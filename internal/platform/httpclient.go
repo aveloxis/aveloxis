@@ -168,6 +168,21 @@ type HTTPClient struct {
 	onPermanentRedirect func(from, to string)
 }
 
+// restTransportRetrySleep is Get's wait after a failed Do (transport
+// error), before the next attempt. A package var so tests can observe
+// the pool DURING the wait — the lease must already be released there
+// (fresh-context review of the v0.29.8 round-2 fixes: nothing drove that
+// ordering once the round-1 shape pin was replaced). Production value
+// only; tests restore it with t.Cleanup.
+var restTransportRetrySleep = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
 // NewHTTPClient creates a platform-aware HTTP client with the given auth style.
 // AuthGitHub sends "Authorization: token <key>"; AuthGitLab sends "PRIVATE-TOKEN: <key>".
 // Uses a transport tuned for high-throughput API collection: keepalives enabled,
@@ -388,10 +403,12 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 	for attempt := range maxRetries {
 		// 2026-09-12: Acquire is a LEASE against the key's and the pool's
-		// in-flight ceilings (least-loaded key wins). It covers exactly
-		// the wire request — released when Do returns, BEFORE
-		// handleResponse's Retry-After sleep — so a throttled caller
-		// never pins a slot while it waits. See graphql.go for the twin.
+		// in-flight ceilings (least-loaded key wins). Released once Do
+		// returns and the response's header state is applied, BEFORE
+		// handleResponse (and the caller) read the body and BEFORE any
+		// Retry-After sleep — so a throttled caller never pins a slot
+		// while it waits. graphql.go is the twin with one difference: it
+		// holds the lease through a 200 body read, for its in-body mark.
 		key, release, err := c.keys.Acquire(ctx, ResourceCore)
 		if err != nil {
 			return nil, fmt.Errorf("getting API key: %w", err)
@@ -427,8 +444,8 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
-			// The lease covers exactly the wire request: a failed Do
-			// has no response state to apply, so release at once.
+			// A failed Do has no response state to apply, so release
+			// at once.
 			release()
 			// v0.27.28: a cancelled context is not a retryable failure —
 			// bail BEFORE the "retrying" WARN. Pre-fix, every request
@@ -444,18 +461,16 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				"url", url, "attempt", attempt+1, "error", err)
 			// Context-aware sleep: a cancelled job wakes immediately
 			// instead of sitting here for 20+s across the retry chain.
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			if err := restTransportRetrySleep(ctx, time.Duration(attempt+1)*2*time.Second); err != nil {
+				return nil, err
 			}
 			continue
 		}
 
-		// Copilot review on PR #203: apply the response's primary AND
-		// secondary-limit state to the pool BEFORE releasing the lease,
-		// so a waiter woken by the release never selects this key on
-		// stale state. Released here — before any retry sleep or key
+		// Copilot review on PR #203: apply the response's primary budget,
+		// secondary-limit rest and (round 2) 401 auth strike to the pool
+		// BEFORE releasing the lease, so a waiter woken by the release
+		// never selects this key on stale state. Released here — before any retry sleep or key
 		// rotation below — so the slot is never held across a wait
 		// (lease_every_exit_test.go drives every exit).
 		c.keys.UpdateFromResponse(key, resp)
@@ -623,12 +638,13 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	case resp.StatusCode == http.StatusUnauthorized:
 		// 401 = bad credentials — but GitHub's auth backend returns this
 		// transiently for valid tokens during incidents, so a single 401
-		// must NOT kill the key. RecordAuthFailure quarantines only after
+		// must NOT kill the key. The pool quarantines only after
 		// several consecutive failures (any success resets the count), and
 		// even then the key auto-recovers after a cooldown. Either way we
-		// just rotate to the next key on the next loop iteration.
+		// just rotate to the next key on the next loop iteration. The
+		// strike itself was recorded by UpdateFromResponse under the lease
+		// (Copilot review round 2 on PR #203) — not here, after release.
 		resp.Body.Close()
-		c.keys.RecordAuthFailure(key)
 		return respRetry, nil, nil
 	case resp.StatusCode == http.StatusBadRequest:
 		// 400 = malformed request. GitHub returns HTML "Whoa there!" for

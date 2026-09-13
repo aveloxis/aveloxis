@@ -69,8 +69,11 @@ func TestKeyPoolConcurrentAccess(t *testing.T) {
 					// maxAuthStrikes" invariant true while these
 					// methods still race against 31 other workers.
 					if w == 0 {
-						kp.RecordAuthFailure(key)
-						kp.RecordAuthSuccess(key)
+						// Strike then clear, through the one production
+						// path for both (v0.29.8 removed the exported
+						// RecordAuthFailure/RecordAuthSuccess wrappers).
+						kp.UpdateFromResponse(key, &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}})
+						kp.UpdateFromResponse(key, &http.Response{StatusCode: http.StatusOK, Header: http.Header{}})
 					} else {
 						kp.UpdateFromResponse(key, mkResp("4000"))
 					}

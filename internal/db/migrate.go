@@ -612,6 +612,17 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_group_email",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email
 		 ON aveloxis_data.repo_groups_list_serve (repo_group_id, rgls_email)`)
+	// v0.29.8: is_automation_email's list-address clause compares
+	// lower(rgls_email) = lower(addr) on every call, and nothing indexed
+	// that expression — each call scanned the whole list table (~800 rows
+	// on chaoss.tv), lowercasing every row. Measured 25x on the serial
+	// per-call cost (114 µs → 4.5 µs; synthetic benchmark, local PG 18 —
+	// summary/changelog/v0.29.md), which multiplies across every
+	// email_message / messages row a gated query touches. Non-unique, so
+	// no dedup precondition (SR-1); CONCURRENTLY like its sibling above.
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_email_lower
+		 ON aveloxis_data.repo_groups_list_serve (lower(rgls_email))`)
 	// v0.25.20 — indexes for the mailing-list projection backfill's per-row
 	// lookups. Without these, backfill-mailing-list-projection (and the live
 	// projection path) sequential-scan messages / email_message per row — the

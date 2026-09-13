@@ -12,19 +12,32 @@ import (
 	"time"
 )
 
+// respond401 feeds one 401 response through UpdateFromResponse — the ONE
+// production path that counts an auth strike — and reports whether that
+// response quarantined the key.
+func respond401(kp *KeyPool, key *APIKey) bool {
+	kp.mu.Lock()
+	before := key.quarantineCount
+	kp.mu.Unlock()
+	kp.UpdateFromResponse(key, &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}})
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	return key.quarantineCount > before
+}
+
 // quietLogger discards log output so the noisy WARN/ERROR lines these tests
 // deliberately trigger don't clutter `go test` output.
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// TestRecordAuthFailure_SingleFailureDoesNotDisable is the core regression test
+// TestAuthStrike_SingleFailureDoesNotDisable is the core regression test
 // for the 2026-06-17 outage: a single 401 must NOT take a key out of rotation.
-func TestRecordAuthFailure_SingleFailureDoesNotDisable(t *testing.T) {
+func TestAuthStrike_SingleFailureDoesNotDisable(t *testing.T) {
 	kp := NewKeyPool([]string{"ghp_singlekey"}, quietLogger())
 	key := kp.keys[0]
 
-	if quarantined := kp.RecordAuthFailure(key); quarantined {
+	if quarantined := respond401(kp, key); quarantined {
 		t.Fatal("a single 401 quarantined the key; it must be treated as transient")
 	}
 
@@ -41,18 +54,18 @@ func TestRecordAuthFailure_SingleFailureDoesNotDisable(t *testing.T) {
 	}
 }
 
-// TestRecordAuthFailure_QuarantinesAfterThreshold verifies the key is quarantined
+// TestAuthStrike_QuarantinesAfterThreshold verifies the key is quarantined
 // only after maxAuthStrikes consecutive failures, and recovers automatically.
-func TestRecordAuthFailure_QuarantinesAfterThreshold(t *testing.T) {
+func TestAuthStrike_QuarantinesAfterThreshold(t *testing.T) {
 	kp := NewKeyPool([]string{"ghp_thresholdkey"}, quietLogger())
 	key := kp.keys[0]
 
 	for i := 1; i < maxAuthStrikes; i++ {
-		if kp.RecordAuthFailure(key) {
+		if respond401(kp, key) {
 			t.Fatalf("quarantined after %d strikes; threshold is %d", i, maxAuthStrikes)
 		}
 	}
-	if !kp.RecordAuthFailure(key) {
+	if !respond401(kp, key) {
 		t.Fatalf("not quarantined after %d consecutive strikes", maxAuthStrikes)
 	}
 
@@ -74,22 +87,22 @@ func TestRecordAuthFailure_QuarantinesAfterThreshold(t *testing.T) {
 	}
 }
 
-// TestRecordAuthSuccess_ResetsStrikes verifies an intervening success prevents a
+// TestAuthStrike_SuccessResetsStrikes verifies an intervening success prevents a
 // slow drip of transient 401s from ever reaching the quarantine threshold —
 // exactly the pattern (good keys, occasional 401s over 15 hours) seen on June 17.
-func TestRecordAuthSuccess_ResetsStrikes(t *testing.T) {
+func TestAuthStrike_SuccessResetsStrikes(t *testing.T) {
 	kp := NewKeyPool([]string{"ghp_resetkey"}, quietLogger())
 	key := kp.keys[0]
 
 	for cycle := 0; cycle < 100; cycle++ {
 		// Fail almost to the threshold...
 		for i := 1; i < maxAuthStrikes; i++ {
-			if kp.RecordAuthFailure(key) {
+			if respond401(kp, key) {
 				t.Fatalf("cycle %d: quarantined before a success reset the strikes", cycle)
 			}
 		}
 		// ...then a success resets the counter.
-		kp.RecordAuthSuccess(key)
+		kp.UpdateFromResponse(key, &http.Response{StatusCode: http.StatusOK, Header: http.Header{}})
 	}
 	if key.quarantineCount != 0 {
 		t.Fatalf("key was quarantined %d times despite interleaved successes", key.quarantineCount)
@@ -97,7 +110,7 @@ func TestRecordAuthSuccess_ResetsStrikes(t *testing.T) {
 }
 
 // TestUpdateFromResponse_ResetsStrikesOn2xx pins that a 2xx response clears the
-// strike counter (the production path RecordAuthSuccess depends on).
+// strike counter (the only production path that resets strikes).
 func TestUpdateFromResponse_ResetsStrikesOn2xx(t *testing.T) {
 	kp := NewKeyPool([]string{"ghp_2xxkey"}, quietLogger())
 	key := kp.keys[0]
@@ -138,16 +151,16 @@ func TestAcquire_WaitsForQuarantineInsteadOfFatal(t *testing.T) {
 	}
 }
 
-// TestRecordAuthFailure_ExponentialCooldownIsBounded verifies repeated
+// TestAuthStrike_ExponentialCooldownIsBounded verifies repeated
 // quarantines grow the cooldown but never exceed authQuarantineMax.
-func TestRecordAuthFailure_ExponentialCooldownIsBounded(t *testing.T) {
+func TestAuthStrike_ExponentialCooldownIsBounded(t *testing.T) {
 	kp := NewKeyPool([]string{"ghp_revoked"}, quietLogger())
 	key := kp.keys[0]
 
 	var lastCooldown time.Duration
 	for round := 0; round < 12; round++ {
 		for i := 0; i < maxAuthStrikes; i++ {
-			kp.RecordAuthFailure(key)
+			respond401(kp, key)
 		}
 		cooldown := time.Until(key.quarantineUntil)
 		if cooldown > authQuarantineMax+time.Second {

@@ -1771,6 +1771,7 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		"mode", mode,
 		"written", written,
 		"api_calls_used", apiCalls,
+		"api_calls_basis", collector.ScorecardAPICallsBasis,
 		"phase_duration", time.Since(phaseStart), // includes slot_wait
 		"slot_wait", slotWait)
 

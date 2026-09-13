@@ -11,9 +11,9 @@
 package platform
 
 import (
+	"context"
+	"io"
 	"net/http"
-	"os"
-	"strings"
 	"testing"
 	"time"
 )
@@ -81,49 +81,52 @@ func TestUpdateFromResponseRestsASecondaryLimitedKey(t *testing.T) {
 }
 
 // TestLeaseReleasedAfterResponseStateApplied pins the ORDER on both
-// wire paths: after Do, the success path applies UpdateFromResponse
-// BEFORE release(); the Do-error arm still releases at once. A
-// behavioral driver for the gap itself would need a waiter racing a
-// throttled response inside a few microseconds; the order is the
-// contract and it is pinned here, while lease_every_exit_test.go keeps
-// proving the release still happens on every exit.
+// wire paths as BEHAVIOR: the pool is observed at the instant of the
+// release (leaseReleaseObserver), and the key a secondary-limit response
+// throttled must already be resting there. Until round 2 this was a
+// source-shape pin ("the line after UpdateFromResponse must be
+// release()"); round 2's GraphQL marks legitimately sit between the two
+// and a comment mentioning release() tripped its token count, so the
+// shape pin was replaced by the observation it stood in for. The
+// Do-error arm's release-before-retry-wait, the auth-strike and the
+// GraphQL budget marks are observed in copilot_pr203_round2_test.go
+// (TestDoErrorReleasesBeforeRetrySleep, TestAuthStrikeRecordedBeforeLeaseRelease,
+// TestGraphQLBudgetMarksAppliedBeforeLeaseRelease); lease_every_exit_test.go
+// proves the pool is idle after every exit returns.
 func TestLeaseReleasedAfterResponseStateApplied(t *testing.T) {
-	for _, tc := range []struct{ file, fn string }{
-		{"httpclient.go", "func (c *HTTPClient) Get("},
-		{"graphql.go", "func (c *HTTPClient) GraphQLAt("},
+	t.Cleanup(SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil }))
+	throttled := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	restOK := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"x":1}}`)
+	}
+	for _, tc := range []struct {
+		name string
+		call wireCall
+	}{
+		{"REST Get", restGet},
+		{"GraphQL", graphqlCall},
 	} {
-		src, err := os.ReadFile(tc.file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := string(src)
-		i := strings.Index(body, tc.fn)
-		if i < 0 {
-			t.Fatalf("%s: %s missing", tc.file, tc.fn)
-		}
-		body = body[i:]
-		do := strings.Index(body, "resp, err := c.inner.Do(req)")
-		upd := strings.Index(body, "c.keys.UpdateFromResponse(key, resp)")
-		if do < 0 || upd < 0 || upd < do {
-			t.Fatalf("%s: expected Do then UpdateFromResponse in %s", tc.file, tc.fn)
-		}
-		between := body[do:upd]
-		// Exactly one release between Do and UpdateFromResponse, and it
-		// lives inside the Do-error arm.
-		if n := strings.Count(between, "release()"); n != 1 {
-			t.Errorf("%s: %d release() calls between Do and UpdateFromResponse, want exactly 1 (the Do-error arm)", tc.file, n)
-		}
-		errArm := strings.Index(between, "if err != nil {")
-		rel := strings.Index(between, "release()")
-		if errArm < 0 || rel < errArm {
-			t.Errorf("%s: the release between Do and UpdateFromResponse must be inside the `if err != nil` arm, not before it", tc.file)
-		}
-		// And the success path releases right after the state is applied.
-		after := body[upd:]
-		nl := strings.Index(after, "\n")
-		next := strings.TrimSpace(after[nl+1:])
-		if !strings.HasPrefix(next, "release()") {
-			t.Errorf("%s: the line after UpdateFromResponse must be release() (state applied under the lease, released before any retry sleep); got %q", tc.file, strings.SplitN(next, "\n", 2)[0])
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			releases := observeLeaseReleases(t)
+			srv := scriptedServer(t, throttled, restOK)
+			kp := NewKeyPool([]string{"tok-a", "tok-b"}, rlTestLogger())
+			if err := tc.call(context.Background(), NewHTTPClient(srv.URL, kp, rlTestLogger(), AuthGitHub)); err != nil {
+				t.Fatalf("the call should rotate to the healthy key and succeed: %v", err)
+			}
+			obs := releases()
+			if len(obs) < 2 {
+				t.Fatalf("expected a release per attempt, got %d", len(obs))
+			}
+			if !obs[0].resting {
+				t.Error("at the release after the 429 the key was not yet resting — a waiter woken by that release can select the key the response just throttled")
+			}
+			if obs[1].key == obs[0].key {
+				t.Error("the retry must be served by the other key while the throttled one rests")
+			}
+		})
 	}
 }

@@ -71,10 +71,13 @@ type ScorecardResult struct {
 	// attempt's cost is real, so the result still carries Mode, Checks
 	// and Duration for the phase log.
 	Discarded bool `json:"-"`
-	// APICalls is the instrumented GitHub API spend of the run
-	// (core + graphql used-delta measured via /rate_limit on the first
-	// token). 0 for local mode (which makes no instrumented calls);
-	// -1 when instrumentation was requested but the probe failed.
+	// APICalls is the instrumented GitHub API spend SAMPLE of the run:
+	// the core + graphql used-delta measured via /rate_limit on the
+	// instrument (first lent) token. Not attributable — it misses the
+	// other lent tokens and includes concurrent same-token callers; see
+	// rateLimitDelta. 0 for local mode (which makes no instrumented
+	// calls); -1 = unknown (a probe failed, or a rate-limit window reset
+	// between the probes).
 	APICalls int64 `json:"-"`
 	// Duration is the wall-clock time of the whole run including any
 	// fallback attempt.
@@ -156,6 +159,17 @@ type ScorecardOptions struct {
 // applied when a caller passes Timeout <= 0. Must match the
 // config.ScorecardTimeout accessor default.
 const defaultScorecardTimeout = 15 * time.Minute
+
+// rateLimitWindowSeconds is the length of GitHub's primary rate-limit
+// window for the core and graphql resources (one hour) — the bound
+// rateLimitDelta's idle-resource exception relies on.
+const rateLimitWindowSeconds = 3600
+
+// ScorecardAPICallsBasis labels every api_calls_used log value: a
+// /rate_limit used-delta on ONE token (the instrument token), which is a
+// sample biased both ways — not the run's attributable spend
+// (rateLimitDelta has the details). One spelling for every log site.
+const ScorecardAPICallsBasis = "instrument_token_sample"
 
 // scorecardRateLimitURL is the default endpoint for the API-spend probe.
 const scorecardRateLimitURL = "https://api.github.com/rate_limit"
@@ -288,6 +302,9 @@ func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, ra
 		"checks", len(result.Checks),
 		"written", !result.Discarded,
 		"api_calls_used", apiCalls,
+		// The number above is a one-token sample, not this run's
+		// attributable spend (rateLimitDelta); say so where it is read.
+		"api_calls_basis", ScorecardAPICallsBasis,
 		"duration", duration)
 	return result, nil
 }
@@ -533,9 +550,11 @@ func setRemoteOrigin(ctx context.Context, repoPath, remoteURL string) error {
 // rateLimitSnapshot is one before/after observation of the first
 // token's GitHub API usage.
 type rateLimitSnapshot struct {
-	coreUsed    int64
-	graphqlUsed int64
-	ok          bool
+	coreUsed     int64
+	coreReset    int64 // the core window's reset epoch — identifies the window
+	graphqlUsed  int64
+	graphqlReset int64
+	ok           bool
 }
 
 // fetchRateLimitSnapshot GETs the GitHub /rate_limit endpoint with the
@@ -568,10 +587,12 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 	var body struct {
 		Resources struct {
 			Core struct {
-				Used int64 `json:"used"`
+				Used  int64 `json:"used"`
+				Reset int64 `json:"reset"`
 			} `json:"core"`
 			GraphQL struct {
-				Used int64 `json:"used"`
+				Used  int64 `json:"used"`
+				Reset int64 `json:"reset"`
 			} `json:"graphql"`
 		} `json:"resources"`
 	}
@@ -580,22 +601,62 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 		return rateLimitSnapshot{}
 	}
 	return rateLimitSnapshot{
-		coreUsed:    body.Resources.Core.Used,
-		graphqlUsed: body.Resources.GraphQL.Used,
-		ok:          true,
+		coreUsed:     body.Resources.Core.Used,
+		coreReset:    body.Resources.Core.Reset,
+		graphqlUsed:  body.Resources.GraphQL.Used,
+		graphqlReset: body.Resources.GraphQL.Reset,
+		ok:           true,
 	}
 }
 
-// rateLimitDelta computes api_calls_used from two snapshots. -1 =
-// unknown (either probe failed — non-fatal per the instrumentation
-// contract). The delta can only observe the FIRST token; with a
-// multi-token GITHUB_TOKEN scorecard spreads calls across the list, so
-// this is a lower-bound sample, not an exact total.
+// rateLimitDelta computes api_calls_used from two snapshots, or -1 =
+// unknown when either probe failed (non-fatal per the instrumentation
+// contract), when a resource's rate-limit window rolled over between the
+// probes, or when the difference is negative.
+//
+// The window check (Copilot review round 2 on PR #203): GitHub's `used`
+// counter restarts when the window resets, so a run straddling a reset
+// produced a negative number, or a plausible-looking wrong one. A
+// window is identified by its `reset` epoch. The one exception is a
+// resource that was idle at the first probe (used 0): it has no window
+// yet and GitHub reports a reset that floats with the clock (probe time
+// + the window length), so a moved epoch there is not by itself a
+// rollover. The window the run opens starts after that probe and so
+// resets less than one window length after the floating value; any
+// later window resets at least one window length after it. So the idle
+// case is accepted only inside that bound — scorecard_timeout_minutes
+// has no upper clamp, and a run that outlived its window would
+// otherwise report the second window's count as the whole run's.
+//
+// The value is a SAMPLE of one token, NOT this run's attributable spend,
+// and it is biased in both directions: it misses the calls scorecard
+// spreads onto the other tokens of a multi-token GITHUB_TOKEN, and it
+// includes any calls the pool's collectors (or a concurrent scorecard
+// run) made with the same token inside the run. It answers "is scorecard
+// spend in the tens or the thousands", not "how many calls did it make".
+// Exact attribution would need either exclusive tokens (taken out of the
+// pool for the run's duration) or a usage report from the subprocess,
+// which scorecard does not emit.
 func rateLimitDelta(before, after rateLimitSnapshot) int64 {
 	if !before.ok || !after.ok {
 		return -1
 	}
-	return (after.coreUsed - before.coreUsed) + (after.graphqlUsed - before.graphqlUsed)
+	sameWindow := func(beforeUsed, beforeReset, afterReset int64) bool {
+		if beforeReset == afterReset {
+			return true
+		}
+		return beforeUsed == 0 && afterReset-beforeReset < rateLimitWindowSeconds
+	}
+	if !sameWindow(before.coreUsed, before.coreReset, after.coreReset) ||
+		!sameWindow(before.graphqlUsed, before.graphqlReset, after.graphqlReset) {
+		return -1
+	}
+	core := after.coreUsed - before.coreUsed
+	graphql := after.graphqlUsed - before.graphqlUsed
+	if core < 0 || graphql < 0 {
+		return -1
+	}
+	return core + graphql
 }
 
 // scorecardOutput is the JSON structure output by `scorecard --format json`.

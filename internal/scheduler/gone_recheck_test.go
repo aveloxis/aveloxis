@@ -204,3 +204,60 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		t.Errorf("second run must probe none of the fixture rows, probed %d", probed)
 	}
 }
+
+// Copilot review round 2 on PR #203: a batch of never-answering hosts
+// costs the probe's full retry ladder per row (up to 73 s), so one tick
+// can run for hours while singleFlight skips the ticks behind it — the
+// cohort's throughput silently falls below the batch-per-hour design
+// point. The concurrency Copilot proposed was declined at the site
+// (goneRecheckBatch); what is taken is that the overrun is LOUD:
+// observation-only (SR-7), computed here and warned by runGoneRecheck.
+func TestGoneRecheckOverrun(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		probed      int
+		elapsed     time.Duration
+		wantOverran bool
+		wantPerHour int
+	}{
+		{"answering hosts: a full batch in two minutes", goneRecheckBatch, 2 * time.Minute, false, 15000},
+		{"never-answering hosts: a full batch at 73 s per probe", goneRecheckBatch, 500 * 73 * time.Second, true, 49},
+		{"exactly one tick is not an overrun", goneRecheckBatch, goneRecheckTick, false, goneRecheckBatch},
+		{"a short batch that still overran", 40, 90 * time.Minute, true, 26},
+		{"nothing probed", 0, 3 * time.Hour, false, 0},
+		{"zero elapsed never divides by zero", 5, 0, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			overran, perHour := goneRecheckOverrun(tc.probed, tc.elapsed)
+			if overran != tc.wantOverran || perHour != tc.wantPerHour {
+				t.Errorf("goneRecheckOverrun(%d, %s) = (%v, %d), want (%v, %d)",
+					tc.probed, tc.elapsed, overran, perHour, tc.wantOverran, tc.wantPerHour)
+			}
+		})
+	}
+	// Wiring: the cycle feeds its own count and elapsed into the check
+	// and an overrun reaches a WARN (the helper alone proves nothing if
+	// runGoneRecheck never consults it).
+	// Block-scoped (fresh-context review pass 2): an order-only check
+	// stayed green under `; !overran {` and `; overran || true {`, which
+	// silence the WARN exactly on an overrun or fire it every cycle. The
+	// gate header is matched exactly and the WARN must sit INSIDE its
+	// block, as the only WARN there.
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/gone_recheck.go"), "func (s *Scheduler) runGoneRecheck("))
+	const gate = "if overran, perHour := goneRecheckOverrun(len(cands), elapsed); overran {"
+	if n := strings.Count(body, gate); n != 1 {
+		t.Fatalf("runGoneRecheck must gate the overrun WARN on exactly %q (found %d)", gate, n)
+	}
+	block := body[strings.Index(body, gate)+len(gate):]
+	end := strings.Index(block, "\n\t}")
+	if end < 0 {
+		t.Fatal("could not find the end of the overrun gate's block")
+	}
+	block = block[:end]
+	if !strings.Contains(block, `s.logger.Warn("gone recheck cycle overran its tick`) {
+		t.Error("the overrun WARN must be inside the `; overran {` block")
+	}
+	if strings.Count(body, `"gone recheck cycle overran its tick`) != 1 {
+		t.Error("the overrun WARN must be emitted from exactly one place — inside the gate")
+	}
+}

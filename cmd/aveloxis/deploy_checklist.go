@@ -91,6 +91,17 @@ var deployChecklists = map[string][]deployStep{
 	// first cycles after the restart re-verify the historical gone
 	// cohort on their own. Same ladder.
 	"0.29.7": v029DeployChecklist,
+	// v0.29.8 (is_automation_email parallel safety + the Copilot
+	// round-2 fixes on PR #203): the function is re-declared PARALLEL
+	// SAFE by the base schema and one tiny expression index
+	// (idx_rgls_email_lower, ~800 rows) is built CONCURRENTLY — both
+	// inside migrate. No operator heal — same ladder. The table size does
+	// not make the build instant: CREATE INDEX CONCURRENTLY waits for
+	// every transaction in the database holding an older snapshot, so a
+	// long analytics query running against the database being migrated
+	// holds migrate (and serve startup) until it ends — the blocker
+	// watcher names it. Let such queries finish, or stop them, first.
+	"0.29.8": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

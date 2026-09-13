@@ -214,12 +214,13 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		}
 		// 2026-09-12: Acquire is a LEASE — it counts this request against
 		// the key's and the pool's in-flight ceilings and picks the
-		// least-loaded key. The lease covers exactly the wire request:
-		// released the moment Do returns, BEFORE any Retry-After or
-		// backoff sleep below, so a throttled caller sleeping out a
-		// 5-minute Retry-After never pins an in-flight slot (which is
-		// what the ceilings exist to keep free). Response handling only
-		// reads/marks the key's budget state under the pool mutex.
+		// least-loaded key. The lease covers the wire request: released
+		// at once when Do fails, and otherwise once the response's pool
+		// state is applied — for a 200 that is after the body is read and
+		// parsed (see the block after Do) — but always BEFORE any
+		// Retry-After or backoff sleep below, so a throttled caller
+		// sleeping out a 5-minute Retry-After never pins an in-flight
+		// slot (which is what the ceilings exist to keep free).
 		key, release, err := c.keys.Acquire(ctx, res)
 		if err != nil {
 			return fmt.Errorf("getting API key: %w", err)
@@ -239,8 +240,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
-			// The lease covers exactly the wire request: a failed Do
-			// has no response state to apply, so release at once.
+			// A failed Do has no response state to apply, so release
+			// at once.
 			release()
 			// v0.27.28: cancellation bails quietly before the
 			// "retrying" WARN — same contract as httpclient.Get.
@@ -256,38 +257,46 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			continue
 		}
 
-		// Copilot review on PR #203: apply the response's primary AND
-		// secondary-limit state to the pool BEFORE releasing the lease,
-		// so a waiter woken by the release never selects this key on
-		// stale state. Released here — before any retry sleep or key
-		// rotation below — so the slot is never held across a wait
-		// (lease_every_exit_test.go drives every exit). Two GraphQL
-		// marks still land AFTER this release, by design: the in-body
-		// RATE_LIMITED mark needs the body read (holding the lease across
-		// I/O is the wrong trade), and the 403 + Remaining:0 belt below
-		// exists for the older resource-header-less shape where
-		// UpdateFromResponse routed the zero into CORE. Each costs at
-		// most one wasted request from a waiter woken in the gap; the
-		// headers on both responses already said Remaining: 0 under
-		// the lease.
+		// Copilot review on PR #203: EVERY response-derived mark a
+		// waiter's key selection reads is applied BEFORE the lease is
+		// released — release() Broadcasts, so any mark that lands after
+		// it is a gap in which every parked waiter may select this key.
+		// UpdateFromResponse carries the header state (primary budget,
+		// secondary-limit rest, 401 strike). The two GraphQL-only marks
+		// follow it here (round 2; round 1 had left both after release
+		// with a site note that undercounted the gap as "one wasted
+		// request"):
+		//
+		//   - the in-body RATE_LIMITED mark, which needs the 200 body.
+		//     Reading the body under the lease is not "holding a slot
+		//     across a wait": the response is still on the wire (GitHub
+		//     counts the request against its concurrency limit until it
+		//     finishes sending), and the read is bounded by the client's
+		//     60-second whole-request Timeout. The decode into dest also
+		//     runs under the lease, though the mark needs only the
+		//     envelope's classification: parseGraphQLResponse classifies
+		//     and then decodes in one call, and it is kept whole for
+		//     simplicity. The extra pass is CPU on a body already in
+		//     memory (≤ ~1 MB batches), small against the request's wire
+		//     time, but unmeasured — split classification from the
+		//     decode if lease hold time ever shows up here. Waits — Retry-After,
+		//     backoff, read-retry pacing — all happen after release.
+		//   - the 403 + Remaining: 0 belt for the older resource-header-
+		//     less shape, whose zero UpdateFromResponse routed into CORE.
+		//
+		// Released here — before any retry sleep or key rotation below —
+		// so the slot is never held across a wait
+		// (lease_every_exit_test.go drives every exit;
+		// copilot_pr203_round2_test.go observes the pool AT the release).
 		c.keys.UpdateFromResponse(key, resp)
-		release()
-
-		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
-			resource := resp.Header.Get("X-RateLimit-Resource")
-			if resource == "" {
-				resource = "graphql"
-			}
-			c.logger.Debug("graphql rate limit status",
-				"resource", resource,
-				"remaining", remaining,
-				"limit", resp.Header.Get("X-RateLimit-Limit"),
-				"reset", resp.Header.Get("X-RateLimit-Reset"))
-		}
-
+		var (
+			respBody []byte
+			readErr  error
+			parsed   error
+		)
 		switch {
 		case resp.StatusCode == http.StatusOK:
-			respBody, readErr := io.ReadAll(resp.Body)
+			respBody, readErr = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			// v0.23.9: GitHub's GraphQL gateway has been observed
 			// returning HTTP 200 with a zero-byte body when the
@@ -304,6 +313,35 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if readErr == nil && len(respBody) == 0 {
 				readErr = io.ErrUnexpectedEOF
 			}
+			if readErr == nil {
+				parsed = parseGraphQLResponse(respBody, dest, c.logger)
+				if parsed != nil && ClassifyError(parsed) == ClassRateLimit {
+					c.markBudgetExhausted(key)
+				}
+			}
+		case resp.StatusCode == http.StatusForbidden &&
+			resp.Header.Get("Retry-After") == "" &&
+			resp.Header.Get("X-RateLimit-Remaining") == "0":
+			c.markBudgetExhausted(key)
+		}
+		release()
+
+		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
+			resource := resp.Header.Get("X-RateLimit-Resource")
+			if resource == "" {
+				resource = "graphql"
+			}
+			c.logger.Debug("graphql rate limit status",
+				"resource", resource,
+				"remaining", remaining,
+				"limit", resp.Header.Get("X-RateLimit-Limit"),
+				"reset", resp.Header.Get("X-RateLimit-Reset"))
+		}
+
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			// The body was read (and an empty body turned into
+			// io.ErrUnexpectedEOF) before release — see above.
 			if readErr != nil {
 				// Fix C (v0.18.23): an HTTP/2 RST_STREAM or a connection
 				// abort during body read used to be terminal here. In
@@ -337,30 +375,18 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				}
 				return fmt.Errorf("read graphql response: %w", readErr)
 			}
-			parsed := parseGraphQLResponse(respBody, dest, c.logger)
 			if parsed != nil && ClassifyError(parsed) == ClassRateLimit {
 				// GitHub reports graphql exhaustion as HTTP 200 with an
 				// errors array — no status-code arm ever sees it. Before
 				// 2026-09-01 this returned straight to the caller with no
 				// rotation or wait, which is what killed pytorch's 86h43m
-				// run (one hit in shard 41's child pagination). Mark the
-				// key's graphql budget dead (belt — the headers on this
-				// response normally said Remaining: 0 already) and retry:
-				// the next attempt's Acquire returns a fresh key,
-				// waits for the earliest window reset, or fast-fails for
-				// callers with their own recovery machinery.
-				//
-				// Budget routing (Copilot round 2 on PR #193, suppressed
-				// #2): GitLab's GraphQL shares the UNIFIED core bucket
-				// (no X-RateLimit-Resource header; checkout via GetKey),
-				// so the graphql-bucket mark would be decorative there —
-				// the next GetKey would re-serve the same exhausted
-				// token. Mark the budget the checkout actually reads.
-				if c.authStyle == AuthGitLab {
-					c.keys.MarkCoreExhausted(key)
-				} else {
-					c.keys.MarkGraphQLExhausted(key)
-				}
+				// run (one hit in shard 41's child pagination). The key's
+				// budget was marked dead before release (markBudgetExhausted,
+				// above — belt: the headers on this response normally said
+				// Remaining: 0 already); retry: the next attempt's Acquire
+				// returns a fresh key, waits for the earliest window reset,
+				// or fast-fails for callers with their own recovery
+				// machinery.
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", url, "attempt", attempt+1, "error", parsed,
 					"token_prefix", tokenPrefix(key.Token))
@@ -380,11 +406,12 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		case resp.StatusCode == http.StatusUnauthorized:
 			// Same transient-tolerant policy as REST Get: a single 401 is
 			// treated as a transient auth-backend hiccup, not a dead token.
-			// RecordAuthFailure quarantines only after consecutive failures and
+			// the pool quarantines only after consecutive failures and
 			// auto-recovers; we rotate to the next key on the next iteration.
 			_ = resp.Body.Close()
-			c.logger.Warn("graphql 401 — recording auth failure (quarantined only after repeated 401s)", "url", url)
-			c.keys.RecordAuthFailure(key)
+			// The strike was recorded by UpdateFromResponse under the
+			// lease (Copilot review round 2 on PR #203).
+			c.logger.Warn("graphql 401 — auth failure recorded (quarantined only after repeated 401s)", "url", url)
 			continue
 
 		case resp.StatusCode == http.StatusForbidden:
@@ -426,15 +453,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// UpdateFromResponse — but GitHub's GraphQL checkout
 				// reads GraphQLRemaining, so the exhausted key stayed
 				// eligible and the retry budget burned on immediate
-				// reuse. Mark the budget THIS client's checkout reads
-				// (the in-body branch's belt, same authStyle routing as
-				// round 2's GitLab fix); redundant when the resource
-				// header was present, and idempotent.
-				if c.authStyle == AuthGitLab {
-					c.keys.MarkCoreExhausted(key)
-				} else {
-					c.keys.MarkGraphQLExhausted(key)
-				}
+				// reuse. The budget THIS client's checkout reads was
+				// marked before release (markBudgetExhausted, above).
 				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
 					message: "graphql rate limit exhausted (403 + X-RateLimit-Remaining: 0) persisted through the retry budget"}
 				rateLimitAttempt = attempt
@@ -504,6 +524,23 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastRateLimit)
 	}
 	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
+}
+
+// markBudgetExhausted zeroes the budget THIS client's GraphQL checkout
+// reads, after a response that says the key is rate-limited but whose
+// headers may not have zeroed that bucket (an in-body RATE_LIMITED, or a
+// 403 + Remaining: 0 without X-RateLimit-Resource). Budget routing
+// (Copilot round 2 on PR #193, suppressed #2): GitLab's GraphQL shares
+// the UNIFIED core bucket (no X-RateLimit-Resource header; checkout
+// gates on ResourceCore), so a graphql-bucket mark would be decorative
+// there — the next Acquire would re-serve the same exhausted token.
+// Idempotent. Called only while the lease is held.
+func (c *HTTPClient) markBudgetExhausted(key *APIKey) {
+	if c.authStyle == AuthGitLab {
+		c.keys.MarkCoreExhausted(key)
+	} else {
+		c.keys.MarkGraphQLExhausted(key)
+	}
 }
 
 // graphqlFastFailRetries is the retry budget under WithGraphQLFastFail

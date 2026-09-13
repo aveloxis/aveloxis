@@ -35,7 +35,7 @@ type APIKey struct {
 	// authStrikes counts CONSECUTIVE 401 responses on this key. Any successful
 	// response resets it to 0. A single 401 — common when GitHub's auth
 	// backend has a transient hiccup and returns "Bad credentials" for a
-	// perfectly valid token — must NOT disable the key. See RecordAuthFailure.
+	// perfectly valid token — must NOT disable the key. See recordAuthFailureLocked.
 	authStrikes int
 	// quarantineUntil is the wall-clock time before which this key is skipped
 	// by GetKey. Set when authStrikes crosses maxAuthStrikes. The key recovers
@@ -690,12 +690,22 @@ func (kp *KeyPool) waitLocked(ctx context.Context, until time.Time) {
 	close(done)
 }
 
+// leaseReleaseObserver is a TEST seam: when non-nil, releaseFunc calls
+// it with the key under kp.mu, before the in-flight counters drop and
+// the Broadcast wakes waiters — the exact state a woken waiter's
+// selection will read. Nil in production (pinned by the tests that set
+// it).
+var leaseReleaseObserver func(key *APIKey)
+
 // releaseFunc returns the idempotent lease release for key.
 func (kp *KeyPool) releaseFunc(key *APIKey) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			kp.mu.Lock()
+			if leaseReleaseObserver != nil {
+				leaseReleaseObserver(key)
+			}
 			key.inflight--
 			kp.inflight--
 			kp.cond.Broadcast()
@@ -804,6 +814,16 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	if resp.StatusCode == http.StatusTooManyRequests ||
 		(resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") != "") {
 		kp.markSecondaryLimitedLocked(key, parseRetryAfter(resp))
+	}
+
+	// Copilot review round 2 on PR #203: the 401 auth strike rides the
+	// same call for the same reason. Pre-fix both clients recorded it
+	// after release(), and at the quarantine threshold every waiter the
+	// release Broadcast to could lease the key this response was about
+	// to quarantine. This is the ONE place a 401 is counted per
+	// response; the clients' 401 arms only log and rotate.
+	if resp.StatusCode == http.StatusUnauthorized {
+		kp.recordAuthFailureLocked(key)
 	}
 }
 
@@ -953,8 +973,11 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 	}
 }
 
-// RecordAuthFailure records a 401 (bad-credentials) response for key and
-// returns true if this call quarantined the key.
+// recordAuthFailureLocked records a 401 (bad-credentials) response for
+// key and returns true if this call quarantined the key. Caller holds
+// kp.mu; the one caller is UpdateFromResponse, so the strike lands in
+// the same critical section as the response's budget headers, while the
+// wire client still holds the lease (Copilot review round 2 on PR #203).
 //
 // It deliberately does NOT disable the key on a single 401. GitHub's auth
 // backend intermittently returns "Bad credentials" for valid tokens during
@@ -964,10 +987,14 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 // any successful response resets the count via UpdateFromResponse — is the key
 // quarantined, and even then it recovers automatically once an exponentially
 // growing cooldown elapses. No key is ever permanently disabled by this path.
-func (kp *KeyPool) RecordAuthFailure(key *APIKey) bool {
-	kp.mu.Lock()
-	defer kp.mu.Unlock()
-
+//
+// The exported RecordAuthFailure / RecordAuthSuccess wrappers were REMOVED
+// in v0.29.8 (fresh-context review of the round-2 fixes): once the strike
+// moved into UpdateFromResponse neither had a production caller, and an
+// exported way to count a 401 a second time is how a double count (a valid
+// key quarantined after two transient 401s instead of three) comes back.
+// Remove-don't-deprecate; tests drive UpdateFromResponse.
+func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	key.authStrikes++
 	if key.authStrikes < maxAuthStrikes {
 		kp.logger.Warn("API key 401 — treating as transient, key not quarantined",
@@ -1001,15 +1028,6 @@ func (kp *KeyPool) RecordAuthFailure(key *APIKey) bool {
 			"cooldown", cooldown, "usable_keys", usable)
 	}
 	return true
-}
-
-// RecordAuthSuccess clears the consecutive-401 strike counter for key. Callers
-// that observe a successful response without routing through UpdateFromResponse
-// use this directly; UpdateFromResponse already clears strikes on 2xx.
-func (kp *KeyPool) RecordAuthSuccess(key *APIKey) {
-	kp.mu.Lock()
-	defer kp.mu.Unlock()
-	key.authStrikes = 0
 }
 
 // NoteServerError records one 5xx attempt for the platform
@@ -1102,20 +1120,24 @@ func (kp *KeyPool) AliveCount() int {
 	return count
 }
 
-// LendTokens hands up to n non-invalidated token strings to a caller that
-// cannot hold a Go lease — a SUBPROCESS (scorecard's comma-separated
-// GITHUB_TOKEN). n <= 0 lends every valid key. The borrow is ACCOUNTED:
+// LendTokens hands up to n usable token strings to a caller that cannot
+// hold a Go lease — a SUBPROCESS (scorecard's comma-separated
+// GITHUB_TOKEN). n <= 0 lends every usable key. The borrow is ACCOUNTED:
 // lending prefers the least-lent keys (then the most remaining budget,
 // then pool order), each key's lent count is visible in Snapshot, and the
 // returned release (idempotent) hands them back. This replaces AllTokens
 // (v0.27.5 - 2026-09-12), which gave every token to every subprocess with
 // no record — the one bypass around the pool's accounting.
 //
-// Rate-limit state and auth quarantine are deliberately not consulted:
-// scorecard paces itself across the list per request, a
-// quarantined-but-valid token is still useful to it, and a subprocess's
-// ~40 calls over ~25 s are negligible per key. What matters is that the
-// pool KNOWS.
+// "Usable" is the admission predicate (usableAt): a key that is
+// invalidated, quarantined after repeated 401s, or resting on a
+// secondary limit is NOT lent — Acquire refuses it to every other caller
+// for the same reason. Primary rate-limit BUDGET is deliberately not
+// consulted: scorecard paces itself across the list per request, and a
+// subprocess's ~40 calls over ~25 s are negligible per key. What matters
+// is that the pool KNOWS. (Copilot review round 2 on PR #203: this
+// paragraph used to say quarantine was not consulted either — true
+// before round 1's usableAt filter, the opposite of the code after it.)
 func (kp *KeyPool) LendTokens(n int) ([]string, func()) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()

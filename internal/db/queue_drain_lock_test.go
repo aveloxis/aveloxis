@@ -30,6 +30,7 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestLockReposForDrainExists pins the function signature on the store.
@@ -65,7 +66,7 @@ func TestLockReposForDrainSQLDoesNotTouchLastCollected(t *testing.T) {
 	if body == "" {
 		t.Skip("LockReposForDrain not yet defined; covered by TestLockReposForDrainExists")
 	}
-	sql := extractSQLFromBody(body)
+	sql := firstRawLiteral(body)
 	if sql == "" {
 		t.Fatal("could not locate SQL string literal inside LockReposForDrain")
 	}
@@ -90,7 +91,7 @@ func TestReleaseDrainLockSQLDoesNotTouchLastCollected(t *testing.T) {
 	if body == "" {
 		t.Skip("ReleaseDrainLock not yet defined; covered by TestReleaseDrainLockExists")
 	}
-	sql := extractSQLFromBody(body)
+	sql := firstRawLiteral(body)
 	if sql == "" {
 		t.Fatal("could not locate SQL string literal inside ReleaseDrainLock")
 	}
@@ -102,21 +103,18 @@ func TestReleaseDrainLockSQLDoesNotTouchLastCollected(t *testing.T) {
 	}
 }
 
-// extractSQLFromBody returns the contents of the first backtick-delimited
-// string literal in the given function body — i.e. the SQL the function
-// passes to pgx. Doc comments mentioning column names for explanation
-// purposes are left out.
-func extractSQLFromBody(body string) string {
-	start := strings.Index(body, "`")
-	if start < 0 {
+// firstRawLiteral returns the contents of the first raw-string
+// literal in the given function body — i.e. the SQL the function passes
+// to pgx. Doc comments mentioning column names for explanation purposes
+// are left out. Built on the shared Go-aware extractor (v0.29.8): the
+// textual first-backtick pairing this used to do read a backtick inside
+// a comment or an interpreted string as the start of the SQL.
+func firstRawLiteral(body string) string {
+	lits := srctest.BacktickLiterals(srctest.StripGoComments(body))
+	if len(lits) == 0 {
 		return ""
 	}
-	rest := body[start+1:]
-	end := strings.Index(rest, "`")
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
+	return strings.Trim(lits[0], "`")
 }
 
 // TestDrainLockSuffixUsesWorkerID enforces that the synthetic worker ID

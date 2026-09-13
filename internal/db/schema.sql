@@ -3047,10 +3047,21 @@ ALTER TABLE aveloxis_data.repo_distribution_manifest_history
 -- (2026-08-31: ungated minting had attributed 83,746 messages to a
 -- jira@apache.org phantom contributor). Declared AFTER
 -- repo_groups_list_serve; CREATE OR REPLACE keeps every migrate
--- idempotent.
+-- idempotent (and re-applies the attributes below on existing fleets).
+--
+-- PARALLEL SAFE (v0.29.8): without a marker Postgres defaults a function
+-- to PARALLEL UNSAFE, which forced EVERY query calling this one to a
+-- serial plan (proparallel = 'u' on both chaoss.tv databases,
+-- 2026-09-12; an aveloxis-analytics feature query ran 2.4 h serial).
+-- The body only reads its argument and one table, which is exactly
+-- what SAFE permits. STABLE, not IMMUTABLE: the list lookup can change
+-- between statements. The list clause's lower(rgls_email) is served by
+-- idx_rgls_email_lower (migrate.go) — keep the two spellings identical
+-- or every call scans the whole list table again.
+-- TestSQLFunctionsDeclareParallelMarker / TestAutomationEmailListLookupIsIndexed.
 CREATE OR REPLACE FUNCTION aveloxis_data.is_automation_email(addr TEXT)
 RETURNS BOOLEAN
-LANGUAGE sql STABLE
+LANGUAGE sql STABLE PARALLEL SAFE
 AS $$
     SELECT CASE
         WHEN addr IS NULL OR addr = '' THEN FALSE

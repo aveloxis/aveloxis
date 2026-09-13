@@ -1335,8 +1335,14 @@ Details:
   backstop: a failed remote attempt is logged, counted, and skipped —
   the repo's next collection cycle retries.
 - Progress prints every 100 repos: done/total, cumulative
-  `api_calls_used` (instrumented via `/rate_limit` on the first
-  token), elapsed, and ETA. Interrupting with Ctrl-C is safe; the
+  `api_calls_used`, elapsed, and ETA. `api_calls_used` is a sum of
+  one-token samples (`instrument_token_sample`): each run's
+  `/rate_limit` used-delta on the first lent token. It misses calls
+  scorecard makes on the other lent tokens and counts other callers'
+  calls on the same token, so read it as an order of magnitude, not an
+  exact count. Runs whose sample is unknown (a probe failed, or the
+  rate-limit window reset mid-run) are excluded and counted as
+  `unknown`. Interrupting with Ctrl-C is safe; the
   oldest-first ordering makes a re-run resume where it left off.
 - Requires GitHub API keys (`aveloxis add-key`). Does not run schema
   migrations (v0.21.5 contract) — run `aveloxis migrate` first when

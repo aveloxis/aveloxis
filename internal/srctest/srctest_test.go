@@ -237,6 +237,37 @@ func TestBacktickLiterals(t *testing.T) {
 	}
 }
 
+// TestBacktickLiteralsIsGoAware — a backtick that is NOT a raw-string
+// delimiter (inside an interpreted "..." string, a rune literal, or a
+// comment) must not shift the pairing. Pairing textually made one
+// unbalanced backtick in a hint string swallow every later raw literal
+// in the file, silently shrinking every corpus built on this helper
+// (fresh-context review, v0.29.8 pass 3: reproduced with an unmarked
+// CREATE FUNCTION literal that the parallel-marker gate then never saw).
+func TestBacktickLiteralsIsGoAware(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{"backtick inside an interpreted string", "hint := \"run `aveloxis migrate to fix\"\nq := `SELECT 1`\n", []string{"`SELECT 1`"}},
+		{"backtick rune literal", "tick := '`'\nq := `SELECT 2`\n", []string{"`SELECT 2`"}},
+		{"backtick inside a line comment", "// the `$1 bind\nq := `SELECT 3`\n", []string{"`SELECT 3`"}},
+		{"backtick inside a block comment", "/* a ` b */ q := `SELECT 4`\n", []string{"`SELECT 4`"}},
+		{"escaped quote before a backtick in a string", "s := \"a\\\" `\"\nq := `SELECT 5`\n", []string{"`SELECT 5`"}},
+		{"raw string containing quotes and //", "q := `SELECT '\"x\"' -- https://y`\n", []string{"`SELECT '\"x\"' -- https://y`"}},
+		{"unterminated raw string at the end is not a literal", "q := `SELECT 6`\nr := `oops", []string{"`SELECT 6`"}},
+		{"function-body fragment", "{\n\tq := `SELECT 7`\n\tif x {\n\t\ty := `SELECT 8`\n\t}\n}", []string{"`SELECT 7`", "`SELECT 8`"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BacktickLiterals(tc.src)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("BacktickLiterals = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeWSAndContains(t *testing.T) {
 	// The gofmt-realignment class (v0.22.0 phase 5): a struct field
 	// re-aligned by gofmt broke a literal-substring pin.

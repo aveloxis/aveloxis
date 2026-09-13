@@ -38,7 +38,6 @@ internal/db/email_message_schema_test.go readSchema
 internal/db/fork_capture_test.go forkCaptureSrc
 internal/db/matview_8knot_test.go readMatviewsSQL
 internal/db/queue_drain_lock_test.go extractDrainFunc
-internal/db/queue_drain_lock_test.go extractSQLFromBody
 internal/db/queue_drain_lock_test.go mustReadStoreSource
 internal/db/queue_order_test.go extractFn
 internal/db/queue_order_test.go extractOrderBy

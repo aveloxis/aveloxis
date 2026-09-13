@@ -184,7 +184,11 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 		done     atomic.Int64
 		failed   atomic.Int64
 		apiCalls atomic.Int64
-		start    = time.Now()
+		// apiUnknown counts runs whose sample is unknown (-1: a probe
+		// failed or a rate-limit window reset mid-run) — excluded from
+		// apiCalls, and reported so the sum's coverage is visible.
+		apiUnknown atomic.Int64
+		start      = time.Now()
 	)
 
 	jobs := make(chan db.ScorecardBacklogRepo)
@@ -215,14 +219,16 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 						"repo_id", r.RepoID, "repo", r.Owner+"/"+r.Name, "error", scErr)
 				} else if res != nil && res.APICalls > 0 {
 					apiCalls.Add(res.APICalls)
+				} else if res != nil && res.APICalls < 0 {
+					apiUnknown.Add(1)
 				}
 
 				if d := done.Add(1); d%100 == 0 {
 					elapsed := time.Since(start)
 					perRepo := elapsed / time.Duration(d)
 					eta := time.Duration(int64(total)-d) * perRepo
-					fmt.Printf("run-scorecard: %d/%d done (failed=%d), api_calls_used=%d, elapsed=%s, eta=%s\n",
-						d, total, failed.Load(), apiCalls.Load(),
+					fmt.Printf("run-scorecard: %d/%d done (failed=%d), api_calls_used=%d (%s, unknown=%d), elapsed=%s, eta=%s\n",
+						d, total, failed.Load(), apiCalls.Load(), collector.ScorecardAPICallsBasis, apiUnknown.Load(),
 						elapsed.Round(time.Second), eta.Round(time.Second))
 				}
 			}
@@ -241,8 +247,11 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	close(jobs)
 	wg.Wait()
 
-	fmt.Printf("run-scorecard: complete — done=%d/%d failed=%d api_calls_used=%d elapsed=%s\n",
-		done.Load(), total, failed.Load(), apiCalls.Load(), time.Since(start).Round(time.Second))
+	// api_calls_used is a SUM OF ONE-TOKEN SAMPLES (collector
+	// rateLimitDelta): workers sharing an instrument token count each
+	// other's calls, and calls on the other lent tokens are missed.
+	fmt.Printf("run-scorecard: complete — done=%d/%d failed=%d api_calls_used=%d (%s, unknown=%d) elapsed=%s\n",
+		done.Load(), total, failed.Load(), apiCalls.Load(), collector.ScorecardAPICallsBasis, apiUnknown.Load(), time.Since(start).Round(time.Second))
 	if ctx.Err() != nil {
 		return fmt.Errorf("interrupted after %d/%d repos — re-run to continue (oldest-first ordering makes the pass resumable)", done.Load(), total)
 	}

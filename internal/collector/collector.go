@@ -14,6 +14,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 )
 
 // Collector orchestrates a one-shot collection for a single repository
@@ -266,16 +267,29 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, gitURL, owner
 	return result, nil
 }
 
-func ClientForRepo(repoURL string, ghClient, glClient platform.Client) (platform.Client, string, string, error) {
-	parsed, err := platform.ParseRepoURL(repoURL)
+// ClientForRepo returns the API client, owner and repo for a repository URL:
+// the GitHub client, or — v0.30.0 — the client of the configured GitLab
+// instance whose web URL the repository lives under (gls). A GitLab URL
+// under no configured instance, or under an instance without keys, is an
+// error wrapping gitlab.ErrInstanceNotConfigured; it is never collected with
+// another instance's client.
+func ClientForRepo(repoURL string, ghClient platform.Client, gls *gitlab.Instances) (platform.Client, string, string, error) {
+	parsed, err := platform.ParseRepoURLWithHints(repoURL, gls.WebBases())
 	if err != nil {
 		return nil, "", "", err
 	}
-	switch parsed.Platform {
-	case model.PlatformGitHub:
+	switch {
+	case parsed.Platform == model.PlatformGitHub:
 		return ghClient, parsed.Owner, parsed.Repo, nil
-	case model.PlatformGitLab:
-		return glClient, parsed.Owner, parsed.Repo, nil
+	case parsed.Platform.IsGitLab():
+		in, ok := gls.ForWebURL(repoURL)
+		if !ok {
+			return nil, "", "", fmt.Errorf("%w: %s is not under a configured GitLab instance's web_url (gitlab.web_url / gitlab.instances)", gitlab.ErrInstanceNotConfigured, repoURL)
+		}
+		if in.Client == nil {
+			return nil, "", "", fmt.Errorf("%w: GitLab instance %s has no API keys", gitlab.ErrInstanceNotConfigured, in.WebBase)
+		}
+		return in.Client, parsed.Owner, parsed.Repo, nil
 	default:
 		return nil, "", "", fmt.Errorf("unsupported platform for URL: %s", repoURL)
 	}

@@ -398,10 +398,15 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 	}
 	defer scratchPool.Close()
 
+	// instance_url (v0.30.0) is read through to_jsonb so a primary still on
+	// an older schema copies as the main instance (''), which is what its
+	// keys are. Dropping the tag would file a self-hosted instance's key
+	// under the main instance and send it to that instance's API.
 	rows, err := primaryPool.Query(ctx, `
 		SELECT name, consumer_key, consumer_secret, access_token,
-		       access_token_secret, repo_directory, platform, rate_limit
-		FROM aveloxis_ops.worker_oauth
+		       access_token_secret, repo_directory, platform, rate_limit,
+		       COALESCE(to_jsonb(w) ->> 'instance_url', '')
+		FROM aveloxis_ops.worker_oauth w
 	`)
 	if err != nil {
 		return fmt.Errorf("select worker_oauth from primary: %w", err)
@@ -412,6 +417,7 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 		name, consumerKey, consumerSecret, accessToken string
 		accessTokenSecret, repoDirectory, platform     string
 		rateLimit                                      int
+		instanceURL                                    string
 	}
 	var keys []keyRow
 	for rows.Next() {
@@ -419,6 +425,7 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 		if err := rows.Scan(
 			&k.name, &k.consumerKey, &k.consumerSecret, &k.accessToken,
 			&k.accessTokenSecret, &k.repoDirectory, &k.platform, &k.rateLimit,
+			&k.instanceURL,
 		); err != nil {
 			return err
 		}
@@ -432,12 +439,12 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 		_, err := scratchPool.Exec(ctx, `
 			INSERT INTO aveloxis_ops.worker_oauth
 			    (name, consumer_key, consumer_secret, access_token,
-			     access_token_secret, repo_directory, platform, rate_limit)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			     access_token_secret, repo_directory, platform, rate_limit, instance_url)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (access_token, platform) DO NOTHING
 		`,
 			k.name, k.consumerKey, k.consumerSecret, k.accessToken,
-			k.accessTokenSecret, k.repoDirectory, k.platform, k.rateLimit,
+			k.accessTokenSecret, k.repoDirectory, k.platform, k.rateLimit, k.instanceURL,
 		)
 		if err != nil {
 			return fmt.Errorf("insert worker_oauth into %s: %w", scratchDBName, err)

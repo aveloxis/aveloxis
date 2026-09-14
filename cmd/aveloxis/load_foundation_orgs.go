@@ -117,16 +117,18 @@ func orgGroupName(foundation string) string {
 // orgURLForRepo derives the canonical org URL from a project repo URL,
 // e.g. "https://github.com/apache/arrow" → "https://github.com/apache".
 // Returns "" for hosts we can't track as an org.
-func orgURLForRepo(rurl string) string {
-	parsed, err := platform.ParseRepoURL(rurl)
+func orgURLForRepo(rurl string, gitlabWebBases []string) string {
+	parsed, err := platform.ParseRepoURLWithHints(rurl, gitlabWebBases)
 	if err != nil || parsed.Owner == "" {
 		return ""
 	}
-	switch parsed.Platform {
-	case model.PlatformGitHub:
+	// v0.30.0: the org lives on the project's own instance (WebBase), not
+	// a gitlab.com group of the same name.
+	switch {
+	case parsed.Platform == model.PlatformGitHub:
 		return "https://github.com/" + parsed.Owner
-	case model.PlatformGitLab:
-		return "https://gitlab.com/" + parsed.Owner
+	case parsed.Platform.IsGitLab() && parsed.WebBase != "":
+		return parsed.WebBase + "/" + parsed.Owner
 	default:
 		return ""
 	}
@@ -163,7 +165,7 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 	orgsByFoundation := map[string]map[string]bool{}
 	for _, p := range projects {
 		for _, rurl := range p.RepoURLs {
-			org := orgURLForRepo(rurl)
+			org := orgURLForRepo(rurl, configuredGitLabWebBases(cfg))
 			if org == "" {
 				continue
 			}

@@ -373,7 +373,7 @@ func detectPlatform(url string) model.Platform {
 }
 ```
 
-In practice, operators will configure a list of Bugzilla host patterns in `aveloxis.json` (similar to `gitlab_hosts`) so the dispatch is deterministic.
+In practice, operators will configure a list of Bugzilla host patterns in `aveloxis.json` (similar to `gitlab.instances`) so the dispatch is deterministic.
 
 ### Step 7 — implement the meaningful methods
 
@@ -667,28 +667,38 @@ func (c *Client) FetchCloneStats(_ context.Context, _, _ string) ([]model.RepoCl
 
 ```go
 // internal/scheduler/scheduler.go
-func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
-    switch p {
-    case model.PlatformGitHub:
+func (s *Scheduler) clientForRepo(repo *model.Repo) (platform.Client, error) {
+    switch {
+    case repo.Platform == model.PlatformGitHub:
         return s.ghClient, nil
-    case model.PlatformGitLab:
-        return s.glClient, nil
-    case model.PlatformBugzilla:
+    case repo.Platform.IsGitLab():
+        c, err := s.gl.ForRepo(repo.Platform, repo.GitURL)
+        if err != nil {
+            return nil, err
+        }
+        return c, nil
+    case repo.Platform == model.PlatformBugzilla:
         return s.bzClient, nil
     default:
-        return nil, fmt.Errorf("unknown platform: %d", p)
+        return nil, fmt.Errorf("unknown platform: %d", repo.Platform)
     }
 }
 ```
 
 Add a `bzClient platform.Client` field to the `Scheduler` struct. Update the constructor `NewWithKeys` to accept it.
 
+GitLab is the model to copy if the new platform has several self-hosted
+instances (Bugzilla does: bugzilla.mozilla.org, bugs.kde.org, …): every GitLab
+instance has its own `platform_id`, its own client on its own API URL and its
+own key pool, and `gitlab.Instances` picks a repository's client by its
+platform_id **and** its URL. One instance's keys never reach another's API.
+
 In `runJob`, the gate that controls "API collection vs git-only":
 
 ```go
+client, clientErr := s.clientForRepo(repo)
 if !repo.Platform.IsGitOnly() {
-    client, clientErr := s.selectClient(repo.Platform)
-    // ... existing code does staged collection
+    // ... existing code does staged collection with client
 }
 ```
 
@@ -709,35 +719,27 @@ Audit `internal/scheduler/scheduler.go` for `runFacadeAndAnalysis`, `analysisCol
 ### Step 10 — wire into `main.go`
 
 ```go
-// cmd/aveloxis/main.go — runServe and the keys loader
+// cmd/aveloxis/forge_clients.go — buildForgeClients, the one builder
 
-func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys bool, logger *slog.Logger) (
-    ghKeys, glKeys, bzKeys *platform.KeyPool, err error,
-) {
-    // ... existing ghKeys + glKeys loading
+    // ... existing GitHub pool and the per-instance GitLab router
 
     bzKeysData, err := db.LoadAPIKeys(ctx, store.Pool(), "bugzilla", useAugurKeys)
     if err != nil {
         logger.Error("loading Bugzilla keys", "error", err)
     }
-    bzKeys = platform.NewKeyPool(bzKeysData, ...)
-
-    return ghKeys, glKeys, bzKeys, nil
-}
+    bzKeys := platform.NewKeyPool(bzKeysData, logger)
+    clients.bz = bugzilla.New(cfg.Bugzilla.BaseURL, bzKeys, logger)
 ```
 
-Then:
+Then in `runServe`:
 
 ```go
-ghKeys, glKeys, bzKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
-ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
-glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
-bzClient := bugzilla.New(cfg.Bugzilla.BaseURL, bzKeys, logger)
+clients, err := buildForgeClients(ctx, cfg, store, useAugurKeys, true, logger)
 
-sched := scheduler.NewWithKeys(store, ghClient, glClient, bzClient, ghKeys, glKeys, logger, scheduler.Config{...})
+sched := scheduler.NewWithKeys(store, clients.gh, clients.gl, clients.bz, clients.ghKeys, logger, scheduler.Config{...})
 ```
 
-Update `scheduler.NewWithKeys` to accept the bzClient param after glClient; the key-pool parameters keep their order.
+Update `scheduler.NewWithKeys` to accept the bzClient param after gl; the key-pool parameter keeps its place.
 
 ### Step 11 — config
 

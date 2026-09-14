@@ -4,30 +4,40 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 )
 
-// forgeClientFor picks the API client for a repository's platform in the
-// operator commands that hold one GitHub and one GitLab client
-// (backfill-repo-metadata, heal-collection-gaps). v0.30.0: a GitLab instance
-// other than the historical one (platform_id 100–199) gets NO client here —
-// never the GitHub client (owner/name there is a different repository, SR-6)
-// and never gitlab.com's (another instance's project ids and tokens). ok is
-// false for those and for generic git.
-//
-// Interim (v0.30.0 Phase A): no platform 100–199 row can exist before the
-// instance registry lands, so the callers' counters for this case (skipped in
-// backfill-repo-metadata, failed in heal-collection-gaps) are not yet
-// reachable; Phase B routing replaces this function with per-instance
-// clients, and those counters with a routed test.
-func forgeClientFor(p model.Platform, gh, gl platform.Client) (platform.Client, bool) {
-	switch p {
-	case model.PlatformGitHub:
-		return gh, true
-	case model.PlatformGitLab:
-		return gl, true
+// errNoForgeAPI marks a platform with no forge API (generic git).
+var errNoForgeAPI = errors.New("platform has no forge API")
+
+// forgeClientFor picks the API client for a repository in the operator
+// commands that walk the catalog (backfill-repo-metadata,
+// heal-collection-gaps): the GitHub client, or — v0.30.0 — the repository's
+// own GitLab instance's client, chosen by platform_id AND repo_git
+// (gitlab.Instances.ForRepo). A GitLab repository is never sent to the
+// GitHub client (owner/name there is a different repository, SR-6) or to
+// another instance's client; an uncollectable instance is an error wrapping
+// gitlab.ErrInstanceNotConfigured / ErrInstanceMismatch, and generic git is
+// errNoForgeAPI.
+func forgeClientFor(p model.Platform, gitURL string, gh platform.Client, gls *gitlab.Instances) (platform.Client, error) {
+	switch {
+	case p == model.PlatformGitHub:
+		if gh == nil {
+			return nil, fmt.Errorf("no GitHub client")
+		}
+		return gh, nil
+	case p.IsGitLab():
+		c, err := gls.ForRepo(p, gitURL)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	default:
-		return nil, false
+		return nil, fmt.Errorf("%w: platform_id %d", errNoForgeAPI, p)
 	}
 }

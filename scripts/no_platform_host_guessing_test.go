@@ -42,8 +42,28 @@ func TestReposAreAddressedByTheirStoredURL(t *testing.T) {
 		t.Error("Collector.CollectRepo must take the repo's URL as a parameter and clone that, not a URL rebuilt from the platform id")
 	}
 	mainSrc := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/main.go"))
+	if !strings.Contains(mainSrc, "c, rerr := clients.gl.ForRepo(stored.Platform, stored.GitURL)") {
+		t.Error("the collect CLI must route a stored GitLab row by its platform_id and URL (clients.gl.ForRepo), as serve does")
+	}
 	if !strings.Contains(mainSrc, "coll.CollectRepo(ctx, repoID, stored.GitURL, owner, repo, since)") ||
 		!strings.Contains(mainSrc, "stored, err := store.GetRepoByID(ctx, repoID)") {
 		t.Error("the collect CLI must clone the stored repo_git (read back after UpsertRepo), not the raw argument")
+	}
+}
+
+// v0.30.0 review of B1–B5 (finding 1): commands that parse a repository URL
+// pass the configured GitLab instances' web URLs as hints, so a self-hosted
+// instance without "gitlab" in its hostname is accepted and a sub-path
+// prefix is not taken for an owner.
+func TestCommandsParseRepoURLsWithInstanceHints(t *testing.T) {
+	if !strings.Contains(srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/load_foundation_orgs.go")), "orgURLForRepo(rurl, configuredGitLabWebBases(cfg))") {
+		t.Error("load-foundation-orgs must pass the configured GitLab instances' web URLs to orgURLForRepo")
+	}
+	allowed := map[string]int{}
+	for _, f := range []string{"cmd/aveloxis/main.go", "cmd/aveloxis/import_foundations.go", "cmd/aveloxis/load_foundation_orgs.go"} {
+		n := strings.Count(srctest.StripGoComments(srctest.Read(t, f)), "platform.ParseRepoURL(")
+		if n != allowed[f] {
+			t.Errorf("%s has %d unhinted platform.ParseRepoURL calls (allowed %d) — use ParseRepoURLWithHints with configuredGitLabWebBases(cfg)", f, n, allowed[f])
+		}
 	}
 }

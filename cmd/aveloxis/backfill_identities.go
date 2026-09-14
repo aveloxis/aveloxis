@@ -86,7 +86,7 @@ func backfillIdentitiesCmd(cfgPath *string) *cobra.Command {
 				fmt.Printf("phase 2 closed_by from events: %d rows %s\n", n, verb(dryRun))
 			}
 			if runAll || phase == "3" {
-				ghKeys, _, err := loadKeys(ctx, cfg, store, false, logger)
+				ghKeys, err := loadGitHubKeys(ctx, cfg, store, false, logger)
 				if err != nil {
 					return fmt.Errorf("phase 3 needs API keys: %w", err)
 				}

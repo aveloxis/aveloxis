@@ -2418,6 +2418,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.worker_oauth (
     platform       TEXT NOT NULL DEFAULT 'github',
     rate_limit     INT DEFAULT 5000,
     created_at     TIMESTAMPTZ DEFAULT NOW(),
+    -- v0.30.0: the GitLab instance (normalized web base) that issued the
+    -- token; '' = the main instance. Added by migration on existing DBs.
+    instance_url   TEXT NOT NULL DEFAULT '',
     UNIQUE (access_token, platform)
 );
 

@@ -35,8 +35,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/monitor"
 	"github.com/aveloxis/aveloxis/internal/pidfile"
 	"github.com/aveloxis/aveloxis/internal/platform"
-	"github.com/aveloxis/aveloxis/internal/platform/github"
-	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
 	"github.com/aveloxis/aveloxis/internal/web"
 	"github.com/spf13/cobra"
@@ -95,6 +93,7 @@ func main() {
 		dataTestCmd(&cfgPath),
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
+		gitlabInstancesCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
 		healCollectionGapsCmd(&cfgPath),
 		markGoneReposCmd(&cfgPath),
@@ -208,17 +207,17 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 		return fmt.Errorf("migrating database: %w", err)
 	}
 
-	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	// v0.30.0: one key pool and client per GitLab instance; serve registers
+	// the configured instances (platform ids) before anything routes.
+	clients, err := buildForgeClients(ctx, cfg, store, useAugurKeys, true, logger)
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
-	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	// Start scheduler.
 	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
 
-	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, glKeys, logger, scheduler.Config{
+	sched := scheduler.NewWithKeys(store, clients.gh, clients.gl, clients.ghKeys, logger, scheduler.Config{
 		Workers: workers,
 		// The whole aveloxis.json collection block, consumed directly —
 		// the scheduler reads knobs through the CollectionConfig
@@ -227,9 +226,6 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 		// The mail block rides the same single-source pattern
 		// (v0.27.12 operator vulnerability digest).
 		Mail: &cfg.Mail,
-		// The gitlab block: its base_url names the one instance the
-		// GitLab keys (glKeys, above) may be sent to (v0.29.11).
-		GitLab: &cfg.GitLab,
 	})
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
@@ -462,15 +458,13 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	// the dedicated `aveloxis migrate` subcommand. Operators run
 	// migrate explicitly before kicking off one-off collections.
 
-	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	clients, err := buildForgeClients(ctx, cfg, store, useAugurKeys, false, logger)
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
-	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	for _, repoURL := range repoURLs {
-		client, owner, repo, err := collector.ClientForRepo(repoURL, ghClient, glClient)
+		client, owner, repo, err := collector.ClientForRepo(repoURL, clients.gh, clients.gl)
 		if err != nil {
 			logger.Error("skipping repo", "url", repoURL, "error", err)
 			continue
@@ -495,6 +489,19 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			logger.Error("failed to read back the stored repo", "url", repoURL, "repo_id", repoID, "error", err)
 			continue
 		}
+		// v0.30.0: a stored GitLab row is collected with ITS instance's
+		// client — chosen by platform_id AND URL, as serve does. A row whose
+		// platform_id contradicts its URL (a misrouted platform-2 row with
+		// API data) or whose instance cannot be collected is skipped, never
+		// collected with the URL's instance client.
+		if stored.Platform.IsGitLab() {
+			c, rerr := clients.gl.ForRepo(stored.Platform, stored.GitURL)
+			if rerr != nil {
+				logger.Error("skipping repo — its GitLab instance cannot collect it", "url", repoURL, "repo_id", repoID, "platform_id", stored.Platform, "error", rerr)
+				continue
+			}
+			client = c
+		}
 
 		// v0.27.139: the incremental lower bound is the queue row's
 		// last_collected (start-anchored by CompleteJob), NEVER
@@ -513,7 +520,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			}
 		}
 
-		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).
+		coll := collector.NewWithOptions(client, store, logger, clients.ghKeys, cfg.Collection.RepoCloneDir).
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, stored.GitURL, owner, repo, since)
@@ -571,12 +578,12 @@ and only repos that still exist are imported.`,
 
 // isOrgURL checks if a URL points to a GitHub org or GitLab group (not a specific repo).
 // Returns (isOrg, host, orgName, platform).
-func isOrgURL(rawURL string) (bool, string, string, model.Platform) {
+func isOrgURL(rawURL string) (bool, string, model.Platform) {
 	rawURL = strings.TrimSpace(rawURL)
 	rawURL = strings.TrimSuffix(rawURL, "/")
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return false, "", "", 0
+		return false, "", 0
 	}
 	host := strings.ToLower(u.Host)
 	path := strings.Trim(u.Path, "/")
@@ -584,12 +591,9 @@ func isOrgURL(rawURL string) (bool, string, string, model.Platform) {
 
 	// GitHub org: https://github.com/chaoss (exactly 1 path segment)
 	if (host == "github.com") && len(parts) == 1 && parts[0] != "" {
-		return true, host, parts[0], model.PlatformGitHub
+		return true, parts[0], model.PlatformGitHub
 	}
-	// GitLab group: could be 1+ segments, but we only treat it as a group
-	// if ParseRepoURL fails (meaning it can't find a project at the end).
-	// For now, we try ParseRepoURL first and fall through to org expansion.
-	return false, "", "", 0
+	return false, "", 0
 }
 
 func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
@@ -608,14 +612,14 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 	// add-repo trusts that the operator has already run
 	// `aveloxis migrate` once for this database.
 
-	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
+	clients, err := buildForgeClients(ctx, cfg, store, false, false, logger)
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
 
 	for _, repoURL := range repoURLs {
 		// Check if this is an org/group URL instead of a repo URL.
-		if isOrg, host, orgName, plat := isOrgURL(repoURL); isOrg {
+		if isOrg, orgName, plat := isOrgURL(repoURL); isOrg {
 			logger.Info("expanding organization", "org", orgName, "platform", plat)
 
 			// Create a repo_group for this org so the refresh job can re-scan it later.
@@ -628,25 +632,11 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				logger.Warn("failed to create repo group for org", "org", orgName, "error", err)
 			}
 
-			var repos []orgRepo
-			switch plat {
-			case model.PlatformGitHub:
-				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)
-				repos, err = listGitHubOrgRepos(ctx, ghHTTP, orgName)
-			case model.PlatformGitLab:
-				// v0.29.11: GitLab keys only ever go to the configured
-				// instance (platform.GitLabAPIBaseForHost). isOrgURL does not
-				// currently classify any URL as a GitLab group, so this arm
-				// is unreachable today; it is guarded like the scheduler's
-				// group refresh so enabling it cannot leak keys.
-				apiBase, ok := platform.GitLabAPIBaseForHost(cfg.GitLab.BaseURL, host)
-				if !ok {
-					err = fmt.Errorf("GitLab group %q is on %s, not the configured GitLab instance (gitlab.base_url %q) — GitLab API keys are only sent to that instance's host", orgName, host, cfg.GitLab.BaseURL)
-					break
-				}
-				glHTTP := platform.NewHTTPClient(apiBase, glKeys, logger, platform.AuthGitLab)
-				repos, err = listGitLabGroupRepos(ctx, glHTTP, orgName)
-			}
+			// isOrgURL recognizes GitHub organizations only; GitLab groups
+			// are refreshed by serve's group refresh on their instance's
+			// client (v0.30.0 removed this command's unreachable GitLab arm).
+			ghHTTP := platform.NewHTTPClient("https://api.github.com", clients.ghKeys, logger, platform.AuthGitHub)
+			repos, err := listGitHubOrgRepos(ctx, ghHTTP, orgName)
 			if err != nil {
 				logger.Error("failed to list org repos", "org", orgName, "error", err)
 				continue
@@ -682,8 +672,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			continue
 		}
 
-		// Regular repo URL.
-		parsed, err := platform.ParseRepoURL(repoURL)
+		// Regular repo URL. Configured GitLab instances' web URLs let a
+		// self-hosted host without "gitlab" in its name parse (v0.30.0);
+		// UpsertRepo assigns the instance's platform_id.
+		parsed, err := platform.ParseRepoURLWithHints(repoURL, clients.gl.WebBases())
 		if err != nil {
 			logger.Error("invalid URL", "url", repoURL, "error", err)
 			continue
@@ -787,48 +779,6 @@ func listGitHubOrgRepos(ctx context.Context, http *platform.HTTPClient, org stri
 	return repos, nil
 }
 
-// listGitLabGroupRepos calls GET /groups/{group}/projects to list all projects.
-func listGitLabGroupRepos(ctx context.Context, http *platform.HTTPClient, group string) ([]orgRepo, error) {
-	var repos []orgRepo
-	page := 1
-	encodedGroup := url.PathEscape(group)
-	for {
-		path := fmt.Sprintf("/groups/%s/projects?per_page=100&include_subgroups=true&page=%d", encodedGroup, page)
-		resp, err := http.Get(platform.WithoutETag(ctx), path)
-		if err != nil {
-			return repos, err
-		}
-		var items []struct {
-			ID                int64  `json:"id"` // v0.27.103 — rename-proof numeric identity
-			PathWithNamespace string `json:"path_with_namespace"`
-			WebURL            string `json:"web_url"`
-			Name              string `json:"name"`
-			Namespace         struct {
-				FullPath string `json:"full_path"`
-			} `json:"namespace"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-			resp.Body.Close()
-			return repos, err
-		}
-		resp.Body.Close()
-
-		if len(items) == 0 {
-			break
-		}
-		for _, item := range items {
-			repos = append(repos, orgRepo{
-				URL:     item.WebURL,
-				Owner:   item.Namespace.FullPath,
-				Name:    item.Name,
-				ForgeID: model.ForgeIDString(item.ID),
-			})
-		}
-		page++
-	}
-	return repos, nil
-}
-
 func runImportFromAugur(cfgPath string, priority int) error {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := loadConfig(cfgPath, bootLog)
@@ -857,7 +807,7 @@ func runImportFromAugur(cfgPath string, priority int) error {
 
 	for _, ar := range augurRepos {
 		// Parse the URL to determine platform and owner/repo.
-		parsed, err := platform.ParseRepoURL(ar.RepoGit)
+		parsed, err := platform.ParseRepoURLWithHints(ar.RepoGit, configuredGitLabWebBases(cfg))
 		if err != nil {
 			logger.Warn("skipping unparseable URL", "url", ar.RepoGit, "augur_repo_id", ar.RepoID, "error", err)
 			skipped++
@@ -931,6 +881,7 @@ func addKeyCmd(cfgPath *string) *cobra.Command {
 	var (
 		plat      string
 		name      string
+		instance  string
 		fromAugur bool
 	)
 
@@ -939,6 +890,12 @@ func addKeyCmd(cfgPath *string) *cobra.Command {
 		Short: "Store API keys in the database",
 		Long: `Stores GitHub or GitLab API tokens in aveloxis_ops.worker_oauth.
 Keys stored here are loaded automatically by 'aveloxis serve' and 'aveloxis collect'.
+
+A GitLab key belongs to the one GitLab instance that issued it. Without
+--instance it belongs to the main instance (gitlab.base_url). For another
+instance pass its web URL, as configured in gitlab.instances:
+  aveloxis add-key glpat-... --platform gitlab --instance https://gitlab.freedesktop.org
+The key is only ever sent to that instance's API URL.
 
 Use --from-augur to copy all keys from augur_operations.worker_oauth into
 aveloxis_ops.worker_oauth in one shot. Duplicates are skipped.`,
@@ -953,24 +910,26 @@ aveloxis_ops.worker_oauth in one shot. Duplicates are skipped.`,
 			if fromAugur {
 				return runImportKeysFromAugur(*cfgPath)
 			}
-			return runAddKey(*cfgPath, args[0], plat, name)
+			return runAddKey(*cfgPath, args[0], plat, name, instance)
 		},
 	}
 
 	cmd.Flags().StringVar(&plat, "platform", "github", "platform for this key (github or gitlab)")
 	cmd.Flags().StringVar(&name, "name", "", "optional label for this key")
+	cmd.Flags().StringVar(&instance, "instance", "", "GitLab only: the web URL of the GitLab instance that issued this key (default: the main instance, gitlab.base_url)")
 	cmd.Flags().BoolVar(&fromAugur, "from-augur", false, "copy all keys from augur_operations.worker_oauth")
 
 	return cmd
 }
 
-func runAddKey(cfgPath, token, plat, name string) error {
+func runAddKey(cfgPath, token, plat, name, instance string) error {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
-	if plat != "github" && plat != "gitlab" {
-		return fmt.Errorf("platform must be 'github' or 'gitlab', got %q", plat)
+	target, err := resolveKeyInstance(cfg, plat, instance)
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
@@ -984,13 +943,106 @@ func runAddKey(cfgPath, token, plat, name string) error {
 	// add-key trusts that the operator has already run
 	// `aveloxis migrate` once for this database.
 
-	if err := db.SaveAPIKey(ctx, store.Pool(), name, token, plat); err != nil {
+	prev, existed, err := db.SaveAPIKey(ctx, store.Pool(), name, token, plat, target.tag)
+	if err != nil {
 		return fmt.Errorf("saving key: %w", err)
 	}
 
-	masked := token[:4] + "..." + token[len(token)-4:]
-	logger.Info("key stored", "platform", plat, "token", masked)
+	if plat == "github" {
+		logger.Info("key stored", "platform", plat, "token", maskToken(token))
+		return nil
+	}
+	// A move is a change of the instance the key LOADS into — not a
+	// re-spelling of the same one ("" vs the main web base, http vs https).
+	if existed && target.resolvesTo(prev) != target.resolvesTo(target.tag) {
+		from := prev
+		if from == "" {
+			from = "the main instance"
+		}
+		logger.Warn("key moved to another GitLab instance", "token", maskToken(token), "from_instance", from, "to_instance", target.webBase)
+	}
+	if !target.configured {
+		logger.Warn("key stored for a GitLab instance that is not configured — it will not load until gitlab.instances names this web_url",
+			"token", maskToken(token), "instance", target.webBase)
+		return nil
+	}
+	logger.Info("key stored", "platform", plat, "token", maskToken(token),
+		"instance", target.webBase, "sent_only_to_api_url", target.apiURL)
 	return nil
+}
+
+// keyInstance is where add-key files a key: the stored worker_oauth tag
+// ("" = the main GitLab instance) and, for GitLab, the instance it resolves
+// to and whether that instance is configured.
+type keyInstance struct {
+	tag, webBase, apiURL string
+	configured           bool
+	instances            []config.GitLabInstance // the configured instances tags resolve against
+}
+
+// resolvesTo is the configured instance a stored tag loads into, exactly as
+// partitionGitLabTokens decides it (instanceForKeyTag). A tag no configured
+// instance has resolves to "orphan:" + its normalized scheme-less web base; a
+// tag that does not normalize (it never loads) resolves to "invalid:" + the
+// tag verbatim. Neither prefix can equal a configured web base, which always
+// has a scheme.
+func (k keyInstance) resolvesTo(tag string) string {
+	if base, ok := instanceForKeyTag(k.instances, tag); ok {
+		return base
+	}
+	// Unconfigured: compared the way it would load once configured
+	// (normalized, scheme-less), so http/https spellings are one instance.
+	if nb, err := model.NormalizeInstanceWebBase(tag); err == nil {
+		return "orphan:" + model.SchemelessWebBase(nb)
+	}
+	// A tag that does not normalize never loads under any config, so it is
+	// its own instance (review pass 6, finding 2).
+	return "invalid:" + tag
+}
+
+// resolveKeyInstance validates add-key's --platform/--instance (v0.30.0).
+// --instance is GitLab-only and normalized as a web base; without it a
+// GitLab key belongs to the main instance, as every pre-v0.30.0 key does.
+func resolveKeyInstance(cfg *config.Config, plat, instance string) (keyInstance, error) {
+	switch plat {
+	case "github":
+		if strings.TrimSpace(instance) != "" {
+			return keyInstance{}, fmt.Errorf("--instance applies to GitLab keys only (GitHub has one instance)")
+		}
+		return keyInstance{configured: true}, nil
+	case "gitlab":
+	default:
+		return keyInstance{}, fmt.Errorf("platform must be 'github' or 'gitlab', got %q", plat)
+	}
+	instances, err := cfg.GitLab.EffectiveInstances()
+	if err != nil {
+		return keyInstance{}, fmt.Errorf("gitlab config: %w", err)
+	}
+	if strings.TrimSpace(instance) == "" {
+		return keyInstance{webBase: instances[0].WebBase, apiURL: instances[0].APIURL, configured: true, instances: instances}, nil
+	}
+	base, err := model.NormalizeInstanceWebBase(instance)
+	if err != nil {
+		return keyInstance{}, fmt.Errorf("--instance: %w", err)
+	}
+	for _, in := range instances {
+		if model.SchemelessWebBase(in.WebBase) == model.SchemelessWebBase(base) {
+			// An explicitly named instance keeps its absolute tag — also for
+			// the main instance: an untagged key follows gitlab.base_url if
+			// it later points elsewhere, a pinned one must not.
+			return keyInstance{tag: in.WebBase, webBase: in.WebBase, apiURL: in.APIURL, configured: true, instances: instances}, nil
+		}
+	}
+	return keyInstance{tag: base, webBase: base, instances: instances}, nil
+}
+
+// maskToken shows a token's first and last four characters, or nothing for
+// a token too short to mask without revealing it.
+func maskToken(token string) string {
+	if len(token) < 12 {
+		return "(hidden)"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
 }
 
 func runImportKeysFromAugur(cfgPath string) error {
@@ -1044,7 +1096,7 @@ func runPrioritize(cfgPath, target string) error {
 	defer store.Close()
 
 	// Try parsing as a repo URL first, then look up the ID.
-	parsed, parseErr := platform.ParseRepoURL(target)
+	parsed, parseErr := platform.ParseRepoURLWithHints(target, configuredGitLabWebBases(cfg))
 	if parseErr == nil {
 		// Look up repo_id by URL.
 		repoID, err := store.UpsertRepo(ctx, &model.Repo{
@@ -1120,7 +1172,7 @@ func runRecollect(cfgPath string, targets []string) error {
 
 	var firstErr error
 	for _, target := range targets {
-		parsed, parseErr := platform.ParseRepoURL(target)
+		parsed, parseErr := platform.ParseRepoURLWithHints(target, configuredGitLabWebBases(cfg))
 		if parseErr != nil {
 			logger.Error("could not parse repo URL — skipping", "url", target, "error", parseErr)
 			if firstErr == nil {
@@ -1195,7 +1247,13 @@ running migrations.`,
 				store.SetMatviewOnStartup(true)
 			}
 			store.SetMigrateNoWait(noWait)
-			return store.Migrate(ctx)
+			if err := store.Migrate(ctx); err != nil {
+				return err
+			}
+			// v0.30.0: register the configured GitLab instances (platform
+			// ids) — migrate and serve startup are the only writers.
+			_, err = registerGitLabInstances(ctx, cfg, store, logger)
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
@@ -1407,7 +1465,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 
 			// Load GitHub keys for immediate org scanning (non-fatal for web — it
 			// can still serve the GUI without keys, just can't scan orgs).
-			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
+			ghKeys, _ := loadGitHubKeys(ctx, cfg, store, false, logger)
 
 			warnAPIPortMismatch(cfg, logger)
 
@@ -2025,77 +2083,9 @@ func versionCmd() *cobra.Command {
 
 // --- helpers ---
 
-func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
-		cfg = config.DefaultConfig()
-	}
-	return cfg
-}
-
 // newLogger creates a logger from the config's log_level setting.
 func newLogger(cfg *config.Config) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.SlogLevel()}))
-}
-
-// loadKeys builds key pools. Priority order:
-//  1. aveloxis_ops.worker_oauth (always checked)
-//  2. augur_operations.worker_oauth (if --augur-keys is set)
-//  3. JSON config file (lowest priority, for standalone deployments)
-func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys bool, logger *slog.Logger) (*platform.KeyPool, *platform.KeyPool, error) {
-	ghTokens := cfg.GitHub.APIKeys
-	glTokens := cfg.GitLab.APIKeys
-
-	// Load from database (aveloxis_ops first, augur_operations as fallback).
-	if dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys); err != nil {
-		logger.Error("failed to load GitHub API keys from database", "error", err)
-	} else if len(dbGH) > 0 {
-		logger.Info("loaded GitHub keys from database", "count", len(dbGH))
-		ghTokens = append(ghTokens, dbGH...)
-	}
-	if dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys); err != nil {
-		logger.Error("failed to load GitLab API keys from database", "error", err)
-	} else if len(dbGL) > 0 {
-		logger.Info("loaded GitLab keys from database", "count", len(dbGL))
-		glTokens = append(glTokens, dbGL...)
-	}
-
-	if len(ghTokens) == 0 && len(glTokens) == 0 {
-		return nil, nil, fmt.Errorf("no API keys configured for any platform — add keys via 'aveloxis add-key <token> --platform github' or store them in the database. Collection is impossible without API keys")
-	}
-	if len(ghTokens) == 0 {
-		logger.Warn("no GitHub API keys configured — GitHub repos will not be collected")
-	}
-	if len(glTokens) == 0 {
-		logger.Warn("no GitLab API keys configured — GitLab repos will not be collected")
-	}
-
-	gh := platform.NewKeyPool(ghTokens, logger)
-	gl := platform.NewKeyPool(glTokens, logger)
-	// 2026-09-12 admission control: the pool is the single authority for
-	// every forge constraint (per-key and pool-wide in-flight ceilings,
-	// the foreground budget reservation). The accessors are the one
-	// default layer (SR-10); log the EFFECTIVE values at the point of use.
-	// GitLab gets only the pool-wide ceiling as a backstop. The per-key
-	// ceiling is DERIVED from GitHub's per-key secondary limits, which
-	// GitLab does not have in that shape — a one-token GitLab fleet under
-	// a per-key 4 would be capped at four concurrent requests across the
-	// whole worker pool, a bound no knob names (review round on the
-	// 2026-09-12 change). The reserve only ever applies to GraphQL
-	// background callers, which the GitLab path never is.
-	maxInflight := cfg.Collection.GitHubMaxInflightValue()
-	maxPerKey := cfg.Collection.GitHubMaxInflightPerKeyValue()
-	reservePct := cfg.Collection.GitHubBudgetForegroundReservePctValue()
-	const glPerKey = 0 // no per-key ceiling on GitLab; one spelling for the call and the log
-	gh.SetAdmission(maxInflight, maxPerKey, reservePct)
-	gl.SetAdmission(maxInflight, glPerKey, reservePct)
-	logger.Info("API key pool admission",
-		"github_keys", len(ghTokens), "gitlab_keys", len(glTokens),
-		"max_inflight", maxInflight, "max_inflight_per_key", maxPerKey,
-		"gitlab_max_inflight_per_key", glPerKey,
-		"foreground_reserve_pct", reservePct)
-	return gh, gl, nil
 }
 
 // digestMailerAdapter bridges *mailer.Mailer to the scheduler's

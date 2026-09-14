@@ -30,6 +30,7 @@ type GapHealCandidate struct {
 	Owner      string
 	Name       string
 	Platform   model.Platform
+	GitURL     string // stored repo_git — GitLab routing needs it (v0.30.0)
 	MetaIssues int64
 	MetaPRs    int64
 	Gap        int64 // GREATEST(meta−stored,0) summed — reporting only
@@ -79,7 +80,7 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	// whose force-list mode needs no metadata counts. Normal gap mode
 	// still excludes them naturally (0 > last_* is never true).
 	rows, err := s.pool.Query(ctx, `
-		SELECT q.repo_id, r.repo_owner, r.repo_name, r.platform_id,
+		SELECT q.repo_id, r.repo_owner, r.repo_name, r.platform_id, r.repo_git,
 		       COALESCE(ri.issues_count, 0), COALESCE(ri.pr_count, 0),
 		       GREATEST(COALESCE(ri.issues_count, 0) - `+nativeGatheredIssuesSQL+`, 0) + GREATEST(COALESCE(ri.pr_count, 0) - COALESCE(q.last_prs, 0), 0)
 		FROM aveloxis_ops.collection_queue q
@@ -110,7 +111,7 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	for rows.Next() {
 		var c GapHealCandidate
 		var plat int
-		if err := rows.Scan(&c.RepoID, &c.Owner, &c.Name, &plat, &c.MetaIssues, &c.MetaPRs, &c.Gap); err != nil {
+		if err := rows.Scan(&c.RepoID, &c.Owner, &c.Name, &plat, &c.GitURL, &c.MetaIssues, &c.MetaPRs, &c.Gap); err != nil {
 			return nil, err
 		}
 		c.Platform = model.Platform(plat)

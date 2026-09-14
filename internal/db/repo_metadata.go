@@ -128,20 +128,26 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 // remove the filter manually if needed.
 //
 // v0.23.0.
-func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, limit int) ([]RepoMetadataBackfillTarget, error) {
+//
+// afterRepoID is a keyset cursor (v0.30.0 review): a row that cannot be
+// refreshed — a generic-git repository, a GitLab instance without keys, a
+// forge 404 — stays a candidate, so without the cursor a page made only of
+// such rows was re-read forever.
+func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterRepoID int64, limit int) ([]RepoMetadataBackfillTarget, error) {
 	if limit <= 0 {
 		limit = 500
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT repo_id, repo_owner, repo_name, platform_id
+		SELECT repo_id, repo_owner, repo_name, platform_id, repo_git
 		FROM aveloxis_data.repos
-		WHERE COALESCE(repo_description, '') = ''
+		WHERE repo_id > $1
+		  AND COALESCE(repo_description, '') = ''
 		  AND COALESCE(primary_language, '') = ''
 		  AND COALESCE(repo_archived, FALSE) = FALSE
 		  AND COALESCE(repo_owner, '') != ''
 		  AND COALESCE(repo_name, '') != ''
 		ORDER BY repo_id
-		LIMIT $1`, limit)
+		LIMIT $2`, afterRepoID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +155,7 @@ func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, limit 
 	var out []RepoMetadataBackfillTarget
 	for rows.Next() {
 		var t RepoMetadataBackfillTarget
-		if err := rows.Scan(&t.RepoID, &t.Owner, &t.Name, &t.PlatformID); err != nil {
+		if err := rows.Scan(&t.RepoID, &t.Owner, &t.Name, &t.PlatformID, &t.GitURL); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -163,6 +169,9 @@ type RepoMetadataBackfillTarget struct {
 	Owner      string
 	Name       string
 	PlatformID int16
+	// GitURL is the stored repo_git: a GitLab repository's client is
+	// chosen by its platform_id AND its URL (v0.30.0).
+	GitURL string
 }
 
 // GetReposForMetadataRefresh pages the WHOLE forge-backed fleet
@@ -181,7 +190,7 @@ func (s *PostgresStore) GetReposForMetadataRefresh(ctx context.Context, afterRep
 		limit = 500
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT repo_id, repo_owner, repo_name, platform_id
+		SELECT repo_id, repo_owner, repo_name, platform_id, repo_git
 		FROM aveloxis_data.repos
 		WHERE repo_id > $1
 		  AND `+ForgePlatformPredicate("platform_id")+`
@@ -196,7 +205,7 @@ func (s *PostgresStore) GetReposForMetadataRefresh(ctx context.Context, afterRep
 	var out []RepoMetadataBackfillTarget
 	for rows.Next() {
 		var t RepoMetadataBackfillTarget
-		if err := rows.Scan(&t.RepoID, &t.Owner, &t.Name, &t.PlatformID); err != nil {
+		if err := rows.Scan(&t.RepoID, &t.Owner, &t.Name, &t.PlatformID, &t.GitURL); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

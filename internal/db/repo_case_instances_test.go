@@ -25,10 +25,15 @@ import (
 func TestCaseVariantResolutionCoversGitLabInstances(t *testing.T) {
 	ctx, store := caseConnect(t)
 	const slug = "_avcase_instance"
-	const instanceID = 197
-	ensureTestPlatform(ctx, t, store, instanceID, "_avcase GitLab instance")
+	// A registered instance (UpsertRepo classifies by the registry).
+	isolateRegistry(ctx, t, store)
 	cleanupCaseRepos(ctx, t, store, slug)
 	t.Cleanup(func() { cleanupCaseRepos(ctx, t, store, slug) })
+	ids, err := store.SyncGitLabInstances(ctx, []GitLabInstanceRef{inst("https://gitlab.main.invalid", true), inst("https://gitlab.example.invalid", false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceID := ids["https://gitlab.example.invalid"]
 
 	url := "https://gitlab.example.invalid/" + slug + "_Group/Repo"
 	id1, err := store.UpsertRepo(ctx, &model.Repo{
@@ -144,5 +149,16 @@ func TestIsRepoGitCIUniqueViolation(t *testing.T) {
 	}
 	if isRepoGitCIUniqueViolation(nil) {
 		t.Error("nil is not a violation")
+	}
+}
+
+func TestRegistryNotMigratedIsOnlyUndefinedColumn(t *testing.T) {
+	if !registryNotMigrated(&pgconn.PgError{Code: "42703"}) {
+		t.Error("42703 undefined_column is the pre-migrate registry state")
+	}
+	for _, e := range []error{nil, errors.New("connection reset"), &pgconn.PgError{Code: "42P01"}, &pgconn.PgError{Code: "57014"}} {
+		if registryNotMigrated(e) {
+			t.Errorf("registryNotMigrated(%v) = true — only the missing column means \"not migrated\" (SR-5)", e)
+		}
 	}
 }

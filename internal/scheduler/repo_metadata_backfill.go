@@ -6,10 +6,12 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 )
 
 // runRepoMetadataBackfill iterates repos whose repo_description AND
@@ -44,6 +46,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 	s.logger.Info("repo metadata backfill starting (v0.23.0)")
 	totalProcessed := 0
 	totalFailed := 0
+	var after int64 // keyset cursor: each repository is visited once per run
 
 	for {
 		if ctx.Err() != nil {
@@ -52,7 +55,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			return
 		}
 
-		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, metadataBackfillPageSize)
+		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, after, metadataBackfillPageSize)
 		if errors.Is(err, context.Canceled) {
 			return // shutdown, not a failure
 		}
@@ -67,18 +70,29 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			return
 		}
 
+		after = targets[len(targets)-1].RepoID
 		for _, t := range targets {
 			if ctx.Err() != nil {
 				return
 			}
 
-			// Pick the platform client by repo's platform_id.
+			// Pick the platform client by the repo's platform_id and, for a
+			// GitLab instance, its URL (v0.30.0: never another instance's).
 			var client platform.Client
-			switch model.Platform(t.PlatformID) {
-			case model.PlatformGitHub:
+			switch p := model.Platform(t.PlatformID); {
+			case p == model.PlatformGitHub:
 				client = s.ghClient
-			case model.PlatformGitLab:
-				client = s.glClient
+			case p.IsGitLab():
+				c, err := s.gl.ForRepo(p, t.GitURL)
+				if err != nil {
+					mismatch := errors.Is(err, gitlab.ErrInstanceMismatch)
+					if _, warned := s.unconfiguredInstanceWarned.LoadOrStore(fmt.Sprintf("metadata/%d/%t", p, mismatch), struct{}{}); !warned {
+						s.logger.Info("repo metadata backfill: skipping GitLab repositories this process cannot collect (logged once per instance and reason)", "platform_id", p, "repo_id", t.RepoID, "error", err)
+					}
+					totalFailed++
+					continue
+				}
+				client = c
 			default:
 				// Generic-git repos have no API; skip them. They'll
 				// be excluded from the next candidate query

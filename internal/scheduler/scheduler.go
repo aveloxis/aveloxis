@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
@@ -64,12 +64,6 @@ type Config struct {
 	// Drives the v0.27.12 operator vulnerability digest; nil or an
 	// empty OperatorEmail disables it.
 	Mail *config.MailConfig
-
-	// GitLab is the operator's aveloxis.json `gitlab` block (same
-	// single-source pattern). Its base_url names the ONE GitLab instance
-	// the GitLab API keys belong to; the legacy GitLab group refresh only
-	// sends those keys to that instance's host (v0.29.11).
-	GitLab *config.PlatformConfig
 }
 
 // digestMailer is the narrow mailer surface the digest ticker needs
@@ -91,12 +85,17 @@ type Scheduler struct {
 
 	store    *db.PostgresStore
 	ghClient platform.Client
-	glClient platform.Client
-	ghKeys   *platform.KeyPool
-	glKeys   *platform.KeyPool // the legacy GitLab group refresh only (v0.29.11)
-	logger   *slog.Logger
-	cfg      Config
-	workerID string
+	// gl routes each GitLab repository to its own instance's client
+	// (v0.30.0, multi-instance GitLab); nil when no GitLab is configured.
+	gl     *gitlab.Instances
+	ghKeys *platform.KeyPool
+	// unconfiguredInstanceWarned: one log line per GitLab instance and
+	// failure kind per process — keys "<platform_id>/<mismatch>" (runJob) and
+	// "metadata/<platform_id>/<mismatch>" (the metadata backfill).
+	unconfiguredInstanceWarned sync.Map
+	logger                     *slog.Logger
+	cfg                        Config
+	workerID                   string
 
 	// scorecardSem bounds concurrent scorecard SUBPROCESSES across the
 	// worker pool (collection.scorecard_max_concurrent, 2026-09-12). A
@@ -187,14 +186,15 @@ func (s *Scheduler) SetDigestMailer(m digestMailer) {
 }
 
 // New creates a scheduler.
-func New(store *db.PostgresStore, ghClient, glClient platform.Client, logger *slog.Logger, cfg Config) *Scheduler {
-	return NewWithKeys(store, ghClient, glClient, nil, nil, logger, cfg)
+func New(store *db.PostgresStore, ghClient platform.Client, gl *gitlab.Instances, logger *slog.Logger, cfg Config) *Scheduler {
+	return NewWithKeys(store, ghClient, gl, nil, logger, cfg)
 }
 
 // NewWithKeys creates a scheduler with the GitHub key pool (commit
-// resolution, org scans, breadth, scorecard loans) and the GitLab key pool
-// (the legacy GitLab group refresh — v0.29.11: it used the GitHub pool).
-func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, ghKeys, glKeys *platform.KeyPool, logger *slog.Logger, cfg Config) *Scheduler {
+// resolution, org scans, breadth, scorecard loans) and the GitLab instance
+// router — every GitLab instance's client carries its own key pool (v0.30.0;
+// v0.29.11 had one GitLab pool for the one configured instance).
+func NewWithKeys(store *db.PostgresStore, ghClient platform.Client, gl *gitlab.Instances, ghKeys *platform.KeyPool, logger *slog.Logger, cfg Config) *Scheduler {
 	if cfg.Workers < 1 {
 		cfg.Workers = 1
 	}
@@ -222,9 +222,8 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	s := &Scheduler{
 		store:    store,
 		ghClient: ghClient,
-		glClient: glClient,
+		gl:       gl,
 		ghKeys:   ghKeys,
-		glKeys:   glKeys,
 		logger:   logger,
 		cfg:      cfg,
 		workerID: workerID,
@@ -248,8 +247,10 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	if ghClient != nil {
 		ghClient.OnPermanentRedirect(renameHook)
 	}
-	if glClient != nil {
-		glClient.OnPermanentRedirect(renameHook)
+	for _, in := range gl.All() {
+		if in.Client != nil {
+			in.Client.OnPermanentRedirect(renameHook)
+		}
 	}
 
 	return s
@@ -877,15 +878,17 @@ const SearchResolveBatchSize = 100
 //
 // Picks a single platform client per tick: GitHub when configured
 // (matching the production fleet's typical 70+ GitHub keys vs single
-// GitLab key); falls back to GitLab if no GitHub client is wired. A
-// future iteration could split the enrichment queue per platform if a
-// deployment needs symmetric coverage.
+// GitLab key); falls back to the historical GitLab instance (platform_id 2)
+// if no GitHub client is wired. Thin logins are not tagged with an
+// instance, so no other GitLab instance is ever asked about them. A future
+// iteration could split the enrichment queue per platform if a deployment
+// needs symmetric coverage.
 func (s *Scheduler) runEnrichment(ctx context.Context) {
 	var client platform.Client
 	if s.ghClient != nil {
 		client = s.ghClient
-	} else if s.glClient != nil {
-		client = s.glClient
+	} else if in, ok := s.gl.ByID(model.PlatformGitLab); ok && in.Client != nil {
+		client = in.Client
 	} else {
 		return
 	}
@@ -1161,8 +1164,22 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// keep the outcome green and last_collected advances past a window
 	// that was never stored. On failure, forget this repo's cached ETags.
 	var forgetRepoETags func()
-	if !repo.Platform.IsGitOnly() {
-		client, clientErr := s.selectClient(repo.Platform)
+	// instanceErr: a GitLab repository whose instance this process cannot
+	// collect (not configured, no keys, or a platform_id its URL
+	// contradicts). Its git-based phases still run; the job is recorded
+	// not successful with the reason, and force_full_collect is set so the
+	// API history is collected in full once the instance is configured.
+	var instanceErr error
+	client, clientErr := s.clientForRepo(repo)
+	if errors.Is(clientErr, gitlab.ErrInstanceNotConfigured) || errors.Is(clientErr, gitlab.ErrInstanceMismatch) {
+		instanceErr = fmt.Errorf("API phases skipped — %w; %s", clientErr, s.instanceFixHint(repo, clientErr))
+		warnKey := fmt.Sprintf("%d/%t", repo.Platform, errors.Is(clientErr, gitlab.ErrInstanceMismatch))
+		if _, warned := s.unconfiguredInstanceWarned.LoadOrStore(warnKey, struct{}{}); !warned {
+			s.logger.Warn("GitLab repository's instance cannot be collected over the API — git-only phases run, the job records why",
+				"repo_id", job.RepoID, "platform_id", repo.Platform, "repo_git", repo.GitURL, "error", clientErr)
+		}
+		err = instanceErr
+	} else if !repo.Platform.IsGitOnly() {
 		if clientErr != nil {
 			s.logger.Error("unknown platform", "repo_id", job.RepoID, "platform", repo.Platform)
 			s.failJob(ctx, job.RepoID, clientErr.Error())
@@ -1226,7 +1243,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		// keys in ~11 minutes. The periodic-task model runs the
 		// enrichment once per cycle, single goroutine, well under the
 		// rate-limit budget.
-	} else {
+	} else if instanceErr == nil {
 		s.logger.Info("git-only repo, skipping API collection", "repo_id", job.RepoID)
 	}
 	// Shutdown is not a failure (pass 34): a job cut short records
@@ -1327,6 +1344,15 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// but keep ordering explicit). The flag is picked up on the repo's
 	// next DequeueNext and causes determineSince to return zero for a
 	// full re-collection. See v0.18.24 troubleshooting docs.
+	if instanceErr != nil {
+		ferr := s.store.SetForceFullCollect(ctx, job.RepoID, true)
+		if errors.Is(ferr, context.Canceled) {
+			return // shutdown: the flag is re-derived on the next cycle's failure
+		}
+		if ferr != nil {
+			s.logger.Warn("failed to set force_full_collect for a repository on an uncollectable GitLab instance", "repo_id", job.RepoID, "error", ferr)
+		}
+	}
 	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
 		err = s.store.SetForceFullCollect(ctx, job.RepoID, true)
 		if errors.Is(err, context.Canceled) {
@@ -1481,16 +1507,46 @@ func (s *Scheduler) skipJob(ctx context.Context, repoID int64, reason string) {
 	}
 }
 
-// selectClient returns the platform client for the given platform, or an error
-// if the platform is unknown.
-func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
-	switch p {
-	case model.PlatformGitHub:
+// instanceFixHint is the operator action for a GitLab repository its
+// instance cannot collect: a platform_id that contradicts the URL is not a
+// configuration problem; the main instance takes gitlab.api_keys; any other
+// instance takes its gitlab.instances entry.
+func (s *Scheduler) instanceFixHint(repo *model.Repo, err error) string {
+	if errors.Is(err, gitlab.ErrInstanceMismatch) {
+		if _, underInstance := s.gl.ForWebURL(repo.GitURL); !underInstance {
+			return "the repository's URL is not under any configured GitLab instance — add that instance to gitlab.instances (web_url, api_url, api_keys) and run `aveloxis migrate`"
+		}
+		if repo.Platform == model.PlatformGitLab {
+			return "the repository's platform_id contradicts its URL — see the misrouted list in `aveloxis gitlab-instances`"
+		}
+		return "the repository's platform_id names another GitLab instance than its URL — check the repository's URL and platform_id (`aveloxis gitlab-instances` lists the instances)"
+	}
+	if in, ok := s.gl.ByID(repo.Platform); ok {
+		if in.Primary {
+			return "add API keys for the main GitLab instance: gitlab.api_keys, or add-key --platform gitlab"
+		}
+		return fmt.Sprintf("add API keys for %s: its gitlab.instances entry's api_keys, or add-key --platform gitlab --instance %s", in.WebBase, in.WebBase)
+	}
+	return "add the instance to gitlab.instances with its web_url, api_url and api_keys, then run `aveloxis migrate`"
+}
+
+// clientForRepo returns the API client for a repository: the GitHub client,
+// or — v0.30.0 — its GitLab instance's client, chosen by platform_id AND
+// repo_git (gitlab.Instances.ForRepo, which returns ErrInstanceNotConfigured
+// or ErrInstanceMismatch instead of another instance's client). Any other
+// platform is an error.
+func (s *Scheduler) clientForRepo(repo *model.Repo) (platform.Client, error) {
+	switch {
+	case repo.Platform == model.PlatformGitHub:
 		return s.ghClient, nil
-	case model.PlatformGitLab:
-		return s.glClient, nil
+	case repo.Platform.IsGitLab():
+		c, err := s.gl.ForRepo(repo.Platform, repo.GitURL)
+		if err != nil {
+			return nil, err // never a typed-nil *gitlab.Client in the interface
+		}
+		return c, nil
 	default:
-		return nil, fmt.Errorf("unknown platform: %d", p)
+		return nil, fmt.Errorf("unknown platform: %d", repo.Platform)
 	}
 }
 
@@ -2216,36 +2272,24 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	// v0.29.11: through v0.29.10 this built its client on s.ghKeys (a TODO
 	// since the initial commit), so every GitLab group refresh sent a GitHub
-	// token as PRIVATE-TOKEN to the host in the group's website URL, and the
-	// 401s it earned struck GitHub keys. All three guards (no GitLab keys,
-	// no usable host, not the configured instance) run before anything
+	// token as PRIVATE-TOKEN to the host in the group's website URL.
+	// v0.30.0: the group's website URL picks its GitLab instance (the
+	// longest configured web base it lives under) and the listing runs on
+	// THAT instance's client, with that instance's own keys — the scheduler
+	// builds no keyed HTTP client of its own. Both guards (not under a
+	// configured instance, instance without keys) run before anything
 	// touches the network or the store.
-	if s.glKeys == nil || s.glKeys.IsEmpty() {
-		s.logger.Warn("GitLab group refresh skipped — no GitLab API keys configured",
+	in, ok := s.gl.ForWebURL(g.Website)
+	if !ok {
+		s.logger.Warn("GitLab group refresh skipped — the group's website is not under a configured GitLab instance's web_url",
 			"group", g.Name, "org_url", g.Website)
 		return 0
 	}
-	// No default host: a website with no scheme, or one that does not
-	// parse, is not assumed to be gitlab.com — that would list another
-	// instance's group of the same name against the configured instance.
-	u, perr := url.Parse(g.Website)
-	if perr != nil || u.Host == "" {
-		s.logger.Warn("GitLab group refresh skipped — the group's website URL has no usable host",
-			"group", g.Name, "org_url", g.Website, "error", perr)
+	if in.Client == nil {
+		s.logger.Warn("GitLab group refresh skipped — the group's GitLab instance has no API keys",
+			"group", g.Name, "org_url", g.Website, "web_url", in.WebBase, "platform_id", in.ID)
 		return 0
 	}
-	glHost := u.Host
-	configuredBase := ""
-	if s.cfg.GitLab != nil {
-		configuredBase = s.cfg.GitLab.BaseURL
-	}
-	apiBase, ok := platform.GitLabAPIBaseForHost(configuredBase, glHost)
-	if !ok {
-		s.logger.Warn("GitLab group refresh skipped — the group is not on the configured GitLab instance, and GitLab API keys are only sent to that instance's host",
-			"group", g.Name, "group_host", glHost, "gitlab_base_url", configuredBase)
-		return 0
-	}
-	http := platform.NewHTTPClient(apiBase, s.glKeys, s.logger, platform.AuthGitLab)
 
 	// Same legacy → user_groups bridge as the GitHub path.
 	userGroupIDs, ugErr := s.store.GetUserGroupIDsForOrgURL(ctx, g.Website)
@@ -2257,89 +2301,65 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	}
 
 	newCount := 0
-	page := 1
-	encodedGroup := url.PathEscape(g.Name)
-	for {
-		path := fmt.Sprintf("/groups/%s/projects?per_page=100&include_subgroups=true&page=%d", encodedGroup, page)
-		resp, err := http.Get(platform.WithoutETag(ctx), path)
+	for item, err := range in.Client.ListGroupProjects(ctx, g.Name) {
 		if errors.Is(err, context.Canceled) {
 			return newCount // shutdown mid-listing, not a failure
 		}
 		if err != nil {
-			s.logger.Warn("group refresh API error", "group", g.Name, "error", err)
+			s.logger.Warn("group refresh API error", "group", g.Name, "web_url", in.WebBase, "error", err)
 			break
 		}
-		var items []struct {
-			ID        int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-			WebURL    string `json:"web_url"`
-			Name      string `json:"name"`
-			Namespace struct {
-				FullPath string `json:"full_path"`
-			} `json:"namespace"`
+		var repoID int64
+		existing, findErr := s.store.FindRepoByURL(ctx, item.WebURL)
+		if errors.Is(findErr, context.Canceled) {
+			return newCount // shutdown, not a failure
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-			resp.Body.Close()
-			break
+		if findErr != nil {
+			s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
 		}
-		resp.Body.Close()
-
-		if len(items) == 0 {
-			break
-		}
-		for _, item := range items {
-			var repoID int64
-			existing, findErr := s.store.FindRepoByURL(ctx, item.WebURL)
-			if errors.Is(findErr, context.Canceled) {
+		if existing > 0 {
+			repoID = existing
+			// v0.27.102: opportunistic forge-ID backfill (fill-empty-
+			// only) — see refreshUserOrgs for the rationale.
+			idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, item.ForgeID)
+			if errors.Is(idErr, context.Canceled) {
 				return newCount // shutdown, not a failure
 			}
-			if findErr != nil {
-				s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
+			if idErr != nil {
+				s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
 			}
-			if existing > 0 {
-				repoID = existing
-				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
-				// only) — see refreshUserOrgs for the rationale.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
-				if errors.Is(idErr, context.Canceled) {
-					return newCount // shutdown, not a failure
-				}
-				if idErr != nil {
-					s.logger.Warn("failed to backfill platform_repo_id", "repo_id", repoID, "error", idErr)
-				}
-			} else {
-				rid, err := s.store.UpsertRepo(ctx, &model.Repo{
-					Platform:   model.PlatformGitLab,
-					GitURL:     item.WebURL,
-					Name:       item.Name,
-					Owner:      item.Namespace.FullPath,
-					GroupID:    g.ID,
-					PlatformID: model.ForgeIDString(item.ID), // v0.27.102
-				})
-				if err != nil {
-					continue
-				}
-				repoID = rid
-				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-					continue
-				}
-				s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
-				newCount++
-				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.WebURL); rerr == nil && n > 0 {
-					s.logger.Info("resolved signaled_repo for new repo", "repo", item.WebURL, "messages", n)
-				}
+		} else {
+			rid, err := s.store.UpsertRepo(ctx, &model.Repo{
+				Platform:   in.ID,
+				GitURL:     item.WebURL,
+				Name:       item.Name,
+				Owner:      item.Owner,
+				GroupID:    g.ID,
+				PlatformID: item.ForgeID, // v0.27.102
+			})
+			if err != nil {
+				continue
 			}
-			for _, gid := range userGroupIDs {
-				_, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
-				if errors.Is(err, context.Canceled) {
-					return newCount // shutdown, not a failure
-				}
-				if err != nil {
-					s.logger.Warn("failed to link discovered repo into user_repos",
-						"group_id", gid, "repo_id", repoID, "error", err)
-				}
+			repoID = rid
+			if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
+				continue
+			}
+			s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
+			newCount++
+			if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.WebURL); rerr == nil && n > 0 {
+				s.logger.Info("resolved signaled_repo for new repo", "repo", item.WebURL, "messages", n)
 			}
 		}
-		page++
+		for _, gid := range userGroupIDs {
+			_, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+			if errors.Is(err, context.Canceled) {
+				return newCount // shutdown, not a failure
+			}
+			if err != nil {
+				s.logger.Warn("failed to link discovered repo into user_repos",
+					"group_id", gid, "repo_id", repoID, "error", err)
+			}
+		}
 	}
 	return newCount
 }

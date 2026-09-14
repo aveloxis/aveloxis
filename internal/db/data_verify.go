@@ -95,6 +95,17 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 		add("case-duplicate repos", "OK", "0 duplicate groups")
 	}
 
+	// Misrouted GitLab repos (v0.30.0): platform-2 rows under another
+	// registered GitLab instance that already hold API data. Reported for an
+	// operator decision; adoption never moves them.
+	if misrouted, err := s.MisroutedGitLabRepos(ctx); err != nil {
+		probeErr("misrouted GitLab repos", err)
+	} else if len(misrouted) > 0 {
+		add("misrouted GitLab repos", "FAIL", "%d repositories on platform_id 2 live under another GitLab instance and hold API data from platform 2's API (first: repo %d %s) — list them with `aveloxis gitlab-instances`", len(misrouted), misrouted[0].RepoID, misrouted[0].GitURL)
+	} else {
+		add("misrouted GitLab repos", "OK", "none")
+	}
+
 	// AT MOST one Default repo_group (v0.27.17 consolidation). Zero is
 	// legitimate — the group is lazily created on first collection, so
 	// a fresh database (CI!) has none; only DUPLICATES are the bug.

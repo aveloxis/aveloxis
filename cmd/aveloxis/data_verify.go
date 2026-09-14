@@ -87,7 +87,7 @@ func runDataVerify(cfgPath string, sample, groundTruth int, jsonOut bool, minIde
 	})
 
 	if groundTruth > 0 {
-		ghKeys, _, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+		ghKeys, err := loadGitHubKeys(ctx, cfg, store, useAugurKeys, logger)
 		if err != nil {
 			return fmt.Errorf("--ground-truth needs API keys: %w", err)
 		}

@@ -69,7 +69,10 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +251,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#mailing-list-commands">Mailing-list commands</a><ul>
@@ -2064,8 +2068,11 @@ aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
 <h3>Platform detection<a class="headerlink" href="#platform-detection" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p>URLs containing <code class="docutils literal notranslate"><span class="pre">github.com</span></code> are treated as GitHub</p></li>
-<li><p>URLs containing <code class="docutils literal notranslate"><span class="pre">gitlab</span></code> in the hostname are treated as GitLab</p></li>
-<li><p>Hostnames listed in <code class="docutils literal notranslate"><span class="pre">gitlab.gitlab_hosts</span></code> in the config are treated as GitLab</p></li>
+<li><p>URLs under the <code class="docutils literal notranslate"><span class="pre">web_url</span></code> of a configured GitLab instance (<code class="docutils literal notranslate"><span class="pre">gitlab.web_url</span></code>
+or <code class="docutils literal notranslate"><span class="pre">gitlab.instances[].web_url</span></code>) belong to that instance</p></li>
+<li><p>Other URLs with <code class="docutils literal notranslate"><span class="pre">gitlab</span></code> in the hostname are recognized as GitLab; one that
+is not under a configured instance is collected git-only until its instance
+is configured</p></li>
 </ul>
 </section>
 </section>
@@ -2092,10 +2099,15 @@ aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
 <td><p>(required unless <code class="docutils literal notranslate"><span class="pre">--from-augur</span></code>)</p></td>
 <td><p>Platform for the key: <code class="docutils literal notranslate"><span class="pre">github</span></code> or <code class="docutils literal notranslate"><span class="pre">gitlab</span></code>.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--from-augur</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--instance</span></code></p></td>
+<td><p>string</p></td>
+<td><p>the main GitLab instance</p></td>
+<td><p>GitLab only (v0.30.0): the web URL of the GitLab instance that issued the key, as configured in <code class="docutils literal notranslate"><span class="pre">gitlab.instances</span></code>. The key is loaded only into that instance’s pool and sent only to its API URL. A key stored for an instance that is not configured is kept but not loaded (a WARN says so). Re-adding a token under another instance moves it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--from-augur</span></code></p></td>
 <td><p>boolean</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Bulk import all keys from <code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code>. Duplicates are skipped.</p></td>
+<td><p>Bulk import all keys from <code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code>. Duplicates are skipped. Imported GitLab keys belong to the main instance.</p></td>
 </tr>
 </tbody>
 </table>
@@ -2105,8 +2117,11 @@ aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Store a GitHub token</span>
 aveloxis<span class="w"> </span>add-key<span class="w"> </span>ghp_your_github_token<span class="w"> </span>--platform<span class="w"> </span>github
 
-<span class="c1"># Store a GitLab token</span>
+<span class="c1"># Store a token issued by the main GitLab instance (gitlab.base_url)</span>
 aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab_token<span class="w"> </span>--platform<span class="w"> </span>gitlab
+
+<span class="c1"># Store a token issued by another GitLab instance</span>
+aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-freedesktop_token<span class="w"> </span>--platform<span class="w"> </span>gitlab<span class="w"> </span>--instance<span class="w"> </span>https://gitlab.freedesktop.org
 
 <span class="c1"># Bulk import from Augur</span>
 aveloxis<span class="w"> </span>add-key<span class="w"> </span>--from-augur
@@ -3132,6 +3147,28 @@ migrations (v0.21.5 contract) — run <code class="docutils literal notranslate"
 upgrading to v0.27.5 so the <code class="docutils literal notranslate"><span class="pre">scorecard_mode</span></code> column exists.</p></li>
 </ul>
 </section>
+<section id="aveloxis-gitlab-instances">
+<h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code><a class="headerlink" href="#aveloxis-gitlab-instances" title="Link to this heading"></a></h2>
+<p>Read-only report of the GitLab instances aveloxis collects from (v0.30.0).</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis gitlab-instances
+</pre></div>
+</div>
+<p>One tab-separated row per instance: its <code class="docutils literal notranslate"><span class="pre">platform_id</span></code>, web URL, the API URL its
+keys are sent to, whether it is configured (and whether it has keys), how many
+keys it has (config and stored), and how many repositories it holds. Also
+listed:</p>
+<ul class="simple">
+<li><p>instances registered earlier but no longer configured (their repositories
+are collected git-only, and each job records why);</p></li>
+<li><p>stored keys tagged with an instance that is not configured (never loaded);</p></li>
+<li><p>misrouted repositories: rows on <code class="docutils literal notranslate"><span class="pre">platform_id</span></code> 2 that live under another
+instance and already hold API data. They are reported, never changed.
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code> fails the same check.</p></li>
+</ul>
+<p>Run it after deploying v0.30.0: gitlab.com should be <code class="docutils literal notranslate"><span class="pre">platform_id</span></code> 2 and
+nothing should be misrouted.</p>
+</section>
+<hr class="docutils" />
 <section id="aveloxis-staging-stats">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code><a class="headerlink" href="#aveloxis-staging-stats" title="Link to this heading"></a></h2>
 <p>Read-only view of the JSONB staging table, per repo and entity type

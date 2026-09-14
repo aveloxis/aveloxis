@@ -33,16 +33,18 @@ var gitLabConstantUses = map[string]int{
 	"internal/platform/repourl.go": 4,
 	// Permanent: the SQL twin of IsForge lists the fixed forge ids.
 	"internal/db/forge_platform_sql.go": 1,
+	// Permanent: the registry stamps, reads and keeps the seeded name of the
+	// historical instance.
+	// Permanent: classification and adoption apply platform 2's own rules
+	// (unsynced window, historical web base, misrouted rows).
+	"internal/db/gitlab_classification.go": 6,
+	"internal/db/gitlab_instances.go":      5,
 	// Permanent: gl_id is written only for instance 2.
 	"internal/db/postgres.go": 1,
-	// Phase B routing burns these down.
-	"internal/platform/gitlab/client.go":           13,
-	"internal/collector/collector.go":              1,
-	"internal/scheduler/repo_metadata_backfill.go": 1,
-	"internal/scheduler/scheduler.go":              2,
-	"cmd/aveloxis/forge_client_for.go":             1,
-	"cmd/aveloxis/load_foundation_orgs.go":         1,
-	"cmd/aveloxis/main.go":                         1,
+	// Permanent: enrichment falls back to the historical instance only
+	// (thin logins carry no instance), and only platform 2 rows appear in the
+	// misrouted list the fix hint points at.
+	"internal/scheduler/scheduler.go": 2,
 }
 
 var gitLabConstantRe = regexp.MustCompile(`\bPlatformGitLab\b`)

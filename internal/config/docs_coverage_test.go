@@ -67,7 +67,16 @@ func TestConfigurationDocsCoverEveryJSONField(t *testing.T) {
 // value. New code-side fields must land in the example same-
 // commit so a `cp aveloxis.example.json aveloxis.json` workflow
 // stays meaningful.
+
 func TestExampleConfigIncludesEveryJSONField(t *testing.T) {
+	// Tags that exist only inside a list element the template leaves
+	// empty. A filled-in template entry would be a real setting once
+	// copied: a placeholder gitlab.instances entry would register a
+	// permanent platform id for a host that does not exist. The keys are
+	// documented in configuration.md (TestConfigurationDocsCoverEveryJSONField).
+	exampleTagExemptions := map[string]string{
+		"api_url": "only inside a gitlab.instances entry; the template's instances list is empty (v0.30.0)",
+	}
 	tags, err := collectJSONTags("config.go")
 	if err != nil {
 		t.Fatalf("parsing config.go: %v", err)
@@ -82,6 +91,12 @@ func TestExampleConfigIncludesEveryJSONField(t *testing.T) {
 
 	for _, tag := range tags {
 		if tag == "" || tag == "-" {
+			continue
+		}
+		if reason, ok := exampleTagExemptions[tag]; ok {
+			if strings.Contains(example, `"`+tag+`"`) {
+				t.Errorf("exampleTagExemptions[%q] suppresses nothing — the example now carries it; delete the entry (reason was: %s)", tag, reason)
+			}
 			continue
 		}
 		// The example is a JSON file so we look for the quoted key.

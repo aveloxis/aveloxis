@@ -4,8 +4,11 @@
 package collector
 
 import (
+	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 )
 
 // ============================================================
@@ -66,16 +69,12 @@ func TestClientForRepo_NilGitHubClient(t *testing.T) {
 	}
 }
 
-func TestClientForRepo_NilGitLabClient(t *testing.T) {
-	client, owner, repo, err := ClientForRepo("https://gitlab.com/group/project", nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if client != nil {
-		t.Error("expected nil client")
-	}
-	if owner != "group" || repo != "project" {
-		t.Errorf("owner=%q repo=%q", owner, repo)
+func TestClientForRepo_NoGitLabInstances(t *testing.T) {
+	// v0.30.0: with no GitLab instances configured a GitLab URL is not
+	// collectable — an error, never a nil client passed off as success.
+	client, _, _, err := ClientForRepo("https://gitlab.com/group/project", nil, nil)
+	if !errors.Is(err, gitlab.ErrInstanceNotConfigured) || client != nil {
+		t.Errorf("ClientForRepo(gitlab.com, no instances) = (%v, %v), want ErrInstanceNotConfigured", client, err)
 	}
 }
 

@@ -802,6 +802,9 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// schema.sql (CREATE UNIQUE INDEX fails on existing duplicates).
 	ensureRepoGitCaseInsensitiveUnique(ctx, pg, logger)
 
+	// v0.30.0: the GitLab instance registry (platforms.platform_instance_url).
+	ensureGitLabInstanceRegistry(ctx, pg, logger, errs)
+
 	// pg_trgm extension + GIN index on repos for monitor search
 	// (v0.18.30). The dashboard's `?q=foo/bar` ILIKE search at v0.18.29
 	// was unindexable (leading wildcard). With pg_trgm + a GIN index on

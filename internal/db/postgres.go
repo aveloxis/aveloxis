@@ -331,6 +331,11 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	if strings.Trim(r.GitURL, "/") == "" {
 		return 0, fmt.Errorf("UpsertRepo: refusing a repository with no URL (owner %q, name %q)", r.Owner, r.Name)
 	}
+	// v0.30.0: the GitLab instance registry decides a non-GitHub
+	// repository's platform_id (classifyRepoPlatform).
+	if err := s.classifyRepoPlatform(ctx, r); err != nil {
+		return 0, err
+	}
 
 	// Case-variant resolution (v0.25.32): GitHub and GitLab treat
 	// owner/repo paths case-insensitively, so a URL differing from a
@@ -738,6 +743,14 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 	// e.g., "https://github.com/old-org/old-repo" -> "old-org/old-repo"
 	oldPath := extractRepoPath(oldURL)
 	newPath := extractRepoPath(newURL)
+	// v0.30.0: refused before any child URL is rewritten.
+	if err := s.checkCrossInstanceRename(ctx, repoID, newURL); err != nil {
+		return err
+	}
+	owner, name, err := s.repoURLOwnerName(ctx, newURL)
+	if err != nil {
+		return err
+	}
 
 	if oldPath == "" || newPath == "" || oldPath == newPath {
 		// Just update the repo_git URL.
@@ -760,7 +773,6 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 		}
 		defer tx.Rollback(ctx)
 
-		owner, name := parseRepoURLOwnerName(newURL)
 		if _, err := tx.Exec(ctx,
 			`UPDATE aveloxis_data.repos
 			 SET repo_git = $2, repo_owner = $3, repo_name = $4, data_collection_date = NOW()
@@ -796,8 +808,11 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 }
 
 // parseRepoURLOwnerName extracts the normalized owner/name pair for a
-// repos-row URL update — the single parse both UpdateRepoURL and the
-// transactional UpdateRepoURLs use (v0.27.111).
+// repos-row URL update without GitLab instance hints (v0.27.111). Since
+// v0.30.0 both UpdateRepoURL and the transactional UpdateRepoURLs go through
+// repoURLOwnerName, which calls this only as its fallback: when the instance
+// registry is not migrated yet, or the hinted parse fails for a URL under no
+// registered instance.
 func parseRepoURLOwnerName(newURL string) (owner, name string) {
 	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
 		owner = ru.Owner
@@ -823,13 +838,23 @@ func extractRepoPath(u string) string {
 // UpdateRepoURL changes the git URL, owner, and name of a repo (e.g., after a redirect).
 // Extracts the new owner/name from the URL so the dashboard and API show correct values.
 func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL string) error {
-	// Parse owner/name from the new URL via the shared parser (v0.25.32
-	// consolidation; unparseable URLs keep empty owner/name — the URL
-	// column still updates, matching the historical permissiveness).
+	// Parse owner/name from the new URL (repoURLOwnerName: the shared parser
+	// with the GitLab instance registry's hints). A URL under no registered
+	// instance that does not parse keeps empty owner/name and the URL column
+	// still updates (the historical permissiveness); a URL on a registered
+	// instance that does not parse is refused (v0.30.0).
 	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
-	owner, name := parseRepoURLOwnerName(newURL)
+	// v0.30.0: a GitLab repository never moves to another instance, and a
+	// sub-path instance's prefix never lands in repo_owner.
+	if err := s.checkCrossInstanceRename(ctx, repoID, newURL); err != nil {
+		return err
+	}
+	owner, name, err := s.repoURLOwnerName(ctx, newURL)
+	if err != nil {
+		return err
+	}
 
-	_, err := s.pool.Exec(ctx,
+	_, err = s.pool.Exec(ctx,
 		`UPDATE aveloxis_data.repos
 		 SET repo_git = $2, repo_owner = $3, repo_name = $4, data_collection_date = NOW()
 		 WHERE repo_id = $1`,

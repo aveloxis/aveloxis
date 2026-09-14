@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestLoadFoundationOrgsCmdRegistered — the new org-tracking command must be
@@ -57,8 +59,9 @@ func TestLoadFoundationOrgsTracksViaAddOrgToGroup(t *testing.T) {
 		t.Error("load-foundation-orgs must call store.AddOrgToGroup (the tracked-org feature), not one-shot repo adds")
 	}
 	// It must derive the org owner from project repo URLs.
-	if !strings.Contains(src, "ParseRepoURL(") {
-		t.Error("load-foundation-orgs must derive distinct org owners from project repo URLs via platform.ParseRepoURL")
+	// v0.30.0: with the configured GitLab instances' web URLs as hints.
+	if !strings.Contains(srctest.StripGoComments(src), "platform.ParseRepoURLWithHints(") {
+		t.Error("load-foundation-orgs must derive distinct org owners from project repo URLs via platform.ParseRepoURLWithHints")
 	}
 }
 

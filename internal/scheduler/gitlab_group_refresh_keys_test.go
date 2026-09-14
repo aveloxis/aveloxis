@@ -4,9 +4,9 @@
 // v0.29.11 — refreshGitLabGroup built its GitLab HTTP client on the GITHUB
 // key pool (a TODO since the initial commit): every GitLab group refresh sent
 // a GitHub token as PRIVATE-TOKEN to the GitLab host named by the group's
-// website URL, and the 401s it earned recorded auth strikes against GitHub
-// keys. The client now uses the GitLab pool, and only for the configured
-// GitLab instance's host.
+// website URL. v0.30.0 (multi-instance GitLab): the group's website picks its
+// GitLab instance and the listing runs on THAT instance's client with that
+// instance's own keys — never the GitHub pool, never another instance's.
 
 package scheduler
 
@@ -29,14 +29,13 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-const (
-	testGitHubSecret = "ghp_github_secret_never_to_gitlab"
-	testGitLabToken  = "glpat_gitlab_token"
-)
+const testGitHubSecret = "ghp_github_secret_never_to_gitlab"
 
 // gitlabRecorder is a fake GitLab API that records every request's
 // PRIVATE-TOKEN and answers an empty project page.
@@ -66,48 +65,54 @@ func (g *gitlabRecorder) seen() []string {
 	return append([]string(nil), g.tokens...)
 }
 
+// recorderInstance registers a fake GitLab server as instance id with web
+// base webBase, its API at the fake server, and one token (none when token
+// is "").
+func recorderInstance(t *testing.T, id model.Platform, webBase string, fake *gitlabRecorder, token string) *gitlab.Instance {
+	t.Helper()
+	in := &gitlab.Instance{ID: id, WebBase: webBase, APIURL: fake.srv.URL + "/api/v4"}
+	if token != "" {
+		c, err := gitlab.New(id, webBase, in.APIURL, platform.NewKeyPool([]string{token}, rlQuiet()), rlQuiet())
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.Client = c
+	}
+	return in
+}
+
 // The refusals need no database: every guard runs before the first store
 // call, so a nil store proves no request is ever built.
-func TestRefreshGitLabGroupRefusesWithoutGitLabKeysOrMatchingInstance(t *testing.T) {
+func TestRefreshGitLabGroupRefusesWithoutAMatchingKeyedInstance(t *testing.T) {
 	fake := newGitLabRecorder(t)
 	ghPool := platform.NewKeyPool([]string{testGitHubSecret}, rlQuiet())
-	glPool := platform.NewKeyPool([]string{testGitLabToken}, rlQuiet())
-	here := &config.PlatformConfig{BaseURL: fake.srv.URL + "/api/v4"}
-	onFake := db.OrgGroup{Name: "grp", Type: "gitlab_group", Website: fake.srv.URL + "/grp"}
+	router, err := gitlab.NewInstances([]*gitlab.Instance{
+		recorderInstance(t, model.PlatformGitLab, "https://gitlab.example.invalid", fake, "glpat_main"),
+		recorderInstance(t, model.GitLabInstanceIDMin, "https://keyless.example.invalid", fake, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
-		name      string
-		glKeys    *platform.KeyPool
-		gitlabCfg *config.PlatformConfig
-		group     db.OrgGroup
-		wantLog   string
+		name    string
+		router  *gitlab.Instances
+		group   db.OrgGroup
+		wantLog string
 	}{
-		{"no GitLab pool", nil, here, onFake, "no GitLab API keys"},
-		{"empty GitLab pool", platform.NewKeyPool(nil, rlQuiet()), here, onFake, "no GitLab API keys"},
-		{"no GitLab config", glPool, nil, onFake, "configured GitLab instance"},
-		{"group on a foreign host", glPool, here,
-			db.OrgGroup{Name: "grp", Type: "gitlab_group", Website: "https://git.elsewhere.example/grp"},
-			"configured GitLab instance"},
-		// A website with no usable host must not be assumed to be the
-		// configured instance: through v0.29.11's first draft a schemeless
-		// or unparseable URL fell back to "gitlab.com", so a group from
-		// another instance would have been listed against gitlab.com's group
-		// of the same name (review of this change).
-		{"schemeless website", glPool, &config.PlatformConfig{BaseURL: "https://gitlab.com/api/v4"},
-			db.OrgGroup{Name: "mesa", Type: "gitlab_group", Website: "gitlab.freedesktop.org/mesa"},
-			"no usable host"},
-		{"empty website", glPool, &config.PlatformConfig{BaseURL: "https://gitlab.com/api/v4"},
-			db.OrgGroup{Name: "mesa", Type: "gitlab_group", Website: ""},
-			"no usable host"},
-		{"unparseable website", glPool, &config.PlatformConfig{BaseURL: "https://gitlab.com/api/v4"},
-			db.OrgGroup{Name: "grp", Type: "gitlab_group", Website: "https://gitlab.com%2Eevil.example/grp"},
-			"no usable host"},
+		{"no GitLab configured", nil, db.OrgGroup{Name: "grp", Website: "https://gitlab.example.invalid/grp"}, "not under a configured GitLab instance"},
+		{"group on a host no instance has", router, db.OrgGroup{Name: "grp", Website: "https://git.elsewhere.example/grp"}, "not under a configured GitLab instance"},
+		// No default host: a schemeless, empty or unparseable website is
+		// not assumed to be any instance (v0.29.11 review).
+		{"schemeless website", router, db.OrgGroup{Name: "mesa", Website: "gitlab.example.invalid/mesa"}, "not under a configured GitLab instance"},
+		{"empty website", router, db.OrgGroup{Name: "mesa", Website: ""}, "not under a configured GitLab instance"},
+		{"unparseable website", router, db.OrgGroup{Name: "grp", Website: "https://gitlab.example.invalid%2Eevil.example/grp"}, "not under a configured GitLab instance"},
+		{"instance without keys", router, db.OrgGroup{Name: "grp", Website: "https://keyless.example.invalid/grp"}, "has no API keys"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&buf, nil))
-			s := NewWithKeys(nil, nil, nil, ghPool, tc.glKeys, logger,
-				Config{Collection: &config.CollectionConfig{}, GitLab: tc.gitlabCfg})
+			s := NewWithKeys(nil, nil, tc.router, ghPool, logger, Config{Collection: &config.CollectionConfig{}})
 			before := len(fake.seen())
 			if n := s.refreshGitLabGroup(context.Background(), tc.group); n != 0 {
 				t.Errorf("refreshGitLabGroup = %d, want 0", n)
@@ -123,9 +128,10 @@ func TestRefreshGitLabGroupRefusesWithoutGitLabKeysOrMatchingInstance(t *testing
 }
 
 // End to end against a database (the refresh reads user_groups before
-// listing): a group on the configured instance is listed with the GitLab
-// token, and the GitHub token never leaves the process.
-func TestRefreshGitLabGroupSendsOnlyTheGitLabToken(t *testing.T) {
+// listing): with two instances, a group under instance B is listed on B's
+// API with B's token only — instance A's API sees nothing and the GitHub
+// token never leaves the process.
+func TestRefreshGitLabGroupSendsOnlyItsInstancesToken(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
 		t.Skip("AVELOXIS_TEST_DB not set")
@@ -137,44 +143,44 @@ func TestRefreshGitLabGroupSendsOnlyTheGitLabToken(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
-	fake := newGitLabRecorder(t)
-	s := NewWithKeys(store, nil, nil,
-		platform.NewKeyPool([]string{testGitHubSecret}, rlQuiet()),
-		platform.NewKeyPool([]string{testGitLabToken}, rlQuiet()),
-		rlQuiet(),
-		Config{Collection: &config.CollectionConfig{}, GitLab: &config.PlatformConfig{BaseURL: fake.srv.URL + "/api/v4"}})
-	s.refreshGitLabGroup(ctx, db.OrgGroup{Name: "_avgl-keys-grp", Type: "gitlab_group", Website: fake.srv.URL + "/_avgl-keys-grp"})
+	fakeA, fakeB := newGitLabRecorder(t), newGitLabRecorder(t)
+	const tokA, tokB = "glpat_instance_a", "glpat_instance_b"
+	router, err := gitlab.NewInstances([]*gitlab.Instance{
+		recorderInstance(t, model.PlatformGitLab, "https://a.example.invalid", fakeA, tokA),
+		recorderInstance(t, model.GitLabInstanceIDMin, "https://code.b.example.invalid/gitlab", fakeB, tokB),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewWithKeys(store, nil, router, platform.NewKeyPool([]string{testGitHubSecret}, rlQuiet()), rlQuiet(),
+		Config{Collection: &config.CollectionConfig{}})
+	s.refreshGitLabGroup(ctx, db.OrgGroup{Name: "_avgl-keys-grp", Type: "gitlab_group", Website: "https://code.b.example.invalid/gitlab/_avgl-keys-grp"})
 
-	got := fake.seen()
+	if got := fakeA.seen(); len(got) != 0 {
+		t.Fatalf("instance A's API received %d request(s) for a group on instance B (tokens %q)", len(got), got)
+	}
+	got := fakeB.seen()
 	if len(got) == 0 {
-		t.Fatal("the refresh never listed the group")
+		t.Fatal("the refresh never listed the group on instance B")
 	}
 	for _, tok := range got {
-		if tok == testGitHubSecret {
-			t.Fatal("a GitHub token was sent to the GitLab host as PRIVATE-TOKEN")
-		}
-		if tok != testGitLabToken {
-			t.Errorf("PRIVATE-TOKEN = %q, want the GitLab pool's token", tok)
+		if tok != tokB {
+			t.Errorf("PRIVATE-TOKEN on instance B = %q, want B's own token (never A's %q or the GitHub key)", tok, tokA)
 		}
 	}
 }
 
-// Wiring: serve hands the scheduler the GitLab pool and the gitlab config
-// block (the refusals above make a forgotten wire loud, but this is the
-// production path).
-func TestServeWiresGitLabKeysIntoScheduler(t *testing.T) {
+// Wiring: serve hands the scheduler the GitLab instance router built by the
+// one forge-client builder (the refusals above make a forgotten wire loud,
+// but this is the production path).
+func TestServeWiresGitLabInstancesIntoScheduler(t *testing.T) {
 	body := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/main.go"))
-	call := "scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, glKeys, logger, scheduler.Config{"
+	call := "scheduler.NewWithKeys(store, clients.gh, clients.gl, clients.ghKeys, logger, scheduler.Config{"
 	if strings.Count(body, call) != 1 {
 		t.Fatalf("serve must construct the scheduler with %q", call)
 	}
-	i := strings.Index(body, call)
-	end := strings.Index(body[i:], "\n\t})")
-	if end < 0 {
-		t.Fatal("could not find the end of the scheduler.Config literal")
-	}
-	if !strings.Contains(body[i:i+end], "GitLab: &cfg.GitLab,") {
-		t.Error("serve's scheduler.Config must carry GitLab: &cfg.GitLab")
+	if !strings.Contains(body, "clients, err := buildForgeClients(ctx, cfg, store, useAugurKeys, true, logger)") {
+		t.Error("serve must build its forge clients with buildForgeClients, registering the GitLab instances (register=true)")
 	}
 }
 
@@ -205,7 +211,7 @@ func TestContributorGuideConstructorExamplesMatchSignatures(t *testing.T) {
 		extrasAfter    string // parameter the guide's one extra argument follows; "" = none allowed
 		checkNames     bool
 	}{
-		{"scheduler.NewWithKeys(", "internal/scheduler/scheduler.go", "NewWithKeys", "glClient", true},
+		{"scheduler.NewWithKeys(", "internal/scheduler/scheduler.go", "NewWithKeys", "gl", true},
 		{"platform.NewHTTPClient(", "internal/platform/httpclient.go", "NewHTTPClient", "", true},
 		// The guide mirrors cmd/aveloxis's loadKeys, whose names differ from
 		// the parameters (store.Pool(), useAugurKeys): arity only.

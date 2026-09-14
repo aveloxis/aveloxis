@@ -189,7 +189,7 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 		}
 		for _, rurl := range p.RepoURLs {
 			t.repos++
-			parsed, perr := platform.ParseRepoURL(rurl)
+			parsed, perr := platform.ParseRepoURLWithHints(rurl, configuredGitLabWebBases(cfg))
 			if perr != nil {
 				logger.Warn("skipping unparseable repo URL", "url", rurl, "project", p.Name, "error", perr)
 				t.skipped++

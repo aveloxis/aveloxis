@@ -16,7 +16,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
-	"github.com/aveloxis/aveloxis/internal/platform/github"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/spf13/cobra"
 )
@@ -82,14 +81,12 @@ Resumable: on interruption, re-run with --after-repo-id <last logged id>.`,
 				return nil
 			}
 
-			ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
+			clients, err := buildForgeClients(ctx, cfg, store, false, false, logger)
 			if err != nil {
 				return fmt.Errorf("loading API keys: %w", err)
 			}
-			ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
-			glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
-			return runBackfillRepoMetadata(ctx, store, ghClient, glClient, logger, limit, afterRepoID, workers)
+			return runBackfillRepoMetadata(ctx, store, clients.gh, clients.gl, logger, limit, afterRepoID, workers)
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 0, "stop after N repos (0 = the whole fleet); canary with --limit 100")
@@ -109,12 +106,12 @@ func countMetadataRefreshCandidates(ctx context.Context, store *db.PostgresStore
 	return n, err
 }
 
-func runBackfillRepoMetadata(ctx context.Context, store *db.PostgresStore, ghClient, glClient platform.Client,
+func runBackfillRepoMetadata(ctx context.Context, store *db.PostgresStore, ghClient platform.Client, gls *gitlab.Instances,
 	logger *slog.Logger, limit int, afterRepoID int64, workers int) error {
 	if workers < 1 {
 		workers = 1
 	}
-	var processed, forks, skipped, failed atomic.Int64
+	var processed, forks, skipped, failed, noClient atomic.Int64
 	var lastID atomic.Int64
 	lastID.Store(afterRepoID)
 
@@ -125,10 +122,14 @@ func runBackfillRepoMetadata(ctx context.Context, store *db.PostgresStore, ghCli
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				client, ok := forgeClientFor(model.Platform(t.PlatformID), ghClient, glClient)
-				if !ok {
-					skipped.Add(1)
-					logger.Warn("metadata refresh skip: no API client for this repo's platform in this command", "repo_id", t.RepoID, "platform_id", t.PlatformID)
+				client, err := forgeClientFor(model.Platform(t.PlatformID), t.GitURL, ghClient, gls)
+				if err != nil {
+					// A GitLab repository whose instance cannot be
+					// collected (not configured, no keys, or a URL its
+					// platform_id contradicts): counted apart from forge
+					// 404s, and never sent to another client.
+					noClient.Add(1)
+					logger.Warn("metadata refresh skip: repository's GitLab instance has no client", "repo_id", t.RepoID, "platform_id", t.PlatformID, "error", err)
 					continue
 				}
 				info, err := client.FetchRepoInfo(ctx, t.Owner, t.Name)
@@ -202,10 +203,15 @@ feed:
 
 	logger.Info("metadata refresh complete",
 		"dispatched", total, "processed", processed.Load(), "forks", forks.Load(),
-		"skipped", skipped.Load(), "failed", failed.Load(), "last_repo_id", lastID.Load(),
+		"skipped", skipped.Load(), "skipped_instance_without_client", noClient.Load(),
+		"failed", failed.Load(), "last_repo_id", lastID.Load(),
 		"resume_hint", fmt.Sprintf("--after-repo-id %d", lastID.Load()))
 	if ctx.Err() != nil {
 		return fmt.Errorf("interrupted — resume with --after-repo-id %d", lastID.Load())
+	}
+	if n := noClient.Load(); n > 0 {
+		// Not success (L14): these repositories were never refreshed.
+		return fmt.Errorf("skipped %d repositories on GitLab instances this process cannot collect — configure each instance's API URL and keys (see `aveloxis gitlab-instances`), then rerun", n)
 	}
 	return nil
 }

@@ -290,8 +290,11 @@ aveloxis add-repo --from-augur
 ### Platform detection
 
 - URLs containing `github.com` are treated as GitHub
-- URLs containing `gitlab` in the hostname are treated as GitLab
-- Hostnames listed in `gitlab.gitlab_hosts` in the config are treated as GitLab
+- URLs under the `web_url` of a configured GitLab instance (`gitlab.web_url`
+  or `gitlab.instances[].web_url`) belong to that instance
+- Other URLs with `gitlab` in the hostname are recognized as GitLab; one that
+  is not under a configured instance is collected git-only until its instance
+  is configured
 
 ---
 
@@ -308,7 +311,8 @@ aveloxis add-key [flags] [<token>]
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--platform` | string | (required unless `--from-augur`) | Platform for the key: `github` or `gitlab`. |
-| `--from-augur` | boolean | `false` | Bulk import all keys from `augur_operations.worker_oauth`. Duplicates are skipped. |
+| `--instance` | string | the main GitLab instance | GitLab only (v0.30.0): the web URL of the GitLab instance that issued the key, as configured in `gitlab.instances`. The key is loaded only into that instance's pool and sent only to its API URL. A key stored for an instance that is not configured is kept but not loaded (a WARN says so). Re-adding a token under another instance moves it. |
+| `--from-augur` | boolean | `false` | Bulk import all keys from `augur_operations.worker_oauth`. Duplicates are skipped. Imported GitLab keys belong to the main instance. |
 
 ### Examples
 
@@ -316,8 +320,11 @@ aveloxis add-key [flags] [<token>]
 # Store a GitHub token
 aveloxis add-key ghp_your_github_token --platform github
 
-# Store a GitLab token
+# Store a token issued by the main GitLab instance (gitlab.base_url)
 aveloxis add-key glpat-your_gitlab_token --platform gitlab
+
+# Store a token issued by another GitLab instance
+aveloxis add-key glpat-freedesktop_token --platform gitlab --instance https://gitlab.freedesktop.org
 
 # Bulk import from Augur
 aveloxis add-key --from-augur
@@ -1355,6 +1362,31 @@ Details:
 - Requires GitHub API keys (`aveloxis add-key`). Does not run schema
   migrations (v0.21.5 contract) — run `aveloxis migrate` first when
   upgrading to v0.27.5 so the `scorecard_mode` column exists.
+
+## `aveloxis gitlab-instances`
+
+Read-only report of the GitLab instances aveloxis collects from (v0.30.0).
+
+```text
+aveloxis gitlab-instances
+```
+
+One tab-separated row per instance: its `platform_id`, web URL, the API URL its
+keys are sent to, whether it is configured (and whether it has keys), how many
+keys it has (config and stored), and how many repositories it holds. Also
+listed:
+
+- instances registered earlier but no longer configured (their repositories
+  are collected git-only, and each job records why);
+- stored keys tagged with an instance that is not configured (never loaded);
+- misrouted repositories: rows on `platform_id` 2 that live under another
+  instance and already hold API data. They are reported, never changed.
+  `aveloxis data-verify` fails the same check.
+
+Run it after deploying v0.30.0: gitlab.com should be `platform_id` 2 and
+nothing should be misrouted.
+
+---
 
 ## `aveloxis staging-stats`
 

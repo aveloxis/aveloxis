@@ -69,7 +69,10 @@
 <li class="toctree-l2"><a class="reference internal" href="#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +251,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -1671,9 +1675,7 @@ claim on two axes, and they have different reach:</p>
 <li><p><strong>Presence — every block, every key.</strong> Each section of the snippet
 must carry every field of its Go config struct. An omitted key is
 invisible to any value check (absent simply means “use the
-default”), so presence is asserted separately. The one reasoned
-exemption is <code class="docutils literal notranslate"><span class="pre">github.gitlab_hosts</span></code>: the two forge blocks share one
-struct and that field is GitLab-only.</p></li>
+default”), so presence is asserted separately.</p></li>
 <li><p><strong>Values — every block, every field, plus the top-level scalars.</strong>
 Each field is compared against the compiled default: through its
 effective accessor where it has one, and by value where it does
@@ -1708,7 +1710,14 @@ a half against its own reference table below:</p>
 <span class="w">  </span><span class="nt">"gitlab"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">"api_keys"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"glpat-your_token_here"</span><span class="p">],</span>
 <span class="w">    </span><span class="nt">"base_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://gitlab.com/api/v4"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"gitlab_hosts"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"gitlab.freedesktop.org"</span><span class="p">]</span>
+<span class="w">    </span><span class="nt">"web_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"instances"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"web_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://gitlab.freedesktop.org"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"api_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://gitlab.freedesktop.org/api/v4"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"api_keys"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"glpat-issued-by-gitlab.freedesktop.org"</span><span class="p">]</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="nt">"mail"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">"gmail_user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis-ops@yourdomain.com"</span><span class="p">,</span>
@@ -1912,20 +1921,69 @@ a half against its own reference table below:</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.api_keys</span></code></p></td>
 <td><p>string[]</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
-<td><p>GitLab personal access tokens.</p></td>
+<td><p>Tokens issued by the <strong>main</strong> GitLab instance.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.base_url</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;https://gitlab.com/api/v4&quot;</span></code></p></td>
-<td><p>GitLab API base URL. Change for self-hosted GitLab instances. It also names the one host the <code class="docutils literal notranslate"><span class="pre">gitlab.api_keys</span></code> are sent to (v0.29.11): the periodic GitLab group refresh skips, with a WARN, any group whose URL is on a different host rather than send it the keys. Before v0.29.11 that refresh used the GitHub keys.</p></td>
+<td><p>The main instance’s API URL. The main instance’s keys are sent only to this URL’s scheme and host.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.gitlab_hosts</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.web_url</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code> (derived)</p></td>
+<td><p>The main instance’s web URL, where its repositories live. When empty it is <code class="docutils literal notranslate"><span class="pre">base_url</span></code> without its trailing <code class="docutils literal notranslate"><span class="pre">/api/v4</span></code>; set it when the main instance’s API is not at <code class="docutils literal notranslate"><span class="pre">&lt;web</span> <span class="pre">URL&gt;/api/v4</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.instances</span></code></p></td>
+<td><p>object[]</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>Additional GitLab instances (v0.30.0), each <code class="docutils literal notranslate"><span class="pre">{&quot;web_url&quot;,</span> <span class="pre">&quot;api_url&quot;,</span> <span class="pre">&quot;api_keys&quot;}</span></code>. See <a class="reference internal" href="#multiple-gitlab-instances">Multiple GitLab instances</a>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.instances[].web_url</span></code></p></td>
+<td><p>string</p></td>
+<td><p>required</p></td>
+<td><p>Where the instance’s repositories live: scheme, host, and the path prefix if GitLab is installed under a sub-path (<code class="docutils literal notranslate"><span class="pre">https://code.example.edu/gitlab</span></code>). This is the instance’s identity: a different host or path prefix makes a different instance (changing only <code class="docutils literal notranslate"><span class="pre">http://</span></code> to <code class="docutils literal notranslate"><span class="pre">https://</span></code> keeps it).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.instances[].api_url</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">web_url</span> <span class="pre">+</span> <span class="pre">&quot;/api/v4&quot;</span></code></p></td>
+<td><p>The instance’s REST API URL. It may be on a different host or path than <code class="docutils literal notranslate"><span class="pre">web_url</span></code> (a proxy or an <code class="docutils literal notranslate"><span class="pre">api.</span></code> host), and may change later without affecting stored data. The instance’s keys are sent only to this URL’s scheme and host.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gitlab.instances[].api_keys</span></code></p></td>
 <td><p>string[]</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
-<td><p>Additional hostnames to recognize as GitLab instances. Use this for self-hosted GitLab servers whose hostnames do not contain “gitlab”.</p></td>
+<td><p>Tokens issued by <strong>that</strong> instance. Keys are never shared between instances.</p></td>
 </tr>
 </tbody>
 </table>
+<section id="multiple-gitlab-instances">
+<h4>Multiple GitLab instances<a class="headerlink" href="#multiple-gitlab-instances" title="Link to this heading"></a></h4>
+<p>Every GitLab instance aveloxis collects from is <code class="docutils literal notranslate"><span class="pre">{web_url,</span> <span class="pre">api_url,</span> <span class="pre">api_keys}</span></code>,
+and nothing is shared between instances:</p>
+<ol class="arabic simple">
+<li><p><strong>A key belongs to exactly one instance.</strong> It sits in that instance’s
+entry, or is stored with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span> <span class="pre">--platform</span> <span class="pre">gitlab</span> <span class="pre">--instance</span> <span class="pre">&lt;web</span> <span class="pre">URL&gt;</span></code>.
+A stored key without <code class="docutils literal notranslate"><span class="pre">--instance</span></code> belongs to the main instance, as before.</p></li>
+<li><p><strong>An instance with no keys makes no API calls.</strong> Its repositories still get
+git-based collection (facade, analysis, scorecard, SBOM, vulnerabilities),
+but each collection is recorded as not successful, with an error naming the
+instance and the fix. Nothing is borrowed from another instance’s keys.</p></li>
+<li><p><strong>A request carrying an instance’s key only goes to that instance’s
+<code class="docutils literal notranslate"><span class="pre">api_url</span></code> host.</strong> Redirects and pagination links to any other host are
+refused.</p></li>
+<li><p><strong>A repository belongs to the instance whose <code class="docutils literal notranslate"><span class="pre">web_url</span></code> it lives under</strong>
+(host and path prefix; the longest prefix wins). Two instances may share a
+web host under different path prefixes, but their API URLs must be on
+different hosts.</p></li>
+</ol>
+<p>Each instance gets its own <code class="docutils literal notranslate"><span class="pre">platform_id</span></code> (gitlab.com keeps <code class="docutils literal notranslate"><span class="pre">2</span></code>; others get
+<code class="docutils literal notranslate"><span class="pre">100</span></code>–<code class="docutils literal notranslate"><span class="pre">199</span></code>), so contributor and message identities from different instances
+never collide. Ids are assigned by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>
+startup, and are never reused.</p>
+<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> refuses to start when two instances share a web URL (<code class="docutils literal notranslate"><span class="pre">http://</span></code> and
+<code class="docutils literal notranslate"><span class="pre">https://</span></code> of one URL count as the same), two instances’ API URLs are on the
+same host (a key is kept to its API’s host, so instances need distinct API
+hosts), an extra instance has no <code class="docutils literal notranslate"><span class="pre">web_url</span></code>, or a <code class="docutils literal notranslate"><span class="pre">web_url</span></code> is an API URL.</p>
+</section>
 </section>
 <section id="collection">
 <h3>Collection<a class="headerlink" href="#collection" title="Link to this heading"></a></h3>

@@ -31,7 +31,10 @@ func TestAddRepoOrgExpansionCapturesForgeRepoID(t *testing.T) {
 		t.Error("orgRepo must carry ForgeID so the listers' decoded id reaches UpsertRepo")
 	}
 
-	for _, fn := range []string{"func listGitHubOrgRepos", "func listGitLabGroupRepos"} {
+	// v0.30.0: add-repo lists GitHub organizations only (its GitLab arm
+	// was unreachable and is gone); GitLab group listings decode the id in
+	// gitlab.Client.ListGroupProjects (internal/platform/gitlab).
+	for _, fn := range []string{"func listGitHubOrgRepos"} {
 		body := srctest.FuncBody(t, s, fn)
 		if !strings.Contains(body, "`json:\"id\"`") {
 			t.Errorf("%s must decode the listing's numeric `id` field", fn)

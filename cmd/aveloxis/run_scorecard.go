@@ -156,7 +156,7 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	}
 	defer store.Close()
 
-	ghKeys, _, err := loadKeys(ctx, cfg, store, false, logger)
+	ghKeys, err := loadGitHubKeys(ctx, cfg, store, false, logger)
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}

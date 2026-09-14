@@ -68,9 +68,9 @@ func (g *gitlabRecorder) seen() []string {
 // recorderInstance registers a fake GitLab server as instance id with web
 // base webBase, its API at the fake server, and one token (none when token
 // is "").
-func recorderInstance(t *testing.T, id model.Platform, webBase string, fake *gitlabRecorder, token string) *gitlab.Instance {
+func recorderInstance(t *testing.T, id model.Platform, webBase string, fake *gitlabRecorder, token string) *gitlab.InstanceSpec {
 	t.Helper()
-	in := &gitlab.Instance{ID: id, WebBase: webBase, APIURL: fake.srv.URL + "/api/v4"}
+	in := &gitlab.InstanceSpec{ID: id, WebBase: webBase, APIURL: fake.srv.URL + "/api/v4"}
 	if token != "" {
 		c, err := gitlab.New(id, webBase, in.APIURL, platform.NewKeyPool([]string{token}, rlQuiet()), rlQuiet())
 		if err != nil {
@@ -86,7 +86,7 @@ func recorderInstance(t *testing.T, id model.Platform, webBase string, fake *git
 func TestRefreshGitLabGroupRefusesWithoutAMatchingKeyedInstance(t *testing.T) {
 	fake := newGitLabRecorder(t)
 	ghPool := platform.NewKeyPool([]string{testGitHubSecret}, rlQuiet())
-	router, err := gitlab.NewInstances([]*gitlab.Instance{
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		recorderInstance(t, model.PlatformGitLab, "https://gitlab.example.invalid", fake, "glpat_main"),
 		recorderInstance(t, model.GitLabInstanceIDMin, "https://keyless.example.invalid", fake, ""),
 	})
@@ -145,7 +145,7 @@ func TestRefreshGitLabGroupSendsOnlyItsInstancesToken(t *testing.T) {
 
 	fakeA, fakeB := newGitLabRecorder(t), newGitLabRecorder(t)
 	const tokA, tokB = "glpat_instance_a", "glpat_instance_b"
-	router, err := gitlab.NewInstances([]*gitlab.Instance{
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		recorderInstance(t, model.PlatformGitLab, "https://a.example.invalid", fakeA, tokA),
 		recorderInstance(t, model.GitLabInstanceIDMin, "https://code.b.example.invalid/gitlab", fakeB, tokB),
 	})
@@ -213,9 +213,9 @@ func TestContributorGuideConstructorExamplesMatchSignatures(t *testing.T) {
 	}{
 		{"scheduler.NewWithKeys(", "internal/scheduler/scheduler.go", "NewWithKeys", "gl", true},
 		{"platform.NewHTTPClient(", "internal/platform/httpclient.go", "NewHTTPClient", "", true},
-		// The guide mirrors cmd/aveloxis's loadKeys, whose names differ from
-		// the parameters (store.Pool(), useAugurKeys): arity only.
-		{"db.LoadAPIKeys(", "internal/db/keys.go", "LoadAPIKeys", "", false},
+		// The guide's stored-key read passes store.Pool() for the pool
+		// parameter: arity only.
+		{"db.LoadStoredAPIKeys(", "internal/db/keys.go", "LoadStoredAPIKeys", "", false},
 	}
 	for _, tc := range cases {
 		params := funcParams(t, tc.file, tc.fn)

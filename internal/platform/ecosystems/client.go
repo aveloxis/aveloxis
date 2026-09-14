@@ -192,8 +192,8 @@ func (c *Client) circuitOpen() bool {
 // currently tripped. Read-only: does NOT have the side effect of
 // resetting state when the pause has elapsed (use circuitOpen
 // internally for that). Callers (typically the CompositeScanner's
-// Healthy() check from the DistributionWorker dispatcher) want a
-// pure read so the dispatcher can sleep without inadvertently
+// UnhealthyReason() check, read by the DistributionWorker dispatcher)
+// want a pure read so the dispatcher can sleep without inadvertently
 // closing the breaker on a stale post-deadline read.
 //
 // v0.25.0.

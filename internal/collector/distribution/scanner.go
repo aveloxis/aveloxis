@@ -6,6 +6,7 @@ package distribution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -143,6 +144,12 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		// repos, missing OAuth scope, archived/empty repos) and
 		// shouldn't force a re-scan.
 		scanIncomplete bool
+		// gitHubNoKeys (v0.30.0 Phase C): a GitHub source could not run
+		// (or could not finish — the pool can empty mid-scan) because the
+		// pool had no active key. The scan is neither complete nor
+		// partial — it returns ErrNoKeys and the worker releases the claim
+		// (UnhealthyReason pauses dispatch).
+		gitHubNoKeys bool
 	)
 
 	// Source 1: deps.dev (external package registry, primary)
@@ -237,6 +244,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
+			if errors.Is(err, platform.ErrNoKeys) {
+				gitHubNoKeys = true
+			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -254,6 +264,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
+			if errors.Is(err, platform.ErrNoKeys) {
+				gitHubNoKeys = true
+			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -271,6 +284,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
+			if errors.Is(err, platform.ErrNoKeys) {
+				gitHubNoKeys = true
+			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -285,6 +301,10 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 				// drop the row — manifest_type alone is still
 				// useful intent signal.
 				content, fetchErr := s.GitHub.FetchManifestContent(ctx, owner, repo, m.ManifestPath)
+				if errors.Is(fetchErr, platform.ErrNoKeys) {
+					gitHubNoKeys = true // the pool emptied mid-scan: no complete answer
+					break
+				}
 				if fetchErr != nil {
 					s.Logger.Debug("distribution: manifest content fetch failed",
 						"repo_id", repoID, "path", m.ManifestPath, "error", fetchErr)
@@ -294,6 +314,10 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 				manifests = append(manifests, m)
 			}
 		}
+	}
+
+	if gitHubNoKeys {
+		return nil, nil, false, fmt.Errorf("distribution scan: GitHub sources had no API key: %w", platform.ErrNoKeys)
 	}
 
 	// v0.25.0 contract: fail the scan ONLY when EVERY enabled
@@ -327,21 +351,33 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	return distributions, manifests, !scanIncomplete, nil
 }
 
-// Healthy reports whether the CompositeScanner's external sources
-// are currently in a healthy state. Returns false when ecosyste.ms
-// is enabled AND its source-level circuit breaker is currently open
-// — the DistributionWorker's dispatcher consults this before each
-// claim and pauses while unhealthy, so we don't dispatch new repos
-// into a known-bad upstream and end up stamping their cadence with
-// partial-scan data.
-//
-// deps.dev does not (yet) have a source-level circuit breaker; if
-// one is added in the future, OR its IsCircuitOpen() in here.
-//
-// v0.25.0.
+// Healthy reports whether the CompositeScanner can scan now (v0.25.0). It
+// is derived from UnhealthyReason, which the DistributionWorker's
+// dispatcher reads once before each claim (unhealthyReason in worker.go)
+// and pauses on, so repos are not dispatched into a scan whose result would
+// be stamped as this cycle's without evidence it should have had. Healthy
+// itself remains for the Scanner interface (scanners without a reason).
 func (s *CompositeScanner) Healthy() bool {
+	return s.UnhealthyReason() == ""
+}
+
+// UnhealthyReason is "" when the scanner is healthy, else why it is not:
+//
+//   - the ecosyste.ms source-level circuit breaker is open (v0.25.0);
+//     deps.dev has no breaker yet — if one is added, check it here;
+//   - the GitHub key pool has no active key (v0.30.0 Phase C: every key
+//     can be removed at runtime). The whole scan pauses, not just the
+//     three GitHub sources: completing a scan from deps.dev/ecosyste.ms
+//     alone would replace the repo's snapshot and rotate its
+//     GitHub-sourced evidence to history, and a fleet with github.com
+//     repos and no GitHub key (none configured, or all removed at
+//     runtime) is not collecting those repos' API data.
+func (s *CompositeScanner) UnhealthyReason() string {
 	if s.Ecosystems != nil && s.Ecosystems.IsCircuitOpen() {
-		return false
+		return "ecosyste.ms circuit breaker open"
 	}
-	return true
+	if s.GitHub != nil && !s.GitHub.HasKeys() {
+		return "no GitHub API keys"
+	}
+	return ""
 }

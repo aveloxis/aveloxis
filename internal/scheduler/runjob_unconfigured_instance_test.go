@@ -70,8 +70,17 @@ func TestRunJobOnUnconfiguredGitLabInstanceRecordsWhy(t *testing.T) {
 	cleanup := func() {
 		c := context.Background()
 		raw.Exec(c, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
-		raw.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`'`)
-		raw.Exec(c, `DELETE FROM aveloxis_data.platforms WHERE platform_id BETWEEN 100 AND 199 AND platform_instance_url LIKE 'http://127.0.0.1:%'`)
+		// runJob writes SBOM scan and scorecard rows (blocking FKs); without these the
+		// repo delete fails silently and pins the instance's platform_id.
+		for _, dep := range []string{"aveloxis_data.repo_sbom_scans", "aveloxis_data.repo_deps_scorecard"} {
+			raw.Exec(c, `DELETE FROM `+dep+` WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
+		}
+		if _, err := raw.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`'`); err != nil {
+			t.Logf("cleanup: test repo not deleted (a dependent row blocks it): %v", err)
+		}
+		if _, err := raw.Exec(c, `DELETE FROM aveloxis_data.platforms WHERE platform_id BETWEEN 100 AND 199 AND platform_instance_url LIKE 'http://127.0.0.1:%'`); err != nil {
+			t.Logf("cleanup: test GitLab instance rows not deleted: %v", err)
+		}
 		raw.Exec(c, `UPDATE aveloxis_data.platforms SET platform_instance_url = $1 WHERE platform_id = 2`, row2)
 	}
 	cleanup()
@@ -87,7 +96,7 @@ func TestRunJobOnUnconfiguredGitLabInstanceRecordsWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 	instanceID := ids[server.URL]
-	router, err := gitlab.NewInstances([]*gitlab.Instance{
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		{ID: instanceID, WebBase: server.URL, APIURL: server.URL + "/api/v4"}, // registered, no keys
 	})
 	if err != nil {

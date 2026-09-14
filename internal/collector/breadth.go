@@ -225,9 +225,11 @@ type breadthFetchOutcome struct {
 //     prior attempt yielded events.
 //   - MarkBreadthAttempted(Batch) covers EVERY contributor attempt —
 //     success, zero events, and per-user fetch errors all count as
-//     attempted. Without this, contributors with no public activity
-//     stayed at the head of the queue forever (observed: 225/1.4M
-//     coverage on the live fleet).
+//     attempted (v0.30.0 Phase C: a fetch that failed for want of an API
+//     key was no attempt — the run aborts, and that contributor and those
+//     not yet processed stay unmarked). Without this, contributors
+//     with no public activity stayed at the head of the queue forever
+//     (observed: 225/1.4M coverage on the live fleet).
 //   - The 200ms inter-contributor sleep is removed. HTTPClient
 //     rate limiting already paces requests via X-RateLimit-Remaining
 //     and 429 backoff; the sleep capped throughput at 5/sec
@@ -378,6 +380,17 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 			continue
 		}
 
+		// v0.30.0 Phase C: the pool was emptied mid-run (every key
+		// removed on the API keys page). Abort like a shutdown: this and
+		// the remaining contributors stay unmarked — a per-user error
+		// normally counts as attempted, but nothing was attempted.
+		if errors.Is(oc.err, platform.ErrNoKeys) {
+			aborted = true
+			abortErr = oc.err
+			cancelFetch()
+			continue
+		}
+
 		// v0.22.12: detect transient-5xx burst BEFORE stamping the
 		// attempt. If the circuit trips on this contributor, they and
 		// everything not yet persisted must re-enter the queue on the
@@ -429,10 +442,11 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 				"login", oc.contributor.Login, "error", oc.err)
 			result.Errors++
 			// v0.20.17 invariant: a per-user fetch error still counts
-			// as attempted (only a circuit trip, an insert failure, or
-			// a shutdown mid-insert leaves a contributor unmarked). A
-			// canceled fetch never reaches here: the loop-top ctx check
-			// aborts the drain first.
+			// as attempted (only a circuit trip, an insert failure, a
+			// shutdown mid-insert, or — v0.30.0 Phase C — a fetch with no
+			// API key leaves a contributor unmarked). A canceled fetch or
+			// an ErrNoKeys fetch never reaches here: the checks above
+			// abort the drain first.
 			pendingMarks = append(pendingMarks, oc.contributor.ID)
 			if len(pendingMarks) >= breadthMarkFlushSize {
 				flushMarks()
@@ -500,6 +514,12 @@ func (bw *BreadthWorker) fetchContributor(ctx context.Context, c db.BreadthContr
 	// 404 + we have a stable numeric id. Try the rename-detection
 	// fallback: look up the current login via /user/{id}.
 	newLogin, lookupErr := bw.lookupLoginByID(ctx, c.GHUserID)
+	if errors.Is(lookupErr, platform.ErrNoKeys) {
+		// v0.30.0 Phase C: the pool emptied before the lookup could run.
+		// Surface it so the coordinator aborts without marking this
+		// contributor (the 404 below would mark it attempted).
+		return rows, false, lookupErr
+	}
 	if lookupErr != nil {
 		// /user/{id} also failed (404 — user genuinely deleted, or
 		// transient 5xx). Bubble the original 404 — the coordinator

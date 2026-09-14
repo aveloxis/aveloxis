@@ -53,8 +53,12 @@ func TestPrelimSkipsARedirectToAnotherGitLabInstance(t *testing.T) {
 	cleanup := func() {
 		c := context.Background()
 		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE 'http://127.0.0.1:%/_avprelim%')`)
-		_, _ = pool.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE 'http://127.0.0.1:%/_avprelim%'`)
-		_, _ = pool.Exec(c, `DELETE FROM aveloxis_data.platforms WHERE platform_id BETWEEN 100 AND 199 AND platform_instance_url LIKE 'http://127.0.0.1:%'`)
+		if _, err := pool.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE 'http://127.0.0.1:%/_avprelim%'`); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+		if _, err := pool.Exec(c, `DELETE FROM aveloxis_data.platforms WHERE platform_id BETWEEN 100 AND 199 AND platform_instance_url LIKE 'http://127.0.0.1:%'`); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
 		_, _ = pool.Exec(c, `UPDATE aveloxis_data.platforms SET platform_instance_url = $1 WHERE platform_id = 2`, row2)
 	}
 	cleanup()
@@ -124,8 +128,12 @@ func TestPrelimRedirectWithinASubPathInstanceKeepsTheOwner(t *testing.T) {
 	cleanup := func() {
 		c := context.Background()
 		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE 'http://127.0.0.1:%/gitlab/_avprelim2%')`)
-		_, _ = pool.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE 'http://127.0.0.1:%/gitlab/_avprelim2%'`)
-		_, _ = pool.Exec(c, `DELETE FROM aveloxis_data.platforms WHERE platform_id BETWEEN 100 AND 199 AND platform_instance_url LIKE 'http://127.0.0.1:%'`)
+		if _, err := pool.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE 'http://127.0.0.1:%/gitlab/_avprelim2%'`); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+		if _, err := pool.Exec(c, `DELETE FROM aveloxis_data.platforms WHERE platform_id BETWEEN 100 AND 199 AND platform_instance_url LIKE 'http://127.0.0.1:%'`); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
 		_, _ = pool.Exec(c, `UPDATE aveloxis_data.platforms SET platform_instance_url = $1 WHERE platform_id = 2`, row2)
 	}
 	cleanup()

@@ -34,6 +34,10 @@ type Client struct {
 	logger     *slog.Logger
 	platformID model.Platform
 	webBase    string // model.NormalizeInstanceWebBase form
+	// keys is the instance's own pool, kept so the router can gate on
+	// active keys and reconcile it in place (v0.30.0 Phase C). Unexported:
+	// only this package pairs a pool with its instance.
+	keys *platform.KeyPool
 	// userRefCache: username → glUserRefCacheEntry (v0.27.122) — see
 	// lookupGLUserRef. Zero value is ready to use.
 	userRefCache sync.Map
@@ -41,8 +45,10 @@ type Client struct {
 
 // New creates the client for one GitLab instance. It refuses a platformID
 // outside the GitLab family, a web base that does not normalize, an empty
-// API URL, and a nil or empty key pool — an instance without keys makes no
-// API calls at all; its repositories take the router's not-configured path.
+// API URL, and a nil key pool. An EMPTY pool is accepted (v0.30.0 Phase C):
+// every registered instance keeps a pool for the process's life so a key
+// added at runtime can make it collectable; the router's KeyedClient gate
+// keeps a keyless instance from making API calls.
 func New(platformID model.Platform, webBase, apiURL string, keys *platform.KeyPool, logger *slog.Logger) (*Client, error) {
 	if !platformID.IsGitLab() {
 		return nil, fmt.Errorf("gitlab.New: platform_id %d is not a GitLab instance id", platformID)
@@ -54,14 +60,15 @@ func New(platformID model.Platform, webBase, apiURL string, keys *platform.KeyPo
 	if strings.TrimSpace(apiURL) == "" {
 		return nil, fmt.Errorf("gitlab.New: GitLab instance %s has no API URL", base)
 	}
-	if keys == nil || keys.IsEmpty() {
-		return nil, fmt.Errorf("gitlab.New: GitLab instance %s has no API keys", base)
+	if keys == nil {
+		return nil, fmt.Errorf("gitlab.New: GitLab instance %s has no key pool", base)
 	}
 	return &Client{
 		http:       platform.NewHTTPClient(apiURL, keys, logger, platform.AuthGitLab),
 		logger:     logger,
 		platformID: platformID,
 		webBase:    base,
+		keys:       keys,
 	}, nil
 }
 

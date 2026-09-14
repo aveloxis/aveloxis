@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -360,3 +361,89 @@ func buildTestScanner(t *testing.T, depsURL, ecoURL, ghURL string, crossCheck bo
 // linter complaints in CI.
 var _ = db.ToolVersion
 var _ json.Decoder
+
+// v0.30.0 Phase C: every GitHub key can be removed at runtime. A scan
+// whose GitHub sources had no key asked GitHub nothing, so it is neither a
+// completion (MarkDistributionComplete would rotate the current snapshot,
+// GitHub rows included, to history) nor a partial (with immediate reclaim
+// on, the dispatcher would re-scan the same repo every start interval): the
+// scanner returns ErrNoKeys and reports itself unhealthy, the worker
+// releases the claim, and the dispatcher pauses (review of Phase C, pass 3,
+// finding 3).
+func TestScannerWithoutGitHubKeysIsUnhealthyAndReturnsErrNoKeys(t *testing.T) {
+	depsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"versions":[]}`)
+	}))
+	t.Cleanup(depsServer.Close)
+	ecoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(ecoServer.Close)
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no GitHub request can be made without a key")
+	}))
+	t.Cleanup(ghServer.Close)
+
+	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
+	if !scanner.Healthy() {
+		t.Fatal("a scanner with GitHub keys must be healthy")
+	}
+	scanner.GitHub = github.New(ghServer.URL, platform.NewKeyPool(nil, slog.Default()), slog.Default())
+	if scanner.Healthy() || scanner.UnhealthyReason() != "no GitHub API keys" {
+		t.Fatalf("a scanner whose GitHub pool has no key must report unhealthy with its reason (got %q), so the dispatcher pauses and says why", scanner.UnhealthyReason())
+	}
+	dists, manifests, _, err := scanner.Scan(context.Background(), 999, "o", "r", "https://github.com/o/r")
+	if !errors.Is(err, platform.ErrNoKeys) || dists != nil || manifests != nil {
+		t.Fatalf("Scan without GitHub keys = (%v, %v, %v), want ErrNoKeys and no evidence", dists, manifests, err)
+	}
+}
+
+// The pool can empty DURING a scan, after the root listing succeeded: the
+// sub-directory listings and the manifest content fetches must surface
+// ErrNoKeys too, or the scan "completes" with degraded manifest evidence and
+// replaces the snapshot (review of Phase C, pass 5, finding 1).
+func TestScannerNoKeysMidManifestWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		root string
+	}{
+		// A root with only a directory: no manifest content fetch can mask
+		// a dropped sub-directory error.
+		{"sub-directory listing", `[{"type":"dir","name":"sub","path":"sub"}]`},
+		{"manifest content fetch", `[{"type":"file","name":"package.json","path":"package.json"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := slog.Default()
+			keys := platform.NewKeyPool([]string{"test-token"}, logger)
+			depsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"versions":[]}`)
+			}))
+			t.Cleanup(depsServer.Close)
+			ecoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `[]`)
+			}))
+			t.Cleanup(ecoServer.Close)
+			ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/repos/o/r/contents" {
+					// Every key is removed while the root listing is served.
+					keys.Reconcile(nil)
+					_, _ = io.WriteString(w, tc.root)
+					return
+				}
+				_, _ = io.WriteString(w, `[]`)
+			}))
+			t.Cleanup(ghServer.Close)
+			scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
+			scanner.GitHub = github.New(ghServer.URL, keys, logger)
+			dists, manifests, complete, err := scanner.Scan(context.Background(), 999, "o", "r", "https://github.com/o/r")
+			if !errors.Is(err, platform.ErrNoKeys) {
+				t.Fatalf("Scan = (%v, %v, complete=%v, %v), want ErrNoKeys — a walk cut short by an emptied pool is not a complete scan", dists, manifests, complete, err)
+			}
+		})
+	}
+}

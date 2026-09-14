@@ -41,6 +41,11 @@ var gitLabConstantUses = map[string]int{
 	"internal/db/gitlab_instances.go":      5,
 	// Permanent: gl_id is written only for instance 2.
 	"internal/db/postgres.go": 1,
+	// Permanent (v0.30.0 Phase C): before any serve report names the main
+	// instance, the admin key list treats instance 2 as main (its registry
+	// row is stamped from the main instance's web URL), and only platform-2
+	// rows appear in the misrouted list it counts.
+	"internal/api/api_keys.go": 2,
 	// Permanent: enrichment falls back to the historical instance only
 	// (thin logins carry no instance), and only platform 2 rows appear in the
 	// misrouted list the fix hint points at.

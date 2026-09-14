@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/forgekeys"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/platform/github"
@@ -18,45 +18,54 @@ import (
 )
 
 // forgeClients is what a collecting command needs to reach the forges: the
-// GitHub client and key pool, and the per-instance GitLab router.
+// GitHub client and key pool, the per-instance GitLab router, and — for a
+// process that reloads keys live (serve; v0.30.0 Phase C) — the loader, the
+// effective instances and what startup refused, so forgekeys.Maintainer
+// continues from exactly the startup resolution.
 type forgeClients struct {
 	gh     *github.Client
 	ghKeys *platform.KeyPool
 	gl     *gitlab.Instances
+
+	loader           *forgekeys.Loader
+	instances        []config.GitLabInstance
+	startupNotLoaded []forgekeys.NotLoaded
 }
 
 // buildForgeClients is the one place forge API clients and key pools are
 // built for collecting commands (serve, collect, add-repo,
 // backfill-repo-metadata, heal-collection-gaps). v0.30.0 (multi-instance
-// GitLab): each configured GitLab instance gets its OWN key pool — from its
+// GitLab): each registered GitLab instance gets its OWN key pool — from its
 // config entry and the stored keys tagged with its web URL
-// (partitionGitLabTokens) — and its own client on its own API URL. register
-// syncs the platforms registry first (serve and migrate only); every other
-// caller reads it, and a configured instance that is not registered yet is
-// left out with a WARN (its repositories take the not-configured path).
+// (forgekeys.PartitionGitLabTokens) — and its own client on its own API URL.
+// Phase C: every registered instance gets a pool and a client even with no
+// keys, so a key added at runtime can make it collectable; the router's
+// KeyedClient gate keeps a keyless instance off the API. register syncs the
+// platforms registry first (serve and migrate only); every other caller
+// reads it, and a configured instance that is not registered yet is left out
+// with a WARN (its repositories take the not-configured path).
 func buildForgeClients(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys, register bool, logger *slog.Logger) (*forgeClients, error) {
 	instances, err := cfg.GitLab.EffectiveInstances()
 	if err != nil {
 		return nil, fmt.Errorf("gitlab config: %w", err)
 	}
 
-	ghKeys, ghCount := loadGitHubKeyPool(ctx, cfg, store, useAugurKeys, logger)
+	loader := forgekeys.NewLoader(store.Pool(), useAugurKeys, logger)
+	ghKeys, ghCount := loadGitHubKeyPool(ctx, cfg, loader, logger)
 
-	stored, err := db.LoadAPIKeysByInstance(ctx, store.Pool(), "gitlab", useAugurKeys)
+	stored, err := loader.Load(ctx, "gitlab")
 	if err != nil {
 		// Same degradation as the GitHub loader: config keys still load,
 		// the failure is an ERROR, never a silent empty set.
 		logger.Error("failed to load GitLab API keys from database — only config keys are used", "error", err)
-		stored = nil
+		stored = forgekeys.Stored{}
 	}
-	pools, orphans, err := partitionGitLabTokens(instances, stored)
+	pools, part, err := forgekeys.PartitionGitLabTokens(instances, stored)
 	if err != nil {
 		return nil, err
 	}
-	for tag, n := range orphans {
-		logger.Warn("stored GitLab keys name an instance that is not configured — not loaded",
-			"instance_url", tag, "keys", n, "fix", "add the instance to gitlab.instances, or re-add the keys with add-key --instance")
-	}
+	forgekeys.LogOrphans(logger, part.Orphans)
+	forgekeys.LogConflicts(logger, part.NotLoaded)
 
 	var ids map[string]model.Platform
 	if register {
@@ -78,7 +87,7 @@ func buildForgeClients(ctx context.Context, cfg *config.Config, store *db.Postgr
 	// GitLab does not have in that shape (2026-09-12 admission review).
 	const glPerKey = 0
 	glCount := 0
-	var list []*gitlab.Instance
+	var list []*gitlab.InstanceSpec
 	for _, in := range instances {
 		id, ok := ids[in.WebBase]
 		if !ok {
@@ -86,26 +95,22 @@ func buildForgeClients(ctx context.Context, cfg *config.Config, store *db.Postgr
 				"web_url", in.WebBase, "api_url", in.APIURL)
 			continue
 		}
-		entry := &gitlab.Instance{ID: id, WebBase: in.WebBase, APIURL: in.APIURL, Primary: in.Primary}
-		toks := pools[in.WebBase]
-		if len(toks) > 0 {
-			// The pool and the API URL come from the same instance (in):
-			// TestKeyedClientBaseURLAllowlist accepts exactly this shape.
-			pool := platform.NewKeyPool(pools[in.WebBase], logger)
-			pool.SetAdmission(maxInflight, glPerKey, reservePct)
-			client, err := gitlab.New(id, in.WebBase, in.APIURL, pool, logger)
-			if err != nil {
-				return nil, err
-			}
-			entry.Client = client
-			glCount += len(toks)
+		// The pool and the API URL come from the same instance (in):
+		// TestKeyedClientBaseURLAllowlist accepts exactly this shape.
+		pool := platform.NewKeyPool(pools[in.WebBase], logger)
+		pool.SetAdmission(maxInflight, glPerKey, reservePct)
+		client, err := gitlab.New(id, in.WebBase, in.APIURL, pool, logger)
+		if err != nil {
+			return nil, err
 		}
-		list = append(list, entry)
+		toks := len(pools[in.WebBase])
+		glCount += toks
+		list = append(list, &gitlab.InstanceSpec{ID: id, WebBase: in.WebBase, APIURL: in.APIURL, Primary: in.Primary, Client: client})
 		logger.Info("GitLab instance",
-			"platform_id", id, "web_url", in.WebBase, "api_url", in.APIURL, "keys", len(toks),
+			"platform_id", id, "web_url", in.WebBase, "api_url", in.APIURL, "keys", toks,
 			"main", in.Primary, "max_inflight", maxInflight, "max_inflight_per_key", glPerKey,
 			"foreground_reserve_pct", reservePct)
-		if len(toks) == 0 {
+		if toks == 0 {
 			logger.Warn("GitLab instance has no API keys — its repositories are collected git-only and each job records why",
 				"web_url", in.WebBase, "platform_id", id)
 		}
@@ -118,81 +123,48 @@ func buildForgeClients(ctx context.Context, cfg *config.Config, store *db.Postgr
 		return nil, fmt.Errorf("no API keys configured for any platform — add keys via 'aveloxis add-key <token> --platform github' or store them in the database. Collection is impossible without API keys")
 	}
 	return &forgeClients{
-		gh:     github.New(cfg.GitHub.BaseURL, ghKeys, logger),
-		ghKeys: ghKeys,
-		gl:     router,
+		gh:               github.New(cfg.GitHub.BaseURL, ghKeys, logger),
+		ghKeys:           ghKeys,
+		gl:               router,
+		loader:           loader,
+		instances:        instances,
+		startupNotLoaded: part.NotLoaded,
 	}, nil
 }
 
-// partitionGitLabTokens assigns every GitLab token to exactly one instance.
-// An instance's pool is its config keys, then the stored keys tagged with
-// its web base (tags compare after model.NormalizeInstanceWebBase), and for
-// the main instance also the untagged stored keys (""). A tag no instance
-// has is an orphan and is never loaded. A token found under two instances
-// is an error naming both: loading it into either pool would send one
-// instance's credential to the other. A token repeated within one instance
-// is kept once. Every configured instance has an entry, empty when it has
-// no keys.
-func partitionGitLabTokens(instances []config.GitLabInstance, stored map[string][]string) (pools map[string][]string, orphans map[string]int, err error) {
-	pools = make(map[string][]string, len(instances))
-	orphans = map[string]int{}
-	owner := map[string]string{} // token → web base
-	add := func(base, tok string) error {
-		if tok == "" {
-			return nil
-		}
-		if prev, ok := owner[tok]; ok {
-			if prev != base {
-				return fmt.Errorf("a GitLab API key is configured for two instances (%s and %s) — a key belongs to the one instance that issued it; remove it from one of them", prev, base)
-			}
-			return nil
-		}
-		owner[tok] = base
-		pools[base] = append(pools[base], tok)
-		return nil
-	}
-
-	for _, in := range instances {
-		pools[in.WebBase] = nil
-		for _, tok := range in.APIKeys {
-			if err := add(in.WebBase, tok); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-
-	tags := make([]string, 0, len(stored))
-	for tag := range stored {
-		tags = append(tags, tag)
-	}
-	sort.Strings(tags) // deterministic pool order and error text
-	for _, tag := range tags {
-		base, ok := instanceForKeyTag(instances, tag)
-		if !ok {
-			orphans[tag] += len(stored[tag])
-			continue
-		}
-		for _, tok := range stored[tag] {
-			if err := add(base, tok); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-	return pools, orphans, nil
+// keyMaintainer returns serve's live key reload (v0.30.0 Phase C): the same
+// loader, config tokens and instances startup resolved with, the pools it
+// built, and this process's report identity.
+func (c *forgeClients) keyMaintainer(cfg *config.Config, store *db.PostgresStore, logger *slog.Logger) *forgekeys.Maintainer {
+	return forgekeys.NewMaintainer(forgekeys.MaintainerConfig{
+		GitHubConfigTokens: cfg.GitHub.APIKeys,
+		GitHubAPIURL:       cfg.GitHub.BaseURL,
+		GitHub:             c.ghKeys,
+		Instances:          c.instances,
+		GitLab:             c.gl,
+		Loader:             c.loader,
+		Reports:            store,
+		Reporter:           forgekeys.ReporterID("serve"),
+		StartupNotLoaded:   c.startupNotLoaded,
+		Logger:             logger,
+	})
 }
 
 // loadGitHubKeyPool builds the GitHub key pool: config keys plus stored keys
-// (aveloxis_ops first, Augur's with useAugurKeys), with the 2026-09-12
-// admission settings. The effective admission values are logged at the point
-// of use (SR-10). It returns the pool (possibly empty) and its size.
-func loadGitHubKeyPool(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys bool, logger *slog.Logger) (*platform.KeyPool, int) {
-	tokens := append([]string(nil), cfg.GitHub.APIKeys...)
-	if dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys); err != nil {
-		logger.Error("failed to load GitHub API keys from database", "error", err)
-	} else if len(dbGH) > 0 {
-		logger.Info("loaded GitHub keys from database", "count", len(dbGH))
-		tokens = append(tokens, dbGH...)
+// (aveloxis_ops, and Augur's when loader decided to fall back), each token
+// once (forgekeys.GitHubKeys), with the 2026-09-12 admission settings. The
+// effective admission values are logged at the point of use (SR-10). A read
+// error loads config keys only, at ERROR. It returns the pool (possibly
+// empty) and its size.
+func loadGitHubKeyPool(ctx context.Context, cfg *config.Config, loader *forgekeys.Loader, logger *slog.Logger) (*platform.KeyPool, int) {
+	stored, err := loader.Load(ctx, "github")
+	if err != nil {
+		logger.Error("failed to load GitHub API keys from database — only config keys are used", "error", err)
+		stored = forgekeys.Stored{}
+	} else if n := len(stored.Database) + len(stored.Augur); n > 0 {
+		logger.Info("loaded GitHub keys from database", "count", n, "augur", len(stored.Augur))
 	}
+	tokens := forgekeys.Tokens(forgekeys.GitHubKeys(cfg.GitHub.APIKeys, stored))
 	if len(tokens) == 0 {
 		logger.Warn("no GitHub API keys configured — GitHub repos will not be collected")
 	}
@@ -212,7 +184,7 @@ func loadGitHubKeyPool(ctx context.Context, cfg *config.Config, store *db.Postgr
 // scans). It errors when no GitHub key is configured, returning the empty
 // pool anyway so a caller that tolerates that still has one.
 func loadGitHubKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, useAugurKeys bool, logger *slog.Logger) (*platform.KeyPool, error) {
-	pool, n := loadGitHubKeyPool(ctx, cfg, store, useAugurKeys, logger)
+	pool, n := loadGitHubKeyPool(ctx, cfg, forgekeys.NewLoader(store.Pool(), useAugurKeys, logger), logger)
 	if n == 0 {
 		return pool, fmt.Errorf("no GitHub API keys configured — add keys via 'aveloxis add-key <token> --platform github'")
 	}
@@ -264,31 +236,4 @@ func configuredGitLabWebBases(cfg *config.Config) []string {
 		bases = append(bases, in.WebBase)
 	}
 	return bases
-}
-
-// instanceForKeyTag is the ONE mapping from a stored key's instance tag to the
-// configured instance it loads into (SR-17; partitionGitLabTokens and
-// add-key's move check both use it): "" is the main instance; any other tag
-// is normalized and compared scheme-less, so a key stored for http://host
-// belongs to the instance now configured as https://host. ok is false for a
-// tag no configured instance has.
-func instanceForKeyTag(instances []config.GitLabInstance, tag string) (webBase string, ok bool) {
-	if tag == "" {
-		for _, in := range instances {
-			if in.Primary {
-				return in.WebBase, true
-			}
-		}
-		return "", false
-	}
-	nb, err := model.NormalizeInstanceWebBase(tag)
-	if err != nil {
-		return "", false
-	}
-	for _, in := range instances {
-		if model.SchemelessWebBase(in.WebBase) == model.SchemelessWebBase(nb) {
-			return in.WebBase, true
-		}
-	}
-	return "", false
 }

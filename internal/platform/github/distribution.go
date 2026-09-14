@@ -363,6 +363,12 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 
 	for _, dir := range firstLevelDirs {
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
+		if errors.Is(err, platform.ErrNoKeys) {
+			// v0.30.0 Phase C: the pool was emptied mid-walk. The walk did
+			// not happen — a partial manifest list must not read as the
+			// repo's complete answer.
+			return nil, fmt.Errorf("list %s contents for %s/%s: %w", dir, owner, repo, err)
+		}
 		if err != nil {
 			if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
 				continue

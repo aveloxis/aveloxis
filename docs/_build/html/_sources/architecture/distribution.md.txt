@@ -20,7 +20,7 @@ This is **distinct** from the existing dependency-tracking subsystem (`aveloxis_
 
 The work is independent of every other per-repo phase:
 
-- Doesn't need API tokens for the main scope. deps.dev is unauthenticated; ecosyste.ms supports an optional polite-pool email; GitHub Packages reuses the existing GitHub keys but the per-scan call count is small.
+- deps.dev is unauthenticated and ecosyste.ms supports an optional polite-pool email. The three GitHub sources (release assets, GitHub Packages, root manifests) reuse the existing GitHub keys; the per-scan call count is small. The worker pauses entirely while the GitHub key pool has no key (v0.30.0): completing a scan without GitHub would replace the snapshot and rotate GitHub-sourced evidence to history.
 - Doesn't need a git clone. The Contents API delivers manifest files inline.
 - Doesn't need facade. Repo statistics don't influence the result.
 - Has its own cadence (180 days default) that's much longer than main collection's. Package-distribution mappings change rarely: a repo published as `pypi/foo` today is overwhelmingly likely still published as `pypi/foo` in six months.
@@ -204,7 +204,7 @@ This was added because the pre-v0.25.0 behavior would stamp `last_run = NOW()` o
         │dispatcher │──jobs chan─▶│ runner  │
         │(30s pace) │             │  pool   │
         │           │             │ (N=4)   │
-        │ Healthy() │             └─────────┘
+        │ Unhealthy │             └─────────┘
         │  pause?   │                  │
         └───────────┘                  ▼
               ▲                  CompositeScanner
@@ -214,17 +214,18 @@ This was added because the pre-v0.25.0 behavior would stamp `last_run = NOW()` o
               │        deps.dev  ecosyste.ms   GitHub releases  Contents walk
               │            │           │             │               │
               └────────────┴───────────┴─────────────┴───────────────┘
-                                  Healthy() consulted on each tick
+                                  UnhealthyReason() read on each tick
 ```
 
 ### 6.2 The lifecycle of a single scan
 
-1. **Dispatcher tick**: every `distribution_tracking_start_interval_s` (default 30s) the dispatcher checks `scanner.Healthy()`. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls `ClaimNextDistributionRepo`.
+1. **Dispatcher tick**: every `distribution_tracking_start_interval_s` (default 30s) the dispatcher checks the scanner's health (`UnhealthyReason`, from which `Healthy()` is derived). If unhealthy — the ecosyste.ms circuit breaker is open (v0.25.0), or the GitHub key pool has no key — none configured, or all removed at runtime (v0.30.0) — the dispatcher logs the reason once, sleeps 60s and re-checks; otherwise it calls `ClaimNextDistributionRepo`. A scan already running when the pool empties — during any GitHub source, including the manifest walk — returns `ErrNoKeys`, and its claim is released with no strike and no snapshot replace. The pause WARN names its reason and is logged again when the reason changes.
 2. **Claim**: SQL acquires the row lock with `FOR UPDATE SKIP LOCKED` and returns a `DistributionJob` carrying the open transaction. Worker death rolls back; row becomes immediately re-claimable.
 3. **Scanner runs**: the CompositeScanner consults all five sources sequentially. Per-source errors are tracked (v0.25.0 per-source-class accounting); the scanner returns a partial result if any sources succeeded.
 4. **Mark complete or record failure**:
    - All sources succeeded OR at least one returned clean data → `MarkDistributionComplete` rotates rows to history, inserts the fresh observations, stamps `scan_complete = TRUE` (or `FALSE` if any source was incomplete), commits.
    - Every enabled source errored AND zero data collected → `RecordDistributionFailure` increments the failure counter, stamps `last_failed_at = NOW()`, commits. On the 10th consecutive failure, also stamps `last_run = NOW()` so the cadence gate sidelines the row.
+   - A GitHub source had no API key (`ErrNoKeys`, v0.30.0 — checked before both arms above, even when other sources returned clean data) or the process is shutting down → `ReleaseDistributionClaim`: no strike, no snapshot replace, no cadence stamp.
 
 ### 6.3 Per-call vs source-level circuit breakers (v0.25.0)
 
@@ -232,7 +233,7 @@ The ecosyste.ms client carries a source-level circuit breaker:
 
 - After `CircuitBreakerThreshold = 10` consecutive transient failures (5xx, transport errors), trips and stays open for `CircuitBreakerPause = 1 hour`.
 - While open, `LookupPackages` short-circuits with `(nil, ErrCircuitOpen)`. The scanner treats this like a 404-class miss for that source — does NOT increment the all-sources-failed counter, just propagates as "ecosyste.ms had nothing to say".
-- `IsCircuitOpen()` exposes the state read-only for the dispatcher's `Healthy()` check.
+- `IsCircuitOpen()` exposes the state read-only for the dispatcher's health check (`CompositeScanner.UnhealthyReason()`).
 
 Per-call short-circuit alone wasn't enough. Under v0.24.x semantics, an outage would let ~480 repos/hour get stamped with permanent "complete scan" cadence locks for the full 180-day window, having seen no ecosyste.ms data. The v0.25.0 dispatcher pause + `distribution_scan_complete` column fix both halves of the problem:
 

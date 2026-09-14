@@ -131,6 +131,15 @@ type ClassifiedError interface {
 // callers stop retrying — no amount of backoff repairs a bad credential.
 var ErrAllKeysInvalidated = errors.New("all API keys invalidated")
 
+// ErrNoKeys is returned by KeyPool.Acquire when the pool has no active key:
+// created empty, or every key removed by a live reload (v0.30.0 Phase C).
+// It stays ClassFatal (the default arm) on purpose: ClassTransient would
+// send GraphQL batch callers into subdivision and REST-fallback cascades
+// against a pool that cannot serve any of them, and ClassAuth aborts every
+// in-flight job; the job that cannot proceed fails and is retried on its
+// next cycle, after keys are added.
+var ErrNoKeys = errors.New("no API keys configured")
+
 // ErrWrongEntityKind is returned when the API responds with the right
 // status code (200 OK) but the wrong shape — specifically, when
 // FetchIssueByNumber receives a 200 for a number that turns out to be a

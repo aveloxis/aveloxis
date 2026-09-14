@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#gitlab">GitLab</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#collection">Collection</a><ul>
@@ -592,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -665,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1570,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -1983,6 +1986,30 @@ startup, and are never reused.</p>
 <code class="docutils literal notranslate"><span class="pre">https://</span></code> of one URL count as the same), two instances’ API URLs are on the
 same host (a key is kept to its API’s host, so instances need distinct API
 hosts), an extra instance has no <code class="docutils literal notranslate"><span class="pre">web_url</span></code>, or a <code class="docutils literal notranslate"><span class="pre">web_url</span></code> is an API URL.</p>
+</section>
+<section id="managing-keys-while-aveloxis-runs">
+<h4>Managing keys while aveloxis runs<a class="headerlink" href="#managing-keys-while-aveloxis-runs" title="Link to this heading"></a></h4>
+<p>A running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> reloads <strong>stored</strong> keys once a minute (v0.30.0).
+Adding and removing keys therefore needs no restart, whether you use
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span></code> or the <strong>API keys</strong> admin page in the web GUI.</p>
+<ul class="simple">
+<li><p><strong>One page for every forge.</strong> The page shows GitHub and every GitLab
+instance. It lists each key by a mask and a <code class="docutils literal notranslate"><span class="pre">key_id</span></code>, never the token, with
+its health as the running processes report it: ok, budget spent, resting on
+a rate limit, quarantined after repeated 401s, or invalid.</p></li>
+<li><p><strong>Adding a key.</strong> An added key is loaded within a minute, into its own
+instance’s pool only.</p></li>
+<li><p><strong>Removing a key.</strong> A removed key is handed out no more; requests already in
+flight finish. A token lent to a running <code class="docutils literal notranslate"><span class="pre">scorecard</span></code> subprocess stays in use
+until that subprocess exits.</p></li>
+<li><p><strong>Keys in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code></strong> are shown read-only. The file is read at
+startup, so a config change still needs a restart. A stored key whose token
+is another instance’s config key is not loaded; config wins.</p></li>
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">web</span></code> process</strong> reloads its GitHub keys before each organization scan.</p></li>
+<li><p><strong>Adding a GitLab instance</strong> still means editing <code class="docutils literal notranslate"><span class="pre">gitlab.instances</span></code>, running
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>, and restarting <code class="docutils literal notranslate"><span class="pre">serve</span></code>. The new instance then appears on
+the page and takes keys there.</p></li>
+</ul>
 </section>
 </section>
 <section id="collection">

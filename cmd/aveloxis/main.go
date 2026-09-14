@@ -30,6 +30,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/forgekeys"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/monitor"
@@ -227,6 +228,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 		// (v0.27.12 operator vulnerability digest).
 		Mail: &cfg.Mail,
 	})
+	// v0.30.0 Phase C: live API-key reload + key report (the API keys admin
+	// page). Must be injected BEFORE Run starts.
+	sched.SetKeyMaintainer(clients.keyMaintainer(cfg, store, logger))
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
 	if cfg.Mail.OperatorEmail != "" {
@@ -949,7 +953,7 @@ func runAddKey(cfgPath, token, plat, name, instance string) error {
 	}
 
 	if plat == "github" {
-		logger.Info("key stored", "platform", plat, "token", maskToken(token))
+		logger.Info("key stored", "platform", plat, "token", platform.MaskToken(token), "key_id", platform.KeyID(token))
 		return nil
 	}
 	// A move is a change of the instance the key LOADS into — not a
@@ -959,14 +963,14 @@ func runAddKey(cfgPath, token, plat, name, instance string) error {
 		if from == "" {
 			from = "the main instance"
 		}
-		logger.Warn("key moved to another GitLab instance", "token", maskToken(token), "from_instance", from, "to_instance", target.webBase)
+		logger.Warn("key moved to another GitLab instance", "token", platform.MaskToken(token), "from_instance", from, "to_instance", target.webBase)
 	}
 	if !target.configured {
 		logger.Warn("key stored for a GitLab instance that is not configured — it will not load until gitlab.instances names this web_url",
-			"token", maskToken(token), "instance", target.webBase)
+			"token", platform.MaskToken(token), "instance", target.webBase)
 		return nil
 	}
-	logger.Info("key stored", "platform", plat, "token", maskToken(token),
+	logger.Info("key stored", "platform", plat, "token", platform.MaskToken(token),
 		"instance", target.webBase, "sent_only_to_api_url", target.apiURL)
 	return nil
 }
@@ -981,13 +985,13 @@ type keyInstance struct {
 }
 
 // resolvesTo is the configured instance a stored tag loads into, exactly as
-// partitionGitLabTokens decides it (instanceForKeyTag). A tag no configured
+// forgekeys.PartitionGitLabTokens decides it (forgekeys.InstanceForTag). A tag no configured
 // instance has resolves to "orphan:" + its normalized scheme-less web base; a
 // tag that does not normalize (it never loads) resolves to "invalid:" + the
 // tag verbatim. Neither prefix can equal a configured web base, which always
 // has a scheme.
 func (k keyInstance) resolvesTo(tag string) string {
-	if base, ok := instanceForKeyTag(k.instances, tag); ok {
+	if base, ok := forgekeys.InstanceForTag(k.instances, tag); ok {
 		return base
 	}
 	// Unconfigured: compared the way it would load once configured
@@ -1034,15 +1038,6 @@ func resolveKeyInstance(cfg *config.Config, plat, instance string) (keyInstance,
 		}
 	}
 	return keyInstance{tag: base, webBase: base, instances: instances}, nil
-}
-
-// maskToken shows a token's first and last four characters, or nothing for
-// a token too short to mask without revealing it.
-func maskToken(token string) string {
-	if len(token) < 12 {
-		return "(hidden)"
-	}
-	return token[:4] + "..." + token[len(token)-4:]
 }
 
 func runImportKeysFromAugur(cfgPath string) error {
@@ -1465,12 +1460,19 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 
 			// Load GitHub keys for immediate org scanning (non-fatal for web — it
 			// can still serve the GUI without keys, just can't scan orgs).
-			ghKeys, _ := loadGitHubKeys(ctx, cfg, store, false, logger)
+			keyLoader := forgekeys.NewLoader(store.Pool(), false, logger)
+			ghKeys, _ := loadGitHubKeyPool(ctx, cfg, keyLoader, logger)
 
 			warnAPIPortMismatch(cfg, logger)
 
+			// v0.30.0 Phase C: an org scan first reconciles web's GitHub pool
+			// with the stored keys, so a key removed on the API keys admin
+			// page stops being used here too.
 			webServer := web.New(store, cfg.Web, ghKeys, logger).
-				WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
+				WithMailer(mailer.New(mailerConfigFrom(cfg), logger)).
+				WithKeyReload(forgekeys.NewMaintainer(forgekeys.MaintainerConfig{
+					GitHubConfigTokens: cfg.GitHub.APIKeys, GitHub: ghKeys, Loader: keyLoader, Logger: logger,
+				}).Reload)
 			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
 
 			go func() {

@@ -106,7 +106,9 @@ func TestNewRefusesAnInvalidInstance(t *testing.T) {
 		{"generic git id", model.PlatformGenericGit, "https://gitlab.example.invalid", "https://gitlab.example.invalid/api/v4", keys},
 		{"id past the range", model.GitLabInstanceIDMax + 1, "https://gitlab.example.invalid", "https://gitlab.example.invalid/api/v4", keys},
 		{"nil pool", selfHostedID, "https://gitlab.example.invalid", "https://gitlab.example.invalid/api/v4", nil},
-		{"empty pool", selfHostedID, "https://gitlab.example.invalid", "https://gitlab.example.invalid/api/v4", platform.NewKeyPool(nil, logger)},
+		// An EMPTY pool is accepted since v0.30.0 Phase C (live key reload):
+		// the router's KeyedClient gate keeps a keyless instance off the API
+		// (TestNewAcceptsEmptyPoolRefusesNil).
 		{"web base that is an API URL", selfHostedID, "https://gitlab.example.invalid/api/v4", "https://gitlab.example.invalid/api/v4", keys},
 		{"no API URL", selfHostedID, "https://gitlab.example.invalid", "", keys},
 	}

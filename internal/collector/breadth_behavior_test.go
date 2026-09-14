@@ -12,6 +12,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -249,5 +250,59 @@ func TestBreadth404sDoNotTripBreaker(t *testing.T) {
 	}
 	if result.CircuitBreakerTripped {
 		t.Fatal("404s are per-contributor conditions and must NOT trip the breaker")
+	}
+}
+
+// v0.30.0 Phase C: the pool can be emptied mid-run (every key removed on
+// the API keys page). A contributor whose fetch failed for want of a key
+// was not attempted: Run aborts, marks nothing, and reports the error
+// (review of Phase C, pass 3, finding 4 — the arm's terminator, not just
+// its presence).
+func TestBreadthAbortsWithoutMarkingOnNoKeys(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := &fakeBreadthStore{contributors: []db.BreadthContributor{
+		{ID: "c1", Login: "alice"}, {ID: "c2", Login: "bob"}, {ID: "c3", Login: "carol"},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request can be made without a key")
+	}))
+	t.Cleanup(server.Close)
+	worker := NewBreadthWorkerWithHTTP(store, platform.NewHTTPClient(server.URL, platform.NewKeyPool(nil, logger), logger, platform.AuthGitHub), logger)
+	_, err := worker.Run(context.Background(), 10, time.Hour)
+	if !errors.Is(err, platform.ErrNoKeys) {
+		t.Fatalf("Run with an empty pool = %v, want ErrNoKeys", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.attempted) != 0 {
+		t.Fatalf("contributors %v were marked attempted though nothing was fetched", store.attempted)
+	}
+}
+
+// The rename-recovery lookup (/user/{id} after an events 404) can hit an
+// emptied pool too: that contributor was not attempted, so the ErrNoKeys
+// must surface — not the original 404, which marks the contributor
+// attempted (review of Phase C, pass 7, finding 3).
+func TestBreadthRenameLookupNoKeysLeavesContributorUnmarked(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	keys := platform.NewKeyPool([]string{"tok"}, logger)
+	store := &fakeBreadthStore{contributors: []db.BreadthContributor{{ID: "c1", Login: "renamed-away", GHUserID: 42}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The events call 404s (the login is gone) and, while it is
+		// served, every key is removed — the /user/{id} lookup that
+		// follows finds an empty pool.
+		keys.Reconcile(nil)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	worker := NewBreadthWorkerWithHTTP(store, platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitHub), logger)
+	_, err := worker.Run(context.Background(), 10, time.Hour)
+	if !errors.Is(err, platform.ErrNoKeys) {
+		t.Fatalf("Run = %v, want ErrNoKeys from the rename lookup", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.attempted) != 0 {
+		t.Fatalf("contributor %v marked attempted though its rename lookup never ran", store.attempted)
 	}
 }

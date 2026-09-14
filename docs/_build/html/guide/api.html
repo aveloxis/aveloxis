@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -2842,7 +2849,7 @@ POST above with <code class="docutils literal notranslate"><span class="pre">kin
 visits the org. Ownership-checked for non-admins (403 otherwise).</p></li>
 </ul>
 <p>Admin-only:</p>
-<ul class="simple">
+<ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/users</span></code> —
 <code class="docutils literal notranslate"><span class="pre">{users:</span> <span class="pre">[{user_id,</span> <span class="pre">login,</span> <span class="pre">email,</span> <span class="pre">provider,</span> <span class="pre">is_admin,</span> <span class="pre">created_at,</span> <span class="pre">last_seen}]}</span></code>. Since v0.27.89 <code class="docutils literal notranslate"><span class="pre">created_at</span></code> is the REAL join date
 (INSERT-only <code class="docutils literal notranslate"><span class="pre">users.created_at</span></code>) and <code class="docutils literal notranslate"><span class="pre">last_seen</span></code> is
@@ -2854,6 +2861,63 @@ and diverge from the next login onward.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/admin</span></code> with
 <code class="docutils literal notranslate"><span class="pre">{&quot;admin&quot;:</span> <span class="pre">true|false}</span></code> — promote/demote. Self-demotion is refused
 (last-admin guard).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/api-keys</span></code> (v0.30.0) — every forge API key on
+one page: GitHub and each GitLab instance. Tokens are never returned.
+The envelope is
+<code class="docutils literal notranslate"><span class="pre">{interval_seconds,</span> <span class="pre">stale_after_seconds,</span> <span class="pre">reporters,</span> <span class="pre">forges,</span> <span class="pre">orphaned,</span> <span class="pre">unregistered}</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">reporters</span></code> lists each <code class="docutils literal notranslate"><span class="pre">serve</span></code> process’s latest key report
+(<code class="docutils literal notranslate"><span class="pre">reporter</span></code>, <code class="docutils literal notranslate"><span class="pre">reported_at</span></code>, <code class="docutils literal notranslate"><span class="pre">age_seconds</span></code>, <code class="docutils literal notranslate"><span class="pre">stale</span></code>). A report older
+than three reload intervals is stale and is not merged.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">forges</span></code> has one entry per forge, in <code class="docutils literal notranslate"><span class="pre">platform_id</span></code> order:
+<code class="docutils literal notranslate"><span class="pre">{platform,</span> <span class="pre">platform_id,</span> <span class="pre">web_url,</span> <span class="pre">api_url,</span> <span class="pre">main,</span> <span class="pre">registered,</span> <span class="pre">reported,</span> <span class="pre">active_keys,</span> <span class="pre">repo_count,</span> <span class="pre">misrouted_count,</span> <span class="pre">health,</span> <span class="pre">keys}</span></code>.
+<code class="docutils literal notranslate"><span class="pre">health</span></code> counts keys by health.</p></li>
+<li><p>Each key is <code class="docutils literal notranslate"><span class="pre">{oauth_id,</span> <span class="pre">name,</span> <span class="pre">source,</span> <span class="pre">key_id,</span> <span class="pre">masked,</span> <span class="pre">instance_url,</span> <span class="pre">created_at,</span> <span class="pre">removable,</span> <span class="pre">status,</span> <span class="pre">health,</span> <span class="pre">reason,</span> <span class="pre">detail,</span> <span class="pre">loaded_by}</span></code>.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">source</span></code> is <code class="docutils literal notranslate"><span class="pre">database</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> or <code class="docutils literal notranslate"><span class="pre">augur</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> is <code class="docutils literal notranslate"><span class="pre">loaded</span></code>, <code class="docutils literal notranslate"><span class="pre">draining</span></code> (removed and finishing its
+in-flight requests) or <code class="docutils literal notranslate"><span class="pre">not_loaded</span></code>.</p></li>
+<li><p>For a <code class="docutils literal notranslate"><span class="pre">not_loaded</span></code> key, <code class="docutils literal notranslate"><span class="pre">reason</span></code> is <code class="docutils literal notranslate"><span class="pre">pending</span></code> (stored after the
+latest reload), <code class="docutils literal notranslate"><span class="pre">no_reporter</span></code>, <code class="docutils literal notranslate"><span class="pre">orphan</span></code> (its instance is not
+configured) or <code class="docutils literal notranslate"><span class="pre">conflict</span></code> (the same token is another instance’s
+config key).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">health</span></code> is <code class="docutils literal notranslate"><span class="pre">ok</span></code>, <code class="docutils literal notranslate"><span class="pre">exhausted</span></code>, <code class="docutils literal notranslate"><span class="pre">resting</span></code>, <code class="docutils literal notranslate"><span class="pre">quarantined</span></code> or
+<code class="docutils literal notranslate"><span class="pre">invalid</span></code>, the worst any process reports.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">removable</span></code> is true only for stored (database) keys.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">orphaned</span></code> lists stored keys tagged for no configured instance.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unregistered</span></code> lists configured GitLab instances that still need
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/api-keys</span></code> (v0.30.0) with <code class="docutils literal notranslate"><span class="pre">{&quot;platform&quot;:</span> <span class="pre">&quot;github&quot;|&quot;gitlab&quot;,</span> <span class="pre">&quot;instance_url&quot;,</span> <span class="pre">&quot;name&quot;,</span> <span class="pre">&quot;token&quot;}</span></code> — store a key.</p>
+<ul class="simple">
+<li><p>The token goes in the JSON body only; a <code class="docutils literal notranslate"><span class="pre">token</span></code> query parameter is
+refused with 400. The body is limited to 8 KB (413 above that).</p></li>
+<li><p>A GitLab key names its instance’s web URL. The instance must be
+registered, and the key is stored under the registered spelling. A
+GitHub key takes no <code class="docutils literal notranslate"><span class="pre">instance_url</span></code>.</p></li>
+<li><p>400 for a token that is empty, longer than 512 bytes, or not
+printable ASCII, and for a token carrying the other forge’s prefix
+(<code class="docutils literal notranslate"><span class="pre">ghp_</span></code> under GitLab, <code class="docutils literal notranslate"><span class="pre">glpat-</span></code> under GitHub, and similar).</p></li>
+<li><p>409 when the token is already stored (move = remove + add) or is a
+config-file key of a running process.</p></li>
+<li><p>201 returns <code class="docutils literal notranslate"><span class="pre">{oauth_id,</span> <span class="pre">key_id,</span> <span class="pre">masked,</span> <span class="pre">platform,</span> <span class="pre">instance_url,</span> <span class="pre">api_url,</span> <span class="pre">pickup_seconds}</span></code>. Running <code class="docutils literal notranslate"><span class="pre">serve</span></code> processes load the key
+within a minute, and <code class="docutils literal notranslate"><span class="pre">web</span></code> loads it before its next org scan.</p></li>
+<li><p>Unlike <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span></code>, which moves a re-added token to the named
+instance, this endpoint never changes an existing row.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/api-keys/{oauthID}/delete</span></code> (v0.30.0) — remove a
+stored key. 404 when absent. Returns <code class="docutils literal notranslate"><span class="pre">{oauth_id,</span> <span class="pre">key_id,</span> <span class="pre">masked,</span> <span class="pre">platform,</span> <span class="pre">instance_url,</span> <span class="pre">still_loaded_from_config,</span> <span class="pre">drain_seconds}</span></code>.
+Running processes stop handing the key out within a minute, and
+requests already in flight finish.</p>
+<p>The api process stores tokens but never reads one back: its reads
+return <code class="docutils literal notranslate"><span class="pre">key_id</span></code>, a truncated domain-separated SHA-256, and a
+first4…last4 mask. It never sends a token anywhere. Serve these
+routes over HTTPS.</p>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/groups/pending</span></code> — pending groups awaiting
 approval, with requester login/email and repo/org counts.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/groups/{groupID}/{decision}</span></code> where decision is

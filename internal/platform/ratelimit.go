@@ -75,6 +75,18 @@ type APIKey struct {
 	// AllTokens bypass that handed every token to every subprocess
 	// invisibly.
 	lent int
+
+	// keyID is KeyID(Token), cached at construction: the stable, log-safe
+	// identity the reload report, the admin page and pool log lines share
+	// (v0.30.0 Phase C).
+	keyID string
+}
+
+// newAPIKey is the one constructor for a pool key — used by
+// NewKeyPoolWithBuffer and by Reconcile, so a key added at runtime starts
+// exactly like one loaded at startup.
+func newAPIKey(token string) *APIKey {
+	return &APIKey{Token: token, Remaining: 5000, GraphQLRemaining: graphQLPointsPerHour, keyID: KeyID(token)}
 }
 
 // Resource is the rate-limit bucket a request spends from. GitHub keeps
@@ -101,8 +113,14 @@ func (r Resource) String() string {
 // before collection waits. This maximizes throughput when you have dozens
 // of tokens at 400K+ repos.
 type KeyPool struct {
-	mu         sync.Mutex
-	keys       []*APIKey
+	mu   sync.Mutex
+	keys []*APIKey
+	// draining holds keys Reconcile removed while a lease or a lend was
+	// still out on them (v0.30.0 Phase C). They are outside keys, so no
+	// selection, reserve, wake or count logic can reach them; the leases
+	// and lends finish on the *APIKey pointer, and the release that brings
+	// both counts to zero prunes the key. Only Snapshot reads this list.
+	draining   []*APIKey
 	rrIndex    int // round-robin counter (core checkout)
 	rrIndexGQL int // round-robin counter (graphql checkout — separate so the two dimensions don't skew each other)
 	buffer     int // stop using a key when remaining drops to this
@@ -242,7 +260,7 @@ func NewKeyPool(tokens []string, logger *slog.Logger) *KeyPool {
 func NewKeyPoolWithBuffer(tokens []string, buffer int, logger *slog.Logger) *KeyPool {
 	keys := make([]*APIKey, len(tokens))
 	for i, t := range tokens {
-		keys[i] = &APIKey{Token: t, Remaining: 5000, GraphQLRemaining: graphQLPointsPerHour}
+		keys[i] = newAPIKey(t)
 	}
 	if buffer < 1 {
 		buffer = DefaultBuffer
@@ -318,7 +336,7 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 			return nil, nil, err
 		}
 		if len(kp.keys) == 0 {
-			return nil, nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+			return nil, nil, fmt.Errorf("%w — add keys via 'aveloxis add-key', the API keys admin page, or the database", ErrNoKeys)
 		}
 		now := time.Now()
 		kp.refillLocked(now, res)
@@ -708,6 +726,7 @@ func (kp *KeyPool) releaseFunc(key *APIKey) func() {
 			}
 			key.inflight--
 			kp.inflight--
+			kp.pruneDrainingLocked()
 			kp.cond.Broadcast()
 			kp.mu.Unlock()
 		})
@@ -744,7 +763,7 @@ func (kp *KeyPool) markSecondaryLimitedLocked(key *APIKey, retryAfter time.Durat
 	// lifetime hit count — an Info here doubled the log volume in exactly
 	// the storm this cooldown exists to end.
 	kp.logger.Debug("API key secondary-rate-limited — resting it for Retry-After",
-		"token_prefix", tokenPrefix(key.Token), "retry_after", retryAfter,
+		"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID, "retry_after", retryAfter,
 		"lifetime_hits", key.secondaryHits, "inflight_on_key", key.inflight)
 }
 
@@ -966,10 +985,10 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 	prefix := tokenPrefix(key.Token)
 	if validRemaining == 0 {
 		kp.logger.Error("LAST API key invalidated — all collection for this platform will fail",
-			"token_prefix", prefix)
+			"token_prefix", prefix, "key_id", key.keyID)
 	} else {
 		kp.logger.Warn("API key invalidated",
-			"token_prefix", prefix, "valid_keys_remaining", validRemaining)
+			"token_prefix", prefix, "key_id", key.keyID, "valid_keys_remaining", validRemaining)
 	}
 }
 
@@ -998,7 +1017,7 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	key.authStrikes++
 	if key.authStrikes < maxAuthStrikes {
 		kp.logger.Warn("API key 401 — treating as transient, key not quarantined",
-			"token_prefix", tokenPrefix(key.Token),
+			"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID,
 			"strike", key.authStrikes, "threshold", maxAuthStrikes)
 		return false
 	}
@@ -1019,12 +1038,12 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	usable := kp.usableLocked(time.Now())
 	if key.quarantineCount >= authQuarantineEscalate || usable == 0 {
 		kp.logger.Error("API key quarantined after repeated 401s — verify the token is valid",
-			"token_prefix", tokenPrefix(key.Token),
+			"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID,
 			"quarantine_count", key.quarantineCount,
 			"cooldown", cooldown, "usable_keys", usable)
 	} else {
 		kp.logger.Warn("API key quarantined after consecutive 401s (will auto-recover)",
-			"token_prefix", tokenPrefix(key.Token),
+			"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID,
 			"cooldown", cooldown, "usable_keys", usable)
 	}
 	return true
@@ -1090,14 +1109,16 @@ func tokenPrefix(t string) string {
 	return t[:min(8, len(t))] + "..."
 }
 
-// IsEmpty returns true if the pool was created with zero keys.
+// IsEmpty reports whether the pool has no active keys — created with none,
+// or every key removed by Reconcile (draining keys are not active).
 func (kp *KeyPool) IsEmpty() bool {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
 	return len(kp.keys) == 0
 }
 
-// Len returns the number of configured keys (invalid ones included).
+// Len returns the number of active keys (invalid ones included; draining
+// keys excluded).
 // Copilot round 24 (PR #193): the GraphQL retry loop bounds its
 // rate-limit KEY rotations by this so every key is considered before the
 // error escapes.
@@ -1176,23 +1197,76 @@ func (kp *KeyPool) LendTokens(n int) ([]string, func()) {
 			for _, k := range cands {
 				k.lent--
 			}
+			kp.pruneDrainingLocked()
 			kp.mu.Unlock()
 		})
 	}
 	return tokens, release
 }
 
-// KeySnapshot is one key's admission state for the operator summary.
+// KeyState says whether a key is selectable (active) or was removed by
+// Reconcile and is finishing its in-flight leases and lends (draining).
+type KeyState string
+
+const (
+	KeyActive   KeyState = "active"
+	KeyDraining KeyState = "draining"
+)
+
+// KeySnapshot is one key's admission state for the operator summary and the
+// key report (v0.30.0 Phase C). It never carries the token: KeyID is the
+// identity, Prefix the log-compatible short form.
 type KeySnapshot struct {
+	KeyID           string
 	Prefix          string
+	State           KeyState
 	Core            int
+	CoreResetAt     time.Time
 	GraphQL         int
+	GraphQLResetAt  time.Time
 	Inflight        int
 	Lent            int
 	SecondaryHits   int
 	SecondaryUntil  time.Time
 	QuarantineUntil time.Time
+	QuarantineCount int
 	Invalid         bool
+	// CoreSpendable / GraphQLSpendable: the balance is above the pool's
+	// buffer (the admission test, spendable) at snapshot time.
+	CoreSpendable    bool
+	GraphQLSpendable bool
+}
+
+// KeyHealth is a key's state for the key report and the admin page.
+type KeyHealth string
+
+const (
+	HealthOK          KeyHealth = "ok"
+	HealthExhausted   KeyHealth = "exhausted"
+	HealthResting     KeyHealth = "resting"
+	HealthQuarantined KeyHealth = "quarantined"
+	HealthInvalid     KeyHealth = "invalid"
+)
+
+// Health classifies the snapshot at now, most severe first: invalid,
+// quarantined (repeated 401s), resting (secondary-limit Retry-After),
+// exhausted (a budget at or below the buffer until a reset still ahead),
+// ok. A spent budget whose reset has passed or is unknown refills on the
+// next Acquire (refillLocked), so it is ok. graphQL says whether the GraphQL
+// budget counts — GitHub; GitLab leases core only.
+func (s KeySnapshot) Health(now time.Time, graphQL bool) KeyHealth {
+	switch {
+	case s.Invalid:
+		return HealthInvalid
+	case now.Before(s.QuarantineUntil):
+		return HealthQuarantined
+	case now.Before(s.SecondaryUntil):
+		return HealthResting
+	case !s.CoreSpendable && now.Before(s.CoreResetAt),
+		graphQL && !s.GraphQLSpendable && now.Before(s.GraphQLResetAt):
+		return HealthExhausted
+	}
+	return HealthOK
 }
 
 // Snapshot returns per-key admission state plus the pool-wide in-flight
@@ -1202,15 +1276,127 @@ type KeySnapshot struct {
 func (kp *KeyPool) Snapshot() ([]KeySnapshot, int) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
-	out := make([]KeySnapshot, 0, len(kp.keys))
-	for _, k := range kp.keys {
-		out = append(out, KeySnapshot{
-			Prefix: tokenPrefix(k.Token), Core: k.Remaining, GraphQL: k.GraphQLRemaining,
+	out := make([]KeySnapshot, 0, len(kp.keys)+len(kp.draining))
+	snap := func(k *APIKey, state KeyState) KeySnapshot {
+		return KeySnapshot{
+			KeyID: k.keyID, Prefix: tokenPrefix(k.Token), State: state,
+			Core: k.Remaining, CoreResetAt: k.ResetAt, GraphQL: k.GraphQLRemaining, GraphQLResetAt: k.GraphQLResetAt,
 			Inflight: k.inflight, Lent: k.lent, SecondaryHits: k.secondaryHits,
-			SecondaryUntil: k.secondaryUntil, QuarantineUntil: k.quarantineUntil, Invalid: k.Invalid,
-		})
+			SecondaryUntil: k.secondaryUntil, QuarantineUntil: k.quarantineUntil,
+			QuarantineCount: k.quarantineCount, Invalid: k.Invalid,
+			CoreSpendable: kp.spendable(k, ResourceCore), GraphQLSpendable: kp.spendable(k, ResourceGraphQL),
+		}
+	}
+	for _, k := range kp.keys {
+		out = append(out, snap(k, KeyActive))
+	}
+	for _, k := range kp.draining {
+		out = append(out, snap(k, KeyDraining))
 	}
 	return out, kp.inflight
+}
+
+// ReconcileResult counts what one Reconcile changed.
+type ReconcileResult struct {
+	Added    int // tokens new to the pool
+	Removed  int // active keys taken out of selection
+	Restored int // draining keys desired again, back with their state
+}
+
+// Reconcile makes the pool's active keys exactly tokens (v0.30.0 Phase C,
+// live key reload), in place, so every holder of this *KeyPool sees the
+// change. Empty and repeated tokens count once; order follows the pool's
+// current order, then tokens' order for new keys.
+//
+//   - A token new to the pool is added as a fresh key (newAPIKey — the same
+//     start as a key loaded at startup).
+//   - An active key whose token is absent is REMOVED from keys at once, so
+//     nothing selects or lends it again, and parked on draining until its
+//     in-flight leases and lends are back; with none out it is dropped now.
+//   - A draining key whose token is desired again returns with its state
+//     (budget windows, strikes, rests) rather than as a fresh key.
+//
+// A pool reconciled to no tokens fails Acquire fast with ErrNoKeys, exactly
+// like a pool created empty. Waiters are woken whenever anything changed.
+func (kp *KeyPool) Reconcile(tokens []string) ReconcileResult {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+
+	want := make(map[string]bool, len(tokens))
+	order := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if t != "" && !want[t] {
+			want[t] = true
+			order = append(order, t)
+		}
+	}
+
+	var res ReconcileResult
+	next := make([]*APIKey, 0, len(order))
+	have := make(map[string]bool, len(order))
+	for _, k := range kp.keys {
+		if want[k.Token] && !have[k.Token] {
+			have[k.Token] = true
+			next = append(next, k)
+			continue
+		}
+		kp.draining = append(kp.draining, k)
+		res.Removed++
+	}
+	for _, t := range order {
+		if have[t] {
+			continue
+		}
+		have[t] = true
+		if k := kp.takeDrainingLocked(t); k != nil {
+			next = append(next, k)
+			res.Restored++
+			continue
+		}
+		next = append(next, newAPIKey(t))
+		res.Added++
+	}
+	kp.keys = next
+	kp.pruneDrainingLocked()
+	if n := len(kp.keys); n == 0 {
+		kp.rrIndex, kp.rrIndexGQL = 0, 0
+	} else {
+		kp.rrIndex %= n
+		kp.rrIndexGQL %= n
+	}
+	if res != (ReconcileResult{}) {
+		kp.cond.Broadcast()
+	}
+	return res
+}
+
+// takeDrainingLocked removes and returns the draining key for token, or nil.
+func (kp *KeyPool) takeDrainingLocked(token string) *APIKey {
+	for i, k := range kp.draining {
+		if k.Token == token {
+			kp.draining = append(kp.draining[:i], kp.draining[i+1:]...)
+			return k
+		}
+	}
+	return nil
+}
+
+// pruneDrainingLocked drops draining keys with no lease and no lend out.
+// Caller holds kp.mu.
+func (kp *KeyPool) pruneDrainingLocked() {
+	if len(kp.draining) == 0 {
+		return
+	}
+	kept := kp.draining[:0]
+	for _, k := range kp.draining {
+		if k.inflight > 0 || k.lent > 0 {
+			kept = append(kept, k)
+		}
+	}
+	for i := len(kept); i < len(kp.draining); i++ {
+		kp.draining[i] = nil
+	}
+	kp.draining = kept
 }
 
 // TotalRemaining returns the sum of remaining requests across all alive keys.

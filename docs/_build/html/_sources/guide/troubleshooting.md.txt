@@ -193,6 +193,27 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 
 ---
 
+## A key added on the API keys page is "not picked up yet" or "not loaded"
+
+Running `serve` processes reload stored keys once a minute and save a report
+that the API keys admin page reads (`aveloxis_ops.forge_key_reports`). A key
+the page lists as not loaded carries one of these reasons:
+
+- **not picked up yet** — the key was stored after the latest reload. Wait a
+  minute and refresh.
+- **no serve reporting** — no `serve` process has reported in the last three
+  minutes. Start `serve`, or check its log for `API key reload failed` or
+  `API key report not saved`. A failed reload leaves every pool exactly as it
+  was.
+- **site not configured** — the key is tagged for a GitLab web URL that no
+  entry in `gitlab.instances` has. Add the instance and run `aveloxis migrate`,
+  or remove the key and add it again for a configured instance.
+- **conflicts with a config key** — the same token is in `aveloxis.json` for
+  another instance. A key belongs to one instance, and config wins; remove the
+  stored copy.
+
+---
+
 ## "Commit resolution FAILED"
 
 **Symptom:** Log shows `level=ERROR msg="commit resolution FAILED (no API keys available — most commits unresolved)"` with a large `key_exhausted` count.

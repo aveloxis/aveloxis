@@ -286,10 +286,11 @@ func ClientForRepo(repoURL string, ghClient platform.Client, gls *gitlab.Instanc
 		if !ok {
 			return nil, "", "", fmt.Errorf("%w: %s is not under a configured GitLab instance's web_url (gitlab.web_url / gitlab.instances)", gitlab.ErrInstanceNotConfigured, repoURL)
 		}
-		if in.Client == nil {
+		c, keyed := in.KeyedClient()
+		if !keyed {
 			return nil, "", "", fmt.Errorf("%w: GitLab instance %s has no API keys", gitlab.ErrInstanceNotConfigured, in.WebBase)
 		}
-		return in.Client, parsed.Owner, parsed.Repo, nil
+		return c, parsed.Owner, parsed.Repo, nil
 	default:
 		return nil, "", "", fmt.Errorf("unsupported platform for URL: %s", repoURL)
 	}

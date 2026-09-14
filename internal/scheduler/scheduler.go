@@ -27,6 +27,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/forgekeys"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
@@ -156,6 +157,10 @@ type Scheduler struct {
 	largeSkipIDs       []int64
 	largeSkipRefreshed time.Time
 
+	// keyMaint is the v0.30.0 Phase C live key reload (nil: keys stay as
+	// loaded at startup).
+	keyMaint keyMaintainer
+
 	// digestMailer + digestStampPath drive the v0.27.12 operator
 	// vulnerability digest. mailer is injected via SetDigestMailer
 	// from runServe; stampPath defaults to ~/.aveloxis/vuln-digest-last
@@ -176,6 +181,20 @@ type Scheduler struct {
 	// Phase C plan requires before any transitive rollout, and an
 	// immediate ~5×/~94× traffic cut on the direct workload.
 	osvCache *collector.OSVCache
+}
+
+// keyMaintainer is serve's live API-key reload (v0.30.0 Phase C;
+// forgekeys.Maintainer): Reload reconciles the running pools with the stored
+// keys, Report saves their state for the API-keys admin page.
+type keyMaintainer interface {
+	Reload(ctx context.Context) error
+	Report(ctx context.Context) error
+}
+
+// SetKeyMaintainer injects the live key reload. Must be called BEFORE Run
+// (Run starts the loop only when one is set).
+func (s *Scheduler) SetKeyMaintainer(m keyMaintainer) {
+	s.keyMaint = m
 }
 
 // SetDigestMailer injects the operator-notification mailer (v0.27.12).
@@ -247,11 +266,9 @@ func NewWithKeys(store *db.PostgresStore, ghClient platform.Client, gl *gitlab.I
 	if ghClient != nil {
 		ghClient.OnPermanentRedirect(renameHook)
 	}
-	for _, in := range gl.All() {
-		if in.Client != nil {
-			in.Client.OnPermanentRedirect(renameHook)
-		}
-	}
+	// Every instance's client, keyed or not yet: a key added at runtime
+	// (v0.30.0 Phase C) must not start a client without the hook.
+	gl.OnPermanentRedirect(renameHook)
 
 	return s
 }
@@ -604,6 +621,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.dbHealthy.Store(true)
 	safego.Go(s.logger, "db-health-monitor", func() { s.runDBHealthMonitor(ctx) })
 
+	// v0.30.0 Phase C: live API-key reload + key report. One tracked,
+	// long-lived loop — ticks are serialized by construction (an overlapping
+	// slow tick could apply an older read over a newer one), and the
+	// shutdown join waits for an in-flight report write before the store
+	// closes.
+	if s.keyMaint != nil {
+		s.goTracked("key-maintenance", func() { s.runKeyMaintenance(ctx) })
+	}
+
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
 	// this avoids a visible delay before collection begins.
@@ -811,7 +837,7 @@ func (s *Scheduler) singleFlight(active *atomic.Bool, name string, task func()) 
 }
 
 func (s *Scheduler) runSearchResolve(ctx context.Context) {
-	if s.ghClient == nil {
+	if s.ghClient == nil || s.gitHubPoolEmpty() {
 		return
 	}
 	candidates, err := s.store.GetContributorsNeedingSearch(ctx, SearchResolveBatchSize)
@@ -833,6 +859,12 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 			return
 		}
 		login, ghUserID, err := s.ghClient.SearchUserByEmail(ctx, c.Email)
+		if errors.Is(err, platform.ErrNoKeys) {
+			// The pool was emptied mid-cycle: stamp nothing, retried once
+			// keys exist.
+			s.logger.Info("search resolve stopped — no API keys", "resolved", resolved)
+			return
+		}
 		if err != nil {
 			// API failure — stamp the attempt so we don't immediately
 			// retry the same email next cycle, and continue.
@@ -886,9 +918,20 @@ const SearchResolveBatchSize = 100
 func (s *Scheduler) runEnrichment(ctx context.Context) {
 	var client platform.Client
 	if s.ghClient != nil {
+		// Every GitHub key can be removed at runtime (v0.30.0 Phase C).
+		// Skip then — never switch to GitLab: thin logins carry no
+		// platform, so a GitHub login looked up on gitlab.com would write
+		// a same-name stranger's profile onto the contributor (SR-6).
+		if s.gitHubPoolEmpty() {
+			return
+		}
 		client = s.ghClient
-	} else if in, ok := s.gl.ByID(model.PlatformGitLab); ok && in.Client != nil {
-		client = in.Client
+	} else if in, ok := s.gl.ByID(model.PlatformGitLab); ok {
+		c, keyed := in.KeyedClient()
+		if !keyed {
+			return
+		}
+		client = c
 	} else {
 		return
 	}
@@ -2285,7 +2328,8 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			"group", g.Name, "org_url", g.Website)
 		return 0
 	}
-	if in.Client == nil {
+	glClient, keyed := in.KeyedClient()
+	if !keyed {
 		s.logger.Warn("GitLab group refresh skipped — the group's GitLab instance has no API keys",
 			"group", g.Name, "org_url", g.Website, "web_url", in.WebBase, "platform_id", in.ID)
 		return 0
@@ -2301,7 +2345,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	}
 
 	newCount := 0
-	for item, err := range in.Client.ListGroupProjects(ctx, g.Name) {
+	for item, err := range glClient.ListGroupProjects(ctx, g.Name) {
 		if errors.Is(err, context.Canceled) {
 			return newCount // shutdown mid-listing, not a failure
 		}
@@ -2495,14 +2539,23 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 // an admin approves (v0.27.20). Rejected-group orgs are excluded by
 // the probe itself — the scan's rejected gate deliberately never
 // stamps them, so counting them would re-fire the probe every tick.
-// A failed enumeration is also safe: MarkOrgRequestScanned stamps
-// unconditionally per attempt, so retries fall to the 4h cadence
-// instead of looping here.
+// A failed enumeration is also safe: MarkOrgRequestScanned stamps each
+// attempt, so retries fall to the 4h cadence instead of looping here. The
+// one persistent unstamped failure is "no GitHub API keys" (v0.30.0 Phase
+// C), and this probe skips while the GitHub pool is empty, so it cannot loop
+// either (a transient group-lookup error also leaves a row unstamped for the
+// next tick).
 func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 	// Same gate as fillWorkerSlots: while the database is unavailable
 	// (nightly Postgres restart), skip silently instead of producing a
 	// probe-failed WARN on every 10s poll tick.
 	if !s.dbHealthy.Load() {
+		return
+	}
+	// The user org scan enumerates GitHub orgs only; with every GitHub key
+	// removed it can list nothing, and an unstamped registration would
+	// re-fire this probe on every poll tick.
+	if s.gitHubPoolEmpty() {
 		return
 	}
 	pending, err := s.store.HasNeverScannedOrgs(ctx)
@@ -2604,6 +2657,13 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 
 	s.logger.Info("scanning user org requests",
 		"count", len(orgs), "distinct_orgs", len(order), "only_never_scanned", onlyNeverScanned)
+	noKeysSkipped := 0
+	defer func() {
+		if noKeysSkipped > 0 {
+			s.logger.Info("user org scan skipped GitHub orgs — no API keys; registrations stay unstamped until keys exist",
+				"orgs", noKeysSkipped)
+		}
+	}()
 	for _, key := range order {
 		if ctx.Err() != nil {
 			return // shutdown between orgs
@@ -2613,9 +2673,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		// ForgeID (v0.27.102) is the forge's numeric repo ID from the
 		// listing JSON — the rename-proof identity UpsertRepo dedups on.
 		var repos []struct{ URL, Owner, Name, ForgeID string }
+		var listErr error
 		switch g.platform {
 		case "github":
-			if s.ghKeys == nil {
+			if s.ghKeys == nil || s.gitHubPoolEmpty() {
+				noKeysSkipped++
 				continue // rows stay unstamped — retried when keys exist
 			}
 			httpC := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
@@ -2631,6 +2693,12 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					path := fmt.Sprintf("%s?per_page=100&type=all&page=%d", basePath, page)
 					resp, err := httpC.Get(platform.WithoutETag(ctx), path)
 					if err != nil {
+						// Not found on /orgs/ is the personal-account
+						// fallback; anything else (no keys, 5xx, rate
+						// limit) means the enumeration did not happen.
+						if !errors.Is(err, platform.ErrNotFound) {
+							listErr = err
+						}
 						break
 					}
 					var items []struct {
@@ -2662,6 +2730,25 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					break
 				}
 			}
+		}
+
+		if errors.Is(listErr, context.Canceled) {
+			return // shutdown mid-listing: stamp nothing
+		}
+		if errors.Is(listErr, platform.ErrNoKeys) {
+			// The pool was emptied mid-listing (v0.30.0 Phase C): nothing
+			// more can be listed — leave the rows unstamped (the demand
+			// probe skips while the pool is empty, so this cannot loop).
+			noKeysSkipped++
+			continue
+		}
+		if listErr != nil {
+			// Any other listing failure keeps the pre-Phase C behaviour —
+			// what was listed is linked and the registrations are stamped,
+			// so retries fall to the 4h cadence — but it is no longer
+			// silent.
+			s.logger.Warn("org listing failed — linking what was listed; the next full pass retries",
+				"org", g.name, "repos_listed", len(repos), "error", listErr)
 		}
 
 		// Distinct target groups (case-variant registrations of the same
@@ -2788,7 +2875,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 
 // runBreadth discovers cross-repo activity for contributors via the GitHub Events API.
 func (s *Scheduler) runBreadth(ctx context.Context) {
-	if s.ghKeys == nil {
+	if s.ghKeys == nil || s.gitHubPoolEmpty() {
 		return
 	}
 	if s.breadthWorker == nil {
@@ -2797,6 +2884,14 @@ func (s *Scheduler) runBreadth(ctx context.Context) {
 		return
 	}
 	result, err := s.breadthWorker.Run(ctx, s.cfg.Collection.BreadthBatchSizeOrDefault(), s.cfg.Collection.BreadthCooldownDuration())
+	if errors.Is(err, platform.ErrNoKeys) {
+		// The pool was emptied mid-run (v0.30.0 Phase C; the entry gate
+		// covers a pool empty from the start). The worker aborted:
+		// contributors processed before the abort keep their marks, the
+		// rest stay unmarked.
+		s.logger.Info("breadth worker stopped — no API keys; contributors not yet processed stay unmarked")
+		return
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
@@ -2822,5 +2917,60 @@ func (s *Scheduler) recoverStale(ctx context.Context) {
 	}
 	if recovered > 0 {
 		s.logger.Warn("recovered stale locks", "count", recovered)
+	}
+}
+
+// gitHubPoolEmpty reports whether the GitHub pool exists and has no active
+// key — none configured (a GitLab-only fleet) or every key removed by a
+// live reload (v0.30.0 Phase C). It is the entry
+// fast path for everything that would record GitHub work as attempted:
+// enrichment, search resolve, breadth, activity history, each tick of the
+// mailing-list sender resolver, the never-scanned org probe
+// (maybeScanNewOrgs) and refreshUserOrgs' GitHub case. Entry alone is
+// check-then-act (a reload can empty the pool mid-cycle), so each sweep also
+// stops without stamping when a fetch returns platform.ErrNoKeys, and
+// refreshUserOrgs leaves a registration unstamped only for that error (any
+// other listing failure is logged and stamped, as before). The distribution
+// scanner pauses on its own check (CompositeScanner.UnhealthyReason) and
+// releases a claim whose scan hit ErrNoKeys (review of Phase C, passes 1-4).
+func (s *Scheduler) gitHubPoolEmpty() bool {
+	return s.ghKeys != nil && s.ghKeys.IsEmpty()
+}
+
+// runKeyMaintenance reloads keys and saves the key report now (so the admin
+// page sees a fresh process within seconds of startup) and then every
+// forgekeys.Interval, until ctx ends. It skips a tick while the database is
+// marked unavailable (the DB-health monitor already logs that outage once).
+func (s *Scheduler) runKeyMaintenance(ctx context.Context) {
+	t := time.NewTicker(forgekeys.Interval)
+	defer t.Stop()
+	for {
+		if s.dbHealthy.Load() {
+			s.maintainKeysOnce(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// maintainKeysOnce is one reload + report. A failed reload leaves every pool
+// as it was (forgekeys.Maintainer applies nothing on a read error) and is
+// logged; the report is still saved, since the pools it describes are
+// intact. Shutdown is not a failure.
+func (s *Scheduler) maintainKeysOnce(ctx context.Context) {
+	if err := s.keyMaint.Reload(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		s.logger.Error("API key reload failed — key pools unchanged; retried next interval", "error", err, "interval", forgekeys.Interval)
+	}
+	if err := s.keyMaint.Report(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		s.logger.Warn("API key report not saved — the API keys admin page shows this process's previous report", "error", err)
 	}
 }

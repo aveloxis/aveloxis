@@ -51,17 +51,6 @@ func TestResolveKeyInstance(t *testing.T) {
 	}
 }
 
-func TestMaskTokenNeverPanicsOrRevealsShortTokens(t *testing.T) {
-	for _, tok := range []string{"", "abc", "abcdefgh", "abcdefghijk"} {
-		if got := maskToken(tok); got != "(hidden)" {
-			t.Errorf("maskToken(%q) = %q, want (hidden)", tok, got)
-		}
-	}
-	if got := maskToken("glpat-1234567890abcdef"); got != "glpa...cdef" {
-		t.Errorf("maskToken = %q", got)
-	}
-}
-
 // A move warning fires only when the instance a key loads into changes: ""
 // and the main web base are the same instance, and so are http:// and
 // https:// of one web URL.

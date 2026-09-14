@@ -19,6 +19,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // mailingListIdleInterval is how long a runner waits before re-polling when
@@ -168,6 +169,11 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if s.gitHubPoolEmpty() {
+				// Every GitHub key removed at runtime (v0.30.0 Phase C):
+				// each lookup would fail and stamp a 30-day cooldown.
+				continue
+			}
 			cands, err := s.store.GetMailingListSenderResolveCandidates(ctx,
 				mailingListSenderResolveMinMessages, mailingListSenderResolveCooldown.Seconds(), mailingListSenderResolveBatch)
 			if errors.Is(err, context.Canceled) {
@@ -179,6 +185,7 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 			}
 			linked := 0
 			created := 0
+		candidates:
 			for _, c := range cands {
 				if ctx.Err() != nil {
 					return
@@ -189,6 +196,12 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					continue
 				}
 				login, ghUserID, source, rerr := collector.ResolveEmailToIdentity(ctx, s.store, s.ghClient, c.SenderEmail)
+				if errors.Is(rerr, platform.ErrNoKeys) {
+					// The pool was emptied mid-cycle: stop, stamp nothing —
+					// these senders are retried once keys exist.
+					s.logger.Info("mailing-list: sender resolve stopped — no API keys", "linked", linked, "created", created)
+					break candidates
+				}
 				if rerr != nil {
 					// Transient (transport/5xx): stamp the attempt so we back off
 					// to the cooldown rather than hammering on a persistent error.

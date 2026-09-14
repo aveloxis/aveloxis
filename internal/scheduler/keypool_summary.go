@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // keyPoolSummaryInterval paces the per-key pool summary. Five minutes:
@@ -43,11 +45,18 @@ func (s *Scheduler) logKeyPoolSummary() {
 	now := time.Now()
 	var (
 		alive, resting, quarantined, lent int
+		draining                          int
 		secondaryHits                     int
 		minCore, maxCore, totalCore       = -1, -1, 0
 		minGQL, maxGQL, totalGQL          = -1, -1, 0
 	)
 	for _, k := range keys {
+		if k.State == platform.KeyDraining {
+			// Removed by a live reload, finishing its leases (v0.30.0
+			// Phase C): counted apart, never as alive budget.
+			draining++
+			continue
+		}
 		if k.Invalid {
 			continue
 		}
@@ -92,6 +101,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	}
 	s.logger.Info("key pool summary",
 		"keys_alive", alive,
+		"keys_draining", draining,
 		"inflight", inflight,
 		"resting_secondary", resting,
 		"quarantined", quarantined,
@@ -107,7 +117,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	if s.logger.Enabled(context.Background(), slog.LevelDebug) {
 		for _, k := range keys {
 			s.logger.Debug("key pool key",
-				"token_prefix", k.Prefix, "invalid", k.Invalid,
+				"token_prefix", k.Prefix, "key_id", k.KeyID, "state", k.State, "invalid", k.Invalid,
 				"inflight", k.Inflight, "lent", k.Lent,
 				"core", k.Core, "graphql", k.GraphQL,
 				"secondary_hits", k.SecondaryHits,

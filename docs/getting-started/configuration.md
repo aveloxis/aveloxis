@@ -261,6 +261,29 @@ startup, and are never reused.
 same host (a key is kept to its API's host, so instances need distinct API
 hosts), an extra instance has no `web_url`, or a `web_url` is an API URL.
 
+#### Managing keys while aveloxis runs
+
+A running `aveloxis serve` reloads **stored** keys once a minute (v0.30.0).
+Adding and removing keys therefore needs no restart, whether you use
+`aveloxis add-key` or the **API keys** admin page in the web GUI.
+
+- **One page for every forge.** The page shows GitHub and every GitLab
+  instance. It lists each key by a mask and a `key_id`, never the token, with
+  its health as the running processes report it: ok, budget spent, resting on
+  a rate limit, quarantined after repeated 401s, or invalid.
+- **Adding a key.** An added key is loaded within a minute, into its own
+  instance's pool only.
+- **Removing a key.** A removed key is handed out no more; requests already in
+  flight finish. A token lent to a running `scorecard` subprocess stays in use
+  until that subprocess exits.
+- **Keys in `aveloxis.json`** are shown read-only. The file is read at
+  startup, so a config change still needs a restart. A stored key whose token
+  is another instance's config key is not loaded; config wins.
+- **The `web` process** reloads its GitHub keys before each organization scan.
+- **Adding a GitLab instance** still means editing `gitlab.instances`, running
+  `aveloxis migrate`, and restarting `serve`. The new instance then appears on
+  the page and takes keys there.
+
 ### Collection
 
 The `collection` block holds every knob for the staged-pipeline scheduler and its periodic background tasks. Group them by category:

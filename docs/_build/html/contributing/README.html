@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -1650,7 +1657,7 @@ SPDX-License-Identifier: MIT
 <p>This is the contributor handbook. The root <a class="reference external" href="https://github.com/aveloxis/aveloxis/blob/main/CONTRIBUTING.md"><code class="docutils literal notranslate"><span class="pre">CONTRIBUTING.md</span></code></a> is a short orientation pointer; the chapters here are where the real material lives.</p>
 <section id="what-aveloxis-is">
 <h2>What Aveloxis is<a class="headerlink" href="#what-aveloxis-is" title="Link to this heading"></a></h2>
-<p>A production, fleet level implementation of experiments conducted via the CHAOSS project in <a class="reference external" href="https://github.com/augurlabs/augur">Augur</a>. The community-health data collection pipeline used by Aveloxis CHAOSS co-founders. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (147 tables across <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code>, plus the views-only <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> compatibility schema). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.</p>
+<p>A production, fleet level implementation of experiments conducted via the CHAOSS project in <a class="reference external" href="https://github.com/augurlabs/augur">Augur</a>. The community-health data collection pipeline used by Aveloxis CHAOSS co-founders. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (148 tables across <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code>, plus the views-only <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> compatibility schema). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.</p>
 <p>If you’re new to the codebase, read these in order before touching code:</p>
 <ol class="arabic simple">
 <li><p><a class="reference internal" href="../architecture/overview.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/architecture/overview.md</span></code></span></a> — the architecture in one page</p></li>

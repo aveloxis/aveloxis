@@ -16,6 +16,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/forgekeys"
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
@@ -59,14 +60,15 @@ be misrouted.`,
 			if err != nil {
 				return err
 			}
-			stored, err := db.LoadAPIKeysByInstance(ctx, store.Pool(), "gitlab", false)
+			stored, err := forgekeys.NewLoader(store.Pool(), false, logger).Load(ctx, "gitlab")
 			if err != nil {
 				return err
 			}
-			pools, orphans, err := partitionGitLabTokens(instances, stored)
+			pools, part, err := forgekeys.PartitionGitLabTokens(instances, stored)
 			if err != nil {
 				return err
 			}
+			orphans := part.Orphans
 			repos, err := store.CountReposByPlatform(ctx)
 			if err != nil {
 				return err

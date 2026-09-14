@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -1660,7 +1667,7 @@ A <code class="docutils literal notranslate"><span class="pre">setup.py</span></
 <h2>2. Why a dedicated worker (the v0.24.0 design call)<a class="headerlink" href="#why-a-dedicated-worker-the-v0-24-0-design-call" title="Link to this heading"></a></h2>
 <p>The work is independent of every other per-repo phase:</p>
 <ul class="simple">
-<li><p>Doesn’t need API tokens for the main scope. deps.dev is unauthenticated; ecosyste.ms supports an optional polite-pool email; GitHub Packages reuses the existing GitHub keys but the per-scan call count is small.</p></li>
+<li><p>deps.dev is unauthenticated and ecosyste.ms supports an optional polite-pool email. The three GitHub sources (release assets, GitHub Packages, root manifests) reuse the existing GitHub keys; the per-scan call count is small. The worker pauses entirely while the GitHub key pool has no key (v0.30.0): completing a scan without GitHub would replace the snapshot and rotate GitHub-sourced evidence to history.</p></li>
 <li><p>Doesn’t need a git clone. The Contents API delivers manifest files inline.</p></li>
 <li><p>Doesn’t need facade. Repo statistics don’t influence the result.</p></li>
 <li><p>Has its own cadence (180 days default) that’s much longer than main collection’s. Package-distribution mappings change rarely: a repo published as <code class="docutils literal notranslate"><span class="pre">pypi/foo</span></code> today is overwhelmingly likely still published as <code class="docutils literal notranslate"><span class="pre">pypi/foo</span></code> in six months.</p></li>
@@ -1955,7 +1962,7 @@ repo_distribution_manifest_history   — prior manifest snapshots
         │dispatcher │──jobs chan─▶│ runner  │
         │(30s pace) │             │  pool   │
         │           │             │ (N=4)   │
-        │ Healthy() │             └─────────┘
+        │ Unhealthy │             └─────────┘
         │  pause?   │                  │
         └───────────┘                  ▼
               ▲                  CompositeScanner
@@ -1965,20 +1972,21 @@ repo_distribution_manifest_history   — prior manifest snapshots
               │        deps.dev  ecosyste.ms   GitHub releases  Contents walk
               │            │           │             │               │
               └────────────┴───────────┴─────────────┴───────────────┘
-                                  Healthy() consulted on each tick
+                                  UnhealthyReason() read on each tick
 </pre></div>
 </div>
 </section>
 <section id="the-lifecycle-of-a-single-scan">
 <h3>6.2 The lifecycle of a single scan<a class="headerlink" href="#the-lifecycle-of-a-single-scan" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
-<li><p><strong>Dispatcher tick</strong>: every <code class="docutils literal notranslate"><span class="pre">distribution_tracking_start_interval_s</span></code> (default 30s) the dispatcher checks <code class="docutils literal notranslate"><span class="pre">scanner.Healthy()</span></code>. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls <code class="docutils literal notranslate"><span class="pre">ClaimNextDistributionRepo</span></code>.</p></li>
+<li><p><strong>Dispatcher tick</strong>: every <code class="docutils literal notranslate"><span class="pre">distribution_tracking_start_interval_s</span></code> (default 30s) the dispatcher checks the scanner’s health (<code class="docutils literal notranslate"><span class="pre">UnhealthyReason</span></code>, from which <code class="docutils literal notranslate"><span class="pre">Healthy()</span></code> is derived). If unhealthy — the ecosyste.ms circuit breaker is open (v0.25.0), or the GitHub key pool has no key — none configured, or all removed at runtime (v0.30.0) — the dispatcher logs the reason once, sleeps 60s and re-checks; otherwise it calls <code class="docutils literal notranslate"><span class="pre">ClaimNextDistributionRepo</span></code>. A scan already running when the pool empties — during any GitHub source, including the manifest walk — returns <code class="docutils literal notranslate"><span class="pre">ErrNoKeys</span></code>, and its claim is released with no strike and no snapshot replace. The pause WARN names its reason and is logged again when the reason changes.</p></li>
 <li><p><strong>Claim</strong>: SQL acquires the row lock with <code class="docutils literal notranslate"><span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> and returns a <code class="docutils literal notranslate"><span class="pre">DistributionJob</span></code> carrying the open transaction. Worker death rolls back; row becomes immediately re-claimable.</p></li>
 <li><p><strong>Scanner runs</strong>: the CompositeScanner consults all five sources sequentially. Per-source errors are tracked (v0.25.0 per-source-class accounting); the scanner returns a partial result if any sources succeeded.</p></li>
 <li><p><strong>Mark complete or record failure</strong>:</p>
 <ul class="simple">
 <li><p>All sources succeeded OR at least one returned clean data → <code class="docutils literal notranslate"><span class="pre">MarkDistributionComplete</span></code> rotates rows to history, inserts the fresh observations, stamps <code class="docutils literal notranslate"><span class="pre">scan_complete</span> <span class="pre">=</span> <span class="pre">TRUE</span></code> (or <code class="docutils literal notranslate"><span class="pre">FALSE</span></code> if any source was incomplete), commits.</p></li>
 <li><p>Every enabled source errored AND zero data collected → <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> increments the failure counter, stamps <code class="docutils literal notranslate"><span class="pre">last_failed_at</span> <span class="pre">=</span> <span class="pre">NOW()</span></code>, commits. On the 10th consecutive failure, also stamps <code class="docutils literal notranslate"><span class="pre">last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> so the cadence gate sidelines the row.</p></li>
+<li><p>A GitHub source had no API key (<code class="docutils literal notranslate"><span class="pre">ErrNoKeys</span></code>, v0.30.0 — checked before both arms above, even when other sources returned clean data) or the process is shutting down → <code class="docutils literal notranslate"><span class="pre">ReleaseDistributionClaim</span></code>: no strike, no snapshot replace, no cadence stamp.</p></li>
 </ul>
 </li>
 </ol>
@@ -1989,7 +1997,7 @@ repo_distribution_manifest_history   — prior manifest snapshots
 <ul class="simple">
 <li><p>After <code class="docutils literal notranslate"><span class="pre">CircuitBreakerThreshold</span> <span class="pre">=</span> <span class="pre">10</span></code> consecutive transient failures (5xx, transport errors), trips and stays open for <code class="docutils literal notranslate"><span class="pre">CircuitBreakerPause</span> <span class="pre">=</span> <span class="pre">1</span> <span class="pre">hour</span></code>.</p></li>
 <li><p>While open, <code class="docutils literal notranslate"><span class="pre">LookupPackages</span></code> short-circuits with <code class="docutils literal notranslate"><span class="pre">(nil,</span> <span class="pre">ErrCircuitOpen)</span></code>. The scanner treats this like a 404-class miss for that source — does NOT increment the all-sources-failed counter, just propagates as “ecosyste.ms had nothing to say”.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">IsCircuitOpen()</span></code> exposes the state read-only for the dispatcher’s <code class="docutils literal notranslate"><span class="pre">Healthy()</span></code> check.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">IsCircuitOpen()</span></code> exposes the state read-only for the dispatcher’s health check (<code class="docutils literal notranslate"><span class="pre">CompositeScanner.UnhealthyReason()</span></code>).</p></li>
 </ul>
 <p>Per-call short-circuit alone wasn’t enough. Under v0.24.x semantics, an outage would let ~480 repos/hour get stamped with permanent “complete scan” cadence locks for the full 180-day window, having seen no ecosyste.ms data. The v0.25.0 dispatcher pause + <code class="docutils literal notranslate"><span class="pre">distribution_scan_complete</span></code> column fix both halves of the problem:</p>
 <ul class="simple">

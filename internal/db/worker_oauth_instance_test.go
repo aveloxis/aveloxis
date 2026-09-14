@@ -56,24 +56,22 @@ func TestWorkerOAuthInstanceRoundTrip(t *testing.T) {
 		}
 	}
 
-	byInst, err := LoadAPIKeysByInstance(ctx, store.Pool(), "gitlab", false)
+	stored, err := LoadStoredAPIKeys(ctx, store.Pool(), "gitlab")
 	if err != nil {
 		t.Fatal(err)
 	}
-	onlyTest := func(m map[string][]string) map[string][]string {
-		out := map[string][]string{}
-		for inst, toks := range m {
-			for _, tok := range toks {
-				if len(tok) > 7 && tok[:7] == "_avkey_" {
-					out[inst] = append(out[inst], tok)
-				}
+	byInst := map[string][]string{}
+	for _, k := range stored {
+		if len(k.Token) > 7 && k.Token[:7] == "_avkey_" {
+			byInst[k.InstanceURL] = append(byInst[k.InstanceURL], k.Token)
+			if k.OAuthID <= 0 {
+				t.Errorf("LoadStoredAPIKeys(%s) carried no oauth_id", k.Token)
 			}
 		}
-		return out
 	}
 	want := map[string][]string{"": {"_avkey_main"}, fd: {"_avkey_fd"}}
-	if got := onlyTest(byInst); !reflect.DeepEqual(got, want) {
-		t.Errorf("LoadAPIKeysByInstance(gitlab) = %v, want %v (github keys never included)", got, want)
+	if !reflect.DeepEqual(byInst, want) {
+		t.Errorf("LoadStoredAPIKeys(gitlab) by instance = %v, want %v (github keys never included)", byInst, want)
 	}
 
 	// Moving a token to another instance keeps one row and reports the old tag.

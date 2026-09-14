@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -1811,6 +1818,27 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 <p class="admonition-title">Note</p>
 <p>If only GitHub tokens are configured, GitLab repos will not be collected (and vice versa). You will see a warning in the log: <code class="docutils literal notranslate"><span class="pre">&quot;no</span> <span class="pre">GitLab</span> <span class="pre">API</span> <span class="pre">keys</span> <span class="pre">configured</span> <span class="pre">—</span> <span class="pre">GitLab</span> <span class="pre">repos</span> <span class="pre">will</span> <span class="pre">not</span> <span class="pre">be</span> <span class="pre">collected&quot;</span></code>.</p>
 </div>
+</section>
+<hr class="docutils" />
+<section id="a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">
+<h2>A key added on the API keys page is “not picked up yet” or “not loaded”<a class="headerlink" href="#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded" title="Link to this heading"></a></h2>
+<p>Running <code class="docutils literal notranslate"><span class="pre">serve</span></code> processes reload stored keys once a minute and save a report
+that the API keys admin page reads (<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.forge_key_reports</span></code>). A key
+the page lists as not loaded carries one of these reasons:</p>
+<ul class="simple">
+<li><p><strong>not picked up yet</strong> — the key was stored after the latest reload. Wait a
+minute and refresh.</p></li>
+<li><p><strong>no serve reporting</strong> — no <code class="docutils literal notranslate"><span class="pre">serve</span></code> process has reported in the last three
+minutes. Start <code class="docutils literal notranslate"><span class="pre">serve</span></code>, or check its log for <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span> <span class="pre">reload</span> <span class="pre">failed</span></code> or
+<code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span> <span class="pre">report</span> <span class="pre">not</span> <span class="pre">saved</span></code>. A failed reload leaves every pool exactly as it
+was.</p></li>
+<li><p><strong>site not configured</strong> — the key is tagged for a GitLab web URL that no
+entry in <code class="docutils literal notranslate"><span class="pre">gitlab.instances</span></code> has. Add the instance and run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>,
+or remove the key and add it again for a configured instance.</p></li>
+<li><p><strong>conflicts with a config key</strong> — the same token is in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> for
+another instance. A key belongs to one instance, and config wins; remove the
+stored copy.</p></li>
+</ul>
 </section>
 <hr class="docutils" />
 <section id="commit-resolution-failed">

@@ -22,6 +22,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform/depsdev"
 	"github.com/aveloxis/aveloxis/internal/platform/ecosystems"
 	"github.com/aveloxis/aveloxis/internal/platform/github"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.25.0 — scan completeness + dispatcher pause tests.
@@ -31,7 +32,9 @@ import (
 //   - Scan returns complete=false when an external source had a
 //     transient error or was skipped due to an open breaker.
 //   - Worker passes complete to MarkDistributionComplete.
-//   - Dispatcher pauses when scanner.Healthy() returns false.
+//   - Dispatcher pauses when unhealthyReason(scanner) is non-empty
+//     (UnhealthyReason, or Healthy() for a scanner without one —
+//     v0.30.0 Phase C; v0.25.0 read Healthy() directly).
 //
 // The combination ensures that during a 1-hour ecosyste.ms outage
 // (a) the breaker-tripping cohort still scans but gets marked
@@ -94,10 +97,12 @@ func TestScannerHandlesErrCircuitOpenAsIncompleteSkip(t *testing.T) {
 }
 
 func TestWorkerDispatcherPausesWhenUnhealthy(t *testing.T) {
-	body := readFile(t, "worker.go")
-	// Pin: the dispatcher calls scanner.Healthy().
-	if !strings.Contains(body, "scanner.Healthy()") && !strings.Contains(body, "w.scanner.Healthy()") {
-		t.Error("dispatcher must call w.scanner.Healthy() before each claim — without this, repos dispatched during an ecosyste.ms outage get permanent 'complete scan' stamps with missing data")
+	body := srctest.StripGoComments(readFile(t, "worker.go"))
+	// Pin: the dispatcher gates each claim on the scanner's health, read
+	// once through unhealthyReason (v0.30.0 Phase C review, pass 7: the
+	// old needle "scanner.Healthy()" survived only in a comment).
+	if !strings.Contains(body, "if reason := unhealthyReason(w.scanner); reason != \"\" {") {
+		t.Error("dispatcher must pause when unhealthyReason(w.scanner) is non-empty before each claim — without this, repos dispatched during an ecosyste.ms outage (or with no GitHub key) get 'complete scan' stamps with missing data")
 	}
 	// Pin: there's an unhealthy-pause log message.
 	if !strings.Contains(body, "scanner unhealthy") {
@@ -374,3 +379,63 @@ var _ = errors.New
 var _ = fmt.Sprintf
 var _ = atomic.AddInt32
 var _ = os.Stat
+
+type reasonedFakeScanner struct {
+	fakeScanner
+	reason  atomic.Value // string
+	healthy atomic.Bool  // what Healthy() says — deliberately independent
+}
+
+func (f *reasonedFakeScanner) UnhealthyReason() string {
+	r, _ := f.reason.Load().(string)
+	return r
+}
+
+func (f *reasonedFakeScanner) Healthy() bool { return f.healthy.Load() }
+
+// unhealthyReason: a reasonedScanner is read ONCE, through
+// UnhealthyReason — even when its Healthy() disagrees (the state changes on
+// another goroutine) — and any other Scanner falls back to Healthy() with a
+// generic reason (review of Phase C, pass 7, finding 1).
+func TestUnhealthyReason(t *testing.T) {
+	r := &reasonedFakeScanner{}
+	r.reason.Store("")
+	r.healthy.Store(false)
+	if got := unhealthyReason(r); got != "" {
+		t.Errorf("reasoned scanner with no reason = %q, want healthy (\"\") even though Healthy() says false", got)
+	}
+	r.reason.Store("no GitHub API keys")
+	r.healthy.Store(true)
+	if got := unhealthyReason(r); got != "no GitHub API keys" {
+		t.Errorf("reasoned scanner with a reason = %q, want the reason even though Healthy() says true", got)
+	}
+	plain := &fakeScanner{}
+	if got := unhealthyReason(plain); got != "" {
+		t.Errorf("healthy plain scanner = %q, want \"\"", got)
+	}
+	plain.unhealthy.Store(true)
+	if got := unhealthyReason(plain); got != "a source is unavailable" {
+		t.Errorf("unhealthy plain scanner = %q, want the generic reason", got)
+	}
+}
+
+// The production shape (a scanner that reports its reason) pauses the
+// dispatcher: no claim is processed while the reason is non-empty.
+func TestWorkerDispatcherPausesForAReasonedScanner(t *testing.T) {
+	scanner := &reasonedFakeScanner{}
+	scanner.results = map[int64]scanResult{}
+	scanner.reason.Store("no GitHub API keys")
+	scanner.healthy.Store(true) // only the reason must count
+	store := &fakeStore{queue: []*db.DistributionJob{{RepoID: 1, RepoOwner: "x", RepoName: "y", RepoGit: "https://github.com/x/y"}}}
+	worker := NewWorker(WorkerOptions{Store: store, Scanner: scanner, Workers: 1, Cadence: 180 * 24 * time.Hour, Logger: testLogger()})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { worker.Run(ctx); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+	marks, failures := store.snapshot()
+	if len(marks) != 0 || len(failures) != 0 || atomic.LoadInt32(&scanner.calls) != 0 {
+		t.Fatalf("dispatcher processed work while the scanner reported %q: marks=%d failures=%d scans=%d", "no GitHub API keys", len(marks), len(failures), scanner.calls)
+	}
+}

@@ -396,7 +396,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// machinery.
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", url, "attempt", attempt+1, "error", parsed,
-					"token_prefix", tokenPrefix(key.Token))
+					"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 				lastRateLimit = parsed
 				rateLimitAttempt = attempt
 				if rotations < maxRotations {
@@ -428,7 +428,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait,
-					"token_prefix", tokenPrefix(key.Token))
+					"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 				// 2026-09-12 (Bug C of the chaoss.tv analysis): rest THIS
 				// key in the pool for the Retry-After. Pre-fix only this
 				// goroutine slept and every other caller kept being handed
@@ -452,7 +452,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			}
 			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 				c.logger.Info("graphql rate limit exhausted", "url", url,
-					"token_prefix", tokenPrefix(key.Token))
+					"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 				// Copilot round 7 on PR #193: a 403 carrying
 				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
 				// GitHub response shape the pool explicitly supports)
@@ -473,7 +473,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait,
-				"token_prefix", tokenPrefix(key.Token))
+				"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 			// 429 is the same per-key throttle as 403 + Retry-After
 			// (GitHub documents both shapes for secondary limits): the
 			// key is already resting (UpdateFromResponse, under the

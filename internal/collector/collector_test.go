@@ -36,7 +36,7 @@ func testGitLabInstances(t *testing.T) (*gitlab.Instances, *gitlab.Client, *gitl
 	if err != nil {
 		t.Fatal(err)
 	}
-	router, err := gitlab.NewInstances([]*gitlab.Instance{
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		{ID: model.PlatformGitLab, WebBase: "https://gitlab.com", APIURL: "https://gitlab.com/api/v4", Client: com},
 		{ID: model.GitLabInstanceIDMin, WebBase: "https://code.example.invalid/gitlab", APIURL: "https://api.example.invalid/api/v4", Client: edu},
 		{ID: model.GitLabInstanceIDMin + 1, WebBase: "https://keyless.example.invalid", APIURL: "https://keyless.example.invalid/api/v4"},

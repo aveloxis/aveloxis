@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
@@ -592,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -665,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1570,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -2111,6 +2114,11 @@ is configured</p></li>
 </tr>
 </tbody>
 </table>
+<p>A running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> picks up a stored key within a minute, with no
+restart (v0.30.0). Keys can also be added and removed on the web GUI’s <strong>API
+keys</strong> admin page, which covers GitHub and every GitLab instance on one page.
+One difference: re-adding a stored token on that page is refused (“remove it
+first”), while <code class="docutils literal notranslate"><span class="pre">add-key</span></code> moves the token to the named instance.</p>
 </section>
 <section id="id7">
 <h3>Examples<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
@@ -2177,10 +2185,10 @@ aveloxis<span class="w"> </span>recollect<span class="w"> </span>https://github.
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 147 tables and 20 materialized views across three PostgreSQL schemas:</p>
+<p>Creates 148 tables and 20 materialized views across three PostgreSQL schemas:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (101 tables + 20 materialized views) – all collected data</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (42 tables) – operational state</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (43 tables) – operational state</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> (4 tables) – scancode per-file license/copyright results</p></li>
 </ul>
 <p>Also performs a data cleanup pass that nullifies garbage timestamps (year &lt; 1970) across all tables, preventing BC-era dates from poisoning queries.</p>

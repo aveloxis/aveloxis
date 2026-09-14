@@ -31,7 +31,7 @@ func TestForgeClientForNeverCrossesInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gls, err := gitlab.NewInstances([]*gitlab.Instance{
+	gls, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		{ID: model.PlatformGitLab, WebBase: "https://gitlab.com", APIURL: "https://gitlab.com/api/v4", Client: com},
 		{ID: model.GitLabInstanceIDMin, WebBase: "https://gitlab.freedesktop.invalid", APIURL: "https://gitlab.freedesktop.invalid/api/v4", Client: fd},
 		{ID: model.GitLabInstanceIDMin + 1, WebBase: "https://keyless.invalid", APIURL: "https://keyless.invalid/api/v4"},

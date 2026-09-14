@@ -165,7 +165,7 @@ func TestClientForRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router, err := gitlab.NewInstances([]*gitlab.Instance{
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		{ID: model.PlatformGitLab, WebBase: "https://gitlab.com", APIURL: "https://gitlab.com/api/v4", Client: gl},
 		{ID: model.GitLabInstanceIDMin, WebBase: "https://salsa.example.invalid", APIURL: "https://salsa.example.invalid/api/v4"},
 	})
@@ -414,7 +414,7 @@ func TestSchedulerRecoverOtherLocksOnStartup(t *testing.T) {
 // configuration problem at all.
 func TestInstanceFixHint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router, err := gitlab.NewInstances([]*gitlab.Instance{
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
 		{ID: model.PlatformGitLab, WebBase: "https://gitlab.com", APIURL: "https://gitlab.com/api/v4", Primary: true},
 		{ID: model.GitLabInstanceIDMin, WebBase: "https://salsa.example.invalid", APIURL: "https://salsa.example.invalid/api/v4"},
 	})

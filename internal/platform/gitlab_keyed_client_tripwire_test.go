@@ -25,6 +25,9 @@ const (
 	platformImport = "github.com/aveloxis/aveloxis/internal/platform"
 	githubImport   = platformImport + "/github"
 	gitlabImport   = platformImport + "/gitlab"
+	// forgekeysImport: the one GitLab token partition (v0.30.0 Phase C moved
+	// it out of cmd/aveloxis so startup and the live reload share it).
+	forgekeysImport = "github.com/aveloxis/aveloxis/internal/forgekeys"
 )
 
 // checkKeyedClients inspects every keyed forge client constructor reference
@@ -51,7 +54,7 @@ const (
 // is never reassigned. Allowed pools: the keys parameter inside gitlab.New,
 // never written; or a name assigned exactly once from
 // platform.NewKeyPool(<m>[<v>.WebBase], …) for the SAME v as the API URL,
-// where <m> is a single-assignment partitionGitLabTokens result. A gitlab.New call's web base must be
+// where <m> is a single-assignment forgekeys.PartitionGitLabTokens result. A gitlab.New call's web base must be
 // <v>.WebBase for that same v too. Identifiers are compared by declaration,
 // so shadowing and a reused name are different variables. Anything else — a
 // config block's BaseURL, a URL built from data, a pool under a name like
@@ -93,6 +96,18 @@ func checkKeyedClients(fset *token.FileSet, f *ast.File) (examined int, findings
 		id, ok := e.(*ast.Ident)
 		return ok && pathOf[id.Name] == want
 	}
+	// isPartitionCall: forgekeys.PartitionGitLabTokens, matched by IMPORT
+	// PATH (an aliased import still counts; a same-named function elsewhere
+	// does not), or the unqualified call inside package forgekeys.
+	isPartitionCall := func(fun ast.Expr) bool {
+		switch x := fun.(type) {
+		case *ast.SelectorExpr:
+			return x.Sel.Name == "PartitionGitLabTokens" && isPkg(x.X, forgekeysImport)
+		case *ast.Ident:
+			return x.Name == "PartitionGitLabTokens" && f.Name.Name == "forgekeys"
+		}
+		return false
+	}
 	for _, decl := range f.Decls {
 		// Function bodies AND package-level declarations: the repo's test
 		// seams are package-level vars (`var goneProbe = collector.…`), so a
@@ -125,7 +140,7 @@ func checkKeyedClients(fset *token.FileSet, f *ast.File) (examined int, findings
 		// spelling), so a shadowing `in` or a second loop reusing the name
 		// is a different variable (review of B1–B5, finding 3). Tracked: how
 		// often each variable is assigned; which hold an
-		// EffectiveInstances() result; which hold partitionGitLabTokens'
+		// EffectiveInstances() result; which hold forgekeys.PartitionGitLabTokens'
 		// pools; which range value variables iterate an instance list; and
 		// which pools were built from one instance's tokens. A reassigned
 		// variable is data, never an allowlisted source.
@@ -166,10 +181,10 @@ func checkKeyedClients(fset *token.FileSet, f *ast.File) (examined int, findings
 				if !ok || !lok {
 					return true
 				}
-				switch exprName(call.Fun) {
-				case "EffectiveInstances":
+				switch {
+				case exprName(call.Fun) == "EffectiveInstances":
 					fromEffective[identKey(lhs)] = true
-				case "partitionGitLabTokens":
+				case isPartitionCall(call.Fun):
 					fromPartition[identKey(lhs)] = true
 				}
 				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "NewKeyPool" && isPkg(sel.X, platformImport) && len(call.Args) > 0 {
@@ -520,8 +535,8 @@ func TestKeyedClientBaseURLAllowlist(t *testing.T) {
 // (loop), so each isolates ONE condition: an instance's API URL, its pool,
 // and its web base must all come from the same EffectiveInstances() entry.
 func TestCheckKeyedClientsFixtures(t *testing.T) {
-	const imports = "import (\n\t\"github.com/aveloxis/aveloxis/internal/platform\"\n\tgh \"github.com/aveloxis/aveloxis/internal/platform/github\"\n\t\"github.com/aveloxis/aveloxis/internal/platform/gitlab\"\n)\n\n"
-	const prelude = "instances, err := cfg.GitLab.EffectiveInstances()\n_ = err\npools, orphans, err := partitionGitLabTokens(instances, stored)\n_ = orphans\n"
+	const imports = "import (\n\t\"github.com/aveloxis/aveloxis/internal/forgekeys\"\n\t\"github.com/aveloxis/aveloxis/internal/platform\"\n\tgh \"github.com/aveloxis/aveloxis/internal/platform/github\"\n\t\"github.com/aveloxis/aveloxis/internal/platform/gitlab\"\n)\n\n"
+	const prelude = "instances, err := cfg.GitLab.EffectiveInstances()\n_ = err\npools, orphans, err := forgekeys.PartitionGitLabTokens(instances, stored)\n_ = orphans\n"
 	loop := func(call string) string {
 		return prelude + "for _, in := range instances {\n\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\t" + call + "\n}"
 	}
@@ -538,6 +553,10 @@ func TestCheckKeyedClientsFixtures(t *testing.T) {
 		{name: "literal base inside package platform", src: "package platform\n\nfunc f(keys *KeyPool) {\n\tNewHTTPClient(\"https://api.github.com\", keys, nil, AuthGitHub)\n}\n", wantExamined: 1},
 		// Allowed shapes — GitLab (v0.30.0).
 		{name: "the forge-client builder shape", body: loop(`gitlab.New(id, in.WebBase, in.APIURL, pool, logger)`), wantExamined: 1},
+		// v0.30.0 Phase C: the partition is forgekeys.PartitionGitLabTokens, matched by
+		// import path — an alias still counts, a same-named function elsewhere does not.
+		{name: "the partition through an aliased forgekeys import", src: "package p\n\n" + "import (\n\tfk \"github.com/aveloxis/aveloxis/internal/forgekeys\"\n\t\"github.com/aveloxis/aveloxis/internal/platform\"\n\t\"github.com/aveloxis/aveloxis/internal/platform/gitlab\"\n)\n\n" + "func f() {\n\t" + "instances, err := cfg.GitLab.EffectiveInstances()\n\t_ = err\n\tpools, orphans, err := fk.PartitionGitLabTokens(instances, stored)\n\t_ = orphans\n\tfor _, in := range instances {\n\t\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\t\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n\t}\n" + "}\n", wantExamined: 1},
+		{name: "the partition inside package forgekeys", src: "package forgekeys\n\n" + imports + "func f() {\n\t" + "instances, err := cfg.GitLab.EffectiveInstances()\n\t_ = err\n\tpools, orphans, err := PartitionGitLabTokens(instances, stored)\n\t_ = orphans\n\tfor _, in := range instances {\n\t\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\t\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n\t}\n" + "}\n", wantExamined: 1},
 		{name: "the builder shape through NewHTTPClient", body: loop(`platform.NewHTTPClient(in.APIURL, pool, logger, platform.AuthGitLab)`), wantExamined: 1},
 		{name: "constructor parameters inside gitlab.New", src: "package gitlab\n\n" + imports + "func New(platformID int, webBase, apiURL string, keys *platform.KeyPool, logger any) {\n\tplatform.NewHTTPClient(apiURL, keys, logger, platform.AuthGitLab)\n}\n", wantExamined: 1},
 		// Round 5: names that are DECLARED, not referenced, must not read as
@@ -568,7 +587,7 @@ func TestCheckKeyedClientsFixtures(t *testing.T) {
 		{name: "reassigned range variable", body: loop("in = other\n\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)"), wantExamined: 1, wantFindings: 1},
 		{name: "EffectiveInstances result reassigned", body: prelude + "instances = append(instances, extra)\nfor _, in := range instances {\n\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n}", wantExamined: 1, wantFindings: 1},
 		{name: "range over something other than EffectiveInstances", body: prelude + "for _, in := range repos {\n\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n}", wantExamined: 1, wantFindings: 1},
-		{name: "apiURL parameter outside gitlab.New", src: "package p\n\n" + imports + "func refresh(apiURL string) {\n\tpools, orphans, err := partitionGitLabTokens(instances, stored)\n\t_, _ = orphans, err\n\tfor _, in := range instances {\n\t\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\t\tplatform.NewHTTPClient(apiURL, pool, logger, platform.AuthGitLab)\n\t}\n}\n", wantExamined: 1, wantFindings: 1},
+		{name: "apiURL parameter outside gitlab.New", src: "package p\n\n" + imports + "func refresh(apiURL string) {\n\tpools, orphans, err := forgekeys.PartitionGitLabTokens(instances, stored)\n\t_, _ = orphans, err\n\tfor _, in := range instances {\n\t\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\t\tplatform.NewHTTPClient(apiURL, pool, logger, platform.AuthGitLab)\n\t}\n}\n", wantExamined: 1, wantFindings: 1},
 		{name: "a local named apiURL inside gitlab.New", src: "package gitlab\n\n" + imports + "func New(platformID int, webBase, u string, keys *platform.KeyPool) {\n\tapiURL := \"https://\" + host\n\tplatform.NewHTTPClient(apiURL, keys, nil, platform.AuthGitLab)\n}\n", wantExamined: 1, wantFindings: 1},
 		// Escapes — the GitLab pool, each with an otherwise valid API URL.
 		{name: "GitHub pool to a GitLab client", body: loop(`gitlab.New(id, in.WebBase, in.APIURL, s.ghKeys, logger)`), wantExamined: 1, wantFindings: 1},
@@ -602,6 +621,7 @@ func TestCheckKeyedClientsFixtures(t *testing.T) {
 		// Review of B1–B5, finding 3: shapes a name-keyed check accepted.
 		{name: "shadowed instance variable (outer pool, inner API URL)", body: prelude + "for _, in := range instances {\n\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\tfor _, in := range instances {\n\t\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n\t}\n}", wantExamined: 1, wantFindings: 1},
 		{name: "a loop over repos reusing the instance variable's name", body: prelude + "for _, in := range repos {\n\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n}\nfor _, in := range instances {\n\t_ = in\n}", wantExamined: 1, wantFindings: 1},
+		{name: "a same-named partition function outside forgekeys", src: "package p\n\n" + imports + "func f() {\n\t" + "instances, err := cfg.GitLab.EffectiveInstances()\n\t_ = err\n\tpools, orphans, err := PartitionGitLabTokens(instances, stored)\n\t_ = orphans\n\tfor _, in := range instances {\n\t\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\t\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n\t}\n" + "}\n", wantExamined: 1, wantFindings: 1},
 		{name: "tokens map that is not the partition", body: "instances, err := cfg.GitLab.EffectiveInstances()\n_ = err\nfor _, in := range instances {\n\tpool := platform.NewKeyPool(everything[in.WebBase], logger)\n\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n}", wantExamined: 1, wantFindings: 1},
 		{name: "partition map reassigned", body: prelude + "pools = merged\nfor _, in := range instances {\n\tpool := platform.NewKeyPool(pools[in.WebBase], logger)\n\tgitlab.New(id, in.WebBase, in.APIURL, pool, logger)\n}", wantExamined: 1, wantFindings: 1},
 		// Review pass 2, finding 3: writes through fields, indexes and pointers.

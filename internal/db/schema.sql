@@ -2424,6 +2424,20 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.worker_oauth (
     UNIQUE (access_token, platform)
 );
 
+-- v0.30.0 Phase C: each running serve process's latest API-key report — the
+-- keys its pools hold (active and draining), their health, the GitLab
+-- instances it serves and the stored keys it refused (orphan tag, conflict
+-- with a config key). One row per process (reporter = serve@<host>#<boot id>),
+-- upserted once a minute; reports more than a day old from other processes
+-- are dropped on the next save. Never holds a token: keys are identified by
+-- key_id (a truncated, domain-separated sha256) and a first4...last4 mask.
+-- Read by the API-keys admin page (aveloxis api).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.forge_key_reports (
+    reporter    TEXT PRIMARY KEY,
+    reported_at TIMESTAMPTZ NOT NULL,
+    report      JSONB NOT NULL
+);
+
 -- ============================================================
 -- Augur users & auth
 -- ============================================================

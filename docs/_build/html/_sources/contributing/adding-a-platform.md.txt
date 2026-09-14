@@ -723,13 +723,25 @@ Audit `internal/scheduler/scheduler.go` for `runFacadeAndAnalysis`, `analysisCol
 
     // ... existing GitHub pool and the per-instance GitLab router
 
-    bzKeysData, err := db.LoadAPIKeys(ctx, store.Pool(), "bugzilla", useAugurKeys)
+    bzStored, err := db.LoadStoredAPIKeys(ctx, store.Pool(), "bugzilla")
     if err != nil {
         logger.Error("loading Bugzilla keys", "error", err)
     }
-    bzKeys := platform.NewKeyPool(bzKeysData, logger)
+    bzTokens := make([]string, 0, len(bzStored))
+    for _, k := range bzStored {
+        bzTokens = append(bzTokens, k.Token)
+    }
+    bzKeys := platform.NewKeyPool(bzTokens, logger)
     clients.bz = bugzilla.New(cfg.Bugzilla.BaseURL, bzKeys, logger)
 ```
+
+A pool built this way keeps its startup keys. Running `serve` processes
+reload GitHub and GitLab keys live (v0.30.0): `forgekeys.Maintainer`
+reconciles each pool with the stored keys once a minute, and the API keys
+admin page reads the report it saves. To include a new platform's pool,
+extend the Maintainer. `TestKeyPoolReconcileHasOnlyReviewedCallers` lists
+every function allowed to pair tokens with a pool, so the new pairing gets
+reviewed.
 
 Then in `runServe`:
 

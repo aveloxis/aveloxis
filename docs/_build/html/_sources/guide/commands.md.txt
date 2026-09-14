@@ -314,6 +314,12 @@ aveloxis add-key [flags] [<token>]
 | `--instance` | string | the main GitLab instance | GitLab only (v0.30.0): the web URL of the GitLab instance that issued the key, as configured in `gitlab.instances`. The key is loaded only into that instance's pool and sent only to its API URL. A key stored for an instance that is not configured is kept but not loaded (a WARN says so). Re-adding a token under another instance moves it. |
 | `--from-augur` | boolean | `false` | Bulk import all keys from `augur_operations.worker_oauth`. Duplicates are skipped. Imported GitLab keys belong to the main instance. |
 
+A running `aveloxis serve` picks up a stored key within a minute, with no
+restart (v0.30.0). Keys can also be added and removed on the web GUI's **API
+keys** admin page, which covers GitHub and every GitLab instance on one page.
+One difference: re-adding a stored token on that page is refused ("remove it
+first"), while `add-key` moves the token to the named instance.
+
 ### Examples
 
 ```bash
@@ -393,10 +399,10 @@ Creates or updates the database schema.
 aveloxis migrate
 ```
 
-Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 148 tables and 20 materialized views across three PostgreSQL schemas:
 
 - **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
-- **`aveloxis_ops`** (42 tables) -- operational state
+- **`aveloxis_ops`** (43 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.

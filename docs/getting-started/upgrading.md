@@ -149,7 +149,7 @@ re-running is always safe. Rows marked *fleet-scale* take hours on a
 | 8 | `aveloxis heal-collection-gaps --dry-run`, then `--workers 4` until 0 candidates | v0.27.140 (safe beside `serve` from v0.27.150) | issues / PRs lost to the pre-v0.27.139 blind-window `since` bug; visits only repos whose metadata counts exceed stored counts | **required** for any repo collected before v0.27.139; must run on the new binary; *fleet-scale* (~65 h at `--workers 4` on a 140K-repo fleet) |
 | 9 | `aveloxis refresh-views` | — | the materialized views over the healed data; add `--aggregates` (v0.28.18) to rebuild the `dm_` tables too — that pass runs for hours at fleet scale | after rows 3–8 settle (the weekly rebuild also covers the views, and the `dm_` tables unless `matview_rebuild_skip_dm_aggregates` is set) |
 | 10 | `aveloxis reconcile-repos` | v0.27.39 (index precondition v0.28.18) | stranded repositories (a `repos` row with no queue row) left by upstream renames | periodic, until the residue drains; its consolidation arms skip with a warning (and the run exits nonzero) until the new binary's migrate has built the `email_message` indexes |
-| 11 | `aveloxis mark-gone-repos` | v0.28.1 | the explicit "gone" state for deleted or privatized repositories that still hold data | optional — display honesty only |
+| 11 | `aveloxis mark-gone-repos` | v0.28.1 (automatic recheck v0.29.7) | the explicit "gone" state for deleted or privatized repositories that still hold data; until v0.29.7 it was also the ONLY path that noticed a gone repository had come back — `serve` now re-probes the gone cohort every `collection.gone_repo_recheck_days` (28) on its own | optional — one run after the upgrade verifies the historical cohort immediately instead of over the first cadence |
 | 12 | `aveloxis heal-vulnerabilities` | v0.27.4 (scan-side version normalization v0.27.72) | empty OSV stub findings and malformed-purl false positives | optional — the scheduled scans self-heal on their normal cadence |
 | 13 | `scripts/heal_mirror_links.sh <db>` (`--dry-run` first) | v0.28.20 | `linked_pull_request_id` / `linked_issue_id` on GitHub-mirror mailing-list messages, NULL on every such row before v0.28.20 | only if you collect Apache mailing lists; needs the migrate to have built the `node_id` indexes first (it refuses otherwise) |
 | 14 | `aveloxis load-apache-lists` | v0.25.7 (forge-resolved lookups v0.27.152) | registers Apache `dev@` / `users@` lists for PMCs whose primary repository is in your catalog | only if you enable mailing-list collection — see [below](#mailing-lists-on-an-existing-catalog) |
@@ -234,6 +234,24 @@ issue / PR heals above have settled: messages are projected onto the
 issues and pull requests already in the database, so a more complete
 catalog links more mail. Full design in
 [Mailing-List Ingestion](../architecture/mailing-list.md).
+
+## Recurring maintenance (not tied to a release)
+
+A few checks are worth a calendar entry rather than an upgrade step. All
+but one run only when you run them; each exists because a fleet drifted
+without anyone noticing.
+
+| Cadence | What | Why |
+|---|---|---|
+| quarterly, and after any incident where someone raised a limit | run the `pg_settings` verification query in [Verifying what is actually live](../guide/scaling.md#verifying-what-is-actually-live) and diff it against your recorded baseline | the settings that OOM a host (`work_mem` × `max_connections` × parallel workers) are the ones most often raised "temporarily" — see [Drift is the failure mode](../guide/scaling.md#drift-is-the-failure-mode) |
+| automatic since v0.29.7 (`collection.gone_repo_recheck_days`, 28) | `aveloxis serve` re-probes every "gone" repository once per cadence and re-enqueues the ones that answer 2xx; `aveloxis mark-gone-repos` is the on-demand form | a repository that returned 404/410 was **dequeued**, so no collection cycle ever looks at it again, and organizations do flip repositories private and back. On a release before v0.29.7 run the command quarterly by hand. The probe is an unauthenticated HEAD per candidate — it spends no API budget |
+| quarterly | `aveloxis reconcile-repos` | stranded `repos` rows left by upstream renames (row 10 above) accumulate between upgrades too |
+| yearly, or when disk is tight | index audit before dropping anything: `SELECT indexrelname, idx_scan, pg_size_pretty(pg_relation_size(indexrelid)) FROM pg_stat_user_indexes WHERE relname = 'commits' ORDER BY idx_scan;` | zero-scan indexes on `commits` can reach tens of GB, but the matview `UNIQUE` indexes read as zero-scan and are REQUIRED for `REFRESH ... CONCURRENTLY` — audit readers first, drop only email/affiliation indexes nothing queries |
+| once, then whenever the network changes | confirm `pg_hba.conf` does not carry a `host all all 0.0.0.0/0` line for a port that is reachable from the internet; firewall the port or restrict it to known networks | the PostgreSQL log's `password authentication failed` lines from unknown addresses are the symptom |
+
+If you run more than one host against the database, the second host's
+role is a decision, not an accident — see
+[Dedicated scancode host](../guide/dedicated-scancode-host.md).
 
 ## Where the per-release detail lives
 

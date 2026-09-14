@@ -238,6 +238,16 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 	if ga != nil {
 		t.Error("ClearRepoGone must null the stamp")
 	}
+	// v0.29.7 (review round 2): the check stamp goes with it — a
+	// reachable repo carries none (same contract as ResurrectRepo).
+	var checked *time.Time
+	if err := store.Pool().QueryRow(ctx,
+		`SELECT repo_gone_checked_at FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&checked); err != nil {
+		t.Fatal(err)
+	}
+	if checked != nil {
+		t.Error("ClearRepoGone must null repo_gone_checked_at with repo_gone_at")
+	}
 
 	// Candidate selection: this queueless repo (has data) appears;
 	// after stamping it stays (GoneStamped=true).

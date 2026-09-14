@@ -237,6 +237,37 @@ func TestBacktickLiterals(t *testing.T) {
 	}
 }
 
+// TestBacktickLiteralsIsGoAware — a backtick that is NOT a raw-string
+// delimiter (inside an interpreted "..." string, a rune literal, or a
+// comment) must not shift the pairing. Pairing textually made one
+// unbalanced backtick in a hint string swallow every later raw literal
+// in the file, silently shrinking every corpus built on this helper
+// (fresh-context review, v0.29.8 pass 3: reproduced with an unmarked
+// CREATE FUNCTION literal that the parallel-marker gate then never saw).
+func TestBacktickLiteralsIsGoAware(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{"backtick inside an interpreted string", "hint := \"run `aveloxis migrate to fix\"\nq := `SELECT 1`\n", []string{"`SELECT 1`"}},
+		{"backtick rune literal", "tick := '`'\nq := `SELECT 2`\n", []string{"`SELECT 2`"}},
+		{"backtick inside a line comment", "// the `$1 bind\nq := `SELECT 3`\n", []string{"`SELECT 3`"}},
+		{"backtick inside a block comment", "/* a ` b */ q := `SELECT 4`\n", []string{"`SELECT 4`"}},
+		{"escaped quote before a backtick in a string", "s := \"a\\\" `\"\nq := `SELECT 5`\n", []string{"`SELECT 5`"}},
+		{"raw string containing quotes and //", "q := `SELECT '\"x\"' -- https://y`\n", []string{"`SELECT '\"x\"' -- https://y`"}},
+		{"unterminated raw string at the end is not a literal", "q := `SELECT 6`\nr := `oops", []string{"`SELECT 6`"}},
+		{"function-body fragment", "{\n\tq := `SELECT 7`\n\tif x {\n\t\ty := `SELECT 8`\n\t}\n}", []string{"`SELECT 7`", "`SELECT 8`"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BacktickLiterals(tc.src)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("BacktickLiterals = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeWSAndContains(t *testing.T) {
 	// The gofmt-realignment class (v0.22.0 phase 5): a struct field
 	// re-aligned by gofmt broke a literal-substring pin.
@@ -360,4 +391,124 @@ type (
 	if strings.Contains(body, "SIBLING_FIELD") {
 		t.Fatalf("TypeBody must NOT include grouped siblings — a pin would pass on a field that lives on a different type; got %q", body)
 	}
+}
+
+// TestConstBody pins the ConstBody contract, including the grouped-
+// declaration trap TypeBody learned the hard way in v0.27.154: a
+// grouped `const (...)` GenDecl spans every sibling, so returning it
+// would let a pin pass on a DIFFERENT const's text.
+func TestConstBody(t *testing.T) {
+	src := `package p
+
+// leading comment mentioning renameSQL should not confuse the anchor
+const renameSQL = ` + "`" + `
+	UPDATE t SET a = $1
+	WHERE id = $2` + "`" + `
+
+const otherSQL = ` + "`" + `DELETE FROM t` + "`" + `
+
+const (
+	groupedA = "alpha value"
+	groupedB = "beta value"
+)
+`
+
+	t.Run("ungrouped returns only that const", func(t *testing.T) {
+		got := ConstBody(t, src, "renameSQL")
+		if !strings.Contains(got, "UPDATE t SET a = $1") {
+			t.Errorf("ConstBody did not return the const's own text: %q", got)
+		}
+		if strings.Contains(got, "DELETE FROM t") {
+			t.Errorf("ConstBody over-reached into the next declaration: %q", got)
+		}
+	})
+
+	t.Run("grouped returns only the named spec", func(t *testing.T) {
+		got := ConstBody(t, src, "groupedA")
+		if !strings.Contains(got, "alpha value") {
+			t.Errorf("ConstBody did not return groupedA: %q", got)
+		}
+		// THE trap: without slicing the ValueSpec, the whole group
+		// comes back and a pin on groupedA passes on groupedB's text.
+		if strings.Contains(got, "beta value") {
+			t.Errorf("ConstBody returned the whole const group — a pin on one member would "+
+				"pass on a sibling's text (the v0.27.154 TypeBody trap): %q", got)
+		}
+	})
+
+	t.Run("comment mentioning the name does not anchor", func(t *testing.T) {
+		got := ConstBody(t, src, "otherSQL")
+		if !strings.Contains(got, "DELETE FROM t") {
+			t.Errorf("ConstBody(otherSQL) = %q", got)
+		}
+	})
+
+	// Copilot review on PR #203: a ValueSpec can declare several names
+	// (`const a, b = "a", "b"`); returning the whole spec for either
+	// name is the exact sibling over-reach this helper exists to
+	// prevent. Refuse loudly rather than return a span a pin on `a`
+	// could pass on `b`'s text.
+	t.Run("multi-name spec is refused", func(t *testing.T) {
+		multi := `package p
+
+const multiA, multiB = "alpha value", "beta value"
+`
+		rec := &recordingTB{TB: t}
+		func() {
+			defer func() { _ = recover() }()
+			_ = ConstBody(rec, multi, "multiA")
+		}()
+		if !rec.failed {
+			t.Error("ConstBody must refuse a multi-name ValueSpec — a pin on multiA would pass on multiB's text")
+		}
+	})
+
+	// Copilot review 5191885530 on PR #203: inside a group, a spec with no
+	// `= value` repeats the PREVIOUS spec's expression (`const ( A = "x"; B )`
+	// gives B the value "x"). Its ValueSpec holds only the identifier, so
+	// the returned span would carry none of the value a pin claims to
+	// inspect, and the pin would pass vacuously. Including the sibling
+	// would break the exact-region contract, so refuse instead — while an
+	// explicit spec in the same group stays readable.
+	t.Run("implicit-value grouped spec is refused", func(t *testing.T) {
+		grouped := `package p
+
+const (
+	explicitA = "alpha value"
+	implicitB
+)
+`
+		rec := &recordingTB{TB: t}
+		var got string
+		func() {
+			defer func() { _ = recover() }()
+			got = ConstBody(rec, grouped, "implicitB")
+		}()
+		if !rec.failed {
+			t.Errorf("ConstBody must refuse an implicit-value spec (it inherits the previous expression) — returned %q, which carries no value for a pin to inspect", got)
+		}
+		if got := ConstBody(t, grouped, "explicitA"); !strings.Contains(got, "alpha value") {
+			t.Errorf("an explicit spec in the same group must still be returned, got %q", got)
+		}
+	})
+
+	t.Run("iota-repeated spec is refused", func(t *testing.T) {
+		iotaGroup := `package p
+
+type kind int
+
+const (
+	kindA kind = iota
+	kindB
+)
+`
+		rec := &recordingTB{TB: t}
+		func() {
+			defer func() { _ = recover() }()
+			_ = ConstBody(rec, iotaGroup, "kindB")
+		}()
+		if !rec.failed {
+			t.Error("ConstBody must refuse kindB — its value is the repeated `kind = iota` of the previous spec")
+		}
+	})
 }

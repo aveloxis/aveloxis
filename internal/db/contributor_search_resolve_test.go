@@ -16,6 +16,8 @@ package db
 import (
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestSchemaAddsLastSearchAttemptedColumn pins the new audit column
@@ -78,8 +80,11 @@ func TestLinkContributorToGitHubUserDoesNotChangeCntrbIdOrLogin(t *testing.T) {
 	}
 
 	// Extract just the SQL strings so doc comments mentioning the
-	// columns don't trip the check.
-	for _, sql := range allBackticks(body) {
+	// columns don't trip the check. The shared Go-aware extractor
+	// (v0.29.8): the local textual pairer this replaced let one stray
+	// backtick in a comment shift every later literal into "code".
+	for _, lit := range srctest.BacktickLiterals(srctest.StripGoComments(body)) {
+		sql := strings.Trim(lit, "`")
 		// SET cntrb_login is forbidden — would re-enter the very
 		// collision class this fix is meant to avoid.
 		if strings.Contains(sql, "SET cntrb_login") || strings.Contains(sql, "cntrb_login =") {
@@ -124,24 +129,4 @@ func TestMarkContributorSearchAttemptedExists(t *testing.T) {
 		t.Error("contributor_search_resolve.go must define MarkContributorSearchAttempted(ctx, cntrbID) " +
 			"for the no-hit / error path so the row is excluded from future batches until the cooldown.")
 	}
-}
-
-// allBackticks returns every backtick-delimited string in the source.
-// Used for SQL extraction without false positives from doc comments.
-func allBackticks(src string) []string {
-	var out []string
-	for {
-		start := strings.Index(src, "`")
-		if start < 0 {
-			break
-		}
-		rest := src[start+1:]
-		end := strings.Index(rest, "`")
-		if end < 0 {
-			break
-		}
-		out = append(out, rest[:end])
-		src = rest[end+1:]
-	}
-	return out
 }

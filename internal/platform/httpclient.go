@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +37,8 @@ var ErrNotFound = errors.New("not found")
 var ErrForbidden = errors.New("forbidden")
 
 // ErrGone wraps 410 Gone responses and unfollowable 3xx redirects (the
-// Location header was missing or the redirect chain looped). Distinct from
+// Location header was missing or the redirect chain looped). A redirect that
+// would leave the client's host or scheme is ErrOffHostRefused instead. Distinct from
 // ErrNotFound: 404 means "never existed or cannot see it", 410 means
 // "existed and was deliberately removed". Callers can check errors.Is(err,
 // ErrGone) to skip the resource without failing the whole collection.
@@ -166,6 +166,21 @@ type HTTPClient struct {
 	// durable state. Guarded against nil at each call site.
 	redirectMu          sync.RWMutex
 	onPermanentRedirect func(from, to string)
+}
+
+// restTransportRetrySleep is Get's wait after a failed Do (transport
+// error), before the next attempt. A package var so tests can observe
+// the pool DURING the wait — the lease must already be released there
+// (fresh-context review of the v0.29.8 round-2 fixes: nothing drove that
+// ordering once the round-1 shape pin was replaced). Production value
+// only; tests restore it with t.Cleanup.
+var restTransportRetrySleep = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 // NewHTTPClient creates a platform-aware HTTP client with the given auth style.
@@ -387,13 +402,30 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	skipETag := bypassETag(ctx)
 
 	for attempt := range maxRetries {
-		key, err := c.keys.GetKey(ctx)
+		// v0.29.12: the layer that attaches the key enforces the host rule
+		// for every request, whatever built the URL (a path joined onto the
+		// base, a redirect, a pagination continuation) — before a key is
+		// leased or a byte is sent.
+		if herr := onClientHostString(c.baseURL, url); herr != nil {
+			c.logger.Error("off-host request refused — the URL leaves this client's API host or scheme, so no API key is sent",
+				"url", url, "error", herr)
+			return nil, herr
+		}
+		// 2026-09-12: Acquire is a LEASE against the key's and the pool's
+		// in-flight ceilings (least-loaded key wins). Released once Do
+		// returns and the response's header state is applied, BEFORE
+		// handleResponse (and the caller) read the body and BEFORE any
+		// Retry-After sleep — so a throttled caller never pins a slot
+		// while it waits. graphql.go is the twin with one difference: it
+		// holds the lease through a 200 body read, for its in-body mark.
+		key, release, err := c.keys.Acquire(ctx, ResourceCore)
 		if err != nil {
 			return nil, fmt.Errorf("getting API key: %w", err)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			release()
 			return nil, err
 		}
 		// Set platform-appropriate auth header.
@@ -421,6 +453,9 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		resp, err := c.inner.Do(req)
 		if err != nil {
+			// A failed Do has no response state to apply, so release
+			// at once.
+			release()
 			// v0.27.28: a cancelled context is not a retryable failure —
 			// bail BEFORE the "retrying" WARN. Pre-fix, every request
 			// in flight at `aveloxis stop` logged a retry it would
@@ -435,15 +470,20 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 				"url", url, "attempt", attempt+1, "error", err)
 			// Context-aware sleep: a cancelled job wakes immediately
 			// instead of sitting here for 20+s across the retry chain.
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+			if err := restTransportRetrySleep(ctx, time.Duration(attempt+1)*2*time.Second); err != nil {
+				return nil, err
 			}
 			continue
 		}
 
+		// Copilot review on PR #203: apply the response's primary budget,
+		// secondary-limit rest and (round 2) 401 auth strike to the pool
+		// BEFORE releasing the lease, so a waiter woken by the release
+		// never selects this key on stale state. Released here — before any retry sleep or key
+		// rotation below — so the slot is never held across a wait
+		// (lease_every_exit_test.go drives every exit).
 		c.keys.UpdateFromResponse(key, resp)
+		release()
 
 		// Log rate limit state on every response so operators can monitor usage.
 		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
@@ -573,11 +613,23 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 				ErrGone, url, maxRedirectHops)
 		}
 		*hopsp++
-		// Resolve relative Location (most GitHub Location headers are
-		// absolute, but RFC 7231 permits relative).
-		newURL := location
-		if !strings.HasPrefix(newURL, "http://") && !strings.HasPrefix(newURL, "https://") {
-			newURL = c.baseURL + location
+		// v0.29.12: the next attempt re-sets the pool key's auth header, so
+		// a redirect is followed only while it stays on this client's API
+		// scheme and host (redirectTarget) — and a relative Location is
+		// resolved against the requested URL, not appended to the base
+		// (the old join doubled a GitLab /api/v4 path). Checked BEFORE the
+		// permanent-redirect hook, so a refused target is never recorded
+		// as a repository's new location.
+		newURL, rerr := redirectTarget(c.baseURL, url, location)
+		if rerr != nil {
+			if errors.Is(rerr, ErrOffHostRefused) {
+				c.logger.Error("redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there",
+					"url", url, "status", resp.StatusCode, "location", location, "error", rerr)
+			} else {
+				c.logger.Warn("redirect with an unparseable Location — treating as gone",
+					"url", url, "status", resp.StatusCode, "location", location, "error", rerr)
+			}
+			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, url)
 		}
 		c.logger.Info("following redirect",
 			"from", url, "to", newURL,
@@ -607,12 +659,13 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	case resp.StatusCode == http.StatusUnauthorized:
 		// 401 = bad credentials — but GitHub's auth backend returns this
 		// transiently for valid tokens during incidents, so a single 401
-		// must NOT kill the key. RecordAuthFailure quarantines only after
+		// must NOT kill the key. The pool quarantines only after
 		// several consecutive failures (any success resets the count), and
 		// even then the key auto-recovers after a cooldown. Either way we
-		// just rotate to the next key on the next loop iteration.
+		// just rotate to the next key on the next loop iteration. The
+		// strike itself was recorded by UpdateFromResponse under the lease
+		// (Copilot review round 2 on PR #203) — not here, after release.
 		resp.Body.Close()
-		c.keys.RecordAuthFailure(key)
 		return respRetry, nil, nil
 	case resp.StatusCode == http.StatusBadRequest:
 		// 400 = malformed request. GitHub returns HTML "Whoa there!" for
@@ -654,7 +707,12 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if resp.Header.Get("Retry-After") != "" {
 			resp.Body.Close()
 			wait := parseRetryAfter(resp)
-			c.logger.Info("secondary rate limit", "url", url, "wait", wait)
+			c.logger.Info("secondary rate limit", "url", url, "wait", wait,
+				"token_prefix", tokenPrefix(key.Token))
+			// 2026-09-12 (Bug C): THIS key is resting in the pool for the
+			// Retry-After so other callers are routed to healthy keys —
+			// applied by UpdateFromResponse under the lease (PR #203
+			// review); this branch is only this attempt's own pacing.
 			select {
 			case <-ctx.Done():
 				return respDone, nil, ctx.Err()
@@ -670,7 +728,8 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			}
 			resetStr := resp.Header.Get("X-RateLimit-Reset")
 			c.logger.Info("rate limit exhausted",
-				"url", url, "resource", resource, "reset", resetStr)
+				"url", url, "resource", resource, "reset", resetStr,
+				"token_prefix", tokenPrefix(key.Token))
 			return respRetry, nil, nil
 		}
 		// Headers said nothing definitive. Read the body and check whether
@@ -679,13 +738,15 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		resp.Body.Close()
 		if isAnonymousRateLimitBody(body) {
 			// Unauthenticated request reached us. Every code path that
-			// builds an HTTPClient call goes through GetKey() — getting
+			// builds an HTTPClient call goes through Acquire() — getting
 			// this body shape means a key was unset, the wrong client
 			// was used, or a proxy stripped the Authorization header.
 			// Log at ERROR so on-call sees the regression, then back off
 			// like a regular rate limit so we don't hot-loop on the bug.
 			c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
 				"url", url,
+				"token_prefix", tokenPrefix(key.Token),
+				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
 			select {
@@ -696,8 +757,21 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return respRetry, nil, nil
 		}
 		if isRateLimitBody(body) {
+			// v0.29.9: nothing is marked on the key for this shape (no
+			// Retry-After to size a rest by). token_prefix and attempt are
+			// logged so the next release's log review can test whether the
+			// pool re-leases the throttled key inside GitHub's one-minute
+			// secondary-limit floor. The clearest case is this caller's own
+			// retry: the same url at attempt 2, 3, ... on the same key (a
+			// search 403 leaves the key's core budget untouched, so
+			// least-loaded selection tends to pick it again after the
+			// backoff below). Evidence of that justifies resting the key
+			// here (summary/changelog/v0.29.md, v0.29.9 "next-release log
+			// review").
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
 				"url", url,
+				"token_prefix", tokenPrefix(key.Token),
+				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
 			select {
@@ -712,7 +786,11 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	case resp.StatusCode == http.StatusTooManyRequests:
 		resp.Body.Close()
 		wait := parseRetryAfter(resp)
-		c.logger.Info("rate limited", "url", url, "wait", wait)
+		c.logger.Info("rate limited", "url", url, "wait", wait,
+			"token_prefix", tokenPrefix(key.Token))
+		// 429 is the same per-key throttle as 403 + Retry-After: the key
+		// is already resting (UpdateFromResponse, under the lease — PR
+		// #203 review); this is only this attempt's own pacing.
 		select {
 		case <-ctx.Done():
 			return respDone, nil, ctx.Err()
@@ -786,14 +864,20 @@ func (c *HTTPClient) GetJSON(ctx context.Context, path string, dest any) error {
 	return json.NewDecoder(resp.Body).Decode(dest)
 }
 
-// nextPageFunc determines the next page path from an HTTP response.
-// Returns "" when there are no more pages.
-type nextPageFunc func(resp *http.Response, basePath string) string
+// nextPageFunc determines the next page path from an HTTP response,
+// relative to the client base URL. Returns "" when there are no more pages,
+// and an error (wrapping ErrOffHostRefused) when the continuation would leave
+// the client's host or base path (v0.29.12).
+type nextPageFunc func(resp *http.Response, basePath, clientBase string) (string, error)
 
 // nextPageGitHub extracts the next page URL from GitHub's Link header,
 // rebased onto the listing's own namespace (rebaseContinuation).
-func nextPageGitHub(resp *http.Response, basePath string) string {
-	return rebaseContinuation(extractNextLink(resp), basePath)
+func nextPageGitHub(resp *http.Response, basePath, clientBase string) (string, error) {
+	next, err := extractNextLink(resp, clientBase)
+	if err != nil {
+		return "", err
+	}
+	return rebaseContinuation(next, basePath), nil
 }
 
 // rebaseContinuation rewrites a GitHub Link-header continuation onto
@@ -822,19 +906,19 @@ func rebaseContinuation(next, basePath string) string {
 }
 
 // nextPageGitLab checks X-Next-Page first, then falls back to Link header.
-func nextPageGitLab(resp *http.Response, basePath string) string {
+func nextPageGitLab(resp *http.Response, basePath, clientBase string) (string, error) {
 	if nextPage := resp.Header.Get("X-Next-Page"); nextPage != "" {
 		pageNum, err := strconv.Atoi(nextPage)
 		if err != nil || pageNum == 0 {
-			return ""
+			return "", nil
 		}
 		p := setQueryParam(basePath, "page", nextPage)
 		if !strings.Contains(p, "per_page=") {
 			p += "&per_page=100"
 		}
-		return p
+		return p, nil
 	}
-	return extractNextLink(resp)
+	return extractNextLink(resp, clientBase)
 }
 
 // paginate is the shared pagination engine used by both PaginateGitHub and
@@ -899,6 +983,11 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 						"path", currentPath)
 					return
 				}
+				// v0.29.12: an off-host refusal on page ≥ 2 (a redirect
+				// refused mid-walk) truncates the listing — not a skip.
+				if currentPath != basePath && errors.Is(err, ErrOffHostRefused) {
+					err = fmt.Errorf("%w after page 1: %w", ErrListingTruncated, err)
+				}
 				var zero T
 				yield(zero, err)
 				return
@@ -942,7 +1031,26 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				}
 			}
 
-			currentPath = nextPage(resp, basePath)
+			next, nerr := nextPage(resp, basePath, c.baseURL)
+			if nerr != nil {
+				// v0.29.12: a continuation that is refused (off-host, or
+				// outside the base path) or does not parse stops the walk
+				// LOUDLY, and as ErrListingTruncated when refused — the pages
+				// after this one were never listed, so the endpoint must fail
+				// rather than be skipped with last_collected advancing.
+				if errors.Is(nerr, ErrOffHostRefused) {
+					nerr = fmt.Errorf("%w: %w", ErrListingTruncated, nerr)
+					c.logger.Error("pagination stopped — the next-page link leaves this client's API host, scheme or base path, so no API key is sent there; the listing is incomplete",
+						"path", currentPath, "error", nerr)
+				} else {
+					c.logger.Error("pagination stopped — the next-page link could not be used; the listing is incomplete",
+						"path", currentPath, "error", nerr)
+				}
+				var zero T
+				yield(zero, nerr)
+				return
+			}
+			currentPath = next
 		}
 	}
 }
@@ -969,28 +1077,6 @@ func PaginateGitHub[T any](ctx context.Context, c *HTTPClient, path string) iter
 // GitLab uses X-Next-Page or Link headers.
 func PaginateGitLab[T any](ctx context.Context, c *HTTPClient, path string) iter.Seq2[T, error] {
 	return paginate[T](ctx, c, path, nextPageGitLab)
-}
-
-// linkNextRE matches the "next" relation in a Link header.
-var linkNextRE = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
-
-// extractNextLink parses the Link header for the "next" page URL.
-// Returns the path portion only (strips the host to keep requests going through our client).
-func extractNextLink(resp *http.Response) string {
-	link := resp.Header.Get("Link")
-	if link == "" {
-		return ""
-	}
-	matches := linkNextRE.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return ""
-	}
-	nextURL := matches[1]
-	// Extract just the path+query from the full URL.
-	if u, err := http.NewRequest("GET", nextURL, nil); err == nil {
-		return u.URL.RequestURI()
-	}
-	return nextURL
 }
 
 func setQueryParam(path, key, value string) string {

@@ -13,8 +13,8 @@ import (
 // Pins for the 2026-09-01 graphql-budget fixes (the pytorch incident).
 
 // TestBackgroundSweepsCarryBackgroundBudget: the three background GraphQL
-// fetchers must flag their contexts so key checkout leaves
-// GraphQLBackgroundReserve headroom for foreground collection.
+// fetchers must flag their contexts so key checkout leaves the pool's
+// foreground budget reservation for collection.
 func TestBackgroundSweepsCarryBackgroundBudget(t *testing.T) {
 	hist := srctest.Read(t, "internal/platform/github/contributor_history.go")
 	for _, fn := range []string{"FetchContributorHistoryMeta", "FetchContributorDailyHistory"} {

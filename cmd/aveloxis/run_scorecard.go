@@ -159,8 +159,13 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	token, instrumentToken := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
-	if token == "" {
+	// Copilot review on PR #203: each worker borrows its OWN accounted
+	// loan inside its goroutine (below) — one loan shared by every
+	// worker under-counted `lent` by the worker count and let all
+	// workers concentrate on the same keys; least-lent ordering spreads
+	// per-worker loans instead. The preflight here only asks whether
+	// there is anything to lend.
+	if ghKeys == nil || ghKeys.AliveCount() == 0 {
 		return fmt.Errorf("no GitHub API keys loaded — remote scorecard needs GITHUB_TOKEN; add keys via `aveloxis add-key <token> --platform github`")
 	}
 
@@ -179,7 +184,11 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 		done     atomic.Int64
 		failed   atomic.Int64
 		apiCalls atomic.Int64
-		start    = time.Now()
+		// apiUnknown counts runs whose sample is unknown (-1: a probe
+		// failed or a rate-limit window reset mid-run) — excluded from
+		// apiCalls, and reported so the sum's coverage is visible.
+		apiUnknown atomic.Int64
+		start      = time.Now()
 	)
 
 	jobs := make(chan db.ScorecardBacklogRepo)
@@ -194,28 +203,49 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 				// phase. No analysis clone exists here → remote only:
 				// LocalPath stays empty, so a failed remote attempt
 				// surfaces as an error (recorded + skipped) instead of
-				// falling back.
-				res, scErr := collector.RunScorecard(ctx, store, r.RepoID, collector.ScorecardOptions{
-					RepoURL:         repoURL,
-					RemotePrimary:   true,
-					Timeout:         cfg.Collection.ScorecardTimeout(),
-					GithubToken:     token,
-					InstrumentToken: instrumentToken,
-				}, logger)
+				// falling back. An empty token loan is refused up front
+				// with collector.ErrScorecardNoToken rather than sleeping out
+				// the rate limit (v0.29.10) — in THIS process that needs a
+				// misconfigured empty key string, because the pool here
+				// sends no forge traffic and so never marks a key resting.
+				//
+				// The loan is taken PER REPO (v0.29.10; per worker since the
+				// PR #203 review, once per pass before that). Defense in
+				// depth: it keeps each loan as short as the subprocess and
+				// re-reads the pool's usable set per repo, which only matters
+				// if this command ever shares a pool that sees responses.
+				// The closure scopes the deferred release to this repo.
+				var (
+					res   *collector.ScorecardResult
+					scErr error
+				)
+				func() {
+					token, instrumentToken, releaseTokens := collector.ScorecardTokens(ghKeys, cfg.Collection.ScorecardTokenCountOrDefault())
+					defer releaseTokens()
+					res, scErr = collector.RunScorecard(ctx, store, r.RepoID, collector.ScorecardOptions{
+						RepoURL:         repoURL,
+						RemotePrimary:   true,
+						Timeout:         cfg.Collection.ScorecardTimeout(),
+						GithubToken:     token,
+						InstrumentToken: instrumentToken,
+					}, logger)
+				}()
 				if scErr != nil {
 					failed.Add(1)
 					logger.Warn("run-scorecard: repo failed (skipped — next collection cycle retries)",
 						"repo_id", r.RepoID, "repo", r.Owner+"/"+r.Name, "error", scErr)
 				} else if res != nil && res.APICalls > 0 {
 					apiCalls.Add(res.APICalls)
+				} else if res != nil && res.APICalls < 0 {
+					apiUnknown.Add(1)
 				}
 
 				if d := done.Add(1); d%100 == 0 {
 					elapsed := time.Since(start)
 					perRepo := elapsed / time.Duration(d)
 					eta := time.Duration(int64(total)-d) * perRepo
-					fmt.Printf("run-scorecard: %d/%d done (failed=%d), api_calls_used=%d, elapsed=%s, eta=%s\n",
-						d, total, failed.Load(), apiCalls.Load(),
+					fmt.Printf("run-scorecard: %d/%d done (failed=%d), api_calls_used=%d (%s, unknown=%d), elapsed=%s, eta=%s\n",
+						d, total, failed.Load(), apiCalls.Load(), collector.ScorecardAPICallsBasis, apiUnknown.Load(),
 						elapsed.Round(time.Second), eta.Round(time.Second))
 				}
 			}
@@ -234,8 +264,11 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	close(jobs)
 	wg.Wait()
 
-	fmt.Printf("run-scorecard: complete — done=%d/%d failed=%d api_calls_used=%d elapsed=%s\n",
-		done.Load(), total, failed.Load(), apiCalls.Load(), time.Since(start).Round(time.Second))
+	// api_calls_used is a SUM OF ONE-TOKEN SAMPLES (collector
+	// rateLimitDelta): workers sharing an instrument token count each
+	// other's calls, and calls on the other lent tokens are missed.
+	fmt.Printf("run-scorecard: complete — done=%d/%d failed=%d api_calls_used=%d (%s, unknown=%d) elapsed=%s\n",
+		done.Load(), total, failed.Load(), apiCalls.Load(), collector.ScorecardAPICallsBasis, apiUnknown.Load(), time.Since(start).Round(time.Second))
 	if ctx.Err() != nil {
 		return fmt.Errorf("interrupted after %d/%d repos — re-run to continue (oldest-first ordering makes the pass resumable)", done.Load(), total)
 	}

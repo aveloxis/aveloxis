@@ -390,12 +390,20 @@ func (s *Server) handleRepoScorecard(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	checks, overall, asOf, err := s.store.GetRepoScorecard(r.Context(), repoID)
+	checks, overall, asOf, mode, err := s.store.GetRepoScorecard(r.Context(), repoID)
 	if err != nil {
 		http.Error(w, "scorecard lookup failed", http.StatusInternalServerError)
 		return
 	}
 	resp := map[string]any{"repo_id": repoID, "checks": checks, "scanned": len(checks) > 0}
+	if len(checks) > 0 {
+		// 2026-09-12: which check SET this is. "remote" is the complete
+		// set; "local" is the subset a clone alone can answer (GitLab and
+		// generic-git repos, or a GitHub repo whose only successful runs
+		// were local) — a consumer must not read a missing Code-Review
+		// row as "no code review" on a local set. "" = pre-v0.27.5 rows.
+		resp["mode"] = mode
+	}
 	if overall != nil {
 		// The headline aggregate. Absent on scans that predate v0.27.4;
 		// heals on the repo's next scorecard run.

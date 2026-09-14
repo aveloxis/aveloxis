@@ -52,9 +52,11 @@ func TestMarkGoneReposDoesNotMigrate(t *testing.T) {
 }
 
 // SR-16: only DEFINITIVE probe answers decide. A transport error and
-// every indeterminate status must SKIP (rerun retries) — never stamp,
-// never clear. And the probe must be the SHARED resolver (SR-17), not
-// a private HTTP client.
+// every indeterminate status must SKIP (rerun retries) — never stamp
+// the GONE state, never clear it. (Since v0.29.7 they DO stamp the
+// CHECK on an already-gone row — the recheck cadence, not a verdict.)
+// And the probe must be the SHARED resolver (SR-17), not a private
+// HTTP client.
 func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	src := markGoneSrc(t)
 	if !strings.Contains(src, "collector.ResolveRedirectTarget(") {
@@ -73,7 +75,7 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 		errArm = errArm[:end]
 	}
 	if !strings.Contains(errArm, "skipped++") || !strings.Contains(errArm, "continue") {
-		t.Error("a probe ERROR must skip the repo (SR-16), never stamp or clear")
+		t.Error("a probe ERROR must skip the repo (SR-16), never stamp gone or clear it")
 	}
 	// Resurrection is bidirectional AND atomic (v0.28.6, Copilot
 	// round 2): 200 on a gone-stamped repo clears + re-enqueues via

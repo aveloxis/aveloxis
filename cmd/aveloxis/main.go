@@ -118,9 +118,10 @@ func main() {
 
 func serveCmd(cfgPath *string) *cobra.Command {
 	var (
-		monitorAddr  string
-		workers      int
-		useAugurKeys bool
+		monitorAddr      string
+		workers          int
+		useAugurKeys     bool
+		allowSecondServe bool
 	)
 
 	cmd := &cobra.Command{
@@ -141,18 +142,28 @@ the same queue — each claims jobs via SELECT ... FOR UPDATE SKIP LOCKED.`,
 					workers = cfg.Collection.Workers
 				}
 			}
-			return runServe(*cfgPath, monitorAddr, workers, useAugurKeys)
+			return runServe(*cfgPath, monitorAddr, workers, useAugurKeys, allowSecondServe)
 		},
 	}
 
 	cmd.Flags().StringVar(&monitorAddr, "monitor", "127.0.0.1:5555", "address for the monitoring dashboard")
 	cmd.Flags().IntVar(&workers, "workers", 1, "number of concurrent collection workers")
 	cmd.Flags().BoolVar(&useAugurKeys, "augur-keys", false, "load API keys from Augur's augur_operations.worker_oauth table")
+	// 2026-09-11 (F3). Serve REFUSES to start when another
+	// aveloxis-serve is already connected to the same database; this is
+	// the deliberate override. A CLI flag rather than a config key on
+	// purpose: a config key persists silently and would make the second
+	// serve invisible again, which is the failure this refusal exists to
+	// prevent. `aveloxis start serve` does not forward it — a deliberate
+	// second serve is the foreground/systemd shape (see
+	// docs/guide/dedicated-scancode-host.md).
+	cmd.Flags().BoolVar(&allowSecondServe, "allow-second-serve", false,
+		"start even though another aveloxis-serve is connected to this database (competes for the same queue and API keys)")
 
 	return cmd
 }
 
-func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error {
+func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecondServe bool) error {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
@@ -192,6 +203,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	// re-walking on kate with zero collection). `aveloxis migrate`
 	// remains the full-run self-heal path and never fast-paths.
 	store.SetMigrateFastPath(true)
+	store.SetAllowSecondServe(allowSecondServe)
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}
@@ -206,7 +218,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 	// Start scheduler.
 	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
 
-	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, logger, scheduler.Config{
+	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, glKeys, logger, scheduler.Config{
 		Workers: workers,
 		// The whole aveloxis.json collection block, consumed directly —
 		// the scheduler reads knobs through the CollectionConfig
@@ -215,6 +227,9 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys bool) error
 		// The mail block rides the same single-source pattern
 		// (v0.27.12 operator vulnerability digest).
 		Mail: &cfg.Mail,
+		// The gitlab block: its base_url names the one instance the
+		// GitLab keys (glKeys, above) may be sent to (v0.29.11).
+		GitLab: &cfg.GitLab,
 	})
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
@@ -610,7 +625,17 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)
 				repos, err = listGitHubOrgRepos(ctx, ghHTTP, orgName)
 			case model.PlatformGitLab:
-				glHTTP := platform.NewHTTPClient("https://"+host+"/api/v4", glKeys, logger, platform.AuthGitLab)
+				// v0.29.11: GitLab keys only ever go to the configured
+				// instance (platform.GitLabAPIBaseForHost). isOrgURL does not
+				// currently classify any URL as a GitLab group, so this arm
+				// is unreachable today; it is guarded like the scheduler's
+				// group refresh so enabling it cannot leak keys.
+				apiBase, ok := platform.GitLabAPIBaseForHost(cfg.GitLab.BaseURL, host)
+				if !ok {
+					err = fmt.Errorf("GitLab group %q is on %s, not the configured GitLab instance (gitlab.base_url %q) — GitLab API keys are only sent to that instance's host", orgName, host, cfg.GitLab.BaseURL)
+					break
+				}
+				glHTTP := platform.NewHTTPClient(apiBase, glKeys, logger, platform.AuthGitLab)
 				repos, err = listGitLabGroupRepos(ctx, glHTTP, orgName)
 			}
 			if err != nil {
@@ -2037,7 +2062,31 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 		logger.Warn("no GitLab API keys configured — GitLab repos will not be collected")
 	}
 
-	return platform.NewKeyPool(ghTokens, logger), platform.NewKeyPool(glTokens, logger), nil
+	gh := platform.NewKeyPool(ghTokens, logger)
+	gl := platform.NewKeyPool(glTokens, logger)
+	// 2026-09-12 admission control: the pool is the single authority for
+	// every forge constraint (per-key and pool-wide in-flight ceilings,
+	// the foreground budget reservation). The accessors are the one
+	// default layer (SR-10); log the EFFECTIVE values at the point of use.
+	// GitLab gets only the pool-wide ceiling as a backstop. The per-key
+	// ceiling is DERIVED from GitHub's per-key secondary limits, which
+	// GitLab does not have in that shape — a one-token GitLab fleet under
+	// a per-key 4 would be capped at four concurrent requests across the
+	// whole worker pool, a bound no knob names (review round on the
+	// 2026-09-12 change). The reserve only ever applies to GraphQL
+	// background callers, which the GitLab path never is.
+	maxInflight := cfg.Collection.GitHubMaxInflightValue()
+	maxPerKey := cfg.Collection.GitHubMaxInflightPerKeyValue()
+	reservePct := cfg.Collection.GitHubBudgetForegroundReservePctValue()
+	const glPerKey = 0 // no per-key ceiling on GitLab; one spelling for the call and the log
+	gh.SetAdmission(maxInflight, maxPerKey, reservePct)
+	gl.SetAdmission(maxInflight, glPerKey, reservePct)
+	logger.Info("API key pool admission",
+		"github_keys", len(ghTokens), "gitlab_keys", len(glTokens),
+		"max_inflight", maxInflight, "max_inflight_per_key", maxPerKey,
+		"gitlab_max_inflight_per_key", glPerKey,
+		"foreground_reserve_pct", reservePct)
+	return gh, gl, nil
 }
 
 // digestMailerAdapter bridges *mailer.Mailer to the scheduler's

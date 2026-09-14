@@ -3,7 +3,11 @@
 
 package srctest
 
-import "strings"
+import (
+	"go/scanner"
+	"go/token"
+	"strings"
+)
 
 // StripGoComments removes // line comments and /* */ block comments,
 // aware of string, raw-string, and rune literals — a "//" inside a
@@ -146,24 +150,34 @@ func StripSQLComments(sql string) string {
 	return b.String()
 }
 
-// BacktickLiterals returns every backtick-delimited literal in src,
-// backticks included — the SQL-in-Go extraction the flagship
+// BacktickLiterals returns every backtick-delimited (raw string) literal
+// in src, backticks included — the SQL-in-Go extraction the flagship
 // column-writer tripwire pioneered. DOCUMENTED BLIND SPOT: SQL built
 // by string concatenation or fmt.Sprintf is invisible here (and to
 // every consumer of this helper).
+//
+// v0.29.8: src is TOKENIZED with go/scanner, not paired textually. A
+// backtick inside an interpreted "..." string, a rune literal or a
+// comment is not a delimiter; textual pairing let one unbalanced
+// backtick in a hint string swallow every later raw literal in the file
+// and silently shrink every corpus built on this helper
+// (TestBacktickLiteralsIsGoAware). Fragments (a function body from
+// FuncBody) tokenize fine; scan errors are ignored, and an unterminated
+// raw string at the end of src is not returned.
 func BacktickLiterals(src string) []string {
 	var out []string
+	var sc scanner.Scanner
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	sc.Init(file, []byte(src), func(token.Position, string) {}, 0)
 	for {
-		start := strings.IndexByte(src, '`')
-		if start < 0 {
+		_, tok, lit := sc.Scan()
+		if tok == token.EOF {
 			return out
 		}
-		end := strings.IndexByte(src[start+1:], '`')
-		if end < 0 {
-			return out
+		if tok == token.STRING && len(lit) >= 2 && lit[0] == '`' && lit[len(lit)-1] == '`' {
+			out = append(out, lit)
 		}
-		out = append(out, src[start:start+1+end+1])
-		src = src[start+1+end+1:]
 	}
 }
 

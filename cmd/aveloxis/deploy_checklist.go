@@ -68,6 +68,64 @@ var deployChecklists = map[string][]deployStep{
 	// here and the serve-startup other-serve refusal — no data change,
 	// same ladder.
 	"0.29.4": v029DeployChecklist,
+	// v0.29.5 (the 2026-09-11 production log analysis): scorecard
+	// attempt diagnostics, the same-version second-serve refusal, the
+	// contributor rename pre-probe, the R2 cntrb_login fix and the
+	// staged-abort replay. No schema change and no new operator heal —
+	// same ladder. Operators on this version ALSO have Postgres-side
+	// work that no checklist can do for them (the OOM-era work_mem /
+	// max_connections / shared_buffers drift): see
+	// docs/guide/scaling.md, "PostgreSQL server tuning".
+	"0.29.5": v029DeployChecklist,
+	// v0.29.6 (the 2026-09-12 key-pool admission control): the pool
+	// leases keys under in-flight ceilings, rests secondary-limited
+	// keys, reserves foreground budget, and scorecard never replaces a
+	// complete set with a partial one. No schema change, no new
+	// operator heal — same ladder. Four new config knobs, all with
+	// derived defaults; nothing to set unless tuning.
+	"0.29.6": v029DeployChecklist,
+	// v0.29.7 (gone-repo recheck cadence): ONE new column
+	// (repos.repo_gone_checked_at, addColumnIfMissing inside migrate)
+	// and a scheduler ticker that re-probes gone repos every
+	// collection.gone_repo_recheck_days (28). No operator heal — the
+	// first cycles after the restart re-verify the historical gone
+	// cohort on their own. Same ladder.
+	"0.29.7": v029DeployChecklist,
+	// v0.29.8 (is_automation_email parallel safety + the Copilot
+	// round-2 fixes on PR #203): the function is re-declared PARALLEL
+	// SAFE by the base schema and one tiny expression index
+	// (idx_rgls_email_lower, ~800 rows) is built CONCURRENTLY — both
+	// inside migrate. No operator heal — same ladder. The table size does
+	// not make the build instant: CREATE INDEX CONCURRENTLY waits for
+	// every transaction in the database holding an older snapshot, so a
+	// long analytics query running against the database being migrated
+	// holds migrate (and serve startup) until it ends — the blocker
+	// watcher names it. Let such queries finish, or stop them, first.
+	"0.29.8": v029DeployChecklist,
+	// v0.29.9: the headerless rate-limit 403 lines name the serving key and
+	// attempt (for the next release's log review), and a response without
+	// a reset header can no longer raise a key's tracked budget. No schema
+	// change, no operator heal — same ladder.
+	"0.29.9": v029DeployChecklist,
+	// v0.29.10: scorecard never runs remote without a lent GitHub token
+	// (local mode at once on the retained clone, or a named skip), and
+	// run-scorecard borrows tokens per repo. No schema change, no operator
+	// heal — same ladder.
+	"0.29.10": v029DeployChecklist,
+	// v0.29.11: the legacy GitLab group refresh uses the GitLab key pool,
+	// and only for the gitlab.base_url host (it had been sending GitHub
+	// tokens to GitLab hosts); srctest.ConstBody refuses implicit-value
+	// consts. No schema change, no operator heal — same ladder.
+	"0.29.11": v029DeployChecklist,
+	// v0.29.12: HTTPClient no longer follows a redirect off the client's
+	// own API scheme and host (it re-sent the pool key to the target), and
+	// the scorecard /rate_limit probe follows none. No schema change, no
+	// operator heal — same ladder.
+	"0.29.12": v029DeployChecklist,
+	// v0.29.13: the contributor guide's scheduler.NewWithKeys example matches
+	// the real parameter list (glKeys was missing). Docs and a doc-drift test
+	// only — same ladder.
+	"0.29.13": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

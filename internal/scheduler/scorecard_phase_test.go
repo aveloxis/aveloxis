@@ -117,3 +117,63 @@ func TestScorecardPhaseRemotePrimaryForGitHub(t *testing.T) {
 		t.Error("runScorecardPhase must clean up the retained analysis clone after scorecard finishes")
 	}
 }
+
+// TestScorecardPhaseReportsCostAndContention pins the F2 diagnostics
+// (2026-09-11). The production log could not answer two questions that
+// a 1,152-worker-hour cost demands answers to:
+//
+//   - "How long did scorecard hold this worker's slot?" The phase ran
+//     inline in the collection worker goroutine and discarded
+//     RunScorecard's result (`_, scErr :=`), so mode and measured API
+//     spend never left the collector package even though
+//     ScorecardResult has carried them since v0.27.5.
+//   - "Was the remote attempt slow because every subprocess is spending
+//     the same un-checked-out token set?" ScorecardTokens hands every
+//     non-invalidated pool token to every concurrent subprocess, so the
+//     token count and the pool's remaining budget at attempt start are
+//     the numbers that confirm or discard that hypothesis.
+//
+// These are DIAGNOSTICS, not a fix: the 15-minute cap and the absence of
+// scorecard cooldown state are deliberately unchanged until a week of
+// this data says which one to change.
+func TestScorecardPhaseReportsCostAndContention(t *testing.T) {
+	body := schedulerFuncBody(t, "(s *Scheduler) runScorecardPhase")
+
+	// The result must stop being discarded — everything else depends on it.
+	if strings.Contains(body, "_, scErr := collector.RunScorecard(") {
+		t.Error("runScorecardPhase still discards RunScorecard's result. " +
+			"ScorecardResult carries Mode, APICalls and Duration; dropping it is why the " +
+			"per-repo scorecard cost was unanswerable without grepping 627 MB of log.")
+	}
+
+	// Copilot review on PR #203: phase_duration is "how long the phase
+	// held this worker", and the phase holds the worker while it QUEUES
+	// for a subprocess slot too — so the timer starts before the
+	// semaphore select, and the slot wait is reported on its own.
+	if ps, sem := strings.Index(body, "phaseStart := time.Now()"), strings.Index(body, "case s.scorecardSem <- struct{}{}:"); ps < 0 || sem < 0 || ps > sem {
+		t.Error("phaseStart must be taken BEFORE the scorecardSem select — phase_duration includes the slot wait")
+	}
+	for _, needle := range []string{
+		`"scorecard phase complete"`, // the slot-holding cost
+		"phase_duration",
+		"slot_wait",
+		"api_calls_used",
+		`"scorecard tokens"`, // the contention probe
+		"token_count",
+		"pool_remaining",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("runScorecardPhase is missing %s — without it the F2 hypothesis "+
+				"(token contention driving the 4,608 full-cap timeouts) cannot be confirmed "+
+				"or discarded from the log.", needle)
+		}
+	}
+
+	// The probe must tolerate a nil pool: runScorecardPhase is reachable
+	// with no keys configured (ScorecardTokens itself nil-guards), and a
+	// diagnostic that panics is worse than no diagnostic.
+	if !strings.Contains(body, "s.ghKeys != nil") {
+		t.Error("the token-contention probe must nil-check s.ghKeys. ScorecardTokens nil-guards " +
+			"internally, so this phase is genuinely reachable with a nil pool.")
+	}
+}

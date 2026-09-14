@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-// TestGetKey_EmptyPool verifies that an empty key pool returns an error immediately
+// TestAcquire_EmptyPool verifies that an empty key pool returns an error immediately
 // with a clear message indicating no keys are configured, not just "no valid API keys".
-func TestGetKey_EmptyPool(t *testing.T) {
+func TestAcquire_EmptyPool(t *testing.T) {
 	kp := NewKeyPool(nil, testLogger())
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := kp.GetKey(ctx)
+	_, err := checkout(kp, ctx, ResourceCore)
 	if err == nil {
 		t.Fatal("expected error from empty pool")
 	}
@@ -26,13 +26,13 @@ func TestGetKey_EmptyPool(t *testing.T) {
 	}
 }
 
-// TestGetKey_EmptyTokenSlice verifies same behavior with an empty (non-nil) slice.
-func TestGetKey_EmptyTokenSlice(t *testing.T) {
+// TestAcquire_EmptyTokenSlice verifies same behavior with an empty (non-nil) slice.
+func TestAcquire_EmptyTokenSlice(t *testing.T) {
 	kp := NewKeyPool([]string{}, testLogger())
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := kp.GetKey(ctx)
+	_, err := checkout(kp, ctx, ResourceCore)
 	if err == nil {
 		t.Fatal("expected error from empty pool")
 	}
@@ -54,9 +54,9 @@ func TestKeyPool_IsEmpty(t *testing.T) {
 	}
 }
 
-// TestGetKey_AllInvalid verifies that a pool where all keys have been invalidated
+// TestAcquire_AllInvalid verifies that a pool where all keys have been invalidated
 // (bad credentials) returns a different error than an unconfigured pool.
-func TestGetKey_AllInvalidated(t *testing.T) {
+func TestAcquire_AllInvalidated(t *testing.T) {
 	kp := NewKeyPool([]string{"bad1", "bad2"}, testLogger())
 	// Mark all keys invalid.
 	for _, k := range kp.keys {
@@ -66,7 +66,7 @@ func TestGetKey_AllInvalidated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := kp.GetKey(ctx)
+	_, err := checkout(kp, ctx, ResourceCore)
 	if err == nil {
 		t.Fatal("expected error when all keys invalidated")
 	}

@@ -21,7 +21,7 @@ import (
 // the key pool tracked ONLY the core rate-limit bucket — UpdateFromResponse
 // discarded every response whose X-RateLimit-Resource was not "core", so a
 // key with a full core budget and ZERO graphql points looked perfect to
-// GetKey. 36,164 "API rate limit already exceeded for user ID …" errors in
+// checkout. 36,164 "API rate limit already exceeded for user ID …" errors in
 // 4 days: GraphQL requests kept landing on graphql-dead keys, and monster
 // PR-batch jobs (pytorch 86h43m, vscode, winget-pkgs, home-assistant/core)
 // died on single unretried hits. These tests pin the per-resource budget.
@@ -72,44 +72,44 @@ func TestUpdateFromResponseRoutesGraphQLResource(t *testing.T) {
 	}
 }
 
-// TestGetGraphQLKeySkipsGraphQLDepletedKeys: checkout for GraphQL work must
-// gate on the GRAPHQL budget. A key with a dead graphql bucket and a full
-// core bucket is unusable for GraphQL (and still fine for REST).
-func TestGetGraphQLKeySkipsGraphQLDepletedKeys(t *testing.T) {
+// TestAcquireGraphQLSkipsGraphQLDepletedKeys: checkout for GraphQL work
+// must gate on the GRAPHQL budget. A key with a dead graphql bucket and a
+// full core bucket is unusable for GraphQL (and still fine for REST).
+func TestAcquireGraphQLSkipsGraphQLDepletedKeys(t *testing.T) {
 	kp := NewKeyPool([]string{"dead-gql", "alive"}, rlTestLogger())
 	kp.keys[0].GraphQLRemaining = 0
 	kp.keys[0].GraphQLResetAt = time.Now().Add(time.Hour)
 
 	for i := 0; i < 4; i++ {
-		k, err := kp.GetGraphQLKey(context.Background())
+		k, err := checkout(kp, context.Background(), ResourceGraphQL)
 		if err != nil {
-			t.Fatalf("GetGraphQLKey: %v", err)
+			t.Fatalf("Acquire(graphql): %v", err)
 		}
 		if k.Token != "alive" {
-			t.Fatalf("checkout %d returned the graphql-dead key — GetGraphQLKey must skip keys with no graphql budget", i)
+			t.Fatalf("checkout %d returned the graphql-dead key — Acquire(ResourceGraphQL) must skip keys with no graphql budget", i)
 		}
 	}
 	// The graphql-dead key is still perfectly fine for REST (core budget full).
-	k, err := kp.GetKey(context.Background())
+	k, err := checkout(kp, context.Background(), ResourceCore)
 	if err != nil {
-		t.Fatalf("GetKey: %v", err)
+		t.Fatalf("Acquire(core): %v", err)
 	}
 	if k == nil {
-		t.Fatal("GetKey returned nil")
+		t.Fatal("Acquire(core) returned nil")
 	}
 }
 
-// TestGetGraphQLKeyRefillsAfterReset: once a key's graphql window resets,
+// TestAcquireGraphQLRefillsAfterReset: once a key's graphql window resets,
 // the budget refills (5,000 points/hr) and the key is usable again.
-func TestGetGraphQLKeyRefillsAfterReset(t *testing.T) {
+func TestAcquireGraphQLRefillsAfterReset(t *testing.T) {
 	kp := NewKeyPool([]string{"only"}, rlTestLogger())
 	kp.keys[0].GraphQLRemaining = 0
 	kp.keys[0].GraphQLResetAt = time.Now().Add(50 * time.Millisecond)
 
 	start := time.Now()
-	k, err := kp.GetGraphQLKey(context.Background())
+	k, err := checkout(kp, context.Background(), ResourceGraphQL)
 	if err != nil {
-		t.Fatalf("GetGraphQLKey: %v", err)
+		t.Fatalf("Acquire(graphql): %v", err)
 	}
 	if k.GraphQLRemaining <= kp.buffer {
 		t.Errorf("GraphQLRemaining = %d after reset elapsed — window refill missing", k.GraphQLRemaining)
@@ -119,18 +119,18 @@ func TestGetGraphQLKeyRefillsAfterReset(t *testing.T) {
 	}
 }
 
-// TestGetGraphQLKeyFastFailReturnsInsteadOfWaiting: fast-fail callers
+// TestAcquireGraphQLFastFailReturnsInsteadOfWaiting: fast-fail callers
 // (subdividing batches, the deferred-retry tickers) must get a typed
 // rate-limit error immediately instead of blocking until a window reset —
 // their claim/subdivision machinery IS the retry strategy.
-func TestGetGraphQLKeyFastFailReturnsInsteadOfWaiting(t *testing.T) {
+func TestAcquireGraphQLFastFailReturnsInsteadOfWaiting(t *testing.T) {
 	kp := NewKeyPool([]string{"a", "b"}, rlTestLogger())
 	for _, k := range kp.keys {
 		k.GraphQLRemaining = 0
 		k.GraphQLResetAt = time.Now().Add(time.Hour)
 	}
 	start := time.Now()
-	_, err := kp.GetGraphQLKey(WithGraphQLFastFail(context.Background()))
+	_, err := checkout(kp, WithGraphQLFastFail(context.Background()), ResourceGraphQL)
 	if err == nil {
 		t.Fatal("expected a typed error when every graphql budget is exhausted under fast-fail")
 	}
@@ -142,39 +142,45 @@ func TestGetGraphQLKeyFastFailReturnsInsteadOfWaiting(t *testing.T) {
 	}
 }
 
-// TestGraphQLBackgroundReserveKeepsHeadroom: background sweeps (activity
-// history, classification) must refuse keys whose graphql budget is below
-// the reserve, leaving that headroom for foreground collection. Foreground
-// checkout still accepts the same key.
-func TestGraphQLBackgroundReserveKeepsHeadroom(t *testing.T) {
+// TestGraphQLForegroundReserveIsPoolLevel: background sweeps (activity
+// history, classification) are admitted only while the POOL's remaining
+// graphql budget is above the foreground reservation; foreground checkout
+// is admitted while any key has budget. 2026-09-12 REVERSED the 2026-09-01
+// per-key shape this test used to pin (a key below 500 points was refused
+// for background work): that cliff shrank the background-eligible set as
+// keys depleted and concentrated the whole sweep onto the survivors — Bug
+// A of the chaoss.tv analysis. The reservation is now a share of the
+// pool's capacity, and a low key is as eligible as a high one for a
+// background caller while the pool as a whole is above the line.
+func TestGraphQLForegroundReserveIsPoolLevel(t *testing.T) {
 	kp := NewKeyPool([]string{"low", "high"}, rlTestLogger())
-	// AT the reserve exactly: selection is strict (> minBudget), so a key
-	// holding precisely the reserve is refused for background work too
-	// (review F6 — the boundary the first test never probed).
-	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve
-	kp.keys[1].GraphQLRemaining = GraphQLBackgroundReserve + 100
+	kp.SetAdmission(0, 0, 25)          // reserve 25% of 2 x 5000 = 2500 points
+	kp.keys[0].GraphQLRemaining = 400  // far below the old per-key cliff
+	kp.keys[1].GraphQLRemaining = 4000 // pool total 4400 > 2500: above the line
 
 	bg := WithGraphQLBackgroundBudget(context.Background())
-	for i := 0; i < 4; i++ {
-		k, err := kp.GetGraphQLKey(bg)
-		if err != nil {
-			t.Fatalf("background GetGraphQLKey: %v", err)
-		}
-		if k.Token != "high" {
-			t.Fatalf("background checkout %d got the below-reserve key — the reserve exists so sweeps can't starve collection", i)
-		}
+	// With nothing in flight the richest key wins the tie (water-filling
+	// equalizes primary budgets), so hold ONE lease on "high": least-
+	// inflight now prefers "low" — which the old per-key cliff refused
+	// (400 < 500), sending this caller back onto "high" as well.
+	kHigh, holdHigh := heldAcquire(t, kp, bg, ResourceGraphQL)
+	if kHigh.Token != "high" {
+		t.Fatalf("first background acquire = %q, want the richest key \"high\"", kHigh.Token)
 	}
-	// Foreground checkout may use the low key (it's above the plain buffer).
-	seen := map[string]bool{}
-	for i := 0; i < 8; i++ {
-		k, err := kp.GetGraphQLKey(context.Background())
-		if err != nil {
-			t.Fatalf("foreground GetGraphQLKey: %v", err)
-		}
-		seen[k.Token] = true
+	k, release := heldAcquire(t, kp, bg, ResourceGraphQL)
+	release()
+	holdHigh()
+	if k.Token != "low" {
+		t.Errorf("second background acquire = %q, want \"low\" — the POOL is above the reserve, so a low key is as eligible as a high one; a per-key cliff is exactly what concentrated the sweep onto survivors (Bug A)", k.Token)
 	}
-	if !seen["low"] {
-		t.Error("foreground checkout never used the below-reserve key — the reserve must apply to BACKGROUND callers only")
+
+	// Drain the pool to the line: background is refused, foreground is not.
+	kp.keys[1].GraphQLRemaining = 2100 // total 2500 == reserve
+	if _, err := checkout(kp, WithGraphQLFastFail(bg), ResourceGraphQL); !errors.Is(err, ErrGraphQLBudgetExhausted) {
+		t.Fatalf("background at the reserve line: err = %v, want ErrGraphQLBudgetExhausted", err)
+	}
+	if _, err := checkout(kp, WithGraphQLFastFail(context.Background()), ResourceGraphQL); err != nil {
+		t.Fatalf("foreground at the reserve line must still be admitted: %v", err)
 	}
 }
 
@@ -360,11 +366,11 @@ func TestMixedExhaustionClassifiesTransient(t *testing.T) {
 }
 
 // TestGitLabInBodyRateLimitExhaustsCoreBudget (Copilot round 2 on
-// PR #193, suppressed #2): GitLab GraphQL checks out via GetKey (the
-// unified/core budget — no X-RateLimit-Resource header exists there),
-// so an in-body rate limit that only zeroes GraphQLRemaining would be
-// decorative: the next retry's GetKey reads Remaining, sees it
-// healthy, and re-serves the SAME exhausted token through the whole
+// PR #193, suppressed #2): GitLab GraphQL checks out by ResourceCore
+// (the unified/core budget — no X-RateLimit-Resource header exists
+// there), so an in-body rate limit that only zeroes GraphQLRemaining
+// would be decorative: the next retry's checkout reads Remaining, sees
+// it healthy, and re-serves the SAME exhausted token through the whole
 // retry budget. The in-body branch must mark the budget the checkout
 // dimension actually reads: core for AuthGitLab, graphql for GitHub.
 func TestGitLabInBodyRateLimitExhaustsCoreBudget(t *testing.T) {
@@ -405,7 +411,7 @@ func TestGitLabInBodyRateLimitExhaustsCoreBudget(t *testing.T) {
 	// the dead key's CORE budget, not (only) its graphql bucket.
 	for _, k := range keys.keys {
 		if k.Token == "gl-dead" && k.Remaining > 0 {
-			t.Errorf("gl-dead key's core Remaining = %d, want 0 — GetKey would re-serve this exhausted token", k.Remaining)
+			t.Errorf("gl-dead key's core Remaining = %d, want 0 — the core checkout would re-serve this exhausted token", k.Remaining)
 		}
 	}
 }
@@ -522,19 +528,21 @@ func TestHeaderlessRateLimit403MarksTheCheckoutBudget(t *testing.T) {
 // TestBackgroundReserveActuallyBinds (Copilot round 8 on PR #193,
 // active): checkout must RESERVE the query's cost — pre-fix it only
 // gated on the pre-request balance, so concurrent background windows
-// all saw the same number and collectively spent through
-// GraphQLBackgroundReserve. With the optimistic 1-point spend, a key
-// holding reserve+3 admits exactly 3 background checkouts before the
-// gate closes (the response headers later overwrite with the
-// authoritative absolute, so an underestimate reconciles itself).
+// all saw the same number and collectively spent through the reserve.
+// With the optimistic 1-point spend, a pool holding reserve+3 admits
+// exactly 3 background checkouts before the gate closes (the response
+// headers later overwrite with the authoritative absolute, so an
+// underestimate reconciles itself). Since 2026-09-12 the line is
+// pool-level (reservePct of capacity), so the fixture sets it there.
 func TestBackgroundReserveActuallyBinds(t *testing.T) {
 	kp := NewKeyPool([]string{"k"}, rlTestLogger())
-	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve + 3
+	kp.SetAdmission(0, 0, 10) // reserve = 10% of 5000 = 500 points
+	kp.keys[0].GraphQLRemaining = 500 + 3
 	ctx := WithGraphQLFastFail(WithGraphQLBackgroundBudget(context.Background()))
 
 	got := 0
 	for i := 0; i < 10; i++ {
-		if _, err := kp.GetGraphQLKey(ctx); err != nil {
+		if _, err := checkout(kp, ctx, ResourceGraphQL); err != nil {
 			if !errors.Is(err, ErrGraphQLBudgetExhausted) {
 				t.Fatalf("checkout %d: %v", i, err)
 			}
@@ -552,7 +560,8 @@ func TestBackgroundReserveActuallyBinds(t *testing.T) {
 // admissions never exceed the excess above the reserve.
 func TestBackgroundReserveBindsUnderConcurrency(t *testing.T) {
 	kp := NewKeyPool([]string{"k"}, rlTestLogger())
-	kp.keys[0].GraphQLRemaining = GraphQLBackgroundReserve + 5
+	kp.SetAdmission(0, 0, 10) // reserve = 10% of 5000 = 500 points
+	kp.keys[0].GraphQLRemaining = 500 + 5
 	ctx := WithGraphQLFastFail(WithGraphQLBackgroundBudget(context.Background()))
 
 	var mu sync.Mutex
@@ -562,7 +571,7 @@ func TestBackgroundReserveBindsUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := kp.GetGraphQLKey(ctx); err == nil {
+			if _, err := checkout(kp, ctx, ResourceGraphQL); err == nil {
 				mu.Lock()
 				admitted++
 				mu.Unlock()

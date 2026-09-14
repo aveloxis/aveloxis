@@ -56,7 +56,7 @@ func captureHeaders(failCount int) (http.HandlerFunc, *[]http.Header, *sync.Mute
 // server receives (including retries) and asserts each one carries
 // `Authorization: token <key>`.
 //
-// Designed so that a future refactor that, say, bypasses GetKey()
+// Designed so that a future refactor that, say, bypasses Acquire()
 // on the retry path, or strips the header before calling
 // client.Do(), fires this test immediately.
 func TestHTTPClientAlwaysAttachesAuthorizationHeaderGitHub(t *testing.T) {

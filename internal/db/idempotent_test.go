@@ -84,7 +84,7 @@ func TestBatchInsertsHaveOnConflict(t *testing.T) {
 	// Tables with their own lifecycle management (rotation, accumulation).
 	batchExceptions := map[string]bool{
 		"aveloxis_data.repo_sbom_scans":     true, // SBOMs accumulate per collection run
-		"aveloxis_data.repo_deps_scorecard": true, // uses RotateScorecardToHistory before insert
+		"aveloxis_data.repo_deps_scorecard": true, // ReplaceScorecard rotates before its inserts (one tx)
 		"aveloxis_data.repo_deps_libyear":   true, // uses RotateLibyearToHistory before insert
 		// v0.27.17: repo_dependencies is snapshot-replaced by the SAME
 		// RotateLibyearToHistory pass (it deletes both tables' current

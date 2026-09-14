@@ -15,31 +15,63 @@ import (
 	"time"
 )
 
+// hop is one redirect a sameHostRedirector serves: requests to the map key's
+// path get status with an ABSOLUTE same-host Location to `to`.
+type hop struct {
+	status int
+	to     string
+}
+
+// sameHostRedirector serves the given redirects on ONE server and answers
+// 200 on any other path, counting those final hits. Until v0.29.12 these
+// tests redirected from one httptest server to another — a different
+// host:port — which is exactly the cross-host follow v0.29.12 refuses
+// (httpclient_redirect_host_test.go); the hook's contract is about status
+// codes, not hosts, so every hop now stays on one host.
+func sameHostRedirector(t *testing.T, hops map[string]hop) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var finalHits atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h, ok := hops[r.URL.Path]; ok {
+			w.Header().Set("Location", srv.URL+h.to)
+			w.WriteHeader(h.status)
+			return
+		}
+		finalHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &finalHits
+}
+
+func hookClient(baseURL string) *HTTPClient {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewHTTPClient(baseURL, NewKeyPool([]string{"t"}, logger), logger, AuthGitHub)
+}
+
+func getOK(t *testing.T, c *HTTPClient, path string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := c.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	resp.Body.Close()
+}
+
 // TestOnPermanentRedirect_Fires301 verifies the hook fires on a 301 and
 // receives the from/to URLs. Use case: GitHub renamed the repo; we need to
 // update repos.repo_git in the DB. Without the hook, httpclient silently
 // follows the redirect and the DB entry stays stale — the repo keeps getting
 // collected under its old name.
 func TestOnPermanentRedirect_Fires301(t *testing.T) {
-	var finalRequested atomic.Int32
-	var target *httptest.Server
-
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", target.URL+"/repos/new-owner/new-repo")
-		w.WriteHeader(http.StatusMovedPermanently)
-	}))
-	defer origin.Close()
-
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		finalRequested.Add(1)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer target.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	keys := NewKeyPool([]string{"t"}, logger)
-	client := NewHTTPClient(origin.URL, keys, logger, AuthGitHub)
+	srv, finalHits := sameHostRedirector(t, map[string]hop{
+		"/repos/old-owner/old-repo": {http.StatusMovedPermanently, "/repos/new-owner/new-repo"},
+	})
+	client := hookClient(srv.URL)
 
 	var mu sync.Mutex
 	var fires []struct{ from, to string }
@@ -48,28 +80,20 @@ func TestOnPermanentRedirect_Fires301(t *testing.T) {
 		defer mu.Unlock()
 		fires = append(fires, struct{ from, to string }{from, to})
 	})
+	getOK(t, client, "/repos/old-owner/old-repo")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := client.Get(ctx, "/repos/old-owner/old-repo")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	if finalHits.Load() == 0 {
+		t.Fatal("target was never hit — redirect was not followed")
 	}
-	resp.Body.Close()
-
-	if finalRequested.Load() == 0 {
-		t.Fatal("target server was never hit — redirect was not followed")
-	}
-
 	mu.Lock()
 	defer mu.Unlock()
 	if len(fires) != 1 {
 		t.Fatalf("expected exactly 1 hook call, got %d: %+v", len(fires), fires)
 	}
-	if fires[0].from != origin.URL+"/repos/old-owner/old-repo" {
+	if fires[0].from != srv.URL+"/repos/old-owner/old-repo" {
 		t.Errorf("from = %q, want origin+path", fires[0].from)
 	}
-	if fires[0].to != target.URL+"/repos/new-owner/new-repo" {
+	if fires[0].to != srv.URL+"/repos/new-owner/new-repo" {
 		t.Errorf("to = %q, want target+path", fires[0].to)
 	}
 }
@@ -78,34 +102,11 @@ func TestOnPermanentRedirect_Fires301(t *testing.T) {
 // preserve method on redirect) and must also trigger the hook. Covered
 // separately from 301 because implementations sometimes forget one.
 func TestOnPermanentRedirect_Fires308(t *testing.T) {
-	var target *httptest.Server
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", target.URL+"/new")
-		w.WriteHeader(http.StatusPermanentRedirect)
-	}))
-	defer origin.Close()
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer target.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	keys := NewKeyPool([]string{"t"}, logger)
-	client := NewHTTPClient(origin.URL, keys, logger, AuthGitHub)
-
+	srv, _ := sameHostRedirector(t, map[string]hop{"/old": {http.StatusPermanentRedirect, "/new"}})
+	client := hookClient(srv.URL)
 	var fired atomic.Bool
-	client.OnPermanentRedirect(func(from, to string) {
-		fired.Store(true)
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := client.Get(ctx, "/old")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	resp.Body.Close()
-
+	client.OnPermanentRedirect(func(from, to string) { fired.Store(true) })
+	getOK(t, client, "/old")
 	if !fired.Load() {
 		t.Error("OnPermanentRedirect should fire on 308 — same semantic as 301 for repo renames")
 	}
@@ -115,34 +116,14 @@ func TestOnPermanentRedirect_Fires308(t *testing.T) {
 // transient endpoint redirect). The hook must NOT fire: mutating repo_git
 // on a temporary redirect would mis-point the DB.
 func TestOnPermanentRedirect_DoesNotFire302(t *testing.T) {
-	var target *httptest.Server
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", target.URL+"/endpoint")
-		w.WriteHeader(http.StatusFound) // 302
-	}))
-	defer origin.Close()
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer target.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	keys := NewKeyPool([]string{"t"}, logger)
-	client := NewHTTPClient(origin.URL, keys, logger, AuthGitHub)
-
+	srv, finalHits := sameHostRedirector(t, map[string]hop{"/endpoint": {http.StatusFound, "/endpoint-now"}})
+	client := hookClient(srv.URL)
 	var fired atomic.Bool
-	client.OnPermanentRedirect(func(from, to string) {
-		fired.Store(true)
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := client.Get(ctx, "/endpoint")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	client.OnPermanentRedirect(func(from, to string) { fired.Store(true) })
+	getOK(t, client, "/endpoint")
+	if finalHits.Load() != 1 {
+		t.Fatalf("the 302 was not followed (final hits %d)", finalHits.Load())
 	}
-	resp.Body.Close()
-
 	if fired.Load() {
 		t.Error("OnPermanentRedirect must NOT fire on 302 — it's a temporary redirect and the repo identity is still at the old URL")
 	}
@@ -151,34 +132,14 @@ func TestOnPermanentRedirect_DoesNotFire302(t *testing.T) {
 // TestOnPermanentRedirect_DoesNotFire307 — 307 is method-preserving
 // temporary redirect. Same reasoning as 302: don't fire the hook.
 func TestOnPermanentRedirect_DoesNotFire307(t *testing.T) {
-	var target *httptest.Server
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", target.URL+"/endpoint")
-		w.WriteHeader(http.StatusTemporaryRedirect)
-	}))
-	defer origin.Close()
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer target.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	keys := NewKeyPool([]string{"t"}, logger)
-	client := NewHTTPClient(origin.URL, keys, logger, AuthGitHub)
-
+	srv, finalHits := sameHostRedirector(t, map[string]hop{"/endpoint": {http.StatusTemporaryRedirect, "/endpoint-now"}})
+	client := hookClient(srv.URL)
 	var fired atomic.Bool
-	client.OnPermanentRedirect(func(from, to string) {
-		fired.Store(true)
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := client.Get(ctx, "/endpoint")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	client.OnPermanentRedirect(func(from, to string) { fired.Store(true) })
+	getOK(t, client, "/endpoint")
+	if finalHits.Load() != 1 {
+		t.Fatalf("the 307 was not followed (final hits %d)", finalHits.Load())
 	}
-	resp.Body.Close()
-
 	if fired.Load() {
 		t.Error("OnPermanentRedirect must NOT fire on 307 — it's a temporary redirect")
 	}
@@ -190,41 +151,17 @@ func TestOnPermanentRedirect_DoesNotFire307(t *testing.T) {
 // Cap is maxRedirectHops (5); within that range, fire for each permanent
 // hop. Temporary hops in the chain do not fire.
 func TestOnPermanentRedirect_MultipleHops_FiresOncePerHop(t *testing.T) {
-	var hopC *httptest.Server
-	var hopB *httptest.Server
-
-	hopA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", hopB.URL+"/B")
-		w.WriteHeader(http.StatusMovedPermanently)
-	}))
-	defer hopA.Close()
-	hopB = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", hopC.URL+"/C")
-		w.WriteHeader(http.StatusMovedPermanently)
-	}))
-	defer hopB.Close()
-	hopC = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer hopC.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	keys := NewKeyPool([]string{"t"}, logger)
-	client := NewHTTPClient(hopA.URL, keys, logger, AuthGitHub)
-
-	var fires atomic.Int32
-	client.OnPermanentRedirect(func(from, to string) {
-		fires.Add(1)
+	srv, finalHits := sameHostRedirector(t, map[string]hop{
+		"/A": {http.StatusMovedPermanently, "/B"},
+		"/B": {http.StatusMovedPermanently, "/C"},
 	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := client.Get(ctx, "/A")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	client := hookClient(srv.URL)
+	var fires atomic.Int32
+	client.OnPermanentRedirect(func(from, to string) { fires.Add(1) })
+	getOK(t, client, "/A")
+	if finalHits.Load() != 1 {
+		t.Fatalf("the chain did not end at /C (final hits %d)", finalHits.Load())
 	}
-	resp.Body.Close()
-
 	if got := fires.Load(); got != 2 {
 		t.Errorf("expected 2 hook calls for two-hop chain, got %d", got)
 	}
@@ -234,27 +171,11 @@ func TestOnPermanentRedirect_MultipleHops_FiresOncePerHop(t *testing.T) {
 // still follow normally. A nil-callback panic would break everyone who
 // didn't opt in to the hook.
 func TestOnPermanentRedirect_NilSafe(t *testing.T) {
-	var target *httptest.Server
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", target.URL+"/new")
-		w.WriteHeader(http.StatusMovedPermanently)
-	}))
-	defer origin.Close()
-	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer target.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	keys := NewKeyPool([]string{"t"}, logger)
-	client := NewHTTPClient(origin.URL, keys, logger, AuthGitHub)
+	srv, finalHits := sameHostRedirector(t, map[string]hop{"/old": {http.StatusMovedPermanently, "/new"}})
+	client := hookClient(srv.URL)
 	// Intentionally do NOT call OnPermanentRedirect.
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := client.Get(ctx, "/old")
-	if err != nil {
-		t.Fatalf("Get should succeed even without a hook installed: %v", err)
+	getOK(t, client, "/old")
+	if finalHits.Load() != 1 {
+		t.Errorf("redirect not followed without a hook (final hits %d)", finalHits.Load())
 	}
-	resp.Body.Close()
 }

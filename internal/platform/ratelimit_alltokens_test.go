@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// v0.27.5 — KeyPool.AllTokens feeds scorecard's comma-separated
-// multi-token GITHUB_TOKEN. Behavioral tests: pool order preserved,
-// invalidated keys excluded, no checkout side effects.
+// v0.27.5 introduced KeyPool.AllTokens to feed scorecard's comma-separated
+// multi-token GITHUB_TOKEN; 2026-09-12 replaced it with LendTokens — the
+// same tokens, but ACCOUNTED (the pool records who borrowed what) instead
+// of handed out invisibly. Behavioral tests: pool order preserved when
+// nothing distinguishes the keys, invalidated keys excluded, no checkout
+// side effects on the budget or the round-robin cursor.
 
 package platform
 
@@ -15,18 +18,19 @@ import (
 	"testing"
 )
 
-func TestAllTokensReturnsAllValidTokensInPoolOrder(t *testing.T) {
+func TestLendTokensReturnsAllValidTokensInPoolOrder(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	kp := NewKeyPool([]string{"tok-a", "tok-b", "tok-c"}, logger)
 
-	got := kp.AllTokens()
+	got, release := kp.LendTokens(0)
+	defer release()
 	want := []string{"tok-a", "tok-b", "tok-c"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("AllTokens() = %v, want %v (pool order preserved)", got, want)
+		t.Errorf("LendTokens(0) = %v, want %v (pool order preserved when nothing distinguishes the keys)", got, want)
 	}
 }
 
-func TestAllTokensSkipsInvalidatedKeys(t *testing.T) {
+func TestLendTokensSkipsInvalidatedKeys(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	kp := NewKeyPool([]string{"tok-a", "tok-b", "tok-c"}, logger)
 
@@ -36,50 +40,57 @@ func TestAllTokensSkipsInvalidatedKeys(t *testing.T) {
 	kp.mu.Unlock()
 	kp.InvalidateKey(middle)
 
-	got := kp.AllTokens()
+	got, release := kp.LendTokens(0)
+	defer release()
 	want := []string{"tok-a", "tok-c"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("AllTokens() after invalidating tok-b = %v, want %v", got, want)
+		t.Errorf("LendTokens(0) after invalidating tok-b = %v, want %v", got, want)
 	}
 }
 
-func TestAllTokensEmptyPool(t *testing.T) {
+func TestLendTokensEmptyPool(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	kp := NewKeyPool(nil, logger)
-	if got := kp.AllTokens(); len(got) != 0 {
-		t.Errorf("AllTokens() on empty pool = %v, want empty", got)
+	got, release := kp.LendTokens(0)
+	release()
+	if len(got) != 0 {
+		t.Errorf("LendTokens(0) on empty pool = %v, want empty", got)
 	}
 }
 
-// TestAllTokensDoesNotCheckOutKeys pins the no-side-effect contract:
-// AllTokens must not advance the round-robin index or touch Remaining —
-// it is a read-only snapshot, not a checkout. (The pre-v0.27.5 scorecard
-// phase checked a key out via GetKey and MarkDepleted'd it; the whole
-// point of AllTokens is that no checkout happens.)
-func TestAllTokensDoesNotCheckOutKeys(t *testing.T) {
+// TestLendTokensDoesNotCheckOutKeys pins the no-budget-side-effect
+// contract: lending must not advance the round-robin cursors or touch
+// Remaining — a subprocess's ~40 calls are accounted by the lent counter,
+// not by pretending to be one in-flight request.
+func TestLendTokensDoesNotCheckOutKeys(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	kp := NewKeyPool([]string{"tok-a", "tok-b"}, logger)
 
 	kp.mu.Lock()
-	rrBefore := kp.rrIndex
+	rrBefore, rrGQLBefore := kp.rrIndex, kp.rrIndexGQL
 	remBefore := kp.keys[0].Remaining
+	inflightBefore := kp.inflight
 	kp.mu.Unlock()
 
-	_ = kp.AllTokens()
+	_, release := kp.LendTokens(0)
+	defer release()
 
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
-	if kp.rrIndex != rrBefore {
-		t.Errorf("AllTokens advanced rrIndex %d → %d; must be read-only", rrBefore, kp.rrIndex)
+	if kp.rrIndex != rrBefore || kp.rrIndexGQL != rrGQLBefore {
+		t.Errorf("LendTokens advanced a cursor (%d/%d → %d/%d); must not touch selection state", rrBefore, rrGQLBefore, kp.rrIndex, kp.rrIndexGQL)
 	}
 	if kp.keys[0].Remaining != remBefore {
-		t.Errorf("AllTokens changed Remaining %d → %d; must be read-only", remBefore, kp.keys[0].Remaining)
+		t.Errorf("LendTokens changed Remaining %d → %d; must not spend budget", remBefore, kp.keys[0].Remaining)
+	}
+	if kp.inflight != inflightBefore {
+		t.Errorf("LendTokens changed pool inflight %d → %d; a lend is not a lease", inflightBefore, kp.inflight)
 	}
 }
 
-// TestAllTokensConcurrentAccess drives AllTokens alongside key mutation
+// TestLendTokensConcurrentAccess drives LendTokens alongside key mutation
 // so the race detector observes the mutex guard.
-func TestAllTokensConcurrentAccess(t *testing.T) {
+func TestLendTokensConcurrentAccess(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	kp := NewKeyPool([]string{"tok-a", "tok-b", "tok-c"}, logger)
 
@@ -89,10 +100,18 @@ func TestAllTokensConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				_ = kp.AllTokens()
+				_, release := kp.LendTokens(2)
 				_ = kp.AliveCount()
+				release()
 			}
 		}()
 	}
 	wg.Wait()
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	for _, k := range kp.keys {
+		if k.lent != 0 {
+			t.Errorf("key %q lent=%d after every release, want 0", k.Token, k.lent)
+		}
+	}
 }

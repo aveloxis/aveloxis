@@ -284,6 +284,7 @@ Each job runs six phases. After the sequential API collection and processing pha
 | User org refresh | Same as org refresh | Scans user-requested org additions |
 | Contributor breadth | 15 min | Discovers cross-repo activity via GitHub Events API (7-day per-contributor cooldown) |
 | Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 20 materialized views, resumes |
+| Gone-repo recheck | Hourly tick; per-repo cadence `gone_repo_recheck_days` (28) | v0.29.7: re-probes dequeued 404/410 repositories (≤ 500 per tick, unauthenticated HEAD, no key budget); 2xx resurrects + re-enqueues via `ResurrectRepo`; `repos.repo_gone_checked_at` is the cadence marker |
 
 ### Graceful shutdown
 

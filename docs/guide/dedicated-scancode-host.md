@@ -153,9 +153,18 @@ primary's backends by application_name alone and printed terminate
 recipes for them. Since v0.29.4 that shape — a binary AHEAD of the
 stamp — is refused twice: by the `start serve` deploy gate when the
 stamp is behind the binary, and by serve's startup migration when
-another `aveloxis-serve` is connected. A `start serve` built at the
-primary's version (which §2 asks for) is NOT refused: nothing needs
-migrating, so it would start a second full scheduler against the fleet.
+another `aveloxis-serve` is connected. Since 2026-09-11 a `start serve`
+built at the primary's version (which §2 asks for) is refused as well:
+nothing needs migrating, but it would still start a second full
+scheduler against the fleet, and that is the objection. Until then it
+was only warned about — and a second machine consequently ran a full
+stack against the production database for ten days, deadlocking the
+primary's staging inserts against its schema DDL, with the warning
+sitting in a log on the wrong host the whole time. A deliberate second
+serve is now explicit: `aveloxis serve --allow-second-serve`. The flag is
+per-invocation and is deliberately NOT forwarded by `aveloxis start
+serve`, so it cannot become a persistent setting that hides the
+condition again.
 The gate and serve's log both say when another `aveloxis-serve` is
 already connected and from which client addresses, each tagged with the
 code's own verdict: an "(other address)" entry is normally the primary

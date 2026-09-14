@@ -70,6 +70,32 @@ A typical GitHub repo with moderate activity (~500 issues, ~200 PRs) requires ap
 
 These are rough estimates. Actual time depends on repo sizes, API response times, and the facade/analysis phases.
 
+### Background sweeps and the foreground reserve
+
+Since v0.29.6 the key pool admits **background** work (the contributor
+history sweep and the activity classification sweep) only while the pool's
+usable GraphQL budget is above `collection.github_budget_foreground_reserve_pct`
+(default 25%). Foreground collection is admitted while any budget remains.
+The reserve stops a sweep from starving collection; it cannot make a sweep
+that demands more than the budget finish. Size the demand side yourself:
+
+```
+background budget per hour ≈ keys × 5,000 × (100 − reserve_pct) / 100   # GraphQL points
+history-sweep demand per hour = activity_history_batch × 60 / activity_history_interval_minutes   # contributors
+                                × windows per contributor (a 10-year account is ~20 at 180-day windows)
+```
+
+Each window is one GraphQL query. `activity_history_concurrency` and
+`activity_history_window_concurrency` change how fast a cycle runs, not
+how much it asks for; `activity_history_window_days` is the wrong lever
+(larger windows raise the `contributionsCollection` cap loss). If the
+5-minute `key pool summary` log line shows remaining budget pinned near
+the reserve line and `GraphQL background sweep paced by the foreground
+reserve` appears every cycle, lower the batch or lengthen the interval
+until demand sits under roughly half of the background budget — the
+sweep re-audits on a 90-day cooldown, so steady state is far below the
+first pass.
+
 ---
 
 ## Horizontal scaling
@@ -131,16 +157,153 @@ Adjust in `postgresql.conf`:
 max_connections = 100
 ```
 
-### Shared buffers
+That formula gives the **floor** — the number below which Aveloxis cannot
+open its pools. It is not a target: every connection you add above the floor
+is another `work_mem` multiplier, so raise `max_connections` and the
+[`work_mem` budget](#why-work_mem-is-the-dangerous-one) together. A large
+fleet runs 300; the `100` above is a small-deployment example.
 
-For large datasets (millions of rows across tables), increase PostgreSQL shared buffers:
+---
+
+## PostgreSQL server tuning
+
+These are server-wide settings in `postgresql.conf`, distinct from the pool
+arithmetic above. Everything here is expressed as a **formula**, not a flat
+number, for a reason given in [Why `work_mem` is the dangerous
+one](#why-work_mem-is-the-dangerous-one).
+
+### Recommended settings
+
+| Setting | Recommendation | Why |
+|---|---|---|
+| `shared_buffers` | 20–25% of RAM | PostgreSQL's own page cache. Past ~25% you are just duplicating the OS page cache, and on a write-heavy fleet the larger checkpoint working set costs more than the extra hits gain. |
+| `effective_cache_size` | 65–75% of RAM | A planner *hint*, not an allocation. It tells the planner how much OS cache it can assume, which is what makes index scans win over sequential scans on the large tables. |
+| `work_mem` | See the budget below — **not** a round number | Per **operation**, not per connection. This is the setting that OOMs hosts. |
+| `maintenance_work_mem` | 2–4 GB | `VACUUM`, `CREATE INDEX`, `ALTER TABLE`. Bounded by `autovacuum_max_workers` running concurrently, so it multiplies too — just by a much smaller number. |
+| `jit` | `off` | Aveloxis's workload is insert- and index-lookup-heavy; JIT compilation buys little and is a known memory sink on wide analytic queries. A host that reports `fatal llvm error: Unable to allocate section memory` is paying for JIT it is not benefiting from. |
+| `max_connections` | Pool floor from [PostgreSQL configuration](#postgresql-configuration), plus headroom | Every connection is a potential `work_mem` multiplier, so this is a memory setting as much as a concurrency one. Raise it only with the budget below recomputed. |
+
+### Why `work_mem` is the dangerous one
+
+`work_mem` is the limit for **one** sort or hash operation. A single query can
+use several; a parallel query multiplies by its worker count; and every
+connection can be running one. So the worst-case allocation is:
+
+```
+max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
+```
+
+where `ops_per_query` is the number of sort/hash nodes a plan runs at once
+(`EXPLAIN` a representative heavy query — the matview refreshes and the
+commits backfills are the ones on this workload — and count them; 2–4 is
+typical). The budget below folds that factor into its 10% headroom rather
+than the denominator, because every connection is never running its
+heaviest plan at once; if yours are, divide by `ops_per_query` too. Budget it
+against roughly 10% of RAM, which leaves the rest for `shared_buffers` and
+the OS page cache:
+
+```
+work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))
+```
+
+A worked example on a 1 TB host running 300 connections with
+`max_parallel_workers_per_gather = 4`:
+
+```
+work_mem ≤ (1024 GB × 0.10) / (300 × 5) = 102 GB / 1500 ≈ 70 MB
+```
+
+…so `64MB` is the right order of magnitude, and `2GB` — a value that looks
+unremarkable next to a 1 TB host — implies a worst case of
+`300 × 5 × 2GB = 3 TB`, three times the machine. That is not a hypothetical:
+it is what a real fleet drifted to, and it produced 106 out-of-memory errors
+in a three-second window, failing allocations as small as 40 bytes while
+inserting commits.
+
+:::{warning}
+Read `work_mem` recommendations elsewhere — including older revisions of this
+page, which said `256MB` flat — with the denominator in mind. A value that is
+correct for a 20-connection development database is dangerous at 300
+connections, and nothing in PostgreSQL warns you about the difference.
+:::
+
+### Reference configuration
+
+A validated starting point for a large fleet (~180K repos, 1 TB RAM, ~50
+collection workers):
 
 ```ini
-shared_buffers = 4GB          # 25% of available RAM
-effective_cache_size = 12GB   # 75% of available RAM
-work_mem = 256MB              # for complex queries and matview refreshes
-maintenance_work_mem = 1GB    # for VACUUM and index creation
+shared_buffers = 200GB                  # ~20% of RAM
+effective_cache_size = 700GB            # ~68% of RAM — a hint, not an allocation
+work_mem = 64MB                         # per OPERATION; see the budget above
+maintenance_work_mem = 4GB
+max_connections = 300
+jit = off
 ```
+
+Scale `shared_buffers`, `effective_cache_size` and `max_connections` to your
+host, then recompute `work_mem` from the budget — do not carry the `64MB`
+across unchanged, because it is an output of the formula, not an input.
+
+### Operating-system settings
+
+PostgreSQL cannot protect itself from an over-committing kernel. On Linux:
+
+```ini
+vm.overcommit_memory = 2    # refuse allocations beyond the commit limit
+vm.overcommit_ratio = 80    # commit limit = swap + 80% of RAM
+vm.swappiness = 10          # prefer evicting page cache over swapping PostgreSQL
+```
+
+With `vm.overcommit_memory = 0` (the default) the kernel hands out memory it
+does not have and then invokes the OOM killer, which on a database host
+usually kills the postmaster. When the postmaster cannot fork, clients see a
+bare unframed error string mid-handshake rather than a normal error — see
+[the troubleshooting entry for that crash
+signature](troubleshooting.md#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata).
+
+### Verifying what is actually live
+
+Configuration files and running state diverge — an `ALTER SYSTEM`, a
+package upgrade, or a hand-edit during an incident all leave the file saying
+one thing and the server doing another. Check the server, not the file:
+
+```sql
+SELECT name, setting, unit, source
+FROM pg_settings
+WHERE name IN ('work_mem', 'maintenance_work_mem', 'shared_buffers',
+               'effective_cache_size', 'max_connections', 'jit',
+               'max_parallel_workers_per_gather')
+ORDER BY name;
+```
+
+The `source` column is the useful one: `configuration file` means
+`postgresql.conf`, while `database`, `user` or `override` means something has
+set it at runtime and your file is not the whole story.
+
+```bash
+sysctl vm.overcommit_memory vm.overcommit_ratio vm.swappiness
+```
+
+`work_mem` and `maintenance_work_mem` apply with `SELECT pg_reload_conf();`.
+`shared_buffers` and `max_connections` require a restart.
+
+### Drift is the failure mode
+
+The settings above are not a one-time setup step. The realistic failure is not
+choosing a wrong value on day one — it is a value that was right, then moved,
+and nothing noticed until the host ran out of memory. Re-run the verification
+query whenever you:
+
+- change `max_connections`, add Aveloxis instances, or raise the worker count
+  (all three change the `work_mem` denominator),
+- upgrade PostgreSQL or the OS package (which can reset or reintroduce
+  settings),
+- finish any incident where someone raised a limit to get unstuck.
+
+Recording the expected values somewhere your team reads — a runbook, a
+configuration-management repository — turns "is this still what we decided?"
+into a diff instead of an investigation.
 
 ---
 

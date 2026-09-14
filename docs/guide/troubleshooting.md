@@ -469,6 +469,13 @@ level=WARN msg="unexpected status" ... attempt=10
   ```
 - If `Location` is empty, one `WARN` is logged and the error wraps `platform.ErrGone` — `isOptionalEndpointSkip` treats it the same as 404/403 so the single endpoint is skipped and the rest of the collection proceeds.
 - If the chain exceeds 5 hops (pathological loop), same `ErrGone` treatment.
+- **Since v0.29.12 no request that carries an API key leaves the client's own API scheme and host** (`https://api.github.com`, or the scheme and host of `gitlab.base_url`). That covers a redirect's `Location`, a pagination `Link: <…>; rel="next"` continuation, and a GraphQL endpoint: a target on another host, a subdomain, plain `http`, or one carrying userinfo is refused rather than sent the key. Each refusal is logged at ERROR and the endpoint is skipped — the error wraps `platform.ErrOffHostRefused`, classified like 404/403:
+  ```
+  level=ERROR msg="redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there" url=... status=301 location=...
+  level=ERROR msg="pagination stopped — the next-page link leaves this client's API host, scheme or base path, so no API key is sent there; the listing is incomplete" path=... error=...
+  level=ERROR msg="off-host request refused — the URL leaves this client's API host or scheme, so no API key is sent" url=... error=...
+  ```
+  GitHub's and GitLab's own redirects and page links stay on their API host, so these lines should not appear. If one does, the forge, or something between you and it, pointed a request at another host. A refusal on the first request skips that endpoint. A refusal part-way through a listing ("pagination stopped", or a redirect refused on a later page) fails the endpoint with `platform.ErrListingTruncated` instead, so the repository's `last_collected` does not advance past pages that were never listed, and the next cycle lists them again. A request URL that simply does not parse (for example a repository file name containing `%`) is not reported as off-host: nothing can be sent, and it fails the way it always did. Relative targets are resolved against the requested URL, so a GitLab base ending in `/api/v4` no longer doubles the path.
 
 Repo-level renames (the underlying cause when the *whole* repo moves) are still caught by `prelim.RunPrelim`'s HEAD check against `repo.GitURL` — it calls `store.UpdateRepoURLs` to rewrite `repo_git`, `repo_owner`, and `repo_name`. That path is unchanged. The v0.16.10 fix is specifically for per-endpoint 3xx noise that prelim doesn't see.
 
@@ -1617,6 +1624,17 @@ process-limit) exhaustion.
    the "Orphaned postgres backend" runbook above).
 2. Only then restart `aveloxis serve` — restarting into a memory-starved host
    reproduces the crash on the next pool reconnect.
+3. Check the server's live memory settings against
+   [PostgreSQL server tuning](scaling.md#postgresql-server-tuning) before
+   treating the incident as closed. The most common cause on a host that was
+   previously healthy is not a single greedy query but `work_mem` having drifted
+   upward: it is a per-**operation** limit multiplied by every connection and
+   parallel worker, so a value that looks modest beside the host's RAM can imply
+   a worst case several times larger than the machine. Allocation failures for
+   tiny sizes (tens of bytes) alongside larger ones are the signature of genuine
+   exhaustion rather than one oversized request. The same section's
+   `vm.overcommit_memory` guidance is what stops the kernel from promising
+   memory it does not have and then killing the postmaster.
 
 ## A one-shot migration backfill needs to re-run
 

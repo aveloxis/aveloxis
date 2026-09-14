@@ -1294,6 +1294,32 @@ func (p *Processor) processBatch(ctx context.Context, repoID int64, platID int16
 				}
 				p.logger.Warn("failed to upsert contributor batch", "count", len(contribs), "error", err)
 				p.errors += len(contribs)
+				// The error is RETURNED, not swallowed: ProcessStaged
+				// runs markStagedProcessed only after a nil handler
+				// return, so swallowing here marked these payloads
+				// processed and lost the whole batch's contributors
+				// permanently (F6 of the 2026-09-11 log analysis —
+				// latent, zero occurrences in that window). Returning
+				// leaves the staged rows unprocessed for the next
+				// drain.
+				//
+				// Safe rather than head-blocking BECAUSE of the
+				// v0.22.13 savepoint isolation in
+				// upsertOneContributor: every per-contributor failure
+				// is captured through captureErr and skipped, so a
+				// batch-level error can only come from the savepoint
+				// machinery, the COMMIT, or the connection — all
+				// transient, so the replay converges. A future change
+				// that lets a single poison payload fail the batch
+				// would turn this into a permanent per-repo block and
+				// needs to defer the row instead (the
+				// errMailingListRowRetry shape).
+				//
+				// Aborting also stops the entity loop before issues /
+				// PRs / events / messages, which is correct: those
+				// resolve FKs against the contributors that just
+				// failed to land.
+				return fmt.Errorf("upserting %d contributors: %w", len(contribs), err)
 			}
 		}
 		return nil

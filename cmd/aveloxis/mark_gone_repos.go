@@ -59,7 +59,11 @@ probes each URL against the forge:
   anything else -> skipped; re-run later (only definitive answers decide)
 
 Idempotent and re-runnable. Dataless stranded rows are not candidates
-(nothing to display either way — reconcile-repos territory).`,
+(nothing to display either way — reconcile-repos territory).
+
+Since v0.29.7 aveloxis serve re-probes every gone repo on its own every
+collection.gone_repo_recheck_days (default 28); this command remains
+the immediate, whole-cohort form and resets that cadence clock.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -86,7 +90,25 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	}
 	logger.Info("mark-gone-repos starting", "candidates", len(cands), "dry_run", dryRun)
 
-	var stamped, cleared, alreadyGone, alive, skipped int
+	var stamped, cleared, alreadyGone, alive, skipped, stampFailed int
+	// v0.29.7: a manual run is a verification too. On every gone-stamped
+	// row it probes — definitive-gone OR not definitive — stamp the
+	// check so the scheduler's recheck ticker (the same rule, see
+	// scheduler/gone_recheck.go) starts its cadence from now: one clock,
+	// one stamping policy, every consumer. Never on --dry-run. A failed
+	// stamp has its OWN counter (review round 2): the verdict counters
+	// partition the candidates exactly once each, and a stamp failure
+	// is a second event on a row already counted — folding it into
+	// `skipped` double-counted the row.
+	stampChecked := func(c db.GoneProbeCandidate) {
+		if dryRun || !c.GoneStamped {
+			return
+		}
+		if err := store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {
+			logger.Warn("failed to stamp gone check — rerun retries", "repo_id", c.RepoID, "error", err)
+			stampFailed++
+		}
+	}
 	for _, c := range cands {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -96,17 +118,20 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 		// means).
 		_, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)
 		if perr != nil {
-			// SR-16: a transport failure is not "no" — skip, retry on
-			// the next run.
+			// SR-16: a transport failure is not "no" — the gone state is
+			// untouched; a rerun retries. The check is still stamped on
+			// a gone row (the ticker's rule).
 			logger.Warn("probe failed — skipping (rerun retries)",
 				"repo_id", c.RepoID, "url", c.GitURL, "error", perr)
 			skipped++
+			stampChecked(c)
 			continue
 		}
 		switch {
 		case status == http.StatusNotFound || status == http.StatusGone:
 			if c.GoneStamped {
 				alreadyGone++
+				stampChecked(c)
 				continue
 			}
 			if dryRun {
@@ -152,15 +177,16 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			logger.Warn("indeterminate probe status — skipping (rerun retries)",
 				"repo_id", c.RepoID, "url", c.GitURL, "status", status)
 			skipped++
+			stampChecked(c)
 		}
 	}
 
 	logger.Info("mark-gone-repos complete",
 		"candidates", len(cands), "stamped_gone", stamped, "already_gone", alreadyGone,
 		"resurrected", cleared, "alive_unstamped", alive, "skipped", skipped,
-		"dry_run", dryRun)
-	if skipped > 0 {
-		logger.Info("some candidates were skipped on indeterminate probes — re-run to retry them")
+		"check_stamp_failed", stampFailed, "dry_run", dryRun)
+	if skipped > 0 || stampFailed > 0 {
+		logger.Info("some candidates were skipped on indeterminate probes or could not be stamped — re-run to retry them")
 	}
 	return nil
 }

@@ -31,6 +31,7 @@ type PostgresStore struct {
 	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
 	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
+	allowSecondServe bool // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
 
 	// backendPIDs are the server-side PIDs of THIS process's pool
 	// connections (v0.28.18), maintained by the pool's AfterConnect /
@@ -226,6 +227,27 @@ func (s *PostgresStore) SetMigrateNoWait(noWait bool) {
 // bump, which changes ToolVersion and misses the stamp.
 func (s *PostgresStore) SetMigrateFastPath(enabled bool) {
 	s.migrateFastPath = enabled
+}
+
+// SetAllowSecondServe permits this serve to start even though another
+// aveloxis-serve is already connected to the same database (the
+// SetMatviewSkip / SetMigrateFastPath pattern).
+//
+// Default false, i.e. REFUSE — closing the residual v0.29.4 deliberately
+// left open. That residual cost a real incident: from 2026-08-30 to
+// 09-09 a second machine ran a full stack (serve, api, web and 13
+// migrate runs) against the production database and deadlocked the live
+// serve's staging inserts against its schema DDL. The only thing
+// standing between that and the fleet was a WARN.
+//
+// Deliberately NARROW. This flag waves through a second SCHEDULER beside
+// a current schema stamp. It does NOT touch startupMigrateRefusal, which
+// refuses a serve whose binary missed the stamp and would therefore run
+// a FULL migration beside a live fleet — that is the base-DDL deadlock
+// itself, and no override should reach it. The two conditions carry
+// different sentinels so they cannot be conflated by a future caller.
+func (s *PostgresStore) SetAllowSecondServe(allowed bool) {
+	s.allowSecondServe = allowed
 }
 
 func (s *PostgresStore) Migrate(ctx context.Context) error {
@@ -1699,8 +1721,24 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 		}
 		sort.Strings(logins)
 
+		// Known-rename pre-probe (2026-09-11, F5). ONE bulk lookup per
+		// batch, not one per contributor: cost is a single indexed
+		// `cntrb_id = ANY(...)` scan regardless of batch size, so the
+		// busiest write path in the system pays a fixed ~1 round trip
+		// rather than a per-row one.
+		//
+		// What it buys: a contributor whose deterministic cntrb_id
+		// already exists under a DIFFERENT login is a rename, and its
+		// INSERT is guaranteed to violate contributors_pkey — the
+		// ON CONFLICT arbiter is (cntrb_login), which by R2 still holds
+		// the FIRST-observed login and therefore can never match. That
+		// made the failure permanent per contributor per cycle: 884
+		// such violations in a five-day production window, all
+		// recovered, all recurring forever.
+		renamedTo := s.knownRenames(ctx, tx, merged, logins)
+
 		for _, login := range logins {
-			if err := s.upsertOneContributor(ctx, tx, login, merged[login], identMap[login], captureErr, &spCounter); err != nil {
+			if err := s.upsertOneContributor(ctx, tx, login, merged[login], identMap[login], renamedTo, captureErr, &spCounter); err != nil {
 				return err
 			}
 		}
@@ -1728,6 +1766,113 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 	})
 }
 
+// desiredCntrbIDFor derives the deterministic cntrb_id a contributor
+// will be inserted under: PlatformUUID over the first identity carrying
+// a non-zero platform user ID. Returns "" for an email-only contributor
+// (no platform identity), which falls back to gen_random_uuid() at
+// insert time and therefore can never collide on the primary key.
+//
+// ONE spelling (SR-17): upsertOneContributor's own derivation and the
+// batch pre-probe MUST agree, or the probe looks up ids that are never
+// inserted and the short-circuit silently stops working.
+func desiredCntrbIDFor(idents []model.ContributorIdentity) string {
+	for _, ident := range idents {
+		if ident.UserID > 0 {
+			return PlatformUUID(int(ident.Platform), ident.UserID).String()
+		}
+	}
+	return ""
+}
+
+// knownRenames returns, for the contributors in this batch, the
+// deterministic cntrb_ids that ALREADY exist under a different login —
+// i.e. the renames whose INSERT is guaranteed to fail on
+// contributors_pkey. Keyed by cntrb_id, valued with the stored
+// (first-observed) login.
+//
+// Best-effort by design: a failed probe returns nil and every
+// contributor takes the ordinary optimistic path, which is exactly the
+// pre-2026-09-11 behaviour. The probe is an OPTIMIZATION over a
+// correct-but-noisy path, never a correctness dependency — the 23505
+// recovery in upsertOneContributor remains the backstop, which is also
+// what covers the snapshot going stale against a concurrent worker
+// between this lookup and the INSERT.
+func (s *PostgresStore) knownRenames(ctx context.Context, tx pgx.Tx, merged map[string]*model.Contributor, logins []string) map[string]string {
+	ids := make([]string, 0, len(logins))
+	idToLogin := make(map[string]string, len(logins))
+	for _, login := range logins {
+		c := merged[login]
+		if c == nil {
+			continue
+		}
+		if id := desiredCntrbIDFor(c.Identities); id != "" {
+			ids = append(ids, id)
+			idToLogin[id] = login
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT cntrb_id::text, cntrb_login
+		FROM aveloxis_data.contributors
+		WHERE cntrb_id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		// Not fatal, and deliberately not captureErr'd: nothing has
+		// been attempted yet, so there is no per-contributor failure to
+		// attribute. The batch proceeds exactly as it did before this
+		// probe existed.
+		s.logger.Debug("contributor rename pre-probe failed — falling back to optimistic inserts",
+			"batch_size", len(ids), "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var id, storedLogin string
+		if scanErr := rows.Scan(&id, &storedLogin); scanErr != nil {
+			s.logger.Debug("contributor rename pre-probe scan failed", "error", scanErr)
+			return nil
+		}
+		// Same login: the ordinary ON CONFLICT (cntrb_login) path
+		// handles it cleanly. Only a DIFFERENT stored login is a rename.
+		if incoming, ok := idToLogin[id]; ok && storedLogin != "" && storedLogin != incoming {
+			out[id] = storedLogin
+		}
+	}
+	if rows.Err() != nil {
+		s.logger.Debug("contributor rename pre-probe iteration failed", "error", rows.Err())
+		return nil
+	}
+	return out
+}
+
+// renameRecoveryUpdateSQL relabels an EXISTING contributor row that the
+// deterministic cntrb_id proves is the same person under a new login.
+// ONE spelling (SR-17) shared by the two paths that reach it: the
+// pre-probe path, which knows the rename before inserting, and the
+// 23505 backstop, which learns it from a failed INSERT.
+//
+// cntrb_login is deliberately absent from the SET list — R2
+// (docs/architecture/contributor-resolution.md): it is the durable
+// audit trail of the first observation, and gh_login is the
+// current-display-name mirror. Same shape as v0.22.12's
+// RenameContributorGhLogin, expressed here so it runs inside the batch
+// transaction.
+const renameRecoveryUpdateSQL = `
+	UPDATE aveloxis_data.contributors
+	SET gh_login        = $2,
+	    cntrb_email     = COALESCE(NULLIF(cntrb_email, ''),     $3),
+	    cntrb_full_name = COALESCE(NULLIF(cntrb_full_name, ''), $4),
+	    cntrb_company   = COALESCE(NULLIF(cntrb_company, ''),   $5),
+	    cntrb_location  = COALESCE(NULLIF(cntrb_location, ''),  $6),
+	    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical, ''), $7),
+	    tool_version    = $8,
+	    data_collection_date = NOW()
+	WHERE cntrb_id = $1::uuid`
+
 // ============================================================
 // upsertOneContributor performs the full per-contributor unit of the
 // batch upsert — savepoint-bracketed row INSERT with the v0.22.13
@@ -1738,7 +1883,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 // means "done or skipped" (skips are already captured via captureErr);
 // a non-nil return aborts the whole batch (savepoint machinery itself
 // failed, so the transaction is unusable).
-func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, login string, contrib *model.Contributor, idents []model.ContributorIdentity, captureErr func(kind, login string, e error), spCounter *int) error {
+func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, login string, contrib *model.Contributor, idents []model.ContributorIdentity, renamedTo map[string]string, captureErr func(kind, login string, e error), spCounter *int) error {
 	var cntrb_id string
 	// v0.23.0: track whether this contributor's row was
 	// rename-recovered so the contributor_login_history rows
@@ -1768,11 +1913,8 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// (rejection of the 16-table FK rewrite), aveloxis does NOT
 	// migrate existing random cntrb_id values.
 	var desiredCntrbID any
-	for _, ident := range idents {
-		if ident.UserID > 0 {
-			desiredCntrbID = PlatformUUID(int(ident.Platform), ident.UserID).String()
-			break
-		}
+	if id := desiredCntrbIDFor(idents); id != "" {
+		desiredCntrbID = id
 	}
 
 	// v0.22.13 (Fix for production WARN flood on 2026-05-18):
@@ -1789,6 +1931,56 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	cntrbSP := fmt.Sprintf("cntrb_sp_%d", *spCounter)
 	if _, spErr := tx.Exec(ctx, "SAVEPOINT "+cntrbSP); spErr != nil {
 		return spErr
+	}
+
+	// Known rename (2026-09-11, F5): the batch's bulk pre-probe already
+	// established that this deterministic cntrb_id exists under a
+	// different login, so the INSERT below cannot succeed — its
+	// ON CONFLICT arbiter is (cntrb_login), and by R2 the stored login
+	// is still the first-observed one. Go straight to the relabel the
+	// 23505 backstop would have performed anyway, skipping a guaranteed
+	// unique violation and its savepoint rollback.
+	//
+	// INSIDE the savepoint, deliberately. An earlier draft of this block
+	// sat ABOVE the SAVEPOINT above, which made its own fall-through
+	// comment false: an unprotected failed UPDATE aborts the
+	// transaction, so the SAVEPOINT that follows fails too, this
+	// function returns non-nil, and the WHOLE BATCH dies — precisely the
+	// "count=420 batches drop ~419 innocent contributors" failure
+	// v0.22.13 introduced savepoints to end. Under the savepoint, a
+	// failed relabel rolls back to a clean state and the ordinary INSERT
+	// path still runs.
+	//
+	// The 23505 backstop is NOT removed: this probe is a snapshot and
+	// can go stale against a concurrent worker, in which case the INSERT
+	// below runs and fails exactly as it did before.
+	if id, ok := desiredCntrbID.(string); ok && renamedTo != nil {
+		if storedLogin, isRename := renamedTo[id]; isRename {
+			if _, updErr := tx.Exec(ctx, renameRecoveryUpdateSQL,
+				id, contrib.Login, contrib.Email,
+				contrib.FullName, contrib.Company, contrib.Location,
+				contrib.Canonical, ToolVersion,
+			); updErr != nil {
+				// Roll back to the savepoint so the tx is usable, then
+				// fall through to the ordinary path: the INSERT will
+				// trip contributors_pkey and the 23505 backstop reports
+				// it with full context.
+				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+					return rbErr
+				}
+				captureErr("contributors_rename_preprobe_update", login, updErr)
+			} else {
+				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+					return relErr
+				}
+				s.logger.Info("contributor rename recovered in batch upsert",
+					"cntrb_id", id,
+					"stored_cntrb_login", storedLogin,
+					"new_gh_login", contrib.Login,
+					"cause", "known rename — insert skipped (deterministic cntrb_id already present under the first-observed login)")
+				return s.upsertContributorIdentities(ctx, tx, id, login, contrib, idents, true, captureErr, spCounter)
+			}
+		}
 	}
 
 	err := tx.QueryRow(ctx, `
@@ -1847,17 +2039,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			// RenameContributorGhLogin, inlined here so it
 			// runs inside the batch tx.
 			existingID := desiredCntrbID.(string)
-			if _, updErr := tx.Exec(ctx, `
-				UPDATE aveloxis_data.contributors
-				SET gh_login        = $2,
-				    cntrb_email     = COALESCE(NULLIF(cntrb_email, ''),     $3),
-				    cntrb_full_name = COALESCE(NULLIF(cntrb_full_name, ''), $4),
-				    cntrb_company   = COALESCE(NULLIF(cntrb_company, ''),   $5),
-				    cntrb_location  = COALESCE(NULLIF(cntrb_location, ''),  $6),
-				    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical, ''), $7),
-				    tool_version    = $8,
-				    data_collection_date = NOW()
-				WHERE cntrb_id = $1::uuid`,
+			if _, updErr := tx.Exec(ctx, renameRecoveryUpdateSQL,
 				existingID, contrib.Login, contrib.Email,
 				contrib.FullName, contrib.Company, contrib.Location,
 				contrib.Canonical, ToolVersion,
@@ -1907,6 +2089,20 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		return relErr
 	}
 
+	return s.upsertContributorIdentities(ctx, tx, cntrb_id, login, contrib, idents, wasRenameRecovery, captureErr, spCounter)
+}
+
+// upsertContributorIdentities is the per-identity half of a
+// contributor's batch upsert: the savepoint-bracketed identity rows,
+// the v0.23.0 login-history observation, and the denormalized
+// gh_*/gl_* backfill.
+//
+// Extracted (2026-09-11, F5) so the known-rename pre-probe path, which
+// skips the contributor INSERT entirely, still performs IDENTICAL
+// identity work — one spelling, so the two paths cannot drift into
+// doing different amounts of it. wasRenameRecovery only tags the
+// login-history source.
+func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.Tx, cntrb_id, login string, contrib *model.Contributor, idents []model.ContributorIdentity, wasRenameRecovery bool, captureErr func(kind, login string, e error), spCounter *int) error {
 	// Upsert platform identities and backfill gh_*/gl_* columns.
 	// v0.22.13: each identity is bracketed in its own SAVEPOINT so a
 	// stale identity row (rare — would require a (platform_id,

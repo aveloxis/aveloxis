@@ -45,8 +45,14 @@ var columnWritePolicies = []sqlscan.Registered{
 		Reason: "the pattern-library version that produced msg_text_clean — travels with it on every write so --rule-rerun can find stale-rule rows"},
 	{Table: "aveloxis_data.messages", Column: "msg_updated", Policy: sqlscan.GreatestNonNull,
 		Reason: "the provider's comment edit time only increases; a stale replayed envelope must not regress it — it is the comparator the msg_text freshness guard reads (round 14)"},
-	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.PreferNonemptyIncoming,
-		Reason: "refreshed ONLY on cntrb_id-keyed conflicts (same person, deterministic UUID) so renames pick up the current login; never keyed by login itself (v0.18.29 Fix 3, v0.22.0)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.FillEmptyOnly,
+		Reason: "R2 audit trail — the login as FIRST observed, so an established value never changes. " +
+			"Tightened from PreferNonemptyIncoming on 2026-09-11 (F4): the commit-resolver branch that " +
+			"re-wrote it was the sole source of all 555 idx_contributors_login violations in the " +
+			"2026-09-06..09-11 production log and is gone, and the two remaining writers — the " +
+			"ON CONFLICT (cntrb_id) race arms in commit_resolver_store.go and contributors.go — now " +
+			"preserve the stored login and fill only an empty one, which also makes them structurally " +
+			"unable to trip the partial unique index (v0.18.29 Fix 3, v0.22.0)"},
 	{Table: "aveloxis_data.contributor_identities", Column: "node_id", Policy: sqlscan.PreferNonemptyIncoming,
 		Reason: "pre-v0.27.103 GraphQL-rail rows carry empty node_id; a non-empty observation heals them, empty never clobbers (v0.27.103)"},
 	{Table: "aveloxis_data.contributor_identities", Column: "user_type", Policy: sqlscan.PreferNonemptyIncoming,
@@ -64,9 +70,18 @@ var columnWriteExceptions = []sqlscan.Exception{
 	{Table: "aveloxis_data.repos", Column: "forked_from", File: "internal/db/repo_metadata.go",
 		Match:  "forked_from = $6",
 		Reason: "Phase 0's FetchRepoInfo is AUTHORITATIVE for fork lineage — a repo detaching from its upstream honestly clears the column (v0.27.78); the prefer-nonempty policy protects the id-less org-scan re-upsert path only"},
-	{Table: "aveloxis_data.contributors", Column: "cntrb_login", File: "internal/db/commit_resolver_store.go",
-		Match:  "SET gh_login = $2, cntrb_login = $2",
-		Reason: "the row-exists-by-deterministic-ID branch: keyed by cntrb_id (same person by construction), the freshly-resolved login IS the truth and callers only reach this with a non-empty resolved login (v0.19.2 rename path)"},
+	// RETIRED (2026-09-11, F4): the cntrb_login exception on
+	// commit_resolver_store.go's row-exists-by-deterministic-ID branch
+	// is gone because the WRITE is gone. Its reason argued the
+	// freshly-resolved login "IS the truth" for a cntrb_id-keyed row —
+	// true about the person, but cntrb_login is not the person's
+	// current name, it is the first-observed one (R2), and gh_login
+	// already carries the current name. Production settled the
+	// argument: that statement produced all 555 idx_contributors_login
+	// unique violations in the 2026-09-06..09-11 log, and its recovery
+	// dropped the gh_login update too, so every affected rename was
+	// lost outright. Deliberately NOT re-added as a differently-worded
+	// exception — the code now agrees with the doc.
 	{Table: "aveloxis_data.contributor_identities", Column: "node_id", File: "internal/db/contributors.go",
 		Match:  "SET node_id = COALESCE(NULLIF(node_id, ''), $3)",
 		Reason: "the v0.27.112 step-2 IN-PLACE heal deliberately fills empties only — node_id never changes for a platform user, so fill-empty is a strictly more conservative shape than the registered prefer-nonempty (which governs the full upserts)"},

@@ -388,7 +388,7 @@ The view does not have a unique index. Aveloxis's built-in views all carry one; 
 
 Some views can take hours at fleet scale (especially `explorer_new_contributors`, `explorer_contributor_recent_actions`, `explorer_cntrb_per_file`, and `explorer_pr_response_times` on a 100K-repo / 474M-commit / 117M-PR-file deployment). When a refresh is taking too long:
 
-- Check `work_mem` and `maintenance_work_mem`. Increase to at least 256 MB and 1 GB respectively.
+- Check `work_mem` and `maintenance_work_mem` against the budget in [PostgreSQL server tuning](../guide/scaling.md#postgresql-server-tuning). Resist raising `work_mem` globally to speed up a refresh: it is a per-**operation** limit multiplied by every connection and parallel worker, so a value chosen for one overnight rebuild is a standing OOM risk for the whole fleet. If a single refresh genuinely needs more, raise it for that session only (`SET work_mem = '1GB';` before the `REFRESH`), which affects nothing else. `maintenance_work_mem` is the one that legitimately helps here, and it multiplies only by `autovacuum_max_workers`.
 - Verify the indexes documented in the 2026-05-26 matview audit (internal design archive) are present.
 - A view's underlying tables (especially `commits` and `messages`) growing dramatically since the last rebuild can extend refresh time super-linearly; consider whether the view's defining query has the anti-patterns documented in that audit.
 

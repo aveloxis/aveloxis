@@ -1,25 +1,51 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// Source-contract tests for v0.19.1 fix: UpsertContributorFull's
-// "Row exists by ID" UPDATE branch must catch SQLSTATE 23505
-// (unique violation on idx_contributors_login) and fall back to a
-// non-cntrb_login UPDATE.
+// Source-contract tests for UpsertContributorFull's "Row exists by ID"
+// branch.
 //
-// Background: in production logs from 2026-05-02 we see repeated
+// SUPERSEDED CONTRACT (2026-09-11, F4). These two tests used to pin the
+// v0.19.1 design: the branch wrote `cntrb_login = $2` and therefore
+// needed a SQLSTATE 23505 fallback plus a log line when another row
+// already held that login. They are REWRITTEN, not deleted, because the
+// v0.19.1 rationale below is still the right history to read — what
+// changed is the answer, not the question.
 //
-//   ERROR:  duplicate key value violates unique constraint "idx_contributors_login"
-//   DETAIL: Key (cntrb_login)=(Aashish93-stack) already exists.
-//   STATEMENT: UPDATE aveloxis_data.contributors
-//              SET gh_login = $2, cntrb_login = $2, gh_user_id = ..., ...
-//              WHERE cntrb_id = $1::uuid
+// v0.19.1's background, verbatim, because it is still the shape being
+// prevented:
 //
-// The collision happens when the commit resolver wants to label a
-// deterministic-UUID row with a login that another row (typically a
-// random-UUID lazy-resolver row, of which there are tens of thousands
-// in production) already holds. The INSERT branch in the same
-// function already has a unique-violation fallback (lines 128-138 in
-// the pre-fix file); the UPDATE branch did not. v0.19.1 adds it.
+//	ERROR:  duplicate key value violates unique constraint "idx_contributors_login"
+//	DETAIL: Key (cntrb_login)=(Aashish93-stack) already exists.
+//	STATEMENT: UPDATE aveloxis_data.contributors
+//	           SET gh_login = $2, cntrb_login = $2, gh_user_id = ..., ...
+//	           WHERE cntrb_id = $1::uuid
+//
+// v0.19.1 RECOVERED from that collision. The 2026-09-11 analysis of the
+// chaoss.tv logs showed recovery was the wrong level to fix it at:
+//
+//   - That statement was the source of ALL 555 idx_contributors_login
+//     violations in the 2026-09-06..09-11 production log (555 of 555;
+//     the ON CONFLICT arm in the same function contributed zero), so
+//     "recovered" meant 555 Postgres ERROR lines per five days burying
+//     real errors.
+//   - The recovery UPDATE omitted gh_login as well as cntrb_login, so
+//     for every one of those events the rename was lost ENTIRELY — the
+//     current-display-name mirror stayed stale. Recovery was not
+//     lossless.
+//   - Writing cntrb_login at all contradicted R2
+//     (docs/architecture/contributor-resolution.md) and the three other
+//     rename paths, one of which carries a hard NEGATIVE pin against
+//     the same write (contributor_batch_rename_recovery_test.go).
+//
+// So the write is gone, and with it the need to recover: contributors
+// carries exactly two unique indexes — contributors_pkey (cntrb_id, not
+// in the SET list) and idx_contributors_login (cntrb_login, no longer
+// in the SET list) — so that statement can no longer raise 23505 at
+// all. The pins below now enforce the ABSENCE of the collision-causing
+// write rather than the presence of its recovery, which is the stronger
+// contract: there is nothing left to recover from.
+//
+// The behavioral half lives in contributor_login_r2_test.go.
 
 package db
 
@@ -28,80 +54,72 @@ import (
 	"testing"
 )
 
-// TestUpsertContributorFullCatchesUniqueViolationOnUpdate pins the
-// fallback path. The UPDATE branch must reference SQLSTATE 23505 (or
-// pgconn.PgError) and re-run the UPDATE without setting cntrb_login
-// when the partial unique index is violated.
-func TestUpsertContributorFullCatchesUniqueViolationOnUpdate(t *testing.T) {
+// rowExistsBranch returns the tail of UpsertContributorFull starting at
+// the "Row exists by ID" comment — the branch both tests below scope
+// to. Shared so a refactor that renames the branch fails once, loudly,
+// instead of silently skipping both tests.
+func rowExistsBranch(t *testing.T) string {
+	t.Helper()
 	src := mustReadStoreSource(t, "commit_resolver_store.go")
 	body := extractBatchFunc(src, "UpsertContributorFull")
 	if body == "" {
 		t.Fatal("could not locate UpsertContributorFull body")
 	}
-
-	// Locate the "Row exists by ID" UPDATE — the one whose WHERE
-	// clause is `cntrb_id = $1::uuid` with cntrb_login = $2 in SET.
-	// This is the unconditional UPDATE that lacked a fallback.
-	rowExistsIdx := strings.Index(body, "Row exists by ID")
-	if rowExistsIdx < 0 {
+	idx := strings.Index(body, "Row exists by ID")
+	if idx < 0 {
 		t.Fatal("could not locate the 'Row exists by ID' branch comment — has the function been refactored away from this naming?")
 	}
+	return body[idx:]
+}
 
-	rest := body[rowExistsIdx:]
+// TestUpsertContributorFullDoesNotWriteCntrbLoginOnRename is the
+// negative pin that replaces v0.19.1's recovery pin. It is the twin of
+// TestUpsertContributorBatchRenameRecoveryPreservesCntrbLogin on the
+// batch path — the two rename paths now hold the same line.
+func TestUpsertContributorFullDoesNotWriteCntrbLoginOnRename(t *testing.T) {
+	rest := rowExistsBranch(t)
 
-	// The fallback path needs SOMETHING that detects the unique
-	// violation. Most natural form: errors.As + pgconn.PgError + Code
-	// == "23505". We accept either the code literal or a named const.
-	hasCheck := strings.Contains(rest, `"23505"`) ||
-		strings.Contains(rest, "pgconn.PgError") ||
-		strings.Contains(rest, "PgError")
-	if !hasCheck {
-		t.Error("UpsertContributorFull's 'Row exists by ID' UPDATE branch must catch the unique-violation error " +
-			"(SQLSTATE 23505 / pgconn.PgError) and fall back. Without it, every cross-row login collision " +
-			"surfaces as an ERROR-level statement failure in the Postgres log.")
+	// The UPDATE must not assign cntrb_login. Matching the assignment
+	// operator (not the bare column name) so the explanatory comment
+	// above the statement, which necessarily discusses cntrb_login,
+	// cannot satisfy or trip this check.
+	for _, banned := range []string{
+		"cntrb_login = $",
+		"cntrb_login=$",
+		"cntrb_login = EXCLUDED",
+	} {
+		if strings.Contains(rest, banned) {
+			t.Errorf("UpsertContributorFull's 'Row exists by ID' branch assigns cntrb_login (%q).\n"+
+				"cntrb_login is the durable audit trail of the login as FIRST observed (R2, "+
+				"docs/architecture/contributor-resolution.md); gh_login is the current-display-name mirror "+
+				"and is where a rename belongs. Writing cntrb_login here collides with whatever row already "+
+				"holds the new login — that was 555 of 555 idx_contributors_login violations in the "+
+				"2026-09-11 production log, and the recovery dropped the gh_login update with it.", banned)
+		}
 	}
 
-	// The fallback retry must NOT set cntrb_login. The whole point of
-	// the fallback is to leave the OTHER row's claim on the login
-	// alone and only backfill gh_user_id + canonical on the row we
-	// actually own.
-	//
-	// We look for a SECOND UPDATE statement in the function body that
-	// sets gh_user_id but NOT cntrb_login.
-	if !strings.Contains(rest, "without touching cntrb_login") &&
-		!strings.Contains(rest, "without cntrb_login") &&
-		!strings.Contains(rest, "skip cntrb_login") {
-		// Loose contract — the comment is documentation. The harder
-		// invariant: the fallback UPDATE must include "gh_user_id"
-		// but exclude "cntrb_login = $". If the fallback isn't
-		// distinguishable, this test will need a tighter assertion.
-		t.Log("note: no explicit 'without cntrb_login' comment — relying on the harder invariant below")
+	// The rename must still reach gh_login — the fix removes the
+	// collision, it does not stop tracking the current name.
+	if !strings.Contains(rest, "gh_login = $2") {
+		t.Error("UpsertContributorFull's 'Row exists by ID' branch no longer updates gh_login. " +
+			"Dropping cntrb_login must not also drop the current-display-name mirror, or renames " +
+			"become invisible (which is exactly what the v0.19.1 recovery path did by accident).")
 	}
 }
 
-// TestUpsertContributorFullFallbackIsLogged pins that the fallback
-// path emits a Debug-level log so operators can still see the
-// collision when investigating, even though it's no longer an
-// ERROR-level Postgres log entry.
-func TestUpsertContributorFullFallbackIsLogged(t *testing.T) {
-	src := mustReadStoreSource(t, "commit_resolver_store.go")
-	body := extractBatchFunc(src, "UpsertContributorFull")
-	if body == "" {
-		t.Skip("UpsertContributorFull not yet refactored")
-	}
+// TestUpsertContributorFullReportsRenames replaces v0.19.1's
+// "fallback is logged" pin. The event worth surfacing is the rename
+// itself, not the failed statement it used to cause.
+func TestUpsertContributorFullReportsRenames(t *testing.T) {
+	rest := rowExistsBranch(t)
 
-	rowExistsIdx := strings.Index(body, "Row exists by ID")
-	if rowExistsIdx < 0 {
-		t.Skip("'Row exists by ID' branch comment not found")
+	if !strings.Contains(rest, "logger.Info") {
+		t.Error("UpsertContributorFull's 'Row exists by ID' branch must log the rename it observes at Info. " +
+			"Pre-v0.29.x this event was visible only as a recovered Postgres ERROR logged at Debug — " +
+			"invisible in production, where the log level is info.")
 	}
-
-	rest := body[rowExistsIdx:]
-	hasLog := strings.Contains(rest, "logger.Debug") ||
-		strings.Contains(rest, "logger.Warn") ||
-		strings.Contains(rest, ".Debug(") ||
-		strings.Contains(rest, ".Warn(")
-	if !hasLog {
-		t.Error("UpsertContributorFull's unique-violation fallback must log at Debug or Warn level so the " +
-			"collision is observable for diagnostics, even though it's no longer raised to Postgres ERROR.")
+	if !strings.Contains(rest, "rename") {
+		t.Error("the rename log line must name the event ('rename') so operators can grep for it " +
+			"alongside the batch path's 'contributor rename recovered in batch upsert'.")
 	}
 }

@@ -173,10 +173,59 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 	if err := otherServe.QueryRow(ctx, `SELECT COALESCE(host(client_addr), 'local socket') FROM pg_stat_activity WHERE pid = pg_backend_pid()`).Scan(&fakeAddr); err != nil {
 		t.Fatal(err)
 	}
-	var sameVersionLog bytes.Buffer
+	// 2026-09-11 (F3): the residual is CLOSED by default. A second host
+	// ran a full aveloxis stack — serve, api, web and 13 migrate runs —
+	// against production for ten days and deadlocked the live serve's
+	// staging inserts against its schema DDL, and the only thing standing
+	// between that and the fleet was a WARN in a log nobody was reading.
+	// So a same-version second serve now REFUSES unless the operator says
+	// otherwise, and the refusal has to name the override or it is just an
+	// obstacle.
+	var refusedLog bytes.Buffer
 	store.SetMigrateFastPath(true)
+	refuseErr := RunMigrations(ctx, store, slog.New(slog.NewTextHandler(&refusedLog, nil)))
+	if refuseErr == nil {
+		t.Fatal("a current stamp beside another serve must REFUSE by default — a second full " +
+			"scheduler competes for the same queue and API keys, and the 2026-08-30..09-09 " +
+			"incident shows a WARN does not stop it")
+	}
+	if !errors.Is(refuseErr, ErrSecondServeRefused) {
+		t.Errorf("the refusal must wrap ErrSecondServeRefused so callers can tell it from a "+
+			"migration failure, got %v", refuseErr)
+	}
+	// Distinct from the stamp-mismatch refusal: that one exists because a
+	// FULL migration beside a live serve caused the base-DDL deadlock.
+	// Conflating them would let --allow-second-serve also wave through a
+	// concurrent full migration, which is the incident itself.
+	if errors.Is(refuseErr, ErrOtherServeConnected) {
+		t.Error("the second-serve refusal must NOT wrap ErrOtherServeConnected — that sentinel is " +
+			"the stamp-mismatch refusal (a full migration beside a live serve), and the override " +
+			"for this one must never widen to that one")
+	}
+	// A refusal BLOCKS, so it owes BOTH ways forward. Advice() has just
+	// said a "(this host)" entry may be a draining backend rather than a
+	// live serve — and for a serve that was KILLED rather than stopped,
+	// whose backends linger on TCP keepalive for tens of minutes,
+	// --allow-second-serve is the WRONG remedy: it starts a second
+	// scheduler beside a corpse instead of clearing the corpse. A
+	// blocking message that offers only the override walks the operator
+	// into that.
+	for _, want := range []string{"--allow-second-serve", "orphan"} {
+		if !strings.Contains(refuseErr.Error(), want) {
+			t.Errorf("the refusal must name %q. It BLOCKS, so an operator hitting it on a routine "+
+				"restart needs every way forward — the override for a deliberate second serve, and "+
+				"terminating the orphan when the entry is a killed serve's leftover backend: %v", want, refuseErr)
+		}
+	}
+
+	// With the override, the pre-2026-09-11 behaviour is reachable
+	// verbatim — including every message the rounds 4-11 findings put
+	// into it.
+	var sameVersionLog bytes.Buffer
+	store.SetAllowSecondServe(true)
+	t.Cleanup(func() { store.SetAllowSecondServe(false) })
 	if err := RunMigrations(ctx, store, slog.New(slog.NewTextHandler(&sameVersionLog, nil))); err != nil {
-		t.Fatalf("a current stamp beside another serve must fast-path, got %v", err)
+		t.Fatalf("with --allow-second-serve a current stamp beside another serve must fast-path, got %v", err)
 	}
 	// Round-11 finding 1: the fake runs on THIS host, so every entry the
 	// listing renders is tagged "(this host)" and Advice() WITHDRAWS the
@@ -909,5 +958,56 @@ func TestOtherServeProbeAcquiresRatherThanBegins(t *testing.T) {
 	}
 	if strings.Contains(body, "s.pool.Begin(") || strings.Contains(body, "tx.Rollback(") {
 		t.Error("otherServeConnected must NOT hold a transaction across the ~1.75s confirmation loop (round-11 finding 8: idle-in-transaction pins xmin on every positive start)")
+	}
+}
+
+// TestAllowSecondServeIsWiredAndNarrow pins the 2026-09-11 (F3)
+// override's plumbing and — more importantly — its NARROWNESS.
+//
+// The refusal it overrides is "another scheduler is already running
+// here". The refusal it must NOT reach is startupMigrateRefusal: a serve
+// whose binary missed the stamp would run a FULL migration beside a live
+// fleet, and that is the base-DDL deadlock of the 2026-09-09 incident
+// itself. Widening the override to cover both would re-enable the
+// incident through the front door, which is why the two conditions carry
+// separate sentinels.
+func TestAllowSecondServeIsWiredAndNarrow(t *testing.T) {
+	pg := srctest.Read(t, "internal/db/postgres.go")
+	if !strings.Contains(pg, "func (s *PostgresStore) SetAllowSecondServe(") {
+		t.Error("PostgresStore must expose SetAllowSecondServe (the SetMatviewSkip / SetMigrateFastPath pattern)")
+	}
+
+	main := srctest.Read(t, "cmd/aveloxis/main.go")
+	serveBody := srctest.FuncBody(t, main, "func runServe(")
+	if !strings.Contains(serveBody, "SetAllowSecondServe(allowSecondServe)") {
+		t.Error("runServe must pass the --allow-second-serve flag through to the store, or the flag " +
+			"is inert and an operator who genuinely wants two serves cannot start one")
+	}
+	if !strings.Contains(main, `"allow-second-serve"`) {
+		t.Error("serve must register the --allow-second-serve flag")
+	}
+	// A config key would persist silently and make the second serve
+	// invisible again — exactly the condition the refusal exists to
+	// surface. The override has to be per-invocation.
+	cfg := srctest.Read(t, "internal/config/config.go")
+	if strings.Contains(cfg, "allow_second_serve") {
+		t.Error("--allow-second-serve must NOT become a config key: a persisted override restores " +
+			"the silent-second-serve condition this refusal exists to prevent. Keep it per-invocation.")
+	}
+
+	// The narrowness pin: the override is consulted at the second-serve
+	// arm only, never on the stamp-mismatch path.
+	mig := srctest.StripGoComments(srctest.Read(t, "internal/db/migrate.go"))
+	uses := strings.Count(mig, "allowSecondServe")
+	if uses != 1 {
+		t.Errorf("allowSecondServe is read %d times in migrate.go, want exactly 1 (the second-serve "+
+			"arm). A second read means the override has spread — most dangerously onto "+
+			"startupMigrateRefusal, which guards a FULL migration beside a live fleet.", uses)
+	}
+	refusal := srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func startupMigrateRefusal(")
+	if strings.Contains(refusal, "allowSecondServe") || strings.Contains(refusal, "ErrSecondServeRefused") {
+		t.Error("startupMigrateRefusal must not know about the second-serve override or its sentinel. " +
+			"It refuses a serve that would run a full migration beside a live fleet — the 2026-09-09 " +
+			"deadlock — and no override may reach it.")
 	}
 }

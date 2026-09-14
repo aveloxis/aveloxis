@@ -16,7 +16,9 @@
 //     (32 REST + 8 GraphQL), ~25s on augurlabs/augur. GitHub repos run
 //     remote FIRST.
 //   - Local mode (--local <path>): scorecard runs against the retained
-//     analysis clone. Measured: 0 API calls, ~7s, but only ~11 checks —
+//     analysis clone. Measured: 0 GitHub API calls (Fuzzing and
+//     Vulnerabilities still reach OSS-Fuzz and api.osv.dev), ~7s, needs no
+//     token, but only ~11 checks —
 //     the API-dependent checks are skipped entirely. Used as the BACKSTOP
 //     when the remote attempt errors or times out (11 checks beat none),
 //     and as the ONLY mode for GitLab and generic-git repos (scorecard's
@@ -65,10 +67,19 @@ type ScorecardResult struct {
 	// "local" (v0.27.5). Remote and local overall scores are NOT
 	// comparable — different check sets.
 	Mode string `json:"-"`
-	// APICalls is the instrumented GitHub API spend of the run
-	// (core + graphql used-delta measured via /rate_limit on the first
-	// token). 0 for local mode (which makes no instrumented calls);
-	// -1 when instrumentation was requested but the probe failed.
+	// Discarded is true when the run completed but its result was NOT
+	// written because a local (partial) set would have replaced a
+	// stored remote (complete) one — the 2026-09-12 operator rule. The
+	// attempt's cost is real, so the result still carries Mode, Checks
+	// and Duration for the phase log.
+	Discarded bool `json:"-"`
+	// APICalls is the instrumented GitHub API spend SAMPLE of the run:
+	// the core + graphql used-delta measured via /rate_limit on the
+	// instrument (first lent) token. Not attributable — it misses the
+	// other lent tokens and includes concurrent same-token callers; see
+	// rateLimitDelta. 0 for local mode (which makes no instrumented
+	// calls); -1 = unknown (a probe failed, or a rate-limit window reset
+	// between the probes).
 	APICalls int64 `json:"-"`
 	// Duration is the wall-clock time of the whole run including any
 	// fallback attempt.
@@ -88,8 +99,33 @@ type ScorecardCheck struct {
 // full remote/local fallback with a fake store + fake scorecard binary.
 // *db.PostgresStore satisfies it.
 type scorecardStore interface {
-	RotateScorecardToHistory(ctx context.Context, repoID int64) error
-	InsertScorecardResult(ctx context.Context, repoID int64, name, score string, detailsJSON []byte, mode string) error
+	// ReplaceScorecard is the ONE persist operation: in a single store
+	// transaction under a per-repo lock it reads the stored mode, asks
+	// allow(storedMode, found) whether this run may replace the set,
+	// and if so rotates the current rows to history and inserts rows.
+	// written=false = refused, nothing touched. An error = nothing
+	// committed; a failed mode read is an error, never "no prior set"
+	// (SR-5). The collector never sequences check/rotate/insert itself
+	// — that is what let a local writer rotate a concurrent remote
+	// writer's complete set away (Copilot review on PR #203; SR-18).
+	ReplaceScorecard(ctx context.Context, repoID int64, mode string, rows []db.ScorecardRow, allow func(storedMode string, found bool) bool) (written bool, err error)
+}
+
+// errScorecardModeProbe wraps a ReplaceScorecard failure so the phase
+// log can say the run was not written and why. The name predates the
+// fused transaction: the first cause it covered was the current-mode
+// read, and a failed read is still the same class (unknowable state,
+// nothing written).
+var errScorecardModeProbe = errors.New("scorecard: persist transaction failed — result not written (an unknowable stored state is not 'no prior set')")
+
+// scorecardReplaceAllowed is the D9 policy, evaluated by the store
+// INSIDE its transaction: a remote (complete) run replaces anything;
+// a local (partial) run never replaces a stored remote set; local over
+// local/none replaces (the GitLab/generic normal path).
+func scorecardReplaceAllowed(mode string) func(storedMode string, found bool) bool {
+	return func(storedMode string, found bool) bool {
+		return mode == "remote" || !(found && storedMode == "remote")
+	}
 }
 
 // ScorecardOptions bundles the inputs for RunScorecard.
@@ -109,7 +145,9 @@ type ScorecardOptions struct {
 	// so a direct caller can't run unbounded).
 	Timeout time.Duration
 	// GithubToken is the GITHUB_TOKEN value — a comma-separated list
-	// for multi-token round-robin (see ScorecardTokens).
+	// for multi-token round-robin (see ScorecardTokens). Empty on a
+	// remote-primary run means remote is never attempted: local mode on
+	// LocalPath, or ErrScorecardNoToken without one (v0.29.10).
 	GithubToken string
 	// InstrumentToken, when non-empty, enables the before/after
 	// /rate_limit probe on remote attempts (measured API spend in the
@@ -126,36 +164,69 @@ type ScorecardOptions struct {
 // config.ScorecardTimeout accessor default.
 const defaultScorecardTimeout = 15 * time.Minute
 
+// rateLimitWindowSeconds is the length of GitHub's primary rate-limit
+// window for the core and graphql resources (one hour) — the bound
+// rateLimitDelta's idle-resource exception relies on.
+const rateLimitWindowSeconds = 3600
+
+// ErrScorecardNoToken is returned by RunScorecard for a remote-primary
+// (GitHub) repository when the caller has no usable GitHub token AND no
+// clone to run local mode on. The loan is empty when no GitHub key is
+// configured (a GitLab-only deployment still claims GitHub repos) or when
+// every key is quarantined or cooling down on a secondary limit
+// (KeyPool.LendTokens lends only usable keys). Running `scorecard --repo` with an empty GITHUB_TOKEN is
+// never useful: probed 2026-09-13, scorecard goes unauthenticated, hits the
+// rate limit and logs "Rate limit exceeded. Waiting 46m50s to retry", holding
+// a subprocess slot for the whole per-attempt timeout. The repository is
+// retried on its next cycle.
+var ErrScorecardNoToken = errors.New("scorecard not run: no usable GitHub token lent (none configured, or every key quarantined or cooling down) and no clone for local mode")
+
+// ScorecardAPICallsBasis labels every api_calls_used log value: a
+// /rate_limit used-delta on ONE token (the instrument token), which is a
+// sample biased both ways — not the run's attributable spend
+// (rateLimitDelta has the details). One spelling for every log site.
+const ScorecardAPICallsBasis = "instrument_token_sample"
+
 // scorecardRateLimitURL is the default endpoint for the API-spend probe.
 const scorecardRateLimitURL = "https://api.github.com/rate_limit"
 
 // ScorecardTokens builds scorecard's comma-separated GITHUB_TOKEN value
-// from the key pool (v0.27.5). count 0 = all non-invalidated tokens;
-// N>0 = the first N. Returns the joined list plus the first token
-// (used for the /rate_limit instrumentation probe). No key checkout
-// happens — scorecard paces itself across the whole set.
-func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string) {
+// from the key pool (v0.27.5). count 0 = every usable token (not
+// invalidated, quarantined or cooling down — KeyPool.LendTokens); N>0 =
+// the N least-borrowed of those. Empty when there are none. Returns the joined list, the first token
+// (used for the /rate_limit instrumentation probe), and the release the
+// caller MUST invoke once the subprocess has exited.
+//
+// 2026-09-12: the tokens are BORROWED through KeyPool.LendTokens rather
+// than copied out with the retired AllTokens — a subprocess cannot hold
+// a Go lease, so its use is accounted (which keys, how many concurrent
+// borrowers) instead of invisible. Still no in-flight lease: scorecard
+// paces itself across the set, and its ~40 calls over ~25 s are
+// negligible per key; the point is that the pool KNOWS.
+func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, release func()) {
 	if pool == nil {
-		return "", ""
+		return "", "", func() {}
 	}
-	tokens := pool.AllTokens()
-	if count > 0 && count < len(tokens) {
-		tokens = tokens[:count]
-	}
+	tokens, release := pool.LendTokens(count)
 	if len(tokens) == 0 {
-		return "", ""
+		release()
+		return "", "", func() {}
 	}
-	return strings.Join(tokens, ","), tokens[0]
+	return strings.Join(tokens, ","), tokens[0], release
 }
 
 // RunScorecard executes the OpenSSF Scorecard tool against a repo and
 // stores results in repo_deps_scorecard. Requires the `scorecard` binary
 // on PATH (silently skipped otherwise).
 //
-// Mode selection (v0.27.5):
-//   - RemotePrimary (GitHub): remote attempt first; on error or
-//     per-attempt timeout, fall back to local mode when a clone path
-//     exists — 11 checks beat none. No clone → the remote error surfaces.
+// Mode selection (v0.27.5; empty-token arm v0.29.10):
+//   - RemotePrimary (GitHub) with a lent token: remote attempt first; on
+//     error or per-attempt timeout, fall back to local mode when a clone
+//     path exists — 11 checks beat none. No clone → the remote error
+//     surfaces.
+//   - RemotePrimary with NO token (none configured, or every key resting):
+//     remote is never attempted — local mode at once on the clone, or
+//     ErrScorecardNoToken without one.
 //   - Local-only (GitLab / generic git): local mode only. No clone →
 //     skipped with an INFO log (scorecard's GitLab remote support is
 //     immature; running --repo against non-GitHub hosts is not useful).
@@ -180,6 +251,17 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// internal/api/logsafe.go, internal/web truncateForLog). v0.27.10.
 	safeRepoURL := scrubLogValue(opts.RepoURL)
 
+	// runLocal is the one local-mode attempt shape (invoke on the clone,
+	// persist, no API instrumentation) shared by local-only platforms and
+	// the empty-loan arm below (SR-17).
+	runLocal := func() (*ScorecardResult, error) {
+		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
+		if localErr != nil {
+			return nil, localErr
+		}
+		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger)
+	}
+
 	if !opts.RemotePrimary {
 		// Local-only platforms (GitLab, generic git).
 		if opts.LocalPath == "" {
@@ -187,11 +269,24 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 				"repo_id", repoID, "url", safeRepoURL)
 			return nil, nil
 		}
-		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
-		if localErr != nil {
-			return nil, localErr
+		return runLocal()
+	}
+
+	// v0.29.10: a remote-primary run needs a token. The caller's loan is
+	// empty when no GitHub key is configured or every one is quarantined
+	// or cooling down, and
+	// `scorecard --repo` without one sleeps out the rate limit for the
+	// whole per-attempt timeout (ErrScorecardNoToken). Decided HERE, the
+	// layer that owns mode selection, so neither caller can reach it.
+	if opts.GithubToken == "" {
+		if opts.LocalPath == "" {
+			logger.Warn("scorecard not run — no usable GitHub token lent (none configured, or every key quarantined or cooling down) and no clone for local mode; retried next cycle",
+				"repo_id", repoID, "url", safeRepoURL)
+			return nil, ErrScorecardNoToken
 		}
-		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger), nil
+		logger.Warn("scorecard: no usable GitHub token lent (none configured, or every key quarantined or cooling down) — running local mode on the retained clone instead of remote",
+			"repo_id", repoID, "url", safeRepoURL)
+		return runLocal()
 	}
 
 	// Remote-primary (GitHub): --repo first, instrumented.
@@ -207,7 +302,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		apiCalls = rateLimitDelta(before, after)
 	}
 	if remoteErr == nil {
-		return finishScorecard(ctx, store, repoID, raw, "remote", apiCalls, time.Since(start), logger), nil
+		return finishScorecard(ctx, store, repoID, raw, "remote", apiCalls, time.Since(start), logger)
 	}
 
 	if opts.LocalPath == "" {
@@ -226,13 +321,22 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	if localErr != nil {
 		return nil, fmt.Errorf("scorecard remote attempt failed (%v); local fallback also failed: %w", remoteErr, localErr)
 	}
-	return finishScorecard(ctx, store, repoID, raw, "local", apiCalls, time.Since(start), logger), nil
+	return finishScorecard(ctx, store, repoID, raw, "local", apiCalls, time.Since(start), logger)
 }
 
-// finishScorecard persists a successful attempt and emits the
-// completion log with the instrumented API spend.
-func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, apiCalls int64, duration time.Duration, logger *slog.Logger) *ScorecardResult {
-	result := persistScorecard(ctx, store, repoID, raw, mode, logger)
+// finishScorecard persists a successful attempt (subject to the
+// partial-never-replaces-complete gate in persistScorecard) and emits
+// the completion log with the instrumented API spend. The only error it
+// can return is a failed persist transaction (errScorecardModeProbe) —
+// the run happened, but its result was not written. RunScorecard
+// returns that error directly: a store failure after a successful
+// remote run is NOT a remote failure and never triggers the local
+// backstop (pinned by TestScorecardPersistFailureAfterRemoteSuccessDoesNotFallBack).
+func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, apiCalls int64, duration time.Duration, logger *slog.Logger) (*ScorecardResult, error) {
+	result, err := persistScorecard(ctx, store, repoID, raw, mode, logger)
+	if err != nil {
+		return nil, err
+	}
 	result.APICalls = apiCalls
 	result.Duration = duration
 
@@ -241,9 +345,13 @@ func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, ra
 		"mode", mode,
 		"overall_score", raw.Score,
 		"checks", len(result.Checks),
+		"written", !result.Discarded,
 		"api_calls_used", apiCalls,
+		// The number above is a one-token sample, not this run's
+		// attributable spend (rateLimitDelta); say so where it is read.
+		"api_calls_basis", ScorecardAPICallsBasis,
 		"duration", duration)
-	return result
+	return result, nil
 }
 
 // invokeScorecard is the INVOKE half of the v0.27.5 split: build the
@@ -254,13 +362,42 @@ func finishScorecard(ctx context.Context, store scorecardStore, repoID int64, ra
 //
 // localPath selects the mode: non-empty = local (--local localPath),
 // empty = remote (--repo repoURL).
-func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, repoURL string, localPath string, timeout time.Duration, githubToken string, logger *slog.Logger) (*scorecardOutput, error) {
+func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, repoURL string, localPath string, timeout time.Duration, githubToken string, logger *slog.Logger) (out *scorecardOutput, invokeErr error) {
 	// Per-attempt wall-clock cap (v0.27.5). The pre-v0.27.5 remote
 	// mode could hang for DAYS: scorecard sleeps through rate-limit
 	// resets when its token is drained. On expiry cmd.Cancel SIGKILLs
 	// the whole process group.
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Per-ATTEMPT outcome log (2026-09-11, F2). "scorecard complete"
+	// fires once, only on success, for the whole remote-then-local
+	// sequence — so a repo that burned a full remote timeout before
+	// succeeding locally looked identical to one that succeeded
+	// immediately, and a repo that failed both attempts logged no cost
+	// at all. Measured consequence: 4,608 repos hit the full 15-minute
+	// cap in 5.2 days (~1,152 worker-hours, ~18% of collection
+	// capacity) and the log could neither count nor attribute it.
+	//
+	// Named returns + one deferred site so every exit path reports,
+	// including the ones that return early. timed_out separates the
+	// wall-clock cohort from parse failures — different causes,
+	// different fixes.
+	attemptMode := "remote"
+	if localPath != "" {
+		attemptMode = "local"
+	}
+	attemptStart := time.Now()
+	defer func() {
+		logger.Info("scorecard attempt",
+			"repo_id", repoID,
+			"mode", attemptMode,
+			"ok", invokeErr == nil,
+			"timed_out", errors.Is(attemptCtx.Err(), context.DeadlineExceeded),
+			"duration", time.Since(attemptStart),
+			"timeout_cap", timeout,
+			"error", invokeErr)
+	}()
 
 	var cmd *exec.Cmd
 	if localPath != "" {
@@ -338,14 +475,48 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 	var raw scorecardOutput
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w", timeout, attemptCtx.Err())
+			// stderr often carries the reason a run went long (rate-limit
+			// waits, a check retrying) right up to the SIGKILL, so it is
+			// the cheapest evidence available for the 4,608-repo
+			// timeout cohort.
+			return nil, fmt.Errorf("scorecard timed out after %v (wall-clock cap): %w: %s",
+				timeout, attemptCtx.Err(), tailForError(stderr.String()))
 		}
 		if runErr != nil {
-			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), stderr.String())
+			return nil, fmt.Errorf("scorecard failed: %w: %s", execErr(attemptCtx, runErr), tailForError(stderr.String()))
 		}
-		return nil, fmt.Errorf("parsing scorecard output: %w", err)
+		// Exit 0 with unparseable stdout — the 2,492-repo cohort of the
+		// 2026-09-11 analysis. This arm used to drop stderr on the
+		// floor while its sibling above appended it, so for those repos
+		// there was no evidence at all of what scorecard said. The
+		// subprocess exiting 0 is exactly what makes stderr the only
+		// remaining witness. stdout_bytes disambiguates "produced
+		// nothing" from "produced something malformed".
+		return nil, fmt.Errorf("parsing scorecard output (stdout_bytes=%d): %w: %s",
+			stdout.Len(), err, tailForError(stderr.String()))
 	}
 	return &raw, nil
+}
+
+// scorecardStderrTailBytes bounds how much of a failed attempt's stderr
+// rides along in the returned error. Scorecard is chatty when a run goes
+// wrong (one line per retried check), and these errors reach
+// collection_queue.last_error and the application log — an unbounded
+// tail would be a per-repo blob in both. The TAIL, not the head: the
+// operative message is the last thing written before the process gave
+// up or was killed.
+const scorecardStderrTailBytes = 2048
+
+// tailForError trims stderr to the last scorecardStderrTailBytes,
+// marking the truncation so a reader is never misled into thinking the
+// captured fragment is the whole story.
+func tailForError(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= scorecardStderrTailBytes {
+		return s
+	}
+	return "...[truncated " + strconv.Itoa(len(s)-scorecardStderrTailBytes) + " bytes]... " +
+		s[len(s)-scorecardStderrTailBytes:]
 }
 
 // persistScorecard is the PERSIST half of the v0.27.5 split: rotate the
@@ -353,59 +524,57 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 // the reserved row name (db.ScorecardOverallName — never mixed into the
 // checks), then store each check row. Every row carries the mode
 // marker, because remote and local check sets are not comparable.
-func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, logger *slog.Logger) *ScorecardResult {
+//
+// 2026-09-12 — a partial run never replaces a complete set (operator
+// rule). Keyed on the stored scorecard_mode, not on check counts:
+//
+//	new run | stored | action
+//	remote  | any    | replace (the best obtainable set)
+//	local   | remote | REFUSE — keep the stored set, result.Discarded
+//	local   | local  | replace (no better data exists; GitLab/generic
+//	        | none   | are local-only, so this is their normal path)
+//
+// Before this the rotation was unconditional, so a 15-minute remote
+// timeout followed by a successful local fallback replaced an 18-check
+// set with an 11-check one — 10,214 repos on chaoss.tv held that
+// 7-check deficit. Mode is the discriminator so the rule survives
+// scorecard adding or removing a check, and needs no platform case.
+// A probe ERROR is not "no prior set" (SR-5): nothing is written.
+func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, raw *scorecardOutput, mode string, logger *slog.Logger) (*ScorecardResult, error) {
 	result := &ScorecardResult{
 		OverallScore: raw.Score,
 		Mode:         mode,
 	}
-
-	// Rotate previous scorecard results to history before inserting new ones.
-	if err := store.RotateScorecardToHistory(ctx, repoID); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
-		if !errors.Is(err, context.Canceled) {
-			logger.Warn("failed to rotate scorecard to history", "repo_id", repoID, "error", err)
-		}
-	}
-
-	// Store the aggregate ("headline") score under the reserved
-	// __overall__ row name — v0.27.4; it was previously logged and
-	// dropped, which the operator called out as a gap. One decimal,
-	// matching scorecard's own output.
-	if err := store.InsertScorecardResult(ctx, repoID, db.ScorecardOverallName,
-		fmt.Sprintf("%.1f", raw.Score), nil, mode); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
-		if !errors.Is(err, context.Canceled) {
-			logger.Warn("failed to store scorecard overall score", "repo_id", repoID, "error", err)
-		}
-	}
-
-	// Store each check as a row in repo_deps_scorecard.
+	// The aggregate ("headline") score under the reserved __overall__
+	// row name — v0.27.4; one decimal, matching scorecard's own output —
+	// then each check as a row with its full details as JSONB.
+	rows := make([]db.ScorecardRow, 0, 1+len(raw.Checks))
+	rows = append(rows, db.ScorecardRow{Name: db.ScorecardOverallName, Score: fmt.Sprintf("%.1f", raw.Score)})
 	for _, check := range raw.Checks {
-		sc := ScorecardCheck{
-			Name:    check.Name,
-			Score:   check.Score,
-			Reason:  check.Reason,
-			Details: check.Details,
-		}
-		result.Checks = append(result.Checks, sc)
-
-		// Store in database with full check details as JSONB.
+		result.Checks = append(result.Checks, ScorecardCheck{
+			Name: check.Name, Score: check.Score, Reason: check.Reason, Details: check.Details,
+		})
 		detailsJSON, _ := json.Marshal(check)
-		if err := store.InsertScorecardResult(ctx, repoID, check.Name, strconv.FormatFloat(check.Score, 'f', -1, 64), detailsJSON, mode); err != nil {
-			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-			// defect. Only the log is suppressed — surrounding behaviour is
-			// unchanged and the work is retried on the next cycle.
-			if !errors.Is(err, context.Canceled) {
-				logger.Warn("failed to store scorecard check", "check", check.Name, "error", err)
-			}
-		}
+		rows = append(rows, db.ScorecardRow{
+			Name: check.Name, Score: strconv.FormatFloat(check.Score, 'f', -1, 64), Details: detailsJSON,
+		})
 	}
 
-	return result
+	written, err := store.ReplaceScorecard(ctx, repoID, mode, rows, scorecardReplaceAllowed(mode))
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logger.Warn("scorecard persist failed — result NOT written",
+				"repo_id", repoID, "mode", mode, "error", err)
+		}
+		return nil, fmt.Errorf("%w: %w", errScorecardModeProbe, err)
+	}
+	if !written {
+		result.Discarded = true
+		logger.Info("scorecard degraded run discarded — prior complete set retained",
+			"repo_id", repoID, "run_mode", mode, "stored_mode", "remote",
+			"run_checks", len(raw.Checks))
+	}
+	return result, nil
 }
 
 // setRemoteOrigin sets the git remote origin URL on a local clone so scorecard
@@ -426,9 +595,11 @@ func setRemoteOrigin(ctx context.Context, repoPath, remoteURL string) error {
 // rateLimitSnapshot is one before/after observation of the first
 // token's GitHub API usage.
 type rateLimitSnapshot struct {
-	coreUsed    int64
-	graphqlUsed int64
-	ok          bool
+	coreUsed     int64
+	coreReset    int64 // the core window's reset epoch — identifies the window
+	graphqlUsed  int64
+	graphqlReset int64
+	ok           bool
 }
 
 // fetchRateLimitSnapshot GETs the GitHub /rate_limit endpoint with the
@@ -447,7 +618,15 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 		return rateLimitSnapshot{}
 	}
 	req.Header.Set("Authorization", "token "+token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	// v0.29.12: the probe carries a pool token and never follows a redirect
+	// — Go's default policy re-sends Authorization to the same domain AND its
+	// subdomains, including on an https→http downgrade, and the probe only
+	// wants the endpoint's own 200; a 3xx falls through to the non-200 arm
+	// below (an unknown sample).
+	client := &http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Debug("rate_limit probe failed (non-fatal)", "error", err)
@@ -461,10 +640,12 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 	var body struct {
 		Resources struct {
 			Core struct {
-				Used int64 `json:"used"`
+				Used  int64 `json:"used"`
+				Reset int64 `json:"reset"`
 			} `json:"core"`
 			GraphQL struct {
-				Used int64 `json:"used"`
+				Used  int64 `json:"used"`
+				Reset int64 `json:"reset"`
 			} `json:"graphql"`
 		} `json:"resources"`
 	}
@@ -473,22 +654,62 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 		return rateLimitSnapshot{}
 	}
 	return rateLimitSnapshot{
-		coreUsed:    body.Resources.Core.Used,
-		graphqlUsed: body.Resources.GraphQL.Used,
-		ok:          true,
+		coreUsed:     body.Resources.Core.Used,
+		coreReset:    body.Resources.Core.Reset,
+		graphqlUsed:  body.Resources.GraphQL.Used,
+		graphqlReset: body.Resources.GraphQL.Reset,
+		ok:           true,
 	}
 }
 
-// rateLimitDelta computes api_calls_used from two snapshots. -1 =
-// unknown (either probe failed — non-fatal per the instrumentation
-// contract). The delta can only observe the FIRST token; with a
-// multi-token GITHUB_TOKEN scorecard spreads calls across the list, so
-// this is a lower-bound sample, not an exact total.
+// rateLimitDelta computes api_calls_used from two snapshots, or -1 =
+// unknown when either probe failed (non-fatal per the instrumentation
+// contract), when a resource's rate-limit window rolled over between the
+// probes, or when the difference is negative.
+//
+// The window check (Copilot review round 2 on PR #203): GitHub's `used`
+// counter restarts when the window resets, so a run straddling a reset
+// produced a negative number, or a plausible-looking wrong one. A
+// window is identified by its `reset` epoch. The one exception is a
+// resource that was idle at the first probe (used 0): it has no window
+// yet and GitHub reports a reset that floats with the clock (probe time
+// + the window length), so a moved epoch there is not by itself a
+// rollover. The window the run opens starts after that probe and so
+// resets less than one window length after the floating value; any
+// later window resets at least one window length after it. So the idle
+// case is accepted only inside that bound — scorecard_timeout_minutes
+// has no upper clamp, and a run that outlived its window would
+// otherwise report the second window's count as the whole run's.
+//
+// The value is a SAMPLE of one token, NOT this run's attributable spend,
+// and it is biased in both directions: it misses the calls scorecard
+// spreads onto the other tokens of a multi-token GITHUB_TOKEN, and it
+// includes any calls the pool's collectors (or a concurrent scorecard
+// run) made with the same token inside the run. It answers "is scorecard
+// spend in the tens or the thousands", not "how many calls did it make".
+// Exact attribution would need either exclusive tokens (taken out of the
+// pool for the run's duration) or a usage report from the subprocess,
+// which scorecard does not emit.
 func rateLimitDelta(before, after rateLimitSnapshot) int64 {
 	if !before.ok || !after.ok {
 		return -1
 	}
-	return (after.coreUsed - before.coreUsed) + (after.graphqlUsed - before.graphqlUsed)
+	sameWindow := func(beforeUsed, beforeReset, afterReset int64) bool {
+		if beforeReset == afterReset {
+			return true
+		}
+		return beforeUsed == 0 && afterReset-beforeReset < rateLimitWindowSeconds
+	}
+	if !sameWindow(before.coreUsed, before.coreReset, after.coreReset) ||
+		!sameWindow(before.graphqlUsed, before.graphqlReset, after.graphqlReset) {
+		return -1
+	}
+	core := after.coreUsed - before.coreUsed
+	graphql := after.graphqlUsed - before.graphqlUsed
+	if core < 0 || graphql < 0 {
+		return -1
+	}
+	return core + graphql
 }
 
 // scorecardOutput is the JSON structure output by `scorecard --format json`.

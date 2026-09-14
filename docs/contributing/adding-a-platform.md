@@ -77,8 +77,8 @@ This is the complete list of files a new platform needs. Some are mandatory; som
    - `users.go` — `ListContributors`, `EnrichContributor`, `SearchUserByEmail`.
    - `urlparse.go` — `ParseRepoURL` (parses a Bugzilla product URL).
    - `errors.go` — mapping Bugzilla error codes to `platform.Class*` classifications.
-4. **`internal/scheduler/scheduler.go`** — add `case model.PlatformBugzilla:` to the `selectClient` switch (~line 899); add the relevant capability gate around facade/analysis/SBOM phases (~line 756).
-5. **`cmd/aveloxis/main.go`** — load Bugzilla API keys into a `bugzillaKeys` `*platform.KeyPool`, construct the `bugzilla.Client`, pass it to the scheduler config.
+4. **`internal/scheduler/scheduler.go`** — add `case model.PlatformBugzilla:` to the `selectClient` switch; add the relevant capability gate around the facade/analysis/SBOM phases in `runJob`.
+5. **`cmd/aveloxis/main.go`** — load Bugzilla API keys into a `bugzillaKeys` `*platform.KeyPool`, construct the `bugzilla.Client`, pass it to `scheduler.NewWithKeys` (Step 10).
 6. **`internal/db/keys.go`** — already supports arbitrary platform strings via `loadKeysFromTable(table, platform)`. Pass `"bugzilla"` as the platform string. No code change needed unless you want explicit constants.
 7. **`internal/config/config.go`** — add a `BugzillaConfig` block to `Config` (base URL, optionally a list of self-hosted Bugzilla hosts).
 8. **`internal/db/version.go`** — bump.
@@ -112,7 +112,7 @@ func (p Platform) IsGitOnly() bool {
 The scheduler uses it to gate API collection:
 
 ```go
-// internal/scheduler/scheduler.go (~line 756)
+// internal/scheduler/scheduler.go, in runJob
 if !repo.Platform.IsGitOnly() {
     // staged collection (API)
     client, err := s.selectClient(repo.Platform)
@@ -263,19 +263,23 @@ import (
 // Client implements platform.Client for Bugzilla.
 type Client struct {
     baseURL string                // e.g. "https://bugzilla.mozilla.org"
-    keys    *platform.KeyPool     // API keys (Bugzilla 5.0+); use nil for unauthenticated read-only access
+    keys    *platform.KeyPool     // API keys (Bugzilla 5.0+); platform.HTTPClient leases one for every request
     http    *platform.HTTPClient
     logger  *slog.Logger
 }
 
 // New constructs a Bugzilla client. baseURL is the Bugzilla instance root
-// (no trailing slash). If keys is nil, requests are unauthenticated —
-// works for public bugs on public instances, rate-limited harshly.
+// (no trailing slash); methods pass request paths, which the HTTP client
+// prefixes with it. baseURL is also the only scheme and host the client will
+// send a key to: a redirect or next-page link anywhere else is refused
+// (v0.29.12). keys must be a real pool — platform.HTTPClient leases a key for
+// every request, so anonymous read-only access would need a keyless request
+// path that the HTTP client does not have.
 func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
     return &Client{
         baseURL: baseURL,
         keys:    keys,
-        http:    platform.NewHTTPClient(keys, logger, platform.AuthBugzilla),
+        http:    platform.NewHTTPClient(baseURL, keys, logger, platform.AuthBugzilla),
         logger:  logger,
     }
 }
@@ -389,9 +393,10 @@ func (c *Client) FetchRepoInfo(ctx context.Context, _, product string) (*model.R
             // Bug count needs a separate /rest/bug?product=X&count_only=true call.
         } `json:"products"`
     }
-    url := fmt.Sprintf("%s/rest/product?names=%s&include_fields=name,description,is_active",
-        c.baseURL, url.QueryEscape(product))
-    if err := c.http.GetJSON(ctx, url, &resp); err != nil {
+    // A path, not a URL: the HTTP client prefixes its base URL.
+    path := fmt.Sprintf("/rest/product?names=%s&include_fields=name,description,is_active",
+        url.QueryEscape(product))
+    if err := c.http.GetJSON(ctx, path, &resp); err != nil {
         return nil, fmt.Errorf("fetch product: %w", err)
     }
     if len(resp.Products) == 0 {
@@ -434,8 +439,8 @@ func (c *Client) ListIssues(ctx context.Context, _, product string, since time.T
             var resp struct {
                 Bugs []bugzillaBug `json:"bugs"`
             }
-            apiURL := fmt.Sprintf("%s/rest/bug?%s", c.baseURL, params.Encode())
-            if err := c.http.GetJSON(ctx, apiURL, &resp); err != nil {
+            path := fmt.Sprintf("/rest/bug?%s", params.Encode())
+            if err := c.http.GetJSON(ctx, path, &resp); err != nil {
                 yield(model.Issue{}, fmt.Errorf("list bugs at offset %d: %w", offset, err))
                 return
             }
@@ -562,8 +567,8 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
             RealName string `json:"real_name"`
         } `json:"users"`
     }
-    apiURL := fmt.Sprintf("%s/rest/user?names=%s", c.baseURL, url.QueryEscape(login))
-    if err := c.http.GetJSON(ctx, apiURL, &resp); err != nil {
+    path := fmt.Sprintf("/rest/user?names=%s", url.QueryEscape(login))
+    if err := c.http.GetJSON(ctx, path, &resp); err != nil {
         return nil, fmt.Errorf("enrich user: %w", err)
     }
     if len(resp.Users) == 0 {
@@ -597,8 +602,8 @@ func (c *Client) SearchUserByEmail(ctx context.Context, email string) (login str
             Email string `json:"email"`
         } `json:"users"`
     }
-    apiURL := fmt.Sprintf("%s/rest/user?match=%s", c.baseURL, url.QueryEscape(email))
-    if err := c.http.GetJSON(ctx, apiURL, &resp); err != nil {
+    path := fmt.Sprintf("/rest/user?match=%s", url.QueryEscape(email))
+    if err := c.http.GetJSON(ctx, path, &resp); err != nil {
         return "", 0, err
     }
     if len(resp.Users) == 0 {
@@ -661,7 +666,7 @@ func (c *Client) FetchCloneStats(_ context.Context, _, _ string) ([]model.RepoCl
 ### Step 9 — wire into the scheduler
 
 ```go
-// internal/scheduler/scheduler.go around line 899
+// internal/scheduler/scheduler.go
 func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
     switch p {
     case model.PlatformGitHub:
@@ -678,7 +683,7 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 
 Add a `bzClient platform.Client` field to the `Scheduler` struct. Update the constructor `NewWithKeys` to accept it.
 
-Around line 756, the gate that controls "API collection vs git-only":
+In `runJob`, the gate that controls "API collection vs git-only":
 
 ```go
 if !repo.Platform.IsGitOnly() {
@@ -711,9 +716,9 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 ) {
     // ... existing ghKeys + glKeys loading
 
-    bzKeysData, err := store.LoadAPIKeys(ctx, "bugzilla", useAugurKeys)
+    bzKeysData, err := db.LoadAPIKeys(ctx, store.Pool(), "bugzilla", useAugurKeys)
     if err != nil {
-        logger.Warn("loading Bugzilla keys", "error", err)
+        logger.Error("loading Bugzilla keys", "error", err)
     }
     bzKeys = platform.NewKeyPool(bzKeysData, ...)
 
@@ -729,10 +734,10 @@ ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
 glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 bzClient := bugzilla.New(cfg.Bugzilla.BaseURL, bzKeys, logger)
 
-sched := scheduler.NewWithKeys(store, ghClient, glClient, bzClient, ghKeys, logger, scheduler.Config{...})
+sched := scheduler.NewWithKeys(store, ghClient, glClient, bzClient, ghKeys, glKeys, logger, scheduler.Config{...})
 ```
 
-Update `scheduler.NewWithKeys` to accept the bzClient param.
+Update `scheduler.NewWithKeys` to accept the bzClient param after glClient; the key-pool parameters keep their order.
 
 ### Step 11 — config
 
@@ -794,7 +799,8 @@ func TestBugzillaListIssues(t *testing.T) {
     }))
     defer srv.Close()
 
-    c := New(srv.URL, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+    logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+    c := New(srv.URL, platform.NewKeyPool([]string{"test-key"}, logger), logger)
     var issues []model.Issue
     for issue, err := range c.ListIssues(context.Background(), "", "Firefox", time.Time{}) {
         if err != nil { t.Fatal(err) }

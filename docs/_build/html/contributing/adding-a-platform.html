@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adding a new platform &mdash; Aveloxis 0.29.12 documentation</title>
+  <title>Adding a new platform &mdash; Aveloxis 0.29.13 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=3b307b24"></script>
+      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1772,8 +1772,8 @@ SPDX-License-Identifier: MIT
 <li><p><code class="docutils literal notranslate"><span class="pre">errors.go</span></code> — mapping Bugzilla error codes to <code class="docutils literal notranslate"><span class="pre">platform.Class*</span></code> classifications.</p></li>
 </ul>
 </li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/scheduler/scheduler.go</span></code></strong> — add <code class="docutils literal notranslate"><span class="pre">case</span> <span class="pre">model.PlatformBugzilla:</span></code> to the <code class="docutils literal notranslate"><span class="pre">selectClient</span></code> switch (~line 899); add the relevant capability gate around facade/analysis/SBOM phases (~line 756).</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/main.go</span></code></strong> — load Bugzilla API keys into a <code class="docutils literal notranslate"><span class="pre">bugzillaKeys</span></code> <code class="docutils literal notranslate"><span class="pre">*platform.KeyPool</span></code>, construct the <code class="docutils literal notranslate"><span class="pre">bugzilla.Client</span></code>, pass it to the scheduler config.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/scheduler/scheduler.go</span></code></strong> — add <code class="docutils literal notranslate"><span class="pre">case</span> <span class="pre">model.PlatformBugzilla:</span></code> to the <code class="docutils literal notranslate"><span class="pre">selectClient</span></code> switch; add the relevant capability gate around the facade/analysis/SBOM phases in <code class="docutils literal notranslate"><span class="pre">runJob</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/main.go</span></code></strong> — load Bugzilla API keys into a <code class="docutils literal notranslate"><span class="pre">bugzillaKeys</span></code> <code class="docutils literal notranslate"><span class="pre">*platform.KeyPool</span></code>, construct the <code class="docutils literal notranslate"><span class="pre">bugzilla.Client</span></code>, pass it to <code class="docutils literal notranslate"><span class="pre">scheduler.NewWithKeys</span></code> (Step 10).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/db/keys.go</span></code></strong> — already supports arbitrary platform strings via <code class="docutils literal notranslate"><span class="pre">loadKeysFromTable(table,</span> <span class="pre">platform)</span></code>. Pass <code class="docutils literal notranslate"><span class="pre">&quot;bugzilla&quot;</span></code> as the platform string. No code change needed unless you want explicit constants.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/config/config.go</span></code></strong> — add a <code class="docutils literal notranslate"><span class="pre">BugzillaConfig</span></code> block to <code class="docutils literal notranslate"><span class="pre">Config</span></code> (base URL, optionally a list of self-hosted Bugzilla hosts).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/db/version.go</span></code></strong> — bump.</p></li>
@@ -1808,7 +1808,7 @@ SPDX-License-Identifier: MIT
 </pre></div>
 </div>
 <p>The scheduler uses it to gate API collection:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/scheduler/scheduler.go (~line 756)</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/scheduler/scheduler.go, in runJob</span>
 <span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">.</span><span class="nx">IsGitOnly</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// staged collection (API)</span>
 <span class="w">    </span><span class="nx">client</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">selectClient</span><span class="p">(</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">)</span>
@@ -1957,11 +1957,13 @@ SPDX-License-Identifier: MIT
 <span class="c1">// New constructs a Bugzilla client. baseURL is the Bugzilla instance root</span>
 <span class="c1">// (no trailing slash). If keys is nil, requests are unauthenticated —</span>
 <span class="c1">// works for public bugs on public instances, rate-limited harshly.</span>
+<span class="c1">// baseURL is also the only scheme and host the HTTP client will send a key</span>
+<span class="c1">// to: a redirect or next-page link anywhere else is refused (v0.29.12).</span>
 <span class="kd">func</span><span class="w"> </span><span class="nx">New</span><span class="p">(</span><span class="nx">baseURL</span><span class="w"> </span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">keys</span><span class="w"> </span><span class="o">*</span><span class="nx">platform</span><span class="p">.</span><span class="nx">KeyPool</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="w"> </span><span class="o">*</span><span class="nx">slog</span><span class="p">.</span><span class="nx">Logger</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="nx">Client</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">Client</span><span class="p">{</span>
 <span class="w">        </span><span class="nx">baseURL</span><span class="p">:</span><span class="w"> </span><span class="nx">baseURL</span><span class="p">,</span>
 <span class="w">        </span><span class="nx">keys</span><span class="p">:</span><span class="w">    </span><span class="nx">keys</span><span class="p">,</span>
-<span class="w">        </span><span class="nx">http</span><span class="p">:</span><span class="w">    </span><span class="nx">platform</span><span class="p">.</span><span class="nx">NewHTTPClient</span><span class="p">(</span><span class="nx">keys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="nx">platform</span><span class="p">.</span><span class="nx">AuthBugzilla</span><span class="p">),</span>
+<span class="w">        </span><span class="nx">http</span><span class="p">:</span><span class="w">    </span><span class="nx">platform</span><span class="p">.</span><span class="nx">NewHTTPClient</span><span class="p">(</span><span class="nx">baseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">keys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="nx">platform</span><span class="p">.</span><span class="nx">AuthBugzilla</span><span class="p">),</span>
 <span class="w">        </span><span class="nx">logger</span><span class="p">:</span><span class="w">  </span><span class="nx">logger</span><span class="p">,</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
@@ -2336,7 +2338,7 @@ SPDX-License-Identifier: MIT
 </section>
 <section id="step-9-wire-into-the-scheduler">
 <h3>Step 9 — wire into the scheduler<a class="headerlink" href="#step-9-wire-into-the-scheduler" title="Link to this heading"></a></h3>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/scheduler/scheduler.go around line 899</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/scheduler/scheduler.go</span>
 <span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="w"> </span><span class="o">*</span><span class="nx">Scheduler</span><span class="p">)</span><span class="w"> </span><span class="nx">selectClient</span><span class="p">(</span><span class="nx">p</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">Platform</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">platform</span><span class="p">.</span><span class="nx">Client</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">switch</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">PlatformGitHub</span><span class="p">:</span>
@@ -2352,7 +2354,7 @@ SPDX-License-Identifier: MIT
 </pre></div>
 </div>
 <p>Add a <code class="docutils literal notranslate"><span class="pre">bzClient</span> <span class="pre">platform.Client</span></code> field to the <code class="docutils literal notranslate"><span class="pre">Scheduler</span></code> struct. Update the constructor <code class="docutils literal notranslate"><span class="pre">NewWithKeys</span></code> to accept it.</p>
-<p>Around line 756, the gate that controls “API collection vs git-only”:</p>
+<p>In <code class="docutils literal notranslate"><span class="pre">runJob</span></code>, the gate that controls “API collection vs git-only”:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">.</span><span class="nx">IsGitOnly</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">client</span><span class="p">,</span><span class="w"> </span><span class="nx">clientErr</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">selectClient</span><span class="p">(</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">)</span>
 <span class="w">    </span><span class="c1">// ... existing code does staged collection</span>
@@ -2379,9 +2381,9 @@ SPDX-License-Identifier: MIT
 <span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// ... existing ghKeys + glKeys loading</span>
 
-<span class="w">    </span><span class="nx">bzKeysData</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">LoadAPIKeys</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">"bugzilla"</span><span class="p">,</span><span class="w"> </span><span class="nx">useAugurKeys</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">bzKeysData</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">db</span><span class="p">.</span><span class="nx">LoadAPIKeys</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Pool</span><span class="p">(),</span><span class="w"> </span><span class="s">"bugzilla"</span><span class="p">,</span><span class="w"> </span><span class="nx">useAugurKeys</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">logger</span><span class="p">.</span><span class="nx">Warn</span><span class="p">(</span><span class="s">"loading Bugzilla keys"</span><span class="p">,</span><span class="w"> </span><span class="s">"error"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">logger</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"loading Bugzilla keys"</span><span class="p">,</span><span class="w"> </span><span class="s">"error"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">bzKeys</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">platform</span><span class="p">.</span><span class="nx">NewKeyPool</span><span class="p">(</span><span class="nx">bzKeysData</span><span class="p">,</span><span class="w"> </span><span class="p">...)</span>
 
@@ -2395,10 +2397,10 @@ SPDX-License-Identifier: MIT
 <span class="nx">glClient</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">gitlab</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">cfg</span><span class="p">.</span><span class="nx">GitLab</span><span class="p">.</span><span class="nx">BaseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
 <span class="nx">bzClient</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">bugzilla</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">cfg</span><span class="p">.</span><span class="nx">Bugzilla</span><span class="p">.</span><span class="nx">BaseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">bzKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
 
-<span class="nx">sched</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">NewWithKeys</span><span class="p">(</span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">ghClient</span><span class="p">,</span><span class="w"> </span><span class="nx">glClient</span><span class="p">,</span><span class="w"> </span><span class="nx">bzClient</span><span class="p">,</span><span class="w"> </span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">Config</span><span class="p">{...})</span>
+<span class="nx">sched</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">NewWithKeys</span><span class="p">(</span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">ghClient</span><span class="p">,</span><span class="w"> </span><span class="nx">glClient</span><span class="p">,</span><span class="w"> </span><span class="nx">bzClient</span><span class="p">,</span><span class="w"> </span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">Config</span><span class="p">{...})</span>
 </pre></div>
 </div>
-<p>Update <code class="docutils literal notranslate"><span class="pre">scheduler.NewWithKeys</span></code> to accept the bzClient param.</p>
+<p>Update <code class="docutils literal notranslate"><span class="pre">scheduler.NewWithKeys</span></code> to accept the bzClient param after glClient; the key-pool parameters keep their order.</p>
 </section>
 <section id="step-11-config">
 <h3>Step 11 — config<a class="headerlink" href="#step-11-config" title="Link to this heading"></a></h3>

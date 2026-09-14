@@ -122,6 +122,10 @@ var deployChecklists = map[string][]deployStep{
 	// the scorecard /rate_limit probe follows none. No schema change, no
 	// operator heal — same ladder.
 	"0.29.12": v029DeployChecklist,
+	// v0.29.13: the contributor guide's scheduler.NewWithKeys example matches
+	// the real parameter list (glKeys was missing). Docs and a doc-drift test
+	// only — same ladder.
+	"0.29.13": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

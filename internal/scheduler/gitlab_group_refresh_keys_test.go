@@ -13,11 +13,16 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -174,3 +179,175 @@ func TestServeWiresGitLabKeysIntoScheduler(t *testing.T) {
 }
 
 func rlQuiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// v0.29.13 (Copilot review 5192972644): v0.29.11 added glKeys to NewWithKeys,
+// but the contributor guide's example call kept the old argument list, so a
+// contributor following it put the new platform's client in a key-pool slot
+// and the call no longer type-checked. The same guide's NewHTTPClient and
+// LoadAPIKeys examples had drifted too. Each pinned call below is checked
+// against the parameter list read from the source: a change in the number of
+// parameters fails here for all three, and a reordering for the two whose
+// names are checked (LoadAPIKeys is arity only), instead of in a
+// contributor's build.
+//
+// The rules, per example:
+//   - the argument count equals the parameter count, plus the new platform's
+//     extra arguments where the guide inserts them (NewWithKeys only: right
+//     after glClient, as its prose says);
+//   - where the pin checks names, an argument that is a plain identifier must
+//     be the parameter at its position (literals, including nil/true/false,
+//     selectors and calls such as scheduler.Config{...} or
+//     platform.AuthBugzilla are free).
+func TestContributorGuideConstructorExamplesMatchSignatures(t *testing.T) {
+	doc := srctest.Read(t, "docs/contributing/adding-a-platform.md")
+	cases := []struct {
+		call, file, fn string
+		extrasAfter    string // parameter the guide's extra arguments follow; "" = none allowed
+		checkNames     bool
+	}{
+		{"scheduler.NewWithKeys(", "internal/scheduler/scheduler.go", "NewWithKeys", "glClient", true},
+		{"platform.NewHTTPClient(", "internal/platform/httpclient.go", "NewHTTPClient", "", true},
+		// The guide mirrors cmd/aveloxis's loadKeys, whose names differ from
+		// the parameters (store.Pool(), useAugurKeys): arity only.
+		{"db.LoadAPIKeys(", "internal/db/keys.go", "LoadAPIKeys", "", false},
+	}
+	for _, tc := range cases {
+		params := funcParams(t, tc.file, tc.fn)
+		examples := 0
+		for off := 0; ; {
+			i := strings.Index(doc[off:], tc.call)
+			if i < 0 {
+				break
+			}
+			open := off + i + len(tc.call) - 1
+			off = open + 1
+			inner := callArgs(doc, open)
+			if end := open + 1 + len(inner); end >= len(doc) || doc[end] != ')' {
+				t.Fatalf("unterminated %s example in the contributor guide", tc.call)
+			}
+			examples++
+			args := splitTopLevelArgs(inner)
+			if problem := guideCallProblem(params, args, tc.extrasAfter, tc.checkNames); problem != "" {
+				t.Errorf("contributor guide example %s%s): %s; %s takes (%s)",
+					tc.call, strings.Join(args, ", "), problem, tc.fn, strings.Join(params, ", "))
+			}
+		}
+		if examples == 0 {
+			t.Errorf("the contributor guide has no %s example; this test pins it (fix the example, not the pin)", tc.call)
+		}
+	}
+
+	// HTTPClient.Get prefixes its own base URL and refuses any URL whose
+	// host is not the base's (v0.29.12), so an example that formats
+	// c.baseURL into a request URL builds base+base and is refused. The
+	// guide's examples pass a path.
+	sprintfs := 0
+	for off := 0; ; {
+		i := strings.Index(doc[off:], "fmt.Sprintf(")
+		if i < 0 {
+			break
+		}
+		open := off + i + len("fmt.Sprintf(") - 1
+		off = open + 1
+		sprintfs++
+		if inner := callArgs(doc, open); strings.Contains(inner, "baseURL") {
+			t.Errorf("contributor guide formats a request URL from the base URL: fmt.Sprintf(%s); pass a path to GetJSON, the client prefixes the base", inner)
+		}
+	}
+	if sprintfs == 0 {
+		t.Error("the contributor guide has no fmt.Sprintf request path to check; the base-URL rule above examined nothing")
+	}
+}
+
+// funcParams returns a package-level function's parameter names in order.
+func funcParams(t *testing.T, file, fn string) []string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), file, srctest.Read(t, file), parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range f.Decls {
+		decl, ok := d.(*ast.FuncDecl)
+		if !ok || decl.Recv != nil || decl.Name.Name != fn {
+			continue
+		}
+		var names []string
+		for _, field := range decl.Type.Params.List {
+			for _, n := range field.Names {
+				names = append(names, n.Name)
+			}
+		}
+		if len(names) == 0 {
+			t.Fatalf("%s in %s has no named parameters to pin", fn, file)
+		}
+		return names
+	}
+	t.Fatalf("%s not found in %s", fn, file)
+	return nil
+}
+
+// splitTopLevelArgs splits callArgs's output at its top-level commas,
+// skipping brackets and string literals.
+func splitTopLevelArgs(inner string) []string {
+	var args []string
+	depth, start, inStr := 0, 0, byte(0)
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		switch {
+		case inStr != 0:
+			if c == '\\' {
+				i++
+			} else if c == inStr {
+				inStr = 0
+			}
+		case c == '"' || c == '`':
+			inStr = c
+		case c == '(' || c == '{' || c == '[':
+			depth++
+		case c == ')' || c == '}' || c == ']':
+			depth--
+		case c == ',' && depth == 0:
+			args = append(args, strings.TrimSpace(inner[start:i]))
+			start = i + 1
+		}
+	}
+	if last := strings.TrimSpace(inner[start:]); last != "" || len(args) > 0 {
+		args = append(args, last)
+	}
+	return args
+}
+
+var plainIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// predeclaredLiteral are identifiers that are values, not names: New passes
+// nil key pools to NewWithKeys.
+var predeclaredLiteral = map[string]bool{"nil": true, "true": true, "false": true}
+
+// guideCallProblem returns why args do not fit params under the rules in
+// TestContributorGuideConstructorExamplesMatchSignatures, or "".
+func guideCallProblem(params, args []string, extrasAfter string, checkNames bool) string {
+	extra := len(args) - len(params)
+	if (extrasAfter == "" && extra != 0) || extra < 0 {
+		return fmt.Sprintf("%d arguments for %d parameters", len(args), len(params))
+	}
+	if extra > 0 {
+		at := -1
+		for k, p := range params {
+			if p == extrasAfter {
+				at = k
+			}
+		}
+		if at < 0 {
+			return fmt.Sprintf("pin names insertion point %q, which is no longer a parameter", extrasAfter)
+		}
+		args = append(append([]string{}, args[:at+1]...), args[at+1+extra:]...)
+	}
+	if checkNames {
+		for k, a := range args {
+			if plainIdentRe.MatchString(a) && !predeclaredLiteral[a] && a != params[k] {
+				return fmt.Sprintf("argument %d is %s where the parameter is %s", k+1, a, params[k])
+			}
+		}
+	}
+	return ""
+}

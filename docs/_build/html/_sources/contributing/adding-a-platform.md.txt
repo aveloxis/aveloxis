@@ -77,8 +77,8 @@ This is the complete list of files a new platform needs. Some are mandatory; som
    - `users.go` — `ListContributors`, `EnrichContributor`, `SearchUserByEmail`.
    - `urlparse.go` — `ParseRepoURL` (parses a Bugzilla product URL).
    - `errors.go` — mapping Bugzilla error codes to `platform.Class*` classifications.
-4. **`internal/scheduler/scheduler.go`** — add `case model.PlatformBugzilla:` to the `selectClient` switch (~line 899); add the relevant capability gate around facade/analysis/SBOM phases (~line 756).
-5. **`cmd/aveloxis/main.go`** — load Bugzilla API keys into a `bugzillaKeys` `*platform.KeyPool`, construct the `bugzilla.Client`, pass it to the scheduler config.
+4. **`internal/scheduler/scheduler.go`** — add `case model.PlatformBugzilla:` to the `selectClient` switch; add the relevant capability gate around the facade/analysis/SBOM phases in `runJob`.
+5. **`cmd/aveloxis/main.go`** — load Bugzilla API keys into a `bugzillaKeys` `*platform.KeyPool`, construct the `bugzilla.Client`, pass it to `scheduler.NewWithKeys` (Step 10).
 6. **`internal/db/keys.go`** — already supports arbitrary platform strings via `loadKeysFromTable(table, platform)`. Pass `"bugzilla"` as the platform string. No code change needed unless you want explicit constants.
 7. **`internal/config/config.go`** — add a `BugzillaConfig` block to `Config` (base URL, optionally a list of self-hosted Bugzilla hosts).
 8. **`internal/db/version.go`** — bump.
@@ -112,7 +112,7 @@ func (p Platform) IsGitOnly() bool {
 The scheduler uses it to gate API collection:
 
 ```go
-// internal/scheduler/scheduler.go (~line 756)
+// internal/scheduler/scheduler.go, in runJob
 if !repo.Platform.IsGitOnly() {
     // staged collection (API)
     client, err := s.selectClient(repo.Platform)
@@ -271,11 +271,13 @@ type Client struct {
 // New constructs a Bugzilla client. baseURL is the Bugzilla instance root
 // (no trailing slash). If keys is nil, requests are unauthenticated —
 // works for public bugs on public instances, rate-limited harshly.
+// baseURL is also the only scheme and host the HTTP client will send a key
+// to: a redirect or next-page link anywhere else is refused (v0.29.12).
 func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
     return &Client{
         baseURL: baseURL,
         keys:    keys,
-        http:    platform.NewHTTPClient(keys, logger, platform.AuthBugzilla),
+        http:    platform.NewHTTPClient(baseURL, keys, logger, platform.AuthBugzilla),
         logger:  logger,
     }
 }
@@ -661,7 +663,7 @@ func (c *Client) FetchCloneStats(_ context.Context, _, _ string) ([]model.RepoCl
 ### Step 9 — wire into the scheduler
 
 ```go
-// internal/scheduler/scheduler.go around line 899
+// internal/scheduler/scheduler.go
 func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
     switch p {
     case model.PlatformGitHub:
@@ -678,7 +680,7 @@ func (s *Scheduler) selectClient(p model.Platform) (platform.Client, error) {
 
 Add a `bzClient platform.Client` field to the `Scheduler` struct. Update the constructor `NewWithKeys` to accept it.
 
-Around line 756, the gate that controls "API collection vs git-only":
+In `runJob`, the gate that controls "API collection vs git-only":
 
 ```go
 if !repo.Platform.IsGitOnly() {
@@ -711,9 +713,9 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 ) {
     // ... existing ghKeys + glKeys loading
 
-    bzKeysData, err := store.LoadAPIKeys(ctx, "bugzilla", useAugurKeys)
+    bzKeysData, err := db.LoadAPIKeys(ctx, store.Pool(), "bugzilla", useAugurKeys)
     if err != nil {
-        logger.Warn("loading Bugzilla keys", "error", err)
+        logger.Error("loading Bugzilla keys", "error", err)
     }
     bzKeys = platform.NewKeyPool(bzKeysData, ...)
 
@@ -729,10 +731,10 @@ ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
 glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 bzClient := bugzilla.New(cfg.Bugzilla.BaseURL, bzKeys, logger)
 
-sched := scheduler.NewWithKeys(store, ghClient, glClient, bzClient, ghKeys, logger, scheduler.Config{...})
+sched := scheduler.NewWithKeys(store, ghClient, glClient, bzClient, ghKeys, glKeys, logger, scheduler.Config{...})
 ```
 
-Update `scheduler.NewWithKeys` to accept the bzClient param.
+Update `scheduler.NewWithKeys` to accept the bzClient param after glClient; the key-pool parameters keep their order.
 
 ### Step 11 — config
 

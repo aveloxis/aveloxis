@@ -1102,7 +1102,7 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			}
 			result.Messages++
 		}
-		if sc.platID == int16(model.PlatformGitLab) {
+		if model.Platform(sc.platID).IsGitLab() {
 			// GitLab keeps MR conversation notes on a per-MR endpoint
 			// (GitHub's repo-wide /issues/comments covers PRs too, so its
 			// ListPRComments delegates and would duplicate here). Pass 31

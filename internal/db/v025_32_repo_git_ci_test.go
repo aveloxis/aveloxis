@@ -71,15 +71,29 @@ func TestMigrationCreatesRepoGitLowerLookupIndex(t *testing.T) {
 }
 
 func TestEnsureRepoGitCaseInsensitiveUniqueContract(t *testing.T) {
-	body := extractTopLevelFunc(t, "migrate.go", "ensureRepoGitCaseInsensitiveUnique")
-	flat := normWS(body)
+	// v0.30.0: one builder, run once per platform family's index.
+	loop := normWS(extractTopLevelFunc(t, "migrate.go", "ensureRepoGitCaseInsensitiveUnique"))
+	if !strings.Contains(loop, "for _, ix := range repoGitCIUniqueIndexes") ||
+		!strings.Contains(loop, "ensureOneRepoGitCIUniqueIndex(ctx, pg, logger, ix.name, ix.predicate)") {
+		t.Error("ensureRepoGitCaseInsensitiveUnique must build every index in repoGitCIUniqueIndexes")
+	}
+	src, err := os.ReadFile("migrate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The v0.25.32 index keeps its name AND predicate together (SR-4).
+	if !strings.Contains(string(src), `{"uq_repos_repo_git_ci", "platform_id IN (1, 2)"},`) {
+		t.Error(`repoGitCIUniqueIndexes must keep {"uq_repos_repo_git_ci", "platform_id IN (1, 2)"} — a changed predicate under the same name never rebuilds on existing fleets`)
+	}
+	if !strings.Contains(string(src), `{"uq_repos_repo_git_ci_gitlab_instances", gitLabInstancePlatformPredicate("platform_id")},`) {
+		t.Error("repoGitCIUniqueIndexes must cover the GitLab instance ids with uq_repos_repo_git_ci_gitlab_instances")
+	}
 
+	flat := normWS(extractTopLevelFunc(t, "migrate.go", "ensureOneRepoGitCIUniqueIndex"))
 	needles := []string{
-		"uq_repos_repo_git_ci",
 		"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS",
-		// Partial predicate: only forge platforms are case-insensitive-unique;
-		// generic git hosts (platform 3) may legitimately be case-sensitive.
-		"WHERE platform_id IN (1, 2)",
+		// Partial predicate, per family.
+		"WHERE `+predicate",
 		// The dup-count gate: never attempt the unique create while
 		// case-variant duplicates exist (CREATE would fail / leave INVALID).
 		"HAVING COUNT(*) > 1",
@@ -90,7 +104,7 @@ func TestEnsureRepoGitCaseInsensitiveUniqueContract(t *testing.T) {
 	}
 	for _, n := range needles {
 		if !strings.Contains(flat, n) {
-			t.Errorf("ensureRepoGitCaseInsensitiveUnique must contain %q — see the "+
+			t.Errorf("ensureOneRepoGitCIUniqueIndex must contain %q — see the "+
 				"create-after-cleanup contract in the file header of this test.", n)
 		}
 	}
@@ -101,21 +115,20 @@ func TestEnsureRepoGitCaseInsensitiveUniqueContract(t *testing.T) {
 // able to start serve — the WARN names the dedup-repos command instead
 // of blocking startup.
 func TestEnsureRepoGitCaseInsensitiveUniqueIsWarnOnly(t *testing.T) {
-	body := extractTopLevelFunc(t, "migrate.go", "ensureRepoGitCaseInsensitiveUnique")
-
-	sigEnd := strings.Index(body, "{")
-	if sigEnd < 0 {
-		t.Fatal("malformed function extraction")
+	for _, fn := range []string{"ensureRepoGitCaseInsensitiveUnique", "ensureOneRepoGitCIUniqueIndex"} {
+		body := extractTopLevelFunc(t, "migrate.go", fn)
+		sigEnd := strings.Index(body, "{")
+		if sigEnd < 0 {
+			t.Fatal("malformed function extraction")
+		}
+		if strings.Contains(body[:sigEnd], "errs") {
+			t.Errorf("%s must NOT take the *[]error collector — it is warn-only by design so fleets "+
+				"with pending duplicates can still start serve. The fail-closed contract belongs to "+
+				"idx_repos_repo_git_lower only.", fn)
+		}
 	}
-	sig := body[:sigEnd]
-	if strings.Contains(sig, "errs") {
-		t.Error("ensureRepoGitCaseInsensitiveUnique must NOT take the *[]error collector — " +
-			"it is warn-only by design so fleets with pending duplicates can still start " +
-			"serve. The fail-closed contract belongs to idx_repos_repo_git_lower only.")
-	}
-
-	if !strings.Contains(body, "logger.Warn") {
-		t.Error("ensureRepoGitCaseInsensitiveUnique must WARN (with the dedup-repos hint) " +
+	if !strings.Contains(extractTopLevelFunc(t, "migrate.go", "ensureOneRepoGitCIUniqueIndex"), "logger.Warn") {
+		t.Error("ensureOneRepoGitCIUniqueIndex must WARN (with the dedup-repos hint) " +
 			"when duplicates block the unique index.")
 	}
 }

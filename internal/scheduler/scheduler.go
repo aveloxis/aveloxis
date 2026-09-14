@@ -1580,16 +1580,19 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	var facadeResult *collector.FacadeResult
 	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	// Clone from the repo's OWN stored URL (v0.25.38). The pre-v0.25.38
-	// reconstruction via platformHostForModel produced
+	// reconstruction from the platform id produced
 	// https://unknown/owner/name.git for every GENERIC-GIT repo —
 	// breaking facade for the exact platform whose only collection IS
 	// facade — and forced github.com/gitlab.com hosts onto
 	// enterprise/self-hosted repos. Surfaced by the v0.25.38 runJob
-	// lifecycle test on its first execution.
+	// lifecycle test on its first execution. v0.30.0 removed the
+	// reconstruction fallback entirely (multi-instance GitLab): repo_git
+	// is NOT NULL, so an empty URL is a defect to report, never a reason
+	// to guess a host.
 	gitURL := repo.GitURL
 	if gitURL == "" {
-		gitURL = fmt.Sprintf("https://%s/%s/%s.git",
-			platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+		s.logger.Error("facade skipped: repo has no stored repo_git", "repo_id", repoID)
+		return nil, nil
 	}
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if errors.Is(err, context.Canceled) {
@@ -1615,7 +1618,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	// populated aveloxis_data.commits with the real count, patch the latest
 	// repo_info row so the monitor/web "metadata commits" column reflects
 	// reality instead of the API-reported zero. GitHub path is unaffected.
-	if err == nil && repo.Platform == model.PlatformGitLab {
+	if err == nil && repo.Platform.IsGitLab() {
 		updated, bfErr := s.store.BackfillGitLabCommitCount(ctx, repoID)
 		if errors.Is(bfErr, context.Canceled) {
 			return facadeResult, nil
@@ -1702,8 +1705,7 @@ func scorecardSkipReason(err error) string {
 // The retained temp clone is cleaned up after scorecard finishes,
 // regardless of outcome.
 func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *model.Repo, analysisClonePath string) {
-	repoURL := fmt.Sprintf("https://%s/%s/%s",
-		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+	repoURL := collector.ScorecardRepoURL(repo.Platform, repo.GitURL, repo.Owner, repo.Name)
 
 	// Clean up the retained temp clone once scorecard is done — on
 	// every exit, the shutdown one included.
@@ -1922,17 +1924,6 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	}
 
 	return out
-}
-
-func platformHostForModel(p model.Platform) string {
-	switch p {
-	case model.PlatformGitHub:
-		return "github.com"
-	case model.PlatformGitLab:
-		return "gitlab.com"
-	default:
-		return "unknown"
-	}
 }
 
 // generateSBOMs produces CycloneDX and SPDX SBOMs after collection completes.

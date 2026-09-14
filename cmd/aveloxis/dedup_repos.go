@@ -88,9 +88,10 @@ refuses to start without them rather than sequential-scan the table
 per pair — run 'aveloxis migrate --skip-views' on this binary first.
 
 After the fleet reports 0 pairs, run 'aveloxis migrate --skip-views' to
-build the uq_repos_repo_git_ci unique index (the permanent DB-level
-backstop), then 'aveloxis refresh-views' so matviews stop
-double-counting.
+build the case-insensitive unique indexes (uq_repos_repo_git_ci, and
+uq_repos_repo_git_ci_gitlab_instances for self-hosted GitLab instances —
+the permanent DB-level backstops), then 'aveloxis refresh-views' so
+matviews stop double-counting.
 
 Use --dry-run first to see the plan.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -133,7 +134,7 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 
 	if count == 0 {
 		logger.Info("no case-variant duplicate repos — nothing to merge. " +
-			"Run `aveloxis migrate --skip-views` to build the uq_repos_repo_git_ci backstop if it doesn't exist yet.")
+			"Run `aveloxis migrate --skip-views` to build the case-insensitive unique index backstops (uq_repos_repo_git_ci, uq_repos_repo_git_ci_gitlab_instances) if they don't exist yet.")
 		return nil
 	}
 

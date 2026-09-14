@@ -80,13 +80,13 @@ type RepoDupPair struct {
 // pairs from the window (the batch loop's shape — see
 // DedupCaseVariantReposBatch); FALSE keeps them, flagged, for dry-run
 // display.
-const repoDupCandidatesSQL = `
+var repoDupCandidatesSQL = `
 	WITH dup_groups AS (
 		SELECT LOWER(repo_git) AS lower_git,
 		       MIN(repo_id)    AS winner_id,
 		       COUNT(*)        AS group_size
 		FROM aveloxis_data.repos
-		WHERE platform_id IN (1, 2)
+		WHERE ` + ForgePlatformPredicate("platform_id") + `
 		GROUP BY LOWER(repo_git)
 		HAVING COUNT(*) > 1
 	), candidates AS (
@@ -107,7 +107,7 @@ const repoDupCandidatesSQL = `
 			SELECT r.repo_id, r.repo_git
 			FROM aveloxis_data.repos r
 			WHERE LOWER(r.repo_git) = g.lower_git
-			  AND r.platform_id IN (1, 2)
+			  AND ` + ForgePlatformPredicate("r.platform_id") + `
 			  AND r.repo_id <> g.winner_id
 			ORDER BY r.repo_id
 			LIMIT 1
@@ -130,7 +130,7 @@ func CountCaseVariantRepoDups(ctx context.Context, store *PostgresStore) (int, e
 		SELECT COUNT(*) FROM (
 			SELECT 1
 			FROM aveloxis_data.repos
-			WHERE platform_id IN (1, 2)
+			WHERE `+ForgePlatformPredicate("platform_id")+`
 			GROUP BY LOWER(repo_git)
 			HAVING COUNT(*) > 1
 		) dup`).Scan(&n)

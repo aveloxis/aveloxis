@@ -36,6 +36,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/pidfile"
 	"github.com/spf13/cobra"
 )
@@ -198,7 +199,7 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 		go func() {
 			defer wg.Done()
 			for r := range jobs {
-				repoURL := fmt.Sprintf("https://github.com/%s/%s", r.Owner, r.Name)
+				repoURL := collector.ScorecardRepoURL(model.Platform(r.Platform), r.GitURL, r.Owner, r.Name)
 				// Same shared invoke/persist path as the per-cycle
 				// phase. No analysis clone exists here → remote only:
 				// LocalPath stays empty, so a failed remote attempt

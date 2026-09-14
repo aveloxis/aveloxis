@@ -98,7 +98,7 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 		) ri ON TRUE
 		WHERE q.last_collected IS NOT NULL
 		  AND q.repo_id > $1
-		  AND r.platform_id IN (1, 2)
+		  AND `+ForgePlatformPredicate("r.platform_id")+`
 		  `+gapPredicate+`
 		ORDER BY q.repo_id
 		LIMIT $2`, afterRepoID, limit)

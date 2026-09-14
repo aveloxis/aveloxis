@@ -486,6 +486,15 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			logger.Error("failed to upsert repo", "url", repoURL, "error", err)
 			continue
 		}
+		// Collect from the row as stored (v0.30.0): the facade clones the
+		// stored repo_git, the same address serve uses — UpsertRepo trims
+		// the argument and may substitute an existing case variant. A
+		// lookup error skips the repo rather than guessing a URL (SR-5).
+		stored, err := store.GetRepoByID(ctx, repoID)
+		if err != nil {
+			logger.Error("failed to read back the stored repo", "url", repoURL, "repo_id", repoID, "error", err)
+			continue
+		}
 
 		// v0.27.139: the incremental lower bound is the queue row's
 		// last_collected (start-anchored by CompleteJob), NEVER
@@ -507,7 +516,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
-		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
+		result, err := coll.CollectRepo(ctx, repoID, stored.GitURL, owner, repo, since)
 		if err != nil {
 			logger.Error("collection failed", "url", repoURL, "error", err)
 			continue
@@ -611,7 +620,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 
 			// Create a repo_group for this org so the refresh job can re-scan it later.
 			rgType := "github_org"
-			if plat == model.PlatformGitLab {
+			if plat.IsGitLab() {
 				rgType = "gitlab_group"
 			}
 			groupID, err := store.UpsertRepoGroup(ctx, orgName, rgType, repoURL)

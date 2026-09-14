@@ -18,7 +18,7 @@ import (
 // ListPRComments delegates to it.
 func TestGitLabMRConversationNotesAreCollectedOnTheMainPath(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/collector/staged.go"), "func (sc *StagedCollector) collectMessages("))
-	gate := strings.Index(body, "if sc.platID == int16(model.PlatformGitLab) {")
+	gate := strings.Index(body, "if model.Platform(sc.platID).IsGitLab() {")
 	call := strings.Index(body, "sc.client.ListPRComments(ctx, owner, repo, since)")
 	if gate < 0 || call < 0 || call < gate {
 		t.Fatalf("collectMessages must walk ListPRComments under the GitLab gate (gate=%d call=%d)", gate, call)

@@ -184,7 +184,7 @@ func (s *PostgresStore) GetReposForMetadataRefresh(ctx context.Context, afterRep
 		SELECT repo_id, repo_owner, repo_name, platform_id
 		FROM aveloxis_data.repos
 		WHERE repo_id > $1
-		  AND platform_id IN (1, 2)
+		  AND `+ForgePlatformPredicate("platform_id")+`
 		  AND COALESCE(repo_owner, '') != ''
 		  AND COALESCE(repo_name, '') != ''
 		ORDER BY repo_id

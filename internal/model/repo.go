@@ -20,17 +20,43 @@ const (
 	PlatformGenericGit Platform = 3 // Generic git host — git-only collection (facade, analysis, scorecard)
 )
 
+// GitLab instances other than the historical one (PlatformGitLab) each get
+// their own platform_id in this range (v0.30.0, multi-instance GitLab), so
+// every identity key that includes platform_id — contributor_identities,
+// messages, contributor_login_history, the db.PlatformUUID byte — is
+// instance-scoped without rewriting existing rows. The range fits the
+// one-byte platform namespace of db.PlatformUUID.
+const (
+	GitLabInstanceIDMin Platform = 100
+	GitLabInstanceIDMax Platform = 199
+)
+
 func (p Platform) String() string {
-	switch p {
-	case PlatformGitHub:
+	switch {
+	case p == PlatformGitHub:
 		return "GitHub"
-	case PlatformGitLab:
+	case p.IsGitLab():
 		return "GitLab"
-	case PlatformGenericGit:
+	case p == PlatformGenericGit:
 		return "Git"
 	default:
 		return "Unknown"
 	}
+}
+
+// IsGitLab reports whether p is any GitLab instance: the historical
+// PlatformGitLab or an id in [GitLabInstanceIDMin, GitLabInstanceIDMax].
+// Code that means "GitLab" asks this, never p == PlatformGitLab; only
+// routing and registry code cares which instance.
+func (p Platform) IsGitLab() bool {
+	return p == PlatformGitLab || (p >= GitLabInstanceIDMin && p <= GitLabInstanceIDMax)
+}
+
+// IsForge reports whether p is a forge with an API identity namespace
+// (GitHub or any GitLab instance) — the platforms whose owner/repo paths are
+// case-insensitive and whose repos carry platform_repo_id.
+func (p Platform) IsForge() bool {
+	return p == PlatformGitHub || p.IsGitLab()
 }
 
 // IsGitOnly returns true if this platform only supports git-based collection

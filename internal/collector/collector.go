@@ -149,7 +149,11 @@ type CollectResult struct {
 
 // CollectRepo runs a full collection for the given repository.
 // The since parameter controls incremental vs full collection (zero = full).
-func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo string, since time.Time) (*CollectResult, error) {
+//
+// gitURL is the repository's stored repo_git, which the facade clones.
+// v0.30.0: it used to be rebuilt from the client's platform id, which cloned
+// every self-hosted GitLab repo from gitlab.com.
+func (c *Collector) CollectRepo(ctx context.Context, repoID int64, gitURL, owner, repo string, since time.Time) (*CollectResult, error) {
 	result := &CollectResult{}
 	c.logger.Info("starting collection",
 		"platform", c.client.Platform(),
@@ -185,8 +189,6 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 
 	// Phase 4: Facade — git clone + log for commit data.
 	// Runs AFTER API phases so contributor emails can be resolved.
-	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
-		platformHost(c.client.Platform()), owner, repo)
 	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:       repoID,
 		FacadeStatus: string(StatusCollecting),
@@ -262,17 +264,6 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	)
 
 	return result, nil
-}
-
-func platformHost(p model.Platform) string {
-	switch p {
-	case model.PlatformGitHub:
-		return "github.com"
-	case model.PlatformGitLab:
-		return "gitlab.com"
-	default:
-		return "unknown"
-	}
 }
 
 func ClientForRepo(repoURL string, ghClient, glClient platform.Client) (platform.Client, string, string, error) {

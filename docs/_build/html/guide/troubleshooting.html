@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.30.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=a7ea5d77"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2779,14 +2779,17 @@ when a URL arrived with different casing and created a second full repo.</p>
 <p><strong>Diagnosis:</strong></p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">LOWER</span><span class="p">(</span><span class="n">repo_git</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repo</span><span class="p">,</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">variants</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">platform_id</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">)</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">platform_id</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">)</span><span class="w"> </span><span class="k">OR</span><span class="w"> </span><span class="n">platform_id</span><span class="w"> </span><span class="k">BETWEEN</span><span class="w"> </span><span class="mf">100</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="mf">199</span>
 <span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">LOWER</span><span class="p">(</span><span class="n">repo_git</span><span class="p">)</span>
 <span class="k">HAVING</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">1</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>Zero rows means you’re clean. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> also reports this
-state: while duplicates remain it logs</p>
+<p>(Platform ids 100–199 are self-hosted GitLab instances, v0.30.0.) Zero rows
+means you’re clean. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> also reports this state: while
+duplicates remain it logs, per affected index (<code class="docutils literal notranslate"><span class="pre">uq_repos_repo_git_ci</span></code> for
+GitHub and gitlab.com, <code class="docutils literal notranslate"><span class="pre">uq_repos_repo_git_ci_gitlab_instances</span></code> for other
+GitLab instances)</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">msg</span><span class="o">=</span><span class="s2">"case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci"</span>
   <span class="n">duplicate_groups</span><span class="o">=</span><span class="n">N</span> <span class="n">hint</span><span class="o">=</span><span class="s2">"run `aveloxis dedup-repos` to merge them, then re-run `aveloxis migrate`"</span>
 </pre></div>
@@ -2795,11 +2798,11 @@ state: while duplicates remain it logs</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>stop<span class="w"> </span>serve<span class="w">                 </span><span class="c1"># optional — dedup-repos skips mid-flight</span>
 <span class="w">                                    </span><span class="c1"># pairs, but a quiet window drains all in one run</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">       </span><span class="c1"># creates the LOWER(repo_git) lookup index;</span>
-<span class="w">                                    </span><span class="c1"># WARNs + skips the unique index while dups remain</span>
+<span class="w">                                    </span><span class="c1"># WARNs + skips a unique index while its dups remain</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># review the plan</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">     </span><span class="c1"># canary, then:</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — repeat until "0 pairs"</span>
-aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">       </span><span class="c1"># now builds uq_repos_repo_git_ci (the backstop)</span>
+aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">       </span><span class="c1"># now builds the unique index backstops</span>
 aveloxis<span class="w"> </span>refresh-views<span class="w">              </span><span class="c1"># matviews stop double-counting immediately</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </pre></div>

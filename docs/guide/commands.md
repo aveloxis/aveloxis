@@ -518,9 +518,11 @@ names the missing index.
 ### After the run
 
 ```bash
-aveloxis migrate --skip-views   # builds uq_repos_repo_git_ci — the permanent
-                                # DB-level backstop (skipped with a WARN while
-                                # duplicates remain)
+aveloxis migrate --skip-views   # builds uq_repos_repo_git_ci (and, for
+                                # self-hosted GitLab instances,
+                                # uq_repos_repo_git_ci_gitlab_instances) — the
+                                # permanent DB-level backstops (each skipped
+                                # with a WARN while its duplicates remain)
 aveloxis refresh-views          # matviews stop double-counting immediately
 ```
 

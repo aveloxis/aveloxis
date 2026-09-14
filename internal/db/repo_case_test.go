@@ -32,7 +32,7 @@ func TestFindRepoByURLIsCaseInsensitiveForForgePlatforms(t *testing.T) {
 
 	for _, needle := range []string{
 		"LOWER(repo_git) = LOWER($1)",
-		"platform_id IN (1, 2)",
+		`ForgePlatformPredicate("platform_id")`,
 		"ORDER BY (repo_git = $1) DESC",
 	} {
 		if !strings.Contains(body, needle) {
@@ -101,7 +101,7 @@ func TestResolveCaseVariantURLHelperContract(t *testing.T) {
 
 	for _, needle := range []string{
 		"LOWER(repo_git) = LOWER($1)",
-		"platform_id IN (1, 2)",
+		`ForgePlatformPredicate("platform_id")`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("resolveCaseVariantURL must contain %q — the platform gate keeps "+

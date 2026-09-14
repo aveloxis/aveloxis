@@ -196,24 +196,6 @@ func TestDetermineSince(t *testing.T) {
 	}
 }
 
-func TestPlatformHostForModel(t *testing.T) {
-	tests := []struct {
-		platform model.Platform
-		want     string
-	}{
-		{model.PlatformGitHub, "github.com"},
-		{model.PlatformGitLab, "gitlab.com"},
-		{model.Platform(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		got := platformHostForModel(tt.platform)
-		if got != tt.want {
-			t.Errorf("platformHostForModel(%d) = %q, want %q", tt.platform, got, tt.want)
-		}
-	}
-}
-
 func TestBuildOutcome_Success(t *testing.T) {
 	s := New(nil, nil, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), Config{})
 

@@ -34,8 +34,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
-	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/platform/github"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/spf13/cobra"
@@ -117,13 +115,16 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 			}
 
 			healOne := func(c db.GapHealCandidate) {
-				var client platform.Client
-				switch c.Platform {
-				case model.PlatformGitHub:
-					client = ghClient
-				case model.PlatformGitLab:
-					client = glClient
-				default:
+				client, ok := forgeClientFor(c.Platform, ghClient, glClient)
+				if !ok {
+					if c.Platform.IsForge() {
+						// A forge repo this command cannot list (a GitLab
+						// instance other than the configured one): counted,
+						// not silent, so a rerun-until-done never reads as
+						// drained.
+						logger.Warn("gap heal skip: no API client for this repo's platform in this command", "repo_id", c.RepoID, "platform_id", c.Platform)
+						atomic.AddInt64(&totalFailed, 1)
+					}
 					return // generic git — nothing to list
 				}
 				// Drain-lock: only 'queued' rows lock; a repo

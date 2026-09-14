@@ -6,8 +6,6 @@ package collector
 import (
 	"testing"
 	"time"
-
-	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestParseCommitHeader_ValidLine(t *testing.T) {
@@ -167,26 +165,5 @@ func TestParseTimestamp(t *testing.T) {
 	// Invalid format.
 	if parseTimestamp("not-a-date") != nil {
 		t.Error("expected nil for invalid date")
-	}
-}
-
-func TestPlatformHost(t *testing.T) {
-	tests := []struct {
-		name string
-		plat int
-		want string
-	}{
-		{"github", 1, "github.com"},
-		{"gitlab", 2, "gitlab.com"},
-		{"unknown", 99, "unknown"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// model.Platform is an int type; we cast here for simplicity.
-			got := platformHost(model.Platform(tt.plat))
-			if got != tt.want {
-				t.Errorf("platformHost(%d) = %q, want %q", tt.plat, got, tt.want)
-			}
-		})
 	}
 }

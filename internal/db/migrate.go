@@ -793,9 +793,10 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_repo_git_lower
 		ON aveloxis_data.repos (LOWER(repo_git))`)
 
-	// uq_repos_repo_git_ci (UNIQUE partial, WARN-ONLY) is the hard
-	// backstop against future case-variant duplicates. It can only be
-	// created once the fleet has zero case-dup groups — operators run
+	// uq_repos_repo_git_ci and, since v0.30.0, its GitLab-instance
+	// companion (UNIQUE partial, WARN-ONLY) are the hard backstops against
+	// future case-variant duplicates. Each can only be created once its
+	// platforms have zero case-dup groups — operators run
 	// `aveloxis dedup-repos` first, then re-run migrate. Per the
 	// CLAUDE.md schema-DDL-ordering rule the index is NOT declared in
 	// schema.sql (CREATE UNIQUE INDEX fails on existing duplicates).
@@ -3525,17 +3526,19 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 	}
 }
 
-// ensureRepoGitCaseInsensitiveUnique creates the UNIQUE partial index
-// uq_repos_repo_git_ci ON aveloxis_data.repos (LOWER(repo_git)) WHERE
-// platform_id IN (1, 2) — the hard backstop that prevents case-variant
-// duplicate repositories (GitHub/GitLab treat owner/repo paths
-// case-insensitively; generic git hosts on platform 3 may legitimately
-// be case-sensitive, so they are excluded and stay byte-exact-unique via
-// the existing repos.repo_git UNIQUE constraint).
+// ensureRepoGitCaseInsensitiveUnique creates the UNIQUE partial indexes in
+// repoGitCIUniqueIndexes, ON aveloxis_data.repos (LOWER(repo_git)) — the
+// hard backstops that prevent case-variant duplicate repositories (GitHub
+// and every GitLab instance treat owner/repo paths case-insensitively;
+// generic git hosts on platform 3 may legitimately be case-sensitive, so
+// they are excluded and stay byte-exact-unique via the existing
+// repos.repo_git UNIQUE constraint). uq_repos_repo_git_ci covers platforms
+// 1 and 2; since v0.30.0 uq_repos_repo_git_ci_gitlab_instances covers the
+// other GitLab instances.
 //
 // Create-after-cleanup contract (mirrors deduplicateCommits, per the
-// CLAUDE.md schema-DDL-ordering rule): the index is NOT in schema.sql
-// and is only created once the fleet has ZERO case-dup groups. Unlike
+// CLAUDE.md schema-DDL-ordering rule): the indexes are NOT in schema.sql
+// and each is only created once its platforms have ZERO case-dup groups. Unlike
 // deduplicateCommits this function does NOT delete the duplicates itself
 // — a duplicate repo pair carries full child-data trees whose merge is
 // the operator-invoked `aveloxis dedup-repos` command's job. While
@@ -3663,6 +3666,44 @@ func dedupLinkedMsgIDsTx(ctx context.Context, pg *PostgresStore) error {
 }
 
 func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	for _, ix := range repoGitCIUniqueIndexes {
+		ensureOneRepoGitCIUniqueIndex(ctx, pg, logger, ix.name, ix.predicate)
+	}
+}
+
+// repoGitCIUniqueIndexes are the case-insensitive repo_git backstops, one
+// per platform family. uq_repos_repo_git_ci (v0.25.32) covers GitHub and the
+// historical GitLab instance; its name and predicate are frozen together
+// (SR-4: a changed predicate under the same name never rebuilds on fleets
+// that already have it). v0.30.0 adds the companion for the other GitLab
+// instances (ids GitLabInstanceIDMin..Max). Those rows start empty, so its
+// build scans nothing — but CREATE INDEX CONCURRENTLY still waits out every
+// older snapshot on a live repos table. Each index blocks case variants
+// WITHIN its platforms; the two together cover the rows of
+// ForgePlatformPredicate, but a case-variant pair split across the two
+// (a platform-2 row and an instance row) is not blocked by the database.
+// Different instances have different web bases, so such a pair needs a row
+// on the wrong platform id; classification and adoption guard that.
+var repoGitCIUniqueIndexes = []struct{ name, predicate string }{
+	{"uq_repos_repo_git_ci", "platform_id IN (1, 2)"},
+	{"uq_repos_repo_git_ci_gitlab_instances", gitLabInstancePlatformPredicate("platform_id")},
+}
+
+// isRepoGitCIUniqueViolation reports whether err is a unique violation of
+// one of repoGitCIUniqueIndexes — the case-variant race UpsertRepo retries.
+func isRepoGitCIUniqueViolation(pgErr *pgconn.PgError) bool {
+	if pgErr == nil || pgErr.Code != "23505" {
+		return false
+	}
+	for _, ix := range repoGitCIUniqueIndexes {
+		if pgErr.ConstraintName == ix.name {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureOneRepoGitCIUniqueIndex(ctx context.Context, pg *PostgresStore, logger *slog.Logger, name, predicate string) {
 	// Fast path: a VALID index already exists — nothing to do.
 	// ErrNoRows = the index doesn't exist yet; other errors are logged
 	// and we fall through (the dup-count gate below fails safe).
@@ -3672,8 +3713,8 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsValid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		logger.Warn("uq_repos_repo_git_ci validity probe failed", "error", err)
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = $1`, name).Scan(&existsValid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("case-insensitive repo_git unique index validity probe failed", "index", name, "error", err)
 	}
 	if existsValid {
 		return
@@ -3686,15 +3727,17 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 		SELECT COUNT(*) FROM (
 			SELECT 1
 			FROM aveloxis_data.repos
-			WHERE platform_id IN (1, 2)
+			WHERE `+predicate+`
 			GROUP BY LOWER(repo_git)
 			HAVING COUNT(*) > 1
 		) dup`).Scan(&dupGroups); err != nil {
-		logger.Warn("could not count case-variant duplicate repos; skipping uq_repos_repo_git_ci", "error", err)
+		logger.Warn("could not count case-variant duplicate repos; skipping unique index "+name, "error", err)
 		return
 	}
 	if dupGroups > 0 {
-		logger.Warn("case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci",
+		// The index name stays in the message: operators search the log for
+		// the exact line quoted in troubleshooting.md and upgrading.md.
+		logger.Warn("case-variant duplicate repos present; skipping unique index "+name,
 			"duplicate_groups", dupGroups,
 			"hint", "run `aveloxis dedup-repos` to merge them, then re-run `aveloxis migrate`")
 		return
@@ -3709,23 +3752,23 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'`).Scan(&existsInvalid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		logger.Warn("invalid-index probe failed for uq_repos_repo_git_ci", "error", err)
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = $1`, name).Scan(&existsInvalid); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("invalid-index probe failed", "index", name, "error", err)
 	}
 	if existsInvalid {
-		logger.Warn("dropping invalid uq_repos_repo_git_ci from prior interrupted CONCURRENT build")
-		if _, err := pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.uq_repos_repo_git_ci`); err != nil {
-			logger.Warn("dropping invalid uq_repos_repo_git_ci failed", "error", err)
+		logger.Warn("dropping invalid case-insensitive unique index from prior interrupted CONCURRENT build", "index", name)
+		if _, err := pg.pool.Exec(ctx, `DROP INDEX IF EXISTS aveloxis_data.`+name); err != nil {
+			logger.Warn("dropping invalid case-insensitive unique index failed", "index", name, "error", err)
 		}
 	}
 	if _, err := pg.pool.Exec(ctx, `
-		CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repos_repo_git_ci
+		CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS `+name+`
 		ON aveloxis_data.repos (LOWER(repo_git))
-		WHERE platform_id IN (1, 2)`); err != nil {
-		logger.Warn("failed to create uq_repos_repo_git_ci", "error", err)
+		WHERE `+predicate); err != nil {
+		logger.Warn("failed to create case-insensitive unique index "+name, "error", err)
 		return
 	}
-	logger.Info("created case-insensitive unique index uq_repos_repo_git_ci — case-variant duplicate repos are now blocked at the database level")
+	logger.Info("created case-insensitive unique index " + name + " — case-variant duplicate repos are now blocked at the database level")
 }
 
 // addColumnIfMissing runs ALTER TABLE ... ADD COLUMN IF NOT EXISTS for

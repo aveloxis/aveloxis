@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // ============================================================
@@ -200,17 +198,6 @@ func TestParseTimestamp_Empty(t *testing.T) {
 	if parseTimestamp("") != nil {
 		t.Error("empty should return nil")
 	}
-}
-
-// ============================================================
-// platformHost edge cases (beyond facade_test.go coverage)
-// ============================================================
-
-func TestPlatformHost_GenericGit(t *testing.T) {
-	// PlatformGenericGit (3) — should return "unknown" or similar.
-	host := platformHost(model.PlatformGenericGit)
-	// Actual behavior depends on implementation; document it.
-	_ = host
 }
 
 // ============================================================

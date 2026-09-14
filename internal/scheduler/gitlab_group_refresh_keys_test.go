@@ -191,9 +191,9 @@ func rlQuiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 // contributor's build.
 //
 // The rules, per example:
-//   - the argument count equals the parameter count, plus the new platform's
-//     extra arguments where the guide inserts them (NewWithKeys only: right
-//     after glClient, as its prose says);
+//   - the argument count equals the parameter count, plus at most the one
+//     client the guide inserts (NewWithKeys only: right after glClient, as
+//     its prose says);
 //   - where the pin checks names, an argument that is a plain identifier must
 //     be the parameter at its position (literals, including nil/true/false,
 //     selectors and calls such as scheduler.Config{...} or
@@ -202,7 +202,7 @@ func TestContributorGuideConstructorExamplesMatchSignatures(t *testing.T) {
 	doc := srctest.Read(t, "docs/contributing/adding-a-platform.md")
 	cases := []struct {
 		call, file, fn string
-		extrasAfter    string // parameter the guide's extra arguments follow; "" = none allowed
+		extrasAfter    string // parameter the guide's one extra argument follows; "" = none allowed
 		checkNames     bool
 	}{
 		{"scheduler.NewWithKeys(", "internal/scheduler/scheduler.go", "NewWithKeys", "glClient", true},
@@ -237,25 +237,129 @@ func TestContributorGuideConstructorExamplesMatchSignatures(t *testing.T) {
 		}
 	}
 
-	// HTTPClient.Get prefixes its own base URL and refuses any URL whose
-	// host is not the base's (v0.29.12), so an example that formats
-	// c.baseURL into a request URL builds base+base and is refused. The
-	// guide's examples pass a path.
-	sprintfs := 0
+	problems, examined := guideBaseURLProblems(doc)
+	for _, p := range problems {
+		t.Error(p)
+	}
+	if examined == 0 {
+		t.Error("the contributor guide has no c.http.GetJSON request to check; the base-URL rule examined nothing")
+	}
+}
+
+// guideBaseURLProblems checks what each c.http.GetJSON request in the guide
+// is given, and returns the problems and the number of request sites
+// examined. HTTPClient.Get prefixes its own base URL, so the argument must be
+// a path: a "/..." literal, or an identifier whose nearest earlier assignment
+// is a "/..." literal or fmt.Sprintf("/..."). Anything else is a problem,
+// including an argument this check cannot resolve. A URL built from the base,
+// by any spelling (fmt.Sprintf, concatenation, url.JoinPath, an accessor),
+// becomes base+base: refused off-host (v0.29.12), or unparseable when the base
+// names a port.
+func guideBaseURLProblems(doc string) (problems []string, examined int) {
+	const call = "c.http.GetJSON("
 	for off := 0; ; {
-		i := strings.Index(doc[off:], "fmt.Sprintf(")
+		i := strings.Index(doc[off:], call)
 		if i < 0 {
 			break
 		}
-		open := off + i + len("fmt.Sprintf(") - 1
+		open := off + i + len(call) - 1
 		off = open + 1
-		sprintfs++
-		if inner := callArgs(doc, open); strings.Contains(inner, "baseURL") {
-			t.Errorf("contributor guide formats a request URL from the base URL: fmt.Sprintf(%s); pass a path to GetJSON, the client prefixes the base", inner)
+		args := splitTopLevelArgs(callArgs(doc, open))
+		examined++
+		if len(args) < 2 {
+			problems = append(problems, "contributor guide GetJSON call without a path argument: "+call+strings.Join(args, ", ")+")")
+			continue
+		}
+		if !guidePathArgument(doc[:open], args[1]) {
+			problems = append(problems, "contributor guide GetJSON is given "+args[1]+", which is not a path built from a \"/...\" literal; pass a path, the client prefixes its base URL")
 		}
 	}
-	if sprintfs == 0 {
-		t.Error("the contributor guide has no fmt.Sprintf request path to check; the base-URL rule above examined nothing")
+	return problems, examined
+}
+
+// guidePathArgument reports whether arg, as passed at the end of before, is a
+// path: a "/..." literal, or an identifier whose nearest earlier assignment
+// in before starts with one or with fmt.Sprintf("/...").
+func guidePathArgument(before, arg string) bool {
+	if isPathLiteral(arg) {
+		return true
+	}
+	if !plainIdentRe.MatchString(arg) {
+		return false
+	}
+	assign := regexp.MustCompile(`(?m)\b` + regexp.QuoteMeta(arg) + `\s*:?=\s*`)
+	locs := assign.FindAllStringIndex(before, -1)
+	if len(locs) == 0 {
+		return false
+	}
+	rhs := strings.TrimSpace(before[locs[len(locs)-1][1]:])
+	return isPathLiteral(rhs) || (strings.HasPrefix(rhs, "fmt.Sprintf(") && isPathLiteral(strings.TrimPrefix(rhs, "fmt.Sprintf(")))
+}
+
+// isPathLiteral reports whether s starts with a string literal beginning "/".
+func isPathLiteral(s string) bool {
+	return strings.HasPrefix(s, `"/`) || strings.HasPrefix(s, "`/")
+}
+
+// The guide rules themselves, on fixtures: v0.29.13 review pass 3 found both
+// escapes below against the rules as first written.
+func TestContributorGuideRules(t *testing.T) {
+	keyed := []string{"store", "ghClient", "glClient", "ghKeys", "glKeys", "logger", "cfg"}
+	guideCall := []string{"store", "ghClient", "glClient", "bzClient", "ghKeys", "glKeys", "logger", "scheduler.Config{...}"}
+	callCases := []struct {
+		name      string
+		params    []string
+		args      []string
+		wantFails bool
+	}{
+		{"the guide's call against today's signature", keyed, guideCall, false},
+		// The key pools move into Config: the stale 8-argument call would
+		// not compile, but seven parameters minus the two pools plus the
+		// three extras still counted out.
+		{"parameters removed right after the insertion point", []string{"store", "ghClient", "glClient", "logger", "cfg"}, guideCall, true},
+		{"two inserted clients", keyed, []string{"store", "ghClient", "glClient", "bzClient", "xyClient", "ghKeys", "glKeys", "logger", "scheduler.Config{...}"}, true},
+		{"no inserted client", keyed, []string{"store", "ghClient", "glClient", "ghKeys", "glKeys", "logger", "scheduler.Config{...}"}, false},
+		{"nil pools", keyed, []string{"store", "ghClient", "glClient", "bzClient", "nil", "nil", "logger", "cfg"}, false},
+	}
+	for _, tc := range callCases {
+		if got := guideCallProblem(tc.params, tc.args, "glClient", true) != ""; got != tc.wantFails {
+			t.Errorf("%s: fails=%v, want %v (%q)", tc.name, got, tc.wantFails, guideCallProblem(tc.params, tc.args, "glClient", true))
+		}
+	}
+
+	const getJSON = "if err := c.http.GetJSON(ctx, path, &resp); err != nil {\n"
+	urlCases := []struct {
+		name, doc    string
+		wantFails    bool
+		wantExamined int
+	}{
+		{"path", `path := fmt.Sprintf("/rest/bug?%s", q.Encode())` + "\n" + getJSON, false, 1},
+		{"path literal inline", `if err := c.http.GetJSON(ctx, "/rest/version", &resp); err != nil {`, false, 1},
+		{"constructor keeps the base", "baseURL: baseURL,\nhttp: platform.NewHTTPClient(baseURL, keys, logger, platform.AuthBugzilla),\n" + `path := fmt.Sprintf("/rest/bug?%s", q.Encode())` + "\n" + getJSON, false, 1},
+		// Mentions of the base that build no request are not requests (review
+		// pass 4 on v0.30.0: the substring rule over-fired on both).
+		{"prose mention", "// never prefix c.baseURL: the client does\n" + `path := fmt.Sprintf("/rest/bug?%s", q.Encode())` + "\n" + getJSON, false, 1},
+		{"host check parses the base", "base, _ := url.Parse(c.baseURL)\nif u.Host != base.Host {\n" + `path := fmt.Sprintf("/rest/bug?%s", q.Encode())` + "\n" + getJSON, false, 1},
+		{"Sprintf", `path := fmt.Sprintf("%s/rest/bug?%s", c.baseURL, q.Encode())` + "\n" + getJSON, true, 1},
+		// jira/client.go, the tracker a contributor would copy, concatenates.
+		{"concatenation", `path := c.baseURL + "/rest/bug?" + q.Encode()` + "\n" + getJSON, true, 1},
+		{"JoinPath", `path, _ := url.JoinPath(c.baseURL, "rest", "bug")` + "\n" + getJSON, true, 1},
+		// Review pass 4 on v0.30.0: spellings the substring rule missed.
+		{"accessor", `path := c.http.BaseURL() + "/rest/bug"` + "\n" + getJSON, true, 1},
+		{"renamed field", `path := c.root + "/rest/bug"` + "\n" + getJSON, true, 1},
+		{"inline URL argument", `if err := c.http.GetJSON(ctx, c.root+"/rest/bug", &resp); err != nil {`, true, 1},
+		{"identifier never assigned", getJSON, true, 1},
+		{"a later reassignment does not count", getJSON + `path = "/rest/bug"`, true, 1},
+		{"no request site", `path := fmt.Sprintf("/rest/bug?%s", q.Encode())`, false, 0},
+	}
+	for _, tc := range urlCases {
+		problems, examined := guideBaseURLProblems(tc.doc)
+		if examined != tc.wantExamined {
+			t.Errorf("%s: examined %d request sites, want %d", tc.name, examined, tc.wantExamined)
+		}
+		if got := len(problems) > 0; got != tc.wantFails {
+			t.Errorf("%s: fails=%v, want %v (%q)", tc.name, got, tc.wantFails, problems)
+		}
 	}
 }
 
@@ -327,7 +431,10 @@ var predeclaredLiteral = map[string]bool{"nil": true, "true": true, "false": tru
 // TestContributorGuideConstructorExamplesMatchSignatures, or "".
 func guideCallProblem(params, args []string, extrasAfter string, checkNames bool) string {
 	extra := len(args) - len(params)
-	if (extrasAfter == "" && extra != 0) || extra < 0 {
+	// The guide inserts exactly one client. Allowing more would let a
+	// signature that dropped parameters right after the insertion point
+	// still count out against the stale call (review pass 3).
+	if (extrasAfter == "" && extra != 0) || extra < 0 || extra > 1 {
 		return fmt.Sprintf("%d arguments for %d parameters", len(args), len(params))
 	}
 	if extra > 0 {

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.30.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=a7ea5d77"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2299,9 +2299,11 @@ names the missing index.</p>
 </section>
 <section id="after-the-run">
 <h3>After the run<a class="headerlink" href="#after-the-run" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># builds uq_repos_repo_git_ci — the permanent</span>
-<span class="w">                                </span><span class="c1"># DB-level backstop (skipped with a WARN while</span>
-<span class="w">                                </span><span class="c1"># duplicates remain)</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># builds uq_repos_repo_git_ci (and, for</span>
+<span class="w">                                </span><span class="c1"># self-hosted GitLab instances,</span>
+<span class="w">                                </span><span class="c1"># uq_repos_repo_git_ci_gitlab_instances) — the</span>
+<span class="w">                                </span><span class="c1"># permanent DB-level backstops (each skipped</span>
+<span class="w">                                </span><span class="c1"># with a WARN while its duplicates remain)</span>
 aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># matviews stop double-counting immediately</span>
 </pre></div>
 </div>

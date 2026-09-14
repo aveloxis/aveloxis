@@ -103,7 +103,7 @@ func countMetadataRefreshCandidates(ctx context.Context, store *db.PostgresStore
 	var n int
 	err := store.Pool().QueryRow(ctx, `
 		SELECT COUNT(*) FROM aveloxis_data.repos
-		WHERE repo_id > $1 AND platform_id IN (1, 2)
+		WHERE repo_id > $1 AND `+db.ForgePlatformPredicate("platform_id")+`
 		  AND COALESCE(repo_owner, '') != '' AND COALESCE(repo_name, '') != ''`,
 		afterRepoID).Scan(&n)
 	return n, err
@@ -125,9 +125,11 @@ func runBackfillRepoMetadata(ctx context.Context, store *db.PostgresStore, ghCli
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				client := ghClient
-				if t.PlatformID == int16(model.PlatformGitLab) {
-					client = glClient
+				client, ok := forgeClientFor(model.Platform(t.PlatformID), ghClient, glClient)
+				if !ok {
+					skipped.Add(1)
+					logger.Warn("metadata refresh skip: no API client for this repo's platform in this command", "repo_id", t.RepoID, "platform_id", t.PlatformID)
+					continue
 				}
 				info, err := client.FetchRepoInfo(ctx, t.Owner, t.Name)
 				if err != nil {

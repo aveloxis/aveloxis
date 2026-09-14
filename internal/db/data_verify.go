@@ -86,7 +86,7 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 	var n int64
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM (
-			SELECT LOWER(repo_git) FROM aveloxis_data.repos WHERE platform_id IN (1,2)
+			SELECT LOWER(repo_git) FROM aveloxis_data.repos WHERE `+ForgePlatformPredicate("platform_id")+`
 			GROUP BY LOWER(repo_git) HAVING COUNT(*) > 1) g`).Scan(&n); err != nil {
 		probeErr("case-duplicate repos", err)
 	} else if n > 0 {

@@ -168,9 +168,9 @@ func TestRepoDedupWinnerIsMinRepoID(t *testing.T) {
 		t.Error("candidate query must group case variants by LOWER(repo_git) with " +
 			"HAVING COUNT(*) > 1.")
 	}
-	if !strings.Contains(dedup, "platform_id IN (1, 2)") {
-		t.Error("candidate query must scope to forge platforms (1, 2) — generic git " +
-			"hosts may legitimately be case-sensitive.")
+	if !strings.Contains(dedup, `ForgePlatformPredicate("platform_id")`) {
+		t.Error("candidate query must scope to forge platforms (ForgePlatformPredicate: " +
+			"GitHub and every GitLab instance) — generic git hosts may legitimately be case-sensitive.")
 	}
 }
 

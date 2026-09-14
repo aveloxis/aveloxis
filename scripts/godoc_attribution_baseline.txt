@@ -1,0 +1,48 @@
+# Frozen godoc-attribution debt — SHRINK ONLY.
+#
+# Each line is a PAIR: a declaration whose doc comment opens with the
+# name of a DIFFERENT declaration in the same file, and that
+# declaration, which has no doc of its own. That is the signature of a
+# doc block fused onto its successor by an insertion with no blank line
+# between them. See scripts/godoc_attribution_test.go for the full
+# rationale and the three incidents that earned the check.
+#
+# These accumulated across the release history and are frozen so a NEW
+# fusion fails the build. To repair one: separate the two doc blocks
+# with a blank line, give each declaration a doc that opens with its own
+# name, and DELETE its line here in the same change — a stale line fails
+# the test as unreviewed permission.
+#
+# Format: <repo-relative file>::<declaration carrying the doc><-<declaration the doc was stolen from>
+#
+# The stolen-from half is load-bearing (round 14): keyed on the carrier
+# alone, a frozen line exempted that declaration no matter which
+# neighbour it swallowed, so re-fusing a repaired site onto a different
+# undocumented sibling in the same file shipped green.
+#
+# Regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run GodocIsAttached
+cmd/aveloxis/main.go::mailerConfigFrom<-digestMailerAdapter
+cmd/aveloxis/shadow_diff.go::shadowTable<-shadowTables
+internal/api/analytics.go::recordComparison<-resolveEntityRepos
+internal/api/portal.go::homeReposMaxLimit<-homeCacheKey
+internal/collector/distribution/manifest_parser.go::kvStringPattern<-extractKVString
+internal/collector/prelim.go::ResolveRedirectTarget<-resolveRedirects
+internal/collector/scancode_worker.go::checkOwnLocks<-recoverOrphans
+internal/collector/vulnerability.go::stampVulnScanComplete<-ScanVulnerabilities
+internal/config/config.go::ActivityHistoryWindowDaysOrDefault<-MatviewRebuildWeekday
+internal/config/config.go::RecollectAfterDuration<-EnrichIntervalDuration
+internal/config/config.go::jiraCadenceMaxHours<-JiraCadenceDuration
+internal/config/config.go::senderBackfillMaxMinutes<-MailingListSenderBackfillInterval
+internal/config/example_defaults_test.go::blockValueOpts<-assertSnippetBlockValues
+internal/config/example_defaults_test.go::exampleBlockAllowlist<-snippetValueAllowlist
+internal/config/example_defaults_test.go::snippetAccessor<-snippetValueAccessors
+internal/db/analytics_store.go::LastActivityAt<-FirstActivityAt
+internal/db/contributor_search_resolve.go::mergeLoserAliasRepointSQL<-GetContributorsNeedingSearch
+internal/db/gap_heal_store.go::nativeGatheredIssuesSQL<-GetGapHealCandidates
+internal/db/queue.go::archivedStretchCaseSQL<-CompleteJob
+internal/db/scancode_worker_store.go::RecordScancodeTimeout<-RecordScancodeFailure
+internal/db/vulnerability_store.go::SetVulnScanLastRun<-CountRepoVulnerabilities
+internal/mailer/mailer.go::SiteURL<-SendWelcome
+internal/platform/jira/walk.go::jiraMaxWestTZSkew<-maxStalePages
+internal/scheduler/scheduler.go::largeRepoExclusions<-fillWorkerSlots
+internal/scheduler/scheduler.go::singleFlight<-runSearchResolve

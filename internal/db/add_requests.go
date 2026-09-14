@@ -13,6 +13,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -389,8 +390,13 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 	for _, it := range items {
 		repoID, err := s.ensureRepoCollectedInGroup(ctx, groupID, it.url)
 		if err != nil {
-			s.logger.Warn("add-request item failed — marking processed-with-error",
-				"request_id", requestID, "url", it.url, "error", err)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				s.logger.Warn("add-request item failed — marking processed-with-error",
+					"request_id", requestID, "url", it.url, "error", err)
+			}
 			repoID = -1
 		}
 		if _, err := s.pool.Exec(ctx, `

@@ -40,10 +40,92 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// serialization at all. See SetMigrateFastPath for the contract
 	// (serve-only; `aveloxis migrate` always runs fully).
 	if pg.migrateFastPath {
-		if v := pg.GetSchemaVersion(ctx); v == ToolVersion {
+		v, verr := pg.schemaVersionProbe(ctx)
+		// v0.29.4 (the 2026-09-09 scancode-runner incident): a serve is
+		// starting; is another aveloxis-serve already on this database,
+		// and from where? Sighted BEFORE the stamp decision so both arms
+		// can use it (the ONE confirm-then-list composition, round 6).
+		//
+		// DECLINED, round-11 finding 13 ("`start serve` probes twice —
+		// the parent's deploy gate, then this): true as a fact, and left
+		// alone deliberately. The two go to DIFFERENT SINKS — the gate's
+		// note is stdout for the human at the terminal, this WARN is the
+		// serve log for whoever investigates later — and there is no
+		// channel from a parent to a spawned process to carry a result
+		// through. The cost is ~2 s of confirmation, paid only when a
+		// positive is already confirmed.
+		sight, oerr := pg.otherServeSighting(ctx)
+		// A shutdown landing inside the probes or the listing is an
+		// interruption, not a refusal or a failed probe (round-5 finding
+		// 8, round-6 finding 2).
+		if cause := ctx.Err(); cause != nil || errors.Is(verr, context.Canceled) || errors.Is(oerr, context.Canceled) || errors.Is(sight.ListErr, context.Canceled) {
+			if cause == nil {
+				cause = context.Canceled
+			}
+			return fmt.Errorf("serve startup migration interrupted: %w", cause)
+		}
+		if sight.ListErr != nil {
+			// DECLINED, round-11 finding 14 ("the listing error is
+			// rendered twice — here and inside Describe()'s '(listing
+			// failed: …)'"): the refusal text below is deliberately
+			// self-contained for a reader who sees only the returned
+			// error and never this log line, and this WARN is for a
+			// reader scanning the log who never sees the refusal (the
+			// fast path continues). Each rendering has a reader the
+			// other does not reach; the duplication is cosmetic.
+			logger.Warn("serve startup: could not list the other aveloxis-serve's client addresses", "error", sight.ListErr)
+		}
+		if verr == nil && v == ToolVersion {
+			switch {
+			case oerr != nil:
+				// Nothing is about to run, so a failed probe only costs the
+				// warning below — said, never folded into "no other serve".
+				logger.Warn("serve startup: could not probe for another aveloxis-serve", "error", oerr)
+			case sight.Connected:
+				// Observation only (round-4 finding 3): a same-version second
+				// serve passes every refusal — this is the dedicated-host
+				// mistake with the version drift removed — and whether two
+				// serves on one database is ever deliberate is the operator's
+				// call, so it is named, not blocked. The verdict that reads
+				// the address tags is OtherServe.Advice (SR-17, the ONE
+				// spelling) — restating it here would be a fourth rendering,
+				// which survived the round-9 pin only because its walk strips
+				// comments (round-10 finding 7).
+				//
+				// This is the one verdict site where serve CONTINUES: the
+				// refusal exits and the deploy gate runs before serve starts,
+				// so only here is "stop this serve" both true and actionable
+				// (runServe writes the pidfile before store.Migrate, so
+				// `aveloxis stop serve` finds exactly this process). Round-10
+				// finding 2 (L9/L12): the word "stop" lived at this site alone
+				// before round 9 and the merge onto the shared renderer
+				// dropped it, leaving a WARN that named a mistake and no way
+				// to back out of it.
+				logger.Warn("another aveloxis-serve is connected to this database. "+sight.Advice()+" A second full scheduler competes with the first for the same queue and API keys — and this serve is STARTING anyway: nothing here has been stopped, so `aveloxis stop serve` on this host is the way to back out",
+					"schema_version", v, "from", sight.Describe())
+			}
 			logger.Info("schema stamp matches binary — skipping migrations (F13 fast path); run `aveloxis migrate` for a full pass",
 				"schema_version", v)
 			return nil
+		}
+		// A serve whose binary missed the stamp is about to run the FULL
+		// migration — beside a live fleet that is the base-DDL deadlock
+		// (ACCESS EXCLUSIVE guards vs 120 workers' row locks; three retries
+		// did not help). The single-host ladder never reaches here with a
+		// serve connected (stop → migrate → start); a second host does.
+		// Refuse, name the way out; a probe ERROR is not "no other serve"
+		// (SR-5), so it refuses too. `aveloxis migrate` (fast path off)
+		// keeps its documented beside-a-live-serve behavior.
+		if oerr != nil {
+			logger.Error("serve startup: could not probe for another aveloxis-serve — refusing the startup migration (a probe error is not \"no other serve\")", "error", oerr)
+			return fmt.Errorf("probing for another aveloxis-serve before the startup migration: %w", oerr)
+		}
+		if err := startupMigrateRefusal(v, verr, sight); err != nil {
+			logger.Error("serve startup migration refused", "error", err)
+			return err
+		}
+		if verr != nil {
+			logger.Warn("schema stamp unreadable — running the full migration", "error", verr)
 		}
 	}
 
@@ -150,11 +232,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// retry rationale applies verbatim.
 	execMigrationStep(ctx, pg, logger, &errs, "base schema DDL", schemaSQL)
 
+	// v0.28.4 — the completed-backfill ledger must exist before any
+	// runOnce-gated step below probes it (belt over the base DDL's own
+	// declaration; see migration_ledger.go for the full contract).
+	ensureMigrationLedgerTable(ctx, pg, logger, &errs)
+
 	// Run data cleanup for any garbage timestamps from prior versions.
-	if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {
-		logger.Error("schema migration error", "step", "cleanupBadTimestamps", "error", err)
-		errs = append(errs, fmt.Errorf("cleanupBadTimestamps: %w", err))
-	}
+	// Ledgered (v0.28.4): the per-column probes walked every large
+	// table for ~1h on the 2026-08-23 production migrate to fix 38
+	// rows; garbage timestamps come from PRIOR-version writers, so
+	// once clean the sweep never needs to re-run.
+	runOnce(ctx, pg, logger, &errs, "cleanup garbage timestamps from prior versions", func(errs *[]error) {
+		if err := cleanupBadTimestamps(ctx, pg, logger); err != nil {
+			logger.Error("schema migration error", "step", "cleanupBadTimestamps", "error", err)
+			*errs = append(*errs, fmt.Errorf("cleanupBadTimestamps: %w", err))
+		}
+	})
 
 	// The migration step sequence, split into ordered stages
 	// (v0.27.42). Every stage takes the shared error collector; order
@@ -232,9 +325,24 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	}
 
 	// Stamp schema version so non-migrating commands (web, api) can detect
-	// when the schema is behind the binary and warn the operator.
+	// when the schema is behind the binary and warn the operator, and so
+	// v0.29.4's `start serve` deploy gate can tell a fleet that has
+	// migrated this binary from one that has not.
 	// Only reached when ALL migration steps succeeded — see comment above.
-	stampSchemaVersion(ctx, pg, logger)
+	//
+	// The stamp is LOAD-BEARING since v0.29.4: deployStepsProvablyUnrun
+	// treats a stamp behind the binary as PROOF that no migration of this
+	// binary has completed here and refuses the start. So a failed stamp
+	// must fail the migration rather than let it report success over a row
+	// that still names the previous version. Every step above is
+	// idempotent, so the remedy is simply to re-run `aveloxis migrate` —
+	// the steps no-op and only the stamp lands.
+	if err := stampSchemaVersion(ctx, pg, logger); err != nil {
+		return fmt.Errorf("schema migration steps all succeeded but the version stamp failed — "+
+			"re-run `aveloxis migrate` (every step is idempotent, so they no-op and only the stamp lands); "+
+			"until it lands, `aveloxis start serve` reads the stamp as proof no migration of this binary "+
+			"completed here and refuses to start: %w", err)
+	}
 
 	logger.Info("schema migrations complete", "schema_version", ToolVersion)
 	return nil
@@ -243,30 +351,64 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 // migrateStage1CoreColumns — recent heals, msg_kind, tool_version defaults, libyear/users/queue/sbom columns, contributor cooldowns.
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
-func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	// Set tool_version column defaults to the current version so new inserts
-	// automatically get the right value without every INSERT needing to specify it.
-	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
-	// were silently dropped on the main collection path since
-	// inception (client refs carried no parent number). The forward
-	// fix makes new cycles collect them, but incremental cycles are
-	// since-filtered — only a FULL pass re-walks comment history.
-	// One-shot: flag every collected GitLab repo for force-full.
-	// Self-disabling: once flagged (or after the full pass clears the
-	// flag on success), the filter matches nothing.
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
-		UPDATE aveloxis_ops.collection_queue q
-		SET force_full_collect = TRUE
-		FROM aveloxis_data.repos r
-		WHERE r.repo_id = q.repo_id
-		  AND r.platform_id = 2
-		  AND q.last_collected IS NOT NULL
-		  AND q.force_full_collect = FALSE`)
 
+// homeActivityBackfillSQL seeds collection_queue.last_activity_90d —
+// ONE named spelling (SR-17) shared by the ledgered migrate step and
+// its behavioral test, so the test exercises the exact statement the
+// fleet runs. collection_queue.repo_id is the PRIMARY KEY, so the
+// q/q0 self-join matches exactly one row and both GROUP BY subqueries
+// are repo-unique: every NULL row fills exactly once (zero-activity
+// repos fill with 0, never stay NULL).
+const homeActivityBackfillSQL = `
+		UPDATE aveloxis_ops.collection_queue q
+		SET last_activity_90d = COALESCE(iss.c, 0) + COALESCE(prs.c, 0)
+		FROM aveloxis_ops.collection_queue q0
+		LEFT JOIN (
+		    SELECT repo_id, COUNT(*) AS c FROM aveloxis_data.issues
+		    WHERE created_at >= NOW() - INTERVAL '90 days' GROUP BY repo_id
+		) iss ON iss.repo_id = q0.repo_id
+		LEFT JOIN (
+		    SELECT repo_id, COUNT(*) AS c FROM aveloxis_data.pull_requests
+		    WHERE created_at >= NOW() - INTERVAL '90 days' GROUP BY repo_id
+		) prs ON prs.repo_id = q0.repo_id
+		WHERE q.repo_id = q0.repo_id
+		  AND q.last_activity_90d IS NULL`
+
+func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	// v0.27.38 (summary/18 Phase 1a): messages msg_kind — see
 	// msg_kind_migration.go for the full sequence + rationale.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_kind", "SMALLINT NOT NULL DEFAULT 0")
+	// v0.29.0 Part B: quote-stripped body + rule version. msg_text_clean
+	// carries NO DEFAULT on purpose (NULL = no clean variant; a DEFAULT
+	// the empty string would empty every forge row via the COALESCE read path). The
+	// 12.6M-row history strip is `aveloxis strip-quoted-history`, a
+	// resumable CLI — NEVER a migrate walker (the F13 class).
+	// v0.29.0 C3a: the real Jira internal id gets its OWN column —
+	// synthetics keep their negative platform_issue_id (id-space
+	// collision + sign-keyed detector class; see schema.sql).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "jira_issue_id", "BIGINT")
+	// v0.29.0 C3a: the notification→native-comment supersession link
+	// (see schema.sql). The FK is added only on fresh installs via the
+	// base DDL; existing fleets get the bare column — the stamp writer
+	// only ever writes ids RETURNING'd from messages in the same
+	// process, and a backfilled FK VALIDATE over 12.6M rows is not
+	// worth a migrate stall for a link column.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.email_message", "linked_msg_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_text_clean_rule", "TEXT DEFAULT ''")
+	// v0.29.0 round 14: provider edit timestamp — the Jira comment
+	// upsert's stale-replay freshness guard compares against it.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.messages", "msg_updated", "TIMESTAMPTZ")
+	// v0.29.0 round 15: same-minute tracker-action tie-breaker.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "last_mail_event_id", "BIGINT")
+	// v0.29.1 (Copilot round 22 suppressed #2): the last-applied Jira-API
+	// update timestamp — the reliable API clock the freshness guard
+	// compares against, immune to mail events clobbering updated_at.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.issues", "jira_api_updated_at", "TIMESTAMPTZ")
+	// v0.29.1 (Copilot round 22 suppressed #1): ownership-qualified
+	// heartbeat so the Jira project lease measures inactivity, not total
+	// scan duration.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.jira_project_serve", "jps_heartbeat_at", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.38 create message_heal_worklist", `
 		CREATE TABLE IF NOT EXISTS aveloxis_ops.message_heal_worklist (
@@ -298,12 +440,46 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// Collection queue: commits column (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "last_commits", "INT DEFAULT 0")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "last_activity_90d", "INT")
 
 	// Collection queue: force-full-recollect flag (added in v0.18.24).
 	// Set automatically when a job ends with a GraphQL PR batch error
 	// class that leaves PR child data incomplete; set manually via
 	// `aveloxis recollect <url>`. CompleteJob clears it on success.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.collection_queue", "force_full_collect", "BOOLEAN NOT NULL DEFAULT FALSE")
+
+	// v0.28.15: the v0.27.37 force-full step below WRITES force_full_collect,
+	// so it must run after the column add above (it previously sat ~50
+	// lines earlier — TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded
+	// caught it on the day the analyzer landed). Same class as the v0.28.7
+	// last_seen_at relocation.
+	// v0.27.37 (summary/18 Phase 1b): GitLab conversation comments
+	// were silently dropped on the main collection path since
+	// inception (client refs carried no parent number). The forward
+	// fix makes new cycles collect them, but incremental cycles are
+	// since-filtered — only a FULL pass re-walks comment history.
+	// One-shot: flag every collected GitLab repo for force-full.
+	// v0.28.18: LEDGERED. The old comment called this "self-disabling",
+	// but the predicate re-matches every collected GitLab repo the moment
+	// CompleteJob clears the flag on a successful pass — so as a plain
+	// step it re-flagged the whole GitLab fleet on EVERY migrate (each
+	// version bump forced a full recollect of every GitLab repo). The
+	// ledger runs it exactly once per database — and a fleet whose stamp
+	// already proves a ≥ v0.27.37 migrate completed has ALREADY run it
+	// (every migrate did), so the ledger row is seeded instead of
+	// forcing one more fleet-wide GitLab full pass on upgrade.
+	if runOnceSeedIfApplied(ctx, pg, logger,
+		"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", "0.27.37") {
+		runOnceStep(ctx, pg, logger, errs,
+			"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)", `
+		UPDATE aveloxis_ops.collection_queue q
+		SET force_full_collect = TRUE
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id = q.repo_id
+		  AND r.platform_id = 2
+		  AND q.last_collected IS NOT NULL
+		  AND q.force_full_collect = FALSE`)
+	}
 
 	// SBOM storage: format and timestamp columns (added in v0.5.4).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_sbom_scans", "sbom_format", "TEXT DEFAULT ''")
@@ -385,6 +561,21 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_issues_external_key",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_external_key
 		 ON aveloxis_data.issues (repo_id, external_key) WHERE external_key <> ''`)
+	// v0.28.18: email_message's three v0.25.7 FK columns get their indexes
+	// (dedup-repos and the list dedup below repoint by them; the repos
+	// delete's deferred FK checks probe them), then the list table is
+	// deduplicated BEFORE the UNIQUE below can be attempted (SR-1).
+	ensureEmailMessageFKIndexes(ctx, pg, logger, errs)
+	// v0.28.18: repo_info_history was created with LIKE … INCLUDING ALL
+	// BEFORE idx_repo_info_repo_id existed, so it never inherited a
+	// repo_id index — and InsertRepoInfo's unknown-count carry-forward
+	// reads the prior snapshot from it (rotation precedes the insert).
+	// Migration-owned CONCURRENTLY (SR-2): the history table is
+	// fleet-scale (one row per repo per cycle).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_info_history_repo_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_info_history_repo_id
+		 ON aveloxis_data.repo_info_history (repo_id)`)
+	dedupRepoGroupsListServe(ctx, pg, logger, errs)
 	// Idempotent list registration: one row per (repo_group, list address).
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_group_email",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_group_email
@@ -452,6 +643,18 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_locked_boot_id", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_output_path", "TEXT")
 
+	// v0.28.1 (A4): completed-vuln-scan stamp (the scancode_last_run
+	// pattern). Stamped ONLY at ScanVulnerabilities' completed-scan
+	// exits — never on error paths — so NULL means "never scanned"
+	// and a date on a zero-finding repo means "scanned, clean".
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "vuln_scan_last_run", "TIMESTAMPTZ")
+
+	// v0.28.1 (A6): the distinct "gone" state — prelim's 404/410
+	// sideline stamps it alongside repo_archived so the GUI can say
+	// "no longer publicly available" instead of misreading the
+	// dequeued state as "queued for first collection".
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_gone_at", "TIMESTAMPTZ")
+
 	// v0.21.4: failure tracking + exponential backoff.
 	//
 	// 2026-05-14 production diagnostic: the v0.21.0 ScancodeWorker
@@ -485,7 +688,7 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// liveness is only adjudicable on the machine that wrote it.
 	// scancode_skip_reason: why the last "run" was a no-scan skip
 	// ('generated-content' for the >5 GiB / >=90% HTML+CSS+JS
-	// policy); cleared back to '' by the next real successful scan.
+	// policy); cleared back to the empty string by the next real successful scan.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_locked_host", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "scancode_skip_reason", "TEXT DEFAULT ''")
 
@@ -635,12 +838,40 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// (2026-07-20), against a documented expectation of tens of
 	// minutes. v0.20.12's own comment named this index as "the next
 	// step" if the join profiled as a bottleneck. Same partial
-	// predicate as its sibling: the email-only cohort (gh_login = '')
-	// is excluded, matching the query's v0.27.25 `!= ''` guards.
+	// predicate as its sibling: the email-only cohort (empty gh_login)
+	// is excluded, matching the query's v0.27.25 non-empty guards.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_contributors_gh_login_lower",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login_lower
 		ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != ''`)
+
+	// v0.29.0 (review 2026-08-30 #15) — the Jira identity probes.
+	// ResolveJiraIdentity matches each first-seen Jira username against
+	// lower(cntrb_login) and each display name against
+	// lower(cntrb_full_name); without these, every cold identity in the
+	// ASF backfill (tens of thousands) is 1-2 sequential scans of the
+	// 1.7M-row contributors table (the v0.27.53/54 email-lookup class).
+	// Partial, and USABLE because the query carries the literal
+	// non-empty guards (the v0.27.125 FindRepoByPlatformRepoID rule —
+	// a generic plan cannot prove $1 <> ''). Migration-only per SR-2.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_cntrb_login_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_cntrb_login_lower
+		ON aveloxis_data.contributors (LOWER(cntrb_login)) WHERE cntrb_login <> ''`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_full_name_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_full_name_lower
+		ON aveloxis_data.contributors (LOWER(cntrb_full_name)) WHERE cntrb_full_name <> ''`)
+
+	// v0.29.0 (review 2026-08-30 #3) — the gap healer's synthetic-count
+	// lateral (`platform_issue_id < 0` per repo) must not walk every
+	// repo's full issues index range. Partial, and usable because the
+	// lateral's predicate matches the index predicate verbatim.
+	// Synthetics are ~486K rows fleet-wide, so the index stays small.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_synthetic_repo",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_synthetic_repo
+		ON aveloxis_data.issues (repo_id) WHERE platform_issue_id < 0`)
 
 	// v0.21.0 — ScancodeWorker claim-query index.
 	//
@@ -867,7 +1098,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// COUNT(DISTINCT) subquery itself is the cost; on a 100K-repo
 	// fleet with hundreds of millions of commit rows this takes a few
 	// minutes once, then never matters again.
-	execMigrationStep(ctx, pg, logger, errs, "backfill collection_queue.last_commits with distinct counts",
+	runOnceStep(ctx, pg, logger, errs, "backfill collection_queue.last_commits with distinct counts",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET last_commits = sub.cnt
 		FROM (
@@ -898,7 +1129,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// snapshot rotated to repo_info_history so the live table may hold
 	// just one row per repo on a steady-state install, but the
 	// DISTINCT ON is correct either way.
-	execMigrationStep(ctx, pg, logger, errs, "v0.20.5 backfill force_full_collect for repos with PR gap",
+	runOnceStep(ctx, pg, logger, errs, "v0.20.5 backfill force_full_collect for repos with PR gap",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET force_full_collect = TRUE
 		FROM (
@@ -946,7 +1177,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// tool_version is omitted from the column list — the per-table
 	// DEFAULT set by setToolVersionDefaults fills it in. Same for
 	// the other tool_version-bearing tables.
-	execMigrationStep(ctx, pg, logger, errs, "v0.20.12 backfill placeholder contributors for unresolvable logins",
+	runOnceStep(ctx, pg, logger, errs, "v0.20.12 backfill placeholder contributors for unresolvable logins",
 		`INSERT INTO aveloxis_data.contributors
 			(cntrb_id, cntrb_login, gh_login, gh_state,
 			 tool_source, data_source, data_collection_date)
@@ -983,7 +1214,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// AND any inappropriately-set force_full_collect lets the next
 	// cycle run incrementally, which is the correct cadence for a
 	// healthy small repo with no API activity.
-	execMigrationStep(ctx, pg, logger, errs, "v0.20.7 clear false-positive 'no data collected' errors for repos with real commits",
+	runOnceStep(ctx, pg, logger, errs, "v0.20.7 clear false-positive 'no data collected' errors for repos with real commits",
 		`UPDATE aveloxis_ops.collection_queue
 		SET last_error = NULL,
 		    force_full_collect = FALSE
@@ -1011,7 +1242,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// UPDATE means a second migrate run is a no-op once backfill
 	// completes. Wrapped in execMigrationStep per the v0.19.4
 	// fail-closed contract.
-	execMigrationStep(ctx, pg, logger, errs, "v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans",
+	runOnceStep(ctx, pg, logger, errs, "v0.21.0 backfill scancode_last_run from aveloxis_scan.scancode_scans",
 		`UPDATE aveloxis_data.repos r
 		SET scancode_last_run = sub.last_at,
 		    scancode_version = sub.last_version
@@ -1048,7 +1279,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// outer subquery scans the full collection_queue but joins
 	// each row with a single indexed lookup. On a 40K-repo / 5M-
 	// row issues fleet this is a few seconds.
-	execMigrationStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_issues with cumulative counts",
+	runOnceStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_issues with cumulative counts",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET last_issues = sub.cnt
 		FROM (
@@ -1062,7 +1293,7 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// v0.21.2 backfill collection_queue.last_prs with cumulative counts.
 	// See last_issues backfill above for the rationale; same shape
 	// against aveloxis_data.pull_requests via idx_pull_requests_repo_id.
-	execMigrationStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_prs with cumulative counts",
+	runOnceStep(ctx, pg, logger, errs, "v0.21.2 backfill collection_queue.last_prs with cumulative counts",
 		`UPDATE aveloxis_ops.collection_queue q
 		SET last_prs = sub.cnt
 		FROM (
@@ -1220,7 +1451,7 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// (1,051,111 of 1,051,111 on production — 2026-08-19 fill audit).
 	// Value derived from the owning repo's platform. Self-disabling via
 	// the empty-data_source predicate; ~1M rows = one pass, no windows.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.103 backfill releases.data_source from repo platform", `
 		UPDATE aveloxis_data.releases rel
 		SET data_source = CASE r.platform_id
@@ -1233,7 +1464,14 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// v0.27.104: backfill pull_requests.meta_head_id/meta_base_id from
 	// pull_request_meta (100% derivable locally — see pr_meta_links.go).
-	ensurePRMetaLinks(ctx, pg, logger, errs)
+	// Ledgered (v0.28.4): ~21 keyset windows per side over the 21M-row
+	// pull_requests PK on every re-run; forward writes are
+	// SetPRMetaLinks' job since v0.27.104.
+	runOnce(ctx, pg, logger, errs,
+		"v0.27.104 backfill pull_requests.meta_head_id/meta_base_id",
+		func(errs *[]error) {
+			ensurePRMetaLinks(ctx, pg, logger, errs)
+		})
 
 	// v0.27.105: whitespace-walk marker (fill-audit Workstream C).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "whitespace_head_hash", "TEXT DEFAULT ''")
@@ -1246,7 +1484,7 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// meaningless without a real platform_user_id; nothing reads them
 	// post-v0.27.106. Self-disabling: once deleted, the fixed writer
 	// never recreates them.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.108 delete poisoned platform_user_id=0 identity rows", `
 		DELETE FROM aveloxis_data.contributor_identities
 		WHERE platform_user_id = 0`)
@@ -1298,6 +1536,37 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "first_detected_at", "TIMESTAMPTZ DEFAULT NOW()")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "resolved_at", "TIMESTAMPTZ")
+
+	// v0.28.15: the v0.28.7 stamp backfill below READS last_seen_at, so it
+	// must run AFTER the column add above. It originally sat ~870 lines
+	// earlier next to the vuln_scan_last_run column add and failed with
+	// SQLSTATE 42703 on every fleet upgrading from before v0.27.4 (the
+	// 2026-08-26 `aveloxis` DB, 0.25.26 → 0.28.x) — "fails on the first
+	// migrate, passes on the retry" because the retry ran after this add.
+	// TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded now bans the
+	// class. Ledgered; label unchanged (the ledger registry pins it).
+	// v0.28.7 (Copilot round 3): upgraded fleets get the column as
+	// NULL for every repo, but the API documents NULL as "never
+	// scanned" — a repo with STORED findings would serve active
+	// findings alongside scanned_at:null until its next scan. A
+	// finding's last_seen_at PROVES an OSV scan touched the repo at
+	// that time (resolved findings included — they were seen once
+	// too), so backfill the stamp from the latest finding evidence.
+	// Historically CLEAN scans left no evidence and honestly stay
+	// NULL until the repo's next scan stamps for real. Ledgered: a
+	// one-shot GROUP BY over the fleet's vuln table.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.28.7 backfill vuln_scan_last_run from finding evidence (a scan provably ran)", `
+		UPDATE aveloxis_data.repos r
+		SET vuln_scan_last_run = sub.last_seen
+		FROM (
+		    SELECT repo_id, MAX(last_seen_at) AS last_seen
+		    FROM aveloxis_data.repo_deps_vulnerabilities
+		    WHERE last_seen_at IS NOT NULL
+		    GROUP BY repo_id
+		) sub
+		WHERE r.repo_id = sub.repo_id
+		  AND r.vuln_scan_last_run IS NULL`)
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.4 create user_repo_stars",
 		`CREATE TABLE IF NOT EXISTS aveloxis_ops.user_repo_stars (
@@ -1316,10 +1585,25 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created
 			ON aveloxis_data.pull_requests (repo_id, created_at)`)
 
+	// v0.29.0: seed the home page's cached 90-day activity ranking so
+	// the page is fast on the first post-deploy render, not after a
+	// full recollect cycle (the v0.21.2 backfill precedent; the
+	// per-render aggregation this replaces measured mean 8.1s /
+	// max 48.2s on the production fleet for a 143K-repo admin scope —
+	// this pass pays it ONCE). Runs AFTER the two composite-index
+	// builds above so even a pre-v0.27.4 fleet's one-shot pass is
+	// index-served (review 2026-08-31 #4 — the v0.28.15 ordering
+	// class, index variant). Ledgered: CompleteJob keeps the column
+	// current afterwards; RefreshQueueGatheredCounts covers healed
+	// repos.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.0 backfill collection_queue.last_activity_90d from the 90-day window",
+		homeActivityBackfillSQL)
+
 	// v0.27.5 — scorecard execution-mode marker. 'remote' (--repo, ~18
 	// checks) vs 'local' (--local, ~11 checks) overall scores are NOT
 	// comparable, so every check row and the __overall__ row records
-	// which mode produced it. '' = pre-v0.27.5 scan. MUST be added to
+	// which mode produced it. the empty string = pre-v0.27.5 scan. MUST be added to
 	// BOTH the main table AND the history table: RotateScorecardToHistory
 	// does `INSERT INTO ..._history SELECT * FROM ...`, which requires
 	// identical column sets — adding the column to only one side breaks
@@ -1361,6 +1645,31 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_linked_review
 		ON aveloxis_data.email_message (linked_pr_review_id) WHERE linked_pr_review_id IS NOT NULL`)
 
+	// v0.29.0: email_message.linked_msg_id serves the Part D
+	// native>notification dedup in aveloxis-analytics (enumerate
+	// notifications whose native twin was collected — linked_msg_id IS
+	// NOT NULL — to exclude their body rows) AND enforces the
+	// one-notification-per-native-comment invariant. Copilot round 20 on
+	// PR #193: that invariant needs a partial UNIQUE index as the hard
+	// backstop — the two writers' anti-join is check-then-act and races
+	// under concurrent mailing_list_processor drains. ensureLinkedMsgIDUnique
+	// RETIRES the earlier non-unique idx_email_message_linked_msg (SR-4:
+	// dropped, never recreated) and builds the unique replacement after
+	// draining any existing duplicate claims (SR-1). Migration-only per
+	// SR-2 (the v0.28.20 precedent on this 13M-row table).
+	ensureLinkedMsgIDUnique(ctx, pg, logger, errs)
+
+	// Copilot round 6 on PR #193 (suppressed #1): the comment_count
+	// recount excludes superseded notifications by probing
+	// email_message_ref BY msg_id — previously unindexed (flagged as a
+	// follow-up in v0.28.15; heal-messages' bridge-delete path is the
+	// other reader). NON-partial: the probe is a join variable
+	// (v0.27.54 — a partial predicate cannot serve it). Migration-only
+	// per SR-2 (1.7 GB table on the mailing-list deployment).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_email_message_ref_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_email_message_ref_msg_id
+		ON aveloxis_data.email_message_ref (msg_id)`)
+
 	// v0.23.0: contributor_login_history table + backfill. Closes the
 	// rename-audit gap documented as a v0.22.13 limitation
 	// ("Intermediate login history is NOT stored"). The CREATE TABLE
@@ -1398,7 +1707,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// constant, not user input, so there's no injection vector.
 	// execMigrationStep doesn't take SQL parameters; we inline the
 	// literal directly into the SQL string.
-	execMigrationStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from identities",
+	runOnceStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from identities",
 		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
 			(cntrb_id, platform_id, login, source, tool_version)
 		 SELECT i.cntrb_id, i.platform_id, i.login, 'backfill', '%s'
@@ -1407,7 +1716,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		 WHERE COALESCE(i.login, '') != ''
 		   AND COALESCE(c.cntrb_deleted, 0) = 0
 		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
-	execMigrationStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from contributors.cntrb_login",
+	runOnceStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from contributors.cntrb_login",
 		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
 			(cntrb_id, platform_id, login, source, tool_version)
 		 SELECT DISTINCT c.cntrb_id, i.platform_id, c.cntrb_login, 'backfill', '%s'
@@ -1475,7 +1784,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	//      the CTE is gone. Keeping them would cost write
 	//      amplification on every contributors INSERT/UPDATE with
 	//      zero read-side benefit.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.25.6 backfill cntrb_canonical from contributors_aliases",
 		`UPDATE aveloxis_data.contributors c
 		    SET cntrb_canonical = sub.alias_email
@@ -1489,7 +1798,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		    AND COALESCE(c.cntrb_canonical, '') = ''
 		    AND COALESCE(c.cntrb_deleted, 0) = 0`)
 
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.25.6 backfill cmt_author_platform_username from cmt_ght_author_id",
 		`UPDATE aveloxis_data.commits co
 		    SET cmt_author_platform_username = c.gh_login
@@ -1523,14 +1832,14 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	//
 	// Idempotent: the COALESCE(col, '') = '' predicates stop matching
 	// once filled.
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.26.4 backfill pull_requests.pr_diff_url from pr_html_url",
 		`UPDATE aveloxis_data.pull_requests
 		 SET pr_diff_url = pr_html_url || '.diff'
 		 WHERE COALESCE(pr_diff_url, '') = ''
 		   AND COALESCE(pr_html_url, '') <> ''`)
 
-	execMigrationStep(ctx, pg, logger, errs,
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.26.4 backfill pull_request_meta.meta_label from pull_request_repo",
 		`UPDATE aveloxis_data.pull_request_meta m
 		 SET meta_label = split_part(r.pr_repo_full_name, '/', 1) || ':' || m.meta_ref
@@ -1610,7 +1919,12 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// dead tuples behind — plain VACUUM won't return the space to the
 	// OS; use pg_repack or VACUUM FULL on aveloxis_data.repo_labor in
 	// a maintenance window (docs/architecture/analysis.md).
-	migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, errs)
+	// Ledgered (v0.28.4): 2,829 no-op windows per re-run on kate.
+	runOnce(ctx, pg, logger, errs,
+		"v0.27.7 rotate non-latest repo_labor snapshots to repo_labor_history",
+		func(errs *[]error) {
+			migrateRepoLaborSnapshotsToHistory(ctx, pg, logger, errs)
+		})
 
 	// v0.27.18 — natural-key backstop for repo_labor (the W3/v0.27.7
 	// follow-up). Post-rotation the table holds one snapshot per repo,
@@ -1633,72 +1947,116 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// backfill inline review comments (with full line metadata) from
 	// review_comments. All from in-database data — zero API calls.
 	// See msg_ref_metadata.go.
-	ensureMsgRefMetadata(ctx, pg, logger, errs)
+	// Ledgered (v0.28.4): the dedup's ROW_NUMBER() pass alone scans
+	// the 10.5M-row bridge table every re-run; the data_source +
+	// inline-comment keyset walks measured ~37-45 min on kate.
+	runOnce(ctx, pg, logger, errs,
+		"v0.27.15 msg_ref bridge repairs (dedup + data_source + inline-comment backfills)",
+		func(errs *[]error) {
+			ensureMsgRefMetadata(ctx, pg, logger, errs)
+		})
+	// v0.29.0 C1: close the permanently-open synthetic Jira issues
+	// from the Resolved/Closed/Reopened notifications already in
+	// email_message (485,892 open synthetics vs 358,384 Resolved
+	// notifications on the aveloxis DB; the parsed action was captured
+	// and discarded until this release). Keyset-windowed, event-time
+	// guarded, synthetic-gated. Pure SQL — ledger-scoped.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 backfill synthetic Jira issue state from notification subjects",
+		func(errs *[]error) {
+			if err := pg.BackfillSyntheticJiraState(ctx, logger); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
 
-	// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
-	// creation used a bare ON CONFLICT DO NOTHING with NO unique on
-	// rg_name, so the INSERT succeeded on EVERY UpsertRepo call with
-	// GroupID=0: production accumulated 93,912 'Default' groups (one
-	// per repo), making almost every repo its own singleton group in
-	// every repo_group_id rollup (dm_repo_group_*, rg-name metric
-	// routes, 8Knot). Consolidate per rg_name to the MIN id, repoint
-	// every FK table, hygiene-delete the dm_repo_group_* rows of the
-	// losers (rebuilt by the weekly aggregate pass), delete the loser
-	// groups, THEN create uq_repo_groups_rg_name (after dedup —
-	// schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
-		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
-		 FROM aveloxis_data.repo_groups g,
-		      (SELECT rg_name, MIN(repo_group_id) AS canon
-		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-		 WHERE g.repo_group_id = r.repo_group_id
-		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
-	for _, tbl := range []string{
-		"aveloxis_data.repo_groups_list_serve",
-		"aveloxis_data.email_message",
-		"aveloxis_data.email_message_ref",
-		"aveloxis_data.repo_group_insights",
-	} {
-		execMigrationStep(ctx, pg, logger, errs,
-			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
-			`UPDATE `+tbl+` t SET repo_group_id = c.canon
-			 FROM aveloxis_data.repo_groups g,
-			      (SELECT rg_name, MIN(repo_group_id) AS canon
-			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-			 WHERE g.repo_group_id = t.repo_group_id
-			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
-	}
-	for _, tbl := range []string{
-		"aveloxis_data.dm_repo_group_annual",
-		"aveloxis_data.dm_repo_group_monthly",
-		"aveloxis_data.dm_repo_group_weekly",
-	} {
-		execMigrationStep(ctx, pg, logger, errs,
-			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
-			`DELETE FROM `+tbl+` t
-			 WHERE EXISTS (
-			   SELECT 1 FROM aveloxis_data.repo_groups g
-			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
-			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-			     ON c.rg_name = g.rg_name
-			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
-	}
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.27.17 delete consolidated loser repo_groups rows",
-		`DELETE FROM aveloxis_data.repo_groups g
-		 WHERE g.repo_group_id <> (
-		   SELECT MIN(g2.repo_group_id) FROM aveloxis_data.repo_groups g2
-		   WHERE g2.rg_name = g.rg_name)`)
+	// v0.29.0 C1-pre: repair the automation-phantom identity
+	// fabrication (2026-08-31 find): the pre-guard sender-resolve
+	// ticker minted email-only contributor rows for relay addresses
+	// (jira@apache.org, gitbox@, a list address) and 83,746 messages
+	// were attributed to the jira@ phantom on the aveloxis DB.
+	// Soft-deletes the phantoms, drops their aliases, NULLs their
+	// attributions. Pure SQL, bounded, idempotent — ledger-scoped.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 heal automation-phantom contributors (relay identity fabrication)",
+		func(errs *[]error) {
+			if err := pg.HealAutomationPhantomContributors(ctx); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
+	// Part G layer-3 find (2026-09-01): the pre-fix drain pools were
+	// system-blind — the lore processor (projectionClean=false) drained
+	// 90-92% of apache lists' staged rows, stamping ml_system wrong and
+	// skipping ALL Layer-2 projection. Restamp + reset those rows to the
+	// pending sentinel so `aveloxis backfill-mailing-list-projection`
+	// re-runs the keyed + thread passes over exactly that cohort (the
+	// operator step is documented in upgrading.md). Keyset-windowed
+	// (13M rows on the mailing-list deployment); ledgered — one-shot.
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.0 heal cross-system mis-drained mailing-list rows",
+		func(errs *[]error) {
+			if err := pg.HealMisdrainedMailingListRows(ctx, logger); err != nil {
+				*errs = append(*errs, err)
+			}
+		})
+
+	// The uq_pr_review_msg_ref arbiter stays LIVE-healed regardless of
+	// the ledger (the plan's "CIC builds are never ledgered" rule): a
+	// hand-dropped unique must come back on the next explicit migrate.
+	// Redundant with the build inside ensureMsgRefMetadata on the
+	// first run — IF NOT EXISTS makes this a catalog no-op then and on
+	// every healthy later run; execCreateIndexConcurrently's
+	// INVALID-recovery re-checks each time. If duplicates re-enter
+	// while the index is dropped, this build fails LOUDLY into the
+	// collector and the operator replays the ledgered dedup
+	// (DELETE its migration_ledger row, then migrate).
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
-		"aveloxis_data", "uq_repo_groups_rg_name",
-		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
-		 ON aveloxis_data.repo_groups (rg_name)`)
+		"aveloxis_data", "uq_pr_review_msg_ref",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_pr_review_msg_ref
+		 ON aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id)`)
+
+	// v0.28.15 — index every repo_groups FK child BEFORE the v0.27.17
+	// consolidation deletes loser groups: each deleted group fires a
+	// deferred FK check per child, and an unindexed 12 GB email_message
+	// made that a 5.3 s seq scan × 873 losers on the 2026-08-26 `aveloxis`
+	// DB upgrade. Migration-owned CONCURRENTLY (SR-2); see
+	// repo_group_fk_indexes.go.
+	ensureRepoGroupFKIndexes(ctx, pg, logger, errs)
+
+	// v0.28.16 (Copilot round on PR #191, verified): the index step above
+	// only RECORDS a failed CONCURRENTLY build — on its own it would let the
+	// consolidation below run its loser DELETE unindexed anyway, the exact
+	// multi-hour grind the indexes exist to prevent (the decorative-gate
+	// class, v0.27.107). So readiness GATES the consolidation: every
+	// repo_groups FK-child index must exist and be valid. Skipping is safe —
+	// the consolidation is idempotent and runs on the next migrate once the
+	// index builds — and the skip is itself an error so the migrate still
+	// fails closed (v0.19.4). A probe ERROR is not "ready" (SR-5).
+	if pending, perr := listDedupPending(ctx, pg.pool); perr != nil {
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %w", perr))
+		logger.Warn("repo_groups consolidation skipped — duplicate list partition probe failed", "error", perr)
+	} else if pending > 0 {
+		// v0.28.18: a duplicate (group, list) partition the stage-2 dedup
+		// left (skipped because a serve is connected, or a failed step) is
+		// exactly the row the plain repo_groups_list_serve repoint below
+		// would collide on (23505 on idx_rgls_group_email) — and the loser
+		// group's DELETE then fails its deferred FK.
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: %d duplicate (group, list) partitions still present — either the list dedup skipped them because another aveloxis-serve is connected (see the WARN above; rerun `aveloxis migrate --skip-views` with serve stopped) or a list-dedup step failed (its error is above)", pending))
+		logger.Warn("repo_groups consolidation skipped — duplicate list partitions pending", "partitions", pending)
+	} else if ready, perr := repoGroupFKIndexesReady(ctx, pg); perr != nil {
+		*errs = append(*errs, fmt.Errorf("repo_groups FK-child index readiness probe: %w", perr))
+		logger.Warn("skipping v0.27.17 repo_groups consolidation — could not verify the FK-child indexes", "error", perr)
+	} else if !ready {
+		*errs = append(*errs, fmt.Errorf("v0.27.17 repo_groups consolidation skipped: a repo_groups FK-child index is missing or INVALID (see the index build error above); it runs on the next migrate once the index builds"))
+		logger.Warn("skipping v0.27.17 repo_groups consolidation — a repo_groups FK-child index is missing or INVALID; the consolidation runs on the next migrate once it builds")
+	} else {
+		consolidateRepoGroups(ctx, pg, logger, errs)
+	}
 
 	// v0.27.11 — vulnerability version-resolution accuracy. Every
 	// finding carries the raw manifest requirement and how the scanned
 	// version was chosen ('locked'/'exact'/'bounded-range'/
-	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep '' and heal on
+	// 'range-floor'/'unpinned'). Pre-v0.27.11 rows keep the empty string and heal on
 	// the repo's next scan — deliberately NO backfill: the
 	// classification must come from the current manifest, which only a
 	// scan can read.
@@ -1819,15 +2177,15 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
 
 	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
-	// '' (operator decision — '' was uninterpretable for direct table
-	// readers). Backfill every ''-scope direct/transitive finding:
-	// under the presentation contract '' already READ as runtime
+	// the empty string (operator decision — the empty string was uninterpretable for direct table
+	// readers). Backfill every empty-scope direct/transitive finding:
+	// under the presentation contract the empty string already READ as runtime
 	// everywhere (IsRuntimeScope), so this is a spelling change, not a
 	// semantic one — and it is SELF-CORRECTING for legacy rows whose
 	// dep is really non-runtime: the upsert refreshes scope
 	// unconditionally on each repo's next scan, overwriting the
 	// backfilled 'runtime' with the fine value. kind='self' rows
-	// deliberately stay '' — scope vocabulary does not apply to a
+	// deliberately stay the empty string — scope vocabulary does not apply to a
 	// project's own advisories. Idempotent by predicate.
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",
@@ -1886,7 +2244,52 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// legitimately-dataless rows (deleted users, mark-only) stamped by
 	// the fixed code never match. Broken-era deleted users get exactly
 	// one harmless re-check.
-	execMigrationStep(ctx, pg, logger, errs,
+	// Code-review round 2026-09-06 (finding 5/6 historical cohort): every
+	// pre-fix merge left the loser's OWN alias rows pointing at the
+	// soft-deleted cntrb_id — dead-owned aliases that resolve nothing
+	// (the resolver's alias arm filters to active owners) while blocking
+	// re-creation. Forward fixes repoint inside each merge tx; these two
+	// ledgered steps heal what already accumulated. Step 1 reassigns a
+	// dead-owned alias to the ONE active contributor whose
+	// cntrb_email/canonical matches the alias_email (SR-6: ambiguous
+	// stays — the sender-resolve ticker handles those). Step 2 must run
+	// AFTER step 1: it re-opens the TERMINAL resolved=TRUE stamp for
+	// senders whose alias is STILL dead-owned and who have no active
+	// email-match — without it the round-29 candidate-pool fix can never
+	// reach them (the resolved filter runs before the alias anti-join).
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.2 reassign dead-owned contributor aliases to their unambiguous active match",
+		`UPDATE aveloxis_data.contributors_aliases a
+		 SET cntrb_id = m.active_id, data_collection_date = NOW()
+		 FROM (
+		     SELECT a2.alias_email,
+		            (array_agg(DISTINCT c.cntrb_id))[1] AS active_id
+		     FROM aveloxis_data.contributors_aliases a2
+		     JOIN aveloxis_data.contributors dead ON dead.cntrb_id = a2.cntrb_id
+		         AND COALESCE(dead.cntrb_deleted, 0) <> 0
+		     JOIN aveloxis_data.contributors c
+		         ON (c.cntrb_email = a2.alias_email OR c.cntrb_canonical = a2.alias_email)
+		        AND COALESCE(c.cntrb_deleted, 0) = 0
+		     GROUP BY a2.alias_email
+		     HAVING count(DISTINCT c.cntrb_id) = 1
+		 ) m
+		 WHERE a.alias_email = m.alias_email`)
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.2 re-open terminal sender-resolve stamps stranded behind dead-owned aliases",
+		`UPDATE aveloxis_ops.mailing_list_sender_resolve r
+		 SET resolved = FALSE
+		 WHERE r.resolved = TRUE
+		   AND EXISTS (
+		       SELECT 1 FROM aveloxis_data.contributors_aliases a
+		       JOIN aveloxis_data.contributors dead ON dead.cntrb_id = a.cntrb_id
+		       WHERE a.alias_email = r.sender_email
+		         AND COALESCE(dead.cntrb_deleted, 0) <> 0)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM aveloxis_data.contributors c
+		       WHERE (c.cntrb_email = r.sender_email OR c.cntrb_canonical = r.sender_email)
+		         AND COALESCE(c.cntrb_deleted, 0) = 0)`)
+
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.79 re-null activity-check stamps from the resource-limits incident",
 		`UPDATE aveloxis_data.contributors
 		 SET gh_activity_checked_at = NULL
@@ -1900,6 +2303,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.27.58: daily contributor activity history (see schema.sql for
 	// the design rationale — TEXT repo names on purpose, no repos FK).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_backfilled_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_history_failed_at", "TIMESTAMPTZ")
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.58 create contributor_activity_days",
 		`CREATE TABLE IF NOT EXISTS aveloxis_data.contributor_activity_days (
@@ -1965,6 +2369,35 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_pull_request_review_message_ref_msg_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_request_review_message_ref_msg_id
 		 ON aveloxis_data.pull_request_review_message_ref (msg_id)`)
+
+	// v0.28.20: node_id probe indexes for GitHub-mirror mailing-list link
+	// resolution. ResolveMirrorLinkByNodeID looks an issue/PR up by its
+	// GraphQL node ID once per mirror message; the heal
+	// (scripts/heal_mirror_links.sh) joins the whole mirror cohort against
+	// the same columns. Neither column was indexed (2026-08-29 audit) — the
+	// v0.27.54 class exactly: a probe column no write-path audit sees, free
+	// until a reader arrives. Unindexed cost measured on `aveloxis`: the
+	// heal's node_id join over 396,809 mirrors did not finish in 5 minutes;
+	// indexed it returns in ~26s.
+	//
+	// NON-partial deliberately. A partial variant restricted to non-empty
+	// node_id is unusable for the heal, whose probe is a JOIN variable the
+	// planner cannot prove the predicate for (the v0.27.54 lesson, second
+	// half). Do not "optimize" these to partial in a future audit.
+	//
+	// Migration-only (SR-2): NOT declared in schema.sql, because the base
+	// DDL runs first and would block-build these on fleet-scale tables
+	// (aveloxis_large: 23.0M pull_requests, 9.6M issues) during startup
+	// migrate. Operators can pre-create by hand — the step then no-ops via
+	// IF NOT EXISTS.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pull_requests_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_node_id
+		 ON aveloxis_data.pull_requests (node_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_node_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_node_id
+		 ON aveloxis_data.issues (node_id)`)
 
 	// v0.27.115 (2026-08-20 schema-drift audit remediation, operator
 	// decisions on findings 3 + 4):
@@ -2050,6 +2483,7 @@ const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
 // The schema and indexName are passed separately (rather than parsing
 // from the SQL) because the helper needs them for the indisvalid
 // query.
+
 // ginTrgmOpsSchema returns the name of the schema that contains the
 // gin_trgm_ops operator class (for access method gin), or "" if no such
 // opclass exists in any schema. The idx_repos_owner_name_trgm DDL
@@ -2146,36 +2580,228 @@ func watchBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger, 
 	}
 }
 
-// checkBlockers runs one poll cycle: find blocked aveloxis backends,
-// resolve their blockers via pg_blocking_pids, log holder + recipe.
+// holderBuckets is one waiter's blocking holders, split by the verdict
+// each holder earned. NAMED (round-11 finding 5, SR-18): the five
+// buckets were five positional []int parameters, and `thisHost` is the
+// one that emits `pg_terminate_backend` recipes — a transposition with
+// `hidden` or `otherAddr` reproduces the 2026-09-09 incident's failure
+// mode (a terminate recipe for a backend that is not this host's), the
+// compiler cannot see it because all five have the same type, and a
+// consistent swap on both sides of the caller and the test stays green.
+// Named fields make the transposition unrepresentable.
+type holderBuckets struct {
+	// thisHost holders are the ONLY ones offered for termination.
+	thisHost   []int
+	otherAddr  []int
+	background []int
+	hidden     []int
+	unseen     []int
+}
+
+// blockerAdvice renders the operator hint for one blocked waiter:
+// holders on THIS host get the terminate recipe (an orphan is a backend
+// no local process owns); holders connected from a different client
+// address are named and never offered for termination — the predicate
+// knows the ADDRESS, not the machine or the program: normally another
+// machine's aveloxis (the primary's serve, seen from a second host), but
+// an analytics session or psql can hold the same lock, which is why the
+// holder apps are logged beside the PIDs (round-2 finding 2, round-3
+// findings 3 and 6). A holder whose address this database role cannot
+// see (another role's session, round-7 finding 1) and a holder the
+// activity snapshot could not show are neither ours nor another's:
+// re-check, never a recipe.
+//
+// A holder that is not a client session at all gets its own arm
+// (round-8 finding 3): the holder join is unfiltered — holders come
+// from unnest(pg_blocking_pids(...)) with only the WAITER constrained —
+// so a PostgreSQL background worker is a legitimate holder, and
+// autovacuum taking ShareUpdateExclusiveLock is the textbook blocker of
+// the base-DDL `ADD COLUMN IF NOT EXISTS`. It has no client address, so
+// before this arm it landed wherever the address comparison happened to
+// put it: for a privileged LOOPBACK migrate — the common case — that was
+// the THIS-HOST arm, telling the operator to "end it yourself" beside a
+// pg_terminate_backend recipe; from a LAN address, "another machine's
+// aveloxis"; for a restricted viewer, "another role's sessions", when
+// there is no role at all (measured on PG 18.4: an autovacuum worker
+// carries NULL usename and NULL usesysid).
+func blockerAdvice(h holderBuckets) string {
+	local, other, background, hidden, unknown := h.thisHost, h.otherAddr, h.background, h.hidden, h.unseen
+	var parts []string
+	if len(local) > 0 {
+		parts = append(parts, fmt.Sprintf("holders on this host: %v — an `aveloxis-*` holder app (see holder_apps_this_host) with no such process running on this host is an orphan: run `SELECT pg_terminate_backend(<pid>)` to release the lock; a non-aveloxis app is another client on this host — let it finish or end it yourself", local))
+	}
+	if len(other) > 0 {
+		parts = append(parts, fmt.Sprintf("holders connected from a different client address: %v — not this host's (normally another machine's aveloxis such as the primary's serve, but see holder_apps: any client can hold a lock); do not terminate them from here", other))
+	}
+	if len(background) > 0 {
+		parts = append(parts, fmt.Sprintf("holders that are PostgreSQL background workers, not client sessions: %v (see holder_types_background) — normally autovacuum, which takes ShareUpdateExclusiveLock and is the ordinary blocker of a base-DDL `ADD COLUMN`; let it finish rather than terminating it (autovacuum simply restarts, and an anti-wraparound run has to complete)", background))
+	}
+	if len(hidden) > 0 {
+		parts = append(parts, fmt.Sprintf("holders whose client address is not visible to this database role: %v (sessions of a role whose privileges this one does not hold — pg_stat_activity shows a session's address only to roles that HOLD that session's role's privileges, and to roles that hold pg_read_all_stats's; see holder_apps_hidden) — no verdict from here: re-check as that role, or `GRANT pg_read_all_stats TO <this role>` (a plain grant to a role with INHERIT; a NOINHERIT member holds none of its privileges), and do not terminate them on this evidence", hidden))
+	}
+	if len(unknown) > 0 {
+		parts = append(parts, fmt.Sprintf("holders no longer visible in pg_stat_activity: %v — re-check before acting", unknown))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// checkBlockers runs one poll cycle from the migrate session's own
+// client address; only tests drive the address seam.
 func checkBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	checkBlockersFrom(ctx, pg, logger, nil)
+}
+
+// checkBlockersFrom finds blocked aveloxis backends, resolves their
+// blockers via pg_blocking_pids, classifies each holder through the ONE
+// this-host verdict `stop` uses (backendOnThisHostSQL: visible to this
+// role AND the same host as this session's — SR-17; asIfFrom overrides
+// the session's address for the behavioral test), and logs holders +
+// advice. Both predicates are total, so a holder absent from the
+// activity snapshot is routed by `b.pid IS NOT NULL`, not by a NULL
+// guard, and a holder of another role whose address this role cannot
+// see is routed by its own visibility column (round-7 finding 1).
+//
+// A failed row read FLAGS the cycle incomplete and still reports every
+// waiter accumulated so far, stamped `report_incomplete` (round-11
+// finding 3 — the arm used to `return`, throwing away exactly the
+// holder PIDs a blocked migration needs). SR-5 is what forbids the
+// other direction: a read error is never rendered as "no blockers".
+// Only a session with no pg_stat_activity row of its own ends the cycle
+// early, because without it no holder can be placed on this host
+// (round-11 finding 9).
+func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logger, asIfFrom *string) {
 	rows, err := pg.pool.Query(ctx, `
 		SELECT a.pid,
-		       LEFT(a.query, 200)                  AS waiter_query,
-		       pg_blocking_pids(a.pid)              AS blockers
+		       me.present,
+		       LEFT(a.query, 200)  AS waiter_query,
+		       bp.pid              AS holder,
+		       b.pid IS NOT NULL   AS seen,
+		       COALESCE(b.application_name, '') AS holder_app,
+		       COALESCE(b.backend_type, '')     AS holder_type,
+		       `+backgroundBackendSQL("b")+` AS background,
+		       `+clientAddrVisibleSQL("b")+` AS visible,
+		       `+backendOnThisHostSQL("b")+` AS this_host
 		FROM pg_stat_activity a
-		WHERE a.application_name LIKE 'aveloxis-%'
+		CROSS JOIN `+probingSessionSQL("$1", "$2")+`
+		CROSS JOIN LATERAL unnest(pg_blocking_pids(a.pid)) AS bp(pid)
+		LEFT JOIN pg_stat_activity b ON b.pid = bp.pid
+		WHERE a.datname = current_database()
+		  AND a.application_name LIKE 'aveloxis-%'
 		  AND a.wait_event_type = 'Lock'
-		  AND a.state = 'active'`)
+		  AND a.state = 'active'
+		ORDER BY a.pid, bp.pid`, asIfFrom, HostMarker())
 	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logger.Warn("migration blocker poll failed", "error", err)
+		}
 		return
 	}
 	defer rows.Close()
+	type waiter struct {
+		query                                     string
+		local, other, background, hidden, unknown []int
+		localApps, otherApps, hiddenApps          []string
+		backgroundTypes                           []string
+	}
+	var order []int
+	// partial marks a cycle whose row set could not be read in full.
+	// Round-11 finding 3: the scan-failure arm used to `return`, which
+	// threw away every waiter already accumulated — while the log line
+	// promised an INCOMPLETE report, not no report, and the holder PIDs
+	// are exactly what an operator needs during a blocked migration.
+	// Flag-and-fall-through rather than a keep-going arm: `break` and
+	// `continue` are banned from this loop (round-3 finding 2 — a
+	// keep-going arm is how a failed read became "no blocker"), and a
+	// failed Scan leaves the pgx iterator in an error state, so
+	// rows.Next() ends the loop on its own and rows.Err() carries the
+	// cause.
+	partial := false
+	waiters := map[int]*waiter{}
 	for rows.Next() {
-		var waiterPid int
-		var waiterQuery string
-		var blockers []int32
-		if err := rows.Scan(&waiterPid, &waiterQuery, &blockers); err != nil {
-			continue
+		var waiterPid, holder int
+		var waiterQuery, holderApp, holderType string
+		var present, seen, background, visible, thisHost bool
+		if err := rows.Scan(&waiterPid, &present, &waiterQuery, &holder, &seen, &holderApp, &holderType, &background, &visible, &thisHost); err != nil {
+			logger.Warn("migration blocker poll: row read failed — this cycle's report is incomplete", "error", err)
+			partial = true
+		} else if !present {
+			// Round-11 finding 9: with no row for this session every
+			// holder would be placed on THIS host and offered for
+			// termination — the incident's own shape. Say so; render
+			// nothing.
+			logger.Warn("migration blocker poll: this session has no pg_stat_activity row, so no holder can be placed on this host — reporting nothing this cycle")
+			return
+		} else {
+			w := waiters[waiterPid]
+			if w == nil {
+				w = &waiter{query: waiterQuery}
+				waiters[waiterPid] = w
+				order = append(order, waiterPid)
+			}
+			switch {
+			case !seen:
+				w.unknown = append(w.unknown, holder)
+			case background:
+				// Round-8 finding 3, BEFORE the visibility check: a
+				// background worker has no client address to compare and no
+				// role to re-check as, so it needs its own arm rather than
+				// the hidden bucket's "re-check as that role". The verdict is
+				// backgroundBackendSQL (SR-17) — backend_type decides
+				// whenever it is visible, usename only when it is not.
+				// usename alone would be wrong: a client backend in
+				// `state = 'starting'` carries a VISIBLE
+				// backend_type = 'client backend' with usename, usesysid and
+				// datname all NULL (measured), and the round-8 first draft
+				// labeled exactly that row a background worker.
+				w.background = append(w.background, holder)
+				w.backgroundTypes = append(w.backgroundTypes, holderType)
+			case !visible:
+				w.hidden = append(w.hidden, holder)
+				w.hiddenApps = append(w.hiddenApps, holderApp)
+			case thisHost:
+				w.local = append(w.local, holder)
+				w.localApps = append(w.localApps, holderApp)
+			default:
+				w.other = append(w.other, holder)
+				w.otherApps = append(w.otherApps, holderApp)
+			}
 		}
-		if len(blockers) == 0 {
-			continue
+	}
+	if err := rows.Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			// Shutdown: nothing to report, and a WARN would be noise.
+			return
 		}
+		// A failed Scan above already logged this same error (it leaves
+		// the iterator in an error state, which is what ends the loop),
+		// so log only when the iteration is the FIRST thing to fail.
+		if !partial {
+			logger.Warn("migration blocker poll: iteration failed — this cycle's report is incomplete", "error", err)
+		}
+		partial = true
+	}
+	for _, pid := range order {
+		w := waiters[pid]
 		logger.Warn("migration blocked on lock — investigate the holder PID(s)",
-			"waiter_pid", waiterPid,
-			"holder_pids", blockers,
-			"waiter_query_prefix", waiterQuery,
-			"hint", "if no aveloxis-side process matches a holder PID, it's an orphan; run `SELECT pg_terminate_backend(<pid>)` to release the lock")
+			"waiter_pid", pid,
+			"holder_pids_this_host", w.local,
+			"holder_apps_this_host", w.localApps,
+			"holder_pids_other_addresses", w.other,
+			"holder_apps_other_addresses", w.otherApps,
+			"holder_pids_background", w.background,
+			"holder_types_background", w.backgroundTypes,
+			"holder_pids_hidden", w.hidden,
+			"holder_apps_hidden", w.hiddenApps,
+			"holder_pids_unseen", w.unknown,
+			"waiter_query_prefix", w.query,
+			"report_incomplete", partial,
+			"hint", blockerAdvice(holderBuckets{
+				thisHost:   w.local,
+				otherAddr:  w.other,
+				background: w.background,
+				hidden:     w.hidden,
+				unseen:     w.unknown,
+			}))
 	}
 }
 
@@ -2223,27 +2849,417 @@ retry:
 // stampSchemaVersion writes the current ToolVersion into schema_meta.
 // Called at the end of RunMigrations so the version reflects the latest
 // successful migration, not just a binary update.
-func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
-	_, err := pg.pool.Exec(ctx, `
+//
+// FAIL-CLOSED as of v0.29.4 (Copilot round 1 on PR #197, finding 2).
+// Through v0.29.3 a failed stamp was a WARN: the stamp's only consumers
+// were CheckSchemaVersion's advisory warning and the v0.27.131 fast
+// path, so a stale stamp cost one extra full (idempotent) migration run
+// and nothing else. v0.29.4 promoted the stamp to EVIDENCE —
+// deployStepsProvablyUnrun reads it as proof that a migration of THIS
+// binary completed here and refuses `start serve` when it is behind. A
+// swallowed stamp failure therefore makes the gate's premise false in
+// exactly the direction that hurts: a fleet that DID migrate is told
+// "no migration of this binary has completed here", and the operator's
+// visible remedy is a full re-run (hours at fleet scale).
+//
+// The zero-rows arm is the second silent-failure shape: `UPDATE ...
+// WHERE id = TRUE` against a missing row SUCCEEDS and stamps nothing.
+// The base schema DDL seeds that row (schema.sql, INSERT ... ON
+// CONFLICT DO NOTHING) and runs before every step here, so zero rows is
+// impossible on a healthy path — which is precisely why it must be an
+// error rather than a silent no-op.
+func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	tag, err := pg.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.schema_meta
 		SET schema_version = $1, migrated_at = NOW()
 		WHERE id = TRUE`, ToolVersion)
 	if err != nil {
-		logger.Warn("failed to stamp schema version", "error", err)
+		logger.Error("failed to stamp schema version — the deploy gate reads this stamp as proof a migration of this binary completed here",
+			"schema_version", ToolVersion, "error", err)
+		return fmt.Errorf("stamp schema version %s: %w", ToolVersion, err)
 	}
+	if tag.RowsAffected() == 0 {
+		logger.Error("schema version stamp matched no row in aveloxis_ops.schema_meta (id = TRUE) — nothing was stamped",
+			"schema_version", ToolVersion)
+		return fmt.Errorf("stamp schema version %s: no aveloxis_ops.schema_meta row (id = TRUE) to stamp", ToolVersion)
+	}
+	return nil
 }
 
 // GetSchemaVersion reads the schema version from the database. Returns an
 // empty string if the schema_meta table doesn't exist yet (pre-v0.14.5 DB).
 func (s *PostgresStore) GetSchemaVersion(ctx context.Context) string {
+	v, _ := s.schemaVersionProbe(ctx)
+	return v
+}
+
+// SchemaVersion is schemaVersionProbe for callers outside the package
+// (the `aveloxis start serve` deploy gate, v0.29.4) — the error arm
+// kept, so a failed read never reads as "unstamped".
+func (s *PostgresStore) SchemaVersion(ctx context.Context) (string, error) {
+	return s.schemaVersionProbe(ctx)
+}
+
+// ErrOtherServeConnected is the serve-startup refusal: another
+// aveloxis-serve is connected to this database while this binary's
+// schema stamp is not in place. Wrapped by startupMigrateRefusal.
+var ErrOtherServeConnected = errors.New("another aveloxis-serve is connected to this database")
+
+// A positive other-serve read is CONFIRMED by re-probing before it
+// refuses a serve start (round-2 finding 1, reproduced at 1-3 % per
+// fresh pool): the pool constructs its own connections in the
+// background (MinConns at creation, refills later), and such a backend
+// is visible in pg_stat_activity — tagged aveloxis-serve — from its
+// startup packet, yet joins backendPIDs only when AfterConnect fires
+// after the TLS + SCRAM handshake. A single probe inside that window
+// counts our own connection as another serve. The window is one
+// handshake: milliseconds on loopback, tens to a few hundred ms across
+// a LAN, so 8 x 250 ms = 2 s is an order of magnitude above the slowest
+// realistic handshake; it is paid only on a positive read, and a real
+// serve stays connected through it.
+const (
+	otherServeConfirmAttempts = 8
+	otherServeConfirmInterval = 250 * time.Millisecond
+)
+
+// confirmOtherServe re-runs probe while it reads positive: the first
+// negative clears it (our own connection registered), the first error
+// surfaces (SR-5), and only attempts consecutive positives confirm.
+func confirmOtherServe(probe func() (bool, error), attempts int, sleep func()) (bool, error) {
+	for i := 1; ; i++ {
+		other, err := probe()
+		if err != nil || !other {
+			return other, err
+		}
+		if i >= attempts {
+			return true, nil
+		}
+		sleep()
+	}
+}
+
+// otherServeProbeHook is a test seam: called after every confirmation
+// probe with the 1-based attempt number. nil in production. It lets a
+// test register a backend as the pool's own BETWEEN probes — what
+// AfterConnect does for a MinConns connection mid-confirmation — and
+// prove the next probe excludes it.
+var otherServeProbeHook func(attempt int)
+
+// The address-tag vocabulary. ONE spelling (SR-17): the listing SQL in
+// otherServeAddressesFrom RENDERS these tags and OtherServe.Advice
+// BRANCHES on them (round-11 finding 1), so a change to one spelling
+// without the other would silently withdraw — or silently restore — the
+// wrong-command verdict.
+//
+// What the tags MEAN, since the host verdict stopped being a pure
+// address comparison (v0.29.4 rounds 12-13): they label
+// backendOnThisHostSQL's verdict, not a diff of the address text. The
+// verdict is the client-address rule vetoed by the `@host` marker, so
+// on a pooled deployment a backend can render as
+// `10.0.0.99 (other address)` beside an address string identical to
+// the reader's own — the marker is what separated them, and that is
+// the case the tag exists to surface. The strings are deliberately
+// unchanged: they are pinned against docs/guide/commands.md by
+// TestOtherServeVerdictMatchesTheDocs and quoted in two runbooks, and
+// both now say what the label reports.
+const (
+	thisHostTag     = " (this host)"
+	otherAddressTag = " (other address)"
+)
+
+// OtherServe is a sighting of another aveloxis-serve on this database:
+// whether one is connected (confirmed per confirmOtherServe), where
+// its backends connect from — each address carrying the code's own
+// this-host verdict (sameClientHostSQL, SR-17) — and, when the
+// listing failed after a confirmed positive, that error. ONE type for
+// the serve startup gate and the `start serve` gate (round-6 finding
+// 3: two compositions had two policies).
+type OtherServe struct {
+	Connected bool
+	From      []string
+	ListErr   error
+}
+
+// Describe renders WHERE the other serve connects from — the addresses
+// with their verdicts, or an honest "unrecorded" when the listing
+// failed or found nothing, never an empty list (round-6 finding 4).
+// The callers say "from" (round 7: the fast-path attr read
+// from="from ::1 (this host)").
+func (o OtherServe) Describe() string {
+	switch {
+	case len(o.From) > 0:
+		return strings.Join(o.From, ", ")
+	case o.ListErr != nil:
+		return fmt.Sprintf("an unrecorded address (listing failed: %v)", o.ListErr)
+	default:
+		return "an unrecorded address"
+	}
+}
+
+// Advice renders the shared operator verdict for a sighting: how to read
+// what Describe() just printed, and what to do about it. It is the ONE
+// spelling (SR-17) — the fast-path WARN, the startup-migration refusal
+// and the `aveloxis start serve` deploy-gate note all compose it, so the
+// three cannot drift apart the way they had by v0.29.4 round 8 (two said
+// `aveloxis scancode-worker`, one said `aveloxis start scancode-worker`;
+// both are real commands, so nothing caught it — the pins match
+// SUBSTRINGS and each pinned what its own site happened to say).
+//
+// The wording is the DOCS inference chain, matching
+// docs/guide/commands.md: normally the primary, SO this host is running
+// the wrong command (X is the alternative). Round-10 finding 1 (L9):
+// round 9 consolidated the three sites onto the ASSERTIVE form (this
+// host IS running the wrong command, use X instead), which asserts what
+// the code cannot know — sameClientHostSQL knows only that a backend
+// connects from a DIFFERENT client address, never which host holds the
+// primary. Reverse chair: a runner starts serve first, the primary
+// restarts, and the PRIMARY is the one tagged (other address) and told
+// it is running the wrong command. The hedge propagates through the
+// "so" to the consequent, which is exactly the claim being hedged.
+//
+// The command form is `aveloxis start scancode-worker`: the mistake this
+// verdict corrects is a MANAGED start (`aveloxis start serve`), so the
+// correction belongs in the same idiom, and it is the form
+// docs/guide/commands.md already uses for this exact verdict. The bare
+// `aveloxis scancode-worker` is the foreground/systemd form, documented
+// in the dedicated-host recipe.
+//
+// The receiver is LOAD-BEARING (round-10 finding 3, L9). When the
+// listing failed or found nothing, Describe() renders "an unrecorded
+// address" — there are no tags on screen, and a legend for tags that
+// were never printed is advice about output the operator cannot see.
+// That branch states the same two readings without the tag framing.
+//
+// A THIRD branch (round-11 finding 1, the same class one branch over):
+// the verdict is warranted by an (other address) ENTRY, not by a
+// non-empty listing. otherServeAddressesFrom tags every address with
+// the code's own verdict, and a sighting whose entries are ALL
+// "(this host)" is reachable and documented — round-8 finding 4: a
+// "(this host)" entry is equally a serve STILL RUNNING here, and a
+// foreground `aveloxis serve` beside a running one is reachable. On a
+// primary restarting beside its own draining backends the len(From)>0
+// branch therefore led with "this host is running the wrong command"
+// for a tag that was never printed, and the fast-path WARN's tail then
+// added "`aveloxis stop serve` on this host is the way to back out" —
+// telling the operator to stop the primary. The same holds for an
+// all-HIDDEN sighting: a backend whose address this role cannot see
+// carries no verdict at all (round-7 finding 1), so reading it as the
+// primary is exactly the inference the hidden bucket exists to refuse.
+//
+// Callers own the tail: the fast-path WARN says the two schedulers
+// compete AND that this serve is starting anyway; the refusal says how
+// to clear the draining case and names the ladder. Neither tail belongs
+// here — "stop this serve" is true only where serve is still starting.
+func (o OtherServe) Advice() string {
+	if len(o.From) == 0 {
+		return "Another serve is normally the primary, so this host is running the wrong command (`aveloxis start scancode-worker` is the alternative); it may instead be a serve on THIS host — either one still running (check `ps` and the pidfile — only `aveloxis start` refuses to double-start) or a backend of one just stopped here, still draining (`aveloxis stop` reports those)."
+	}
+	if !hasOtherAddressEntry(o.From) {
+		return "Every listed entry is a serve on THIS host, or an address this role cannot see, so nothing here identifies the primary. A (this host) entry is a serve on THIS host: either one still running (check `ps` and the pidfile — only `aveloxis start` refuses to double-start) or a backend of one just stopped here, still draining (`aveloxis stop` reports those). An entry whose client address is not visible carries NO verdict — re-check as the role it names, or as a role holding pg_read_all_stats, before reading it as another host's."
+	}
+	return "An (other address) entry is normally the primary, so this host is running the wrong command (`aveloxis start scancode-worker` is the alternative). A (this host) entry is a serve on THIS host: either one still running (check `ps` and the pidfile — only `aveloxis start` refuses to double-start) or a backend of one just stopped here, still draining (`aveloxis stop` reports those)."
+}
+
+// hasOtherAddressEntry reports whether any listed address carries the
+// tag that identifies a DIFFERENT client address — the one datum in the
+// listing that can indicate the primary.
+func hasOtherAddressEntry(from []string) bool {
+	for _, a := range from {
+		if strings.Contains(a, otherAddressTag) {
+			return true
+		}
+	}
+	return false
+}
+
+// OtherServeConnected is otherServeSighting for callers outside the
+// package (the `aveloxis start serve` gate's note, v0.29.4 round 4).
+func (s *PostgresStore) OtherServeConnected(ctx context.Context) (OtherServe, error) {
+	return s.otherServeSighting(ctx)
+}
+
+// otherServeSighting is the ONE confirm-then-list composition (SR-17):
+// the probe decides (its error is the error), the listing only
+// annotates — a listing failure after a confirmed positive rides
+// OtherServe.ListErr and never downgrades the sighting to "unknown".
+func (s *PostgresStore) otherServeSighting(ctx context.Context) (OtherServe, error) {
+	other, err := s.otherServeConnected(ctx)
+	if err != nil || !other {
+		return OtherServe{Connected: other}, err
+	}
+	from, lerr := s.otherServeAddresses(ctx)
+	return OtherServe{Connected: true, From: from, ListErr: lerr}, nil
+}
+
+// otherServeAddresses lists from the session's REAL address (a nil
+// override); only the behavioral test drives the seam.
+func (s *PostgresStore) otherServeAddresses(ctx context.Context) ([]string, error) {
+	return s.otherServeAddressesFrom(ctx, nil)
+}
+
+// otherServeAddressesFrom lists the distinct client addresses of the
+// aveloxis-serve backends beyond this process's own pool, each tagged
+// with the code's own verdict (backendOnThisHostSQL, SR-17) — the datum
+// that tells the primary ("other address": wrong command on this host)
+// from a backend of a serve on THIS host ("this host"), round-5
+// finding 5 and round-6 finding 6. A unix-socket backend reads "local
+// socket". A backend of another role whose address this role cannot see
+// (round-7 finding 1) is said to be hidden, with the way to a verdict —
+// never "this host", never "local socket". asIfFrom overrides the
+// session's address for the behavioral test (round-7 finding 3: the
+// other-address arm cannot be produced from one machine). A listing
+// that fails mid-iteration returns NO list (round-7 finding 4): a
+// partial list would render as complete.
+//
+// The connection is ACQUIRED BEFORE the own-PID set is snapshotted
+// (round-8 finding 5): the pool creates backends on demand, and a
+// backend is tagged in pg_stat_activity from its startup packet but
+// joins backendPIDs only after AfterConnect, so a set read before the
+// acquire can miss the very connection this query then runs on — the
+// v0.28.18 twelfth-pass rule its sibling serveBackendsBeyondOwnPool
+// obeys by re-reading per probe. Acquiring first is sufficient for
+// THIS connection: pgxpool runs AfterConnect — the hook that registers
+// the PID — as part of establishing a connection, so a connection that
+// Acquire has returned is already in the set. A pg_backend_pid() belt
+// would be redundant here and would put a second spelling of the
+// probing session in the package (SR-17, pinned).
+//
+// Residual, stated rather than claimed closed: a MinConns refill
+// completing between the snapshot and the read can still add one of
+// our own addresses. It cannot invent a sighting — the listing runs
+// only on an already-confirmed positive — and both readings of a
+// "(this host)" entry are now spelled out wherever one is printed
+// (round-8 finding 4).
+func (s *PostgresStore) otherServeAddressesFrom(ctx context.Context, asIfFrom *string) ([]string, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Release()
+	own := s.ownBackendPIDs()
+	if own == nil {
+		own = []int32{}
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT DISTINCT me.present, CASE
+		         WHEN NOT `+clientAddrVisibleSQL("a")+` THEN 'a backend of role ' || COALESCE(a.usename::text, '?') || ' (client address not visible to role ' || current_user::text || ': pg_stat_activity shows the address of a session only to roles that HOLD the privileges of that session owner role, and to roles that hold pg_read_all_stats privileges; connect as that role, or GRANT pg_read_all_stats TO this role — a plain grant to a role with INHERIT, since a NOINHERIT member holds none of its privileges and still reads NULL)'
+		         WHEN `+backendOnThisHostSQL("a")+` THEN COALESCE(host(a.client_addr), 'local socket') || '`+thisHostTag+`'
+		         ELSE COALESCE(host(a.client_addr), 'local socket') || '`+otherAddressTag+`'
+		       END
+		FROM pg_stat_activity a
+		CROSS JOIN `+probingSessionSQL("$3", "$4")+`
+		WHERE a.datname = current_database() AND `+appNamePrefixSQL("a.application_name")+` = $1
+		  AND a.pid <> ALL($2::int4[])
+		ORDER BY 2`, ServeApplicationName, own, asIfFrom, HostMarker())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		var present bool
+		if err := rows.Scan(&present, &a); err != nil {
+			return nil, err
+		}
+		if !present {
+			return nil, fmt.Errorf("this session has no pg_stat_activity row, so no address can be tagged (this host)/(other address)")
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// otherServeConnected runs the shared other-serve probe (SR-17 — the
+// list-dedup gate's serveBackendsBeyondOwnPool, own pool excluded by
+// server PID) on an ACQUIRED CONNECTION of its own — the probe needs one
+// session for its snapshot-clear-then-read pair, not a transaction —
+// confirming a positive per confirmOtherServe. Acquire, not Begin
+// (round-11 finding 8): the confirmation loop runs ~1.75 s on a
+// positive, and a transaction held across it sits idle-in-transaction
+// pinning xmin on every affected serve start, while a cancellation
+// leaves Rollback(dead ctx) failing so pgx destroys the pooled
+// connection. In autocommit each statement gets a fresh activity view
+// anyway; the clear stays because the shared probe also runs inside the
+// dedup transaction, where it is load-bearing.
+//
+// The own-PID set is passed as a METHOD VALUE and re-read on every probe
+// (round-3 finding 1): a snapshot hoisted out of the loop would keep
+// counting our own connection after it registered.
+func (s *PostgresStore) otherServeConnected(ctx context.Context) (bool, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire other-serve probe connection: %w", err)
+	}
+	defer conn.Release()
+	attempt := 0
+	return confirmOtherServe(
+		func() (bool, error) {
+			other, err := serveBackendsBeyondOwnPool(ctx, conn, s.ownBackendPIDs)
+			attempt++
+			if otherServeProbeHook != nil {
+				otherServeProbeHook(attempt)
+			}
+			return other, err
+		},
+		otherServeConfirmAttempts,
+		func() {
+			select {
+			case <-ctx.Done():
+			case <-time.After(otherServeConfirmInterval):
+			}
+		})
+}
+
+// startupMigrateRefusal is the pure decision behind the serve-startup
+// gate: with another serve connected, a stamp that is not this
+// binary's (missing, different, or unreadable — the read error is
+// shown, never folded into "unstamped") refuses; alone, the full run
+// proceeds as it always has.
+func startupMigrateRefusal(stamp string, stampErr error, sight OtherServe) error {
+	if !sight.Connected {
+		return nil
+	}
+	var stampDesc string
+	switch {
+	case stampErr != nil:
+		stampDesc = fmt.Sprintf("the schema stamp could not be read (%v)", stampErr)
+	case stamp == "":
+		stampDesc = "the database carries no schema stamp"
+	default:
+		stampDesc = fmt.Sprintf("the schema stamp is %s", stamp)
+	}
+	return fmt.Errorf("%w (from %s) and %s while this binary is %s — refusing to run the startup migration beside it (a full pass takes ACCESS EXCLUSIVE locks a live fleet's workers deadlock against). %s If it is draining, retrying once it clears is enough. Otherwise run the upgrade ladder from the primary: `aveloxis stop all`, then `aveloxis migrate --skip-views`, then `aveloxis start all`",
+		ErrOtherServeConnected, sight.Describe(), stampDesc, ToolVersion, sight.Advice())
+}
+
+// schemaVersionProbe is GetSchemaVersion with the error arm kept (SR-5:
+// a lookup ERROR is not "no"). Copilot round 8: GetSchemaVersion maps
+// EVERY failure to "", and runOnceSeedIfApplied reads "" as "no stamp,
+// so the step has not run" — a transient catalog or connection error
+// during migrate therefore re-flagged the ENTIRE GitLab fleet for a
+// full recollect, which is the outcome the seed exists to prevent.
+// ErrNoRows and an absent schema_meta (42P01, pre-v0.14.5) are the
+// only definitive absences; everything else is a failed read.
+func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) {
 	var version string
 	err := s.pool.QueryRow(ctx,
 		`SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`,
 	).Scan(&version)
-	if err != nil {
-		return ""
+	if err == nil {
+		return version, nil
 	}
-	return version
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil // definitively unstamped
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		return "", nil // schema_meta does not exist: pre-v0.14.5 database
+	}
+	return "", err
 }
 
 // CheckSchemaVersion compares the database schema version against the running
@@ -2470,6 +3486,122 @@ func deduplicateCommits(ctx context.Context, pg *PostgresStore, logger *slog.Log
 // resolution in FindRepoByURL/resolveCaseVariantURL keeps prevention
 // best-effort until the index lands; the next migrate run after
 // dedup-repos drains creates it.
+
+// ensureLinkedMsgIDUnique (Copilot round 20 on PR #193): enforces
+// one-notification-per-native-comment via a partial UNIQUE index on
+// email_message.linked_msg_id. The two writers (UpsertJiraComment,
+// LinkCommentNotificationToNative) use a NOT EXISTS anti-join to pick an
+// unclaimed native comment, but that is check-then-act: two concurrent
+// drains can both see the same native unclaimed and update DIFFERENT
+// email_message rows toward it, then both commit under a non-unique index
+// (duplicate provenance links, the recount then double-excludes). The
+// unique index rejects the second commit with 23505, which the writers
+// handle (skip / re-pick the next candidate). This REPLACES the earlier
+// non-unique idx_email_message_linked_msg (retired; SR-4). SR-1: any
+// existing duplicate claims are drained (keep the lowest email_message_id,
+// NULL the rest) and their issues recounted BEFORE the unique build, or
+// the CONCURRENTLY create would fail on duplicate data.
+func ensureLinkedMsgIDUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	// Copilot round 24 (PR #193): capture + dedup + recount must be ATOMIC.
+	// The earlier best-effort form captured the affected-issue set, then
+	// unconditionally NULLed the duplicate links, then recounted — so a
+	// capture FAILURE/PARTIAL (query, Scan, or iteration error) followed by
+	// the destructive NULL lost the affected set forever (a rerun
+	// re-captures nothing, the losers are already NULLed), and a recount
+	// failure after the dedup was never retried. Jira collection is off by
+	// default, so no "next sync" self-heals a stale comment_count. One
+	// transaction now: any failure rolls back and the migration re-does the
+	// whole thing on the next run. The CONCURRENTLY index steps run only
+	// AFTER a successful dedup (they cannot run inside a transaction anyway,
+	// and must not build the unique backstop over un-deduped data).
+	if err := pg.withRetry(ctx, func(ctx context.Context) error {
+		return dedupLinkedMsgIDsTx(ctx, pg)
+	}); err != nil {
+		*errs = append(*errs, fmt.Errorf("linked_msg dedup: %w", err))
+		return
+	}
+	// Retire the non-unique index (SR-4: dropped, never recreated).
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.29.0 drop non-unique idx_email_message_linked_msg (replaced by unique backstop)",
+		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.idx_email_message_linked_msg`)
+	// The hard backstop: one notification per native comment.
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "uq_email_message_linked_msg",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_email_message_linked_msg
+		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
+}
+
+// dedupLinkedMsgIDsTx captures the affected issues, NULLs the duplicate
+// email_message.linked_msg_id claims, and recounts those issues' comment_count
+// in ONE transaction (Copilot round 24). Capture errors abort BEFORE the
+// destructive NULL; a recount failure rolls back the NULL too, so a rerun
+// re-captures and retries consistently.
+func dedupLinkedMsgIDsTx(ctx context.Context, pg *PostgresStore) error {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Capture the issues whose comment_count changes (a loser
+	//    notification's body row was excluded from its issue's count; NULLing
+	//    it un-supersedes the notification). ANY error aborts before the NULL.
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT imr.issue_id
+		FROM (
+			SELECT email_message_id FROM (
+				SELECT email_message_id,
+				       ROW_NUMBER() OVER (PARTITION BY linked_msg_id ORDER BY email_message_id) AS rn
+				FROM aveloxis_data.email_message WHERE linked_msg_id IS NOT NULL) r
+			WHERE r.rn > 1) losers
+		JOIN aveloxis_data.email_message_ref emr ON emr.email_message_id = losers.email_message_id
+		JOIN aveloxis_data.issue_message_ref imr ON imr.msg_id = emr.msg_id`)
+	if err != nil {
+		return fmt.Errorf("capture affected issues: %w", err)
+	}
+	var affected []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("capture scan: %w", err)
+		}
+		affected = append(affected, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("capture iterate: %w", err)
+	}
+
+	// 2. Drain the duplicate claims: keep the lowest email_message_id per
+	//    linked_msg_id value, NULL the rest.
+	if _, err := tx.Exec(ctx, `
+		UPDATE aveloxis_data.email_message SET linked_msg_id = NULL
+		WHERE email_message_id IN (
+			SELECT email_message_id FROM (
+				SELECT email_message_id,
+				       ROW_NUMBER() OVER (PARTITION BY linked_msg_id ORDER BY email_message_id) AS rn
+				FROM aveloxis_data.email_message WHERE linked_msg_id IS NOT NULL) r
+			WHERE r.rn > 1)`); err != nil {
+		return fmt.Errorf("dedup: %w", err)
+	}
+
+	// 3. Recount the affected issues (freed notifications count again).
+	if len(affected) > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE aveloxis_data.issues i SET comment_count = (
+				SELECT count(*) FROM aveloxis_data.issue_message_ref imr
+				WHERE imr.issue_id = i.issue_id
+				  AND NOT EXISTS (
+					SELECT 1 FROM aveloxis_data.email_message_ref emr
+					JOIN aveloxis_data.email_message em ON em.email_message_id = emr.email_message_id
+					WHERE emr.msg_id = imr.msg_id AND em.linked_msg_id IS NOT NULL))
+			WHERE i.issue_id = ANY($1)`, affected); err != nil {
+			return fmt.Errorf("recount: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	// Fast path: a VALID index already exists — nothing to do.
 	// ErrNoRows = the index doesn't exist yet; other errors are logged
@@ -2730,8 +3862,20 @@ func cleanupBadTimestamps(ctx context.Context, pg *PostgresStore, logger *slog.L
 		)
 		tag, err := pg.pool.Exec(ctx, query)
 		if err != nil {
-			// Table or column may not exist yet — skip silently.
-			continue
+			// v0.28.4: only the TYPED definitive absences skip —
+			// 42P01 undefined_table / 42703 undefined_column mean
+			// "nothing to clean here" on older schemas. Every OTHER
+			// error (deadlock victim, lock timeout, permissions,
+			// dead ctx) must propagate: this step is ledgered now,
+			// and the pre-ledger blanket swallow would let runOnce
+			// record "complete" over uncleaned columns — after which
+			// the step never re-runs (the decorative-gate class,
+			// v0.27.107 lesson).
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "42703") {
+				continue
+			}
+			return fmt.Errorf("timestamp cleanup %s.%s: %w", f.table, f.column, err)
 		}
 		n := tag.RowsAffected()
 		if n > 0 {
@@ -2785,4 +3929,93 @@ func ensureRepoLaborNaturalKeyUnique(ctx context.Context, pg *PostgresStore, log
 	for _, e := range errs {
 		logger.Warn("repo_labor unique: build failed (warn-only — retried next migrate)", "error", e)
 	}
+}
+
+// consolidateRepoGroups is the v0.27.17 repo_groups consolidation,
+// extracted (v0.28.16) so RunMigrations (via migrateStage10RecentReleases) can gate it
+// on repoGroupFKIndexesReady. Body unchanged from v0.27.17.
+//
+// v0.27.17 — repo_groups consolidation. The lazy 'Default'-group
+// creation used a bare ON CONFLICT DO NOTHING with NO unique on
+// rg_name, so the INSERT succeeded on EVERY UpsertRepo call with
+// GroupID=0: production accumulated 93,912 'Default' groups (one
+// per repo), making almost every repo its own singleton group in
+// every repo_group_id rollup (dm_repo_group_*, rg-name metric
+// routes, 8Knot). Consolidate per rg_name to the MIN id, repoint
+// every FK table, hygiene-delete the dm_repo_group_* rows of the
+// losers (rebuilt by the weekly aggregate pass), delete the loser
+// groups, THEN create uq_repo_groups_rg_name (after dedup —
+// schema-DDL-ordering rule: NOT in schema.sql). All idempotent.
+func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	// Baseline for the fail-closed gate below: any repoint that fails
+	// appends to errs, and the deletes must not run over a partial
+	// repoint. It covers the repos repoint too — that one is first.
+	errsBeforeRepoint := len(*errs)
+
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.17 repoint repos.repo_group_id to canonical group per rg_name",
+		`UPDATE aveloxis_data.repos r SET repo_group_id = c.canon
+		 FROM aveloxis_data.repo_groups g,
+		      (SELECT rg_name, MIN(repo_group_id) AS canon
+		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+		 WHERE g.repo_group_id = r.repo_group_id
+		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
+	for _, tbl := range []string{
+		"aveloxis_data.repo_groups_list_serve",
+		"aveloxis_data.email_message",
+		"aveloxis_data.email_message_ref",
+		"aveloxis_data.repo_group_insights",
+		// v0.28.18: no FK, but DrainList reads the first staged row's
+		// repo_group_id as the LIST's identity (GetPrimaryRepoForGroup) —
+		// a row still stamped with a deleted loser group wedges the drain
+		// of the whole list ("no repo for group, leaving staged").
+		"aveloxis_ops.mailing_list_staging",
+	} {
+		execMigrationStep(ctx, pg, logger, errs,
+			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
+			`UPDATE `+tbl+` t SET repo_group_id = c.canon
+			 FROM aveloxis_data.repo_groups g,
+			      (SELECT rg_name, MIN(repo_group_id) AS canon
+			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			 WHERE g.repo_group_id = t.repo_group_id
+			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+	}
+	// Copilot round 8: the repoints above are execMigrationStep, which
+	// ACCUMULATES a failure and continues. mailing_list_staging has no
+	// FK to repo_groups (schema.sql: `repo_group_id BIGINT,`), so a
+	// failed repoint followed by the loser-group DELETE below leaves
+	// dangling repo_group_id values that wedge DrainList for the whole
+	// list ("no repo for group, leaving staged"). Fail closed: a
+	// successful repoint is idempotent, so the next migrate retries the
+	// failed one and then deletes.
+	if len(*errs) > errsBeforeRepoint {
+		logger.Warn("repo_groups consolidation: a repoint step failed — skipping the loser-group deletes this migrate (re-run migrate; the repoints are idempotent)",
+			"failed_steps", len(*errs)-errsBeforeRepoint)
+		return
+	}
+	for _, tbl := range []string{
+		"aveloxis_data.dm_repo_group_annual",
+		"aveloxis_data.dm_repo_group_monthly",
+		"aveloxis_data.dm_repo_group_weekly",
+	} {
+		execMigrationStep(ctx, pg, logger, errs,
+			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
+			`DELETE FROM `+tbl+` t
+			 WHERE EXISTS (
+			   SELECT 1 FROM aveloxis_data.repo_groups g
+			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
+			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			     ON c.rg_name = g.rg_name
+			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
+	}
+	execMigrationStep(ctx, pg, logger, errs,
+		"v0.27.17 delete consolidated loser repo_groups rows",
+		`DELETE FROM aveloxis_data.repo_groups g
+		 WHERE g.repo_group_id <> (
+		   SELECT MIN(g2.repo_group_id) FROM aveloxis_data.repo_groups g2
+		   WHERE g2.rg_name = g.rg_name)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "uq_repo_groups_rg_name",
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
+		 ON aveloxis_data.repo_groups (rg_name)`)
 }

@@ -33,7 +33,18 @@ func TestEverySynonymCanonicalIsARealSPDXID(t *testing.T) {
 	if len(seen) < 10 {
 		t.Fatalf("extracted only %d canonical values — regex rot?", len(seen))
 	}
+	// Reviewed FAMILY-BUCKET exemptions (v0.28.6): version-unspecified
+	// declarations normalize to a bare family name — the EPL/Artistic
+	// precedent from the classifier — because every specific SPDX id
+	// (incl. -or-later, which asserts a recipient may choose later
+	// versions) would claim more than the source metadata says. Add a
+	// bucket here ONLY with that rationale at the license_normalize.go
+	// site; anything else is a minted invalid id.
+	familyBuckets := map[string]bool{"LGPL": true}
 	for id := range seen {
+		if familyBuckets[id] {
+			continue
+		}
 		if !isSPDXLicense(id) {
 			t.Errorf("license_normalize.go maps synonyms to %q, which is NOT in the official SPDX list (spdx_license_ids.txt) — the normalizer is minting invalid ids", id)
 		}

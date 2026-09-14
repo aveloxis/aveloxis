@@ -52,8 +52,15 @@ type RepoInfo struct {
 	PRsOpen        int
 	PRsClosed      int
 	PRsMerged      int
-	DefaultBranch  string
-	License        string
+	// v0.28.18: a fetcher that could NOT determine the counts marks them
+	// unknown instead of storing a fabricated 0 (GitLab's per-state
+	// merge-request probes fail independently of the project GET, and
+	// GitLab omits the X-Total header above 10,000 records). The store
+	// carries the prior snapshot's counts forward when these are set.
+	IssuesCountUnknown bool
+	PRCountUnknown     bool
+	DefaultBranch      string
+	License            string
 	// v0.23.0 — basic repo metadata captured at first observation
 	// and refreshed each collection cycle. Written to repos.repo_description,
 	// repos.primary_language, and repos.languages (JSONB) on Phase 0.

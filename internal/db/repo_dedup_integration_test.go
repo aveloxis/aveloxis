@@ -265,7 +265,7 @@ func seedDedupPair(ctx context.Context, t *testing.T, store *PostgresStore, slug
 
 	// Seeding a duplicate pair requires the pre-dedup fleet state — the
 	// unique backstop cannot coexist with the duplicates it prevents.
-	dropCaseUniqueIndex(ctx, t, store)
+	dropCaseUniqueIndex(ctx, t, store, func() { cleanupDedupRepos(ctx, t, store, slug) })
 
 	mustScan := func(dst *int64, sql string, args ...any) {
 		t.Helper()

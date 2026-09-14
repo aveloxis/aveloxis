@@ -55,8 +55,15 @@ func TestGetRepoStatsBatchReadsFromQueueCache(t *testing.T) {
 
 // TestGetRepoStatsBatchAvoidsBigChildTableCounts pins the negative:
 // the heavy COUNT(*) queries against pull_requests, issues, commits
-// must be gone. These are the queries that were hitting tens of
-// millions of rows on every dashboard load.
+// must be gone FROM THE HOT PATH. These are the queries that were
+// hitting tens of millions of rows on every dashboard load.
+// DELIBERATE CARVE-OUT (v0.28.7/v0.28.10): the queueless gone-cohort
+// fallback lives in the separate queuelessLiveCountsBatch method —
+// gated to requested ids with no queue row and bounded by
+// RepoStatsBatchMaxIDs — exactly mirroring the single-repo path's
+// documented carve-out. The body scope of this pin is intentional:
+// it bans the aggregates from the CACHED path, not from the gated
+// fallback.
 func TestGetRepoStatsBatchAvoidsBigChildTableCounts(t *testing.T) {
 	src := mustReadStoreSource(t, "repo_stats.go")
 	body := extractBatchFunc(src, "GetRepoStatsBatch")

@@ -88,6 +88,20 @@ GET /api/v1/repos/stats?ids=1,2,3,42
 
 Returns stats for multiple repos in one call. Response is a map keyed by repo ID.
 
+Since v0.28.7 the batch rows carry the same `gone_at` and
+`metadata_as_of` fields as the single-repo endpoint, and requested ids
+with no collection-queue row (the prelim-dequeued "gone" cohort) fall
+back to live gathered counts instead of serving zeros — the two
+endpoints can no longer disagree about a vanished repository. The
+fallback runs only for that rare queueless subset; every tracked repo
+stays on the cached queue counts.
+
+Since v0.28.10 the id list is capped at **500 per request** (requests
+above the cap get a 400) — the queueless fallback makes per-id cost
+non-trivial for gone repos, so the batch stays bounded. Every real
+consumer (monitor at 200/page, group pages at 100/page) sits well
+under the cap.
+
 ### Time Series
 
 ```
@@ -101,7 +115,7 @@ Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues
 |---|---|---|---|
 | `since` | date (YYYY-MM-DD) | 2 years ago | Start date for time series |
 
-```json
+```jsonc
 {
   "repo_id": 42,
   "repo_name": "augur",
@@ -110,9 +124,9 @@ Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues
     {"week_start": "2024-01-01T00:00:00Z", "count": 15},
     {"week_start": "2024-01-08T00:00:00Z", "count": 22}
   ],
-  "prs_opened": [...],
-  "prs_merged": [...],
-  "issues": [...]
+  "prs_opened": [ /* ... */ ],
+  "prs_merged": [ /* ... */ ],
+  "issues": [ /* ... */ ]
 }
 ```
 
@@ -195,7 +209,7 @@ Malformed dates fall back to the defaults rather than returning 400, matching th
 
 Response shape:
 
-```json
+```jsonc
 [
   {
     "cntrb_id": "01000001-0000-4000-8000-000000000000",
@@ -208,8 +222,8 @@ Response shape:
     "public_contribs_year": 0,
     "restricted_contribs_year": 812,
     "last_contribution_year": 2026
-  },
-  ...
+  }
+  // ...more rows
 ]
 ```
 
@@ -304,14 +318,22 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-`?bots=hide` (v0.27.69) filters bot identities by three markers:
-`gh_type='Bot'` (GitHub App accounts like `dependabot[bot]`), the
-`[bot]` login suffix, and the hyphenated `-bot`/`-robot`
-machine-account convention (the `k8s-ci-robot` class, which GitHub
-types as a regular User — verified live). The separator requirement
-keeps human surnames (talbot) safe. Deliberately broader than the
-`contributor_retention` metric's bot exclusion, which is pinned to
-8Knot parity; this one is a display filter. The same parameter works
+`?bots=hide` (v0.27.69; widened v0.28.1) filters automation
+identities by four markers: the non-human account types
+`gh_type IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`
+(GitHub App accounts like `dependabot[bot]`; fine-grained-PAT
+actors; org accounts acting as contributors — the codecov shape,
+whose enriched row is typed Organization), the `[bot]` login
+suffix, the hyphenated `-bot`/`-robot` machine-account convention
+(the `k8s-ci-robot` class, which GitHub types as a regular User —
+verified live), and the curated system-account list (actions-user,
+web-flow, ghost, codecov, codecov-io, codecov-commenter — machine
+accounts GitHub types as plain User). `Mannequin` rows are
+deliberately NOT hidden: mannequins are import placeholders
+standing in for unmatched humans, not automation. The separator
+requirement keeps human surnames (talbot) safe. Deliberately
+broader than the `contributor_retention` metric's bot exclusion,
+which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
 same repo scope as every other per-repo endpoint; responses are served
 from a 60-second cache (the underlying data only changes per
@@ -390,8 +412,10 @@ Response rows per contributor:
 the v0.27.58 history backfill has not reached this contributor yet —
 their empty `elsewhere` array is "history pending", NOT "active
 nowhere else". Frontends must render the two differently. Exception
-(v0.27.81): bot accounts and GitHub system accounts (actions-user,
-web-flow, ghost) are excluded from the backfill claim entirely —
+(v0.27.81; widened v0.28.1): accounts typed Bot /
+ProgrammaticAccessBot / Organization and the curated system-account
+list (actions-user, web-flow, ghost, codecov, codecov-io,
+codecov-commenter) are excluded from the backfill claim entirely —
 their stamps stay `null` permanently by design (their histories are
 the most expensive to fetch and the contributor surfaces exclude
 bots from display anyway). `repo_id`
@@ -585,6 +609,27 @@ Per-repo metrics (all under `/api/v1/repos/{repoID}/`):
 | Code / deps | `languages`, `project-languages`, `project-files`, `project-lines`, `deps`, `libyear` |
 | Other | `repo-messages`, `releases` |
 
+### License drill-down on `/deps` (v0.28.1)
+
+`GET /api/v1/repos/{repoID}/deps` accepts two optional parameters
+that turn it into the drill-down behind the dependency-licenses
+table:
+
+- `license=<canonical>` — only rows whose license normalizes to the
+  given canonical bucket (the same `NormalizeLicenseToSPDX` merge the
+  licenses aggregate applies, so "MIT License"-spelled rows match the
+  `MIT` bucket). Pass the `license` value exactly as the
+  `/repos/{id}/licenses` response returned it.
+- `scope=runtime|all` — the same scope filter as `/licenses`
+  (`runtime` excludes dev/test/build/optional/peer rows). Invalid
+  values are a 400.
+
+With EITHER parameter present, the row universe mirrors the licenses
+aggregate exactly (GitHub-Actions rows excluded — they carry no
+license data), so a license bucket counting N always drills down to
+exactly N rows. With NEITHER parameter, the legacy behavior is
+unchanged: the full raw dependency list, unfiltered.
+
 ## CORS
 
 CORS is handled by a single middleware (v0.27.1). With `api.cors_origins`
@@ -697,8 +742,9 @@ exchange:
 3. Copy the `token` value and send it on every request:
 
    ```bash
+   SITE=aveloxis.example.org
    curl -H "Authorization: Bearer $TOKEN" \
-        "https://<your-site>/api/v1/compare?entities=repo:42&metric=contributors"
+        "https://$SITE/api/v1/compare?entities=repo:42&metric=contributors"
    ```
 
 Token semantics:
@@ -797,6 +843,19 @@ Token semantics:
   Both fields are absent (`""`) on findings last touched by a
   pre-v0.27.11 scan and heal on the repo's next scan.
 
+  The envelope carries `scanned_at` (v0.28.1) — the timestamp of the
+  most recent COMPLETED vulnerability scan. `null` means the repo has
+  never been scanned; a date on a zero-finding repo means "scanned,
+  clean". The stamp is written only where OSV was actually consulted
+  or the dependency universe was genuinely empty (v0.28.5): scan
+  errors never stamp, and neither do the two degenerate passes that
+  query nothing — a repo whose dependencies all lack purl mappings,
+  or whose legacy targets were all dropped as malformed. Those stay
+  `null` (honestly "not yet scanned") until a real scan runs, so a
+  date + zero findings genuinely means "checked and clean". Frontends
+  must render `null` distinctly (e.g. "not yet scanned"), never as a
+  clean result.
+
   The envelope also gains `lockfile_certainty`, derived at read time:
 
   ```json
@@ -837,7 +896,17 @@ Token semantics:
   and the historical chart window from these. v0.27.84 adds
   `last_collected` (omitted when the repo has never completed a
   collection pass) — the GUI's signal to render the "queued for
-  first collection" banner instead of misleading zeros.
+  first collection" banner instead of misleading zeros. v0.28.1
+  adds `gone_at` (omitted unless prelim's probe got a definitive
+  404/410 — the repo no longer resolves on its forge; the GUI must
+  suppress the queued banner and render the no-longer-available
+  notice, with gone taking precedence over the archived chip) and
+  `metadata_as_of` (the repo_info snapshot date behind the
+  metadata_* counts, so gone repos can date their frozen metadata
+  honestly). Also v0.28.1: for QUEUELESS repos (no collection_queue
+  row — the prelim-dequeued gone cohort) the gathered counts fall
+  back to live row counts instead of fabricated zeros; tracked
+  repos keep the cached-count read.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo
@@ -857,12 +926,23 @@ Token semantics:
   list-shaped). Bearer required unconditionally, same posture as
   PUT/DELETE; starred state is caller-personal, so repo scope does
   not apply.
-- `GET /api/v1/home/repos?limit=50` — the home-tab list: the user's
+- `GET /api/v1/home/repos?limit=50` (max 100; oversized values clamp) — the home-tab list: the user's
   starred repos first (always included), then the most active repos
   from their own groups over the trailing 90 days (issues + change
   requests opened). Default limit is 50 (v0.27.14; was 20). There is
   no cap on the number of repos a user may star — the limit only
   bounds how many rows the home list returns per request.
+  Freshness (v0.29.0): the activity ranking reads the queue's cached
+  `last_activity_90d`, stamped per completed collection cycle — the
+  same as-of-last-collected freshness as every gathered count. The
+  response is additionally cached per user for 5 minutes and served
+  **stale-while-revalidate** past that: an expired entry returns
+  immediately while one background refresh recomputes it (stale
+  serving is bounded at one hour past expiry — older entries block
+  on a fresh load, which the cached ranking keeps fast). The
+  `X-Cache` header reports `hit`, `stale`, or `miss`; starring a
+  repo invalidates the entry so the next request reorders
+  immediately.
 - `GET /api/v1/home/new-repos?days=30` — the "New Repositories" home
   feed (v0.27.62): `{"days", "fleet": [...], "mine": [...]}` where
   each row is `{repo_id, owner, name, org, added_at}`, newest-first,
@@ -1015,6 +1095,16 @@ Admin-only:
   the forge-reported meta counts (`meta_issues`, `meta_prs`,
   `meta_commits` from the latest repo_info snapshot) for
   gathered-vs-metadata comparison.
+  Sortable (v0.29.0): `?sort=<key>&dir=asc|desc` with keys `repo`,
+  `status`, `priority`, `due`, `last_run`, `issues`, `prs`,
+  `commits`, `meta_issues`, `meta_prs`, `meta_commits` — resolved
+  through a server-side allowlist (unknown keys keep the default
+  collecting-first composite ordering); the envelope echoes the
+  EFFECTIVE `sort`/`dir` (an unknown key echoes BOTH as `""` — the
+  composite ordering has no single direction, so a caller's `dir` is
+  never parroted when it was not applied). The `meta_*` keys order by the latest repo_info snapshot
+  and are API-only — the SPA's paired "(ours / meta)" headers sort the
+  gathered half.
 - `POST /api/v1/admin/monitor/queue/{repoID}/prioritize` — the SPA
   monitor's "Boost" button (v0.27.14). Pushes the repo to priority 0,
   makes it immediately due, and resets its status to `queued` — the

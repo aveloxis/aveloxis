@@ -82,6 +82,12 @@ func TestGapHealConvergesToZeroCandidates(t *testing.T) {
 			{`DELETE FROM aveloxis_data.messages WHERE repo_id = $1`, []any{repoID}},
 			{`DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{repoID}},
 			{`DELETE FROM aveloxis_data.contributor_identities WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = '_avgapheal-alice')`, nil},
+			// contributor_login_history is a cntrb_id child with ON DELETE
+			// RESTRICT (v0.23.0) and every resolved login writes one — the
+			// contributors DELETE below fails with 23001 until it is gone,
+			// which stranded the fixture's contributor on every run
+			// (children before parents; pass 44).
+			{`DELETE FROM aveloxis_data.contributor_login_history WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = '_avgapheal-alice')`, nil},
 			{`DELETE FROM aveloxis_data.contributors WHERE cntrb_login = '_avgapheal-alice'`, nil},
 			{`DELETE FROM aveloxis_data.repo_info WHERE repo_id = $1`, []any{repoID}},
 			{`DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, []any{repoID}},

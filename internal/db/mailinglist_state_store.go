@@ -32,6 +32,11 @@ type ListJob struct {
 	ListAddress string // rgls_email, e.g. dev@kafka.apache.org
 	System      string // mlls_system
 	LastMonth   string // mlls_last_month checkpoint ("" = never scanned)
+	// LockedAt is the claim's own mlls_locked_at stamp — the release key
+	// (pass 39): unique per claim in every topology, where (pid, boot_id)
+	// is not (PIDs are namespaced and the boot id host-global under the
+	// container deployment). Set by ClaimNextList only.
+	LockedAt time.Time
 }
 
 // ClaimNextList atomically claims the next eligible list for the given
@@ -64,13 +69,13 @@ func (s *PostgresStore) ClaimNextList(ctx context.Context, system string, cadenc
 		UPDATE aveloxis_data.repo_groups_list_serve r
 		SET mlls_locked_at = NOW(), mlls_locked_pid = $4, mlls_locked_boot_id = $5
 		WHERE r.rgls_id IN (SELECT rgls_id FROM candidate)
-		RETURNING r.rgls_id, r.repo_group_id, COALESCE(r.rgls_email, ''),
+		RETURNING r.mlls_locked_at, r.rgls_id, r.repo_group_id, COALESCE(r.rgls_email, ''),
 		          COALESCE(r.mlls_system, ''), COALESCE(r.mlls_last_month, '')`,
 		mailingListBackoffBaseSeconds)
 
 	var j ListJob
 	err := s.pool.QueryRow(ctx, claimSQL, system, cadence.String(), MailingListStaleLock.String(), pid, bootID).
-		Scan(&j.RglsID, &j.RepoGroupID, &j.ListAddress, &j.System, &j.LastMonth)
+		Scan(&j.LockedAt, &j.RglsID, &j.RepoGroupID, &j.ListAddress, &j.System, &j.LastMonth)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -127,6 +132,30 @@ func (s *PostgresStore) RecordListFailure(ctx context.Context, rglsID int64) err
 		WHERE rgls_id = $1`, rglsID, MailingListMaxFailures)
 	if err != nil {
 		return fmt.Errorf("record list failure: %w", err)
+	}
+	return nil
+}
+
+// ReleaseListLock clears a list's lock WITHOUT touching the failure
+// counters or checkpoints — the worker's shutdown path (pass 37): a scan
+// interrupted by `stop serve` is neither a failure (RecordListFailure
+// would count it toward the sideline) nor a completion, and without a
+// release the list stayed unclaimable for MailingListStaleLock (2h) after
+// every restart. Ownership-qualified (pass 38/39) by the claim's OWN
+// mlls_locked_at stamp (ListJob.LockedAt): a scan that outlived the
+// stale window and was re-claimed elsewhere cannot clear the new
+// holder's lock. The (pid, boot_id) pair was the first key and is not
+// unique under the container deployment (PIDs namespaced, boot id
+// host-global). (CompleteListScan / RecordListFailure predate this and
+// stay unqualified — a >2h scan reclaimed mid-way can still be closed
+// out by its first holder; noted in docs/architecture/mailing-list.md.)
+func (s *PostgresStore) ReleaseListLock(ctx context.Context, rglsID int64, lockedAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_data.repo_groups_list_serve
+		SET mlls_locked_at = NULL, mlls_locked_pid = NULL, mlls_locked_boot_id = ''
+		WHERE rgls_id = $1 AND mlls_locked_at = $2`, rglsID, lockedAt)
+	if err != nil {
+		return fmt.Errorf("release list lock: %w", err)
 	}
 	return nil
 }

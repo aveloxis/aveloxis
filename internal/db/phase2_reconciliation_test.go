@@ -50,9 +50,12 @@ func TestPrelimKeepsQueueRowWhenArchiveFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	idx := strings.Index(s, "failed to archive dead repo")
+	// v0.28.1 (A6): the sideline marker is MarkRepoGone (archive +
+	// gone stamp in one statement); the v0.27.39 ordering contract is
+	// unchanged — mark must succeed before dequeue.
+	idx := strings.Index(s, "failed to mark dead repo gone")
 	if idx < 0 {
-		t.Fatal("prelim must log the archive failure with the keep-queue-row semantics")
+		t.Fatal("prelim must log the mark-gone failure with the keep-queue-row semantics")
 	}
 	// The archive-failure branch must RETURN before DequeueRepo.
 	window := s[idx:]

@@ -36,7 +36,10 @@ func TestMailingListStagingRoundTrip(t *testing.T) {
 	store, ctx := emConnect(t) // runs Migrate → creates mailing_list_staging
 	t.Cleanup(store.Close)
 
-	const rgls = int64(999000111)
+	// A REAL registered list: ListsWithStaging joins repo_groups_list_serve
+	// to scope drains by system (the Part G cross-system drain find), so a
+	// fabricated rgls_id with no registration row is invisible by design.
+	rgls := xsRegisterList(t, store, "_avmlstage", "dev@avmlstage.apache.org", "apache_ponymail")
 	clean := func() {
 		store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.mailing_list_staging WHERE rgls_id=$1`, rgls)
 	}
@@ -61,7 +64,7 @@ func TestMailingListStagingRoundTrip(t *testing.T) {
 		t.Fatalf("re-stage: %v", err)
 	}
 
-	lists, err := store.ListsWithStaging(ctx, 100)
+	lists, err := store.ListsWithStaging(ctx, "apache_ponymail", 0, 100)
 	if err != nil {
 		t.Fatalf("ListsWithStaging: %v", err)
 	}
@@ -69,7 +72,7 @@ func TestMailingListStagingRoundTrip(t *testing.T) {
 		t.Fatalf("ListsWithStaging should include %d", rgls)
 	}
 
-	batch, err := store.GetMailingListStagingBatch(ctx, rgls, 100)
+	batch, err := store.GetMailingListStagingBatch(ctx, rgls, 0, 100)
 	if err != nil {
 		t.Fatalf("GetMailingListStagingBatch: %v", err)
 	}
@@ -87,11 +90,11 @@ func TestMailingListStagingRoundTrip(t *testing.T) {
 	if err := store.MarkMailingListStagingProcessed(ctx, []int64{got.MlsID}); err != nil {
 		t.Fatalf("mark processed: %v", err)
 	}
-	lists2, _ := store.ListsWithStaging(ctx, 100)
+	lists2, _ := store.ListsWithStaging(ctx, "apache_ponymail", 0, 100)
 	if containsInt64(lists2, rgls) {
 		t.Error("processed list must not appear in ListsWithStaging")
 	}
-	batch2, _ := store.GetMailingListStagingBatch(ctx, rgls, 100)
+	batch2, _ := store.GetMailingListStagingBatch(ctx, rgls, 0, 100)
 	if len(batch2) != 0 {
 		t.Errorf("processed rows must not be returned; got %d", len(batch2))
 	}

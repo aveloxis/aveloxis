@@ -19,7 +19,7 @@ or `migrate.go`.
   gate. The harness exit code is 0 on PASS / FLAG-only and 1 on any
   FAIL (row loss), so it can drive CI.
 - **Operators** — before deploying a release with schema changes to a
-  production fleet. The CLAUDE.md changelog for each release notes
+  production fleet. The release notes for each version note
   whether schema changed; if it did, run the harness against the prior
   released tag first.
 
@@ -140,9 +140,11 @@ captures rows the released schema missed. Two scenarios:
 If a FLAG is unexpected, run with `--keep-dbs`, then:
 
 ```bash
+TABLE=issues      # the flagged table
+PK=issue_id       # its primary key
 psql -d aveloxis_new -c "
-  SELECT * FROM aveloxis_data.<flagged_table>
-  WHERE <pk> NOT IN (SELECT <pk> FROM aveloxis_released.aveloxis_data.<flagged_table>);
+  SELECT * FROM aveloxis_data.$TABLE
+  WHERE $PK NOT IN (SELECT $PK FROM aveloxis_released.aveloxis_data.$TABLE);
 "
 ```
 

@@ -9,12 +9,20 @@
 // twice.
 //
 // Per pair (winner = oldest repo_id): user_repos links repoint to the
-// winner, shared-copy rows (messages, email_message, commit_comment_ref,
-// contributor_repo) repoint, and the loser's duplicated child data plus
-// the loser row itself are deleted — the winner holds the same data.
+// winner, shared-copy rows (messages, email_message, commit_comment_ref)
+// repoint, and the loser's duplicated child data plus the loser row
+// itself are deleted — the winner holds the same data. contributor_repo
+// is deliberately untouched (v0.25.34).
+//
+// Precondition (v0.28.18): the migrate on this binary must have built
+// the email_message FK indexes (idx_email_message_repo_id /
+// _signaled_repo_id) — the store refuses to merge without them, since
+// every pair would otherwise sequential-scan that table (12 GB on the
+// mailing-list deployment).
 //
 // Operator workflow:
 //
+//	aveloxis migrate --skip-views       # first: the v0.28.18 email_message indexes
 //	aveloxis dedup-repos --dry-run      # show the plan
 //	aveloxis dedup-repos --limit 50     # canary batch
 //	aveloxis dedup-repos                # full run (re-run until 0 pairs)
@@ -27,6 +35,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -58,16 +67,25 @@ so the variants ARE the same repository):
      every user group that referenced either variant keeps the repo and
      immediately sees the winner's collected data.
   2. Repoint shared-copy rows (messages, email_message,
-     commit_comment_ref, contributor_repo, foundation_membership) —
-     these are globally unique, the pair shares one copy.
+     commit_comment_ref, foundation_membership) — these are globally
+     unique, the pair shares one copy. contributor_repo is deliberately
+     untouched: the breadth worker's observational record, keyed by the
+     numeric gh_repo_id.
   3. Delete the loser's duplicated child data (issues, PRs, commits,
      ...) leaves-first, then the loser repos row. Nothing is lost: both
      sides collected the same repository.
   4. Enqueue the winner if it has never been collected.
 
-Pairs with either side mid-collection (status='collecting') are skipped
-and reported; re-run after those jobs finish. The command is idempotent
-— resolved pairs drop out of the candidate set.
+Pairs with either side mid-collection (status='collecting') are left
+out of each batch's window so they cannot stall the run, and the final
+summary reports how many groups remain; re-run after those jobs finish.
+The command is idempotent — resolved pairs drop out of the candidate
+set.
+
+Requires the v0.28.18 migrate to have built the email_message FK
+indexes (idx_email_message_repo_id / _signaled_repo_id): the merge
+refuses to start without them rather than sequential-scan the table
+per pair — run 'aveloxis migrate --skip-views' on this binary first.
 
 After the fleet reports 0 pairs, run 'aveloxis migrate --skip-views' to
 build the uq_repos_repo_git_ci unique index (the permanent DB-level
@@ -139,11 +157,13 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 	}
 
 	merged := 0
-	skipped := 0
+	skipped := 0 // run total of in-transaction races (collecting pairs sit outside the window since v0.28.18)
+	capped := false
 	startedAt := time.Now()
 	for {
 		if limit > 0 && merged >= limit {
 			logger.Info("hit --limit cap, stopping", "merged", merged, "limit", limit)
+			capped = true
 			break
 		}
 		thisBatch := batchSize
@@ -153,15 +173,22 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 
 		batchMerged, batchSkipped, err := db.DedupCaseVariantReposBatch(ctx, store, thisBatch)
 		merged += batchMerged
-		skipped = batchSkipped // per-round snapshot; skipped pairs recur each round
+		skipped += batchSkipped
 		if err != nil {
+			if errors.Is(err, db.ErrEmailMessageIndexesNotReady) {
+				// The v0.28.18 precondition: nothing in this batch was
+				// touched — the store refuses before any write.
+				logger.Error("precondition unmet — stopping: run `aveloxis migrate --skip-views` on this binary first",
+					"total_merged", merged, "error", err)
+				return err
+			}
 			logger.Error("batch dedup errored mid-way — completed pairs are preserved",
 				"batch_merged", batchMerged, "total_merged", merged, "error", err)
 			return err
 		}
 		logger.Info("batch complete",
 			"batch_merged", batchMerged,
-			"skipped_collecting", batchSkipped,
+			"skipped_collecting_races", batchSkipped,
 			"total_merged", merged,
 			"elapsed", time.Since(startedAt).Round(time.Second))
 
@@ -172,11 +199,30 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 
 	logger.Info("v0.25.32 case-variant repo dedup complete",
 		"merged", merged,
-		"skipped_collecting", skipped,
+		"skipped_collecting_races", skipped,
 		"duration", time.Since(startedAt).Round(time.Second))
-	if skipped > 0 {
-		logger.Info("some pairs were mid-collection and skipped — re-run once those jobs finish",
-			"skipped_collecting", skipped)
+	// v0.28.18: mid-collection pairs sit outside the batch window, so
+	// "merged == 0" no longer means "nothing left" — report what remains
+	// (SR-19: the rerun-until-0 contract needs the remaining count, not
+	// the per-round skip count, to be honest).
+	remaining, rerr := db.CountCaseVariantRepoDups(ctx, store)
+	switch {
+	case rerr != nil:
+		// The remaining count IS the rerun-until-0 signal; losing it must
+		// not read as success to a script (v0.27.106: nonzero on
+		// incomplete work). Every merge is already committed.
+		logger.Error("could not count remaining duplicate groups — re-run to verify", "error", rerr)
+		return fmt.Errorf("count remaining duplicate groups: %w", rerr)
+	case remaining == 0:
+		logger.Info("no duplicate groups remain")
+	case capped:
+		logger.Info("hit --limit; duplicate groups remain — re-run to continue",
+			"remaining_groups", remaining, "limit", limit)
+	default:
+		// The loop exited on merged == 0 with no cap: every remaining
+		// group sat outside the window (mid-collection) or arrived since.
+		logger.Info("duplicate groups remain (mid-collection during this run, or added since) — re-run once those jobs finish",
+			"remaining_groups", remaining, "skipped_collecting_races", skipped)
 	}
 	if merged > 0 {
 		logger.Info("next steps: `aveloxis migrate --skip-views` builds the unique-index backstop; " +

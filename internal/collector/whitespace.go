@@ -37,6 +37,7 @@ package collector
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -251,7 +252,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	headCmd := exec.CommandContext(ctx, "git", "-C", clonePath, "rev-parse", branch)
 	headOut, err := headCmd.Output()
 	if err != nil {
-		return 0, "", fmt.Errorf("rev-parse %s: %w", branch, err)
+		return 0, "", fmt.Errorf("rev-parse %s: %w", branch, execErr(ctx, err))
 	}
 	head := strings.TrimSpace(string(headOut))
 
@@ -318,7 +319,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 		return updated, head, fmt.Errorf("parse whitespace log: %w", parseErr)
 	}
 	if waitErr != nil {
-		return updated, head, fmt.Errorf("git log -p exited: %w", waitErr)
+		return updated, head, fmt.Errorf("git log -p exited: %w", execErr(ctx, waitErr))
 	}
 	if err := flush(); err != nil {
 		return updated, head, err
@@ -370,7 +371,13 @@ func markerResolves(ctx context.Context, clonePath, marker string) bool {
 // resolves (force-push + gc, pruned re-clone) triggers the full walk;
 // every other failure warns and retries next cycle.
 func (f *FacadeCollector) runWhitespacePhase(ctx context.Context, repoID int64, clonePath string) {
+	if ctx.Err() != nil {
+		return // shutdown: the phase is warn-don't-fail, so it must not misdiagnose a dead ctx (pass 36)
+	}
 	marker, err := f.store.GetWhitespaceHead(ctx, repoID)
+	if errors.Is(err, context.Canceled) {
+		return
+	}
 	if err != nil {
 		f.logger.Warn("whitespace phase: marker read failed", "repo_id", repoID, "error", err)
 		return
@@ -379,12 +386,17 @@ func (f *FacadeCollector) runWhitespacePhase(ctx context.Context, repoID int64, 
 	if marker != "" {
 		if markerResolves(ctx, clonePath, marker) {
 			rangeSpec = marker + ".." + resolveDefaultBranch(ctx, clonePath)
+		} else if ctx.Err() != nil {
+			return // a killed rev-parse is not a vanished marker
 		} else {
 			f.logger.Warn("whitespace phase: marker no longer resolves — full-history walk",
 				"repo_id", repoID, "marker", marker)
 		}
 	}
 	updated, head, werr := f.runWhitespaceWalk(ctx, repoID, clonePath, rangeSpec)
+	if errors.Is(werr, context.Canceled) {
+		return // shutdown mid-walk: nothing stamped, the next cycle re-walks
+	}
 	if werr != nil {
 		f.logger.Warn("whitespace phase failed", "repo_id", repoID, "error", werr)
 		return

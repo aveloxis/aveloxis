@@ -232,6 +232,9 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		RepoID:     repoID,
 		CoreStatus: string(StatusCollecting),
 	}); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err // shutdown before the first phase (pass 35)
+		}
 		sc.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
 	}
 
@@ -258,8 +261,13 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// Non-fatal — if the UPDATE fails we log and continue;
 		// the next cycle will retry.
 		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated); updateErr != nil {
-			sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
-				"owner", owner, "repo", repo, "error", updateErr)
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(updateErr, context.Canceled) {
+				sc.logger.Warn("failed to update repos.repo_description/primary_language/languages",
+					"owner", owner, "repo", repo, "error", updateErr)
+			}
 		}
 
 		// v0.25.32: case self-heal. The forge returns the CANONICAL
@@ -271,8 +279,13 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// collection job, so failures log and continue.
 		if info.FullName != "" {
 			if healed, healErr := sc.store.HealRepoCaseDrift(ctx, repoID, info.FullName); healErr != nil {
-				sc.logger.Warn("case-drift self-heal failed",
-					"owner", owner, "repo", repo, "error", healErr)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(healErr, context.Canceled) {
+					sc.logger.Warn("case-drift self-heal failed",
+						"owner", owner, "repo", repo, "error", healErr)
+				}
 			} else if healed {
 				sc.logger.Info("healed repo case drift",
 					"repo_id", repoID, "canonical", info.FullName)
@@ -364,6 +377,9 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		result.Errors = append(result.Errors, fmt.Errorf("staging flush: %w", err))
 	}
 
+	if ctx.Err() != nil {
+		return result, ctx.Err() // shutdown: never "complete" with zeros (pass 37)
+	}
 	sc.logger.Info("staged collection complete",
 		"repoID", repoID, "staged_issues", result.Issues,
 		"staged_prs", result.PullRequests, "staged_messages", result.Messages,
@@ -414,6 +430,12 @@ func (sc *StagedCollector) preEnumerateIfGraphQL(ctx context.Context, owner, rep
 		return preEnumerateBatch{}
 	}
 	batch, err := sc.client.ListIssuesAndPRs(ctx, owner, repo, since)
+	if errors.Is(err, context.Canceled) {
+		// Shutdown mid-listing (the common shape on a big repo): no
+		// partial staging on the dead ctx, no fallback WARN — the REST
+		// fallback fails fast and the job ends unrecorded (pass 36).
+		return preEnumerateBatch{}
+	}
 	if err != nil {
 		// Surface partial results even on error: ListIssuesAndPRs (phase 5)
 		// returns the batch with whatever issues/labels/assignees made it
@@ -1080,6 +1102,29 @@ func (sc *StagedCollector) collectMessages(ctx context.Context, sw *db.StagingWr
 			}
 			result.Messages++
 		}
+		if sc.platID == int16(model.PlatformGitLab) {
+			// GitLab keeps MR conversation notes on a per-MR endpoint
+			// (GitHub's repo-wide /issues/comments covers PRs too, so its
+			// ListPRComments delegates and would duplicate here). Pass 31
+			// (v0.28.18): this walk had NO production caller — merged and
+			// closed MRs' conversation threads were never collected on the
+			// main path; only the open-item refresher and gap fill read them.
+			for msg, err := range sc.client.ListPRComments(ctx, owner, repo, since) {
+				if err != nil {
+					if isOptionalEndpointSkip(err) {
+						sc.logger.Info("skipping MR comments endpoint",
+							"owner", owner, "repo", repo, "reason", err)
+						break
+					}
+					result.Errors = append(result.Errors, fmt.Errorf("mr comments: %w", err))
+					break
+				}
+				if err := sw.Stage(ctx, EntityMessage, msg); err != nil {
+					result.Errors = append(result.Errors, fmt.Errorf("stage message: %w", err))
+				}
+				result.Messages++
+			}
+		}
 	}
 	reviewCount := 0
 	for rc, err := range sc.client.ListReviewComments(ctx, owner, repo, since) {
@@ -1190,7 +1235,12 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 	// attributed. Events are processed by this point, so the derivation
 	// is platform- and mode-agnostic with zero API cost.
 	if n, err := p.store.DeriveIssueClosedByFromEvents(ctx, repoID); err != nil {
-		p.logger.Warn("closed_by derivation failed", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			p.logger.Warn("closed_by derivation failed", "repo_id", repoID, "error", err)
+		}
 	} else if n > 0 {
 		p.logger.Info("derived issue closed_by from events", "repo_id", repoID, "count", n)
 	}
@@ -1207,7 +1257,12 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 		CoreStatus:            status,
 		CoreDataLastCollected: &now,
 	}); err != nil {
-		p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			p.logger.Warn("failed to update final processing status", "repo_id", repoID, "error", err)
+		}
 	}
 
 	if p.unresolvableRefs > 0 {
@@ -1234,6 +1289,9 @@ func (p *Processor) processBatch(ctx context.Context, repoID int64, platID int16
 		}
 		if len(contribs) > 0 {
 			if err := p.store.UpsertContributorBatch(ctx, contribs); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err // shutdown: ProcessRepo reports it once
+				}
 				p.logger.Warn("failed to upsert contributor batch", "count", len(contribs), "error", err)
 				p.errors += len(contribs)
 			}
@@ -1244,7 +1302,13 @@ func (p *Processor) processBatch(ctx context.Context, repoID int64, platID int16
 	// All other entity types: process one at a time.
 	var errCount int
 	for _, row := range rows {
+		if ctx.Err() != nil {
+			return ctx.Err() // shutdown mid-batch: one exit, not one WARN per remaining row (pass 36)
+		}
 		if err := p.processOne(ctx, repoID, platID, entityType, row.Payload); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to process staged row",
 				"type", entityType, "staging_id", row.ID, "error", err)
 			errCount++
@@ -1262,6 +1326,9 @@ func (p *Processor) resolveUser(ctx context.Context, platID int16, ref model.Use
 	cid, err := p.resolver.Resolve(ctx, platID, ref.PlatformID,
 		ref.Login, ref.Name, ref.Email,
 		ref.AvatarURL, ref.URL, ref.NodeID, ref.Type)
+	if errors.Is(err, context.Canceled) {
+		return nil // shutdown: the row's processing fails right after and ProcessRepo reports it once
+	}
 	if err != nil {
 		// Log the error — the original silent nil return hid a SQL syntax bug
 		// that caused 131K+ messages to lose contributor attribution.
@@ -1333,6 +1400,14 @@ func (p *Processor) processStagedIssue(ctx context.Context, repoID int64, platID
 	// Process bundled children using the parent's DB ID.
 	if len(env.Labels) > 0 {
 		if err := p.store.UpsertIssueLabels(ctx, issueID, repoID, env.Labels); err != nil {
+			// Copilot round 8 (class sweep): all 12 child-upsert arms
+			// below are warn-and-continue, so a cancel mid-row emitted
+			// one WARN per remaining child — the v0.27.91 flood class.
+			// Shutdown ends the row; the staging row stays unprocessed
+			// and the next cycle redoes it (idempotent upserts).
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert issue labels", "issue_id", issueID, "error", err)
 		}
 	}
@@ -1344,6 +1419,9 @@ func (p *Processor) processStagedIssue(ctx context.Context, repoID int64, platID
 			env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
 		}
 		if err := p.store.UpsertIssueAssignees(ctx, issueID, repoID, env.Assignees); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert issue assignees", "issue_id", issueID, "error", err)
 		}
 	}
@@ -1369,6 +1447,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 	// Process all bundled children using the parent's DB ID.
 	if len(env.Labels) > 0 {
 		if err := p.store.UpsertPRLabels(ctx, prID, repoID, env.Labels); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR labels", "pr_id", prID, "error", err)
 		}
 	}
@@ -1377,6 +1458,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 			env.Assignees[i].ContributorID = p.resolveUser(ctx, platID, env.Assignees[i].UserRef)
 		}
 		if err := p.store.UpsertPRAssignees(ctx, prID, repoID, env.Assignees); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR assignees", "pr_id", prID, "error", err)
 		}
 	}
@@ -1385,6 +1469,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 			env.Reviewers[i].ContributorID = p.resolveUser(ctx, platID, env.Reviewers[i].UserRef)
 		}
 		if err := p.store.UpsertPRReviewers(ctx, prID, repoID, env.Reviewers); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR reviewers", "pr_id", prID, "error", err)
 		}
 	}
@@ -1393,6 +1480,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		review.RepoID = repoID
 		review.ContributorID = p.resolveUser(ctx, platID, review.AuthorRef)
 		if err := p.store.UpsertPRReview(ctx, &review); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR review", "pr_id", prID, "error", err)
 		}
 	}
@@ -1401,6 +1491,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		commit.RepoID = repoID
 		commit.AuthorID = p.resolveUser(ctx, platID, commit.AuthorRef)
 		if err := p.store.UpsertPRCommit(ctx, &commit); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR commit", "pr_id", prID, "error", err)
 		}
 	}
@@ -1408,6 +1501,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		file.PRID = prID
 		file.RepoID = repoID
 		if err := p.store.UpsertPRFile(ctx, &file); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR file", "pr_id", prID, "error", err)
 		}
 	}
@@ -1419,6 +1515,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.MetaHead.AuthorID = p.resolveUser(ctx, platID, env.MetaHead.AuthorRef)
 		headMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaHead)
 		if metaErr != nil {
+			if errors.Is(metaErr, context.Canceled) {
+				return metaErr
+			}
 			p.logger.Warn("failed to upsert PR meta (head)", "pr_id", prID, "error", metaErr)
 		}
 	}
@@ -1429,6 +1528,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.MetaBase.AuthorID = p.resolveUser(ctx, platID, env.MetaBase.AuthorRef)
 		baseMetaID, metaErr = p.store.UpsertPRMeta(ctx, env.MetaBase)
 		if metaErr != nil {
+			if errors.Is(metaErr, context.Canceled) {
+				return metaErr
+			}
 			p.logger.Warn("failed to upsert PR meta (base)", "pr_id", prID, "error", metaErr)
 		}
 	}
@@ -1439,6 +1541,16 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 	// targeted follow-up UPDATE, warn-don't-fail like the siblings.
 	if headMetaID != 0 || baseMetaID != 0 {
 		if err := p.store.SetPRMetaLinks(ctx, prID, headMetaID, baseMetaID); err != nil {
+			// L10 pass: the one child-write arm in this function the
+			// round-8 sweep missed — its verb is "link", and the pin
+			// that was supposed to derive the sites only matched
+			// upsert/insert/clear/set. meta_head_id/meta_base_id are
+			// the columns v0.27.104 un-darkened after being 100% dark
+			// on 41.2M rows; a shutdown here left them unset for the
+			// PR while the row still stamped processed.
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to link PR meta ids", "pr_id", prID, "error", err)
 		}
 	}
@@ -1450,6 +1562,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.RepoHead.MetaID = headMetaID
 		env.RepoHead.ContribID = p.resolveUser(ctx, platID, env.RepoHead.OwnerRef)
 		if err := p.store.UpsertPRRepo(ctx, env.RepoHead); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR repo (head)", "pr_id", prID, "error", err)
 		}
 	}
@@ -1457,6 +1572,9 @@ func (p *Processor) processStagedPR(ctx context.Context, repoID int64, platID in
 		env.RepoBase.MetaID = baseMetaID
 		env.RepoBase.ContribID = p.resolveUser(ctx, platID, env.RepoBase.OwnerRef)
 		if err := p.store.UpsertPRRepo(ctx, env.RepoBase); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			p.logger.Warn("failed to upsert PR repo (base)", "pr_id", prID, "error", err)
 		}
 	}
@@ -1599,7 +1717,12 @@ func (p *Processor) processStagedRepoInfo(ctx context.Context, repoID int64, pla
 	info.RepoID = repoID
 	// Rotate previous snapshot to history before inserting the latest.
 	if err := p.store.RotateRepoInfoToHistory(ctx, repoID); err != nil {
-		p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			p.logger.Warn("failed to rotate repo info to history", "repo_id", repoID, "error", err)
+		}
 	}
 	return p.store.InsertRepoInfo(ctx, &info)
 }

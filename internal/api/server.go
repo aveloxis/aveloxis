@@ -36,7 +36,13 @@ type Server struct {
 	auth      *authenticator      // v0.27.1: Bearer sessions + repo scope
 	cmpCache  *compareCache       // v0.27.2: 60s TTL for hot compare responses
 	faCache   *firstActivityCache // v0.27.24: per-entity first-activity floors (process lifetime)
-	homeCache homeReposCache      // v0.27.4: 5m per-user TTL — ~5s cold query on fleet-scale group sets
+	homeCache homeReposCache      // v0.27.4 + v0.29.0: per-user cache, stale-while-revalidate
+
+	// v0.29.0: the home-repos loader seam (defaults to
+	// store.GetHomeRepos at construction; a bare test Server injects a
+	// fake so the stale-while-revalidate cache is behaviorally
+	// testable — the sharedWithMeStore precedent).
+	homeLoader func(ctx context.Context, userID, limit int) ([]db.HomeRepo, error)
 
 	// v0.27.20 per-add approval: optional mailer for add-request
 	// notifications + the auto-approve limit for the portal repo-add
@@ -77,6 +83,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
 		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit,
 		sharedWithMe: store}
+	s.homeLoader = store.GetHomeRepos
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
 	// the publicPaths allowlist (auth.go); 60s stale-on-error cache.
@@ -234,6 +241,15 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(ids) == 0 {
 		http.Error(w, "no valid repo IDs", http.StatusBadRequest)
+		return
+	}
+	// v0.28.10 (Copilot round 7): the batch is bounded — its queueless
+	// fallback runs live aggregates for gone repos, so an uncapped id
+	// list was an unbounded-cost surface. 500 comfortably covers every
+	// real caller (monitor 200/page, group pages 100/page); the store
+	// clamps as backstop (v0.27.65 pattern), this 400 is the honest UX.
+	if len(ids) > db.RepoStatsBatchMaxIDs {
+		http.Error(w, fmt.Sprintf("at most %d ids per request", db.RepoStatsBatchMaxIDs), http.StatusBadRequest)
 		return
 	}
 	stats, err := s.store.GetRepoStatsBatch(r.Context(), ids)

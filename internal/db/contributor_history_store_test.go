@@ -227,8 +227,12 @@ func TestHistoryClaimExcludesBots(t *testing.T) {
 	flat := strings.Join(strings.Fields(body), " ")
 	for _, needle := range []string{
 		// the v0.27.69 three-marker predicate, applied to gh_login (the
-		// claim's fetch key)
-		`COALESCE(gh_type, '') = 'Bot'`,
+		// claim's fetch key). v0.28.1: the type test widened to the
+		// full non-human set — Organization is the codecov production
+		// shape, ProgrammaticAccessBot the fine-grained-PAT actor;
+		// their histories are ghost-class dense and the display
+		// surfaces exclude them anyway.
+		`COALESCE(gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`,
 		`gh_login ILIKE '%[bot]%'`,
 		`gh_login ~* '[-_](bot|robot)[0-9]*$'`,
 		// the curated GitHub system-account list
@@ -238,8 +242,14 @@ func TestHistoryClaimExcludesBots(t *testing.T) {
 			t.Errorf("history claim must exclude bots: missing %q", needle)
 		}
 	}
-	// The list itself must carry the three known GitHub system accounts.
-	for _, acct := range []string{`"actions-user"`, `"web-flow"`, `"ghost"`} {
+	// The list itself must carry the known GitHub system accounts plus
+	// the v0.28.1 machine accounts GitHub types as plain 'User'
+	// (codecov's own row is typed Organization — the 'codecov' entry
+	// is belt-and-suspenders for un-enriched login-only rows).
+	for _, acct := range []string{
+		`"actions-user"`, `"web-flow"`, `"ghost"`,
+		`"codecov"`, `"codecov-io"`, `"codecov-commenter"`,
+	} {
 		if !strings.Contains(src, acct) {
 			t.Errorf("githubSystemAccounts must include %s", acct)
 		}
@@ -278,6 +288,12 @@ func TestHistoryClaimSkipsBotAndSystemAccounts(t *testing.T) {
 	suffixBot := seed("_avhistbot_x", "_avhistbot_x[bot]", "User")
 	robot := seed("_avhistbot_ci", "_avhistbot-ci-robot", "User")
 	system := seed("_avhistbot_ghost", "GHOST", "User") // LOWER() must catch case variants
+	// v0.28.1: the widened non-human types are excluded too
+	// (Organization = the codecov shape); Mannequin stays claimable —
+	// it stands in for an unmatched human.
+	orgAcct := seed("_avhistbot_org", "_avhistbot_org", "Organization")
+	pabAcct := seed("_avhistbot_pab", "_avhistbot_pab", "ProgrammaticAccessBot")
+	mannequin := seed("_avhistbot_mann", "_avhistbot_mann", "Mannequin")
 
 	var poolN int
 	if err := store.pool.QueryRow(ctx, `
@@ -299,11 +315,16 @@ func TestHistoryClaimSkipsBotAndSystemAccounts(t *testing.T) {
 	if !got[talbot] {
 		t.Error("talbot-style surname must survive the bot regex (v0.27.69 safety)")
 	}
+	if !got[mannequin] {
+		t.Error("Mannequin rows must stay claimable — they stand in for unmatched humans (v0.28.1)")
+	}
 	for name, id := range map[string]string{
-		"gh_type=Bot":       appBot,
-		"[bot] suffix":      suffixBot,
-		"-ci-robot suffix":  robot,
-		"system acct GHOST": system,
+		"gh_type=Bot":                   appBot,
+		"[bot] suffix":                  suffixBot,
+		"-ci-robot suffix":              robot,
+		"system acct GHOST":             system,
+		"gh_type=Organization":          orgAcct,
+		"gh_type=ProgrammaticAccessBot": pabAcct,
 	} {
 		if got[id] {
 			t.Errorf("%s must be excluded from the history claim", name)

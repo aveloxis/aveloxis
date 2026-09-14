@@ -130,6 +130,75 @@ func TestStripSQLComments(t *testing.T) {
 	}
 }
 
+// TestStripShellComment pins StripShellComment (round 17 L10 pass 6;
+// the control-operator rows came from Copilot's PR #198): an unquoted
+// `#…` tail is dropped — at line start, after whitespace, OR after a
+// shell control operator — a backslash inside that comment is not kept
+// as a continuation, and quotes and backslash escapes decide what
+// counts as unquoted. The escaped-quote and single-quote-backslash
+// cases are the ones only the escape arm decides; each was added after
+// a mutation to that arm survived the rest of the table.
+func TestStripShellComment(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"unquoted tail", "git fetch --prune  # never --all", "git fetch --prune  "},
+		{"whole-line comment", "# just a note", ""},
+		{"backslash inside a comment is not kept", "cmd  # note \\", "cmd  "},
+		// Operator boundaries (`;` `&` `|` are POSIX control operators;
+		// `<` `>` are redirection operators — both kinds end a word, so
+		// both start a comment). `cmd;# note \` was a real bypass: the
+		// backslash survived the strip, the caller joined the next line
+		// on, and the piece carrying the fetch then began with `#`.
+		// Every row below was checked against bash, and every operator
+		// member has a row here: dropping any one of them from
+		// isShellWordBoundary must fail this table (round 17 L10: five
+		// of the nine members were pinned by nothing when first added).
+		{"comment after control operator", "cmd;# note", "cmd;"},
+		{"backslash in control-operator comment is not continuation", "true;# note \\", "true;"},
+		{"comment after pipe", "cmd |#note", "cmd |"},
+		{"comment after redirect", "cmd >#note", "cmd >"},
+		{"comment after input redirect", "cmd <#note", "cmd <"},
+		{"comment after background operator", "cmd &#note", "cmd &"},
+		{"comment after subshell open", "(#note", "("},
+		{"comment after tab", "cmd\t#note", "cmd\t"},
+		// `)` is NOT a boundary here, deliberately. It ends a word when
+		// it closes a subshell, an arithmetic command `((…))`, a `case`
+		// pattern or a function definition `()`; closing `$(…)`,
+		// `$((…))` or `<(…)` it is PART of the word, so bash keeps a
+		// following `#` literal (`echo $((1+2))#c` prints `3#c`, while
+		// `((1+2))#c` is a comment — the SAME closing `))`, opposite
+		// verdicts, decided by expansion-vs-command; `echo $(echo A)#c`
+		// prints `A#c` for the single-`)` case). Both examples below
+		// have rows. Telling those apart needs `$(`/`<(` nesting depth,
+		// which this helper does not track. With `)` in the set (PR
+		// #198's set), a fetch line whose refspecs sit AFTER a `$(…)#`
+		// would be truncated and reported as missing them; no docs line
+		// spells that shape today, so these rows pin the behaviour
+		// rather than a corpus line. Excluding `)` under-strips, the
+		// safe direction, and is what StripShellComment's own "no
+		// `$(…)`" disclaimer already promised.
+		{"hash after a command substitution stays literal", "echo $(date)#c", "echo $(date)#c"},
+		{"hash after an arithmetic expansion stays literal", "echo $((1+2))#c", "echo $((1+2))#c"},
+		{"hash after a subshell close is left alone (deliberate under-strip)", "( echo A )#c", "( echo A )#c"},
+		{"single-quoted hash", "x --opt='a # b' --prune", "x --opt='a # b' --prune"},
+		{"double-quoted hash", "x --opt=\"a # b\" --prune", "x --opt=\"a # b\" --prune"},
+		{"escaped hash", "echo \\# not a comment", "echo \\# not a comment"},
+		{"hash glued to a word", "url#frag --prune", "url#frag --prune"},
+		// An escaped quote must not open a quote that swallows the
+		// comment; these two are what the escape arm alone decides.
+		{"escaped single quote", "echo it\\'s  # tail", "echo it\\'s  "},
+		{"escaped double quote", "echo \\\"x  # tail", "echo \\\"x  "},
+		// Inside single quotes a backslash is literal, so this quote
+		// closes and the tail IS a comment.
+		{"backslash literal inside single quotes", "echo 'dir\\' # tail", "echo 'dir\\' "},
+		{"no comment", "git fetch origin", "git fetch origin"},
+	}
+	for _, c := range cases {
+		if got := StripShellComment(c.in); got != c.want {
+			t.Errorf("%s: StripShellComment(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 // v0.27.125 (Copilot round 16, suppressed — real): removing an INLINE
 // block comment without replacing its whitespace merged the adjacent
 // tokens (`func/*note*/f` → `funcf`; `SELECT/*note*/FROM` →

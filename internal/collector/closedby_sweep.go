@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -89,7 +90,12 @@ func (s *ClosedBySweep) Run(ctx context.Context, limit int64, dryRun bool) (int6
 				continue
 			}
 			if err := s.store.SetIssueClosedBy(ctx, si.IssueID, cid); err != nil {
-				s.logger.Warn("closed_by sweep write failed", "issue_id", si.IssueID, "error", err)
+				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+				// defect. Only the log is suppressed — surrounding behaviour is
+				// unchanged and the work is retried on the next cycle.
+				if !errors.Is(err, context.Canceled) {
+					s.logger.Warn("closed_by sweep write failed", "issue_id", si.IssueID, "error", err)
+				}
 				continue
 			}
 			filled++

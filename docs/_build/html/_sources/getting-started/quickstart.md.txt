@@ -35,6 +35,10 @@ Edit `aveloxis.json` with your database credentials:
 }
 ```
 
+```{important}
+**Local development over HTTP:** If you plan to use the web GUI locally (without HTTPS), set `"dev_mode": true` in the `"web"` section of `aveloxis.json`. Without this, session cookies are marked `Secure` and browsers will not send them over plain HTTP, causing login to fail silently. Do not enable `dev_mode` in production.
+```
+
 If you do not have a database yet, create one:
 
 ```sql
@@ -63,7 +67,7 @@ docker run -d --name aveloxis-db -p 5432:5432 \
 aveloxis migrate
 ```
 
-This creates 108 tables and 19 materialized views across two PostgreSQL schemas (`aveloxis_data` and `aveloxis_ops`). It is safe to run repeatedly -- all DDL uses `CREATE ... IF NOT EXISTS`.
+This creates 147 tables and 20 materialized views across three PostgreSQL schemas (`aveloxis_data`, `aveloxis_ops`, and `aveloxis_scan`), plus the `aveloxis_augur_data` compatibility views for 8Knot. It is safe to run repeatedly -- all DDL uses `CREATE ... IF NOT EXISTS`.
 
 ---
 

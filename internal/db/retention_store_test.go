@@ -125,6 +125,25 @@ func newRetentionSeed(ctx context.Context, t *testing.T, store *PostgresStore) *
 	if err != nil {
 		t.Fatalf("UpsertRepo: %v", err)
 	}
+	// Self-cleaning: 462 leaked _avret repos (2026-08-31) helped push
+	// the shared scratch DB's claim-eligible residue past the scancode
+	// claim test's bounded loop. Children before parents; contributors
+	// are NOT deleted (fixed logins, reused via ON CONFLICT across
+	// runs — and login-history rows RESTRICT them anyway, v0.28.18).
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.issue_message_ref WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.messages WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.pull_request_reviews WHERE pull_request_id IN
+			(SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1)`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.commits WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repo_deps_scorecard WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
+		cleanupExecRetry(cctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+	})
 	return &retentionSeed{t: t, ctx: ctx, store: store, repoID: id, seq: time.Now().UnixNano()}
 }
 

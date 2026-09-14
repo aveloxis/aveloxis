@@ -68,11 +68,11 @@ Issues and PRs are staged as **envelope types** that bundle the parent entity wi
 
 A staged issue envelope contains:
 
-```json
+```jsonc
 {
-  "issue": { ... },
-  "labels": [ ... ],
-  "assignees": [ ... ]
+  "issue": { /* ... */ },
+  "labels": [ /* ... */ ],
+  "assignees": [ /* ... */ ]
 }
 ```
 
@@ -86,17 +86,17 @@ When processed:
 
 A staged PR envelope contains:
 
-```json
+```jsonc
 {
-  "pull_request": { ... },
-  "labels": [ ... ],
-  "assignees": [ ... ],
-  "reviewers": [ ... ],
-  "reviews": [ ... ],
-  "commits": [ ... ],
-  "files": [ ... ],
-  "head_meta": { ... },
-  "base_meta": { ... }
+  "pull_request": { /* ... */ },
+  "labels": [ /* ... */ ],
+  "assignees": [ /* ... */ ],
+  "reviewers": [ /* ... */ ],
+  "reviews": [ /* ... */ ],
+  "commits": [ /* ... */ ],
+  "files": [ /* ... */ ],
+  "head_meta": { /* ... */ },
+  "base_meta": { /* ... */ }
 }
 ```
 

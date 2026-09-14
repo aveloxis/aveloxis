@@ -105,6 +105,15 @@ func TestV0264ParityBackfillEndToEnd(t *testing.T) {
 		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
 
+	// v0.28.4: the two backfills are ledgered (migration_ledger) — a
+	// completed label skips on re-run, so replay them exactly the way
+	// an operator would: DELETE the ledger rows, then migrate. This
+	// doubles as the documented-replay-flow exercise.
+	if _, err := store.Pool().Exec(ctx,
+		`DELETE FROM aveloxis_ops.migration_ledger WHERE step_label LIKE 'v0.26.4 backfill%'`); err != nil {
+		t.Fatalf("ledger replay delete: %v", err)
+	}
+
 	// Run migrations again — the backfill steps must fill both columns.
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("backfill migrate: %v", err)

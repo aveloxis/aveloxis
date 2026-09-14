@@ -19,7 +19,11 @@ Bare clones contain only the git object database (no working tree). They are:
 
 - **Smaller** than full clones (no checked-out files)
 - **Permanent** -- stored in `repo_clone_dir` and reused across collection cycles
-- **Updated** via `git fetch --all` on subsequent runs
+- **Updated** on subsequent runs via `git -C <clone> fetch origin` with explicit
+  `+refs/heads/*:refs/heads/*` / `+refs/tags/*:refs/tags/*` refspecs and
+  `--prune` -- a bare clone carries no fetch refspec, so a plain
+  `git fetch --all` would download objects without ever advancing
+  `refs/heads/*`
 
 ### Full clones (temporary)
 
@@ -49,7 +53,7 @@ The facade phase runs `git log` with a custom format string to extract commit da
 The format uses custom field and record separators to reliably parse multi-line output:
 
 ```
-git log --all --numstat --pretty=format:'<COMMIT>%H<SEP>%an<SEP>%ae<SEP>%ad<SEP>%cn<SEP>%ce<SEP>%cd<SEP>%P<SEP>%s'
+git log --numstat --pretty=format:'<COMMIT>%H<SEP>%an<SEP>%ae<SEP>%ad<SEP>%cn<SEP>%ce<SEP>%cd<SEP>%P<SEP>%s'
 ```
 
 Where:
@@ -110,7 +114,7 @@ Following Augur's data model, the `commits` table stores **one row per file per 
 | `cmt_committer_timestamp` | Parsed from `%cd` | Parsed timestamp |
 | `cmt_added` | numstat | Lines added in this file |
 | `cmt_removed` | numstat | Lines removed in this file |
-| `cmt_whitespace` | Computed | Always 0 (reserved) |
+| `cmt_whitespace` | Computed | Augur-parity whitespace/reformat count (v0.27.105); `cmt_added`/`cmt_removed` are adjusted to Augur's semantics on walked rows |
 | `cmt_filename` | numstat | File path |
 
 ### Upsert behavior
@@ -246,7 +250,7 @@ GROUP BY repo_id, cmt_author_email, cmt_author_affiliation,
          EXTRACT(YEAR FROM cmt_author_timestamp);
 ```
 
-Aggregates are refreshed per-repo after each facade run, not globally. This keeps the cost proportional to the repo's commit count.
+Aggregates are refreshed in one bulk pass on the configured matview-rebuild day (v0.16.5) — NOT per-repo after each facade run. The per-repo helpers remain in `internal/db/aggregates.go` for manual recalculation only.
 
 ---
 
@@ -254,7 +258,7 @@ Aggregates are refreshed per-repo after each facade run, not globally. This keep
 
 ### Fetch failure recovery
 
-If `git fetch --all` fails on an existing bare clone (e.g., due to corruption):
+If the explicit-refspec fetch fails on an existing bare clone (e.g., due to corruption):
 
 1. The existing bare clone is deleted
 2. A fresh `git clone --bare` is attempted
@@ -262,7 +266,7 @@ If `git fetch --all` fails on an existing bare clone (e.g., due to corruption):
 
 ### Incremental collection
 
-On subsequent collection cycles, `git fetch --all` retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with `ON CONFLICT` ensure only truly new data is inserted.
+On subsequent collection cycles, the explicit-refspec fetch retrieves only new commits since the last fetch. The git log is re-parsed in full, but upserts with `ON CONFLICT` ensure only truly new data is inserted.
 
 ### GitLab `repo_info.commit_count` backfill (v0.16.9+)
 

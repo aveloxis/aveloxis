@@ -16,6 +16,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -41,6 +42,9 @@ const EnrichBatchSize = 14000
 // cycle.
 func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolver *db.ContributorResolver, client platform.Client, logger *slog.Logger) int {
 	logins, err := resolver.GetThinContributorLogins(ctx, EnrichBatchSize)
+	if errors.Is(err, context.Canceled) {
+		return 0 // shutdown, not a failure
+	}
 	if err != nil {
 		logger.Warn("failed to query thin contributors for enrichment", "error", err)
 		return 0
@@ -54,6 +58,9 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 	successLogins := make([]string, 0, len(logins))
 
 	for _, login := range logins {
+		if ctx.Err() != nil {
+			return 0 // shutdown: one exit, not 14,000 no-op calls (pass 35)
+		}
 		contrib, err := client.EnrichContributor(ctx, login)
 		if err != nil {
 			// User may be deleted, suspended, or rate-limited. Still mark
@@ -72,7 +79,11 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 	// Single batch flush. UpsertContributorBatch dedupes by login in
 	// memory and runs one transaction.
 	if len(enriched) > 0 {
-		if err := store.UpsertContributorBatch(ctx, enriched); err != nil {
+		err := store.UpsertContributorBatch(ctx, enriched)
+		if errors.Is(err, context.Canceled) {
+			return 0 // shutdown, not a failure: nothing is marked, the batch re-enriches next tick
+		}
+		if err != nil {
 			logger.Warn("failed to flush enriched contributor batch",
 				"count", len(enriched), "error", err)
 			// Don't mark them enriched if the batch failed — they'll be

@@ -165,7 +165,7 @@ func (s *Scheduler) runMyThing(ctx context.Context) {
             s.logger.Warn("my-thing failed",
                 "id", c.ID, "error", err)
             // Stamp last_attempted_at unconditionally so the cooldown gate works
-            // (the v0.18.29 / v0.19.2 / v0.20.17 pattern — see CLAUDE.md).
+            // (the v0.18.29 / v0.19.2 / v0.20.17 pattern).
             _ = s.store.MarkThingAttempted(ctx, c.ID)
             continue
         }
@@ -174,7 +174,7 @@ func (s *Scheduler) runMyThing(ctx context.Context) {
 }
 ```
 
-**The cooldown discipline (mandatory):** if your background task has the failure pattern "I tried X, it failed, I'll try again next cycle, it fails again, repeat forever," add a `last_attempted_at TIMESTAMPTZ` column AND a query gate `WHERE last_attempted_at IS NULL OR last_attempted_at < NOW() - cooldown`. Stamp the column on EVERY attempt — success, failure, even network errors. v0.18.29, v0.19.2, and v0.20.17 are all this pattern. CLAUDE.md has the full rationale; don't reinvent it.
+**The cooldown discipline (mandatory):** if your background task has the failure pattern "I tried X, it failed, I'll try again next cycle, it fails again, repeat forever," add a `last_attempted_at TIMESTAMPTZ` column AND a query gate `WHERE last_attempted_at IS NULL OR last_attempted_at < NOW() - cooldown`. Stamp the column on EVERY attempt — success, failure, even network errors. v0.18.29, v0.19.2, and v0.20.17 are all this pattern. The v0.18.29 / v0.19.2 / v0.20.17 release notes carry the full rationale; don't reinvent it.
 
 Add config knobs:
 
@@ -270,7 +270,7 @@ When adding a phase:
 5. **Implement the phase function** following the relevant template above.
 6. **Wire into the scheduler / staged collector** at the right phase position.
 7. **Add config knobs** with the `Interval / BatchSize / Cooldown` pattern if it's a background task.
-8. **Test, document, version-bump, CLAUDE.md entry.**
+8. **Test, document, version-bump, release-note entry.**
 
 ## A real example to study
 

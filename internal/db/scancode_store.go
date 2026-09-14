@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -76,54 +77,6 @@ func (s *PostgresStore) ScancodeFreshness(ctx context.Context, repoID int64) (ti
 		v = *version
 	}
 	return t, v, nil
-}
-
-// InsertScancodeScan inserts a scan metadata row and returns the scan_id.
-func (s *PostgresStore) InsertScancodeScan(ctx context.Context, repoID int64, scancodeVersion string, filesScanned, filesWithFindings int, durationSecs float64, scanErrors json.RawMessage) (int64, error) {
-	var scanID int64
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_scan.scancode_scans
-			(repo_id, scancode_version, files_scanned, files_with_findings,
-			 scan_duration_secs, scan_errors,
-			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, $5, $6,
-			'aveloxis-scancode', 'scancode-toolkit', NOW())
-		RETURNING scan_id`,
-		repoID, scancodeVersion, filesScanned, filesWithFindings, durationSecs, scanErrors).Scan(&scanID)
-	return scanID, err
-}
-
-// InsertScancodeFileResultBatch inserts per-file scancode results in a single
-// round-trip using pgx batch. A scan of a large repo can produce thousands of
-// file results, so batching is important for performance.
-func (s *PostgresStore) InsertScancodeFileResultBatch(ctx context.Context, repoID int64, rows []*ScancodeFileRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	batch := &pgx.Batch{}
-	for _, row := range rows {
-		batch.Queue(`
-			INSERT INTO aveloxis_scan.scancode_file_results
-				(repo_id, path, file_type, programming_language,
-				 detected_license_expression, detected_license_expression_spdx,
-				 percentage_of_license_text,
-				 copyrights, holders, license_detections, package_data, scan_errors,
-				 tool_source, data_source, data_collection_date)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				'aveloxis-scancode', 'scancode-toolkit', NOW())`,
-			repoID, row.Path, row.FileType, row.ProgrammingLanguage,
-			row.DetectedLicenseExpression, row.DetectedLicenseExpressionSPDX,
-			row.PercentageOfLicenseText,
-			row.Copyrights, row.Holders, row.LicenseDetections, row.PackageData, row.ScanErrors)
-	}
-	results := s.pool.SendBatch(ctx, batch)
-	defer results.Close()
-	for range batch.Len() {
-		if _, err := results.Exec(); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ScancodeForSBOM holds aggregated scancode data for SBOM enrichment.
@@ -311,9 +264,28 @@ type ScancodeFileEntry struct {
 	Copyright string `json:"copyright"`
 }
 
+// scancodeRootSegRe matches the leading clone-directory segment of a
+// scancode path: the worker clones into repo_<repoID>_<unixNanos>
+// (scancode_worker.go) and scancode emits paths relative to the scan
+// root's PARENT, so pre-v0.28.1 stored paths carry that noise segment.
+var scancodeRootSegRe = regexp.MustCompile(`^repo_\d+_\d+/`)
+
+// StripScancodeRootPrefix makes scancode paths repository-root-relative
+// (v0.28.1 item 5; hoisted here in v0.28.5 as the ONE shared strip,
+// SR-17). Applied at BOTH boundaries: collector ingest (new scans
+// store clean paths) and the API read below (historical prefixed rows
+// serve clean to every consumer without waiting for their next
+// 180-day-cadence rescan). The aveloxis-gui display-side strip
+// remains as a belt for cached payloads.
+func StripScancodeRootPrefix(p string) string {
+	return scancodeRootSegRe.ReplaceAllString(p, "")
+}
+
 // GetScancodeFileEntries returns per-file license and copyright data for the
 // web GUI table. Each row is: file path, SPDX license expression, first
-// copyright holder (truncated). Sorted by path for deterministic display.
+// copyright holder (truncated). Sorted by path for deterministic display
+// (historical rows all share one scan-root prefix per scan, so stripping
+// preserves the sorted order).
 func (s *PostgresStore) GetScancodeFileEntries(ctx context.Context, repoID int64) ([]ScancodeFileEntry, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT path,
@@ -336,7 +308,7 @@ func (s *PostgresStore) GetScancodeFileEntries(ctx context.Context, repoID int64
 		}
 		copyright := truncateCopyright(extractFirstCopyrightHolder(copyrightsJSON), 120)
 		result = append(result, ScancodeFileEntry{
-			Path:      path,
+			Path:      StripScancodeRootPrefix(path),
 			License:   NormalizeLicenseToSPDX(lic),
 			Copyright: copyright,
 		})
@@ -375,4 +347,94 @@ func truncateCopyright(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// ScancodeScanMeta is the scancode_scans row for one completed scan.
+type ScancodeScanMeta struct {
+	Version           string
+	FilesScanned      int
+	FilesWithFindings int
+	DurationSecs      float64
+	ScanErrors        json.RawMessage
+}
+
+// ReplaceScancodeSnapshot rotates the repo's current scancode rows to
+// history and writes the new snapshot — rotation and BOTH inserts in
+// ONE transaction.
+//
+// v0.28.19. The ingest used to call RotateScancodeToHistory,
+// InsertScancodeScan and InsertScancodeFileResultBatch as three
+// independent transactions, guarded only by a ctx check BEFORE the
+// first. That guard prevents STARTING the sequence under a done ctx;
+// it does nothing about a cancellation (or any failure) landing
+// between them, which is a wide window — the file batch is one Exec
+// per finding. The repo was then left with its previous snapshot
+// deleted and no current rows, or with scan metadata and no file
+// rows, until a full re-scan 180 days later. Fusing them is the same
+// fix ReplaceRepoLaborSnapshot got in v0.27.7: the rotation can
+// neither be skipped nor half-applied, and a mid-insert failure rolls
+// the rotation back so the PREVIOUS snapshot stays current.
+func (s *PostgresStore) ReplaceScancodeSnapshot(ctx context.Context, repoID int64, meta ScancodeScanMeta, rows []*ScancodeFileRow) (int64, error) {
+	var scanID int64
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		if err := rotateScancodeRows(ctx, tx, repoID); err != nil {
+			return fmt.Errorf("rotating scancode history: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO aveloxis_scan.scancode_scans
+				(repo_id, scancode_version, files_scanned, files_with_findings,
+				 scan_duration_secs, scan_errors,
+				 tool_source, data_source, data_collection_date)
+			VALUES ($1, $2, $3, $4, $5, $6,
+				'aveloxis-scancode', 'scancode-toolkit', NOW())
+			RETURNING scan_id`,
+			repoID, meta.Version, meta.FilesScanned, meta.FilesWithFindings,
+			meta.DurationSecs, meta.ScanErrors).Scan(&scanID); err != nil {
+			return fmt.Errorf("inserting scancode scan: %w", err)
+		}
+
+		// Chunked batch sends inside the single tx — the same shape
+		// ReplaceRepoLaborSnapshot uses (v0.27.7). The first cut of this
+		// fusion carried the transaction over from the three separate
+		// calls but left the pgx.Batch behind, degrading ingest to one
+		// round-trip per finding: measured 10,000 rows at 299 ms
+		// (loopback) versus 50 ms batched, and every one of those
+		// round-trips is held inside a transaction that has already
+		// deleted the repo's current rows. On a network-attached
+		// Postgres a kernel-class repo (80K findings) would hold that
+		// transaction open for over a minute.
+		const chunkSize = 5000
+		for start := 0; start < len(rows); start += chunkSize {
+			end := min(start+chunkSize, len(rows))
+			batch := &pgx.Batch{}
+			for _, row := range rows[start:end] {
+				batch.Queue(`
+					INSERT INTO aveloxis_scan.scancode_file_results
+						(repo_id, path, file_type, programming_language,
+						 detected_license_expression, detected_license_expression_spdx,
+						 percentage_of_license_text,
+						 copyrights, holders, license_detections, package_data, scan_errors,
+						 tool_source, data_source, data_collection_date)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+						'aveloxis-scancode', 'scancode-toolkit', NOW())`,
+					repoID, row.Path, row.FileType, row.ProgrammingLanguage,
+					row.DetectedLicenseExpression, row.DetectedLicenseExpressionSPDX,
+					row.PercentageOfLicenseText,
+					row.Copyrights, row.Holders, row.LicenseDetections, row.PackageData,
+					row.ScanErrors)
+			}
+			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+				return fmt.Errorf("inserting scancode file results: %w", err)
+			}
+		}
+		return tx.Commit(ctx)
+	})
+	return scanID, err
 }

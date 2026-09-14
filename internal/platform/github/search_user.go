@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // SearchUserByEmail looks up a GitHub user by email address using the
@@ -38,7 +40,8 @@ func (c *Client) SearchUserByEmail(ctx context.Context, email string) (string, i
 	}
 
 	path := fmt.Sprintf("/search/users?q=%s+in:email&per_page=1", url.QueryEscape(email))
-	resp, err := c.http.Get(ctx, path)
+	// v0.28.17: ETag-free — see search_commit.go.
+	resp, err := c.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		return "", 0, err
 	}

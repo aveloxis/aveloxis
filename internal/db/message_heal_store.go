@@ -39,11 +39,17 @@ func (s *PostgresStore) CountMessageHealPending(ctx context.Context) (int64, err
 	return n, err
 }
 
-// GetMessageHealBatch resolves up to limit pending worklist rows to
-// their claiming parents. Rows whose parents cannot be resolved at all
-// (deleted issues/PRs) still come back — the healer stamps them healed
-// after deleting their stale links, since there is nothing to refetch.
-func (s *PostgresStore) GetMessageHealBatch(ctx context.Context, limit int) ([]MessageHealItem, error) {
+// GetMessageHealBatch resolves up to limit pending worklist rows
+// ABOVE afterMsgID to their claiming parents (v0.28.8, Copilot round
+// 4: the cursor is what lets a run advance PAST a fully-failing batch
+// — without it, failed rows stay pending, the next pass reselects the
+// same lowest 25K ids, and every higher-id row is permanently starved
+// while the run reports success). Failed rows stay pending; a fresh
+// run starts at cursor 0 and retries them. Rows whose parents cannot
+// be resolved at all (deleted issues/PRs) still come back — the
+// healer stamps them healed after deleting their stale links, since
+// there is nothing to refetch.
+func (s *PostgresStore) GetMessageHealBatch(ctx context.Context, afterMsgID int64, limit int) ([]MessageHealItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT w.msg_id, m.msg_kind,
 		       COALESCE(i.repo_id, 0), COALESCE(i.issue_number, 0),
@@ -80,8 +86,9 @@ func (s *PostgresStore) GetMessageHealBatch(ctx context.Context, limit int) ([]M
 			LIMIT 1
 		) rp ON TRUE
 		WHERE w.healed_at IS NULL
+		  AND w.msg_id > $1
 		ORDER BY w.msg_id
-		LIMIT $1`, limit)
+		LIMIT $2`, afterMsgID, limit)
 	if err != nil {
 		return nil, err
 	}

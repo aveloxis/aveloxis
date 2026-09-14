@@ -1,3 +1,5 @@
+REVIEW.md
+long-jobs/
 *.1
 loadorgs
 el-orgs.txt
@@ -75,3 +77,10 @@ aveloxis-shadow-graphql.json
 aveloxis-shadow-rest.json
 aveloxis.nsa.json
 !internal/collector/testdata/sbom_schemas/*.json
+
+# compiled binary — was accidentally committed in 451b729; remove with git rm --cached aveloxis
+/aveloxis
+
+# Sphinx moves the previous .buildinfo here on a config-change rebuild; the live
+# .buildinfo is tracked, the backup is build noise (PR #197 round 15).
+docs/_build/html/.buildinfo.bak

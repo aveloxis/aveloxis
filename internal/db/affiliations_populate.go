@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -88,8 +89,13 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 	// it must be logged, or an aliases-side outage would invisibly shrink
 	// the affiliations map (the v0.27.19 silent-error-drop lesson).
 	if err != nil {
-		s.logger.Warn("affiliation population: alias-bridge query failed — proceeding with profile candidates only",
-			"error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			s.logger.Warn("affiliation population: alias-bridge query failed — proceeding with profile candidates only",
+				"error", err)
+		}
 	} else {
 		defer aliasRows.Close()
 		for aliasRows.Next() {
@@ -127,7 +133,12 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 		}
 		exRows.Close()
 	} else {
-		s.logger.Warn("affiliation population: existing-map load failed — falling back to full upsert this run", "error", exErr)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(exErr, context.Canceled) {
+			s.logger.Warn("affiliation population: existing-map load failed — falling back to full upsert this run", "error", exErr)
+		}
 	}
 
 	// Upsert into contributor_affiliations.

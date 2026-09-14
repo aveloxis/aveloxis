@@ -59,7 +59,7 @@ This helps identify licensing risks in the project's dependency tree at a glance
 
 ### Source Code Licenses (ScanCode)
 
-Below the dependency license table, a second section shows licenses and copyright holders detected directly in source code files by [ScanCode](https://github.com/aboutcode-org/scancode-toolkit). This data comes from periodic source file analysis (every 30 days by default).
+Below the dependency license table, a second section shows licenses and copyright holders detected directly in source code files by [ScanCode](https://github.com/aboutcode-org/scancode-toolkit). This data comes from periodic source file analysis (every 180 days by default).
 
 The **aggregate table** shows per-SPDX-expression file counts (same normalization as the dependency table).
 

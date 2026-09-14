@@ -9,6 +9,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -16,8 +17,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
-	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // mailingListIdleInterval is how long a runner waits before re-polling when
@@ -39,9 +40,16 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		return
 	}
 
-	// #9: clear locks left by a worker that died mid-scan, so those lists are
-	// reclaimable immediately rather than after the stale-lock gate.
-	if n, err := s.store.RecoverStaleListLocks(ctx); err != nil {
+	// #9: clear the locks a worker that died mid-scan left behind once they
+	// have aged past MailingListStaleLock (the claim query gates on the same
+	// window). A worker's own shutdown path releases its lock best-effort
+	// (pass 37; the scheduler waits for it before closing the pool, pass
+	// 38) — this startup pass is the fallback when that lost.
+	n, err := s.store.RecoverStaleListLocks(ctx)
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
+	if err != nil {
 		s.logger.Warn("mailing-list: stale-lock recovery failed", "error", err)
 	} else if n > 0 {
 		s.logger.Info("mailing-list: recovered stale list locks", "count", n)
@@ -69,7 +77,13 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		cadence = db.DefaultMailingListCadence
 	}
 	pid := os.Getpid()
-	bootID := fmt.Sprintf("%d-%d", pid, time.Now().UnixNano())
+	// v0.28.18: the REAL kernel boot id (one shared reader with the
+	// scancode worker) — what the column name promises. Pre-.18 this was
+	// a per-process synthetic (pid-nanos). Informational: nothing
+	// compares it (PIDs are namespaced and boot ids host-global under the
+	// container deployment, so no same-host PID rule can be built on it;
+	// the shutdown release is keyed on the claim's own lock stamp).
+	bootID := hostid.BootID()
 
 	// Spawn a worker pool per system definition that has a supported backend
 	// (Phase 3: Apache Pony Mail + lore public-inbox). Each pool shares one
@@ -90,7 +104,7 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 			w := collector.NewMailingListWorker(s.store, sys, backend, pacer, breaker,
 				cadence, s.cfg.Collection.MailingListBackfillMonthsOrDefault(),
 				pid, bootID, s.logger)
-			safego.Go(s.logger, "mailing-list-worker", func() { s.runMailingListLoop(ctx, w) })
+			s.goTracked("mailing-list-worker", func() { s.runMailingListLoop(ctx, w) })
 		}
 
 		// The resolve+write half: a MailingListProcessor drains this system's
@@ -105,7 +119,7 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 		}
 		proc := collector.NewMailingListProcessor(s.store, sys.Name, s.cfg.Collection.MailingListMirrorHandlingOrDefault(), sys.ProjectionClean(), s.logger)
 		for i := 0; i < drainWorkers; i++ {
-			safego.Go(s.logger, "mailing-list-drain", func() { s.runMailingListDrainLoop(ctx, proc) })
+			s.goTracked("mailing-list-drain", func() { s.runMailingListDrainLoop(ctx, proc) })
 		}
 
 		spawned++
@@ -118,12 +132,12 @@ func (s *Scheduler) spawnMailingListWorker(ctx context.Context) {
 	// §5d: periodically re-resolve unresolved mailing-list sender identities
 	// against the now-fuller contributors table ("coverage improves over
 	// time"). Single goroutine; runs on the same cadence knob as enrichment.
-	safego.Go(s.logger, "mailing-list-sender-backfill", func() { s.runMailingListSenderBackfill(ctx) })
+	s.goTracked("mailing-list-sender-backfill", func() { s.runMailingListSenderBackfill(ctx) })
 
 	// Phase 2 (summary/12 §5): for senders the DB-only backfill can't resolve,
 	// run them through the shared email→identity chain (Search + global
 	// commit-search) and link/create the contributor. Single goroutine.
-	safego.Go(s.logger, "mailing-list-sender-resolve", func() { s.runMailingListSenderResolve(ctx) })
+	s.goTracked("mailing-list-sender-resolve", func() { s.runMailingListSenderResolve(ctx) })
 }
 
 // runMailingListSenderResolve config. The min-message threshold (6) is the
@@ -156,6 +170,9 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 		case <-t.C:
 			cands, err := s.store.GetMailingListSenderResolveCandidates(ctx,
 				mailingListSenderResolveMinMessages, mailingListSenderResolveCooldown.Seconds(), mailingListSenderResolveBatch)
+			if errors.Is(err, context.Canceled) {
+				return // shutdown, not a failure
+			}
 			if err != nil {
 				s.logger.Warn("mailing-list: sender-resolve candidate query error", "error", err)
 				continue
@@ -167,7 +184,7 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					return
 				}
 				// Bots are never people — terminal stamp so they drop out.
-				if collector.IsBotEmail(c.SenderEmail) {
+				if collector.IsAutomationEmail(c.SenderEmail) {
 					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
 					continue
 				}
@@ -183,10 +200,25 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					// DIRECT-HUMAN sender (not a Jira/GitBox/CI relay), create an
 					// email-only contributor so they're attributed and ride the
 					// convergence ticker. Bot-relayed senders get no contributor.
-					if c.HumanClass && !collector.IsBotEmail(c.SenderEmail) {
-						if _, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail); cerr != nil {
+					if c.HumanClass && !collector.IsAutomationEmail(c.SenderEmail) {
+						createdID, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail)
+						if errors.Is(cerr, context.Canceled) {
+							return // shutdown, not a failure: no attempt stamped
+						}
+						if cerr != nil {
 							s.logger.Warn("mailing-list: email-only contributor create failed", "email", c.SenderEmail, "error", cerr)
 							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+							continue
+						}
+						// Code-review round 2026-09-06 (finding 7): ("", nil) is
+						// the documented invalid-email outcome (no '@') — NOTHING
+						// was created. Stamping it "email-only" would lie about a
+						// contributor that does not exist and created++ would
+						// over-report. A malformed From header can never become
+						// valid, so the terminal stamp is right — but under its
+						// honest source, and never counted as a creation.
+						if createdID == "" {
+							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "invalid-email", "")
 							continue
 						}
 						_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")
@@ -196,7 +228,11 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
 					continue
 				}
-				if _, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID); lerr != nil {
+				_, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID)
+				if errors.Is(lerr, context.Canceled) {
+					return // shutdown, not a failure: no attempt stamped
+				}
+				if lerr != nil {
 					s.logger.Warn("mailing-list: sender link failed", "email", c.SenderEmail, "login", login, "error", lerr)
 					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
 					continue
@@ -212,11 +248,28 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 	}
 }
 
-// mailingListSenderBackfillInterval is how often unresolved sender→cntrb
-// links are retried. Hourly is ample — it only matters as commit resolution
-// + search-resolve add identities over days.
-const mailingListSenderBackfillInterval = time.Hour
-const mailingListSenderBackfillBatch = 5000
+// mailingListSenderBackfillWindow is the msg_id keyset-window width of
+// one BackfillMailingListSenderIDs call. 500K measured as an Index Scan
+// (~6s/window on the production aveloxis DB); at 2M the planner flips to
+// a parallel seq scan.
+const mailingListSenderBackfillWindow = int64(500_000)
+
+// mailingListSenderBackfillMaxWindowsPerTick is the window-count
+// ceiling per tick; the LOAD-BEARING bound is elapsed time (below) —
+// Copilot round 5 on PR #193: 200 windows × ~6 s each is ~20 minutes,
+// while the interval knob accepts one minute, so a count-only budget
+// let a small knob value queue back-to-back ticks that ran the large
+// UPDATEs continuously. A full production pass is ~57 windows today;
+// 200 is headroom, not a target.
+const mailingListSenderBackfillMaxWindowsPerTick = 200
+
+// mailingListSenderBackfillTickFraction caps one tick's wall-clock at
+// this fraction of the configured interval, so lowering the knob
+// LOWERS per-tick work instead of monopolizing the database: at the
+// 60-minute default a full ~20-minute pass still fits in one tick; at
+// a 1-minute interval each tick does ~30 s of windows and the pass
+// cursor carries the rest to the next tick.
+const mailingListSenderBackfillTickFraction = 2 // interval / N
 
 // mailingListBackendFor builds the ArchiveSource for a system definition,
 // or nil for an unsupported backend.
@@ -231,21 +284,95 @@ func mailingListBackendFor(sys *mailinglist.System, userAgent string) mailinglis
 	}
 }
 
+// runMailingListSenderBackfill walks the sender→cntrb_id backfill in
+// keyset windows at the knob-driven cadence
+// (collection.mailing_list_sender_backfill_interval_minutes). The pass
+// cursor PERSISTS across ticks: if a tick's window budget truncates a
+// pass, the next tick resumes where it stopped — restart-from-zero
+// would starve the high-msg_id tail forever. A pass ends when the
+// cursor clears the ceiling (never on rows-affected — sparse windows
+// legally resolve 0); the floor is cached for the process lifetime
+// (~17.5s to compute, and it never moves down).
 func (s *Scheduler) runMailingListSenderBackfill(ctx context.Context) {
-	t := time.NewTicker(mailingListSenderBackfillInterval)
+	interval := s.cfg.Collection.MailingListSenderBackfillInterval()
+	// SR-10's logging half: the EFFECTIVE cadence, post-default.
+	s.logger.Info("mailing-list: sender backfill ticker starting",
+		"interval", interval, "window", mailingListSenderBackfillWindow)
+	t := time.NewTicker(interval)
 	defer t.Stop()
+	var (
+		floor        int64 // process-lifetime cache (0 = not yet known)
+		cursor       int64 // pass cursor — persists across ticks
+		passCeil     int64 // 0 = start a fresh pass on the next tick
+		passResolved int64
+	)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			n, err := s.store.BackfillMailingListSenderIDs(ctx, mailingListSenderBackfillBatch)
-			if err != nil {
-				s.logger.Warn("mailing-list: sender backfill error", "error", err)
-				continue
-			}
-			if n > 0 {
-				s.logger.Info("mailing-list: resolved sender identities", "count", n)
+			tickStart := time.Now()
+			tickBudget := interval / mailingListSenderBackfillTickFraction
+			for w := 0; w < mailingListSenderBackfillMaxWindowsPerTick; w++ {
+				if ctx.Err() != nil {
+					return
+				}
+				// The elapsed-time bound (never count alone): the first
+				// window always runs; later windows only while the tick
+				// is inside its share of the cadence.
+				if w > 0 && time.Since(tickStart) >= tickBudget {
+					break
+				}
+				if passCeil == 0 {
+					if floor == 0 {
+						f, err := s.store.MailingListMsgIDFloor(ctx)
+						if errors.Is(err, context.Canceled) {
+							return
+						}
+						if err != nil {
+							s.logger.Warn("mailing-list: sender backfill floor query failed", "error", err)
+							break
+						}
+						if f == 0 {
+							break // no mailing-list bodies at all yet
+						}
+						floor = f
+					}
+					c, err := s.store.MailingListMsgIDCeiling(ctx)
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					if err != nil {
+						s.logger.Warn("mailing-list: sender backfill ceiling query failed", "error", err)
+						break
+					}
+					if c == 0 {
+						break
+					}
+					passCeil = c
+					cursor = floor - 1
+					passResolved = 0
+				}
+				n, err := s.store.BackfillMailingListSenderIDs(ctx, cursor, mailingListSenderBackfillWindow)
+				if errors.Is(err, context.Canceled) {
+					return // shutdown, not a failure
+				}
+				if err != nil {
+					// Cursor unchanged — the SAME window retries next tick.
+					s.logger.Warn("mailing-list: sender backfill window failed",
+						"error", err, "after_msg_id", cursor)
+					break
+				}
+				passResolved += n
+				cursor += mailingListSenderBackfillWindow
+				if cursor >= passCeil {
+					if passResolved > 0 {
+						s.logger.Info("mailing-list: resolved sender identities",
+							"count", passResolved, "ceiling", passCeil)
+					}
+					passCeil = 0 // next tick starts a fresh pass
+					break
+				}
 			}
 		}
 	}
@@ -268,6 +395,9 @@ func (s *Scheduler) runMailingListDrainLoop(ctx context.Context, proc *collector
 		default:
 		}
 		n, err := proc.DrainOnce(ctx, mailingListDrainListLimit)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
 		if err != nil {
 			s.logger.Warn("mailing-list: drain cycle error", "error", err)
 		}
@@ -295,6 +425,9 @@ func (s *Scheduler) runMailingListLoop(ctx context.Context, w *collector.Mailing
 		default:
 		}
 		claimed, err := w.RunOnce(ctx)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
 		if err != nil {
 			s.logger.Warn("mailing-list: run cycle error", "error", err)
 		}

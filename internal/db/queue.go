@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -145,8 +146,25 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string, exclud
 //     collected (the podman-desktop cohort-A class: five failed first
 //     rounds stamped last_collected and stranded pre-existing history).
 //     due_at, attempts, and last_error still advance for retry pacing.
+//
+// archivedStretchCaseSQL — v0.28.1 (A7): the ONE spelling (SR-17) of
+// the archived-repo cadence stretch, shared by BOTH due_at writers
+// (CompleteJob + RealignDueDates — fix-every-site made structural).
+// Multiplies the recollect interval when repos.repo_archived is set;
+// %s is the caller's multiplier parameter position. The correlated
+// subselect is a single PK lookup per row.
+const archivedStretchCaseSQL = `CASE WHEN COALESCE((SELECT r.repo_archived FROM aveloxis_data.repos r WHERE r.repo_id = collection_queue.repo_id), FALSE) THEN %s ELSE 1 END`
+
 func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success bool, startedAt time.Time, recollectAfter time.Duration,
-	issues, prs, messages, events, releases, contributors, commits int, durationMs int64, errMsg string) error {
+	issues, prs, messages, events, releases, contributors, commits int, durationMs int64, errMsg string,
+	archivedMultiplier int) error {
+	// v0.28.1 (A7): the stretch is enforced HERE (SR-18 — the due_at
+	// writer owns the invariant; a caller that forgets cannot bypass
+	// it). Clamp defensively so a zero from a legacy caller can never
+	// produce a never-due row.
+	if archivedMultiplier < 1 {
+		archivedMultiplier = 1
+	}
 
 	status := "queued" // re-queue immediately
 	var lastErr *string
@@ -199,13 +217,19 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 			UPDATE aveloxis_ops.collection_queue
 			SET status = $2,
 				priority = 100,
-				due_at = NOW() + $3::interval,
+				due_at = NOW() + ($3::interval * `+fmt.Sprintf(archivedStretchCaseSQL, "$13")+`),
 				locked_by = NULL,
 				locked_at = NULL,
 				last_collected = CASE WHEN $12::timestamptz IS NOT NULL THEN $12::timestamptz ELSE last_collected END,
 				last_error = $4,
 				last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
 				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
+				-- v0.29.0 home ranking; stamped on success AND failure like the
+				-- cumulative counts above (it counts stored truth either way)
+				last_activity_90d = (SELECT COUNT(*) FROM aveloxis_data.issues
+				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days')
+				                  + (SELECT COUNT(*) FROM aveloxis_data.pull_requests
+				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days'),
 				last_messages = $5,
 				last_events = $6,
 				last_releases = $7,
@@ -217,7 +241,7 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 			WHERE repo_id = $1`,
 			repoID, status, recollectAfter.String(),
 			lastErr, messages, events, releases, contributors, commits, durationMs,
-			success, startAnchor)
+			success, startAnchor, archivedMultiplier)
 		return err
 	})
 }
@@ -297,15 +321,25 @@ func (s *PostgresStore) MakeQueuedReposDue(ctx context.Context) (int64, error) {
 //
 // Idempotent: the <> predicate skips rows already in the correct shape, so
 // updated_at stays stable across repeated startups.
-func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time.Duration) (int64, error) {
+func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time.Duration, archivedMultiplier int) (int64, error) {
+	// v0.28.1 (A7): the same archived stretch as CompleteJob (the
+	// shared archivedStretchCaseSQL spelling), so a restart realigns
+	// archived repos onto the stretched cadence and config changes to
+	// the multiplier take effect fleet-wide. The idempotency
+	// predicate uses the identical expression so already-aligned rows
+	// stay untouched.
+	if archivedMultiplier < 1 {
+		archivedMultiplier = 1
+	}
+	stretch := fmt.Sprintf(archivedStretchCaseSQL, "$2")
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
-		SET due_at = last_collected + $1::interval,
+		SET due_at = last_collected + ($1::interval * `+stretch+`),
 			updated_at = NOW()
 		WHERE status = 'queued'
 		  AND last_collected IS NOT NULL
-		  AND due_at <> last_collected + $1::interval`,
-		recollectAfter.String())
+		  AND due_at <> last_collected + ($1::interval * `+stretch+`)`,
+		recollectAfter.String(), archivedMultiplier)
 	if err != nil {
 		return 0, err
 	}
@@ -396,10 +430,41 @@ func (s *PostgresStore) ListQueue(ctx context.Context) ([]QueueJob, error) {
 	return jobs, rows.Err()
 }
 
-// ListQueuePage returns a paginated slice of the queue for the monitor dashboard.
-// If search is non-empty, filters to repos whose owner or name contains the term.
-// Results are ordered: collecting first, then queued, then by priority and due_at.
-func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search string) ([]QueueJob, int, error) {
+// queueSorts is the monitor queue's sort ALLOWLIST (the
+// collectionRepoSorts pattern, v0.27.74 — injection-proof by
+// construction: unknown keys fall back to the default composite).
+// meta_* keys order by the latest repo_info snapshot, joined
+// set-based in ListQueuePage.
+var queueSorts = map[string]string{
+	"repo":         "r.repo_owner %s, r.repo_name %s",
+	"status":       "CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END %s",
+	"priority":     "q.priority %s",
+	"due":          "q.due_at %s",
+	"last_run":     "q.last_collected %s NULLS LAST",
+	"issues":       "COALESCE(q.last_issues, 0) %s",
+	"prs":          "COALESCE(q.last_prs, 0) %s",
+	"commits":      "COALESCE(q.last_commits, 0) %s",
+	"meta_issues":  "COALESCE(ri.issues_count, 0) %s",
+	"meta_prs":     "COALESCE(ri.pr_count, 0) %s",
+	"meta_commits": "COALESCE(ri.commit_count, 0) %s",
+}
+
+// QueueSortValid reports whether key is a queueSorts allowlist member —
+// the handler resolves its EFFECTIVE echo through this (the
+// CollectionRepoSortValid twin), so the envelope can never claim a sort
+// the store silently fell back from.
+func QueueSortValid(key string) bool {
+	_, ok := queueSorts[key]
+	return ok
+}
+
+// ListQueuePage returns a paginated slice of the queue for the monitor
+// dashboard. If search is non-empty, filters to repos whose owner/name
+// contains the term. With an allowlisted sortKey the requested ORDER
+// BY wins; otherwise (and by default) rows order collecting-first,
+// then queued, then priority and due_at — always with the v0.18.7
+// q.repo_id tiebreaker so Prev/Next pagination stays stable.
+func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search, sortKey, sortDir string) ([]QueueJob, int, error) {
 	// Build WHERE clause for search.
 	whereClause := ""
 	args := []interface{}{}
@@ -425,6 +490,34 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 		return nil, 0, err
 	}
 
+	// Sort resolution (v0.29.0): allowlisted keys order server-side;
+	// anything else keeps the historical composite. The repo-name sort
+	// joins repos (PK hash join); the meta_* sorts join the LATEST
+	// repo_info snapshot per repo via one set-based DISTINCT ON scan —
+	// deliberately never a per-row LATERAL, which would probe
+	// repo_info once per queue row fleet-wide before the LIMIT.
+	// The v0.18.7 repo_id tiebreaker survives on every branch.
+	dir := "ASC"
+	if strings.EqualFold(sortDir, "desc") {
+		dir = "DESC"
+	}
+	orderBy := `CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+			q.priority, q.due_at, q.repo_id`
+	joins := ""
+	if tmpl, ok := queueSorts[sortKey]; ok {
+		orderBy = strings.ReplaceAll(tmpl, "%s", dir) + ", q.repo_id"
+		if sortKey == "repo" {
+			joins = ` JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id`
+		}
+		if strings.HasPrefix(sortKey, "meta_") {
+			joins = ` LEFT JOIN (
+				SELECT DISTINCT ON (repo_id) repo_id, issues_count, pr_count, commit_count
+				FROM aveloxis_data.repo_info
+				ORDER BY repo_id, data_collection_date DESC NULLS LAST, repo_info_id DESC
+			) ri ON ri.repo_id = q.repo_id`
+		}
+	}
+
 	dataQuery := fmt.Sprintf(`
 		SELECT q.repo_id, q.priority, q.status, q.due_at, q.locked_by, q.locked_at,
 			   q.last_collected, q.last_error,
@@ -433,10 +526,9 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 			   q.last_duration_ms, q.updated_at
 		FROM aveloxis_ops.collection_queue q
 		%s
-		ORDER BY
-			CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
-			q.priority, q.due_at, q.repo_id
-		LIMIT $%d OFFSET $%d`, whereClause, argIdx, argIdx+1)
+		%s
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d`, joins, whereClause, orderBy, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err := s.pool.Query(ctx, dataQuery, args...)

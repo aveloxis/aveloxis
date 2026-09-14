@@ -19,7 +19,7 @@ You also need at least one **GitHub personal access token** (with `repo` or `rea
 ### Verify prerequisites
 
 ```bash
-go version        # Should print go1.23 or later
+go version        # Should print go1.25 or later
 psql --version    # Should print 14.x or later
 git --version     # Any recent version
 ```

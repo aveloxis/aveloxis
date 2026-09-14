@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -94,6 +95,11 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	start := time.Now()
 	logger.Info("refreshing materialized views", "count", len(matviewNames))
 
+	// Pass 26 (v0.28.18): the sibling of the dm_ aggregate fix — a failed
+	// REFRESH was a WARN and the function returned nil, so
+	// `aveloxis refresh-views` exited 0 over a stale view. Keep going,
+	// accumulate, return.
+	var failed []error
 	for _, name := range matviewNames {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -104,11 +110,26 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 		// Try CONCURRENTLY first (requires a unique index and at least one row).
 		_, err := pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name))
 		if err != nil {
+			// Copilot round 8: a shutdown is not a failed view. The
+			// loop-top guard cannot see it — the in-flight Exec that
+			// OBSERVED the cancellation is already past it — and the
+			// non-concurrent retry below would be issued on the same
+			// dead ctx, so it fails too and the pair lands as a WARN
+			// plus a stale-view failure on every `stop serve`.
+			if errors.Is(err, context.Canceled) {
+				logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+				return ctx.Err()
+			}
 			// Fall back to non-concurrent refresh (blocks reads but always works).
 			_, err = pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name))
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+					return ctx.Err()
+				}
 				logger.Warn("failed to refresh materialized view",
 					"view", name, "error", err, "duration", time.Since(viewStart))
+				failed = append(failed, fmt.Errorf("view %s: %w", name, err))
 				continue // Don't abort all views if one fails.
 			}
 		}
@@ -117,7 +138,13 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 			"view", name, "duration", time.Since(viewStart).Truncate(time.Millisecond))
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err() // a cancel inside the last view is one exit, not "complete"
+	}
 	logger.Info("materialized view refresh complete",
-		"total_duration", time.Since(start).Truncate(time.Second))
+		"total_duration", time.Since(start).Truncate(time.Second), "failed", len(failed))
+	if len(failed) > 0 {
+		return boundedJoin(fmt.Sprintf("materialized view refresh left %d of %d views stale", len(failed), len(matviewNames)), failed, partialFailureSample)
+	}
 	return nil
 }

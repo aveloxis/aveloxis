@@ -60,6 +60,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -229,7 +230,12 @@ func remediateCorruptLibmagic(ctx context.Context, deps remediationDeps,
 	log.Warn("scancode remediation step 2/3: injecting typecode-libmagic into the scancode venv",
 		"command", "pipx inject "+scancodePipxPackage+" typecode-libmagic")
 	if err := deps.runCmd(ctx, "pipx", "inject", scancodePipxPackage, "typecode-libmagic"); err != nil {
-		log.Error("scancode remediation step 2/3 FAILED: typecode-libmagic injection", "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			log.Error("scancode remediation step 2/3 FAILED: typecode-libmagic injection", "error", err)
+		}
 	}
 	if pair, ok := deps.discover(); ok {
 		deps.applyEnvPair(pair)

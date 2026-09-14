@@ -66,7 +66,10 @@ func TestStopSendsSIGTERM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "proc.Signal(syscall.SIGTERM)") {
+	// Round 17 routed the signal through the sendSignal seam, so the
+	// pin follows the SIGNAL, not the call shape: signalProcess must
+	// hand syscall.SIGTERM to the seam whose default reaches the kernel.
+	if !strings.Contains(string(src), "sendSignal(pid, syscall.SIGTERM)") {
 		t.Error("stopComponent must send syscall.SIGTERM — the graceful-shutdown path keys off it")
 	}
 }

@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// ErrNotModified is returned by GetConditional when the server returns 304.
+// ErrNotModified is returned by Get when the server returns 304.
 // Callers should use their cached copy of the data.
 var ErrNotModified = errors.New("not modified (304)")
 
@@ -139,6 +139,15 @@ type HTTPClient struct {
 	// per unique endpoint path hit during a collection cycle).
 	etagMu    sync.RWMutex
 	etagCache map[string]string
+	// etagIndex groups the cached paths by repo prefix (etagRepoPrefix)
+	// so ForgetETagsWithPrefix — called on EVERY failed job since pass 30
+	// — touches only that repo's entries. The first cut walked the whole
+	// cache under the write lock every Get shares: with the cache at its
+	// 500K cap that is a fleet-wide stall per failure (Copilot round 7,
+	// v0.28.18). Maintained at the three cache writers below
+	// (indexETagLocked / unindexETagLocked / resetETagCacheLocked); a
+	// path outside both repo namespaces is not indexed.
+	etagIndex map[string]map[string]struct{}
 	// maxETagEntries bounds etagCache (v0.27.40, summary/18 Phase 3).
 	// Keys include query strings, and incremental-collection URLs carry
 	// per-cycle since= values and page numbers — mostly write-once,
@@ -199,7 +208,64 @@ func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle
 		baseURL:   strings.TrimSuffix(baseURL, "/"),
 		authStyle: authStyle,
 		etagCache: make(map[string]string),
+		etagIndex: make(map[string]map[string]struct{}),
 	}
+}
+
+// etagRepoPrefix returns the repo namespace a request path belongs to —
+// "/repos/{owner}/{repo}/" on GitHub, "/projects/{escaped path}/" on
+// GitLab (the forge clients build every repo-scoped path from exactly
+// these roots; the repo-root read "/repos/o/r" itself belongs to its
+// namespace) — or "" for a path outside both (users, orgs, search,
+// rate_limit). The query string never participates.
+func etagRepoPrefix(path string) string {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	seg := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	switch {
+	case len(seg) >= 3 && seg[0] == "repos" && seg[1] != "" && seg[2] != "":
+		return "/repos/" + seg[1] + "/" + seg[2] + "/"
+	case len(seg) >= 2 && seg[0] == "projects" && seg[1] != "":
+		return "/projects/" + seg[1] + "/"
+	}
+	return ""
+}
+
+// indexETagLocked records path under its repo prefix. Caller holds etagMu.
+func (c *HTTPClient) indexETagLocked(path string) {
+	key := etagRepoPrefix(path)
+	if key == "" {
+		return
+	}
+	set := c.etagIndex[key]
+	if set == nil {
+		set = make(map[string]struct{}, 8)
+		c.etagIndex[key] = set
+	}
+	set[path] = struct{}{}
+}
+
+// unindexETagLocked removes path from its repo prefix, dropping the
+// prefix once empty. Caller holds etagMu.
+func (c *HTTPClient) unindexETagLocked(path string) {
+	key := etagRepoPrefix(path)
+	if key == "" {
+		return
+	}
+	if set := c.etagIndex[key]; set != nil {
+		delete(set, path)
+		if len(set) == 0 {
+			delete(c.etagIndex, key)
+		}
+	}
+}
+
+// resetETagCacheLocked drops the whole cache AND its index together —
+// the maxETagEntries cap (v0.27.40). Caller holds etagMu.
+func (c *HTTPClient) resetETagCacheLocked() {
+	c.etagCache = make(map[string]string, 1024)
+	c.etagIndex = make(map[string]map[string]struct{}, 64)
 }
 
 // Keys returns the underlying key pool, allowing callers to get keys for
@@ -245,8 +311,9 @@ const maxETagEntries = 500_000
 type ctxKeyBypassETag struct{}
 
 // WithoutETag returns a derived context that suppresses both the
-// If-None-Match send and the ETag cache write for any Get/GetJSON
-// call made with it. Use this for endpoints where 304 responses
+// If-None-Match send and the ETag cache write for any Get call made
+// with it (GetJSON applies it unconditionally since v0.28.17 — see its
+// doc; callers only need WithoutETag for bare Get / paginate paths). Use this for endpoints where 304 responses
 // would silently destroy data via snapshot-replace semantics — the
 // v0.24.0 DistributionWorker is the canonical case: on 304 the
 // scanner gets back empty data, MarkDistributionComplete rotates
@@ -276,7 +343,38 @@ func bypassETag(ctx context.Context) bool {
 func (c *HTTPClient) forgetETag(path string) {
 	c.etagMu.Lock()
 	delete(c.etagCache, path)
+	c.unindexETagLocked(path)
 	c.etagMu.Unlock()
+}
+
+// ForgetETagsWithPrefix drops every cached ETag under one repo
+// namespace and reports how many. prefix must be a repo prefix exactly
+// as etagRepoPrefix spells it ("/repos/{owner}/{repo}/" or
+// "/projects/{escaped path}/") — that is the shape the forge clients'
+// ForgetRepoETags pass; anything else forgets nothing and is logged,
+// never silently treated as a match. A collection job that fetched a
+// repo's listing pages and then FAILED leaves their ETags cached; the
+// retry in the same process would be answered 304 on those pages —
+// zero items — and, with the facade's commits keeping the outcome
+// green, advance last_collected past a window it never stored (pass
+// 30, v0.28.18). The scheduler calls this on every failed job, so the
+// work is bounded by the repo's own entry count via etagIndex — never
+// by the size of the whole cache (Copilot round 7). Continuation pages
+// are in the namespace too: nextPageGitHub rebases the /repositories/
+// {id}/ Link targets GitHub emits for page ≥2 (pass 34).
+func (c *HTTPClient) ForgetETagsWithPrefix(prefix string) int {
+	if key := etagRepoPrefix(prefix); key == "" || key != prefix {
+		c.logger.Warn("ForgetETagsWithPrefix: not a repo prefix — nothing forgotten", "prefix", prefix)
+		return 0
+	}
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	set := c.etagIndex[prefix]
+	for path := range set {
+		delete(c.etagCache, path)
+	}
+	delete(c.etagIndex, prefix)
+	return len(set)
 }
 
 // Get performs a single authenticated GET request with retries and rate-limit handling.
@@ -368,9 +466,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			if etag := resp.Header.Get("ETag"); etag != "" && resp.StatusCode == http.StatusOK {
 				c.etagMu.Lock()
 				if len(c.etagCache) >= maxETagEntries {
-					c.etagCache = make(map[string]string, 1024)
+					c.resetETagCacheLocked()
 				}
 				c.etagCache[path] = etag
+				c.indexETagLocked(path)
 				c.etagMu.Unlock()
 			}
 		}
@@ -662,9 +761,24 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	}
 }
 
-// GetJSON performs a GET and decodes the response JSON into dest.
+// GetJSON fetches one JSON document and decodes it into dest.
+//
+// v0.28.17: ALWAYS ETag-free. A body-decoding reader can never use a
+// 304 (there is no body to decode), and no GetJSON caller handles
+// ErrNotModified — so every repeat single-object read in one process
+// (GitHub's FetchPRMeta/FetchPRRepos after FetchPRByNumber on the same
+// /pulls/N; GitLab's labels/assignees/reviewers/meta/repos readers on
+// the same /merge_requests/N; both forges' issue readers) either
+// errored ("not modified (304)" — petsc/petsc's 0 of 9,450 MRs) or
+// silently returned empty children (the v0.20.20 huge-body REST
+// fallback tolerated ClassNotModified as a skip and dropped meta/repos).
+// The v0.28.15 GitLab batch fix covered one call site; Copilot round 2
+// on PR #191 pointed out the REST waterfall still had it — this is the
+// class-kill. Conditional requests keep their legitimate meaning in
+// paginate(), which fetches via Get: on a listing, 304 = "nothing new
+// since last time" and ends pagination cleanly.
 func (c *HTTPClient) GetJSON(ctx context.Context, path string, dest any) error {
-	resp, err := c.Get(ctx, path)
+	resp, err := c.Get(WithoutETag(ctx), path)
 	if err != nil {
 		return err
 	}
@@ -676,9 +790,35 @@ func (c *HTTPClient) GetJSON(ctx context.Context, path string, dest any) error {
 // Returns "" when there are no more pages.
 type nextPageFunc func(resp *http.Response, basePath string) string
 
-// nextPageGitHub extracts the next page URL from GitHub's Link header.
-func nextPageGitHub(resp *http.Response, _ string) string {
-	return extractNextLink(resp)
+// nextPageGitHub extracts the next page URL from GitHub's Link header,
+// rebased onto the listing's own namespace (rebaseContinuation).
+func nextPageGitHub(resp *http.Response, basePath string) string {
+	return rebaseContinuation(extractNextLink(resp), basePath)
+}
+
+// rebaseContinuation rewrites a GitHub Link-header continuation onto
+// the listing's /repos/{owner}/{repo}/ namespace. GitHub spells page ≥2
+// of a repo listing under the numeric alias — `<https://api.github.com/
+// repositories/1300192/issues?page=2>; rel="next"` — and that alias was
+// the cache key of every continuation page, so ForgetRepoETags (which
+// only knows /repos/o/r/) could never reach them: a failed job's retry
+// re-read page 1 unconditionally and was answered 304 from page 2 on —
+// the pass-30 truncation, surviving behind the pass-30 fix (pass 34,
+// v0.28.18). The two spellings name the same resource; requesting the
+// /repos form keeps every page of one walk in one namespace. Paths
+// that are not a /repositories/{id}/… continuation of a /repos/o/r/
+// listing pass through unchanged.
+func rebaseContinuation(next, basePath string) string {
+	ns := etagRepoPrefix(basePath)
+	if ns == "" || !strings.HasPrefix(ns, "/repos/") || !strings.HasPrefix(next, "/repositories/") {
+		return next
+	}
+	rest := strings.TrimPrefix(next, "/repositories/")
+	i := strings.IndexByte(rest, '/')
+	if i < 0 {
+		return next
+	}
+	return ns + rest[i+1:]
 }
 
 // nextPageGitLab checks X-Next-Page first, then falls back to Link header.
@@ -710,7 +850,17 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 			resp, err := c.Get(ctx, currentPath)
 			if err != nil {
 				// 304 Not Modified means the data hasn't changed since our last
-				// request (ETag match). This is not an error — just means zero new items.
+				// FETCH of this URL (ETag match) — not since last_collected. This
+				// is not an error — zero new items — for an INCREMENTAL listing
+				// whose previous fetch was fully consumed. A full-snapshot listing
+				// (since zero) is a truth set and a listing used as an iteration
+				// DRIVER (the GitLab comment walks) must never be answered this
+				// way: the forge clients bypass the cache for those (WithoutETag);
+				// a job that FAILED after fetching forgets its repo's cached ETags
+				// (ForgetRepoETags) so the retry re-reads the pages (v0.28.18) —
+				// continuation pages included, because nextPageGitHub rebases
+				// GitHub's /repositories/{id}/ Link targets onto the listing's
+				// /repos/o/r/ namespace (pass 34).
 				if errors.Is(err, ErrNotModified) {
 					if currentPath != basePath {
 						// A 304 MID-pagination is unusual (per-page ETag matched

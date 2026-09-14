@@ -102,7 +102,7 @@ curl http://localhost:5555/api/queue
 
 Response:
 
-```json
+```jsonc
 [
   {
     "repo_id": 42,
@@ -111,8 +111,8 @@ Response:
     "priority": 100,
     "due_at": "2026-04-05T12:00:00Z",
     "last_collected_at": "2026-04-04T12:00:00Z"
-  },
-  ...
+  }
+  // ...more rows
 ]
 ```
 

@@ -20,10 +20,11 @@ import (
 //  1. insertCommitBatch checks ctx.Err() inside its per-commit loop and
 //     bails out with ONE aggregate log line (carrying the remaining count —
 //     the v0.27.39 aggregate-WARN pattern; never silent).
-//  2. The function's return contract is UNCHANGED: the cancel guard returns
-//     nil, exactly like the grind-through path did (per-row failures have
-//     always been swallowed; starting to return an error here would change
-//     facade error propagation, which is out of scope for a log-noise fix).
+//  2. The per-commit cancel guard returns nil, exactly like the
+//     grind-through path did (per-row failures have always been
+//     swallowed). Pass 37 added the ONE non-nil return: a batch WRITE
+//     that fails under a done ctx returns ctx.Err() so parseGitLog can
+//     kill git and surface the cancel — pinned in exec_cancel_test.go.
 //     Data outcome is byte-identical by construction — post-cancel upserts
 //     all fail anyway.
 func TestInsertCommitBatchAbortsOnCanceledContext(t *testing.T) {

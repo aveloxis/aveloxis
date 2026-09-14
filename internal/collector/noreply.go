@@ -59,8 +59,49 @@ func IsNoreplyEmail(email string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(email)), "@users.noreply.github.com")
 }
 
-// IsBotEmail returns true if the email looks like an automated/bot email
-// that shouldn't be resolved to a human contributor.
+// IsAutomationEmail reports whether an email address belongs to an
+// automated sender: everything IsBotEmail catches PLUS the Apache
+// notification relays (jira@ / jira+<project>@ / git@ / gitbox@
+// apache.org). Found 2026-08-31: IsBotEmail alone let the relays
+// classify as human — the sender-resolve ticker minted email-only
+// CONTRIBUTOR rows for them and 83,746 messages were attributed to the
+// jira@apache.org phantom. The SQL twin is
+// aveloxis_data.is_automation_email (schema.sql), which additionally
+// knows "sender IS a registered list address" (DB-side knowledge);
+// TestAutomationEmailSQLParity pins the two spellings together
+// (SR-17). Callers with the list address in hand should also treat
+// sender == list address as automation.
+func IsAutomationEmail(email string) bool {
+	if IsBotEmail(email) {
+		return true
+	}
+	lower := strings.ToLower(email)
+	if lower == "git@apache.org" || lower == "gitbox@apache.org" {
+		return true
+	}
+	if strings.HasSuffix(lower, "@apache.org") &&
+		(lower == "jira@apache.org" || strings.HasPrefix(lower, "jira+")) {
+		return true
+	}
+	// Bugzilla relays (v0.29.0 pre-release, summary/27 B0): ASF's
+	// bugzilla@ / bugzilla-daemon@ (+ per-list daemon variants) send
+	// ~193K notifications already in the corpus — IsBotEmail did not
+	// know them, so the sender-resolve ticker was minting phantom
+	// contributor rows for them exactly like the jira@ phantom. Kept
+	// in lockstep with the SQL twin (TestAutomationEmailSQLParity).
+	if strings.HasSuffix(lower, "@apache.org") &&
+		(lower == "bugzilla@apache.org" ||
+			strings.HasPrefix(lower, "bugzilla-") ||
+			strings.HasPrefix(lower, "bugzilla+")) {
+		return true
+	}
+	return false
+}
+
+// IsBotEmail reports whether the email looks like an automated/bot
+// email that shouldn't be resolved to a human contributor. Production
+// gates use IsAutomationEmail (the superset); this narrower predicate
+// remains for the SQL-parity split and as IsAutomationEmail's first arm.
 func IsBotEmail(email string) bool {
 	lower := strings.ToLower(email)
 	return strings.Contains(lower, "[bot]") ||

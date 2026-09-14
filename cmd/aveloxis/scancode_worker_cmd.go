@@ -51,6 +51,11 @@ Needs: network access to PostgreSQL, git, and the scancode toolchain
 (aveloxis install-tools). Does NOT need API keys — scancode clones
 anonymously.
 
+Background management: 'aveloxis start scancode-worker' / 'aveloxis stop
+scancode-worker' (v0.29.4). Do NOT run 'aveloxis serve' on this host: serve
+is the full scheduler — it migrates and collects — whatever the config's
+knobs say.
+
 See docs/guide/dedicated-scancode-host.md for the full recipe (Postgres
 remote access, minimal config template, systemd unit).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -64,7 +69,7 @@ func runScancodeWorker(cfgPath string) error {
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
-	pidPath := pidfile.Path("scancode-worker")
+	pidPath := pidfile.Path(scancodeWorkerComponent)
 	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
 		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
 	}
@@ -73,7 +78,7 @@ func runScancodeWorker(cfgPath string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName("aveloxis-scancode-worker"), logger)
+	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(componentAppName(scancodeWorkerComponent)), logger)
 	if err != nil {
 		return fmt.Errorf("connecting to database: %w", err)
 	}

@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // registerMetricRoutes registers all Augur-compatible metric endpoints.
@@ -767,7 +769,22 @@ func (s *Server) handleDeps(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	data, err := s.store.Deps(r.Context(), repoID)
+	// v0.28.1 (item 7a): ?license=<canonical>&scope=runtime|all turn
+	// this into the licenses-table drill-down (DepsFiltered mirrors
+	// the aggregate's row universe). With NEITHER param, the legacy
+	// full raw list is served unchanged for existing consumers.
+	licFilter := r.URL.Query().Get("license")
+	scope := r.URL.Query().Get("scope")
+	if scope != "" && scope != "all" && scope != "runtime" {
+		http.Error(w, `scope must be "all" or "runtime"`, http.StatusBadRequest)
+		return
+	}
+	var data []db.DepRow
+	if licFilter == "" && scope == "" {
+		data, err = s.store.Deps(r.Context(), repoID)
+	} else {
+		data, err = s.store.DepsFiltered(r.Context(), repoID, licFilter, scope == "runtime")
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

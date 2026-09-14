@@ -9,6 +9,10 @@ build:
 
 sphinx:
   configuration: docs/conf.py
+  # Warnings are errors: an unknown fence language, a block that does
+  # not lex, or a dead cross-reference must not publish silently. RTD
+  # keeps serving the last successful build when this fails.
+  fail_on_warning: true
 
 python:
   install:

@@ -5,6 +5,7 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -89,6 +90,12 @@ func projectPath(owner, repo string) string {
 // --- IssueCollector ---
 
 func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.Issue, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/issues?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
@@ -134,6 +141,13 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, since time.
 }
 
 func (c *Client) ListIssueLabels(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[model.IssueLabel, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	// GitLab embeds label names in the issue response but not full label objects.
 	// Fetch the issue to get label names, then look up full details.
 	pp := projectPath(owner, repo)
@@ -156,6 +170,13 @@ func (c *Client) ListIssueLabels(ctx context.Context, owner, repo string, issueN
 }
 
 func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, issueNumber int) iter.Seq2[model.IssueAssignee, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/issues/%d", pp, issueNumber)
 
@@ -179,6 +200,12 @@ func (c *Client) ListIssueAssignees(ctx context.Context, owner, repo string, iss
 // --- PullRequestCollector (GitLab Merge Requests) ---
 
 func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequest, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
@@ -230,6 +257,13 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo string, since
 }
 
 func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestLabel, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
 
@@ -239,10 +273,8 @@ func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber 
 			yield(model.PullRequestLabel{}, err)
 			return
 		}
-		for _, name := range raw.Labels {
-			if !yield(model.PullRequestLabel{
-				Name: name,
-			}, nil) {
+		for _, l := range mrLabels(raw) {
+			if !yield(l, nil) {
 				return
 			}
 		}
@@ -250,6 +282,13 @@ func (c *Client) ListPRLabels(ctx context.Context, owner, repo string, prNumber 
 }
 
 func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestAssignee, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
 
@@ -259,11 +298,8 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 			yield(model.PullRequestAssignee{}, err)
 			return
 		}
-		for _, a := range raw.Assignees {
-			if !yield(model.PullRequestAssignee{
-				PlatformSrcID: a.ID,
-				UserRef:       glUserToRef(a),
-			}, nil) {
+		for _, a := range mrAssignees(raw) {
+			if !yield(a, nil) {
 				return
 			}
 		}
@@ -271,6 +307,13 @@ func (c *Client) ListPRAssignees(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestReviewer, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", pp, prNumber)
 
@@ -280,11 +323,8 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 			yield(model.PullRequestReviewer{}, err)
 			return
 		}
-		for _, r := range raw.Reviewers {
-			if !yield(model.PullRequestReviewer{
-				PlatformSrcID: r.ID,
-				UserRef:       glUserToRef(r),
-			}, nil) {
+		for _, r := range mrReviewers(raw) {
+			if !yield(r, nil) {
 				return
 			}
 		}
@@ -292,6 +332,13 @@ func (c *Client) ListPRReviewers(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestReview, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	// GitLab doesn't have a direct "reviews" concept like GitHub.
 	// The closest equivalent is the approvals API.
 	pp := projectPath(owner, repo)
@@ -319,6 +366,13 @@ func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber
 }
 
 func (c *Client) ListPRCommits(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestCommit, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/commits", pp, prNumber)
 
@@ -341,6 +395,13 @@ func (c *Client) ListPRCommits(ctx context.Context, owner, repo string, prNumber
 }
 
 func (c *Client) ListPRFiles(ctx context.Context, owner, repo string, prNumber int) iter.Seq2[model.PullRequestFile, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/diffs", pp, prNumber)
 
@@ -376,15 +437,7 @@ func (c *Client) FetchPRMeta(ctx context.Context, owner, repo string, prNumber i
 		return nil, nil, err
 	}
 
-	head = &model.PullRequestMeta{
-		HeadOrBase: "head",
-		Ref:        raw.SourceBranch,
-		SHA:        raw.SHA,
-	}
-	base = &model.PullRequestMeta{
-		HeadOrBase: "base",
-		Ref:        raw.TargetBranch,
-	}
+	head, base = mrMeta(raw)
 	return head, base, nil
 }
 
@@ -397,14 +450,7 @@ func (c *Client) FetchPRRepos(ctx context.Context, owner, repo string, prNumber 
 		return nil, nil, err
 	}
 
-	// Source project (head/fork).
-	if raw.SourceProjectID != 0 {
-		headRepo = c.fetchGLProjectAsRepo(ctx, raw.SourceProjectID, "head")
-	}
-	// Target project (base/upstream).
-	if raw.TargetProjectID != 0 {
-		baseRepo = c.fetchGLProjectAsRepo(ctx, raw.TargetProjectID, "base")
-	}
+	headRepo, baseRepo = c.mrRepos(ctx, raw)
 	return headRepo, baseRepo, nil
 }
 
@@ -546,6 +592,12 @@ type glUserRefFlight struct {
 // merge_request), so there is no ETag aliasing here and two fetches
 // are correct.
 func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.RepoEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	return func(yield func(platform.RepoEvent, error) bool) {
 		for ev, err := range c.ListIssueEvents(ctx, owner, repo, since) {
 			if err != nil {
@@ -571,6 +623,12 @@ func (c *Client) ListRepoEvents(ctx context.Context, owner, repo string, since t
 }
 
 func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.IssueEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	// GitLab uses resource state events per-issue. We iterate all issues and fetch events.
 	// For bulk collection, we use the project events endpoint filtered to issues.
@@ -603,6 +661,12 @@ func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since 
 }
 
 func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[model.PullRequestEvent, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/events?target_type=merge_request&sort=desc", pp)
 	if !since.IsZero() {
@@ -635,6 +699,12 @@ func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since tim
 // --- MessageCollector ---
 
 func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 
 	// GitLab doesn't have a bulk notes endpoint across all issues.
@@ -644,6 +714,17 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 		issuesPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
+	// The whole walk bypasses the ETag cache. The issue/MR listing is a
+	// DRIVER, byte-identical to the URL the listing phase walked minutes
+	// earlier in this cycle — a conditional read is answered 304 from that
+	// walk's ETag and yields NOTHING (pass 30, the v0.26.3 two-pass alias
+	// on the GitLab side). The per-item notes/discussions pages are
+	// created-ascending with no since: a new note lands on the LAST page
+	// while page 1 stays byte-stable, so its cached ETag would 304 and end
+	// the walk before page 2 (pass 31 — any item past 100 notes never
+	// gained a note again). The driver's updated_after already proved the
+	// item changed; the conditional read saved nothing.
+	ctx = platform.WithoutETag(ctx)
 	return func(yield func(platform.MessageWithRef, error) bool) {
 		for issue, err := range platform.PaginateGitLab[glIssue](ctx, c.http, issuesPath) {
 			if err != nil {
@@ -656,6 +737,14 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 			noteP := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc", pp, issue.IID)
 			for note, err := range platform.PaginateGitLab[glNote](ctx, c.http, noteP) {
 				if err != nil {
+					// One item's pages can 404/403 on their own (deleted or
+					// hidden between the driver page and this read); ending the
+					// whole walk here would drop every LATER item's notes this
+					// cycle, and updated_after never lists them again (pass 32).
+					if platform.ClassifyError(err) == platform.ClassSkip {
+						c.logger.Info("skipping one item's notes — gone or forbidden", "owner", owner, "repo", repo, "error", err)
+						break
+					}
 					yield(platform.MessageWithRef{}, err)
 					return
 				}
@@ -689,12 +778,29 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 }
 
 func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.MessageWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	mrsPath := fmt.Sprintf("/projects/%s/merge_requests?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
 		mrsPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
+	// The whole walk bypasses the ETag cache. The issue/MR listing is a
+	// DRIVER, byte-identical to the URL the listing phase walked minutes
+	// earlier in this cycle — a conditional read is answered 304 from that
+	// walk's ETag and yields NOTHING (pass 30, the v0.26.3 two-pass alias
+	// on the GitLab side). The per-item notes/discussions pages are
+	// created-ascending with no since: a new note lands on the LAST page
+	// while page 1 stays byte-stable, so its cached ETag would 304 and end
+	// the walk before page 2 (pass 31 — any item past 100 notes never
+	// gained a note again). The driver's updated_after already proved the
+	// item changed; the conditional read saved nothing.
+	ctx = platform.WithoutETag(ctx)
 	return func(yield func(platform.MessageWithRef, error) bool) {
 		for mr, err := range platform.PaginateGitLab[glMergeRequest](ctx, c.http, mrsPath) {
 			if err != nil {
@@ -707,10 +813,22 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 			noteP := fmt.Sprintf("/projects/%s/merge_requests/%d/notes?sort=asc", pp, mr.IID)
 			for note, err := range platform.PaginateGitLab[glNote](ctx, c.http, noteP) {
 				if err != nil {
+					// One item's pages can 404/403 on their own (deleted or
+					// hidden between the driver page and this read); ending the
+					// whole walk here would drop every LATER item's notes this
+					// cycle, and updated_after never lists them again (pass 32).
+					if platform.ClassifyError(err) == platform.ClassSkip {
+						c.logger.Info("skipping one item's notes — gone or forbidden", "owner", owner, "repo", repo, "error", err)
+						break
+					}
 					yield(platform.MessageWithRef{}, err)
 					return
 				}
-				if note.System {
+				if note.System || note.Position != nil {
+					// System notes are events; diff-positioned notes are
+					// review comments (ListReviewComments) — the two kinds
+					// stay disjoint, as GitHub's /issues/comments vs
+					// /pulls/comments are.
 					continue
 				}
 				msg := model.Message{
@@ -737,12 +855,29 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 }
 
 func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	if since.IsZero() {
+		// A full-snapshot listing is a truth set (the gap filler's set-diff,
+		// a force-full recollect): never a 304 — the cache would answer a
+		// repeat walk in one process with "nothing new" (v0.28.18).
+		ctx = platform.WithoutETag(ctx)
+	}
 	pp := projectPath(owner, repo)
 	mrsPath := fmt.Sprintf("/projects/%s/merge_requests?scope=all&sort=desc&order_by=updated_at", pp)
 	if !since.IsZero() {
 		mrsPath += "&updated_after=" + since.Format(time.RFC3339)
 	}
 
+	// The whole walk bypasses the ETag cache. The issue/MR listing is a
+	// DRIVER, byte-identical to the URL the listing phase walked minutes
+	// earlier in this cycle — a conditional read is answered 304 from that
+	// walk's ETag and yields NOTHING (pass 30, the v0.26.3 two-pass alias
+	// on the GitLab side). The per-item notes/discussions pages are
+	// created-ascending with no since: a new note lands on the LAST page
+	// while page 1 stays byte-stable, so its cached ETag would 304 and end
+	// the walk before page 2 (pass 31 — any item past 100 notes never
+	// gained a note again). The driver's updated_after already proved the
+	// item changed; the conditional read saved nothing.
+	ctx = platform.WithoutETag(ctx)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
 		for mr, err := range platform.PaginateGitLab[glMergeRequest](ctx, c.http, mrsPath) {
 			if err != nil {
@@ -752,6 +887,14 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 			discPath := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", pp, mr.IID)
 			for disc, err := range platform.PaginateGitLab[glDiscussion](ctx, c.http, discPath) {
 				if err != nil {
+					// One item's pages can 404/403 on their own (deleted or
+					// hidden between the driver page and this read); ending the
+					// whole walk here would drop every LATER item's notes this
+					// cycle, and updated_after never lists them again (pass 32).
+					if platform.ClassifyError(err) == platform.ClassSkip {
+						c.logger.Info("skipping one item's notes — gone or forbidden", "owner", owner, "repo", repo, "error", err)
+						break
+					}
 					yield(platform.ReviewCommentWithRef{}, err)
 					return
 				}
@@ -805,6 +948,13 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 // "assigned to bob") are filtered out — those are captured through the
 // separate events pipeline, and including them here would double-count.
 func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, issueIID int) iter.Seq2[platform.MessageWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc", pp, issueIID)
 	return func(yield func(platform.MessageWithRef, error) bool) {
@@ -840,7 +990,16 @@ func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, i
 // ListCommentsForPR returns conversation notes on a single merge request via
 // GET /projects/:id/merge_requests/:iid/notes. System notes are skipped (see
 // ListCommentsForIssue for rationale).
+// System notes and diff-positioned notes (review comments — see
+// ListReviewCommentsForPR) are skipped, so the two kinds stay disjoint.
 func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.MessageWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes?sort=asc", pp, mrIID)
 	return func(yield func(platform.MessageWithRef, error) bool) {
@@ -849,7 +1008,7 @@ func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrII
 				yield(platform.MessageWithRef{}, err)
 				return
 			}
-			if note.System {
+			if note.System || note.Position != nil { // diff notes are review comments (ListReviewCommentsForPR)
 				continue
 			}
 			msg := model.Message{
@@ -878,6 +1037,13 @@ func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrII
 // filtered to notes that carry a `position` (those are diff-anchored; notes
 // without a position are conversation comments that belong in ListCommentsForPR).
 func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string, mrIID int) iter.Seq2[platform.ReviewCommentWithRef, error] {
+	// A per-item child listing (labels, assignees, reviews, commits,
+	// files, comments of ONE issue/PR) is read as a truth set on refresh
+	// and gap fill; its pages are ascending with no since, so a new child
+	// lands on the LAST page while page 1 stays byte-stable — a cached
+	// ETag would 304 page 1 and end the walk before it (pass 31,
+	// v0.28.18). Never conditional.
+	ctx = platform.WithoutETag(ctx)
 	pp := projectPath(owner, repo)
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", pp, mrIID)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
@@ -1107,16 +1273,71 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		} `json:"statistics"`
 	}
 	issueStatsPath := fmt.Sprintf("/projects/%s/issues_statistics", pp)
-	if err := c.http.GetJSON(ctx, issueStatsPath, &issueStats); err != nil {
-		c.logger.Warn("failed to fetch issue statistics, counts will be zero", "owner", owner, "repo", repo, "error", err)
+	issuesUnknown := false
+	// open_issues comes from the same statistics read as the totals so
+	// the triple (all / closed / opened) is one snapshot; the project
+	// payload's open_issues_count is the fallback only where the
+	// statistics were not read. Disabled → definitive 0; unknown → the
+	// store carries the prior snapshot's value forward with the totals.
+	openIssues := raw.OpenIssuesCount
+	if !featureEnabled(raw.IssuesAccessLevel, raw.IssuesEnabled) {
+		openIssues = 0
+		// Definitive zero, not unknown: the feature is DISABLED, so there
+		// is nothing to count and the probe would only 404 (and log) every
+		// cycle. Not raw.IssuesEnabled — that is feature_available?(user)
+		// and reads false for a members-only feature this token cannot
+		// see, where the honest answer is "unknown". issueStats stays zero.
+	} else if err := c.http.GetJSON(ctx, issueStatsPath, &issueStats); err != nil {
+		// v0.28.18: mark unknown — the store carries the prior snapshot's
+		// counts forward; a fabricated 0 would rotate the accurate snapshot
+		// away and hide the repo from the gap healer's pr_count/issues_count
+		// predicates.
+		issuesUnknown = true
+		c.logger.Warn("issue statistics unavailable — issue counts marked unknown, prior snapshot's counts carry forward",
+			"owner", owner, "repo", repo, "error", err)
+	} else {
+		openIssues = issueStats.Statistics.Counts.Opened
 	}
 
 	// GitLab merge_requests count by state.
 	// The /merge_requests endpoint returns X-Total header with per_page=1 for cheap counts.
-	mrOpen := c.countGitLabResource(ctx, pp, "merge_requests", "opened")
-	mrClosed := c.countGitLabResource(ctx, pp, "merge_requests", "closed")
-	mrMerged := c.countGitLabResource(ctx, pp, "merge_requests", "merged")
+	// v0.28.18: each probe carries an error arm (SR-16). A transport/HTTP
+	// failure OR GitLab's documented X-Total omission above 10,000 records
+	// marks the PR counts unknown instead of storing 0.
+	prUnknown := false
+	mrCounts := map[string]int{}
+	if featureEnabled(raw.MergeRequestsAccessLevel, raw.MergeRequestsEnabled) { // the one rule — see the issues gate above
+		for _, state := range []string{"opened", "closed", "merged"} {
+			n, err := c.countGitLabResource(ctx, pp, "merge_requests", state)
+			if err == nil {
+				mrCounts[state] = n
+				continue
+			}
+			if errors.Is(err, errCountUnavailable) {
+				// GitLab's documented >10,000-record header omission: ask
+				// GraphQL, which counts every state in one query.
+				if gql, gerr := c.mrCountsViaGraphQL(ctx, owner, repo); gerr == nil {
+					mrCounts = gql
+					c.logger.Info("merge request counts above GitLab's X-Total limit — resolved via GraphQL",
+						"owner", owner, "repo", repo, "opened", gql["opened"], "closed", gql["closed"], "merged", gql["merged"])
+				} else {
+					prUnknown = true
+					c.logger.Info("merge request counts unavailable (above GitLab's 10,000-record X-Total limit and GraphQL count failed) — PR counts marked unknown, prior snapshot's counts carry forward",
+						"owner", owner, "repo", repo, "state", state, "error", err, "graphql_error", gerr)
+				}
+				break
+			}
+			prUnknown = true
+			c.logger.Warn("merge request count unavailable — PR counts marked unknown, prior snapshot's counts carry forward",
+				"owner", owner, "repo", repo, "state", state, "error", err)
+			break
+		}
+	} // merge requests disabled: definitive zero, no probes, no log.
+	mrOpen, mrClosed, mrMerged := mrCounts["opened"], mrCounts["closed"], mrCounts["merged"]
 	mrTotal := mrOpen + mrClosed + mrMerged
+	if prUnknown {
+		mrOpen, mrClosed, mrMerged, mrTotal = 0, 0, 0, 0
+	}
 
 	status := "Active"
 	if raw.Archived {
@@ -1164,38 +1385,40 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	}
 
 	return &model.RepoInfo{
-		FullName:          raw.PathWithNamespace,
-		PlatformRepoID:    model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
-		CreatedAt:         raw.CreatedAt,               // v0.27.104
-		Keywords:          strings.Join(raw.Topics, ","),
-		LastUpdated:       raw.LastActivityAt,
-		IssuesEnabled:     raw.IssuesEnabled,
-		PRsEnabled:        raw.MergeRequestsEnabled,
-		WikiEnabled:       raw.WikiEnabled,
-		PagesEnabled:      raw.PagesAccessLevel != "disabled",
-		IsFork:            isFork,
-		ForkParent:        forkParent,
-		ForkCount:         raw.ForksCount,
-		StarCount:         raw.StarCount,
-		OpenIssues:        raw.OpenIssuesCount,
-		DefaultBranch:     raw.DefaultBranch,
-		License:           license,
-		LicenseFile:       license,
-		CommitCount:       commitCount,
-		IssuesCount:       issueStats.Statistics.Counts.All,
-		IssuesClosed:      issueStats.Statistics.Counts.Closed,
-		PRCount:           mrTotal,
-		PRsOpen:           mrOpen,
-		PRsClosed:         mrClosed,
-		PRsMerged:         mrMerged,
-		Description:       raw.Description,
-		PrimaryLanguage:   primaryLang,
-		Languages:         languages,
-		ChangelogFile:     community.Changelog,
-		ContributingFile:  community.Contributing,
-		CodeOfConductFile: community.CodeOfConduct,
-		SecurityIssueFile: community.Security,
-		Status:            status,
+		FullName:           raw.PathWithNamespace,
+		PlatformRepoID:     model.ForgeIDString(raw.ID), // v0.27.102 — rename-proof numeric identity
+		CreatedAt:          raw.CreatedAt,               // v0.27.104
+		Keywords:           strings.Join(raw.Topics, ","),
+		LastUpdated:        raw.LastActivityAt,
+		IssuesEnabled:      featureEnabled(raw.IssuesAccessLevel, raw.IssuesEnabled),
+		PRsEnabled:         featureEnabled(raw.MergeRequestsAccessLevel, raw.MergeRequestsEnabled),
+		WikiEnabled:        featureEnabled(raw.WikiAccessLevel, raw.WikiEnabled),
+		PagesEnabled:       featureEnabled(raw.PagesAccessLevel, false), // no pages_enabled boolean exists; an absent level is not an observed feature
+		IsFork:             isFork,
+		ForkParent:         forkParent,
+		ForkCount:          raw.ForksCount,
+		StarCount:          raw.StarCount,
+		OpenIssues:         openIssues,
+		DefaultBranch:      raw.DefaultBranch,
+		License:            license,
+		LicenseFile:        license,
+		CommitCount:        commitCount,
+		IssuesCount:        issueStats.Statistics.Counts.All,
+		IssuesClosed:       issueStats.Statistics.Counts.Closed,
+		PRCount:            mrTotal,
+		PRsOpen:            mrOpen,
+		PRsClosed:          mrClosed,
+		PRsMerged:          mrMerged,
+		PRCountUnknown:     prUnknown,
+		IssuesCountUnknown: issuesUnknown,
+		Description:        raw.Description,
+		PrimaryLanguage:    primaryLang,
+		Languages:          languages,
+		ChangelogFile:      community.Changelog,
+		ContributingFile:   community.Contributing,
+		CodeOfConductFile:  community.CodeOfConduct,
+		SecurityIssueFile:  community.Security,
+		Status:             status,
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitLab API",
@@ -1251,20 +1474,74 @@ func (c *Client) fetchCommunityFiles(ctx context.Context, projectPath string) co
 // countGitLabResource returns the total count for a filtered resource using
 // per_page=1 and reading the X-Total response header. This is the cheapest way
 // to get counts from GitLab without paginating through all results.
-func (c *Client) countGitLabResource(ctx context.Context, projectPath, resource, state string) int {
+func (c *Client) countGitLabResource(ctx context.Context, projectPath, resource, state string) (int, error) {
 	path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=1", projectPath, resource, state)
-	resp, err := c.http.Get(ctx, path)
+	// v0.28.17: ETag-free — a header reader cannot use a 304.
+	// v0.28.18: the error arm is the caller's (SR-16). Pre-.18 this
+	// returned 0 on ANY failure — a transient 5xx on one probe stored
+	// pr_count = 0 and rotated the accurate prior snapshot to history.
+	resp, err := c.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("%s?state=%s: %w", resource, state, err)
 	}
 	resp.Body.Close()
 	total := resp.Header.Get("X-Total")
 	if total == "" {
-		return 0
+		return 0, fmt.Errorf("%s?state=%s: %w", resource, state, errCountUnavailable)
 	}
-	n, _ := strconv.Atoi(total)
-	return n
+	n, err := strconv.Atoi(total)
+	if err != nil {
+		return 0, fmt.Errorf("%s?state=%s: X-Total %q: %w", resource, state, total, err)
+	}
+	return n, nil
 }
+
+// mrCountsViaGraphQL counts merge requests per state through GitLab's
+// GraphQL API (v0.28.18) — the only count that works above the REST
+// X-Total limit. One query, three aliased connections; a nil project
+// (private / vanished) is an error, never a zero. Live-verified
+// 2026-08-27 against the public petsc/petsc: opened 232 / merged 8400 /
+// closed 834 alongside the REST X-Totals. Fast-fail retry budget: this
+// is a fallback, not a place to spend a 10-retry chain.
+func (c *Client) mrCountsViaGraphQL(ctx context.Context, owner, repo string) (map[string]int, error) {
+	endpoint := strings.TrimSuffix(c.http.BaseURL(), "/api/v4") + "/api/graphql"
+	const query = `query($fullPath: ID!) {
+		project(fullPath: $fullPath) {
+			opened: mergeRequests(state: opened) { count }
+			closed: mergeRequests(state: closed) { count }
+			merged: mergeRequests(state: merged) { count }
+		}
+	}`
+	// Every alias is a POINTER: parseGraphQLResponse tolerates per-path
+	// errors (a resolver timeout on one count nulls that alias and still
+	// returns data), and a null alias decoded as a plain struct would read
+	// as count 0 — the fabricated zero this whole path exists to avoid.
+	type count struct{ Count int }
+	var out struct {
+		Project *struct {
+			Opened *count `json:"opened"`
+			Closed *count `json:"closed"`
+			Merged *count `json:"merged"`
+		} `json:"project"`
+	}
+	if err := c.http.GraphQLAt(platform.WithGraphQLFastFail(ctx), endpoint, query,
+		map[string]any{"fullPath": owner + "/" + repo}, &out); err != nil {
+		return nil, err
+	}
+	if out.Project == nil {
+		return nil, fmt.Errorf("graphql project %s/%s is null (not visible to this token)", owner, repo)
+	}
+	if out.Project.Opened == nil || out.Project.Closed == nil || out.Project.Merged == nil {
+		return nil, fmt.Errorf("graphql project %s/%s returned a null count (per-path error) — counts unknown", owner, repo)
+	}
+	return map[string]int{"opened": out.Project.Opened.Count, "closed": out.Project.Closed.Count, "merged": out.Project.Merged.Count}, nil
+}
+
+// errCountUnavailable: GitLab omits X-Total (and X-Total-Pages) on any
+// listing whose result exceeds 10,000 records, for performance. A missing
+// header on a 200 is therefore "more than we can count this way", never
+// "zero". Callers mark the count unknown so the prior snapshot carries.
+var errCountUnavailable = errors.New("X-Total header absent (GitLab omits it above 10,000 records)")
 
 func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, error) {
 	// GitLab doesn't expose clone statistics via the API for non-admins.
@@ -1335,33 +1612,25 @@ func (c *Client) FetchPRByNumber(ctx context.Context, owner, repo string, number
 	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
 		return nil, err
 	}
-	state := raw.State
-	if state == "opened" {
-		state = "open"
+	return mrToPullRequest(raw, prDataSourceGapFill), nil
+}
+
+// featureEnabled derives a repo_info *_enabled flag from GitLab's
+// *_access_level when the payload carries it: "disabled" is the only
+// off state — "private" is enabled-for-members, which the legacy
+// *_enabled boolean (feature_available?(current_user)) reports as false
+// to a token that is not a member, i.e. it would record a live feature
+// as disabled. The boolean is the fallback only for older GitLab
+// responses that omit the level.
+func featureEnabled(accessLevel string, legacy bool) bool {
+	if accessLevel == "" {
+		return legacy
 	}
-	mergeCommit := raw.MergeCommitSHA
-	if mergeCommit == "" {
-		mergeCommit = raw.SquashCommitSHA
-	}
-	pr := &model.PullRequest{
-		PlatformSrcID:  raw.ID,
-		Number:         raw.IID,
-		HTMLURL:        raw.WebURL,
-		DiffURL:        raw.WebURL + ".diff",
-		Title:          raw.Title,
-		Body:           raw.Description,
-		State:          state,
-		Locked:         state == "locked",
-		CreatedAt:      raw.CreatedAt,
-		UpdatedAt:      raw.UpdatedAt,
-		ClosedAt:       raw.ClosedAt,
-		MergedAt:       raw.MergedAt,
-		MergeCommitSHA: mergeCommit,
-		AuthorRef:      glUserToRef(raw.Author),
-		Origin: model.DataOrigin{
-			ToolSource: "aveloxis",
-			DataSource: "GitLab API (gap fill)",
-		},
-	}
-	return pr, nil
+	return accessLevel != "disabled"
+}
+
+// ForgetRepoETags drops every cached ETag under /projects/{path}/ — the
+// scheduler's hook for a FAILED job (see the GitHub twin).
+func (c *Client) ForgetRepoETags(owner, repo string) int {
+	return c.http.ForgetETagsWithPrefix(fmt.Sprintf("/projects/%s/", projectPath(owner, repo)))
 }

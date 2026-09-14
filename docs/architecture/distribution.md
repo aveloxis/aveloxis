@@ -43,7 +43,7 @@ The CompositeScanner consults up to five sources per scan, in this order:
 
 Google's open-source dependency database. Reverse-lookup across seven major registries (NPM, PyPI, Maven, Cargo, Go, RubyGems, NuGet). Aggregated by `(system, name)` into one `repo_distribution` row per package; version count plus first/latest publish timestamps.
 
-Two API quirks that matter (both learned the hard way; see CLAUDE.md v0.24.1):
+Two API quirks that matter (both learned the hard way; see the v0.24.1 release notes):
 
 - **Project ID is a single path segment.** Internal slashes must be percent-encoded as `%2F`. `url.PathEscape` over the whole `github.com/owner/repo` string handles this correctly; per-segment escape (the v0.24.0 bug) produces a 404 that's indistinguishable from "deps.dev doesn't know this repo".
 - **`:packageversions` does NOT carry `publishedAt`.** The reverse-lookup endpoint returns versions without timestamps. To populate `first_published_at` / `latest_published_at`, the client chains one call per distinct `(system, name)` to `/v3/systems/{SYSTEM}/packages/{name}` and merges. Best-effort: a failed package-detail call silently leaves that package's timestamps at zero.
@@ -154,7 +154,7 @@ Current tables carry a natural-key UNIQUE constraint:
 - `repo_distribution` UNIQUE on `(repo_id, ecosystem, package_name, source)`. The `source` column distinguishes deps.dev rows from ecosyste.ms rows from github_release_asset rows — when multiple sources observe the same package, they coexist as multiple rows so each source's data quality stays auditable.
 - `repo_distribution_manifest` UNIQUE on `(repo_id, manifest_path)`. A monorepo with two `setup.py` files in different subdirectories produces two rows.
 
-History tables do NOT carry those UNIQUE constraints (v0.25.1 fix — see CLAUDE.md). They hold many snapshots over time per logical key.
+History tables do NOT carry those UNIQUE constraints (v0.25.1 fix — see its release notes). They hold many snapshots over time per logical key.
 
 ### 5.3 Rotation semantics
 
@@ -317,7 +317,7 @@ See [`docs/getting-started/configuration.md`](../getting-started/configuration.m
 ## 11. Cross-references
 
 - **Architectural cousin**: [`scancode.md`](scancode.md) covers the v0.21.0 ScancodeWorker, which uses the same decoupled-pool pattern for a different domain (per-file license + copyright scanning). Read both to understand the shape Aveloxis applies to "work that doesn't fit the per-job budget".
-- **Schema rationale**: history-table UNIQUE constraint drop is documented in the v0.25.1 CLAUDE.md changelog entry — explains why `LIKE … INCLUDING ALL` was wrong for history tables and how the fix preserves the PK while dropping the natural-key constraints.
+- **Schema rationale**: history-table UNIQUE constraint drop is documented in the v0.25.1 release notes — explains why `LIKE … INCLUDING ALL` was wrong for history tables and how the fix preserves the PK while dropping the natural-key constraints.
 - **Source-of-truth files**:
   - `internal/collector/distribution/` — worker + scanner + manifest parsers
   - `internal/platform/depsdev/`, `internal/platform/ecosystems/` — external API clients
@@ -364,7 +364,7 @@ These settings are **explicitly ephemeral**, scheduled for removal as v0.24.x su
 | Stage | Aveloxis version | Behavior |
 |---|---|---|
 | **Current (v0.25.3+)** | Knobs default to `true` (preserve v0.25.0 behavior). Migrations run idempotently. Documented as transitional. |
-| **Mainstream v0.24.x EOL** | v0.26.x or v0.27.x | Both knobs emit a startup WARN if present in `aveloxis.json`. Defaults unchanged. Operators on fresh installs see no warning. |
+| **Mainstream v0.24.x EOL** | a future release (the original v0.26.x/v0.27.x milestone passed without the WARN being added — the knobs remain functional and default-on) | Both knobs emit a startup WARN if present in `aveloxis.json`. Defaults unchanged. Operators on fresh installs see no warning. |
 | **Full removal** | Two minor versions after EOL warn | JSON fields removed from `CollectionConfig`. Operators with the keys still in their `aveloxis.json` get a fatal "unknown config key" startup error. Migrations stay (they're cheap idempotent no-ops on healthy data) but their docs get pruned. |
 
 Target year for "v0.24.x support officially ends": **2027**. By then, no operator should still be running a fleet whose first collection was under v0.24.0–v0.25.0, and the only purpose the knobs and migrations served — managing the v0.25.x transition — will be historical.

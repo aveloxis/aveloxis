@@ -196,9 +196,13 @@ func TestGraphQL_RetriesOn5xx(t *testing.T) {
 // treat a partial/failed response as success. GitHub returns rate-limit
 // exhaustion and permission errors this way.
 func TestGraphQL_SurfacesErrorsField(t *testing.T) {
+	// A NON-rate-limit whole-query error (2026-09-01 rewrite): in-body
+	// RATE_LIMITED now marks the key and rotates inside the loop, so it is
+	// no longer the right probe for "the errors array surfaces". A bad-
+	// syntax-class error still returns immediately.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
+		_, _ = w.Write([]byte(`{"data":null,"errors":[{"type":"SOME_UNKNOWN_FAILURE","message":"field does not exist"}]}`))
 	}))
 	defer server.Close()
 
@@ -216,18 +220,22 @@ func TestGraphQL_SurfacesErrorsField(t *testing.T) {
 	}
 	// The error message must mention something specific so the operator can
 	// diagnose. Empty or generic "graphql failed" wouldn't distinguish
-	// rate-limit from permission from parse error.
-	if !strings.Contains(err.Error(), "RATE_LIMITED") &&
-		!strings.Contains(err.Error(), "rate limit") {
+	// the failure type from a parse error.
+	if !strings.Contains(err.Error(), "SOME_UNKNOWN_FAILURE") {
 		t.Errorf("GraphQL error should include the type/message from the errors array, got: %v", err)
 	}
 }
 
-// TestGraphQL_RateLimitedClassifiesCorrectly — RATE_LIMITED in the errors
-// array must map to platform.ClassRateLimit via ClassifyError, so callers
-// can treat it consistently with HTTP-level rate limits (wait, don't fail).
+// TestGraphQL_RateLimitedClassifiesCorrectly — a PERSISTENT in-body
+// RATE_LIMITED must still surface as ClassRateLimit to callers with
+// their own recovery machinery (2026-09-01 rewrite): the loop now marks
+// the key and rotates, so the error only escapes once every key's
+// graphql budget is spent — under WithGraphQLFastFail that is a quick,
+// typed exit rather than a wait-for-reset.
 func TestGraphQL_RateLimitedClassifiesCorrectly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Resource", "graphql")
+		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
 	}))
@@ -237,16 +245,16 @@ func TestGraphQL_RateLimitedClassifiesCorrectly(t *testing.T) {
 	keys := NewKeyPool([]string{"t"}, logger)
 	client := NewHTTPClient(server.URL, keys, logger, AuthGitHub)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var dst map[string]any
-	err := client.GraphQL(ctx, `{ x }`, nil, &dst)
+	err := client.GraphQL(WithGraphQLFastFail(ctx), `{ x }`, nil, &dst)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if got := ClassifyError(err); got != ClassRateLimit {
-		t.Errorf("GraphQL RATE_LIMITED should classify as ClassRateLimit, got %v (err=%v)", got, err)
+		t.Errorf("persistent GraphQL RATE_LIMITED should classify as ClassRateLimit, got %v (err=%v)", got, err)
 	}
 }
 

@@ -352,7 +352,8 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		if len(pendingMarks) == 0 {
 			return
 		}
-		if markErr := bw.store.MarkBreadthAttemptedBatch(ctx, pendingMarks); markErr != nil {
+		markErr := bw.store.MarkBreadthAttemptedBatch(ctx, pendingMarks)
+		if markErr != nil && !errors.Is(markErr, context.Canceled) { // shutdown is not a failure (pass 34)
 			bw.logger.Warn("breadth: failed to mark contributors attempted",
 				"count", len(pendingMarks), "error", markErr)
 		}
@@ -401,7 +402,20 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		// inserted page-by-page, so a mid-pagination failure still
 		// kept the earlier pages' events.
 		if len(oc.rows) > 0 {
-			if insErr := bw.store.InsertContributorRepoBatch(ctx, oc.rows); insErr != nil {
+			insErr := bw.store.InsertContributorRepoBatch(ctx, oc.rows)
+			if errors.Is(insErr, context.Canceled) {
+				// Copilot round 8: shutdown, not a failure — but it must
+				// ABORT, not merely skip this contributor. A bare
+				// `continue` on the LAST outcome left abortErr nil, so
+				// the loop ended and the worker logged "contributor
+				// breadth complete" and returned nil on a `stop serve`.
+				// Aborting also stops the remaining in-flight fetches.
+				aborted = true
+				abortErr = insErr
+				cancelFetch()
+				continue // unmarked: retried next cycle
+			}
+			if insErr != nil {
 				bw.logger.Warn("breadth: failed to insert contributor events — leaving unmarked for retry",
 					"login", oc.contributor.Login, "events", len(oc.rows), "error", insErr)
 				result.Errors++
@@ -415,8 +429,10 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 				"login", oc.contributor.Login, "error", oc.err)
 			result.Errors++
 			// v0.20.17 invariant: a per-user fetch error still counts
-			// as attempted (only a circuit trip or an insert failure
-			// leaves a contributor unmarked).
+			// as attempted (only a circuit trip, an insert failure, or
+			// a shutdown mid-insert leaves a contributor unmarked). A
+			// canceled fetch never reaches here: the loop-top ctx check
+			// aborts the drain first.
 			pendingMarks = append(pendingMarks, oc.contributor.ID)
 			if len(pendingMarks) >= breadthMarkFlushSize {
 				flushMarks()
@@ -501,8 +517,13 @@ func (bw *BreadthWorker) fetchContributor(ctx context.Context, c db.BreadthContr
 		"cntrb_id", c.ID, "old_login", c.Login, "new_login", newLogin,
 		"gh_user_id", c.GHUserID)
 	if renameErr := bw.store.RenameContributorGhLogin(ctx, c.ID, newLogin, c.GHUserID); renameErr != nil {
-		bw.logger.Warn("breadth: failed to persist rename — bubbling original 404",
-			"cntrb_id", c.ID, "new_login", newLogin, "error", renameErr)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(renameErr, context.Canceled) {
+			bw.logger.Warn("breadth: failed to persist rename — bubbling original 404",
+				"cntrb_id", c.ID, "new_login", newLogin, "error", renameErr)
+		}
 		return rows, false, err
 	}
 
@@ -518,7 +539,9 @@ func (bw *BreadthWorker) fetchContributor(ctx context.Context, c db.BreadthContr
 // breadth worker's 404 rename-detection fallback.
 func (bw *BreadthWorker) lookupLoginByID(ctx context.Context, ghUserID int64) (string, error) {
 	path := fmt.Sprintf("/user/%d", ghUserID)
-	resp, err := bw.http.Get(ctx, path)
+	// v0.28.18: ETag-free — a single-object reader cannot use a 304, and
+	// the breadth worker's client lives for the whole process (v0.27.18).
+	resp, err := bw.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		return "", err
 	}
@@ -551,7 +574,15 @@ func (bw *BreadthWorker) fetchEventsForLogin(ctx context.Context, cntrbID, login
 
 	for page <= 10 { // GitHub events API max 10 pages (300 events)
 		path := fmt.Sprintf("/users/%s/events?per_page=30&page=%d", login, page)
-		resp, err := bw.http.Get(ctx, path)
+		// v0.28.18: ETag-free. This is a manual page loop, not the
+		// paginator, so a 304 on a repeat read surfaced as ErrNotModified —
+		// a WARN + result.Errors for a normal "nothing new" outcome. And
+		// treating 304 as "no events" would be wrong here: the v0.27.8
+		// ordering contract retries a contributor whose event INSERT
+		// failed, and that retry must see the body again (the previous
+		// fetch's rows never landed). The cooldown is the pacer, not the
+		// ETag cache.
+		resp, err := bw.http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			return rows, err
 		}

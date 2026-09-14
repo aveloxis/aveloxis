@@ -36,7 +36,7 @@ rm -rf /tmp/checkout                 (deleted after analysis)
 
 ## Dependency scanning
 
-The dependency scanner walks the full checkout looking for manifest files across 12 ecosystems.
+The dependency scanner walks the full checkout looking for manifest files across 14 ecosystems (the table below shows the core set; Elixir, Dart, and C/C++ manifests are also covered). It also parses 19 lockfile formats for locked versions, the transitive dependency closure, and parent→child dependency edges (`vuln_scan_transitive`, default on since v0.27.136).
 
 ### Supported ecosystems
 
@@ -88,6 +88,8 @@ A libyear of 0 means the dependency is up to date. A libyear of 2.5 means the ve
 
 ### Supported registries
 
+Twelve registries are queried: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, and SwiftPM (via GitHub releases). Examples:
+
 | Registry | URL Pattern | Ecosystems |
 |---|---|---|
 | **npm** | `https://registry.npmjs.org/{package}` | JavaScript, TypeScript |
@@ -123,7 +125,7 @@ Results are stored in `aveloxis_data.repo_deps_libyear`:
 
 ### Rate limiting
 
-Registry queries are not subject to GitHub/GitLab rate limits. However, some registries (notably crates.io) have their own rate limits. The libyear calculator makes requests sequentially to avoid overwhelming registries.
+Each stored row also carries the registry-reported `license` (normalized to SPDX downstream) and a spec-conformant `purl` — these feed the license table, SBOM generation, and vulnerability scanning. Registry queries are not subject to GitHub/GitLab rate limits. However, some registries (notably crates.io) have their own rate limits. The libyear calculator makes requests sequentially to avoid overwhelming registries.
 
 ---
 

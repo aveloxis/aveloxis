@@ -124,10 +124,11 @@ func TestCntrbIDCascadeActuallyCascades(t *testing.T) {
 	// Cleanup any leftover state from a prior run. pgx.Exec doesn't
 	// parse multi-statement strings, so each DELETE is a separate
 	// call. Order matters: children before parents.
+	// v0.27.120 bounded-retry helper: the 2026-09-01 full-suite run's
+	// concurrent-migrate deadlock storm picked this test's bare seed
+	// Execs as 40P01 victims — victims convert as they appear.
 	cleanup := func(sql string, args ...any) {
-		if _, err := store.pool.Exec(ctx, sql, args...); err != nil {
-			t.Logf("pre-test cleanup (non-fatal): %v", err)
-		}
+		cleanupExecRetry(ctx, store, sql, args...)
 	}
 	cleanup(`DELETE FROM aveloxis_data.issues WHERE reporter_id IN ($1::uuid, $2::uuid)`, oldID, newID)
 	cleanup(`DELETE FROM aveloxis_data.issues WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '_av_cascade' AND repo_name = 'test')`)
@@ -136,12 +137,10 @@ func TestCntrbIDCascadeActuallyCascades(t *testing.T) {
 	cleanup(`DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1 OR cntrb_id IN ($2::uuid, $3::uuid)`, login, oldID, newID)
 
 	// Seed a contributor with a random-looking UUID.
-	if _, err := store.pool.Exec(ctx, `
+	mustExecRetry(ctx, t, store, `
 		INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login)
 		VALUES ($1::uuid, $2)
-	`, oldID, login); err != nil {
-		t.Fatalf("insert contributor: %v", err)
-	}
+	`, oldID, login)
 
 	// Seed a repo_group so repos.repo_group_id has a valid FK target.
 	var repoGroupID int64
@@ -169,13 +168,12 @@ func TestCntrbIDCascadeActuallyCascades(t *testing.T) {
 		t.Fatalf("insert repo: %v", err)
 	}
 
-	// Seed an issue whose reporter_id points at the contributor.
-	if _, err := store.pool.Exec(ctx, `
+	// Seed an issue whose reporter_id points at the contributor (the
+	// 2026-09-01 40P01 victim — now retried).
+	mustExecRetry(ctx, t, store, `
 		INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, reporter_id)
 		VALUES ($1, 999999999, 12345, $2::uuid)
-	`, repoID, oldID); err != nil {
-		t.Fatalf("insert issue: %v", err)
-	}
+	`, repoID, oldID)
 
 	// Now the load-bearing UPDATE: rename the contributor's cntrb_id.
 	// Without ON UPDATE CASCADE this would fail with
@@ -202,8 +200,10 @@ func TestCntrbIDCascadeActuallyCascades(t *testing.T) {
 			reporterID, newID)
 	}
 
-	// Cleanup. Same split-statement pattern.
-	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_number = 12345`, repoID)
-	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
-	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	// Cleanup. Same split-statement pattern — via the retry helper so a
+	// deadlock-killed delete cannot strand residue for the next run
+	// (the silent `_, _ =` form is how residue poisons reruns).
+	cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1 AND issue_number = 12345`, repoID)
+	cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
+	cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 }

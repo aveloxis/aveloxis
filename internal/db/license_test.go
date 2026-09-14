@@ -91,3 +91,80 @@ func TestLicensePageShowsUnknownDistinctly(t *testing.T) {
 		t.Error("license table should render 'Unknown' licenses with distinct styling (e.g., italic)")
 	}
 }
+
+// v0.28.1 (A2) — the operator's LGPL report: "GNU Library or Lesser
+// General Public License (LGPL)" (the PyPI trove wording — "Library
+// OR Lesser") normalized to nothing and rendered "not OSI" even
+// though every LGPL version is OSI-approved. Unversioned family
+// labels map to their own canonical bucket (never fabricate a
+// version) and the OSI set covers them: all released versions of
+// LGPL / EPL / Artistic are OSI-approved, so the unversioned label
+// is safely approved too.
+func TestUnversionedLicenseFamiliesAreOSI(t *testing.T) {
+	// Version-unspecified LGPL translates to the exact SPDX
+	// expression for "some LGPL version": the classifier's wording
+	// spans "Library" (2.0) and "Lesser" (2.1+/3.0), i.e.
+	// The bare-LGPL family bucket (v0.28.6 — the -or-later id would
+	// invent a choose-later-versions grant; see the synonym-canonical
+	// groundtruth tripwire bans invented labels).
+	if got := NormalizeLicenseToSPDX("GNU Library or Lesser General Public License (LGPL)"); got != "LGPL" {
+		t.Errorf("trove LGPL wording normalized to %q, want the LGPL family bucket", got)
+	}
+	if got := NormalizeLicenseToSPDX("LGPL"); got != "LGPL" {
+		t.Errorf("bare LGPL normalized to %q, want the LGPL family bucket (never a version-specific or -or-later id)", got)
+	}
+	// EPL/Artistic have no SPDX any-version expression (or-later is
+	// GNU-only) — the bare family labels stay and are OSI-approved
+	// (every released version of each family is).
+	// v0.28.8 (operator correction, SPDX-verified): the ENTIRE LGPL
+	// family is OSI-approved — spdx.org/licenses marks every
+	// LGPL-2.0/2.1/3.0 -only and -or-later id isOsiApproved=true, so
+	// the bucket AND every versioned id the classifier can emit must
+	// read approved (LGPL-2.0-only was missing, so LGPLv2-exact
+	// packages wrongly read "not OSI").
+	for _, lic := range []string{
+		"LGPL",
+		"LGPL-2.0-only", "LGPL-2.1-only", "LGPL-3.0-only",
+		"LGPL-2.0-or-later", "LGPL-2.1-or-later", "LGPL-3.0-or-later",
+		"EPL", "Artistic",
+	} {
+		if !isOSILicense(lic) {
+			t.Errorf("%s must be OSI-approved (SPDX ground truth: the whole LGPL family is)", lic)
+		}
+	}
+	// -or-later SPDX ids are expressions over approved licenses.
+	for _, lic := range []string{
+		"LGPL-2.1-or-later", "LGPL-3.0-or-later",
+		"GPL-2.0-or-later", "GPL-3.0-or-later", "AGPL-3.0-or-later",
+	} {
+		if !isOSILicense(lic) {
+			t.Errorf("%s must be OSI-approved", lic)
+		}
+	}
+}
+
+// v0.28.1 (A2) — compound expressions: the dep tables store
+// multi-license declarations joined with " AND " (the v0.27.29
+// storage decision), so the OSI check must evaluate the PARTS —
+// approved iff every part is approved. Pre-fix, "MPL-2.0 AND MIT"
+// was looked up as one literal map key and always rendered
+// "not OSI".
+func TestCompoundLicenseExpressionsOSI(t *testing.T) {
+	if !isOSILicense("MPL-2.0 AND MIT") {
+		t.Error("MPL-2.0 AND MIT: both parts OSI-approved — compound must be approved")
+	}
+	// Parts re-normalize individually (synonym forms inside a
+	// compound still resolve).
+	if !isOSILicense("MIT License AND Apache 2.0") {
+		t.Error("compound parts must be normalized before lookup")
+	}
+	if isOSILicense("MIT AND Unknown") {
+		t.Error("a compound with any non-approved part must NOT be approved")
+	}
+	if isOSILicense("MIT AND ") {
+		t.Error("an empty part must never count as approved")
+	}
+	if isOSILicense(" AND ") {
+		t.Error("all-empty compound must not be approved")
+	}
+}

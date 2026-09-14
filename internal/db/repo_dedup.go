@@ -17,11 +17,13 @@
 //     the repo.
 //   - SHARED-COPY rows are repointed, never deleted. Tables whose unique
 //     key is global rather than per-repo (messages: UNIQUE
-//     (platform_msg_id, platform_id); commit_comment_ref; email_message;
-//     contributor_repo by repo_git text) hold ONE row for the pair —
-//     whichever variant collected first owns it. Deleting "the loser's"
-//     rows there would destroy the only copy or trip the winner's
-//     RESTRICT refs.
+//     (platform_msg_id, platform_id); commit_comment_ref; email_message)
+//     hold ONE row for the pair — whichever variant collected first owns
+//     it. Deleting "the loser's" rows there would destroy the only copy
+//     or trip the winner's RESTRICT refs. contributor_repo is
+//     deliberately NOT touched (v0.25.34): it is the breadth worker's
+//     observational record keyed by the numeric gh_repo_id, not a
+//     catalog reference.
 //   - per-repo duplicated child data (issues, PRs, commits, ... — all
 //     keyed UNIQUE (repo_id, platform_*)) is byte-duplicate of the
 //     winner's and is hard-deleted leaves-first, then the loser repos
@@ -30,8 +32,12 @@
 //
 // One transaction per pair; idempotent across runs (resolved pairs drop
 // out of the candidate set). Pairs with either side mid-collection
-// (status='collecting') are skipped and reported — never deleted out
-// from under a worker.
+// (status='collecting') are left out of the batch window (the dry-run
+// sample and the end-of-run remaining count report them), and the
+// LOSER's queue row is re-checked FOR UPDATE inside each pair
+// transaction — a loser is never deleted out from under a worker (the
+// winner is only ever repointed onto, so a winner claimed mid-pair is
+// harmless).
 
 package db
 
@@ -61,7 +67,8 @@ type RepoDupPair struct {
 	WinnerLastCollected *time.Time
 	LoserLastCollected  *time.Time
 	// Collecting is true when either side's queue row is mid-collection;
-	// such pairs are skipped this pass and reported.
+	// the batch window excludes such pairs (v0.28.18) and the dry-run
+	// sample shows them flagged.
 	Collecting bool
 }
 
@@ -69,7 +76,10 @@ type RepoDupPair struct {
 // MIN(repo_id); the LATERAL picks the lowest-id loser so >2-variant
 // groups drain deterministically. Scoped to forge platforms — generic
 // git hosts (platform 3) may legitimately be case-sensitive, so their
-// case variants are NOT duplicates.
+// case variants are NOT duplicates. $2 = TRUE drops mid-collection
+// pairs from the window (the batch loop's shape — see
+// DedupCaseVariantReposBatch); FALSE keeps them, flagged, for dry-run
+// display.
 const repoDupCandidatesSQL = `
 	WITH dup_groups AS (
 		SELECT LOWER(repo_git) AS lower_git,
@@ -79,32 +89,37 @@ const repoDupCandidatesSQL = `
 		WHERE platform_id IN (1, 2)
 		GROUP BY LOWER(repo_git)
 		HAVING COUNT(*) > 1
+	), candidates AS (
+		SELECT g.lower_git,
+		       g.winner_id,
+		       w.repo_git   AS winner_git,
+		       w.repo_name  AS winner_name,
+		       l.repo_id    AS loser_id,
+		       l.repo_git   AS loser_git,
+		       g.group_size,
+		       qw.last_collected AS winner_last_collected,
+		       ql.last_collected AS loser_last_collected,
+		       (COALESCE(qw.status, '') = 'collecting'
+		        OR COALESCE(ql.status, '') = 'collecting') AS collecting
+		FROM dup_groups g
+		JOIN aveloxis_data.repos w ON w.repo_id = g.winner_id
+		JOIN LATERAL (
+			SELECT r.repo_id, r.repo_git
+			FROM aveloxis_data.repos r
+			WHERE LOWER(r.repo_git) = g.lower_git
+			  AND r.platform_id IN (1, 2)
+			  AND r.repo_id <> g.winner_id
+			ORDER BY r.repo_id
+			LIMIT 1
+		) l ON TRUE
+		LEFT JOIN aveloxis_ops.collection_queue qw ON qw.repo_id = g.winner_id
+		LEFT JOIN aveloxis_ops.collection_queue ql ON ql.repo_id = l.repo_id
 	)
-	SELECT g.lower_git,
-	       g.winner_id,
-	       w.repo_git,
-	       w.repo_name,
-	       l.repo_id,
-	       l.repo_git,
-	       g.group_size,
-	       qw.last_collected,
-	       ql.last_collected,
-	       (COALESCE(qw.status, '') = 'collecting'
-	        OR COALESCE(ql.status, '') = 'collecting') AS collecting
-	FROM dup_groups g
-	JOIN aveloxis_data.repos w ON w.repo_id = g.winner_id
-	JOIN LATERAL (
-		SELECT r.repo_id, r.repo_git
-		FROM aveloxis_data.repos r
-		WHERE LOWER(r.repo_git) = g.lower_git
-		  AND r.platform_id IN (1, 2)
-		  AND r.repo_id <> g.winner_id
-		ORDER BY r.repo_id
-		LIMIT 1
-	) l ON TRUE
-	LEFT JOIN aveloxis_ops.collection_queue qw ON qw.repo_id = g.winner_id
-	LEFT JOIN aveloxis_ops.collection_queue ql ON ql.repo_id = l.repo_id
-	ORDER BY g.lower_git
+	SELECT lower_git, winner_id, winner_git, winner_name, loser_id, loser_git,
+	       group_size, winner_last_collected, loser_last_collected, collecting
+	FROM candidates
+	WHERE NOT ($2::boolean AND collecting)
+	ORDER BY lower_git
 	LIMIT $1`
 
 // CountCaseVariantRepoDups returns the number of unresolved case-variant
@@ -123,9 +138,17 @@ func CountCaseVariantRepoDups(ctx context.Context, store *PostgresStore) (int, e
 }
 
 // SampleCaseVariantRepoDups returns up to limit candidate pairs for
-// dry-run display and for the batch loop.
+// dry-run display — mid-collection pairs included, flagged Collecting.
 func SampleCaseVariantRepoDups(ctx context.Context, store *PostgresStore, limit int) ([]RepoDupPair, error) {
-	rows, err := store.pool.Query(ctx, repoDupCandidatesSQL, limit)
+	return sampleCaseVariantRepoDups(ctx, store, limit, false)
+}
+
+// sampleCaseVariantRepoDups is the candidate read behind both the
+// dry-run sample and the batch loop; excludeCollecting = TRUE is the
+// batch's window (a mid-collection pair at the head of the lower_git
+// order must not occupy a slot every round).
+func sampleCaseVariantRepoDups(ctx context.Context, store *PostgresStore, limit int, excludeCollecting bool) ([]RepoDupPair, error) {
+	rows, err := store.pool.Query(ctx, repoDupCandidatesSQL, limit, excludeCollecting)
 	if err != nil {
 		return nil, err
 	}
@@ -153,15 +176,32 @@ var errPairCollecting = errors.New("pair is mid-collection")
 // transaction each. Returns how many merged and how many were skipped
 // because a side was mid-collection. Callers loop until merged == 0;
 // resolved pairs drop out of the candidate set, so re-runs are no-ops.
+//
+// The batch's candidate window EXCLUDES mid-collection pairs (v0.28.18):
+// the window is the first batchSize groups in lower_git order, so a
+// batchSize-long run of collecting pairs at the head (one 33-hour
+// leftover drain per pair is a production shape) used to fill every
+// round with skips, the loop read merged == 0 as "done", and no pair
+// beyond the head was ever reached — the SR-19 "rerun until 0 pairs"
+// contract could not converge. skippedCollecting now counts only the
+// in-transaction race (a side claimed between the read and the FOR
+// UPDATE); the CLI reports the groups still remaining afterwards.
 func DedupCaseVariantReposBatch(ctx context.Context, store *PostgresStore, batchSize int) (merged, skippedCollecting int, err error) {
+	// v0.28.18: refuse, naming the fix, rather than sequential-scan
+	// email_message per pair (the gate's doc has the shape).
+	if err := emailMessageFKIndexesReadyFor(ctx, store.pool, "repos"); err != nil {
+		return 0, 0, err
+	}
 	if batchSize <= 0 {
 		return 0, 0, fmt.Errorf("batchSize must be positive, got %d", batchSize)
 	}
-	pairs, err := SampleCaseVariantRepoDups(ctx, store, batchSize)
+	pairs, err := sampleCaseVariantRepoDups(ctx, store, batchSize, true)
 	if err != nil {
 		return 0, 0, fmt.Errorf("load dedup candidates: %w", err)
 	}
 	for _, pair := range pairs {
+		// Belt: the window excludes collecting pairs; kept so a caller
+		// handing in a dry-run sample still skips them.
 		if pair.Collecting {
 			skippedCollecting++
 			continue

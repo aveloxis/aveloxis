@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Package pidfile manages PID files for aveloxis background processes.
-// Each component (serve, web, api) writes its PID to a file at startup
+// Each component (serve, web, api, scancode-worker) writes its PID to a file at startup
 // and removes it on shutdown. The start/stop commands use these files
 // to reliably identify and manage background processes.
 package pidfile
@@ -31,7 +31,7 @@ func Dir() string {
 	return dir
 }
 
-// Path returns the PID file path for a component (serve, web, api).
+// Path returns the PID file path for a component (serve, web, api, scancode-worker).
 func Path(component string) string {
 	return filepath.Join(Dir(), "aveloxis-"+component+".pid")
 }
@@ -62,11 +62,28 @@ func Read(path string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid PID in %s: %w", path, err)
 	}
+	// A pid is positive. kill(2) reads a negative pid as a PROCESS
+	// GROUP and 0 as the caller's own group, and Go's os.Process guards
+	// only -1 and 0 — so a file holding "-7010" would otherwise read as
+	// a live pid and `stop` would signal every process in that group
+	// (round 17 L10 finding 1). Rejected here, at the owning layer, so
+	// every reader inherits it (SR-18).
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid PID in %s: %d is not a process id", path, pid)
+	}
 	return pid, nil
 }
 
-// Remove deletes a PID file. Best-effort by contract: a stale PID file
-// is handled by the liveness check on the next start.
+// Remove deletes a PID file. Best-effort by contract.
+//
+// A leftover pidfile whose PID is DEAD is resolved by the liveness check
+// on the next start (that is what IsRunning is for). A leftover pidfile
+// that cannot be READ — EACCES, EIO, corrupt or truncated content — is
+// neither stale nor live: it never reaches IsRunning at all, and since
+// round-11 finding 2 (SR-5) callers report that state as UNKNOWN and
+// REFUSE to start rather than risk a second scheduler on one host. So a
+// failed Remove here is not always self-healing; the operator may have
+// to delete the file by hand.
 func Remove(path string) {
 	_ = os.Remove(path)
 }
@@ -83,6 +100,9 @@ func Remove(path string) {
 // The documented intent was always "send signal 0"; this makes the code
 // do that.
 func IsRunning(pid int) bool {
+	if pid <= 0 {
+		return false // never a process; a negative value names a GROUP to kill(2)
+	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false

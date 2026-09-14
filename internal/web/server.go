@@ -1153,7 +1153,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 
 		for {
 			path := fmt.Sprintf("%s?per_page=100&type=all&page=%d", basePath, page)
-			resp, err := httpClient.Get(ctx, path)
+			resp, err := httpClient.Get(platform.WithoutETag(ctx), path)
 			if err != nil {
 				// 404/403 means this isn't an org (or isn't visible) —
 				// try the /users/ path. v0.27.36: sentinel-classified via
@@ -1379,7 +1379,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * monitorPageSize
 
 	stats, _ := s.store.QueueStats(r.Context())
-	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query)
+	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query, "", "")
 
 	totalPages := (total + monitorPageSize - 1) / monitorPageSize
 	if totalPages < 1 {

@@ -68,7 +68,13 @@ Conventions for adding integration tests:
 
 **Trigger:** Every PR to main.
 
-Runs [golangci-lint](https://golangci-lint.run/) with `--only-new-issues` so existing code doesn't block PRs. 5-minute timeout for large codebases.
+Runs three blocking tiers in sequence: `go vet`, `staticcheck`, and [golangci-lint](https://golangci-lint.run/) at a pinned version. All three block the merge — run the pinned golangci-lint locally before pushing (bare staticcheck and golangci-lint disagree on some checks, e.g. ST1000).
+
+### Docs (`docs.yml`)
+
+**Trigger:** Every push to main, every PR to main.
+
+Builds the Sphinx/MyST site exactly as Read the Docs does (Python 3.12, `docs/requirements.txt`) with `sphinx-build -W --keep-going`, so an unknown fence language, a code block that does not lex in its declared language, or a dead cross-reference fails the job — `--keep-going` walks the whole tree so one run lists every offender. `.readthedocs.yaml` enforces the same rule at publish time via `fail_on_warning`. Run the identical command locally before pushing (see "Build docs" in the README).
 
 ### CodeQL (`codeql.yml`)
 
@@ -241,3 +247,11 @@ This requires the CI runner to have:
 For projects without those, the harness still works as an
 operator-invoked local check before pushing the PR. The CI job is a
 convenience, not a requirement.
+
+## Fuzzing (`cifuzz.yml`)
+
+ClusterFuzzLite builds and runs the repo's 7 native Go fuzz targets (`func Fuzz*` — mbox parsing, lockfile + manifest parsers, purl helpers, repo-URL parsers) on every PR. The build recipe lives in `.clusterfuzzlite/`; crashing inputs are committed back as permanent corpus regressions under `testdata/fuzz/`. The targets' seed corpora also run in every ordinary `go test ./...`.
+
+## Network canary (`network-canary.yml`)
+
+A weekly scheduled job runs the `AVELOXIS_TEST_NETWORK=1`-gated tests against the real deps.dev, OSV.dev, crates.io, GitHub search, and Pony Mail APIs — the contract-drift class that mocks structurally cannot catch (the deps.dev URL-encoding bug and the OSV querybatch-stubs bug both lived in that blind spot).

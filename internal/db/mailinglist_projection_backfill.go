@@ -142,9 +142,39 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 		if perr != nil {
 			return n, fmt.Errorf("backfill keyed: project %q: %w", r.key, perr)
 		}
+		// C1: the notification's action reaches issue state on this
+		// path too (the second caller; same SR-18 gates inside).
+		if action := trackerActionFromSubject(r.subject); action != "" {
+			if aerr := s.ApplyTrackerAction(ctx, issueID, action, r.sentAt, r.emID); aerr != nil {
+				return n, fmt.Errorf("backfill keyed: apply action %q: %w", action, aerr)
+			}
+		}
 		if msgID, ok := s.bodyMsgID(ctx, r.msgHdr); ok {
 			if err := s.BridgeEmailToIssue(ctx, issueID, r.repoID, msgID); err != nil {
 				return n, fmt.Errorf("backfill keyed: bridge: %w", err)
+			}
+		}
+		// Round 6 (suppressed #2): the heal path converges the reverse
+		// arrival order too — a re-projected [Commented] notification
+		// claims its already-collected native twin.
+		if trackerActionFromSubject(r.subject) == "Commented" {
+			if err := s.LinkCommentNotificationToNative(ctx, r.emID, issueID, r.sentAt); err != nil {
+				if !errors.Is(err, errLinkContentionExhausted) {
+					return n, fmt.Errorf("backfill keyed: reverse comment link: %w", err)
+				}
+				// Copilot round 25 (PR #193, finding #4, reverses round
+				// 23's `continue`): leaving the row unstamped is correct
+				// (round 23 — the candidate query is projected_kind='' only,
+				// so a stamp would close the row forever and the link would
+				// never happen), BUT `continue` makes an all-contention
+				// batch return n=0, which the CLI reads as "done" and then
+				// runs BackfillMarkRemainingProjected — permanently stamping
+				// this row AND every candidate beyond the batch
+				// mailing_list_only. Return the contention instead: the CLI
+				// stops before the final mark, the n rows already stamped in
+				// THIS batch are committed, and a rerun (after the concurrent
+				// drain settles) resumes with the row still projected_kind=''.
+				return n, fmt.Errorf("backfill keyed: reverse comment link contention (transient — rerun after the concurrent drain settles): %w", errLinkContentionExhausted)
 			}
 		}
 		if _, err := s.pool.Exec(ctx, `

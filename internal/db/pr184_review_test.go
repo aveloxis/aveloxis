@@ -44,6 +44,10 @@ func TestLoginOnlyRefsResolveDistinctly(t *testing.T) {
 	t.Cleanup(func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()
+		// Children before parents: contributor_login_history is ON DELETE
+		// RESTRICT (v0.23.0) and the resolver writes one per observed
+		// login (pass 44).
+		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.contributor_login_history WHERE cntrb_id IN (SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login LIKE 'avpr184-%')`)
 		_, _ = store.pool.Exec(cctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE 'avpr184-%'`)
 	})
 

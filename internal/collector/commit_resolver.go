@@ -26,6 +26,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -150,6 +151,9 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		}
 
 		login, ghUserID, err := r.resolveOne(ctx, repoID, owner, repo, cmt, result)
+		if errors.Is(err, context.Canceled) {
+			return result, err // shutdown, not a failure (pass 35)
+		}
 		if err != nil {
 			// Distinguish key exhaustion from other errors — key exhaustion means
 			// we should stop trying (all subsequent calls will fail too).
@@ -199,6 +203,13 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 
 		// Update commit rows with the resolved login.
 		if err := r.store.SetCommitAuthorLogin(ctx, repoID, cmt.Hash, login); err != nil {
+			// Round-8 class sweep: warn-and-continue per commit, and
+			// result.Errors feeds IsSuccess() — so a shutdown both
+			// flooded the log and could report "commit resolution
+			// FAILED" for a clean stop.
+			if errors.Is(err, context.Canceled) {
+				return result, err
+			}
 			r.logger.Warn("failed to set commit author login", "hash", cmt.Hash[:8], "error", err)
 			result.Errors++
 			continue
@@ -215,7 +226,12 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 
 	// Bulk backfill: connect commits to contributors via cmt_ght_author_id.
 	if n, err := r.store.BackfillCommitAuthorIDs(ctx, repoID); err != nil {
-		r.logger.Warn("backfill cmt_ght_author_id failed", "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("backfill cmt_ght_author_id failed", "error", err)
+		}
 	} else if n > 0 {
 		r.logger.Info("backfilled cmt_ght_author_id", "rows", n)
 	}
@@ -273,8 +289,10 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 		return info.Login, info.UserID, nil
 	}
 
-	// Skip bot/junk emails and non-email strings (names, etc.)
-	if IsBotEmail(email) || email == "" || !strings.Contains(email, "@") {
+	// Skip automation/junk emails and non-email strings (names, etc.)
+	// (IsAutomationEmail ⊇ IsBotEmail — review 2026-08-30 #12: a relay
+	// address as a commit author must never acquire an alias/identity.)
+	if IsAutomationEmail(email) || email == "" || !strings.Contains(email, "@") {
 		r.emailCache[email] = ""
 		r.hashCache[cmt.Hash] = ""
 		return "", 0, nil
@@ -356,7 +374,8 @@ type ghCommitAuthor struct {
 func (r *CommitResolver) githubCommitLookup(ctx context.Context, owner, repo, sha string) (*ghCommitAuthor, error) {
 	path := fmt.Sprintf("/repos/%s/%s/commits/%s", owner, repo, sha)
 
-	resp, err := r.http.Get(ctx, path)
+	// v0.28.18: ETag-free — a body-decoding reader cannot use a 304.
+	resp, err := r.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, nil // 404 — commit not on GitHub
@@ -451,6 +470,12 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 
 	created, actualID, err := r.store.UpsertContributorFull(ctx, desiredID, login, ghUserID, commitEmail)
 	if err != nil {
+		// Round-8 class sweep: a shutdown must not count as a resolve
+		// error — result.Errors feeds IsSuccess(). The caller's loop-top
+		// ctx guard ends the pass on the next iteration.
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		r.logger.Warn("failed to upsert contributor", "login", login, "error", err)
 		result.Errors++
 		return
@@ -463,9 +488,14 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 
 	// Create alias using the actual cntrb_id (may differ from desiredID
 	// if the login already existed under a different UUID).
-	if commitEmail != "" && !IsNoreplyEmail(commitEmail) && !IsBotEmail(commitEmail) {
-		if err := r.store.EnsureContributorAlias(ctx, actualID, commitEmail); err != nil {
-			r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+	if commitEmail != "" && !IsNoreplyEmail(commitEmail) && !IsAutomationEmail(commitEmail) {
+		if err := r.store.EnsureContributorAlias(ctx, actualID, commitEmail, "aveloxis-commit-resolver", "GitHub API"); err != nil {
+			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+			// defect. Only the log is suppressed — surrounding behaviour is
+			// unchanged and the work is retried on the next cycle.
+			if !errors.Is(err, context.Canceled) {
+				r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+			}
 		} else {
 			result.AliasesCreated++
 		}
@@ -475,7 +505,7 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 // ensureAlias creates an alias for a commit email when we resolved the login
 // but don't have a gh_user_id (resolved via DB lookup or Search API).
 func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail string, result *ResolveResult) {
-	if commitEmail == "" || IsNoreplyEmail(commitEmail) || IsBotEmail(commitEmail) {
+	if commitEmail == "" || IsNoreplyEmail(commitEmail) || IsAutomationEmail(commitEmail) {
 		return
 	}
 	// Look up the contributor by login to get their cntrb_id.
@@ -483,8 +513,13 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	if err != nil || cntrbID == "" {
 		return
 	}
-	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail); err != nil {
-		r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail, "aveloxis-commit-resolver", "GitHub API"); err != nil {
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("failed to create alias", "email", commitEmail, "error", err)
+		}
 	} else {
 		result.AliasesCreated++
 	}
@@ -497,7 +532,12 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	// table but left cntrb_canonical empty on the parent contributor
 	// row, suppressing the email-canonical join path downstream.
 	if err := r.store.SetContributorCanonical(ctx, cntrbID, commitEmail); err != nil {
-		r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
+		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
+		// defect. Only the log is suppressed — surrounding behaviour is
+		// unchanged and the work is retried on the next cycle.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
+		}
 	}
 }
 
@@ -521,7 +561,8 @@ func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, err
 		}
 
 		path := fmt.Sprintf("/users/%s", c.Login)
-		resp, err := r.http.Get(ctx, path)
+		// v0.28.18: ETag-free — a body-decoding reader cannot use a 304.
+		resp, err := r.http.Get(platform.WithoutETag(ctx), path)
 		if err != nil {
 			// Mark as enriched even on failure to avoid retrying on
 			// deleted/suspended users every pass. Marking itself

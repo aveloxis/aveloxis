@@ -5,11 +5,29 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
+
+// SetHistoryWindowConcurrency bounds how many history windows fetch
+// concurrently per contributor (v0.28.3; wired each sweep tick from
+// collection.activity_history_window_concurrency — the platform
+// package stays config-free). Unset/zero = 1, the legacy serial
+// shape, so standalone callers and tests are behavior-identical
+// until wired. Atomic: the sweep sets it while pool workers may be
+// mid-fetch.
+func (c *Client) SetHistoryWindowConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	c.historyWindowConc.Store(int32(n))
+}
 
 // contributor_history.go — v0.27.58 daily contributor-history fetch.
 // One GraphQL query per (user, window) returns, at rate-limit cost 1
@@ -86,6 +104,10 @@ func HistoryWindows(createdAt time.Time, years []int, now time.Time, windowDays 
 // FetchContributorHistoryMeta returns the account creation time and
 // contribution years — the inputs HistoryWindows needs. Cost: 1 point.
 func (c *Client) FetchContributorHistoryMeta(ctx context.Context, login string) (time.Time, []int, error) {
+	// Background sweep: leave GraphQLBackgroundReserve headroom per key for
+	// foreground collection (the 2026-09-01 pytorch diagnostic — the history
+	// sweep's sustained load kept keys graphql-dry under multi-day jobs).
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	query := fmt.Sprintf(`query { user(login: %q) { createdAt contributionsCollection { contributionYears } } }`, login)
 	var resp struct {
 		User struct {
@@ -102,8 +124,12 @@ func (c *Client) FetchContributorHistoryMeta(ctx context.Context, login string) 
 }
 
 // historyAccumulator merges per-window results across windows and
-// subdivision levels.
+// subdivision levels. v0.28.3: windows fetch CONCURRENTLY, so the
+// merge sections lock mu — safe because the merge uses ASSIGNMENT
+// semantics (order-independent; boundary days arrive identical from
+// both neighboring windows).
 type historyAccumulator struct {
+	mu     sync.Mutex
 	days   map[string]*model.ContributorDayActivity // key: day + "\x00" + repo
 	totals map[string]int                           // day → calendar total
 }
@@ -163,12 +189,64 @@ type historyRepoEntry struct {
 // FetchContributorDailyHistory fetches and merges every window,
 // subdividing on cap hits. Errors abort (nothing is fabricated); the
 // caller retries the contributor on its next claim.
+//
+// v0.28.3: windows fetch CONCURRENTLY (bounded by
+// SetHistoryWindowConcurrency; default 1 = the legacy serial shape).
+// The serial chain was the sweep's throughput floor — a 10-year
+// account is ~20 windows ≈ 20 sequential round-trips. Windows are
+// independent spans and the accumulator's assignment-semantics merge
+// is order-independent, so concurrency needs only the accumulator
+// mutex. First error cancels the remaining windows and aborts the
+// contributor — unchanged failure semantics, reached faster.
 func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string, windows []HistoryWindow) ([]model.ContributorDayActivity, []model.ContributorDayTotal, error) {
+	// Background sweep — same reserve rationale as FetchContributorHistoryMeta.
+	ctx = platform.WithGraphQLBackgroundBudget(ctx)
 	acc := newHistoryAccumulator()
+	conc := int(c.historyWindowConc.Load())
+	if conc < 1 {
+		conc = 1
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
 	for _, w := range windows {
-		if err := c.fetchHistoryWindow(ctx, login, w, acc); err != nil {
-			return nil, nil, err
-		}
+		wg.Add(1)
+		go func(w HistoryWindow) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-wctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			if wctx.Err() != nil {
+				return
+			}
+			if err := c.fetchHistoryWindow(wctx, login, w, acc); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				cancel()
+			}
+		}(w)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, nil, firstErr
+	}
+	// v0.28.5 (Copilot round): a canceled PARENT context can drain
+	// every worker at the semaphore/entry checks without any fetch
+	// recording an error — returning the partial accumulator as
+	// success would let the scheduler store it AND stamp the
+	// contributor backfilled for a full cooldown period, silently
+	// truncating their history. Cancellation is a failed fetch.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	days := make([]model.ContributorDayActivity, 0, len(acc.days))
 	for _, r := range acc.days {
@@ -192,6 +270,56 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 
 	var resp historyWindowResp
 	if err := c.http.GraphQL(ctx, query, nil, &resp); err != nil {
+		// Error-path policy (rounds 26/28/29 + code-review round
+		// 2026-09-06 — one narrative, superseding the earlier stacked
+		// comments; chaoss.tv logs 2026-09-03..05 are the evidence base):
+		//
+		// The "window is too expensive" signal arrives in three shapes —
+		//  (a) a global RESOURCE_LIMITS_EXCEEDED (the ErrResourceLimits
+		//      sentinel; gate with errors.Is, never the message text —
+		//      graphql.go's own contract, code-review finding 12);
+		//  (b) a TRUNCATED body whose partial JSON carries the marker (a
+		//      decode error the classifier cannot reach — the string
+		//      check exists ONLY for this shape, scoped to decode
+		//      failures so ordinary errors echoing the bytes don't
+		//      false-match);
+		//  (c) persistent 500s that exhaust the retry budget
+		//      (ErrTransient — QCADevProd/robinmordasiewicz presented
+		//      this way; v0.27.81's fetchActivityWithSubdivide subdivides
+		//      on ClassTransient for exactly that measured shape, which
+		//      is why the subdivision gate below is NOT narrowed to the
+		//      explicit marker: that would re-strand those windows).
+		//
+		// ABOVE the 48h floor all three subdivide — a shorter span
+		// aggregates fewer contributions, and a mid-window blip can
+		// recover too. AT the floor the arms split (round 28): only the
+		// EXPLICIT marker (a/b) is lossy — a 48h span GitHub still
+		// refuses is genuinely too big, so the span is skipped (data
+		// lost, logged) rather than stranding the contributor. A generic
+		// transient at the floor (outage / DNS / deadline) is NOT proof
+		// of cost: it BUBBLES, the contributor fails un-stamped, and the
+		// scheduler's failure cooldown retires it from the claim head
+		// (code-review finding 3) — nothing incomplete is ever stamped.
+		tooExpensive := errors.Is(err, platform.ErrResourceLimits) ||
+			(strings.Contains(err.Error(), "decode graphql envelope") &&
+				strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED"))
+		if w.To.Sub(w.From) >= historyMinWindow &&
+			(tooExpensive || platform.ClassifyError(err) == platform.ClassTransient) {
+			c.logger.Info("activity history: query too expensive or transient — subdividing window",
+				"login", login,
+				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+			mid := w.From.Add(w.To.Sub(w.From) / 2)
+			if serr := c.fetchHistoryWindow(ctx, login, HistoryWindow{From: w.From, To: mid}, acc); serr != nil {
+				return serr
+			}
+			return c.fetchHistoryWindow(ctx, login, HistoryWindow{From: mid, To: w.To}, acc)
+		}
+		if tooExpensive {
+			c.logger.Info("activity history: query too expensive at minimum window — span skipped",
+				"login", login,
+				"from", w.From.Format("2006-01-02"), "to", w.To.Format("2006-01-02"))
+			return nil
+		}
 		return fmt.Errorf("contributor history window %q %s→%s: %w", login, w.From.Format("2006-01-02"), w.To.Format("2006-01-02"), err)
 	}
 	cc := resp.User.ContributionsCollection
@@ -215,6 +343,9 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		// Fall through: keep what WAS returned — partial beats nothing.
 	}
 
+	// v0.28.3: the merge region locks — windows merge concurrently.
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
 	for _, week := range cc.ContributionCalendar.Weeks {
 		for _, d := range week.ContributionDays {
 			if d.ContributionCount > 0 {

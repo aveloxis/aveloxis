@@ -84,7 +84,7 @@ func hostileRepoPage() RepoPageData {
 			{Name: "Fuzzing", Score: 1},
 			{Name: "CI-Tests", Score: -1},
 		},
-		DepsScanned:  true,
+		VulnScanned:  true,
 		VulnTotal:    3,
 		VulnCritical: 1,
 	}
@@ -135,12 +135,12 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 	if !strings.Contains(out, "not yet scanned") {
 		t.Error("missing scorecard 'not yet scanned' empty state")
 	}
-	if !strings.Contains(out, "analysis pending") {
-		t.Error("missing dependency 'analysis pending' empty state")
+	if !strings.Contains(out, "scan pending") {
+		t.Error("missing vulnerability 'scan pending' empty state (v0.28.7 wording — the SCAN is what's pending under the stamp gate)")
 	}
 
 	// Scanned with zero findings is a genuinely clean state and says so.
-	d.DepsScanned = true
+	d.VulnScanned = true
 	b.Reset()
 	if err := RenderRepo(&b, d); err != nil {
 		t.Fatalf("render: %v", err)

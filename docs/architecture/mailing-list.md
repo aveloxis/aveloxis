@@ -142,7 +142,7 @@ Per-column documentation is in [`docs/schema.md`](../schema.md). See [`docs/cont
                               ArchiveSource (Pony Mail | public-inbox)
 ```
 
-- **Claim**: `ClaimNextList(system, cadence, staleLock, pid, bootID)` acquires a list with `FOR UPDATE SKIP LOCKED`, gated on cadence and on stale-lock recovery (`MailingListStaleLock = 2h` — a lock older than that is presumed dead, the v0.21.0 `(pid, boot_id)` recovery shape). `RecoverStaleListLocks` runs at startup.
+- **Claim**: `ClaimNextList(system, cadence, pid, bootID)` acquires a list with `FOR UPDATE SKIP LOCKED`, gated on cadence and on stale-lock recovery (`MailingListStaleLock = 2h` — a lock older than that is presumed dead; the `(pid, boot_id)` stamp is informational, liveness is age alone). `RecoverStaleListLocks` runs at startup and clears locks past the same window. A scan interrupted by `stop serve` releases its own lock on the way out (`ReleaseListLock`, v0.28.18 — keyed on the claim's own `mlls_locked_at` stamp, which is unique per claim in every topology where `(pid, boot_id)` is not, on a bounded background context the scheduler waits for before closing the pool) so the list is reclaimable on restart; if that release loses (a hung database at shutdown), the stale window is the fallback. The month checkpoint resumes it either way. `CompleteListScan` / `RecordListFailure` predate the ownership predicate: a scan that runs past the 2 h window and is reclaimed elsewhere can still be closed out by its first holder — a documented gap, bounded by the staging table's `ON CONFLICT DO NOTHING`.
 - **Checkpoint**: each completed month stamps `mlls_last_month` via `CheckpointListMonth`, so an interrupted scan resumes from where it stopped rather than re-fetching.
 - **Months to scan**: from `mlls_last_month` forward to the current month; for a never-scanned list, from `FirstMonth` (full history) when `mailing_list_backfill_months <= 0`, else the recent N-month window.
 - **Failure backoff** (v0.21.4 quadratic, base 120s): `RecordListFailure` schedules 2m → 8m → 18m → … and sidelines the list after `MailingListMaxFailures = 10` consecutive failures.
@@ -166,6 +166,34 @@ The pipeline is split into a **fetch** half and a **resolve+write** half across 
 | `full` | store everything, including the body |
 
 The default avoids wholesale-duplicating GitHub data into a second form while keeping the linkage and timeline.
+
+### How a mirror message is linked (v0.28.20)
+
+The link key is the **GitHub GraphQL node ID**, recovered from the
+Message-ID. Apache's GitBox relay uses it as the local part
+(`PR_kwDOBCyuKc8AAAABBMldbw@gitbox.apache.org`); replies append a UUID,
+which is stripped by its exact 8-4-4-4-12 shape — never by cutting at the
+first dash, since node IDs are base64url and may legitimately contain one.
+`mailinglist.NodeIDFromMessageID` does the extraction and
+`ResolveMirrorLinkByNodeID` joins it to `pull_requests.node_id` /
+`issues.node_id` (both indexed since v0.28.20).
+
+The node ID is preferred over the body-URL captures
+(`owner`/`repo`/`kind`/`number`) that the systems.yaml body rule can
+supply, for three reasons: it is an exact platform identifier rather than
+a number matched within a guessed owner; it is available under
+`metadata_only`, which stores no body at all; and in practice the body
+rule does not fire on Apache mail — a 2026-08-29 production audit found
+**0 of 396,809** mirror rows carried its captures, which is why
+`linked_issue_id` / `linked_pull_request_id` were NULL on every one of
+them before v0.28.20. The body-URL path remains as the fallback for
+relays whose mail does carry a canonical URL.
+
+Legacy `MDExO…` node IDs are deliberately not matched: they carry no type
+prefix, so accepting them could key a row onto an unrelated entity. A
+message whose referenced issue/PR is not in the catalog is left NULL
+rather than guessed. Historical rows are repaired by
+`scripts/heal_mirror_links.sh`, which uses the same key.
 
 ## 10. Operator CLI
 
@@ -218,7 +246,7 @@ Layer 1 (every email → `email_message` + body + classification + threading) is
 
 **Sender attribution (Phases 2+4):** senders the DB can't resolve are run through the shared email→identity chain; direct-human senders that still don't resolve get an **email-only contributor** (random `cntrb_id`, `cntrb_email` set) so they're counted and ride the convergence ticker. Bot/relay senders (`jira@`, `git@`, CI) never become contributors.
 
-**Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (which already covers collected PRs correctly). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
+**Phase B (verified, NOT built) — PR/review synthesis** from `github_mirror` mail. Verification (2026-06-04, summary/12 §3) settled it: `pull_requests.platform_pr_id` stores the GitHub PR **`databaseId`**, but mirror mail carries only the PR **number** — a synthesized PR keyed on the number would *duplicate* the API collector's row rather than merge. Decision: **don't synthesize**; the lever for full Apache PR data is **org collection** (`load-foundation-orgs`) + the existing `github_mirror` **LINK** path (repaired in v0.28.20 — see §9; it was dark until then). `linked_pr_review_id` remains in the schema should a future uncollectable-sibling case justify a number→databaseId resolution step.
 
 For `projection_policy: none` (kernel): none of the above runs — a `[PATCH]` is not a PR; Layer 1 is the faithful record.
 

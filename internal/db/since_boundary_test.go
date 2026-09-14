@@ -138,7 +138,7 @@ func TestCompleteJobLastCollectedSemantics(t *testing.T) {
 
 	// 1. FAILED first pass: last_collected stays NULL (the next round
 	// stays a FULL collection — the cohort-A class killer).
-	if err := store.CompleteJob(ctx, repoID, false, time.Time{}, time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "boom"); err != nil {
+	if err := store.CompleteJob(ctx, repoID, false, time.Time{}, time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "boom", 1); err != nil {
 		t.Fatal(err)
 	}
 	if lc := readLC(); lc != nil {
@@ -155,7 +155,7 @@ func TestCompleteJobLastCollectedSemantics(t *testing.T) {
 	// re-opening of the exact blind window v0.27.139 closed.
 	startRaw := time.Now().Add(-45 * time.Minute).UTC().Truncate(time.Second).Add(700 * time.Millisecond)
 	start := startRaw.Truncate(time.Second)
-	if err := store.CompleteJob(ctx, repoID, true, startRaw, time.Hour, 1, 1, 0, 0, 0, 0, 0, 100, ""); err != nil {
+	if err := store.CompleteJob(ctx, repoID, true, startRaw, time.Hour, 1, 1, 0, 0, 0, 0, 0, 100, "", 1); err != nil {
 		t.Fatal(err)
 	}
 	lc := readLC()
@@ -166,7 +166,7 @@ func TestCompleteJobLastCollectedSemantics(t *testing.T) {
 	// 2b. MISTAKEN CALLER (round-23): success=false with a NONZERO
 	// startedAt must NOT advance the anchor — the store enforces the
 	// failure invariant, not caller discipline.
-	if err := store.CompleteJob(ctx, repoID, false, time.Now(), time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "mistake"); err != nil {
+	if err := store.CompleteJob(ctx, repoID, false, time.Now(), time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "mistake", 1); err != nil {
 		t.Fatal(err)
 	}
 	if lcM := readLC(); lcM == nil || !lcM.Equal(start) {
@@ -179,7 +179,7 @@ func TestCompleteJobLastCollectedSemantics(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT due_at FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID).Scan(&dueBefore); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteJob(ctx, repoID, false, time.Time{}, 2*time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "transient"); err != nil {
+	if err := store.CompleteJob(ctx, repoID, false, time.Time{}, 2*time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "transient", 1); err != nil {
 		t.Fatal(err)
 	}
 	if lc2 := readLC(); lc2 == nil || !lc2.Equal(start) {

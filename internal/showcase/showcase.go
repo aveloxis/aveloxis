@@ -91,10 +91,22 @@ type RepoPageData struct {
 	Issues          int64
 	PRs             int64
 	Commits         int64
-	LastCollected   string // YYYY-MM-DD or ""
-	LastActivity    string // YYYY-MM-DD or ""
-	GeneratedAt     time.Time
-	Collections     []RepoLink // showcase collections featuring this repo
+	// Meta* are the FORGE's own totals from the latest repo_info
+	// snapshot (v0.28.2, PDF items 1c+4): the tiles pair "gathered"
+	// with "metadata N" sub-lines exactly like the authenticated repo
+	// page, so the two surfaces show the same six-tile top line.
+	// HasMetadata (v0.28.6, Copilot round 2) is the PRESENCE signal —
+	// a snapshot can legitimately report 0 issues or PRs, so gating
+	// each sub-line on its own count conflated "zero" with "no
+	// snapshot" and dropped real zeros the authenticated page shows.
+	HasMetadata   bool
+	MetaIssues    int
+	MetaPRs       int
+	MetaCommits   int
+	LastCollected string // YYYY-MM-DD or ""
+	LastActivity  string // YYYY-MM-DD or ""
+	GeneratedAt   time.Time
+	Collections   []RepoLink // showcase collections featuring this repo
 
 	// OpenSSF Scorecard latest snapshot. Nil overall + empty checks =
 	// never scanned (rendered honestly, never as a zero score).
@@ -102,10 +114,13 @@ type RepoPageData struct {
 	ScorecardAsOf    string // YYYY-MM-DD or ""
 	ScorecardChecks  []RepoScorecardRow
 
-	// Dependency / vulnerability posture. DepsScanned=false means the
-	// analysis phase hasn't run — the page says "pending", never "0
-	// vulnerabilities" (a fabricated clean bill).
-	DepsScanned  bool
+	// Vulnerability posture. VulnScanned=false means no OSV scan has
+	// completed for this repo (the repos.vuln_scan_last_run stamp is
+	// NULL and no findings exist) — the page says "pending", never
+	// "0 vulnerabilities" (a fabricated clean bill). v0.28.5 (Copilot
+	// round): dependency-row presence is NOT the gate — analysis can
+	// run cycles before the first OSV scan does.
+	VulnScanned  bool
 	VulnTotal    int
 	VulnCritical int
 
@@ -122,6 +137,44 @@ type RepoPageData struct {
 	// catalog metric, in catalog order. All-zero windows render flat —
 	// honest data, not an omission.
 	MetricCharts []RepoChart
+
+	// HasCycloneDX/HasSPDX (v0.28.2, item 1b): a static SBOM file of
+	// that format sits beside this page in repos/ ({slug}.cyclonedx
+	// .json / {slug}.spdx.json). False = generation failed this run —
+	// the button is omitted rather than 404ing.
+	HasCycloneDX bool
+	HasSPDX      bool
+
+	// Contributors is the REDACTED top-contributors section (v0.28.2,
+	// item 1e — operator decision 2026-08-23): the public pages show
+	// real per-kind counts, activity classes, and cross-repo activity,
+	// but NEVER forge identities. Server-side redaction, not CSS: the
+	// generator emits a fake Placeholder name (blur-styled in the
+	// template) and this struct DELIBERATELY has no Login / FullName /
+	// email field — the structural absence IS the privacy guarantee,
+	// pinned by TestShowcaseContributorTypeCarriesNoIdentity.
+	Contributors []ShowcaseContributor
+}
+
+// ShowcaseContributor is one redacted contributor row. See the
+// Contributors field doc — never add identity fields here.
+type ShowcaseContributor struct {
+	Placeholder    string // deterministic FAKE name, blur-rendered
+	ActivityClass  string // v0.27.57 class; "" = unchecked
+	Commits        int
+	Issues         int
+	PRs            int
+	Reviews        int
+	Comments       int
+	Total          int
+	ElsewhereRepos []string // other repos they're active in (names only; operator-accepted)
+	// HistoryPending — the cross-repo history backfill hasn't reached
+	// this contributor (gh_history_backfilled_at IS NULL) or the
+	// elsewhere lookup was unavailable this run. THE HONESTY RULE
+	// (v0.27.58): an empty elsewhere list must render as "history
+	// pending", never as "active nowhere else". Boolean only — it
+	// carries no identity.
+	HistoryPending bool
 }
 
 // CollectionData drives one public collection page.

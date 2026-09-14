@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -90,6 +91,11 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 	}
 
 	var dead, healedDataless, consolidated, enqueued, skipped int
+	// v0.28.18: consolidation arms refused by the email_message index
+	// precondition. The loop keeps going (dead / re-enqueue arms need no
+	// index) but the run exits nonzero so a script cannot read a fully
+	// refused reconcile as success.
+	preconditionUnmet := 0
 	for _, sr := range stranded {
 		if ctx.Err() != nil {
 			break
@@ -129,6 +135,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 					healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)
 					if herr != nil {
 						logger.Warn("reconcile: heal failed — skipping", "repo_id", sr.RepoID, "error", herr)
+						if errors.Is(herr, db.ErrEmailMessageIndexesNotReady) {
+							preconditionUnmet++
+						}
 						skipped++
 						continue
 					}
@@ -147,6 +156,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						}
 						if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {
 							logger.Warn("reconcile: fallback consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
+							if errors.Is(derr, db.ErrEmailMessageIndexesNotReady) {
+								preconditionUnmet++
+							}
 							skipped++
 							continue
 						}
@@ -164,6 +176,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 					}
 					if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {
 						logger.Warn("reconcile: consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
+						if errors.Is(derr, db.ErrEmailMessageIndexesNotReady) {
+							preconditionUnmet++
+						}
 						skipped++
 						continue
 					}
@@ -203,6 +218,11 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		mode, dead, healedDataless, consolidated, enqueued, skipped, total)
 	if skipped > 0 {
 		fmt.Println("re-run to retry skipped repos")
+	}
+	if preconditionUnmet > 0 {
+		logger.Error("precondition unmet — consolidations refused: run `aveloxis migrate --skip-views` on this binary first, then re-run",
+			"repos_refused", preconditionUnmet)
+		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run `aveloxis migrate --skip-views` first", preconditionUnmet)
 	}
 	return nil
 }

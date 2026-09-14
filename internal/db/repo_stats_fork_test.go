@@ -26,7 +26,9 @@ func TestRepoStatsCarriesForkedFrom(t *testing.T) {
 	if idx < 0 {
 		t.Fatal("GetRepoStats missing")
 	}
-	if !strings.Contains(src[idx:], "SELECT COALESCE(forked_from, '') FROM aveloxis_data.repos") {
-		t.Error("GetRepoStats must read repos.forked_from — without the read the GUI chip is a permanent no-op")
+	// v0.28.1 (A6): repo_gone_at rides the same repos read, so the
+	// needle covers the widened SELECT.
+	if !strings.Contains(src[idx:], "SELECT COALESCE(forked_from, ''), repo_gone_at FROM aveloxis_data.repos") {
+		t.Error("GetRepoStats must read repos.forked_from (+ repo_gone_at since v0.28.1) — without the read the GUI chips are a permanent no-op")
 	}
 }

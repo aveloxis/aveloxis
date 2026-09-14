@@ -520,13 +520,20 @@ func TestFetchPRBatch_NullPR(t *testing.T) {
 // TestFetchPRBatch_GraphQLErrorPropagates — when the GraphQL response has
 // an errors array, FetchPRBatch must surface that error via
 // platform.ClassifyError so callers apply the right retry/skip/abort policy.
+//
+// 2026-09-01 rewrite: an in-body RATE_LIMITED now marks the key's graphql
+// budget and the loop ROTATES/WAITS instead of returning (the pytorch
+// fix), so with a plain context and one key this test would sit in the
+// probe-window wait — production's intended behavior for a multi-day job,
+// but a hang for a unit test. WithGraphQLFastFail observes the surfaced
+// classification the moment every key's budget is spent.
 func TestFetchPRBatch_GraphQLErrorPropagates(t *testing.T) {
 	resp := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`
 	server := httptest.NewServer(graphqlFixture(t, []string{resp}))
 	defer server.Close()
 	client := newTestGraphQLClient(t, server.URL)
 
-	_, err := client.FetchPRBatch(context.Background(), "o", "r", []int{1})
+	_, err := client.FetchPRBatch(platform.WithGraphQLFastFail(context.Background()), "o", "r", []int{1})
 	if err == nil {
 		t.Fatal("GraphQL errors field must surface as a Go error")
 	}

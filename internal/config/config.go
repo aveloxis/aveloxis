@@ -189,6 +189,17 @@ func (w WebConfig) AutoApproveAddLimitValue() int {
 type CollectionConfig struct {
 	// DaysUntilRecollect is how many days before re-collecting a repo.
 	DaysUntilRecollect int `json:"days_until_recollect"`
+	// ArchivedRecollectMultiplier (v0.28.1 A7) stretches the recollect
+	// interval for ARCHIVED repos: their due_at becomes
+	// days_until_recollect × this multiplier. On the 2026-08 fleet,
+	// 19,497 archived repos consumed ~21% of queue churn on
+	// mostly-304 cycles; 6× recovers most of that for live repos while
+	// still re-checking archived repos (they can be unarchived or
+	// gain activity). Set 1 to disable the stretch. 0/absent = the
+	// default 6. Applied inside BOTH due_at writers (CompleteJob +
+	// RealignDueDates), so changing it takes effect fleet-wide on the
+	// next serve restart.
+	ArchivedRecollectMultiplier int `json:"archived_recollect_multiplier"`
 
 	// Workers is the number of concurrent collection goroutines.
 	Workers int `json:"workers"`
@@ -214,8 +225,9 @@ type CollectionConfig struct {
 	// added after the 2026-07-27→30 incident where the dm_ step (a
 	// 93K-repo × two-pass per-repo loop) ran 3+ days holding
 	// MatviewRebuildActive, silently pausing all collection claims.
-	// Deliberately does NOT affect `aveloxis refresh-views` or
-	// `aveloxis migrate` — those are explicit operator commands.
+	// With the skip on, the dm_ tables update ONLY via the explicit
+	// operator command `aveloxis refresh-views --aggregates` (v0.28.18;
+	// plain refresh-views and migrate refresh the materialized views only).
 	// The FULL weekly-rebuild off-switch is matview_rebuild_day:
 	// "disabled".
 	MatviewRebuildSkipDMAggregates bool `json:"matview_rebuild_skip_dm_aggregates"`
@@ -228,6 +240,22 @@ type CollectionConfig struct {
 	// windows below this at runtime when a window hits the 100-repo or
 	// page caps, so this is the STARTING span, not a guarantee.
 	ActivityHistoryWindowDays int `json:"activity_history_window_days"`
+
+	// v0.28.3 (the "breadth worker slow" PDF item — actually the
+	// history backfill): the sweep's four knobs, promoted from
+	// hardcoded constants after the serial design measured
+	// ~1,170 contributors/day against a 2.4M pool (~5.6 years).
+	// Rate limit was never the constraint — request serialization
+	// was (each contributor is ~21 GraphQL round-trips; the old loop
+	// ran them ALL on one goroutine). Defaults are derived:
+	// concurrency 8 × window-concurrency 4 × batch 150 ≈ 6-minute
+	// cycles ≈ 35-50K contributors/day ≈ 13-18% of a 54-key pool's
+	// GraphQL point budget (each contributor ≈ 21 one-point queries).
+	ActivityHistoryIntervalMinutes   int `json:"activity_history_interval_minutes"`
+	ActivityHistoryBatch             int `json:"activity_history_batch"`
+	ActivityHistoryConcurrency       int `json:"activity_history_concurrency"`
+	ActivityHistoryWindowConcurrency int `json:"activity_history_window_concurrency"`
+	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
 	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
 	// during schema migration (startup). For large databases this can take minutes.
@@ -460,7 +488,8 @@ type CollectionConfig struct {
 	ScancodeCloneDir string `json:"scancode_clone_dir"`
 
 	// ScancodeShutdownGraceMinutes caps how long the ScancodeWorker
-	// waits for in-flight scans to finish on aveloxis stop. Default
+	// waits, on aveloxis stop, for the runners' POST-KILL DB
+	// bookkeeping — it cannot let a scan finish (see below). Default
 	// 0 (immediate kill) as of v0.23.7.
 	//
 	// Why 0 by default: a scancode subprocess that outlives aveloxis
@@ -473,12 +502,17 @@ type CollectionConfig struct {
 	// queue. Either way, lingering past stop buys nothing — it just
 	// delays shutdown AND increases ghost-process risk.
 	//
-	// Operators who genuinely want the old behavior (let in-flight
-	// scans finish if they're close) set this explicitly to a
-	// positive minute count. Within the grace window: runners
-	// complete their scans naturally and ingest results. At grace
-	// expiry: the worker's ctx.Done() fires cmd.Cancel which kills
-	// the process group.
+	// A positive value CANNOT let a scan finish: since v0.23.3 the
+	// scan's ctx derives from the worker's, so cmd.Cancel SIGKILLs
+	// each process group at t=0 of the cancel — the grace window
+	// contains no live scans (pass 44 corrected this block; the
+	// pre-v0.23.3 model it described was retired three releases
+	// earlier). What the value lengthens is the wait for the
+	// runners' POST-kill DB bookkeeping (lock clear / completion-
+	// stamp retry): the worker waits
+	// shutdownGrace + collector.ScancodeShutdownBookkeepingGrace,
+	// and the scheduler holds the pgx pool open for the same window.
+	// See docs/architecture/scancode.md §6.
 	//
 	// Separate from collection.shutdown_grace_seconds (which paces
 	// the main scheduler's stop).
@@ -785,6 +819,34 @@ type CollectionConfig struct {
 	// same list). Keep at 1 unless a deep per-list backlog needs cross-list
 	// parallelism.
 	MailingListProcessorWorkers int `json:"mailing_list_processor_workers"` // drain goroutines per system (default 1)
+
+	// JiraEnabled turns on the Jira collector (C3): registered
+	// projects (aveloxis_ops.jira_project_serve) sync incrementally
+	// from their Jira Server instance — issues, state, reporter and
+	// comment-author identity, native comment bodies. OFF by default
+	// (the mailing-list posture).
+	JiraEnabled bool `json:"jira_enabled"`
+	// JiraWorkers is the number of concurrent project runners (default
+	// 1 — politeness first: issues.apache.org is a shared community
+	// server with no rate limiting of its own).
+	JiraWorkers int `json:"jira_workers"`
+	// JiraCadenceHours is the per-project incremental-sync cadence
+	// (default 24). The sync JQL is updated >= <checkpoint>, so a
+	// cycle costs one cheap search per quiet project.
+	JiraCadenceHours int `json:"jira_cadence_hours"`
+	// JiraPoliteEmail lands in the User-Agent so the Jira instance's
+	// admins can reach us (the ecosyste.ms polite-pool pattern).
+	JiraPoliteEmail string `json:"jira_polite_email"`
+
+	// MailingListSenderBackfillMinutes is the cadence of the DB-side
+	// sender→cntrb_id backfill ticker (runMailingListSenderBackfill),
+	// which re-joins retained sender emails against the ever-fuller
+	// contributors/aliases tables. Default 60. One full keyset pass over
+	// the production aveloxis DB measures ~5-10 minutes, so hourly full
+	// passes mean identities converge within the hour ("hours, not
+	// days"). Distinct from the API-side sender-RESOLVE ticker, which
+	// keeps its own interval.
+	MailingListSenderBackfillMinutes int `json:"mailing_list_sender_backfill_interval_minutes"`
 }
 
 // MailingListProcessorWorkersOrDefault falls back to 1 drain goroutine per
@@ -826,6 +888,56 @@ func (c *CollectionConfig) MailingListBackfillMonthsOrDefault() int {
 	return *c.MailingListBackfillMonths
 }
 
+// JiraWorkersOrDefault falls back to 1 concurrent project runner.
+func (c *CollectionConfig) JiraWorkersOrDefault() int {
+	if c.JiraWorkers <= 0 {
+		return 1
+	}
+	return c.JiraWorkers
+}
+
+// JiraCadenceDuration returns the per-project sync cadence
+// (default 24h). SR-10: the accessor is the single default layer.
+// jiraCadenceMaxHours bounds jira_cadence_hours before the multiply
+// (Copilot round 18 on PR #193): a large positive value overflows
+// time.Duration(h)*time.Hour into a NEGATIVE duration, and a negative
+// cadence makes ClaimNextJiraProject treat every completed project as
+// immediately due — continuous resyncs instead of the configured
+// delay. ~10 years is far beyond any real cadence and leaves headroom
+// under time.Duration's ~292-year max.
+const jiraCadenceMaxHours = 24 * 365 * 10
+
+func (c *CollectionConfig) JiraCadenceDuration() time.Duration {
+	if c.JiraCadenceHours <= 0 {
+		return 24 * time.Hour
+	}
+	h := c.JiraCadenceHours
+	if h > jiraCadenceMaxHours {
+		h = jiraCadenceMaxHours
+	}
+	return time.Duration(h) * time.Hour
+}
+
+// MailingListSenderBackfillInterval returns the sender-backfill ticker
+// cadence. SR-10: this accessor is the SINGLE default layer — zero or
+// negative falls back to 60 minutes; no downstream re-clamp.
+// senderBackfillMaxMinutes bounds mailing_list_sender_backfill_interval_minutes
+// before the multiply (Copilot round 18): an overflow to a
+// NON-POSITIVE duration is passed straight to time.NewTicker, which
+// PANICS and terminates serve. ~10 years of minutes is the clamp.
+const senderBackfillMaxMinutes = 60 * 24 * 365 * 10
+
+func (c *CollectionConfig) MailingListSenderBackfillInterval() time.Duration {
+	if c.MailingListSenderBackfillMinutes <= 0 {
+		return 60 * time.Minute
+	}
+	m := c.MailingListSenderBackfillMinutes
+	if m > senderBackfillMaxMinutes {
+		m = senderBackfillMaxMinutes
+	}
+	return time.Duration(m) * time.Minute
+}
+
 // MailingListMirrorHandlingOrDefault falls back to "metadata_only".
 func (c *CollectionConfig) MailingListMirrorHandlingOrDefault() string {
 	switch c.MailingListMirrorHandling {
@@ -865,6 +977,21 @@ func (c *CollectionConfig) RecollectAfterDuration() time.Duration {
 		return 24 * time.Hour
 	}
 	return time.Duration(c.DaysUntilRecollect) * 24 * time.Hour
+}
+
+// ArchivedRecollectMultiplierValue is the SINGLE default layer for
+// the archived-cadence stretch (SR-10): 0/absent → 6; negative
+// (nonsense for a multiplier) → 1 (no stretch); 1 disables the
+// stretch explicitly.
+func (c *CollectionConfig) ArchivedRecollectMultiplierValue() int {
+	switch {
+	case c.ArchivedRecollectMultiplier == 0:
+		return 6
+	case c.ArchivedRecollectMultiplier < 1:
+		return 1
+	default:
+		return c.ArchivedRecollectMultiplier
+	}
 }
 
 func (c *CollectionConfig) EnrichIntervalDuration() time.Duration {
@@ -1059,8 +1186,9 @@ func (c *CollectionConfig) ScancodeCloneDirOrDefault() string {
 // subprocesses surviving `aveloxis stop` can't deliver their output
 // anyway. See the field docstring above for the full rationale.
 //
-// Operators who set a positive value explicitly in aveloxis.json
-// keep getting the old "let in-flight scans finish" behavior.
+// A positive value does NOT keep in-flight scans alive (they die at
+// cancel since v0.23.3); it only lengthens the wait for the runners'
+// post-kill DB bookkeeping. See the field docstring above.
 func (c *CollectionConfig) ScancodeShutdownGrace() time.Duration {
 	if c.ScancodeShutdownGraceMinutes <= 0 {
 		return 0
@@ -1263,6 +1391,44 @@ func (c *CollectionConfig) ActivityHistoryWindowDaysOrDefault() int {
 	}
 }
 
+// The v0.28.3 history-sweep accessors — each the SINGLE default
+// layer (SR-10) for its knob.
+
+func (c *CollectionConfig) ActivityHistoryIntervalValue() time.Duration {
+	if c.ActivityHistoryIntervalMinutes <= 0 {
+		return time.Minute
+	}
+	return time.Duration(c.ActivityHistoryIntervalMinutes) * time.Minute
+}
+
+func (c *CollectionConfig) ActivityHistoryBatchValue() int {
+	if c.ActivityHistoryBatch <= 0 {
+		return 150
+	}
+	return c.ActivityHistoryBatch
+}
+
+func (c *CollectionConfig) ActivityHistoryConcurrencyValue() int {
+	if c.ActivityHistoryConcurrency <= 0 {
+		return 8
+	}
+	return c.ActivityHistoryConcurrency
+}
+
+func (c *CollectionConfig) ActivityHistoryWindowConcurrencyValue() int {
+	if c.ActivityHistoryWindowConcurrency <= 0 {
+		return 4
+	}
+	return c.ActivityHistoryWindowConcurrency
+}
+
+func (c *CollectionConfig) ActivityHistoryCooldownValue() time.Duration {
+	if c.ActivityHistoryCooldownDays <= 0 {
+		return 90 * 24 * time.Hour
+	}
+	return time.Duration(c.ActivityHistoryCooldownDays) * 24 * time.Hour
+}
+
 func (c *CollectionConfig) MatviewRebuildWeekday() int {
 	switch strings.ToLower(c.MatviewRebuildDay) {
 	case "sunday":
@@ -1329,12 +1495,18 @@ func DefaultConfig() *Config {
 			APIInternalURL: "http://127.0.0.1:8383",
 		},
 		Collection: CollectionConfig{
-			DaysUntilRecollect:        1,
-			Workers:                   12,
-			RepoCloneDir:              defaultCloneDir(),
-			MatviewRebuildDay:         "saturday",
-			ActivityHistoryWindowDays: 180,
-			MatviewRebuildOnStartup:   false,
+			DaysUntilRecollect:               1,
+			ArchivedRecollectMultiplier:      6,
+			ActivityHistoryIntervalMinutes:   1,
+			ActivityHistoryBatch:             150,
+			ActivityHistoryConcurrency:       8,
+			ActivityHistoryWindowConcurrency: 4,
+			ActivityHistoryCooldownDays:      90,
+			Workers:                          12,
+			RepoCloneDir:                     defaultCloneDir(),
+			MatviewRebuildDay:                "saturday",
+			ActivityHistoryWindowDays:        180,
+			MatviewRebuildOnStartup:          false,
 			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
 			// default for GitHub PR-child fetch and issue+PR listing —
 			// the flip the v0.19.0 sunset plan scheduled but never
@@ -1373,8 +1545,13 @@ func DefaultConfig() *Config {
 			// MailingListBackfillMonths left nil → MailingListBackfillMonthsOrDefault()
 			// returns 6. Set it explicitly to 0 (or negative) in aveloxis.json for
 			// full-history collection from each list's first month.
-			MailingListMirrorHandling:   "metadata_only",
-			MailingListProcessorWorkers: 1, // single-threaded per list (summary/12 §11)
+			MailingListMirrorHandling:        "metadata_only",
+			MailingListProcessorWorkers:      1,
+			MailingListSenderBackfillMinutes: 60,
+			// v0.29.0 Jira collector. Off by default.
+			JiraEnabled:      false,
+			JiraWorkers:      1,
+			JiraCadenceHours: 24, // one incremental JQL sweep per project per day
 		},
 		LogLevel: "info",
 	}
@@ -1401,12 +1578,36 @@ type APIConfig struct {
 	// believed when resolving the client address (the nginx-on-
 	// same-box layout). Empty = XFF ignored.
 	TrustedProxy string `json:"trusted_proxy,omitempty"`
+	// Addr is the listen address for `aveloxis api`. Default
+	// 127.0.0.1:8383 — loopback only, because the API serves the
+	// whole catalog and its rate limiter exempts loopback and RFC1918
+	// by default. Set a routable address ONLY together with
+	// require_auth and a reviewed exempt_cidrs; see the "Reaching the
+	// API from another host" section of
+	// docs/getting-started/configuration.md.
+	//
+	// v0.28.19: `aveloxis start api` spawns the process with only
+	// --config, so before this existed the address could be changed
+	// only by launching `aveloxis api --addr …` by hand, and two
+	// instances on one host collided on 8383.
+	Addr string `json:"addr,omitempty"`
+
 	// RequireAuth gates every data endpoint (all but /health) behind
 	// Bearer session tokens. Default FALSE: flip it on once the
 	// aveloxis-gui token flow is deployed — enabling it earlier
 	// breaks the server-rendered GUI's browser-side chart fetches.
 	// Exempt-CIDR clients bypass auth even when enabled.
 	RequireAuth bool `json:"require_auth,omitempty"`
+}
+
+// AddrOrDefault returns the configured listen address, or the
+// loopback default. Empty means unset: an address is a host:port
+// string with no meaningful zero value.
+func (a APIConfig) AddrOrDefault() string {
+	if strings.TrimSpace(a.Addr) == "" {
+		return "127.0.0.1:8383"
+	}
+	return a.Addr
 }
 
 // RateLimitRPSOrDefault returns the configured sustained rate, or 1.

@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -52,6 +53,9 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 		}
 
 		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, metadataBackfillPageSize)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
 		if err != nil {
 			s.logger.Warn("repo metadata backfill: failed to load candidate page",
 				"error", err)
@@ -93,12 +97,19 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			}
 
 			info, err := client.FetchRepoInfo(ctx, t.Owner, t.Name)
+			if errors.Is(err, context.Canceled) {
+				return // shutdown, not a failure
+			}
 			if err != nil {
 				s.logger.Info("repo metadata backfill: FetchRepoInfo failed (will retry next restart)",
 					"owner", t.Owner, "repo", t.Name, "error", err)
 				totalFailed++
 			} else {
-				if updErr := s.store.UpdateRepoMetadata(ctx, t.RepoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated); updErr != nil {
+				updErr := s.store.UpdateRepoMetadata(ctx, t.RepoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated)
+				if errors.Is(updErr, context.Canceled) {
+					return // shutdown, not a failure
+				}
+				if updErr != nil {
 					s.logger.Warn("repo metadata backfill: UpdateRepoMetadata failed",
 						"owner", t.Owner, "repo", t.Name, "error", updErr)
 					totalFailed++

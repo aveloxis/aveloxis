@@ -78,7 +78,7 @@ func (p *PublicInbox) ensureClone(ctx context.Context, inbox string) (string, er
 		}
 		cmd := exec.CommandContext(ctx, "git", "clone", "--quiet", "--bare", p.archiveURL(inbox), dir)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("clone %s: %w: %s", inbox, ErrTransient, strings.TrimSpace(string(out)))
+			return "", fmt.Errorf("clone %s: %w: %w: %s", inbox, ErrTransient, ctxCause(ctx, err), strings.TrimSpace(string(out)))
 		}
 	}
 	p.clones[inbox] = dir
@@ -128,7 +128,7 @@ func (p *PublicInbox) FetchMonth(ctx context.Context, listAddress, yyyymm string
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "log", "--format=%H",
 		"--since="+since, "--until="+until).Output()
 	if err != nil {
-		return nil, 0, fmt.Errorf("git log %s: %w", inbox, ErrTransient)
+		return nil, 0, fmt.Errorf("git log %s: %w: %w", inbox, ErrTransient, ctxCause(ctx, err))
 	}
 	var msgs []ArchiveMessage
 	for _, hash := range strings.Fields(string(out)) {
@@ -141,4 +141,15 @@ func (p *PublicInbox) FetchMonth(ctx context.Context, listAddress, yyyymm string
 		}
 	}
 	return msgs, 0, nil
+}
+
+// ctxCause returns the context's error when the subprocess died under a
+// done ctx (exec reports `signal: killed`, never context.Canceled) and
+// the raw error otherwise, so the ErrTransient wrap keeps the cause
+// visible to errors.Is (pass 39).
+func ctxCause(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }

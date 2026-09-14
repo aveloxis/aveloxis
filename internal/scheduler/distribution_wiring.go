@@ -15,7 +15,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector/distribution"
 	gh "github.com/aveloxis/aveloxis/internal/platform/github"
-	"github.com/aveloxis/aveloxis/internal/safego"
 
 	"github.com/aveloxis/aveloxis/internal/platform/depsdev"
 	"github.com/aveloxis/aveloxis/internal/platform/ecosystems"
@@ -94,5 +93,8 @@ func (s *Scheduler) spawnDistributionWorker(ctx context.Context) {
 		"cadence", cadence,
 		"polite_email_set", s.cfg.Collection.DistributionTrackingPoliteEmail != "")
 
-	safego.Go(s.logger, "distribution-worker", func() { worker.Run(ctx) })
+	// Tracked (pass 39): the runners finish their claims on Background
+	// contexts after cancel; Run returns once they have, and the
+	// scheduler waits for that before closing the pool.
+	s.goTracked("distribution-worker", func() { worker.Run(ctx) })
 }

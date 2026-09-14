@@ -55,6 +55,10 @@ type Server struct {
 	// test Servers, which fail closed to the 403).
 	sharedWithMe sharedWithMeStore
 
+	// v0.30.0 Phase C: the API-key admin endpoints' store seam (the store
+	// at construction; tests inject a fake).
+	apiKeys apiKeyStore
+
 	// v0.27.59 (repo count) → v0.27.77 (full fleet payload): 60s
 	// stale-on-error cache for GET /public/stats — repos, commits,
 	// issues, PRs, contributors.
@@ -82,7 +86,7 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
 		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit,
-		sharedWithMe: store}
+		sharedWithMe: store, apiKeys: store}
 	s.homeLoader = store.GetHomeRepos
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
@@ -137,6 +141,10 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/pending-adds", s.handleGroupPendingAdds)
 	s.mux.HandleFunc("GET /api/v1/admin/add-requests", s.handleAdminAddRequests)
 	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
+	// v0.30.0 Phase C: API-key administration (the aveloxis-gui API keys page).
+	s.mux.HandleFunc("GET /api/v1/admin/api-keys", s.handleAdminAPIKeys)
+	s.mux.HandleFunc("POST /api/v1/admin/api-keys", s.handleAdminAPIKeyAdd)
+	s.mux.HandleFunc("POST /api/v1/admin/api-keys/{oauthID}/delete", s.handleAdminAPIKeyDelete)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
 	// v0.27.14 — SPA monitor "Boost": pure reuse of store.PrioritizeRepo.

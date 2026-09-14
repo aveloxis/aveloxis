@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.30.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="_static/documentation_options.js?v=a7ea5d77"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -68,7 +68,11 @@
 <li class="toctree-l2"><a class="reference internal" href="getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -247,6 +251,7 @@
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -587,6 +592,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -660,7 +666,7 @@
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1565,6 +1571,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#users-and-auth">Users and Auth</a><ul>
@@ -7822,9 +7829,49 @@ is nullable and un-FK’d; <code class="docutils literal notranslate"><span clas
 <td><p>Auto-generated</p></td>
 <td><p>When this credential was added.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">instance_url</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>User input</p></td>
+<td><p>v0.30.0: the normalized web URL of the GitLab instance that issued the token; <code class="docutils literal notranslate"><span class="pre">''</span></code> is the main instance (every row stored before v0.30.0). GitHub rows are <code class="docutils literal notranslate"><span class="pre">''</span></code>.</p></td>
+</tr>
 </tbody>
 </table>
 <p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(access_token,</span> <span class="pre">platform)</span></code></p>
+<p>The API keys admin endpoints never read <code class="docutils literal notranslate"><span class="pre">access_token</span></code> back. They list rows
+with <code class="docutils literal notranslate"><span class="pre">key_id</span></code> (the first 16 hex characters of a domain-separated SHA-256 of
+the token) and a first4…last4 mask, both computed in the query.</p>
+</section>
+<section id="forge-key-reports">
+<h4>forge_key_reports<a class="headerlink" href="#forge-key-reports" title="Link to this heading"></a></h4>
+<p>v0.30.0: each running <code class="docutils literal notranslate"><span class="pre">serve</span></code> process’s latest API-key report, read by the API
+keys admin page. It is upserted once a minute. A row older than a day from
+another process is dropped on the next save. It never holds a token.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">reporter</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>serve</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">serve&#64;&lt;host</span> <span class="pre">marker&gt;#&lt;boot</span> <span class="pre">id&gt;</span></code> — one row per process; a restart starts a new row.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reported_at</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL</p></td>
+<td><p>serve</p></td>
+<td><p>Database clock at the save; the page judges staleness against the database clock.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">report</span></code></p></td>
+<td><p>JSONB NOT NULL</p></td>
+<td><p>serve</p></td>
+<td><p>The forges the process serves (with each GitLab instance’s effective API URL), every key its pools hold by <code class="docutils literal notranslate"><span class="pre">key_id</span></code> and mask, with source (config, database, augur), state (active, draining) and health, the stored keys it refused (orphan, conflict), and configured instances not registered yet.</p></td>
+</tr>
+</tbody>
+</table>
 </section>
 </section>
 <hr class="docutils" />

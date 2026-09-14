@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adding a new platform &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Adding a new platform &mdash; Aveloxis 0.30.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=a7ea5d77"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -2054,7 +2061,7 @@ SPDX-License-Identifier: MIT
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>In practice, operators will configure a list of Bugzilla host patterns in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> (similar to <code class="docutils literal notranslate"><span class="pre">gitlab_hosts</span></code>) so the dispatch is deterministic.</p>
+<p>In practice, operators will configure a list of Bugzilla host patterns in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> (similar to <code class="docutils literal notranslate"><span class="pre">gitlab.instances</span></code>) so the dispatch is deterministic.</p>
 </section>
 <section id="step-7-implement-the-meaningful-methods">
 <h3>Step 7 — implement the meaningful methods<a class="headerlink" href="#step-7-implement-the-meaningful-methods" title="Link to this heading"></a></h3>
@@ -2342,25 +2349,34 @@ SPDX-License-Identifier: MIT
 <section id="step-9-wire-into-the-scheduler">
 <h3>Step 9 — wire into the scheduler<a class="headerlink" href="#step-9-wire-into-the-scheduler" title="Link to this heading"></a></h3>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/scheduler/scheduler.go</span>
-<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="w"> </span><span class="o">*</span><span class="nx">Scheduler</span><span class="p">)</span><span class="w"> </span><span class="nx">selectClient</span><span class="p">(</span><span class="nx">p</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">Platform</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">platform</span><span class="p">.</span><span class="nx">Client</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">switch</span><span class="w"> </span><span class="nx">p</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">PlatformGitHub</span><span class="p">:</span>
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">s</span><span class="w"> </span><span class="o">*</span><span class="nx">Scheduler</span><span class="p">)</span><span class="w"> </span><span class="nx">clientForRepo</span><span class="p">(</span><span class="nx">repo</span><span class="w"> </span><span class="o">*</span><span class="nx">model</span><span class="p">.</span><span class="nx">Repo</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">platform</span><span class="p">.</span><span class="nx">Client</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">switch</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">PlatformGitHub</span><span class="p">:</span>
 <span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">ghClient</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span>
-<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">PlatformGitLab</span><span class="p">:</span>
-<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">glClient</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span>
-<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">PlatformBugzilla</span><span class="p">:</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">.</span><span class="nx">IsGitLab</span><span class="p">():</span>
+<span class="w">        </span><span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">gl</span><span class="p">.</span><span class="nx">ForRepo</span><span class="p">(</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">,</span><span class="w"> </span><span class="nx">repo</span><span class="p">.</span><span class="nx">GitURL</span><span class="p">)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">c</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">PlatformBugzilla</span><span class="p">:</span>
 <span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">bzClient</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span>
 <span class="w">    </span><span class="k">default</span><span class="p">:</span>
-<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"unknown platform: %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">p</span><span class="p">)</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"unknown platform: %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 <p>Add a <code class="docutils literal notranslate"><span class="pre">bzClient</span> <span class="pre">platform.Client</span></code> field to the <code class="docutils literal notranslate"><span class="pre">Scheduler</span></code> struct. Update the constructor <code class="docutils literal notranslate"><span class="pre">NewWithKeys</span></code> to accept it.</p>
+<p>GitLab is the model to copy if the new platform has several self-hosted
+instances (Bugzilla does: bugzilla.mozilla.org, bugs.kde.org, …): every GitLab
+instance has its own <code class="docutils literal notranslate"><span class="pre">platform_id</span></code>, its own client on its own API URL and its
+own key pool, and <code class="docutils literal notranslate"><span class="pre">gitlab.Instances</span></code> picks a repository’s client by its
+platform_id <strong>and</strong> its URL. One instance’s keys never reach another’s API.</p>
 <p>In <code class="docutils literal notranslate"><span class="pre">runJob</span></code>, the gate that controls “API collection vs git-only”:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">.</span><span class="nx">IsGitOnly</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">client</span><span class="p">,</span><span class="w"> </span><span class="nx">clientErr</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">selectClient</span><span class="p">(</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">)</span>
-<span class="w">    </span><span class="c1">// ... existing code does staged collection</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">client</span><span class="p">,</span><span class="w"> </span><span class="nx">clientErr</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">s</span><span class="p">.</span><span class="nx">clientForRepo</span><span class="p">(</span><span class="nx">repo</span><span class="p">)</span>
+<span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">repo</span><span class="p">.</span><span class="nx">Platform</span><span class="p">.</span><span class="nx">IsGitOnly</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// ... existing code does staged collection with client</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -2377,33 +2393,36 @@ SPDX-License-Identifier: MIT
 </section>
 <section id="step-10-wire-into-main-go">
 <h3>Step 10 — wire into <code class="docutils literal notranslate"><span class="pre">main.go</span></code><a class="headerlink" href="#step-10-wire-into-main-go" title="Link to this heading"></a></h3>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// cmd/aveloxis/main.go — runServe and the keys loader</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// cmd/aveloxis/forge_clients.go — buildForgeClients, the one builder</span>
 
-<span class="kd">func</span><span class="w"> </span><span class="nx">loadKeys</span><span class="p">(</span><span class="nx">ctx</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">cfg</span><span class="w"> </span><span class="o">*</span><span class="nx">config</span><span class="p">.</span><span class="nx">Config</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="w"> </span><span class="o">*</span><span class="nx">db</span><span class="p">.</span><span class="nx">PostgresStore</span><span class="p">,</span><span class="w"> </span><span class="nx">useAugurKeys</span><span class="w"> </span><span class="kt">bool</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="w"> </span><span class="o">*</span><span class="nx">slog</span><span class="p">.</span><span class="nx">Logger</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
-<span class="w">    </span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">bzKeys</span><span class="w"> </span><span class="o">*</span><span class="nx">platform</span><span class="p">.</span><span class="nx">KeyPool</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="kt">error</span><span class="p">,</span>
-<span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="c1">// ... existing ghKeys + glKeys loading</span>
+<span class="w">    </span><span class="c1">// ... existing GitHub pool and the per-instance GitLab router</span>
 
-<span class="w">    </span><span class="nx">bzKeysData</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">db</span><span class="p">.</span><span class="nx">LoadAPIKeys</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Pool</span><span class="p">(),</span><span class="w"> </span><span class="s">"bugzilla"</span><span class="p">,</span><span class="w"> </span><span class="nx">useAugurKeys</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">bzStored</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">db</span><span class="p">.</span><span class="nx">LoadStoredAPIKeys</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Pool</span><span class="p">(),</span><span class="w"> </span><span class="s">"bugzilla"</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="nx">logger</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"loading Bugzilla keys"</span><span class="p">,</span><span class="w"> </span><span class="s">"error"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="nx">bzKeys</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">platform</span><span class="p">.</span><span class="nx">NewKeyPool</span><span class="p">(</span><span class="nx">bzKeysData</span><span class="p">,</span><span class="w"> </span><span class="p">...)</span>
-
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">bzKeys</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span>
-<span class="p">}</span>
+<span class="w">    </span><span class="nx">bzTokens</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">make</span><span class="p">([]</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">bzStored</span><span class="p">))</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">k</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="k">range</span><span class="w"> </span><span class="nx">bzStored</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">bzTokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">append</span><span class="p">(</span><span class="nx">bzTokens</span><span class="p">,</span><span class="w"> </span><span class="nx">k</span><span class="p">.</span><span class="nx">Token</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nx">bzKeys</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">platform</span><span class="p">.</span><span class="nx">NewKeyPool</span><span class="p">(</span><span class="nx">bzTokens</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">clients</span><span class="p">.</span><span class="nx">bz</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bugzilla</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">cfg</span><span class="p">.</span><span class="nx">Bugzilla</span><span class="p">.</span><span class="nx">BaseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">bzKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>Then:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">bzKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">loadKeys</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">cfg</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">useAugurKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
-<span class="nx">ghClient</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">github</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">cfg</span><span class="p">.</span><span class="nx">GitHub</span><span class="p">.</span><span class="nx">BaseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
-<span class="nx">glClient</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">gitlab</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">cfg</span><span class="p">.</span><span class="nx">GitLab</span><span class="p">.</span><span class="nx">BaseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
-<span class="nx">bzClient</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">bugzilla</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">cfg</span><span class="p">.</span><span class="nx">Bugzilla</span><span class="p">.</span><span class="nx">BaseURL</span><span class="p">,</span><span class="w"> </span><span class="nx">bzKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
+<p>A pool built this way keeps its startup keys. Running <code class="docutils literal notranslate"><span class="pre">serve</span></code> processes
+reload GitHub and GitLab keys live (v0.30.0): <code class="docutils literal notranslate"><span class="pre">forgekeys.Maintainer</span></code>
+reconciles each pool with the stored keys once a minute, and the API keys
+admin page reads the report it saves. To include a new platform’s pool,
+extend the Maintainer. <code class="docutils literal notranslate"><span class="pre">TestKeyPoolReconcileHasOnlyReviewedCallers</span></code> lists
+every function allowed to pair tokens with a pool, so the new pairing gets
+reviewed.</p>
+<p>Then in <code class="docutils literal notranslate"><span class="pre">runServe</span></code>:</p>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="nx">clients</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">buildForgeClients</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">cfg</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">useAugurKeys</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
 
-<span class="nx">sched</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">NewWithKeys</span><span class="p">(</span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">ghClient</span><span class="p">,</span><span class="w"> </span><span class="nx">glClient</span><span class="p">,</span><span class="w"> </span><span class="nx">bzClient</span><span class="p">,</span><span class="w"> </span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">glKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">Config</span><span class="p">{...})</span>
+<span class="nx">sched</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">NewWithKeys</span><span class="p">(</span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">clients</span><span class="p">.</span><span class="nx">gh</span><span class="p">,</span><span class="w"> </span><span class="nx">clients</span><span class="p">.</span><span class="nx">gl</span><span class="p">,</span><span class="w"> </span><span class="nx">clients</span><span class="p">.</span><span class="nx">bz</span><span class="p">,</span><span class="w"> </span><span class="nx">clients</span><span class="p">.</span><span class="nx">ghKeys</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">,</span><span class="w"> </span><span class="nx">scheduler</span><span class="p">.</span><span class="nx">Config</span><span class="p">{...})</span>
 </pre></div>
 </div>
-<p>Update <code class="docutils literal notranslate"><span class="pre">scheduler.NewWithKeys</span></code> to accept the bzClient param after glClient; the key-pool parameters keep their order.</p>
+<p>Update <code class="docutils literal notranslate"><span class="pre">scheduler.NewWithKeys</span></code> to accept the bzClient param after gl; the key-pool parameter keeps its place.</p>
 </section>
 <section id="step-11-config">
 <h3>Step 11 — config<a class="headerlink" href="#step-11-config" title="Link to this heading"></a></h3>

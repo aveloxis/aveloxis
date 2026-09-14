@@ -55,6 +55,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -213,6 +214,23 @@ func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, r
 		return "", "", func() {}
 	}
 	return strings.Join(tokens, ","), tokens[0], release
+}
+
+// ScorecardRepoURL is the URL scorecard is given for a repository: its stored
+// URL (v0.30.0 — rebuilding https://<github.com|gitlab.com>/owner/name from
+// the platform id sent every self-hosted GitLab repo to gitlab.com), except
+// that a GitHub repository is given the canonical
+// https://github.com/owner/name, exactly as before. GitHub is one instance
+// (platform.ParseRepoURL assigns platform 1 only to github.com and its
+// subdomains), scorecard's remote mode refuses any other spelling of the host
+// ("unsupported host: www.github.com"), and the catalog stores URLs as typed
+// (http://, www., mixed case). One function for both callers (the per-cycle
+// phase and run-scorecard), SR-17.
+func ScorecardRepoURL(p model.Platform, gitURL, owner, name string) string {
+	if p == model.PlatformGitHub {
+		return "https://github.com/" + owner + "/" + name
+	}
+	return gitURL
 }
 
 // RunScorecard executes the OpenSSF Scorecard tool against a repo and

@@ -148,8 +148,9 @@ func TestSchedulerCallsBackfillForGitLabOnly(t *testing.T) {
 		start = 0
 	}
 	window := code[start:call]
-	if !strings.Contains(window, "PlatformGitLab") {
-		t.Error("BackfillGitLabCommitCount must be guarded by a PlatformGitLab check — " +
+	// v0.30.0: any GitLab instance, via the family helper.
+	if !strings.Contains(window, "repo.Platform.IsGitLab()") {
+		t.Error("BackfillGitLabCommitCount must be guarded by repo.Platform.IsGitLab() — " +
 			"calling it for GitHub or generic-git repos risks touching rows we don't own here")
 	}
 }

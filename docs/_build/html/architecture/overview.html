@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Architecture Overview &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Architecture Overview &mdash; Aveloxis 0.30.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=a7ea5d77"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -1683,7 +1690,7 @@
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 101 tables        │  │ 42 tables              │ │
+  │  │ 101 tables        │  │ 43 tables              │ │
   │  │ 20 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -1781,8 +1788,8 @@
 <h3><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)<a class="headerlink" href="#aveloxis-scan-4-tables" title="Link to this heading"></a></h3>
 <p>ScanCode per-file license and copyright detections: <code class="docutils literal notranslate"><span class="pre">scancode_scans</span></code> + <code class="docutils literal notranslate"><span class="pre">scancode_file_results</span></code>, each with a <code class="docutils literal notranslate"><span class="pre">_history</span></code> twin. Written by the decoupled scancode worker pool (180-day cadence per repo).</p>
 </section>
-<section id="aveloxis-ops-42-tables">
-<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)<a class="headerlink" href="#aveloxis-ops-42-tables" title="Link to this heading"></a></h3>
+<section id="aveloxis-ops-43-tables">
+<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)<a class="headerlink" href="#aveloxis-ops-43-tables" title="Link to this heading"></a></h3>
 <p>Operational and orchestration tables:</p>
 <table class="docutils align-default">
 <thead>
@@ -1805,8 +1812,8 @@
 <td><p>Tracks core/secondary/facade/ML phases per repo</p></td>
 </tr>
 <tr class="row-odd"><td><p>Credentials</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">worker_oauth</span></code></p></td>
-<td><p>API key storage</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">worker_oauth</span></code>, <code class="docutils literal notranslate"><span class="pre">forge_key_reports</span></code></p></td>
+<td><p>API key storage; each running serve’s key report (v0.30.0, read by the API keys admin page)</p></td>
 </tr>
 <tr class="row-even"><td><p>Users</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">users</span></code>, <code class="docutils literal notranslate"><span class="pre">user_sessions</span></code>, <code class="docutils literal notranslate"><span class="pre">user_repos</span></code></p></td>
@@ -1965,7 +1972,7 @@ Done -&gt; repo re-queued with new due time
       <span class="n">postgres</span><span class="o">.</span><span class="n">go</span>         <span class="c1"># All upsert methods</span>
       <span class="n">staging</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># JSONB staging writer and processor</span>
       <span class="n">migrate</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># Schema migration</span>
-      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (147 tables)</span>
+      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (148 tables)</span>
       <span class="n">matviews</span><span class="o">.</span><span class="n">sql</span>        <span class="c1"># 20 materialized views</span>
       <span class="n">contributors</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Contributor resolver with cache</span>
       <span class="n">affiliations</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Email domain -&gt; org resolver</span>

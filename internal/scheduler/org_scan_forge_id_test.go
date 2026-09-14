@@ -31,6 +31,13 @@ func TestOrgScansCaptureForgeRepoID(t *testing.T) {
 		"func (s *Scheduler) refreshGitLabGroup",
 		"func (s *Scheduler) refreshUserOrgs",
 	} {
+		// v0.30.0: the GitLab group listing lives on the instance's client
+		// (gitlab.Client.ListGroupProjects decodes the id, pinned below);
+		// the scheduler consumes GroupProject.ForgeID.
+		decodes := "`json:\"id\"`"
+		if fn == "func (s *Scheduler) refreshGitLabGroup" {
+			decodes = "item.ForgeID"
+		}
 		i := strings.Index(s, fn)
 		if i < 0 {
 			t.Fatalf("%s not found", fn)
@@ -39,8 +46,8 @@ func TestOrgScansCaptureForgeRepoID(t *testing.T) {
 		if j := strings.Index(body, "\nfunc "); j > 0 {
 			body = body[:j]
 		}
-		if !strings.Contains(body, "`json:\"id\"`") {
-			t.Errorf("%s must decode the listing's numeric `id` field", fn)
+		if !strings.Contains(body, decodes) {
+			t.Errorf("%s must decode (or consume) the listing's numeric `id` field", fn)
 		}
 		if !strings.Contains(body, "PlatformID:") {
 			t.Errorf("%s must pass the forge ID into UpsertRepo via model.Repo.PlatformID", fn)
@@ -48,5 +55,15 @@ func TestOrgScansCaptureForgeRepoID(t *testing.T) {
 		if !strings.Contains(body, "SetPlatformRepoIDIfEmpty(") {
 			t.Errorf("%s must backfill the forge ID onto already-tracked rows (found branch)", fn)
 		}
+	}
+}
+
+func TestGitLabGroupListingDecodesForgeRepoID(t *testing.T) {
+	src, err := os.ReadFile("../platform/gitlab/group_projects.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "`json:\"id\"`") || !strings.Contains(string(src), "ForgeID: model.ForgeIDString(it.ID)") {
+		t.Error("gitlab.Client.ListGroupProjects must decode the numeric project id into GroupProject.ForgeID")
 	}
 }

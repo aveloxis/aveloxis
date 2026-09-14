@@ -73,7 +73,7 @@ func runHealMessages(cfgPath string, limit int, dryRun, useAugurKeys bool) error
 	// the msg_kind migration must already have run (serve startup or
 	// `aveloxis migrate`), or the worklist doesn't exist yet.
 
-	ghKeys, _, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
+	ghKeys, err := loadGitHubKeys(ctx, cfg, store, useAugurKeys, logger)
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -21,7 +22,7 @@ func testClient(t *testing.T, handler http.Handler) *Client {
 	logger := slog.Default()
 	keys := platform.NewKeyPool([]string{"test-token"}, logger)
 	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitLab)
-	return &Client{http: httpClient, logger: logger, host: "gitlab.com"}
+	return &Client{http: httpClient, logger: logger, platformID: model.PlatformGitLab, webBase: "https://gitlab.com"}
 }
 
 // TestFetchCommunityFilePresence verifies that the GitLab client correctly

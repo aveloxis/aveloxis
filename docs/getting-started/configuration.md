@@ -34,9 +34,7 @@ claim on two axes, and they have different reach:
 - **Presence — every block, every key.** Each section of the snippet
   must carry every field of its Go config struct. An omitted key is
   invisible to any value check (absent simply means "use the
-  default"), so presence is asserted separately. The one reasoned
-  exemption is `github.gitlab_hosts`: the two forge blocks share one
-  struct and that field is GitLab-only.
+  default"), so presence is asserted separately.
 - **Values — every block, every field, plus the top-level scalars.**
   Each field is compared against the compiled default: through its
   effective accessor where it has one, and by value where it does
@@ -73,7 +71,14 @@ a half against its own reference table below:
   "gitlab": {
     "api_keys": ["glpat-your_token_here"],
     "base_url": "https://gitlab.com/api/v4",
-    "gitlab_hosts": ["gitlab.freedesktop.org"]
+    "web_url": "",
+    "instances": [
+      {
+        "web_url": "https://gitlab.freedesktop.org",
+        "api_url": "https://gitlab.freedesktop.org/api/v4",
+        "api_keys": ["glpat-issued-by-gitlab.freedesktop.org"]
+      }
+    ]
   },
   "mail": {
     "gmail_user": "aveloxis-ops@yourdomain.com",
@@ -218,9 +223,66 @@ Every field is optional except `database` credentials and at least one API key s
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `gitlab.api_keys` | string[] | `[]` | GitLab personal access tokens. |
-| `gitlab.base_url` | string | `"https://gitlab.com/api/v4"` | GitLab API base URL. Change for self-hosted GitLab instances. It also names the one host the `gitlab.api_keys` are sent to (v0.29.11): the periodic GitLab group refresh skips, with a WARN, any group whose URL is on a different host rather than send it the keys. Before v0.29.11 that refresh used the GitHub keys. |
-| `gitlab.gitlab_hosts` | string[] | `[]` | Additional hostnames to recognize as GitLab instances. Use this for self-hosted GitLab servers whose hostnames do not contain "gitlab". |
+| `gitlab.api_keys` | string[] | `[]` | Tokens issued by the **main** GitLab instance. |
+| `gitlab.base_url` | string | `"https://gitlab.com/api/v4"` | The main instance's API URL. The main instance's keys are sent only to this URL's scheme and host. |
+| `gitlab.web_url` | string | `""` (derived) | The main instance's web URL, where its repositories live. When empty it is `base_url` without its trailing `/api/v4`; set it when the main instance's API is not at `<web URL>/api/v4`. |
+| `gitlab.instances` | object[] | `[]` | Additional GitLab instances (v0.30.0), each `{"web_url", "api_url", "api_keys"}`. See [Multiple GitLab instances](#multiple-gitlab-instances). |
+| `gitlab.instances[].web_url` | string | required | Where the instance's repositories live: scheme, host, and the path prefix if GitLab is installed under a sub-path (`https://code.example.edu/gitlab`). This is the instance's identity: a different host or path prefix makes a different instance (changing only `http://` to `https://` keeps it). |
+| `gitlab.instances[].api_url` | string | `web_url + "/api/v4"` | The instance's REST API URL. It may be on a different host or path than `web_url` (a proxy or an `api.` host), and may change later without affecting stored data. The instance's keys are sent only to this URL's scheme and host. |
+| `gitlab.instances[].api_keys` | string[] | `[]` | Tokens issued by **that** instance. Keys are never shared between instances. |
+
+#### Multiple GitLab instances
+
+Every GitLab instance aveloxis collects from is `{web_url, api_url, api_keys}`,
+and nothing is shared between instances:
+
+1. **A key belongs to exactly one instance.** It sits in that instance's
+   entry, or is stored with `aveloxis add-key --platform gitlab --instance <web URL>`.
+   A stored key without `--instance` belongs to the main instance, as before.
+2. **An instance with no keys makes no API calls.** Its repositories still get
+   git-based collection (facade, analysis, scorecard, SBOM, vulnerabilities),
+   but each collection is recorded as not successful, with an error naming the
+   instance and the fix. Nothing is borrowed from another instance's keys.
+3. **A request carrying an instance's key only goes to that instance's
+   `api_url` host.** Redirects and pagination links to any other host are
+   refused.
+4. **A repository belongs to the instance whose `web_url` it lives under**
+   (host and path prefix; the longest prefix wins). Two instances may share a
+   web host under different path prefixes, but their API URLs must be on
+   different hosts.
+
+Each instance gets its own `platform_id` (gitlab.com keeps `2`; others get
+`100`–`199`), so contributor and message identities from different instances
+never collide. Ids are assigned by `aveloxis migrate` and `aveloxis serve`
+startup, and are never reused.
+
+`aveloxis` refuses to start when two instances share a web URL (`http://` and
+`https://` of one URL count as the same), two instances' API URLs are on the
+same host (a key is kept to its API's host, so instances need distinct API
+hosts), an extra instance has no `web_url`, or a `web_url` is an API URL.
+
+#### Managing keys while aveloxis runs
+
+A running `aveloxis serve` reloads **stored** keys once a minute (v0.30.0).
+Adding and removing keys therefore needs no restart, whether you use
+`aveloxis add-key` or the **API keys** admin page in the web GUI.
+
+- **One page for every forge.** The page shows GitHub and every GitLab
+  instance. It lists each key by a mask and a `key_id`, never the token, with
+  its health as the running processes report it: ok, budget spent, resting on
+  a rate limit, quarantined after repeated 401s, or invalid.
+- **Adding a key.** An added key is loaded within a minute, into its own
+  instance's pool only.
+- **Removing a key.** A removed key is handed out no more; requests already in
+  flight finish. A token lent to a running `scorecard` subprocess stays in use
+  until that subprocess exits.
+- **Keys in `aveloxis.json`** are shown read-only. The file is read at
+  startup, so a config change still needs a restart. A stored key whose token
+  is another instance's config key is not loaded; config wins.
+- **The `web` process** reloads its GitHub keys before each organization scan.
+- **Adding a GitLab instance** still means editing `gitlab.instances`, running
+  `aveloxis migrate`, and restarting `serve`. The new instance then appears on
+  the page and takes keys there.
 
 ### Collection
 

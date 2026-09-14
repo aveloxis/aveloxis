@@ -708,7 +708,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("secondary rate limit", "url", url, "wait", wait,
-				"token_prefix", tokenPrefix(key.Token))
+				"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 			// 2026-09-12 (Bug C): THIS key is resting in the pool for the
 			// Retry-After so other callers are routed to healthy keys —
 			// applied by UpdateFromResponse under the lease (PR #203
@@ -729,7 +729,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			resetStr := resp.Header.Get("X-RateLimit-Reset")
 			c.logger.Info("rate limit exhausted",
 				"url", url, "resource", resource, "reset", resetStr,
-				"token_prefix", tokenPrefix(key.Token))
+				"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 			return respRetry, nil, nil
 		}
 		// Headers said nothing definitive. Read the body and check whether
@@ -745,7 +745,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// like a regular rate limit so we don't hot-loop on the bug.
 			c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
 				"url", url,
-				"token_prefix", tokenPrefix(key.Token),
+				"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID,
 				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
@@ -770,7 +770,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// review").
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
 				"url", url,
-				"token_prefix", tokenPrefix(key.Token),
+				"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID,
 				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
@@ -787,7 +787,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		resp.Body.Close()
 		wait := parseRetryAfter(resp)
 		c.logger.Info("rate limited", "url", url, "wait", wait,
-			"token_prefix", tokenPrefix(key.Token))
+			"token_prefix", tokenPrefix(key.Token), "key_id", key.keyID)
 		// 429 is the same per-key throttle as 403 + Retry-After: the key
 		// is already resting (UpdateFromResponse, under the lease — PR
 		// #203 review); this is only this attempt's own pacing.

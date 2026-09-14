@@ -4,7 +4,9 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -15,6 +17,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 )
 
 // TestSchedulerSourceHasImmediateFirstPoll verifies the scheduler doesn't wait
@@ -141,31 +145,45 @@ func TestWorkerIDIncludesHostname(t *testing.T) {
 	}
 }
 
-func TestSelectClient(t *testing.T) {
-	s := New(nil, nil, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), Config{})
+// v0.30.0: a GitLab repository is routed by platform_id AND repo_git to its
+// own instance's client; a missing router, an unconfigured instance and a
+// contradicting URL are typed errors, never another instance's client (and
+// never a typed-nil client hidden in the interface).
+func TestClientForRepo(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(nil, nil, nil, logger, Config{})
 
-	// GitHub should return ghClient (nil in this test, but no error).
-	client, err := s.selectClient(model.PlatformGitHub)
+	client, err := s.clientForRepo(&model.Repo{Platform: model.PlatformGitHub, GitURL: "https://github.com/o/r"})
+	if err != nil || client != nil {
+		t.Errorf("GitHub with no GitHub client = (%v, %v), want (nil, nil)", client, err)
+	}
+	if client, err := s.clientForRepo(&model.Repo{Platform: model.PlatformGitLab, GitURL: "https://gitlab.com/g/r"}); !errors.Is(err, gitlab.ErrInstanceNotConfigured) || client != nil {
+		t.Errorf("GitLab with no router = (%v, %v), want ErrInstanceNotConfigured and a nil interface", client, err)
+	}
+
+	gl, err := gitlab.New(model.PlatformGitLab, "https://gitlab.com", "https://gitlab.com/api/v4", platform.NewKeyPool([]string{"k"}, logger), logger)
 	if err != nil {
-		t.Errorf("selectClient(GitHub) error = %v", err)
+		t.Fatal(err)
 	}
-	if client != nil {
-		t.Errorf("selectClient(GitHub) = %v, want nil (ghClient)", client)
-	}
-
-	// GitLab should return glClient (nil in this test, but no error).
-	client, err = s.selectClient(model.PlatformGitLab)
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
+		{ID: model.PlatformGitLab, WebBase: "https://gitlab.com", APIURL: "https://gitlab.com/api/v4", Client: gl},
+		{ID: model.GitLabInstanceIDMin, WebBase: "https://salsa.example.invalid", APIURL: "https://salsa.example.invalid/api/v4"},
+	})
 	if err != nil {
-		t.Errorf("selectClient(GitLab) error = %v", err)
+		t.Fatal(err)
 	}
-	if client != nil {
-		t.Errorf("selectClient(GitLab) = %v, want nil (glClient)", client)
+	s = New(nil, nil, router, logger, Config{})
+	if client, err := s.clientForRepo(&model.Repo{Platform: model.PlatformGitLab, GitURL: "https://gitlab.com/g/r"}); err != nil || client != gl {
+		t.Errorf("gitlab.com repo = (%v, %v), want its instance's client", client, err)
 	}
-
-	// Unknown platform should return error.
-	_, err = s.selectClient(model.Platform(99))
-	if err == nil {
-		t.Error("selectClient(99) should return error for unknown platform")
+	if _, err := s.clientForRepo(&model.Repo{Platform: model.GitLabInstanceIDMin, GitURL: "https://salsa.example.invalid/g/r"}); !errors.Is(err, gitlab.ErrInstanceNotConfigured) {
+		t.Errorf("keyless instance repo = %v, want ErrInstanceNotConfigured", err)
+	}
+	if _, err := s.clientForRepo(&model.Repo{Platform: model.PlatformGitLab, GitURL: "https://salsa.example.invalid/g/r"}); !errors.Is(err, gitlab.ErrInstanceMismatch) {
+		t.Errorf("platform 2 repo on another instance's URL = %v, want ErrInstanceMismatch", err)
+	}
+	if _, err := s.clientForRepo(&model.Repo{Platform: model.Platform(99)}); err == nil {
+		t.Error("unknown platform must be an error")
 	}
 }
 
@@ -193,24 +211,6 @@ func TestDetermineSince(t *testing.T) {
 	since = s.determineSince(job)
 	if !since.Equal(collected) {
 		t.Errorf("determineSince(collected) = %v, want exactly last_collected %v — computing since from now-minus-window reopens the blind-window class", since, collected)
-	}
-}
-
-func TestPlatformHostForModel(t *testing.T) {
-	tests := []struct {
-		platform model.Platform
-		want     string
-	}{
-		{model.PlatformGitHub, "github.com"},
-		{model.PlatformGitLab, "gitlab.com"},
-		{model.Platform(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		got := platformHostForModel(tt.platform)
-		if got != tt.want {
-			t.Errorf("platformHostForModel(%d) = %q, want %q", tt.platform, got, tt.want)
-		}
 	}
 }
 
@@ -403,5 +403,44 @@ func TestSchedulerRecoverOtherLocksOnStartup(t *testing.T) {
 
 	if !strings.Contains(runBody, "RecoverOtherWorkerLocks") {
 		t.Error("scheduler Run must call RecoverOtherWorkerLocks on startup to reclaim dead workers' locks immediately")
+	}
+}
+
+// Review of B1–B5 (finding 6): the not-configured reason names the fix that
+// applies — keys for the main instance go in gitlab.api_keys (a
+// gitlab.instances entry for it would be refused as a duplicate), another
+// instance takes its own entry or add-key --instance, an unregistered id
+// needs the instance configured, and a contradicting URL is not a
+// configuration problem at all.
+func TestInstanceFixHint(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router, err := gitlab.NewInstances([]*gitlab.InstanceSpec{
+		{ID: model.PlatformGitLab, WebBase: "https://gitlab.com", APIURL: "https://gitlab.com/api/v4", Primary: true},
+		{ID: model.GitLabInstanceIDMin, WebBase: "https://salsa.example.invalid", APIURL: "https://salsa.example.invalid/api/v4"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(nil, nil, router, logger, Config{})
+	cases := []struct {
+		p    model.Platform
+		url  string
+		err  error
+		want string
+	}{
+		{model.PlatformGitLab, "https://gitlab.com/g/r", gitlab.ErrInstanceNotConfigured, "gitlab.api_keys"},
+		{model.GitLabInstanceIDMin, "https://salsa.example.invalid/g/r", gitlab.ErrInstanceNotConfigured, "--instance https://salsa.example.invalid"},
+		{model.GitLabInstanceIDMax, "https://other.example.invalid/g/r", gitlab.ErrInstanceNotConfigured, "add the instance to gitlab.instances"},
+		{model.PlatformGitLab, "https://salsa.example.invalid/g/r", gitlab.ErrInstanceMismatch, "misrouted"},
+		// Review pass 2 (finding 4): a URL under NO configured instance is
+		// in neither the misrouted list nor adoption.
+		{model.PlatformGitLab, "https://gitlab.selfhosted.invalid/g/r", gitlab.ErrInstanceMismatch, "not under any configured GitLab instance"},
+		// Review pass 3 (finding 9): the misrouted list only holds platform 2.
+		{model.GitLabInstanceIDMin, "https://gitlab.com/g/r", gitlab.ErrInstanceMismatch, "names another GitLab instance"},
+	}
+	for _, tc := range cases {
+		if got := s.instanceFixHint(&model.Repo{Platform: tc.p, GitURL: tc.url}, tc.err); !strings.Contains(got, tc.want) {
+			t.Errorf("instanceFixHint(%d, %v) = %q, want it to mention %q", tc.p, tc.err, got, tc.want)
+		}
 	}
 }

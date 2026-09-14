@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func defaultCloneDir() string {
@@ -26,7 +29,7 @@ func defaultCloneDir() string {
 type Config struct {
 	Database DatabaseConfig `json:"database"`
 	GitHub   PlatformConfig `json:"github"`
-	GitLab   PlatformConfig `json:"gitlab"`
+	GitLab   GitLabConfig   `json:"gitlab"`
 	Mail     MailConfig     `json:"mail"` // v0.19.0: Gmail-backed transactional mailer
 
 	// Collection controls how repositories are collected.
@@ -104,10 +107,151 @@ func (d DatabaseConfig) ConnectionStringWithAppName(name string) string {
 type PlatformConfig struct {
 	APIKeys []string `json:"api_keys"`
 	BaseURL string   `json:"base_url,omitempty"` // override for self-hosted instances
+}
 
-	// GitLabHosts lists additional hostnames that should be recognized as
-	// GitLab instances (for self-hosted). Only relevant for GitLab config.
-	GitLabHosts []string `json:"gitlab_hosts,omitempty"`
+// GitLabConfig configures the GitLab instances aveloxis collects from
+// (v0.30.0, multi-instance GitLab). The top-level fields are the main
+// instance, exactly as before: BaseURL is its API URL and APIKeys its tokens.
+// Instances adds other GitLab instances, each with its own web URL (its
+// identity), API URL and keys. Read them through EffectiveInstances, the
+// single default and validation layer.
+type GitLabConfig struct {
+	APIKeys []string `json:"api_keys"`
+	BaseURL string   `json:"base_url,omitempty"`
+	// WebURL is the main instance's web URL. Default: BaseURL without its
+	// trailing /api/v4. Set it when the main instance's API is not at
+	// <web URL>/api/v4.
+	WebURL    string                 `json:"web_url,omitempty"`
+	Instances []GitLabInstanceConfig `json:"instances,omitempty"`
+}
+
+// GitLabInstanceConfig is one additional GitLab instance.
+type GitLabInstanceConfig struct {
+	// WebURL is where the instance's repositories live — scheme, host and
+	// the path prefix of an install under a sub-path. Required; it is the
+	// instance's identity (its platform_id is registered under it).
+	WebURL string `json:"web_url"`
+	// APIURL is the instance's REST API base. Default: WebURL + "/api/v4".
+	// The instance's keys are sent only to this URL's scheme and host.
+	APIURL string `json:"api_url,omitempty"`
+	// APIKeys are tokens issued by THIS instance.
+	APIKeys []string `json:"api_keys"`
+}
+
+// GitLabInstance is one effective GitLab instance: the normalized web base
+// (model.NormalizeInstanceWebBase), the API URL without a trailing slash, its
+// own keys, and whether it is the main (top-level) instance.
+type GitLabInstance struct {
+	WebBase string
+	APIURL  string
+	APIKeys []string
+	Primary bool
+}
+
+const defaultGitLabAPIURL = "https://gitlab.com/api/v4"
+
+// EffectiveInstances returns the main GitLab instance first, then
+// gitlab.instances in config order, or an error naming the offending entry.
+// It refuses: an extra instance without web_url; a web URL that is not a web
+// base (model.NormalizeInstanceWebBase); an API URL that is not a plain
+// http(s) URL with a host; a main base_url that does not end in /api/v4 when
+// web_url is unset; two instances with the same web base (scheme ignored);
+// and two instances whose APIs share a host. An instance with no keys is kept: its repositories
+// classify under it and take the visible "not configured" path.
+func (g GitLabConfig) EffectiveInstances() ([]GitLabInstance, error) {
+	mainAPI := strings.TrimRight(strings.TrimSpace(g.BaseURL), "/")
+	if mainAPI == "" {
+		mainAPI = defaultGitLabAPIURL
+	}
+	if err := validateGitLabAPIURL(mainAPI); err != nil {
+		return nil, fmt.Errorf("gitlab.base_url: %w", err)
+	}
+	mainWeb := strings.TrimSpace(g.WebURL)
+	if mainWeb == "" {
+		if !strings.HasSuffix(strings.ToLower(mainAPI), "/api/v4") {
+			return nil, fmt.Errorf("gitlab.base_url %q does not end in /api/v4, so the instance's web URL cannot be derived: set gitlab.web_url", mainAPI)
+		}
+		mainWeb = mainAPI[:len(mainAPI)-len("/api/v4")]
+	}
+	mainBase, err := model.NormalizeInstanceWebBase(mainWeb)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab.web_url: %w", err)
+	}
+	out := []GitLabInstance{{WebBase: mainBase, APIURL: mainAPI, APIKeys: g.APIKeys, Primary: true}}
+
+	for i, ic := range g.Instances {
+		field := fmt.Sprintf("gitlab.instances[%d]", i)
+		if strings.TrimSpace(ic.WebURL) == "" {
+			return nil, fmt.Errorf("%s.web_url is required", field)
+		}
+		base, err := model.NormalizeInstanceWebBase(ic.WebURL)
+		if err != nil {
+			return nil, fmt.Errorf("%s.web_url: %w", field, err)
+		}
+		api := strings.TrimRight(strings.TrimSpace(ic.APIURL), "/")
+		if api == "" {
+			api = base + "/api/v4"
+		}
+		if err := validateGitLabAPIURL(api); err != nil {
+			return nil, fmt.Errorf("%s.api_url: %w", field, err)
+		}
+		out = append(out, GitLabInstance{WebBase: base, APIURL: api, APIKeys: ic.APIKeys})
+	}
+
+	for i := range out {
+		for j := 0; j < i; j++ {
+			if model.SchemelessWebBase(out[i].WebBase) == model.SchemelessWebBase(out[j].WebBase) {
+				return nil, fmt.Errorf("%s and %s have the same web URL %q", gitLabInstanceField(j), gitLabInstanceField(i), out[i].WebBase)
+			}
+			// HTTPClient keeps a key on its client's API scheme and HOST
+			// (v0.29.12): two instances whose APIs share a host — the same
+			// API URL respelled, or different paths — could receive each
+			// other's keys through a redirect or pagination link.
+			if hi, hj := apiHostKey(out[i].APIURL), apiHostKey(out[j].APIURL); hi != "" && hi == hj {
+				return nil, fmt.Errorf("%s and %s have their API on the same API host %s — each instance's keys may only reach its own API, and a key is kept to its API's host, so instances need distinct API hosts", gitLabInstanceField(j), gitLabInstanceField(i), hi)
+			}
+		}
+	}
+	return out, nil
+}
+
+// gitLabInstanceField names effective instance i as the operator wrote it.
+func gitLabInstanceField(i int) string {
+	if i == 0 {
+		return "gitlab (the main instance)"
+	}
+	return fmt.Sprintf("gitlab.instances[%d]", i-1)
+}
+
+// apiHostKey is an API URL's host as the redirect guard compares it,
+// normalized (case, default port, trailing dot), without the scheme; "" if
+// the URL does not parse.
+func apiHostKey(apiURL string) string {
+	u, err := url.Parse(apiURL)
+	if err != nil {
+		return ""
+	}
+	base, err := model.NormalizeInstanceWebBase(strings.ToLower(u.Scheme) + "://" + u.Host)
+	if err != nil {
+		return ""
+	}
+	return model.SchemelessWebBase(base)
+}
+
+// validateGitLabAPIURL accepts a plain http(s) URL with a host and no
+// userinfo, query or fragment.
+func validateGitLabAPIURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%q: %v", raw, err)
+	}
+	if s := strings.ToLower(u.Scheme); (s != "http" && s != "https") || u.Host == "" {
+		return fmt.Errorf("%q must be an http or https URL with a host", raw)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%q must not carry userinfo, a query or a fragment", raw)
+	}
+	return nil
 }
 
 // WebConfig configures the web GUI and OAuth.
@@ -1390,6 +1534,11 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	// v0.30.0: an invalid GitLab instance list stops every process at
+	// startup rather than misrouting a key at the first request.
+	if _, err := cfg.GitLab.EffectiveInstances(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -1585,8 +1734,8 @@ func DefaultConfig() *Config {
 		GitHub: PlatformConfig{
 			BaseURL: "https://api.github.com",
 		},
-		GitLab: PlatformConfig{
-			BaseURL: "https://gitlab.com/api/v4",
+		GitLab: GitLabConfig{
+			BaseURL: defaultGitLabAPIURL,
 		},
 		Web: WebConfig{
 			Addr:           ":8082",

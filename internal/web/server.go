@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -35,17 +36,20 @@ import (
 
 // Server is the web GUI server.
 type Server struct {
-	store     *db.PostgresStore
-	cfg       config.WebConfig
-	logger    *slog.Logger
-	ghOAuth   *oauth2.Config
-	glOAuth   *oauth2.Config
-	ghKeys    *platform.KeyPool // for immediate org scanning
-	sessionMu sync.RWMutex
-	sessions  map[string]*Session // session token -> session
-	tmpl      *template.Template
-	apiProxy  http.Handler   // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
-	mailer    *mailer.Mailer // gmail-backed transactional mailer; safely nil if unconfigured (v0.19.0)
+	store   *db.PostgresStore
+	cfg     config.WebConfig
+	logger  *slog.Logger
+	ghOAuth *oauth2.Config
+	glOAuth *oauth2.Config
+	ghKeys  *platform.KeyPool // for immediate org scanning
+	// reloadKeys reconciles ghKeys with the stored keys before an org scan
+	// (v0.30.0 Phase C); nil keeps the startup keys.
+	reloadKeys func(ctx context.Context) error
+	sessionMu  sync.RWMutex
+	sessions   map[string]*Session // session token -> session
+	tmpl       *template.Template
+	apiProxy   http.Handler   // reverse proxy for /api/* → cfg.APIInternalURL; nil on parse failure
+	mailer     *mailer.Mailer // gmail-backed transactional mailer; safely nil if unconfigured (v0.19.0)
 }
 
 // Session tracks a logged-in user.
@@ -66,6 +70,12 @@ type Session struct {
 	Provider  string
 	IsAdmin   bool
 	ExpiresAt time.Time
+}
+
+// WithKeyReload sets the reload an org scan runs first (v0.30.0 Phase C).
+func (s *Server) WithKeyReload(reload func(ctx context.Context) error) *Server {
+	s.reloadKeys = reload
+	return s
 }
 
 // New creates a web server. ghKeys is optional — if provided, org repos are
@@ -1134,6 +1144,15 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 		return
 	}
 
+	if s.reloadKeys != nil {
+		if err := s.reloadKeys(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			// The pool keeps its previous keys; the scan still runs.
+			s.logger.Warn("API key reload before org scan failed — using the keys already loaded", "org", orgURL, "error", err)
+		}
+	}
 	httpClient := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
 	s.logger.Info("scanning repos for user group", "name", name, "group_id", groupID)
 

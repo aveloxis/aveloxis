@@ -36,6 +36,13 @@ func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
 	}
 }
 
+// HasKeys reports whether the client's key pool has an active key (every
+// key can be removed at runtime since v0.30.0 Phase C). Callers that would
+// otherwise record every failed request as an attempt pause on it.
+func (c *Client) HasKeys() bool {
+	return !c.http.Keys().IsEmpty()
+}
+
 func (c *Client) Platform() model.Platform {
 	return model.PlatformGitHub
 }

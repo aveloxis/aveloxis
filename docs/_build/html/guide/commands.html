@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.30.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=a7ea5d77"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -69,7 +69,11 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#full-config-reference">Full config reference</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#database">Database</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#multiple-gitlab-instances">Multiple GitLab instances</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#managing-keys-while-aveloxis-runs">Managing keys while aveloxis runs</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
@@ -248,6 +252,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#aveloxis-gitlab-instances"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-staging-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-distribution-stats"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">distribution-stats</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#mailing-list-commands">Mailing-list commands</a><ul>
@@ -588,6 +593,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#no-api-keys-configured-startup-failure">“No API keys configured” / Startup failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-key-added-on-the-api-keys-page-is-not-picked-up-yet-or-not-loaded">A key added on the API keys page is “not picked up yet” or “not loaded”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#commit-resolution-failed">“Commit resolution FAILED”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#no-data-collected">“No data collected”</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#unsupported-unicode-escape-sequence-sqlstate-22p05"><code class="docutils literal notranslate"><span class="pre">unsupported</span> <span class="pre">Unicode</span> <span class="pre">escape</span> <span class="pre">sequence</span> <span class="pre">(SQLSTATE</span> <span class="pre">22P05)</span></code></a></li>
@@ -661,7 +667,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-43-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (43 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1566,6 +1572,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#api-credentials">API Credentials</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#worker-oauth">worker_oauth</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#forge-key-reports">forge_key_reports</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#users-and-auth">Users and Auth</a><ul>
@@ -2064,8 +2071,11 @@ aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
 <h3>Platform detection<a class="headerlink" href="#platform-detection" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p>URLs containing <code class="docutils literal notranslate"><span class="pre">github.com</span></code> are treated as GitHub</p></li>
-<li><p>URLs containing <code class="docutils literal notranslate"><span class="pre">gitlab</span></code> in the hostname are treated as GitLab</p></li>
-<li><p>Hostnames listed in <code class="docutils literal notranslate"><span class="pre">gitlab.gitlab_hosts</span></code> in the config are treated as GitLab</p></li>
+<li><p>URLs under the <code class="docutils literal notranslate"><span class="pre">web_url</span></code> of a configured GitLab instance (<code class="docutils literal notranslate"><span class="pre">gitlab.web_url</span></code>
+or <code class="docutils literal notranslate"><span class="pre">gitlab.instances[].web_url</span></code>) belong to that instance</p></li>
+<li><p>Other URLs with <code class="docutils literal notranslate"><span class="pre">gitlab</span></code> in the hostname are recognized as GitLab; one that
+is not under a configured instance is collected git-only until its instance
+is configured</p></li>
 </ul>
 </section>
 </section>
@@ -2092,21 +2102,34 @@ aveloxis<span class="w"> </span>add-repo<span class="w"> </span>--from-augur
 <td><p>(required unless <code class="docutils literal notranslate"><span class="pre">--from-augur</span></code>)</p></td>
 <td><p>Platform for the key: <code class="docutils literal notranslate"><span class="pre">github</span></code> or <code class="docutils literal notranslate"><span class="pre">gitlab</span></code>.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--from-augur</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--instance</span></code></p></td>
+<td><p>string</p></td>
+<td><p>the main GitLab instance</p></td>
+<td><p>GitLab only (v0.30.0): the web URL of the GitLab instance that issued the key, as configured in <code class="docutils literal notranslate"><span class="pre">gitlab.instances</span></code>. The key is loaded only into that instance’s pool and sent only to its API URL. A key stored for an instance that is not configured is kept but not loaded (a WARN says so). Re-adding a token under another instance moves it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--from-augur</span></code></p></td>
 <td><p>boolean</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Bulk import all keys from <code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code>. Duplicates are skipped.</p></td>
+<td><p>Bulk import all keys from <code class="docutils literal notranslate"><span class="pre">augur_operations.worker_oauth</span></code>. Duplicates are skipped. Imported GitLab keys belong to the main instance.</p></td>
 </tr>
 </tbody>
 </table>
+<p>A running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> picks up a stored key within a minute, with no
+restart (v0.30.0). Keys can also be added and removed on the web GUI’s <strong>API
+keys</strong> admin page, which covers GitHub and every GitLab instance on one page.
+One difference: re-adding a stored token on that page is refused (“remove it
+first”), while <code class="docutils literal notranslate"><span class="pre">add-key</span></code> moves the token to the named instance.</p>
 </section>
 <section id="id7">
 <h3>Examples<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Store a GitHub token</span>
 aveloxis<span class="w"> </span>add-key<span class="w"> </span>ghp_your_github_token<span class="w"> </span>--platform<span class="w"> </span>github
 
-<span class="c1"># Store a GitLab token</span>
+<span class="c1"># Store a token issued by the main GitLab instance (gitlab.base_url)</span>
 aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab_token<span class="w"> </span>--platform<span class="w"> </span>gitlab
+
+<span class="c1"># Store a token issued by another GitLab instance</span>
+aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-freedesktop_token<span class="w"> </span>--platform<span class="w"> </span>gitlab<span class="w"> </span>--instance<span class="w"> </span>https://gitlab.freedesktop.org
 
 <span class="c1"># Bulk import from Augur</span>
 aveloxis<span class="w"> </span>add-key<span class="w"> </span>--from-augur
@@ -2162,10 +2185,10 @@ aveloxis<span class="w"> </span>recollect<span class="w"> </span>https://github.
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 147 tables and 20 materialized views across three PostgreSQL schemas:</p>
+<p>Creates 148 tables and 20 materialized views across three PostgreSQL schemas:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (101 tables + 20 materialized views) – all collected data</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (42 tables) – operational state</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (43 tables) – operational state</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> (4 tables) – scancode per-file license/copyright results</p></li>
 </ul>
 <p>Also performs a data cleanup pass that nullifies garbage timestamps (year &lt; 1970) across all tables, preventing BC-era dates from poisoning queries.</p>
@@ -2299,9 +2322,11 @@ names the missing index.</p>
 </section>
 <section id="after-the-run">
 <h3>After the run<a class="headerlink" href="#after-the-run" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># builds uq_repos_repo_git_ci — the permanent</span>
-<span class="w">                                </span><span class="c1"># DB-level backstop (skipped with a WARN while</span>
-<span class="w">                                </span><span class="c1"># duplicates remain)</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># builds uq_repos_repo_git_ci (and, for</span>
+<span class="w">                                </span><span class="c1"># self-hosted GitLab instances,</span>
+<span class="w">                                </span><span class="c1"># uq_repos_repo_git_ci_gitlab_instances) — the</span>
+<span class="w">                                </span><span class="c1"># permanent DB-level backstops (each skipped</span>
+<span class="w">                                </span><span class="c1"># with a WARN while its duplicates remain)</span>
 aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># matviews stop double-counting immediately</span>
 </pre></div>
 </div>
@@ -3130,6 +3155,28 @@ migrations (v0.21.5 contract) — run <code class="docutils literal notranslate"
 upgrading to v0.27.5 so the <code class="docutils literal notranslate"><span class="pre">scorecard_mode</span></code> column exists.</p></li>
 </ul>
 </section>
+<section id="aveloxis-gitlab-instances">
+<h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">gitlab-instances</span></code><a class="headerlink" href="#aveloxis-gitlab-instances" title="Link to this heading"></a></h2>
+<p>Read-only report of the GitLab instances aveloxis collects from (v0.30.0).</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis gitlab-instances
+</pre></div>
+</div>
+<p>One tab-separated row per instance: its <code class="docutils literal notranslate"><span class="pre">platform_id</span></code>, web URL, the API URL its
+keys are sent to, whether it is configured (and whether it has keys), how many
+keys it has (config and stored), and how many repositories it holds. Also
+listed:</p>
+<ul class="simple">
+<li><p>instances registered earlier but no longer configured (their repositories
+are collected git-only, and each job records why);</p></li>
+<li><p>stored keys tagged with an instance that is not configured (never loaded);</p></li>
+<li><p>misrouted repositories: rows on <code class="docutils literal notranslate"><span class="pre">platform_id</span></code> 2 that live under another
+instance and already hold API data. They are reported, never changed.
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code> fails the same check.</p></li>
+</ul>
+<p>Run it after deploying v0.30.0: gitlab.com should be <code class="docutils literal notranslate"><span class="pre">platform_id</span></code> 2 and
+nothing should be misrouted.</p>
+</section>
+<hr class="docutils" />
 <section id="aveloxis-staging-stats">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">staging-stats</span></code><a class="headerlink" href="#aveloxis-staging-stats" title="Link to this heading"></a></h2>
 <p>Read-only view of the JSONB staging table, per repo and entity type

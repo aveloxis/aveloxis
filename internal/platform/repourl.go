@@ -24,6 +24,12 @@ type RepoURL struct {
 	Owner    string // e.g. "torvalds" or "group/subgroup" for GitLab
 	Repo     string // e.g. "linux"
 	Raw      string // original URL
+	// WebBase is the forge instance's web base URL
+	// (model.NormalizeInstanceWebBase): the matched gitlab.instances
+	// web_url for a hinted URL, otherwise scheme://host. v0.30.0: a GitLab
+	// instance's identity; the platform above is only the family (1/2/3) —
+	// concrete GitLab instance ids come from the platforms registry.
+	WebBase string
 }
 
 // APIURL returns the base API URL for this repository's platform instance.
@@ -54,14 +60,18 @@ func (r RepoURL) GitLabProjectPath() string {
 //   - GitLab:  https://gitlab.com/group[/subgroup...]/project[.git]
 //   - Self-hosted GitLab: https://gitlab.example.com/group/project
 //
-// For self-hosted instances, use ParseRepoURLWithHints to specify known GitLab hosts.
+// For self-hosted instances, use ParseRepoURLWithHints with the configured
+// GitLab instances' web URLs.
 func ParseRepoURL(rawURL string) (RepoURL, error) {
 	return ParseRepoURLWithHints(rawURL, nil)
 }
 
-// ParseRepoURLWithHints parses a repo URL, using gitlabHosts to identify
-// self-hosted GitLab instances that don't have "gitlab" in their hostname.
-func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL, error) {
+// ParseRepoURLWithHints parses a repo URL, using gitlabWebBases — the
+// configured GitLab instances' web URLs — to recognize self-hosted GitLab
+// instances whose hostname lacks "gitlab" and installs under a sub-path. A
+// URL under a web base (host and path prefix, longest match) is GitLab with
+// owner/repo taken from the path after the prefix (v0.30.0).
+func ParseRepoURLWithHints(rawURL string, gitlabWebBases []string) (RepoURL, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	rawURL = strings.TrimSuffix(rawURL, "/")
 	rawURL = strings.TrimSuffix(rawURL, ".git")
@@ -76,6 +86,21 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 	}
 
 	host := strings.ToLower(u.Host)
+	if base, rest, ok := model.MatchInstanceWebBase(rawURL, gitlabWebBases); ok {
+		parts := strings.Split(rest, "/")
+		if rest == "" || len(parts) < 2 {
+			return RepoURL{}, fmt.Errorf("%w: need at least owner/repo after the GitLab instance URL %s", ErrInvalidRepoURL, base)
+		}
+		return RepoURL{
+			Platform: model.PlatformGitLab,
+			Host:     host,
+			Owner:    strings.Join(parts[:len(parts)-1], "/"),
+			Repo:     parts[len(parts)-1],
+			Raw:      rawURL,
+			WebBase:  base,
+		}, nil
+	}
+
 	path := strings.Trim(u.Path, "/")
 	if path == "" {
 		return RepoURL{}, fmt.Errorf("%w: empty path", ErrInvalidRepoURL)
@@ -86,15 +111,17 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 		return RepoURL{}, fmt.Errorf("%w: need at least owner/repo in path", ErrInvalidRepoURL)
 	}
 
-	plat := detectPlatform(host, gitlabHosts)
+	plat := detectPlatform(host)
 	if plat == 0 {
 		return RepoURL{}, fmt.Errorf("%w: host %q", ErrUnknownPlatform, host)
 	}
 
+	webBase, _ := model.NormalizeInstanceWebBase(u.Scheme + "://" + u.Host)
 	result := RepoURL{
 		Platform: plat,
 		Host:     host,
 		Raw:      rawURL,
+		WebBase:  webBase,
 	}
 
 	switch plat {
@@ -189,15 +216,14 @@ func ParseOrgURL(rawURL string) (host, orgName string, err error) {
 	return strings.ToLower(u.Host), parts[0], nil
 }
 
-// detectPlatform identifies the platform from the hostname.
-func detectPlatform(host string, gitlabHosts map[string]bool) model.Platform {
+// detectPlatform identifies the platform family from the hostname alone.
+// Configured GitLab instances whose hostname lacks "gitlab" are matched by
+// web base before this runs (ParseRepoURLWithHints).
+func detectPlatform(host string) model.Platform {
 	if host == "github.com" || strings.HasSuffix(host, ".github.com") {
 		return model.PlatformGitHub
 	}
 	if host == "gitlab.com" || strings.Contains(host, "gitlab") {
-		return model.PlatformGitLab
-	}
-	if gitlabHosts != nil && gitlabHosts[host] {
 		return model.PlatformGitLab
 	}
 	// GitHub Enterprise instances don't typically have "github" in the hostname,

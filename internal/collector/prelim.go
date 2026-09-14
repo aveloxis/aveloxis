@@ -190,22 +190,45 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// New URL is not yet tracked — update the old repo's URL and fix all stored
 	// URLs (issue html_urls, PR urls, etc.) that contain the old org/repo path.
 	if err := store.UpdateRepoURLs(ctx, repo.ID, repo.GitURL, finalURL); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return result, fmt.Errorf("updating repo URLs: %w", err) // shutdown: no skip recorded
+		}
+		if errors.Is(err, db.ErrCrossInstanceRename) {
+			// v0.30.0: the redirect points at another GitLab instance (or
+			// off GitLab). The repository's collected identities belong to
+			// its own instance, so the URL is not rewritten and this cycle
+			// is skipped with the reason; an operator decides what the move
+			// means (observation-first, SR-7).
+			logger.Warn("prelim: redirect leaves the repository's GitLab instance — URL not rewritten, collection skipped",
+				"repo_id", repo.ID, "old", repo.GitURL, "new", finalURL, "error", err)
+			result.Skip = true
+			result.SkipReason = fmt.Sprintf("redirect to %s leaves the repository's GitLab instance — URL not rewritten; re-add it under the new URL if the move is real", finalURL)
+			return result, nil
+		}
 		return result, fmt.Errorf("updating repo URLs: %w", err)
 	}
 	logger.Info("prelim: updated repo URL to canonical",
 		"repo_id", repo.ID, "old", repo.GitURL, "new", finalURL)
 
-	// Update the repo struct so collection uses the new URL.
+	// Update the repo struct so collection uses the new URL and the
+	// owner/name UpdateRepoURLs just stored (v0.30.0: derived with the GitLab
+	// instance registry, so a sub-path prefix is not an owner). A failed
+	// read-back keeps the shared parser's result — the historical fallback —
+	// and says so.
 	repo.GitURL = finalURL
-	// Re-parse owner/name from the new URL (shared parser, v0.25.32).
-	// On parse failure the old owner/name are kept — same guard the
-	// deleted inline parseOwnerName provided via empty returns.
-	if ru, perr := platform.ParseAnyRepoURL(finalURL); perr == nil {
-		if ru.Owner != "" {
-			repo.Owner = ru.Owner
+	if stored, gerr := store.GetRepoByID(ctx, repo.ID); gerr == nil {
+		repo.GitURL, repo.Owner, repo.Name = stored.GitURL, stored.Owner, stored.Name
+	} else {
+		if !errors.Is(gerr, context.Canceled) {
+			logger.Warn("prelim: could not read back the renamed repo — deriving owner/name from the URL", "repo_id", repo.ID, "error", gerr)
 		}
-		if ru.Repo != "" {
-			repo.Name = ru.Repo
+		if ru, perr := platform.ParseAnyRepoURL(finalURL); perr == nil {
+			if ru.Owner != "" {
+				repo.Owner = ru.Owner
+			}
+			if ru.Repo != "" {
+				repo.Name = ru.Repo
+			}
 		}
 	}
 

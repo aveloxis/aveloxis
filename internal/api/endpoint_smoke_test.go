@@ -116,6 +116,11 @@ var smokeRecipes = map[string]smokeRecipe{
 	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"}, // v0.27.14 Boost (fixture seeds the queue row)
 	"GET /api/v1/admin/add-requests":                         {auth: "admin"}, // v0.27.20 per-add approval queue
 	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"}, // v0.27.20 (fixture seeds the pending request)
+	// v0.30.0 Phase C API-key administration. The fixture seeds a stored
+	// key ({oauthID}); the add stores a second one the cleanup removes.
+	"GET /api/v1/admin/api-keys":                   {auth: "admin"},
+	"POST /api/v1/admin/api-keys":                  {auth: "admin", body: `{"platform":"github","name":"smoke","token":"_avsmoke_add_{repoName}"}`, wantStatus: []int{201}},
+	"POST /api/v1/admin/api-keys/{oauthID}/delete": {auth: "admin", after: "GET /api/v1/admin/api-keys"},
 
 	// Augur-compat metric routes (metrics.go).
 	"GET /api/v1/owner/{owner}/repo/{repo}":                    {},
@@ -226,6 +231,7 @@ func TestEveryEndpointExecutes(t *testing.T) {
 		"{decision}", "approve",
 		"{requestID}", fmt.Sprint(fx.requestID),
 		"{collectionID}", fmt.Sprint(fx.collectionID),
+		"{oauthID}", fmt.Sprint(fx.oauthID),
 		"{cntrbID}", fx.cntrbID,
 		"{owner}", fx.owner,
 		"{repo}", fx.repoName,
@@ -322,6 +328,7 @@ type smokeFixture struct {
 	requestID    int64             // v0.27.20 pending add-request
 	collectionID int64             // v0.27.63 collections routes
 	cntrbID      string            // v0.27.64 contributor activity route
+	oauthID      int64             // v0.30.0 stored API key for the delete route
 }
 
 // seedSmokeFixture creates the minimal graph the recipes need: a repo
@@ -423,7 +430,13 @@ func seedSmokeFixture(t *testing.T, ctx context.Context, store *db.PostgresStore
 		t.Fatal(err)
 	}
 
+	// v0.30.0 Phase C: a stored key for the API-key delete route.
+	if fx.oauthID, err = store.InsertAPIKey(ctx, "smoke", fmt.Sprintf("_avsmoke_key_%d", suffix), "github", ""); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.worker_oauth WHERE access_token LIKE '\_avsmoke\_%'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.collections WHERE created_by = $1`, fx.userID)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, fx.cntrbID)
 		for _, q := range []string{

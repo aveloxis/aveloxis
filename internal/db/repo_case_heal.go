@@ -62,12 +62,17 @@ func (s *PostgresStore) HealRepoCaseDrift(ctx context.Context, repoID int64, ful
 		return false, nil
 	}
 
-	// Rebuild the URL with the canonical path, preserving scheme + host.
+	// Rebuild the URL with the canonical path, preserving everything before
+	// owner/name — scheme, host, and (v0.30.0) the path prefix of a GitLab
+	// instance installed under a sub-path.
 	scheme, host := schemeAndHost(gitURL)
 	if host == "" {
 		return false, fmt.Errorf("cannot derive host from stored repo_git %q", gitURL)
 	}
 	newURL := scheme + "://" + host + "/" + fullName
+	if n := len(storedPath); len(gitURL) > n && strings.EqualFold(gitURL[len(gitURL)-n:], storedPath) && gitURL[len(gitURL)-n-1] == '/' {
+		newURL = gitURL[:len(gitURL)-n] + fullName
+	}
 	if newURL == gitURL {
 		return false, nil
 	}

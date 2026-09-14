@@ -89,7 +89,7 @@ func TestGetReposForMetadataRefreshContract(t *testing.T) {
 	body := src[idx:]
 	// Keyset pagination (the v0.26.6 lesson: never LIMIT-rescan loops)
 	// and forge-backed platforms only (generic git has no API).
-	for _, needle := range []string{"repo_id > $1", "ORDER BY repo_id", "platform_id IN (1, 2)"} {
+	for _, needle := range []string{"repo_id > $1", "ORDER BY repo_id", `ForgePlatformPredicate("platform_id")`} {
 		if !strings.Contains(body[:min(1500, len(body))], needle) {
 			t.Errorf("GetReposForMetadataRefresh must use %q", needle)
 		}

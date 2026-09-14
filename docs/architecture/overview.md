@@ -43,7 +43,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 101 tables        │  │ 42 tables              │ │
+  │  │ 101 tables        │  │ 43 tables              │ │
   │  │ 20 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -97,7 +97,7 @@ Plus 20 materialized views for 8Knot compatibility.
 
 ScanCode per-file license and copyright detections: `scancode_scans` + `scancode_file_results`, each with a `_history` twin. Written by the decoupled scancode worker pool (180-day cadence per repo).
 
-### `aveloxis_ops` (42 tables)
+### `aveloxis_ops` (43 tables)
 
 Operational and orchestration tables:
 
@@ -106,7 +106,7 @@ Operational and orchestration tables:
 | Queue | `collection_queue` | Postgres-backed priority queue with `SKIP LOCKED` |
 | Staging | `staging` | JSONB staging store for the staged pipeline |
 | Status | `collection_status` | Tracks core/secondary/facade/ML phases per repo |
-| Credentials | `worker_oauth` | API key storage |
+| Credentials | `worker_oauth`, `forge_key_reports` | API key storage; each running serve's key report (v0.30.0, read by the API keys admin page) |
 | Users | `users`, `user_sessions`, `user_repos` | User accounts and auth |
 | Config | `config` | Runtime configuration |
 | Workers | `worker_history`, `worker_job` | Worker run history |
@@ -238,7 +238,7 @@ aveloxis/
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (147 tables)
+      schema.sql          # Full DDL (148 tables)
       matviews.sql        # 20 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver

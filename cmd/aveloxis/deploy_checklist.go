@@ -126,6 +126,11 @@ var deployChecklists = map[string][]deployStep{
 	// the real parameter list (glKeys was missing). Docs and a doc-drift test
 	// only — same ladder.
 	"0.29.13": v029DeployChecklist,
+	// v0.30.0 (multi-instance GitLab, in progress on feat/gitlab-multitenancy):
+	// no new operator step yet (the GitLab-instance case-insensitive unique
+	// index builds inside migrate); the shared ladder carries forward until
+	// the release adds its own steps.
+	"0.30.0": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

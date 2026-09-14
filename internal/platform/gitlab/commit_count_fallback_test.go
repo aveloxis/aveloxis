@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -68,7 +69,7 @@ func newTestClientWithCapture(t *testing.T, handler http.Handler) (*Client, *cap
 	logger := slog.New(capture)
 	keys := platform.NewKeyPool([]string{"test-token"}, logger)
 	httpClient := platform.NewHTTPClient(server.URL, keys, logger, platform.AuthGitLab)
-	return &Client{http: httpClient, logger: logger, host: "gitlab.com"}, capture
+	return &Client{http: httpClient, logger: logger, platformID: model.PlatformGitLab, webBase: "https://gitlab.com"}, capture
 }
 
 // repoInfoRouter builds a handler that simulates the GitLab endpoints that

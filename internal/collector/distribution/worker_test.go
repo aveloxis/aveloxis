@@ -6,6 +6,7 @@ package distribution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // v0.24.0 — DistributionWorker tests.
@@ -354,5 +356,23 @@ func TestProcessJobReleasesTheClaimOnShutdown(t *testing.T) {
 	}
 	if len(store.failures) != 0 || len(store.marks) != 0 {
 		t.Errorf("a shutdown-cut scan must record neither a failure (%v) nor a completion (%v)", store.failures, store.marks)
+	}
+}
+
+// A scan that could not ask GitHub (ErrNoKeys) releases the claim like a
+// shutdown: no strike toward the sideline, no snapshot replace, no
+// cadence stamp (review of Phase C, pass 3, finding 3).
+func TestProcessJobReleasesTheClaimWithoutGitHubKeys(t *testing.T) {
+	store := &fakeStore{}
+	scanner := &fakeScanner{scanErr: fmt.Errorf("github sources: %w", platform.ErrNoKeys)}
+	w := NewWorker(WorkerOptions{Store: store, Scanner: scanner, Workers: 1, Cadence: 180 * 24 * time.Hour, Logger: testLogger()})
+	w.processJob(context.Background(), &db.DistributionJob{RepoID: 43, RepoOwner: "o", RepoName: "r"})
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.released) != 1 || store.released[0] != 43 {
+		t.Fatalf("a no-keys scan must release the claim exactly once, got %v", store.released)
+	}
+	if len(store.failures) != 0 || len(store.marks) != 0 {
+		t.Errorf("a no-keys scan must record neither a failure (%v) nor a completion (%v)", store.failures, store.marks)
 	}
 }

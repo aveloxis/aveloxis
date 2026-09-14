@@ -60,9 +60,20 @@ func TestUpdateRepoURLNormalizesName(t *testing.T) {
 	// transactional UpdateRepoURLs). The guarantee is unchanged — pin
 	// that UpdateRepoURL routes through the helper AND that the helper
 	// itself normalizes.
-	if !strings.Contains(fnBody, "parseRepoURLOwnerName(") {
-		t.Error("UpdateRepoURL must derive owner/name via parseRepoURLOwnerName — " +
+	// v0.30.0: through the registry-aware repoURLOwnerName, which falls
+	// back to parseRepoURLOwnerName and normalizes on both arms.
+	if !strings.Contains(fnBody, "s.repoURLOwnerName(") {
+		t.Error("UpdateRepoURL must derive owner/name via repoURLOwnerName — " +
 			"redirects should also produce clean slugs in the DB")
+	}
+	helper, err := os.ReadFile("gitlab_classification.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := string(helper)
+	hi := strings.Index(hs, "func (s *PostgresStore) repoURLOwnerName(")
+	if hi < 0 || !strings.Contains(hs[hi:], "parseRepoURLOwnerName(newURL)") || !strings.Contains(hs[hi:hi+strings.Index(hs[hi:], "\n}\n")], "NormalizeRepoName") {
+		t.Error("repoURLOwnerName must normalize the hinted parse and fall back to parseRepoURLOwnerName")
 	}
 	hIdx := strings.Index(code, "func parseRepoURLOwnerName(")
 	if hIdx < 0 {

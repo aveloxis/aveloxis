@@ -130,7 +130,7 @@ func newOrgScanFixture(t *testing.T) (*orgScanFixture, context.Context) {
 	}))
 	t.Cleanup(server.Close)
 
-	s := NewWithKeys(store, nil, nil, platform.NewKeyPool([]string{"test-token"}, logger), nil, logger,
+	s := NewWithKeys(store, nil, nil, platform.NewKeyPool([]string{"test-token"}, logger), logger,
 		Config{Workers: 1, Collection: &config.CollectionConfig{}})
 	s.ghAPIBase = server.URL
 	fx.s = s

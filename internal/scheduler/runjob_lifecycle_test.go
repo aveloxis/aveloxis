@@ -54,7 +54,9 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	// t.Cleanup, not defer (SR-9): a deferred Close ran before the
+	// fixture cleanup below and left the test repo behind ("closed pool").
+	t.Cleanup(raw.Close)
 
 	// Serve 200 for prelim's HEAD check; git clone against this URL
 	// fails fast (not a git repo).
@@ -67,7 +69,18 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	cleanup := func() {
 		raw.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN
 			(SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
-		raw.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`'`)
+		// runJob writes SBOM scan and scorecard rows, whose FKs block the
+		// repo delete: without these deletes the repo delete failed silently,
+		// the repo stayed, and — once a GitLab-instance test registered
+		// 127.0.0.1 — pinned that instance's platform_id forever (v0.30.0
+		// Phase C gate run 58: the 100–199 range filled up).
+		for _, dep := range []string{"aveloxis_data.repo_sbom_scans", "aveloxis_data.repo_deps_scorecard"} {
+			raw.Exec(ctx, `DELETE FROM `+dep+` WHERE repo_id IN
+				(SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
+		}
+		if _, err := raw.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`'`); err != nil {
+			t.Logf("cleanup: test repo not deleted (a dependent row blocks it): %v", err)
+		}
 	}
 	cleanup()
 	t.Cleanup(cleanup)

@@ -13,6 +13,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -26,7 +27,10 @@ func TestLiveGitLabRepoInfoForGitLabRunner(t *testing.T) {
 	}
 	logger := slog.Default()
 	keys := platform.NewKeyPool([]string{tok}, logger)
-	client := New("https://gitlab.com/api/v4", keys, logger)
+	client, err := New(model.PlatformGitLab, "https://gitlab.com", "https://gitlab.com/api/v4", keys, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
 	info, err := client.FetchRepoInfo(context.Background(), "gitlab-org", "gitlab-runner")
 	if err != nil {
 		t.Fatalf("live GitLab FetchRepoInfo failed: %v", err)

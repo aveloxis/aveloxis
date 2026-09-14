@@ -193,6 +193,27 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 
 ---
 
+## A key added on the API keys page is "not picked up yet" or "not loaded"
+
+Running `serve` processes reload stored keys once a minute and save a report
+that the API keys admin page reads (`aveloxis_ops.forge_key_reports`). A key
+the page lists as not loaded carries one of these reasons:
+
+- **not picked up yet** — the key was stored after the latest reload. Wait a
+  minute and refresh.
+- **no serve reporting** — no `serve` process has reported in the last three
+  minutes. Start `serve`, or check its log for `API key reload failed` or
+  `API key report not saved`. A failed reload leaves every pool exactly as it
+  was.
+- **site not configured** — the key is tagged for a GitLab web URL that no
+  entry in `gitlab.instances` has. Add the instance and run `aveloxis migrate`,
+  or remove the key and add it again for a configured instance.
+- **conflicts with a config key** — the same token is in `aveloxis.json` for
+  another instance. A key belongs to one instance, and config wins; remove the
+  stored copy.
+
+---
+
 ## "Commit resolution FAILED"
 
 **Symptom:** Log shows `level=ERROR msg="commit resolution FAILED (no API keys available — most commits unresolved)"` with a large `key_exhausted` count.
@@ -1328,14 +1349,17 @@ when a URL arrived with different casing and created a second full repo.
 ```sql
 SELECT LOWER(repo_git) AS repo, COUNT(*) AS variants
 FROM aveloxis_data.repos
-WHERE platform_id IN (1, 2)
+WHERE platform_id IN (1, 2) OR platform_id BETWEEN 100 AND 199
 GROUP BY LOWER(repo_git)
 HAVING COUNT(*) > 1
 ORDER BY repo;
 ```
 
-Zero rows means you're clean. `aveloxis migrate` also reports this
-state: while duplicates remain it logs
+(Platform ids 100–199 are self-hosted GitLab instances, v0.30.0.) Zero rows
+means you're clean. `aveloxis migrate` also reports this state: while
+duplicates remain it logs, per affected index (`uq_repos_repo_git_ci` for
+GitHub and gitlab.com, `uq_repos_repo_git_ci_gitlab_instances` for other
+GitLab instances)
 
 ```
 msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_git_ci"
@@ -1348,11 +1372,11 @@ msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_g
 aveloxis stop serve                 # optional — dedup-repos skips mid-flight
                                     # pairs, but a quiet window drains all in one run
 aveloxis migrate --skip-views       # creates the LOWER(repo_git) lookup index;
-                                    # WARNs + skips the unique index while dups remain
+                                    # WARNs + skips a unique index while its dups remain
 aveloxis dedup-repos --dry-run      # review the plan
 aveloxis dedup-repos --limit 50     # canary, then:
 aveloxis dedup-repos                # full run — repeat until "0 pairs"
-aveloxis migrate --skip-views       # now builds uq_repos_repo_git_ci (the backstop)
+aveloxis migrate --skip-views       # now builds the unique index backstops
 aveloxis refresh-views              # matviews stop double-counting immediately
 aveloxis start all
 ```

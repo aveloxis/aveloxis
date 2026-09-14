@@ -324,6 +324,18 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// suffix variants would otherwise slip past both ON CONFLICT (repo_git)
 	// and the case-insensitive unique index and create duplicate rows.
 	r.GitURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(r.GitURL), "/"), ".git")
+	// v0.30.0: the stored repo_git is the only address a repository has
+	// (the facade clones it, scorecard scores it; nothing rebuilds a URL
+	// from the platform id), so a row without one could never be
+	// collected. repo_git's NOT NULL UNIQUE still admits one empty string.
+	if strings.Trim(r.GitURL, "/") == "" {
+		return 0, fmt.Errorf("UpsertRepo: refusing a repository with no URL (owner %q, name %q)", r.Owner, r.Name)
+	}
+	// v0.30.0: the GitLab instance registry decides a non-GitHub
+	// repository's platform_id (classifyRepoPlatform).
+	if err := s.classifyRepoPlatform(ctx, r); err != nil {
+		return 0, err
+	}
 
 	// Case-variant resolution (v0.25.32): GitHub and GitLab treat
 	// owner/repo paths case-insensitively, so a URL differing from a
@@ -331,7 +343,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// stored spelling so the ON CONFLICT below updates that row instead
 	// of inserting a duplicate. Lookup errors are deliberately ignored —
 	// the INSERT below surfaces any real connectivity problem.
-	if r.Platform == model.PlatformGitHub || r.Platform == model.PlatformGitLab {
+	if r.Platform.IsForge() {
 		if stored, rerr := s.resolveCaseVariantURL(ctx, r.GitURL); rerr == nil && stored != "" {
 			r.GitURL = stored
 		}
@@ -350,7 +362,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// this shape (dio/eaigw → dio/ai-gateway, 18F/api.data.gov →
 	// GSA/api.data.gov, ...). URL-tracked rows never reach this branch
 	// — the ON CONFLICT (repo_git) DO UPDATE below owns those.
-	if r.PlatformID != "" && (r.Platform == model.PlatformGitHub || r.Platform == model.PlatformGitLab) {
+	if r.PlatformID != "" && r.Platform.IsForge() {
 		var urlTracked int64
 		// v0.27.112 (wrongly-suppressed Copilot finding): only ErrNoRows
 		// means "untracked" — a transient probe failure must not steer
@@ -488,14 +500,15 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 
 		err := insert()
 		// Unique-index race (v0.25.32): the pre-insert case resolution and
-		// the INSERT are not atomic. When uq_repos_repo_git_ci exists and a
-		// concurrent writer lands the other case variant between our resolve
-		// and our INSERT, the partial unique index rejects us with 23505 —
-		// re-resolve to the now-stored spelling and retry once, which routes
-		// the statement through ON CONFLICT (repo_git) DO UPDATE instead.
+		// the INSERT are not atomic. When a case-insensitive repo_git unique
+		// index exists (uq_repos_repo_git_ci, or since v0.30.0 the GitLab
+		// instance companion) and a concurrent writer lands the other case
+		// variant between our resolve and our INSERT, the partial unique
+		// index rejects us with 23505 — re-resolve to the now-stored
+		// spelling and retry once, which routes the statement through
+		// ON CONFLICT (repo_git) DO UPDATE instead.
 		var pgErr *pgconn.PgError
-		if err != nil && errors.As(err, &pgErr) &&
-			pgErr.Code == "23505" && pgErr.ConstraintName == "uq_repos_repo_git_ci" {
+		if err != nil && errors.As(err, &pgErr) && isRepoGitCIUniqueViolation(pgErr) {
 			if stored, rerr := s.resolveCaseVariantURL(ctx, r.GitURL); rerr == nil && stored != "" {
 				r.GitURL = stored
 				err = insert()
@@ -668,7 +681,7 @@ func (s *PostgresStore) FindRepoByURL(ctx context.Context, gitURL string) (int64
 	err := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
 		WHERE repo_git = $1
-		   OR (LOWER(repo_git) = LOWER($1) AND platform_id IN (1, 2))
+		   OR (LOWER(repo_git) = LOWER($1) AND `+ForgePlatformPredicate("platform_id")+`)
 		ORDER BY (repo_git = $1) DESC, repo_id
 		LIMIT 1`, gitURL,
 	).Scan(&id)
@@ -686,12 +699,13 @@ func (s *PostgresStore) FindRepoByURL(ctx context.Context, gitURL string) (int64
 // or "" when no such row exists. UpsertRepo substitutes the stored
 // spelling before its INSERT so ON CONFLICT (repo_git) targets the
 // existing row instead of creating a case-variant duplicate. The
-// platform_id IN (1, 2) gate keeps generic-git hosts byte-exact.
+// forge-platform gate (ForgePlatformPredicate) keeps generic-git hosts
+// byte-exact.
 func (s *PostgresStore) resolveCaseVariantURL(ctx context.Context, gitURL string) (string, error) {
 	var stored string
 	err := s.pool.QueryRow(ctx, `
 		SELECT repo_git FROM aveloxis_data.repos
-		WHERE LOWER(repo_git) = LOWER($1) AND platform_id IN (1, 2)
+		WHERE LOWER(repo_git) = LOWER($1) AND `+ForgePlatformPredicate("platform_id")+`
 		ORDER BY (repo_git = $1) DESC, repo_id
 		LIMIT 1`, gitURL,
 	).Scan(&stored)
@@ -729,6 +743,14 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 	// e.g., "https://github.com/old-org/old-repo" -> "old-org/old-repo"
 	oldPath := extractRepoPath(oldURL)
 	newPath := extractRepoPath(newURL)
+	// v0.30.0: refused before any child URL is rewritten.
+	if err := s.checkCrossInstanceRename(ctx, repoID, newURL); err != nil {
+		return err
+	}
+	owner, name, err := s.repoURLOwnerName(ctx, newURL)
+	if err != nil {
+		return err
+	}
 
 	if oldPath == "" || newPath == "" || oldPath == newPath {
 		// Just update the repo_git URL.
@@ -751,7 +773,6 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 		}
 		defer tx.Rollback(ctx)
 
-		owner, name := parseRepoURLOwnerName(newURL)
 		if _, err := tx.Exec(ctx,
 			`UPDATE aveloxis_data.repos
 			 SET repo_git = $2, repo_owner = $3, repo_name = $4, data_collection_date = NOW()
@@ -787,8 +808,11 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 }
 
 // parseRepoURLOwnerName extracts the normalized owner/name pair for a
-// repos-row URL update — the single parse both UpdateRepoURL and the
-// transactional UpdateRepoURLs use (v0.27.111).
+// repos-row URL update without GitLab instance hints (v0.27.111). Since
+// v0.30.0 both UpdateRepoURL and the transactional UpdateRepoURLs go through
+// repoURLOwnerName, which calls this only as its fallback: when the instance
+// registry is not migrated yet, or the hinted parse fails for a URL under no
+// registered instance.
 func parseRepoURLOwnerName(newURL string) (owner, name string) {
 	if ru, perr := platform.ParseAnyRepoURL(newURL); perr == nil {
 		owner = ru.Owner
@@ -814,13 +838,23 @@ func extractRepoPath(u string) string {
 // UpdateRepoURL changes the git URL, owner, and name of a repo (e.g., after a redirect).
 // Extracts the new owner/name from the URL so the dashboard and API show correct values.
 func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL string) error {
-	// Parse owner/name from the new URL via the shared parser (v0.25.32
-	// consolidation; unparseable URLs keep empty owner/name — the URL
-	// column still updates, matching the historical permissiveness).
+	// Parse owner/name from the new URL (repoURLOwnerName: the shared parser
+	// with the GitLab instance registry's hints). A URL under no registered
+	// instance that does not parse keeps empty owner/name and the URL column
+	// still updates (the historical permissiveness); a URL on a registered
+	// instance that does not parse is refused (v0.30.0).
 	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
-	owner, name := parseRepoURLOwnerName(newURL)
+	// v0.30.0: a GitLab repository never moves to another instance, and a
+	// sub-path instance's prefix never lands in repo_owner.
+	if err := s.checkCrossInstanceRename(ctx, repoID, newURL); err != nil {
+		return err
+	}
+	owner, name, err := s.repoURLOwnerName(ctx, newURL)
+	if err != nil {
+		return err
+	}
 
-	_, err := s.pool.Exec(ctx,
+	_, err = s.pool.Exec(ctx,
 		`UPDATE aveloxis_data.repos
 		 SET repo_git = $2, repo_owner = $3, repo_name = $4, data_collection_date = NOW()
 		 WHERE repo_id = $1`,
@@ -2234,12 +2268,22 @@ func backfillDenormalizedIdentity(ctx context.Context, tx pgx.Tx, cntrbID string
 			ident.OrganizationsURL, ident.ReposURL, ident.EventsURL,
 			ident.ReceivedEventsURL,
 		)
-	} else if ident.Platform == model.PlatformGitLab && ident.UserID > 0 {
+	} else if ident.Platform.IsGitLab() && ident.UserID > 0 {
 		// gl_state added in v0.20.3 — Phase F closable gap.
 		// GitLab's user state ("active", "blocked", "banned",
 		// "deactivated") was previously parsed from JSON in
 		// glUser.State / glMember.State but never plumbed
 		// through to contributors.gl_state.
+		//
+		// v0.30.0: every GitLab instance fills the gl_* columns, but gl_id
+		// only for the historical instance (platform_id 2) — a numeric
+		// user id identifies nobody without its instance, and the column
+		// has no instance beside it. contributor_identities keeps the
+		// (platform_id, platform_user_id) pair for every instance.
+		var glID *int64
+		if ident.Platform == model.PlatformGitLab {
+			glID = &ident.UserID
+		}
 		_, backfillErr = tx.Exec(ctx, `
 			UPDATE aveloxis_data.contributors SET
 				gl_id = COALESCE(gl_id, $2),
@@ -2249,7 +2293,7 @@ func backfillDenormalizedIdentity(ctx context.Context, tx pgx.Tx, cntrbID string
 				gl_full_name = COALESCE(NULLIF(gl_full_name,''), $6),
 				gl_state = COALESCE(NULLIF(gl_state,''), $7)
 			WHERE cntrb_id = $1::uuid`,
-			cntrbID, ident.UserID, ident.Login, ident.AvatarURL,
+			cntrbID, glID, ident.Login, ident.AvatarURL,
 			ident.URL, ident.Name, ident.State,
 		)
 	}

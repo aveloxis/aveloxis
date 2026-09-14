@@ -1069,6 +1069,60 @@ Admin-only:
 - `POST /api/v1/admin/users/{userID}/admin` with
   `{"admin": true|false}` — promote/demote. Self-demotion is refused
   (last-admin guard).
+- `GET /api/v1/admin/api-keys` (v0.30.0) — every forge API key on
+  one page: GitHub and each GitLab instance. Tokens are never returned.
+  The envelope is
+  `{interval_seconds, stale_after_seconds, reporters, forges, orphaned,
+  unregistered}`:
+  - `reporters` lists each `serve` process's latest key report
+    (`reporter`, `reported_at`, `age_seconds`, `stale`). A report older
+    than three reload intervals is stale and is not merged.
+  - `forges` has one entry per forge, in `platform_id` order:
+    `{platform, platform_id, web_url, api_url, main, registered,
+    reported, active_keys, repo_count, misrouted_count, health, keys}`.
+    `health` counts keys by health.
+  - Each key is `{oauth_id, name, source, key_id, masked, instance_url,
+    created_at, removable, status, health, reason, detail, loaded_by}`.
+    - `source` is `database`, `config` or `augur`.
+    - `status` is `loaded`, `draining` (removed and finishing its
+      in-flight requests) or `not_loaded`.
+    - For a `not_loaded` key, `reason` is `pending` (stored after the
+      latest reload), `no_reporter`, `orphan` (its instance is not
+      configured) or `conflict` (the same token is another instance's
+      config key).
+    - `health` is `ok`, `exhausted`, `resting`, `quarantined` or
+      `invalid`, the worst any process reports.
+    - `removable` is true only for stored (database) keys.
+  - `orphaned` lists stored keys tagged for no configured instance.
+  - `unregistered` lists configured GitLab instances that still need
+    `aveloxis migrate`.
+- `POST /api/v1/admin/api-keys` (v0.30.0) with `{"platform":
+  "github"|"gitlab", "instance_url", "name", "token"}` — store a key.
+  - The token goes in the JSON body only; a `token` query parameter is
+    refused with 400. The body is limited to 8 KB (413 above that).
+  - A GitLab key names its instance's web URL. The instance must be
+    registered, and the key is stored under the registered spelling. A
+    GitHub key takes no `instance_url`.
+  - 400 for a token that is empty, longer than 512 bytes, or not
+    printable ASCII, and for a token carrying the other forge's prefix
+    (`ghp_` under GitLab, `glpat-` under GitHub, and similar).
+  - 409 when the token is already stored (move = remove + add) or is a
+    config-file key of a running process.
+  - 201 returns `{oauth_id, key_id, masked, platform, instance_url,
+    api_url, pickup_seconds}`. Running `serve` processes load the key
+    within a minute, and `web` loads it before its next org scan.
+  - Unlike `aveloxis add-key`, which moves a re-added token to the named
+    instance, this endpoint never changes an existing row.
+- `POST /api/v1/admin/api-keys/{oauthID}/delete` (v0.30.0) — remove a
+  stored key. 404 when absent. Returns `{oauth_id, key_id, masked,
+  platform, instance_url, still_loaded_from_config, drain_seconds}`.
+  Running processes stop handing the key out within a minute, and
+  requests already in flight finish.
+
+  The api process stores tokens but never reads one back: its reads
+  return `key_id`, a truncated domain-separated SHA-256, and a
+  first4...last4 mask. It never sends a token anywhere. Serve these
+  routes over HTTPS.
 - `GET /api/v1/admin/groups/pending` — pending groups awaiting
   approval, with requester login/email and repo/org counts.
 - `POST /api/v1/admin/groups/{groupID}/{decision}` where decision is

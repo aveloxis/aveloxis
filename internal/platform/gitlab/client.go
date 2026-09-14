@@ -20,32 +20,66 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
-// Client implements platform.Client for GitLab (API v4).
-// Supports both gitlab.com and self-hosted instances.
+// Client implements platform.Client for one GitLab instance (API v4).
+//
+// v0.30.0 (multi-instance GitLab): a client belongs to exactly one instance —
+// its platform_id (stamped on every message, event, review and identity it
+// produces, so rows from different instances never share a key), its web
+// base (where its repositories live; repo URLs are parsed against it) and
+// its API URL (where requests go, possibly a different host). Its keys are
+// that instance's only, and v0.29.12's HTTPClient guard keeps every keyed
+// request on the API URL's scheme and host.
 type Client struct {
-	http   *platform.HTTPClient
-	logger *slog.Logger
-	host   string // e.g. "gitlab.com"
+	http       *platform.HTTPClient
+	logger     *slog.Logger
+	platformID model.Platform
+	webBase    string // model.NormalizeInstanceWebBase form
+	// keys is the instance's own pool, kept so the router can gate on
+	// active keys and reconcile it in place (v0.30.0 Phase C). Unexported:
+	// only this package pairs a pool with its instance.
+	keys *platform.KeyPool
 	// userRefCache: username → glUserRefCacheEntry (v0.27.122) — see
 	// lookupGLUserRef. Zero value is ready to use.
 	userRefCache sync.Map
 }
 
-// New creates a GitLab client. baseURL should be like "https://gitlab.com/api/v4".
-func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
-	host := "gitlab.com"
-	if u, err := url.Parse(baseURL); err == nil {
-		host = u.Host
+// New creates the client for one GitLab instance. It refuses a platformID
+// outside the GitLab family, a web base that does not normalize, an empty
+// API URL, and a nil key pool. An EMPTY pool is accepted (v0.30.0 Phase C):
+// every registered instance keeps a pool for the process's life so a key
+// added at runtime can make it collectable; the router's KeyedClient gate
+// keeps a keyless instance from making API calls.
+func New(platformID model.Platform, webBase, apiURL string, keys *platform.KeyPool, logger *slog.Logger) (*Client, error) {
+	if !platformID.IsGitLab() {
+		return nil, fmt.Errorf("gitlab.New: platform_id %d is not a GitLab instance id", platformID)
+	}
+	base, err := model.NormalizeInstanceWebBase(webBase)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab.New: %w", err)
+	}
+	if strings.TrimSpace(apiURL) == "" {
+		return nil, fmt.Errorf("gitlab.New: GitLab instance %s has no API URL", base)
+	}
+	if keys == nil {
+		return nil, fmt.Errorf("gitlab.New: GitLab instance %s has no key pool", base)
 	}
 	return &Client{
-		http:   platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitLab),
-		logger: logger,
-		host:   host,
-	}
+		http:       platform.NewHTTPClient(apiURL, keys, logger, platform.AuthGitLab),
+		logger:     logger,
+		platformID: platformID,
+		webBase:    base,
+		keys:       keys,
+	}, nil
 }
 
+// Platform returns the instance's platform_id.
 func (c *Client) Platform() model.Platform {
-	return model.PlatformGitLab
+	return c.platformID
+}
+
+// WebBase returns the instance's normalized web base URL.
+func (c *Client) WebBase() string {
+	return c.webBase
 }
 
 // OnPermanentRedirect forwards to the underlying HTTPClient. See
@@ -55,12 +89,12 @@ func (c *Client) OnPermanentRedirect(hook func(from, to string)) {
 }
 
 func (c *Client) ParseRepoURL(rawURL string) (owner, repo string, err error) {
-	parsed, err := platform.ParseRepoURLWithHints(rawURL, map[string]bool{c.host: true})
+	parsed, err := platform.ParseRepoURLWithHints(rawURL, []string{c.webBase})
 	if err != nil {
 		return "", "", err
 	}
-	if parsed.Platform != model.PlatformGitLab {
-		return "", "", fmt.Errorf("URL %q is not a GitLab URL", rawURL)
+	if !parsed.Platform.IsGitLab() || parsed.WebBase != c.webBase {
+		return "", "", fmt.Errorf("URL %q is not on the GitLab instance %s", rawURL, c.webBase)
 	}
 	return parsed.Owner, parsed.Repo, nil
 }
@@ -355,7 +389,7 @@ func (c *Client) ListPRReviews(ctx context.Context, owner, repo string, prNumber
 		for _, approval := range resp.ApprovedBy {
 			if !yield(model.PullRequestReview{
 				PlatformReviewID: approval.ID,
-				PlatformID:       model.PlatformGitLab,
+				PlatformID:       c.platformID,
 				State:            "APPROVED",
 				AuthorRef:        glUserToRef(approval.User),
 			}, nil) {
@@ -649,7 +683,7 @@ func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, since 
 			}
 			if !yield(model.IssueEvent{
 				PlatformEventID: raw.ID,
-				PlatformID:      model.PlatformGitLab,
+				PlatformID:      c.platformID,
 				Action:          action,
 				CreatedAt:       raw.CreatedAt,
 				ActorRef:        glUserToRef(raw.User),
@@ -685,7 +719,7 @@ func (c *Client) ListPREvents(ctx context.Context, owner, repo string, since tim
 			}
 			if !yield(model.PullRequestEvent{
 				PlatformEventID: raw.ID,
-				PlatformID:      model.PlatformGitLab,
+				PlatformID:      c.platformID,
 				Action:          action,
 				CreatedAt:       raw.CreatedAt,
 				ActorRef:        glUserToRef(raw.User),
@@ -753,7 +787,7 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, sinc
 				}
 				msg := model.Message{
 					PlatformMsgID: note.ID,
-					PlatformID:    model.PlatformGitLab,
+					PlatformID:    c.platformID,
 					Text:          note.Body,
 					Timestamp:     note.CreatedAt,
 					AuthorRef:     glUserToRef(note.Author),
@@ -833,7 +867,7 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 				}
 				msg := model.Message{
 					PlatformMsgID: note.ID,
-					PlatformID:    model.PlatformGitLab,
+					PlatformID:    c.platformID,
 					Text:          note.Body,
 					Timestamp:     note.CreatedAt,
 					AuthorRef:     glUserToRef(note.Author),
@@ -916,7 +950,7 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 					}
 					msg := model.Message{
 						PlatformMsgID: note.ID,
-						PlatformID:    model.PlatformGitLab,
+						PlatformID:    c.platformID,
 						Text:          note.Body,
 						Timestamp:     note.CreatedAt,
 						AuthorRef:     glUserToRef(note.Author),
@@ -968,7 +1002,7 @@ func (c *Client) ListCommentsForIssue(ctx context.Context, owner, repo string, i
 			}
 			msg := model.Message{
 				PlatformMsgID: note.ID,
-				PlatformID:    model.PlatformGitLab,
+				PlatformID:    c.platformID,
 				Text:          note.Body,
 				Timestamp:     note.CreatedAt,
 				AuthorRef:     glUserToRef(note.Author),
@@ -1013,7 +1047,7 @@ func (c *Client) ListCommentsForPR(ctx context.Context, owner, repo string, mrII
 			}
 			msg := model.Message{
 				PlatformMsgID: note.ID,
-				PlatformID:    model.PlatformGitLab,
+				PlatformID:    c.platformID,
 				Text:          note.Body,
 				Timestamp:     note.CreatedAt,
 				AuthorRef:     glUserToRef(note.Author),
@@ -1070,7 +1104,7 @@ func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string
 				}
 				msg := model.Message{
 					PlatformMsgID: note.ID,
-					PlatformID:    model.PlatformGitLab,
+					PlatformID:    c.platformID,
 					Text:          note.Body,
 					Timestamp:     note.CreatedAt,
 					AuthorRef:     glUserToRef(note.Author),
@@ -1146,7 +1180,7 @@ func (c *Client) ListContributors(ctx context.Context, owner, repo string) iter.
 			if !yield(model.Contributor{
 				Login: raw.Username,
 				Identities: []model.ContributorIdentity{{
-					Platform:  model.PlatformGitLab,
+					Platform:  c.platformID,
 					UserID:    raw.ID,
 					Login:     raw.Username,
 					Name:      raw.Name,
@@ -1211,7 +1245,7 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
 		Canonical: canonical,
 		CreatedAt: createdAt,
 		Identities: []model.ContributorIdentity{{
-			Platform:  model.PlatformGitLab,
+			Platform:  c.platformID,
 			UserID:    raw.ID,
 			Login:     raw.Username,
 			Name:      raw.Name,

@@ -59,18 +59,30 @@ const (
 	// Counted nowhere — shutdown is not a failure (pass 34); the
 	// contributor stays unstamped and re-claims next tick.
 	historyCanceled
+	// historyNoKeys (v0.30.0 Phase C): the GitHub pool had no active key
+	// (every key removed at runtime). Nothing is known about the
+	// contributor, so nothing is stamped; it re-claims once keys exist.
+	historyNoKeys
 )
+
+// stampsFailure reports whether an outcome stamps the failure cooldown:
+// only a real fetch/store failure does.
+func (o activityHistoryOutcome) stampsFailure() bool { return o == historyFailed }
 
 // runActivityHistory performs one sweep tick: claim a batch, fetch
 // each contributor's history through a bounded worker pool (v0.28.3 —
 // the BreadthWorker pattern), store per contributor. Per-contributor
-// failure contract unchanged: a missing account (meta 404 →
-// ErrNotFound class) is mark-only stamped; any OTHER error stamps
-// nothing so the contributor retries on the next claim.
+// failure contract: a missing account (meta 404 → ErrNotFound class) is
+// mark-only stamped; any other fetch or store error stamps the failure
+// cooldown (MarkHistoryFetchFailed); shutdown and a missing API key
+// (ErrNoKeys, v0.30.0 Phase C) stamp nothing.
 func (s *Scheduler) runActivityHistory(ctx context.Context) {
 	fetcher, ok := s.ghClient.(contributorHistoryFetcher)
 	if !ok {
 		return // no GitHub GraphQL client (GitLab-only deployment or test fake)
+	}
+	if s.gitHubPoolEmpty() {
+		return // every GitHub key removed at runtime: nothing to fetch with
 	}
 	// v0.28.3: window-level parallelism lives in the CLIENT (the
 	// windows of one contributor fetch concurrently); wire the
@@ -95,7 +107,7 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 	windowDays := s.cfg.Collection.ActivityHistoryWindowDaysOrDefault()
 	concurrency := s.cfg.Collection.ActivityHistoryConcurrencyValue()
 	start := time.Now()
-	var stored, marked, failed atomic.Int64
+	var stored, marked, failed, noKeys atomic.Int64
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, c := range claimed {
@@ -117,12 +129,15 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 			// either way — this is counter honesty, not recovery).
 			outcome := historyFailed
 			defer func() {
-				switch outcome {
-				case historyStored:
+				switch {
+				case outcome == historyStored:
 					stored.Add(1)
-				case historyMarked:
+				case outcome == historyMarked:
 					marked.Add(1)
-				case historyCanceled:
+				case outcome == historyNoKeys:
+					noKeys.Add(1) // stamped never: nothing was asked
+				case !outcome.stampsFailure():
+					// Canceled: counted nowhere, stamped never.
 				default:
 					failed.Add(1)
 					// Code-review round 2026-09-06 (finding 3): stamp the
@@ -156,6 +171,7 @@ func (s *Scheduler) runActivityHistory(ctx context.Context) {
 	// can measure config changes directly.
 	s.logger.Info("activity history cycle complete",
 		"claimed", len(claimed), "stored", stored.Load(), "marked_no_data", marked.Load(), "failed", failed.Load(),
+		"skipped_no_keys", noKeys.Load(),
 		"window_days", windowDays, "concurrency", concurrency,
 		"window_concurrency", s.cfg.Collection.ActivityHistoryWindowConcurrencyValue(),
 		"duration", time.Since(start).Truncate(time.Millisecond))
@@ -169,6 +185,9 @@ func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contr
 	created, years, err := fetcher.FetchContributorHistoryMeta(ctx, c.Login)
 	if errors.Is(err, context.Canceled) {
 		return historyCanceled // shutdown, not a failure
+	}
+	if errors.Is(err, platform.ErrNoKeys) {
+		return historyNoKeys // the pool was emptied mid-cycle: stamp nothing
 	}
 	if err != nil {
 		if errors.Is(err, platform.ErrNotFound) || platform.ClassifyError(err) == platform.ClassSkip {
@@ -207,6 +226,9 @@ func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contr
 	days, totals, err := fetcher.FetchContributorDailyHistory(ctx, c.Login, windows)
 	if errors.Is(err, context.Canceled) {
 		return historyCanceled
+	}
+	if errors.Is(err, platform.ErrNoKeys) {
+		return historyNoKeys
 	}
 	if err != nil {
 		s.logger.Warn("activity history: fetch failed — will retry on next claim", "login", c.Login, "windows", len(windows), "error", err)

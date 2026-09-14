@@ -426,7 +426,8 @@ func (s *Server) handleAdminAddRequests(w http.ResponseWriter, r *http.Request) 
 // re-approving resumes an interrupted pass (items are stamped as they
 // process). Org approvals register tracking here; the actual repo
 // scan happens on the scheduler's next refreshUserOrgs tick — the api
-// process deliberately has no platform API keys.
+// process makes no forge calls: it accepts API keys on the way in (the
+// v0.30.0 key admin endpoints) but never reads one back or sends one.
 func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireAdmin(w, r)
 	if !ok {

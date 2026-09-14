@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -34,10 +35,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
-	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/platform"
-	"github.com/aveloxis/aveloxis/internal/platform/github"
-	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
 	"github.com/spf13/cobra"
 )
 
@@ -81,12 +78,10 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 			}
 			defer store.Close()
 
-			ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
+			clients, err := buildForgeClients(ctx, cfg, store, false, false, logger)
 			if err != nil {
 				return fmt.Errorf("loading API keys: %w", err)
 			}
-			ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
-			glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 			workerID := fmt.Sprintf("gap-heal-%d", os.Getpid())
 			if workers < 1 {
@@ -104,7 +99,7 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 			stopHB := store.StartDrainHeartbeat(ctx, logger, workerID)
 			defer stopHB()
 
-			var totalFilled, totalFailed, totalSkipped, totalVisited int64
+			var totalFilled, totalFailed, totalSkipped, totalVisited, totalNoClient int64
 
 			// Round-23: --all and --repo-id run in FORCE-LIST mode —
 			// threshold 0 still requires metadata > gathered, which
@@ -117,14 +112,18 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 			}
 
 			healOne := func(c db.GapHealCandidate) {
-				var client platform.Client
-				switch c.Platform {
-				case model.PlatformGitHub:
-					client = ghClient
-				case model.PlatformGitLab:
-					client = glClient
-				default:
+				client, cerr := forgeClientFor(c.Platform, c.GitURL, clients.gh, clients.gl)
+				if errors.Is(cerr, errNoForgeAPI) {
 					return // generic git — nothing to list
+				}
+				if cerr != nil {
+					// A GitLab repository whose instance this process
+					// cannot collect: counted apart from failures (a rerun
+					// cannot change it — configuring the instance does) and
+					// never listed with another instance's client.
+					logger.Warn("gap heal skip: repository's GitLab instance has no client", "repo_id", c.RepoID, "platform_id", c.Platform, "error", cerr)
+					atomic.AddInt64(&totalNoClient, 1)
+					return
 				}
 				// Drain-lock: only 'queued' rows lock; a repo
 				// mid-collection is skipped (rerun catches it).
@@ -177,7 +176,10 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 					return fmt.Errorf("meta counts for repo %d: %w", repoID, merr)
 				}
 				healOne(db.GapHealCandidate{RepoID: repoID, Owner: repo.Owner, Name: repo.Name,
-					Platform: repo.Platform, MetaIssues: metaIssues, MetaPRs: metaPRs})
+					Platform: repo.Platform, GitURL: repo.GitURL, MetaIssues: metaIssues, MetaPRs: metaPRs})
+				if totalNoClient > 0 {
+					return fmt.Errorf("repo %d: its GitLab instance has no client — configure the instance (gitlab.instances) with its API URL and keys", repoID)
+				}
 				if totalFailed > 0 {
 					return fmt.Errorf("gap heal finished with %d failure(s)", totalFailed)
 				}
@@ -236,9 +238,15 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 			logger.Info("gap heal complete",
 				"candidates", processed, "healed", totalVisited,
 				"items_filled", totalFilled, "skipped_collecting", totalSkipped,
+				"skipped_instance_without_client", totalNoClient,
 				"failed", totalFailed)
 			if totalFailed > 0 {
 				return fmt.Errorf("gap heal finished with %d failure(s) — rerun retries them (the candidate query is the resume state)", totalFailed)
+			}
+			if totalNoClient > 0 {
+				// Not success (L14): these repositories were not healed, and
+				// a rerun alone will not heal them.
+				return fmt.Errorf("gap heal skipped %d repositories on GitLab instances this process cannot collect — configure each instance's API URL and keys (see `aveloxis gitlab-instances`), then rerun", totalNoClient)
 			}
 			return nil
 		},

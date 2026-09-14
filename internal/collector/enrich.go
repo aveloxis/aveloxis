@@ -56,12 +56,22 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 	logger.Info("enriching thin contributor profiles", "count", len(logins))
 	enriched := make([]model.Contributor, 0, len(logins))
 	successLogins := make([]string, 0, len(logins))
+	stoppedNoKeys := false
 
 	for _, login := range logins {
 		if ctx.Err() != nil {
 			return 0 // shutdown: one exit, not 14,000 no-op calls (pass 35)
 		}
 		contrib, err := client.EnrichContributor(ctx, login)
+		if errors.Is(err, platform.ErrNoKeys) {
+			// v0.30.0 Phase C: the pool was emptied mid-cycle. Nothing was
+			// asked about this or any later login — stop without marking;
+			// what was fetched so far is still flushed below.
+			logger.Info("contributor enrichment stopped — no API keys; the remaining logins retry once keys exist",
+				"fetched", len(enriched), "of", len(logins))
+			stoppedNoKeys = true
+			break
+		}
 		if err != nil {
 			// User may be deleted, suspended, or rate-limited. Still mark
 			// as enriched to avoid retrying on the next pass — the user
@@ -102,7 +112,7 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 		}
 	}
 
-	if len(enriched) > 0 {
+	if len(enriched) > 0 && !stoppedNoKeys {
 		logger.Info("contributor enrichment complete", "enriched", len(enriched), "of", len(logins))
 	}
 	return len(enriched)

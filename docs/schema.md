@@ -1939,8 +1939,25 @@ OAuth tokens and API keys used by collection workers to authenticate with GitHub
 | `platform` | TEXT NOT NULL | User input | Platform name: `'github'` or `'gitlab'`. Default `'github'`. |
 | `rate_limit` | INT | User input | Rate limit for this token. Default `5000`. |
 | `created_at` | TIMESTAMPTZ | Auto-generated | When this credential was added. |
+| `instance_url` | TEXT NOT NULL | User input | v0.30.0: the normalized web URL of the GitLab instance that issued the token; `''` is the main instance (every row stored before v0.30.0). GitHub rows are `''`. |
 
 **Unique constraint:** `(access_token, platform)`
+
+The API keys admin endpoints never read `access_token` back. They list rows
+with `key_id` (the first 16 hex characters of a domain-separated SHA-256 of
+the token) and a first4...last4 mask, both computed in the query.
+
+#### forge_key_reports
+
+v0.30.0: each running `serve` process's latest API-key report, read by the API
+keys admin page. It is upserted once a minute. A row older than a day from
+another process is dropped on the next save. It never holds a token.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `reporter` | TEXT (PK) | serve | `serve@<host marker>#<boot id>` — one row per process; a restart starts a new row. |
+| `reported_at` | TIMESTAMPTZ NOT NULL | serve | Database clock at the save; the page judges staleness against the database clock. |
+| `report` | JSONB NOT NULL | serve | The forges the process serves (with each GitLab instance's effective API URL), every key its pools hold by `key_id` and mask, with source (config, database, augur), state (active, draining) and health, the stored keys it refused (orphan, conflict), and configured instances not registered yet. |
 
 ---
 

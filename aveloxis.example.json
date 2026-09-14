@@ -14,7 +14,8 @@
   "gitlab": {
     "api_keys": [],
     "base_url": "https://gitlab.com/api/v4",
-    "gitlab_hosts": []
+    "web_url": "",
+    "instances": []
   },
   "mail": {
     "gmail_user": "",

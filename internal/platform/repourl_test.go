@@ -130,21 +130,54 @@ func TestParseRepoURL(t *testing.T) {
 	}
 }
 
+// v0.30.0 (multi-instance GitLab): hints are the configured GitLab
+// instances' web bases — host plus the path prefix of an install under a
+// sub-path. A URL under one belongs to the GitLab family with owner/repo
+// taken from the path AFTER the prefix, and carries the matched WebBase.
 func TestParseRepoURLWithHints(t *testing.T) {
-	// Self-hosted GitLab without "gitlab" in hostname.
-	hints := map[string]bool{"code.internal.company.com": true}
-	got, err := ParseRepoURLWithHints("https://code.internal.company.com/infra/deploy-tools", hints)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	hints := []string{"https://code.internal.company.com", "https://code.example.edu/gitlab", "https://gitlab.com"}
+	cases := []struct {
+		url                           string
+		wantPlat                      model.Platform
+		wantOwner, wantRepo, wantBase string
+		wantErr                       bool
+	}{
+		// Self-hosted GitLab without "gitlab" in the hostname.
+		{"https://code.internal.company.com/infra/deploy-tools", model.PlatformGitLab, "infra", "deploy-tools", "https://code.internal.company.com", false},
+		// Sub-path install: the prefix is not part of the owner.
+		{"https://code.example.edu/gitlab/group/sub/repo.git", model.PlatformGitLab, "group/sub", "repo", "https://code.example.edu/gitlab", false},
+		{"http://www.Code.Example.edu/gitlab/group/repo/", model.PlatformGitLab, "group", "repo", "https://code.example.edu/gitlab", false},
+		// Outside the prefix on the same host, and no "gitlab" in the host.
+		{"https://code.example.edu/other/repo", 0, "", "", "", true},
+		// The prefix alone plus one segment is not owner/repo.
+		{"https://code.example.edu/gitlab/repo", 0, "", "", "", true},
+		// Unhinted gitlab.com still parses, now with its web base.
+		{"https://gitlab.com/group/project", model.PlatformGitLab, "group", "project", "https://gitlab.com", false},
+		// GitHub is never affected by GitLab hints.
+		{"https://github.com/owner/repo", model.PlatformGitHub, "owner", "repo", "https://github.com", false},
 	}
-	if got.Platform != model.PlatformGitLab {
-		t.Errorf("platform = %v, want GitLab", got.Platform)
+	for _, tc := range cases {
+		got, err := ParseRepoURLWithHints(tc.url, hints)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", tc.url, err, tc.wantErr)
+			continue
+		}
+		if tc.wantErr {
+			continue
+		}
+		if got.Platform != tc.wantPlat || got.Owner != tc.wantOwner || got.Repo != tc.wantRepo || got.WebBase != tc.wantBase {
+			t.Errorf("%s: got {%v %q %q base=%q}, want {%v %q %q base=%q}", tc.url, got.Platform, got.Owner, got.Repo, got.WebBase, tc.wantPlat, tc.wantOwner, tc.wantRepo, tc.wantBase)
+		}
 	}
-	if got.Owner != "infra" {
-		t.Errorf("owner = %q, want %q", got.Owner, "infra")
+
+	// Without hints a host lacking "gitlab" is not a forge, and a
+	// "gitlab"-named host still is (its instance may be unconfigured:
+	// classification decides).
+	if _, err := ParseRepoURLWithHints("https://code.internal.company.com/infra/deploy-tools", nil); err == nil {
+		t.Error("an unhinted host without \"gitlab\" in it must not parse as a forge")
 	}
-	if got.Repo != "deploy-tools" {
-		t.Errorf("repo = %q, want %q", got.Repo, "deploy-tools")
+	if got, err := ParseRepoURLWithHints("https://gitlab.example.org/g/r", nil); err != nil || got.Platform != model.PlatformGitLab || got.WebBase != "https://gitlab.example.org" {
+		t.Errorf("gitlab.example.org without hints = (%+v, %v), want GitLab family with its web base", got, err)
 	}
 }
 

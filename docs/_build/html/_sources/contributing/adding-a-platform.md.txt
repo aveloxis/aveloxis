@@ -263,16 +263,18 @@ import (
 // Client implements platform.Client for Bugzilla.
 type Client struct {
     baseURL string                // e.g. "https://bugzilla.mozilla.org"
-    keys    *platform.KeyPool     // API keys (Bugzilla 5.0+); use nil for unauthenticated read-only access
+    keys    *platform.KeyPool     // API keys (Bugzilla 5.0+); platform.HTTPClient leases one for every request
     http    *platform.HTTPClient
     logger  *slog.Logger
 }
 
 // New constructs a Bugzilla client. baseURL is the Bugzilla instance root
-// (no trailing slash). If keys is nil, requests are unauthenticated —
-// works for public bugs on public instances, rate-limited harshly.
-// baseURL is also the only scheme and host the HTTP client will send a key
-// to: a redirect or next-page link anywhere else is refused (v0.29.12).
+// (no trailing slash); methods pass request paths, which the HTTP client
+// prefixes with it. baseURL is also the only scheme and host the client will
+// send a key to: a redirect or next-page link anywhere else is refused
+// (v0.29.12). keys must be a real pool — platform.HTTPClient leases a key for
+// every request, so anonymous read-only access would need a keyless request
+// path that the HTTP client does not have.
 func New(baseURL string, keys *platform.KeyPool, logger *slog.Logger) *Client {
     return &Client{
         baseURL: baseURL,
@@ -391,9 +393,10 @@ func (c *Client) FetchRepoInfo(ctx context.Context, _, product string) (*model.R
             // Bug count needs a separate /rest/bug?product=X&count_only=true call.
         } `json:"products"`
     }
-    url := fmt.Sprintf("%s/rest/product?names=%s&include_fields=name,description,is_active",
-        c.baseURL, url.QueryEscape(product))
-    if err := c.http.GetJSON(ctx, url, &resp); err != nil {
+    // A path, not a URL: the HTTP client prefixes its base URL.
+    path := fmt.Sprintf("/rest/product?names=%s&include_fields=name,description,is_active",
+        url.QueryEscape(product))
+    if err := c.http.GetJSON(ctx, path, &resp); err != nil {
         return nil, fmt.Errorf("fetch product: %w", err)
     }
     if len(resp.Products) == 0 {
@@ -436,8 +439,8 @@ func (c *Client) ListIssues(ctx context.Context, _, product string, since time.T
             var resp struct {
                 Bugs []bugzillaBug `json:"bugs"`
             }
-            apiURL := fmt.Sprintf("%s/rest/bug?%s", c.baseURL, params.Encode())
-            if err := c.http.GetJSON(ctx, apiURL, &resp); err != nil {
+            path := fmt.Sprintf("/rest/bug?%s", params.Encode())
+            if err := c.http.GetJSON(ctx, path, &resp); err != nil {
                 yield(model.Issue{}, fmt.Errorf("list bugs at offset %d: %w", offset, err))
                 return
             }
@@ -564,8 +567,8 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
             RealName string `json:"real_name"`
         } `json:"users"`
     }
-    apiURL := fmt.Sprintf("%s/rest/user?names=%s", c.baseURL, url.QueryEscape(login))
-    if err := c.http.GetJSON(ctx, apiURL, &resp); err != nil {
+    path := fmt.Sprintf("/rest/user?names=%s", url.QueryEscape(login))
+    if err := c.http.GetJSON(ctx, path, &resp); err != nil {
         return nil, fmt.Errorf("enrich user: %w", err)
     }
     if len(resp.Users) == 0 {
@@ -599,8 +602,8 @@ func (c *Client) SearchUserByEmail(ctx context.Context, email string) (login str
             Email string `json:"email"`
         } `json:"users"`
     }
-    apiURL := fmt.Sprintf("%s/rest/user?match=%s", c.baseURL, url.QueryEscape(email))
-    if err := c.http.GetJSON(ctx, apiURL, &resp); err != nil {
+    path := fmt.Sprintf("/rest/user?match=%s", url.QueryEscape(email))
+    if err := c.http.GetJSON(ctx, path, &resp); err != nil {
         return "", 0, err
     }
     if len(resp.Users) == 0 {
@@ -796,7 +799,8 @@ func TestBugzillaListIssues(t *testing.T) {
     }))
     defer srv.Close()
 
-    c := New(srv.URL, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+    logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+    c := New(srv.URL, platform.NewKeyPool([]string{"test-key"}, logger), logger)
     var issues []model.Issue
     for issue, err := range c.ListIssues(context.Background(), "", "Firefox", time.Time{}) {
         if err != nil { t.Fatal(err) }

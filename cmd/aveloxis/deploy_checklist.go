@@ -126,6 +126,12 @@ var deployChecklists = map[string][]deployStep{
 	// the real parameter list (glKeys was missing). Docs and a doc-drift test
 	// only — same ladder.
 	"0.29.13": v029DeployChecklist,
+	// v0.29.14: scc's per-file report is streamed off a pipe instead of
+	// buffered whole — the 1 GiB bytes.Buffer whose doubling to 2 GiB
+	// OOM-killed the scheduler on 2026-09-15 (repo 144636). No schema
+	// change, no operator heal — same ladder. A restart is the fix; the
+	// repo that crashed it re-queues on its own.
+	"0.29.14": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

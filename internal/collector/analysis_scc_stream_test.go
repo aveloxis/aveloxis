@@ -24,7 +24,7 @@ const sccStreamWorkDir = "/tmp/aveloxis-analysis/repo_144636_1789431201538900741
 func collectStream(t *testing.T, r io.Reader, now time.Time) ([]*db.RepoLaborRow, error) {
 	t.Helper()
 	var rows []*db.RepoLaborRow
-	err := streamSCCLabor(r, sccStreamWorkDir, now, func(row *db.RepoLaborRow) {
+	err := streamSCCLabor(json.NewDecoder(r), sccStreamWorkDir, now, func(row *db.RepoLaborRow) {
 		rows = append(rows, row)
 	})
 	return rows, err
@@ -131,7 +131,7 @@ func TestStreamSCCLaborIsIncremental(t *testing.T) {
 	var emitted atomic.Int64
 	done := make(chan error, 1)
 	go func() {
-		done <- streamSCCLabor(r, sccStreamWorkDir, time.Now(), func(*db.RepoLaborRow) {
+		done <- streamSCCLabor(json.NewDecoder(r), sccStreamWorkDir, time.Now(), func(*db.RepoLaborRow) {
 			emitted.Add(1)
 		})
 	}()
@@ -347,7 +347,7 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 	// buffer and the collection worker is lost. Measured: 60,000 trailing
 	// bytes returned, 100,000 wedged. TestScanSCCDrainsTrailingOutput is
 	// the runtime proof; this pins the ordering that makes it work.
-	drain := strings.Index(body, "io.Copy(&trailing, counted)")
+	drain := strings.Index(body, "io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))")
 	reap := strings.Index(body, "waitErr := cmd.Wait()")
 	if drain < 0 {
 		t.Fatal("scanSCC must drain scc's pipe — without it any trailing output past 64 KiB wedges cmd.Wait() forever")
@@ -468,7 +468,7 @@ func BenchmarkStreamSCCLabor(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				var rows []*db.RepoLaborRow
-				err := streamSCCLabor(bytes.NewReader(doc), sccStreamWorkDir, now, func(r *db.RepoLaborRow) {
+				err := streamSCCLabor(json.NewDecoder(bytes.NewReader(doc)), sccStreamWorkDir, now, func(r *db.RepoLaborRow) {
 					rows = append(rows, r)
 				})
 				if err != nil {

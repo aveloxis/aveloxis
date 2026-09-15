@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 const fakeScorecardJSON = `{"score": 5.6, "checks": [` +
@@ -48,9 +50,35 @@ func installFakeScorecard(t *testing.T, body string) (argsLog, envLog string) {
 		"echo \"$@\" >> " + argsLog + "\n" +
 		"echo \"$GITHUB_TOKEN\" >> " + envLog + "\n" +
 		body + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "scorecard"), []byte(script), 0o755); err != nil {
+	scriptPath := filepath.Join(dir, "scorecard")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+
+	// Warm the script before any timed test uses it. The FIRST exec of a
+	// freshly written executable costs ~756 ms on macOS (kernel validation
+	// of a new inode); every later exec of the same file costs ~2.9 ms —
+	// measured, 260x. TestScorecardRemoteTimeoutFallsBackToLocal gives its
+	// remote attempt a 500 ms per-attempt cap, which is SMALLER than that
+	// one-time cost, so the attempt was SIGKILLed before /bin/sh ran the
+	// script's first line and the invocation went unrecorded. The test
+	// then saw one invocation (--local, the second exec, ~3 ms) instead of
+	// two and failed — while the fallback logic it was testing worked
+	// perfectly. It reproduced on unmodified main under load.
+	//
+	// Warming here rather than widening the timeout keeps the cap the test
+	// is exercising honest: a per-attempt deadline should measure the
+	// TOOL, not one-time OS overhead that production never pays per repo
+	// (the real scorecard binary is executed thousands of times).
+	//
+	// The sentinel arg matches no branch in any fixture body, but a body
+	// with unconditional output would still append, so both logs are
+	// removed afterwards: the warm must be invisible to assertions.
+	warm := exec.Command(scriptPath, "--aveloxis-warm-exec")
+	_ = warm.Run()
+	_ = os.Remove(argsLog)
+	_ = os.Remove(envLog)
+
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return argsLog, envLog
 }
@@ -109,6 +137,38 @@ func (f *fakeScorecardStore) snapshot() []string {
 
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestFakeScorecardIsWarmedBeforeUse pins the fix for a flake that cost a
+// full debugging round. installFakeScorecard must execute the fixture once
+// before any test times it, and must clear the logs that warm-up writes.
+//
+// Deleting the warm is silent on an idle machine and fails only under
+// load, which is the worst shape a test defect can have — so the property
+// is pinned rather than left to a comment. See the measurement in
+// installFakeScorecard: 756 ms first exec vs 2.9 ms thereafter, against a
+// 500 ms per-attempt cap.
+func TestFakeScorecardIsWarmedBeforeUse(t *testing.T) {
+	src := srctest.Read(t, "internal/collector/scorecard_modes_test.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func installFakeScorecard("))
+
+	write := strings.Index(body, "os.WriteFile(scriptPath")
+	warm := strings.Index(body, ".Run()")
+	ret := strings.Index(body, "return argsLog, envLog")
+	if write < 0 {
+		t.Fatal("installFakeScorecard no longer writes the fixture script")
+	}
+	if warm < 0 {
+		t.Fatal("installFakeScorecard must EXECUTE the fixture once before returning — the first exec of a new executable costs ~756 ms, more than the 500 ms per-attempt cap a timed test uses, so the attempt is killed before the script's first line runs")
+	}
+	if warm < write || warm > ret {
+		t.Error("the warm exec must run after the script is written and before the helper returns")
+	}
+	for _, cleanup := range []string{"os.Remove(argsLog)", "os.Remove(envLog)"} {
+		if !strings.Contains(body, cleanup) {
+			t.Errorf("missing %s — a fixture body with unconditional output would leave the warm invocation in the logs the tests assert on", cleanup)
+		}
+	}
 }
 
 func TestScorecardRemotePrimarySucceeds(t *testing.T) {

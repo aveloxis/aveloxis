@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -2347,23 +2348,46 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	if err != nil {
 		return fmt.Errorf("scc stdout pipe: %w", err)
 	}
-	// WaitDelay bounds the post-cancel block, same role it plays for
-	// scancode (scancodeWaitDelay, the 2026-05-21 wedge) and scorecard.
-	// It matters here specifically because this function now DRAINS the
-	// pipe before reaping: scc 3.7.0 is a single childless Go binary, so
-	// killing it closes the write end — but anything that leaves a
-	// straggler holding that fd (scc wrapped in a shell, a future scc that
-	// forks) would otherwise block the drain indefinitely with no ctx
-	// escape. Without it, a cancelled scan waits out the straggler.
+	// Process-group cleanup, same shape as scancode runOne and
+	// RunScorecard. Required because this function DRAINS the pipe before
+	// reaping: killing only the immediate child leaves any straggler
+	// holding the inherited stdout fd, and the drain then blocks until
+	// that straggler exits.
+	//
+	// WaitDelay alone does NOT cover this, despite what an earlier version
+	// of this comment claimed. os/exec closes the parent pipe ends on
+	// WaitDelay only when it owns copying goroutines (the
+	// c.goroutineErr != nil branch); StdoutPipe starts none, so WaitDelay
+	// is inert for this Cmd. Measured: with WaitDelay=10s and a straggler
+	// holding stdout, the drain still took 30.08s — the straggler's full
+	// lifetime. With the group kill below, ctx cancellation ends it at
+	// once. WaitDelay is kept as the belt to this braces.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// "Already gone" is success, not a cancel failure. os/exec
+		// surfaces a non-nil Cancel error AS Wait's error, so returning
+		// ESRCH/EPERM here would replace scc's real exit status (or a
+		// trailing-data verdict) with "exec: canceling Cmd: operation not
+		// permitted" — observed before this guard.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil &&
+			!errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
+			return err
+		}
+		return nil
+	}
 	cmd.WaitDelay = sccWaitDelay
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("scc failed to start: %w", execErr(ctx, err))
 	}
 
 	counted := &countingReader{r: stdout}
+	dec := json.NewDecoder(counted)
 	now := time.Now()
 	var laborRows []*db.RepoLaborRow
-	decodeErr := streamSCCLabor(counted, workDir, now, func(row *db.RepoLaborRow) {
+	decodeErr := streamSCCLabor(dec, workDir, now, func(row *db.RepoLaborRow) {
 		laborRows = append(laborRows, row)
 		if sccRowStreamed != nil {
 			sccRowStreamed()
@@ -2385,8 +2409,25 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// still unblocks this, since CommandContext kills scc and the pipe then
 	// reaches EOF. Draining also makes counted.n the true report size
 	// rather than "the bytes the decoder happened to consume".
-	var trailing nonSpaceCounter
-	_, _ = io.Copy(&trailing, counted)
+	// Drain the decoder's LEFTOVER buffer first, then the pipe.
+	// json.Decoder reads ahead in chunks, so by the time it consumed the
+	// top-level "]" it has typically pulled ~445 more bytes off the pipe
+	// into its own buffer. Draining only `counted` therefore missed any
+	// trailing garbage that arrived in the SAME write as the report —
+	// measured: 1 and 50 trailing bytes were silently ACCEPTED, and 500
+	// were reported as "55 bytes". Whether garbage was caught came down to
+	// where scc happened to split its writes. dec.Buffered() is that
+	// leftover; MultiReader puts it back in front of the pipe.
+	//
+	// DECLINED (round 2, R2-6): killing scc on the first non-whitespace
+	// byte to bound the drain. It was implemented and reverted — the kill
+	// makes cmd.Wait() report our own "signal: killed", which then
+	// pre-empts the trailing-data error this drain exists to raise, and
+	// reports a self-inflicted cause to the operator. The unbounded case
+	// is hypothetical (scc 3.7.0 emits nothing after "]") and drains at
+	// pipe speed, so gigabytes cost seconds, not a wedge.
+	trailing := &nonSpaceCounter{}
+	_, _ = io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))
 
 	waitErr := cmd.Wait()
 
@@ -2399,8 +2440,16 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 		// "signal: killed" from the kill above is our doing: reporting it
 		// would name our symptom instead of scc's cause.
 		cause := decodeErr
-		if waitErr != nil && cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		if waitErr != nil && !sccKilledByUs(cmd.ProcessState) {
 			cause = errors.Join(decodeErr, waitErr)
+		}
+		if waitErr != nil {
+			// Logged unconditionally even when not joined: if scc died
+			// while we were also killing it, the exit status is still the
+			// only record of HOW, and "everything that errors is logged".
+			ac.logger.Warn("scc exited abnormally while its report was being decoded",
+				"repo_id", repoID, "wait_error", waitErr.Error(),
+				"decode_error", decodeErr.Error())
 		}
 		return fmt.Errorf("parsing scc output: %w", execErr(ctx, cause))
 	}
@@ -2419,8 +2468,11 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// Observation only (SR-7): nothing here skips, truncates or caps a
 	// repo. The WARN exists so the frequency of the repo class that caused
 	// the 2026-09-15 OOM stays greppable now that it no longer announces
-	// itself by killing the process. Across the 135,089 repos analyzed in
-	// the 2026-09-06..15 production log, exactly one crossed this line.
+	// itself by killing the process. See sccOutputLargeBytes for what the
+	// threshold is and — importantly — what it is not: scc_output_bytes
+	// did not exist before this release, so no repo can be SAID to have
+	// crossed it; what the 2026-09-06..15 log shows is that of 135,089
+	// repos exactly one failed to complete scc at all.
 	if counted.n >= sccOutputLargeBytes {
 		ac.logger.Warn("scc produced a very large per-file report — labor rows are held in memory until the snapshot is written; this is the repo class that OOM-killed the scheduler before v0.29.14",
 			"repo_id", repoID, "scc_output_bytes", counted.n,
@@ -2510,6 +2562,10 @@ type nonSpaceCounter struct{ n int64 }
 
 func (w *nonSpaceCounter) Write(p []byte) (int, error) {
 	for _, b := range p {
+		// Exactly encoding/json's isSpace, so what counts as "trailing
+		// data" here matches what json.Unmarshal rejected before the
+		// streaming rewrite. \v, \f, NUL and a BOM are NOT whitespace to
+		// either, and are correctly counted.
 		switch b {
 		case ' ', '\t', '\r', '\n':
 		default:
@@ -2517,6 +2573,25 @@ func (w *nonSpaceCounter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// sccKilledByUs reports whether a finished scc died from the SIGKILL this
+// package sends on the decode-error path, as opposed to exiting on its own
+// or crashing. Only our own kill is uninformative; a non-zero exit or any
+// other signal (SIGSEGV, or SIGKILL from the kernel OOM-killer on the very
+// repo class this release exists for) is the real cause of a short report
+// and must reach the operator. Before this, the Exited() gate suppressed
+// every signal death — a segfaulting scc surfaced only as "unexpected EOF"
+// from our decoder, pointing at the wrong layer entirely.
+func sccKilledByUs(st *os.ProcessState) bool {
+	if st == nil {
+		return false
+	}
+	ws, ok := st.Sys().(syscall.WaitStatus)
+	if !ok {
+		return false
+	}
+	return ws.Signaled() && ws.Signal() == syscall.SIGKILL
 }
 
 // streamSCCLabor decodes scc's `--by-file` report incrementally from r,
@@ -2532,8 +2607,10 @@ func (w *nonSpaceCounter) Write(p []byte) (int, error) {
 // decoded. Key order is not a correctness dependency: files decoded before
 // their language name is known are held for that ONE object and emitted
 // when it closes.
-func streamSCCLabor(r io.Reader, workDir string, now time.Time, emit func(*db.RepoLaborRow)) error {
-	dec := json.NewDecoder(r)
+// The caller owns the decoder so it can drain dec.Buffered() afterwards —
+// the read-ahead past the top-level "]" is part of the report's trailing
+// bytes and is invisible from the pipe alone (see scanSCC).
+func streamSCCLabor(dec *json.Decoder, workDir string, now time.Time, emit func(*db.RepoLaborRow)) error {
 	if err := expectSCCDelim(dec, '['); err != nil {
 		return err
 	}

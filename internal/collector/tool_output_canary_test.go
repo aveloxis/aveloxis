@@ -167,7 +167,7 @@ func TestLiveSCCStreamingDecodeMatchesUnmarshal(t *testing.T) {
 
 	now := time.Now()
 	var streamed []*db.RepoLaborRow
-	if err := streamSCCLabor(bytes.NewReader(raw), dir, now, func(row *db.RepoLaborRow) {
+	if err := streamSCCLabor(json.NewDecoder(bytes.NewReader(raw)), dir, now, func(row *db.RepoLaborRow) {
 		streamed = append(streamed, row)
 	}); err != nil {
 		t.Fatalf("streaming decode of real scc output failed: %v", err)

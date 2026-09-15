@@ -132,6 +132,18 @@ var deployChecklists = map[string][]deployStep{
 	// change, no operator heal — same ladder. A restart is the fix; the
 	// repo that crashed it re-queues on its own.
 	"0.29.14": v029DeployChecklist,
+	// v0.29.15: test-only — the fake scorecard fixture is warmed before a
+	// timed test uses it (macOS charges ~756 ms for the first exec of a new
+	// executable, more than the 500 ms per-attempt cap). No production
+	// code, no schema change, no operator heal — same ladder.
+	"0.29.15": v029DeployChecklist,
+	// v0.29.16: round-2 review fixes to the v0.29.14 scc streaming path —
+	// the decoder's read-ahead is now drained (trailing garbage in the
+	// same write was being accepted), scc's process group is killed so a
+	// straggler cannot block the drain, and a crash signal reaches the
+	// operator instead of being swallowed. No schema change, no operator
+	// heal — same ladder.
+	"0.29.16": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

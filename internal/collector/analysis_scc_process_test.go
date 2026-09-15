@@ -6,10 +6,13 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -23,9 +26,25 @@ func fakeSCC(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scc")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+	// The guard line lets the fixture be EXEC'd without running its body.
+	// macOS charges ~756 ms to validate a newly written executable on its
+	// first exec (~2.9 ms every time after — measured, 260x). Tests here
+	// budget seconds for rows to appear while scc is still writing, and
+	// that one-time cost comes straight out of the budget. It is the same
+	// defect v0.29.15 fixed in installFakeScorecard, and it is why the
+	// streaming test failed only when run alongside its neighbours.
+	//
+	// An arg sentinel would not work here as it does for scorecard: these
+	// fixture bodies are not all arg-dispatched, and several end in an
+	// unconditional `sleep 30` that would hang the warm-up.
+	body := "#!/bin/sh\n[ -n \"$AVELOXIS_WARM_EXEC\" ] && exit 0\n" + script + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	warm := exec.Command(path)
+	warm.Env = append(os.Environ(), "AVELOXIS_WARM_EXEC=1")
+	_ = warm.Run()
+
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -50,9 +69,21 @@ func runScanSCC(t *testing.T, ctx context.Context, budget time.Duration) error {
 	done := make(chan error, 1)
 	go func() {
 		defer func() {
-			if r := recover(); r != nil {
-				done <- errStoreReached
+			r := recover()
+			if r == nil {
+				return
 			}
+			// ONLY the nil-store panic counts as "got to the end". A
+			// blanket recover made any panic a pass: a panic injected
+			// right after exec.LookPath — before scc was ever started —
+			// left the positive-control tests green in 0.00s. Verify the
+			// panic actually came from the snapshot write.
+			stack := string(debug.Stack())
+			if strings.Contains(stack, "ReplaceRepoLaborSnapshot") {
+				done <- errStoreReached
+				return
+			}
+			done <- fmt.Errorf("scanSCC panicked before reaching the snapshot write: %v\n%s", r, stack)
 		}()
 		done <- quietCollector().scanSCC(ctx, 1, t.TempDir(), &AnalysisResult{})
 	}()
@@ -82,6 +113,54 @@ head -c 100000 /dev/zero | tr '\0' 'x'`)
 	}
 	if !strings.Contains(err.Error(), "trailing") {
 		t.Errorf("error = %v, want it to name the trailing data", err)
+	}
+}
+
+// TestScanSCCRejectsTrailingDataInTheSameWrite covers what the test above
+// could not. json.Decoder reads ahead, so once it consumes the top-level
+// "]" it already holds ~445 more bytes in its own buffer. Draining only the
+// PIPE therefore missed garbage that arrived in the same write() as the
+// report — measured before the fix: 1 and 50 trailing bytes were silently
+// ACCEPTED and reached the snapshot write, and 500 were reported as "55".
+// Whether garbage was caught depended on where scc split its writes.
+//
+// The sizes below straddle that read-ahead window deliberately: a single
+// printf emits report+garbage in one write, so every case here lands
+// inside the decoder's buffer.
+func TestScanSCCRejectsTrailingDataInTheSameWrite(t *testing.T) {
+	for _, n := range []int{1, 50, 500, 5000} {
+		t.Run(fmt.Sprintf("%d_bytes", n), func(t *testing.T) {
+			fakeSCC(t, `printf '`+sccMinimalReport+strings.Repeat("x", n)+`'`)
+
+			err := runScanSCC(t, context.Background(), 20*time.Second)
+			if err == nil || errors.Is(err, errStoreReached) {
+				t.Fatalf("%d trailing bytes in the same write were accepted (err=%v) — the decoder's read-ahead is not being drained", n, err)
+			}
+			if !strings.Contains(err.Error(), "trailing") {
+				t.Fatalf("error = %v, want it to name the trailing data", err)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d bytes", n)) {
+				t.Errorf("error = %v, want it to report exactly %d bytes — a count taken from the pipe alone undercounts by the decoder's read-ahead", err, n)
+			}
+		})
+	}
+}
+
+// TestScanSCCReportsCrashSignal: scc dying by a signal that is NOT our own
+// kill must reach the operator. The Exited() gate suppressed every signal
+// death, so a segfaulting scc — or one taken by the kernel OOM-killer on
+// the very repo class this release exists for — surfaced only as our
+// decoder's "unexpected EOF", pointing at the wrong layer.
+func TestScanSCCReportsCrashSignal(t *testing.T) {
+	fakeSCC(t, `printf '[{"Name":"Go","Files":[{"Location":"/w/a.go","Lines":1'
+kill -SEGV $$`)
+
+	err := runScanSCC(t, context.Background(), 20*time.Second)
+	if err == nil {
+		t.Fatal("a crashing scc must be an error")
+	}
+	if !strings.Contains(err.Error(), "segmentation fault") && !strings.Contains(err.Error(), "signal") {
+		t.Errorf("error = %v, want scc's death signal carried alongside the decode symptom", err)
 	}
 }
 
@@ -154,19 +233,28 @@ exec sleep 30`)
 // TestScanSCCKillsSccOnDecodeError: a malformed report must not leave the
 // process running while we drain a report that may have minutes left.
 func TestScanSCCKillsSccOnDecodeError(t *testing.T) {
+	// The bound is DERIVED from the fixture, not chosen: the fake sleeps
+	// this long after emitting garbage, so "returned in less than the
+	// sleep" is exactly the claim "we did not wait the doomed scan out".
+	// An invented 3 s bound gave only 2 s of headroom and failed under
+	// load while the behavior was correct.
+	const fakeScanSleep = 5 * time.Second
+
 	marker := filepath.Join(t.TempDir(), "still-alive")
 	fakeSCC(t, `printf 'not json at all'
-sleep 5
+sleep `+fmt.Sprint(int(fakeScanSleep.Seconds()))+`
 touch `+marker)
 
 	start := time.Now()
 	if err := runScanSCC(t, context.Background(), 20*time.Second); err == nil {
 		t.Fatal("malformed output must be an error")
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Errorf("scanSCC took %s — it waited out the doomed scan instead of killing it", elapsed)
+	if elapsed := time.Since(start); elapsed >= fakeScanSleep {
+		t.Errorf("scanSCC took %s, the fake's full %s sleep — it waited out the doomed scan instead of killing it", elapsed, fakeScanSleep)
 	}
-	time.Sleep(6 * time.Second)
+
+	// Outlive the fake, then confirm it never reached its final command.
+	time.Sleep(fakeScanSleep + 2*time.Second)
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("scc survived the decode error and ran to completion — the process was not killed")
 	}

@@ -4,6 +4,7 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // fakeSCC puts a shell script named "scc" at the front of PATH so scanSCC's
@@ -66,6 +69,13 @@ var errStoreReached = errors.New("reached ReplaceRepoLaborSnapshot")
 // instead of hanging the package for 10 minutes.
 func runScanSCC(t *testing.T, ctx context.Context, budget time.Duration) error {
 	t.Helper()
+	return runScanSCCWith(t, quietCollector(), ctx, budget)
+}
+
+// runScanSCCWith is runScanSCC with a caller-supplied collector, for tests
+// that assert on what scanSCC logs.
+func runScanSCCWith(t *testing.T, ac *AnalysisCollector, ctx context.Context, budget time.Duration) error {
+	t.Helper()
 	done := make(chan error, 1)
 	go func() {
 		defer func() {
@@ -85,7 +95,7 @@ func runScanSCC(t *testing.T, ctx context.Context, budget time.Duration) error {
 			}
 			done <- fmt.Errorf("scanSCC panicked before reaching the snapshot write: %v\n%s", r, stack)
 		}()
-		done <- quietCollector().scanSCC(ctx, 1, t.TempDir(), &AnalysisResult{})
+		done <- ac.scanSCC(ctx, 1, t.TempDir(), &AnalysisResult{})
 	}()
 	select {
 	case err := <-done:
@@ -147,10 +157,11 @@ func TestScanSCCRejectsTrailingDataInTheSameWrite(t *testing.T) {
 }
 
 // TestScanSCCReportsCrashSignal: scc dying by a signal that is NOT our own
-// kill must reach the operator. The Exited() gate suppressed every signal
-// death, so a segfaulting scc — or one taken by the kernel OOM-killer on
-// the very repo class this release exists for — surfaced only as our
-// decoder's "unexpected EOF", pointing at the wrong layer.
+// kill must reach the operator. v0.29.14's Exited() gate suppressed every
+// signal death, so a segfaulting scc surfaced only as our decoder's
+// "unexpected EOF", pointing at the wrong layer. This covers SIGSEGV; the
+// SIGKILL case — the kernel OOM-killer's signal, which v0.29.16 still
+// dropped — is TestScanSCCReportsOOMKillMidReport.
 func TestScanSCCReportsCrashSignal(t *testing.T) {
 	fakeSCC(t, `printf '[{"Name":"Go","Files":[{"Location":"/w/a.go","Lines":1'
 kill -SEGV $$`)
@@ -316,5 +327,179 @@ printf ']'`)
 	case <-done:
 	case <-time.After(20 * time.Second):
 		t.Fatal("scanSCC did not return after the fake scc exited")
+	}
+}
+
+// capturingCollector logs at Debug into buf so a test can assert on what
+// scanSCC reported, not just on what it returned.
+func capturingCollector(buf *bytes.Buffer) *AnalysisCollector {
+	return &AnalysisCollector{logger: slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+}
+
+// TestScanSCCMalformedReportFromExitedSccIsNotACancellation (round 3, F1).
+// scc exits 0 with a corrupt report. The decode-error path used to kill
+// scc unconditionally; the kill landed on an exited-but-unreaped process,
+// the Cancel guard mapped ESRCH/EPERM to nil, and os/exec reads a nil
+// Cancel as "we interrupted it" and makes Wait return ctx.Err(). The
+// returned error then satisfied errors.Is(err, context.Canceled) — a
+// corrupt report classified as a SHUTDOWN, which every consumer that
+// follows the house rule drops without logging.
+func TestScanSCCMalformedReportFromExitedSccIsNotACancellation(t *testing.T) {
+	for _, tc := range []struct{ name, script string }{
+		{"truncated report, exit 0", `printf '[{"Name":"Go","Files":[{"Location":"/w/a.go","Lines":1'
+exit 0`},
+		{"garbage, exit 0", `printf 'not json at all'
+exit 0`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeSCC(t, tc.script)
+			err := runScanSCC(t, context.Background(), 20*time.Second)
+			if err == nil || errors.Is(err, errStoreReached) {
+				t.Fatalf("a corrupt report must fail the scan, got %v", err)
+			}
+			if errors.Is(err, context.Canceled) {
+				t.Errorf("error = %v; a corrupt report from an scc that exited 0 must NOT classify as context.Canceled — the scheduler would count a data defect as a shutdown", err)
+			}
+		})
+	}
+}
+
+// TestScanSCCReportsOOMKillMidReport (round 3, F2). The kernel OOM-killer
+// sends SIGKILL — the same signal this package sends. Suppressing every
+// SIGKILL on the decode-error path hid exactly the death this release
+// exists for: scc taken by the OOM-killer on a giant repo surfaced only as
+// our decoder's "unexpected EOF".
+func TestScanSCCReportsOOMKillMidReport(t *testing.T) {
+	fakeSCC(t, `printf '[{"Name":"Go","Files":[{"Location":"/w/a.go","Lines":1'
+kill -KILL $$`)
+
+	err := runScanSCC(t, context.Background(), 20*time.Second)
+	if err == nil || errors.Is(err, errStoreReached) {
+		t.Fatalf("a killed scc must fail the scan, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "signal: killed") {
+		t.Errorf("error = %v; want scc's SIGKILL carried alongside the decode symptom — a kill we did not send is the real cause", err)
+	}
+}
+
+// TestScanSCCShutdownDoesNotLogAFailure (round 3, F3; round 4, R4-3). A
+// `stop serve` that lands while scc runs is a cancellation, not a failure.
+// scanSCC must return context.Canceled and log nothing at WARN or above.
+// Since round 4, scanSCC logs no failures of its own (logAnalysisPhaseErrors
+// is the one log site), so this now guards against a scanSCC-level log
+// coming back without a shutdown check. It checks every level at WARN or
+// above and the message text too: matching only "level=WARN" let an
+// ungated logger.Error through (R4-3, a mutation that passed).
+func TestScanSCCShutdownDoesNotLogAFailure(t *testing.T) {
+	fakeSCC(t, `printf '[{"Name":"Go","Files":[{"Location":"/w/a.go","Lines":1'
+exec sleep 30`)
+
+	var logs bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+
+	err := runScanSCCWith(t, capturingCollector(&logs), ctx, 20*time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	for _, forbidden := range []string{"level=WARN", "level=ERROR", "exited abnormally", "failed"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Errorf("a shutdown mid-scc logged %q — a cancellation is not a failure:\n%s", forbidden, logs.String())
+		}
+	}
+}
+
+// TestScanSCCFailureAfterFullReportNeverWritesSnapshot (round 3, F4). A
+// COMPLETE report followed by scc failing is the dangerous shape: the rows
+// look whole, so only the exit-status guard stands between a failed scan
+// and ReplaceRepoLaborSnapshot rotating the good snapshot into history.
+// The source pin anchored on the wrong "if waitErr != nil" block and let a
+// guard that no longer returned pass; this proves the behavior at runtime.
+func TestScanSCCFailureAfterFullReportNeverWritesSnapshot(t *testing.T) {
+	for _, tc := range []struct{ name, tail, want string }{
+		{"non-zero exit", "exit 3", "exit status 3"},
+		{"killed", "kill -KILL $$", "signal: killed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeSCC(t, `printf '`+sccMinimalReport+`'
+`+tc.tail)
+			err := runScanSCC(t, context.Background(), 20*time.Second)
+			if errors.Is(err, errStoreReached) {
+				t.Fatalf("scc failed after a complete report and the scan STILL reached ReplaceRepoLaborSnapshot — the good snapshot would be rotated away")
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to carry %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanSCCKillsDetachedStragglers (round 3, F7). A member of scc's
+// process group that does NOT hold stdout is invisible to the drain and to
+// Wait, so nothing reaps it when scanSCC returns — unless the function
+// kills the group on the way out, as scancode runOne and RunScorecard do.
+func TestScanSCCKillsDetachedStragglers(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "straggler-survived")
+	fakeSCC(t, `(sleep 3; touch `+marker+`) >/dev/null 2>&1 &
+printf '`+sccMinimalReport+`'`)
+
+	if err := runScanSCC(t, context.Background(), 20*time.Second); !errors.Is(err, errStoreReached) {
+		t.Fatalf("scanSCC = %v, want the clean report to reach the snapshot write", err)
+	}
+	time.Sleep(4 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a detached member of scc's process group outlived scanSCC — the group is not killed on return")
+	}
+}
+
+// TestAnalysisPhaseErrorsAreLogged (round 3, F5). AnalyzeRepo used to
+// append every phase error to result.Errors and log only the count; the
+// scheduler never reads the slice, so no phase failure — scc's "signal:
+// killed", a trailing-data verdict, a libyear error — reached any log line.
+func TestAnalysisPhaseErrorsAreLogged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	logAnalysisPhaseErrors(logger, 42, []error{
+		fmt.Errorf("scc: scc failed: %w", errors.New("signal: killed")),
+		fmt.Errorf("libyear: %w", errors.New("registry 503")),
+		fmt.Errorf("scc: parsing scc output: %w", context.Canceled),
+	})
+
+	out := buf.String()
+	for _, want := range []string{"signal: killed", "registry 503"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("phase error %q was not logged:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "level=WARN"); n != 2 {
+		t.Errorf("logged %d WARN lines, want 2 — one per real failure, none for the cancellation:\n%s", n, out)
+	}
+	if strings.Contains(out, "context canceled") {
+		t.Errorf("a cancellation was logged as a phase failure — a shutdown is not a failure:\n%s", out)
+	}
+}
+
+// TestAnalyzeRepoLogsPhaseErrors is the wiring half: the helper is only as
+// good as its call site. It must run after the LAST phase appends and
+// before AnalyzeRepo reports completion.
+func TestAnalyzeRepoLogsPhaseErrors(t *testing.T) {
+	src := srctest.Read(t, "internal/collector/analysis.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (ac *AnalysisCollector) AnalyzeRepo("))
+
+	lastPhase := strings.LastIndex(body, "result.Errors = append(result.Errors")
+	call := strings.Index(body, "logAnalysisPhaseErrors(ac.logger, repoID, result.Errors)")
+	done := strings.Index(body, `"analysis complete"`)
+	if call < 0 {
+		t.Fatal("AnalyzeRepo no longer logs its phase errors — they would be counted and never shown")
+	}
+	if lastPhase < 0 || done < 0 {
+		t.Fatal("AnalyzeRepo's phase appends or completion log moved; re-anchor this pin")
+	}
+	if call < lastPhase || call > done {
+		t.Error("logAnalysisPhaseErrors must run after the last phase appends its error and before completion is reported — anywhere else it misses errors")
 	}
 }

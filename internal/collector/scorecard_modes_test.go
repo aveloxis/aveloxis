@@ -46,7 +46,10 @@ func installFakeScorecard(t *testing.T, body string) (argsLog, envLog string) {
 	dir := t.TempDir()
 	argsLog = filepath.Join(dir, "args.log")
 	envLog = filepath.Join(dir, "env.log")
+	// The guard line comes FIRST, before the log echoes, so the warm-up
+	// exec below leaves no trace in either log and runs none of the body.
 	script := "#!/bin/sh\n" +
+		"[ -n \"$AVELOXIS_WARM_EXEC\" ] && exit 0\n" +
 		"echo \"$@\" >> " + argsLog + "\n" +
 		"echo \"$GITHUB_TOKEN\" >> " + envLog + "\n" +
 		body + "\n"
@@ -71,13 +74,15 @@ func installFakeScorecard(t *testing.T, body string) (argsLog, envLog string) {
 	// TOOL, not one-time OS overhead that production never pays per repo
 	// (the real scorecard binary is executed thousands of times).
 	//
-	// The sentinel arg matches no branch in any fixture body, but a body
-	// with unconditional output would still append, so both logs are
-	// removed afterwards: the warm must be invisible to assertions.
-	warm := exec.Command(scriptPath, "--aveloxis-warm-exec")
+	// The warm uses the env guard, not an argument. v0.29.15 warmed with a
+	// sentinel arg and claimed it "matches no branch in any fixture body";
+	// TestScorecardTimeoutAttemptIsLogged's body is an unconditional
+	// `sleep 30`, so the warm-up itself slept 30 s and that test went from
+	// 0.30 s to 30.96 s (round 3, F6). The guard exits before any fixture
+	// code runs, whatever the body is — the same mechanism fakeSCC uses.
+	warm := exec.Command(scriptPath)
+	warm.Env = append(os.Environ(), "AVELOXIS_WARM_EXEC=1")
 	_ = warm.Run()
-	_ = os.Remove(argsLog)
-	_ = os.Remove(envLog)
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return argsLog, envLog
@@ -153,10 +158,10 @@ func TestFakeScorecardIsWarmedBeforeUse(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func installFakeScorecard("))
 
 	write := strings.Index(body, "os.WriteFile(scriptPath")
-	warm := strings.Index(body, ".Run()")
+	warm := strings.Index(body, "warm.Run()")
 	ret := strings.Index(body, "return argsLog, envLog")
-	if write < 0 {
-		t.Fatal("installFakeScorecard no longer writes the fixture script")
+	if write < 0 || ret < 0 {
+		t.Fatal("installFakeScorecard's shape moved; re-anchor this pin")
 	}
 	if warm < 0 {
 		t.Fatal("installFakeScorecard must EXECUTE the fixture once before returning — the first exec of a new executable costs ~756 ms, more than the 500 ms per-attempt cap a timed test uses, so the attempt is killed before the script's first line runs")
@@ -164,10 +169,19 @@ func TestFakeScorecardIsWarmedBeforeUse(t *testing.T) {
 	if warm < write || warm > ret {
 		t.Error("the warm exec must run after the script is written and before the helper returns")
 	}
-	for _, cleanup := range []string{"os.Remove(argsLog)", "os.Remove(envLog)"} {
-		if !strings.Contains(body, cleanup) {
-			t.Errorf("missing %s — a fixture body with unconditional output would leave the warm invocation in the logs the tests assert on", cleanup)
-		}
+	if !strings.Contains(body[write:warm], `"AVELOXIS_WARM_EXEC=1"`) {
+		t.Error("the warm exec must set AVELOXIS_WARM_EXEC — warming with an argument runs the fixture body, and a body that is an unconditional `sleep 30` made the warm-up itself take 30 s")
+	}
+
+	// The guard must exit before ANY fixture code, including the log
+	// echoes, so the warm-up is invisible to every assertion.
+	guard := strings.Index(body, `[ -n \"$AVELOXIS_WARM_EXEC\" ] && exit 0`)
+	echo := strings.Index(body, `echo \"$@\"`)
+	if guard < 0 {
+		t.Fatal("the fixture script must start with the AVELOXIS_WARM_EXEC guard line")
+	}
+	if echo >= 0 && guard > echo {
+		t.Error("the warm guard must precede the log echoes — otherwise the warm-up invocation lands in the args log the tests assert on")
 	}
 }
 

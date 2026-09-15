@@ -359,11 +359,12 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 		t.Error("scanSCC reaps scc BEFORE draining the pipe — cmd.Wait() then blocks forever on trailing output and the worker is lost")
 	}
 
-	// A decode failure must ABANDON the scan, not read it to the end: the
-	// report may have minutes left, and none of it can help.
-	killBlock := strings.Index(body, "if decodeErr != nil {")
+	// A decode failure must ABANDON a scan that may still be writing, not
+	// read it to the end. EOF-class errors are exempt by design — the write
+	// end is already closed — so the kill is gated on sccStreamEnded.
+	killBlock := strings.Index(body, "\n\tif decodeErr != nil && !sccStreamEnded(decodeErr) {")
 	if killBlock < 0 {
-		t.Fatal("scanSCC must handle the decode error explicitly")
+		t.Fatal("scanSCC must kill a still-writing scc on a non-EOF decode error (and only then — see sccStreamEnded)")
 	}
 	if killBlock > drain || !strings.Contains(body[killBlock:drain], "cancelSCC()") {
 		t.Error("the decode-error path must kill scc BEFORE the drain — otherwise a doomed scan is read to completion first")
@@ -374,22 +375,26 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 	// still reads correctly and still destroys the snapshot, so position
 	// alone is not the property worth pinning.
 	//
-	// "if decodeErr != nil {" appears TWICE — the kill above and the
-	// classify-and-return below — so the guard check takes the LAST one.
+	// Guards are anchored at FUNCTION TOP LEVEL ("\n\t" + one tab). Round 3
+	// (F4) proved why: round 2 nested an `if waitErr != nil {` WARN block
+	// inside the decode-error branch, a bare substring search matched that
+	// one instead of the real guard, and the "does it return" check found
+	// the decode branch's return — so the real guard could stop returning
+	// with every test green. TestScanSCCFailureAfterFullReportNeverWritesSnapshot
+	// is the runtime proof; this keeps the source shape honest.
 	for _, g := range []struct {
 		name, open, whatBreaks string
-		last                   bool
 	}{
-		{name: "scc exit status", open: "if waitErr != nil {",
+		{name: "scc exit status", open: "\n\tif waitErr != nil {",
 			whatBreaks: "a failed scan would rotate the good snapshot into history and install a partial one"},
-		{name: "decode error", open: "if decodeErr != nil {", last: true,
+		{name: "decode error", open: "\n\tif decodeErr != nil {",
 			whatBreaks: "a truncated scan would overwrite the good snapshot with whatever parsed"},
-		{name: "trailing data", open: "if trailing.n > 0 {",
+		{name: "trailing data", open: "\n\tif trailing.n > 0 {",
 			whatBreaks: "garbage after the top-level array would be accepted as a complete report, which json.Unmarshal rejected before the streaming rewrite"},
 	} {
 		at := strings.Index(body, g.open)
-		if g.last {
-			at = strings.LastIndex(body, g.open)
+		if strings.Count(body, g.open) > 1 {
+			t.Fatalf("%q appears more than once at top level — the guard anchor is ambiguous", strings.TrimSpace(g.open))
 		}
 		if at < 0 {
 			t.Fatalf("scanSCC no longer guards on %s (%q)", g.name, g.open)
@@ -453,12 +458,16 @@ func benchSCCDoc(n int) []byte {
 }
 
 // BenchmarkStreamSCCLabor measures the decode path that replaced the
-// buffered one in v0.29.14. The number that matters is B/op: the pre-fix
-// implementation allocated ~9.7x this for the same rows (3,848 MB vs
-// 397 MB at 1M files) because it held the raw JSON, the decoded structs
-// and the rows simultaneously, and grew the raw buffer by doubling — a
-// 2 GiB contiguous request that the kernel refused. If B/op ever climbs
-// back toward the document size, the buffering is back.
+// buffered one in v0.29.14. The number that matters is B/op. Against a
+// faithful replica of the old path at 1M files (a bytes.Buffer filled in
+// 32 KiB writes, as os/exec fills it) the old code allocated 1,793 MB to
+// this path's 397 MB — 4.5x — at the same CPU and allocation count. That
+// old path held the raw JSON, the decoded structs and the rows at once and
+// grew the buffer by doubling, and the doubling to a 2 GiB contiguous
+// request is what the kernel refused. If B/op ever climbs back toward the
+// document size, the buffering is back. (An earlier version of this comment
+// said 9.7x; that came from a replica that grew a raw []byte with append,
+// which is not how bytes.Buffer grows.)
 func BenchmarkStreamSCCLabor(b *testing.B) {
 	for _, n := range []int{10_000, 100_000} {
 		doc := benchSCCDoc(n)

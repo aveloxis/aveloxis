@@ -80,6 +80,33 @@ func NewAnalysisCollector(store *db.PostgresStore, logger *slog.Logger, bareDir 
 	}
 }
 
+// logAnalysisPhaseErrors logs each analysis-phase failure. Before this,
+// AnalyzeRepo appended every phase error to result.Errors and logged only
+// the COUNT ("errors", len(result.Errors)), and the scheduler never reads
+// the slice. So any phase failure that its phase did not log itself never
+// reached a log line (round 3, F5). Two examples are scc exiting non-zero
+// or being killed after a COMPLETE report, and trailing garbage after the
+// report. In the 2026-09-06..15 production log, 35 of 138,397 analyses
+// carried errors, about 90 over nine days, so a WARN per error is cheap.
+//
+// This is the ONLY place scanSCC's errors are logged. Some other phases do
+// log before returning (libyear's rotation failure logs at ERROR), so
+// those failures appear twice: the phase's own line with its context,
+// then this one. That duplicate is accepted, because dropping it would
+// mean auditing every phase's internal logging to find which errors are
+// silent (round 4, R4-2).
+//
+// A cancellation is a shutdown, not a phase failure, so it is skipped
+// (the context.Canceled classification rule).
+func logAnalysisPhaseErrors(logger *slog.Logger, repoID int64, errs []error) {
+	for _, phaseErr := range errs {
+		if errors.Is(phaseErr, context.Canceled) {
+			continue
+		}
+		logger.Warn("analysis phase failed", "repo_id", repoID, "error", phaseErr)
+	}
+}
+
 // AnalysisResult tracks what was collected.
 type AnalysisResult struct {
 	Dependencies     int
@@ -166,6 +193,8 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	// docs/architecture/scancode.md for the architectural rationale
 	// and TestAnalyzeRepoNoLongerInvokesScancode for the regression
 	// guard.
+
+	logAnalysisPhaseErrors(ac.logger, repoID, result.Errors)
 
 	// When RetainClone is true, hand the clone path to the caller for
 	// post-analysis work (e.g., local scorecard execution).
@@ -2337,8 +2366,9 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// raw []byte with append, which is not how bytes.Buffer grows.
 	//
 	// Derived context (same contract the facade's git log reader
-	// documents, v0.27.105): a decode error must kill scc BEFORE
-	// cmd.Wait(), or Wait blocks forever on the undrained pipe.
+	// documents, v0.27.105): when decoding fails while scc may still be
+	// writing, scc is killed BEFORE the drain below, so a doomed report is
+	// abandoned rather than read to the end.
 	sccCtx, cancelSCC := context.WithCancel(ctx)
 	defer cancelSCC()
 
@@ -2367,13 +2397,26 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 		if cmd.Process == nil {
 			return nil
 		}
-		// "Already gone" is success, not a cancel failure. os/exec
-		// surfaces a non-nil Cancel error AS Wait's error, so returning
-		// ESRCH/EPERM here would replace scc's real exit status (or a
-		// trailing-data verdict) with "exec: canceling Cmd: operation not
-		// permitted" — observed before this guard.
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil &&
-			!errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
+		// "Already gone" is reported as os.ErrProcessDone, os/exec's
+		// documented return for a process that had already finished. Both
+		// alternatives are wrong. A raw errno becomes Wait's error ("exec:
+		// canceling Cmd: operation not permitted", observed). nil makes
+		// watchCtx believe it interrupted the command, so Wait returns
+		// ctx.Err() instead.
+		//
+		// This arm is NOT what fixed round 3's F1. That fix is the decode
+		// branch reading ProcessState instead of waitErr. Returning nil
+		// here leaves every test green, and the arm is deliberately
+		// unpinned. When it changes the result, on which OS, and why every
+		// outcome still writes nothing are recorded in
+		// summary/changelog/v0.29.md (v0.29.18), which distinguishes what
+		// was measured from what was read from source. That explanation
+		// lives there, not here, because the three versions of it written
+		// into this comment were each found wrong.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) {
+				return os.ErrProcessDone
+			}
 			return err
 		}
 		return nil
@@ -2382,6 +2425,14 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("scc failed to start: %w", execErr(ctx, err))
 	}
+	// Straggler sweep on every exit path, same as scancode runOne and
+	// RunScorecard. The Cancel above only fires on ctx cancellation, and
+	// the drain only waits for group members that hold stdout; a member
+	// that detached from it survived scanSCC's return (round 3, F7 —
+	// measured with `(sleep 3; touch marker) >/dev/null &`). ESRCH on an
+	// already-empty group is expected and ignored.
+	pid := cmd.Process.Pid
+	defer func() { _ = syscall.Kill(-pid, syscall.SIGKILL) }()
 
 	counted := &countingReader{r: stdout}
 	dec := json.NewDecoder(counted)
@@ -2394,9 +2445,18 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 		}
 	})
 	// A decode failure makes the rest of the report worthless: kill scc
-	// rather than draining a scan that may still have minutes of work left.
-	if decodeErr != nil {
+	// rather than draining a scan that may still have minutes of work left
+	// — but ONLY when scc may still be writing. An EOF-class error means
+	// the write end is already closed, so there is nothing to abandon and
+	// the drain returns at once. Not killing in that case is what lets a
+	// death we did not cause stay visible: the kernel OOM-killer sends the
+	// same SIGKILL we do, and killing unconditionally made an OOM-killed
+	// scc indistinguishable from our own kill (round 3, F2). weKilled
+	// records the one case where a SIGKILL is ours.
+	weKilled := false
+	if decodeErr != nil && !sccStreamEnded(decodeErr) {
 		cancelSCC()
+		weKilled = true
 	}
 
 	// Drain BEFORE reaping. streamSCCLabor stops at the top-level "]", so
@@ -2406,8 +2466,9 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// exactly that boundary: 60,000 trailing bytes returned, 100,000 hung.
 	// The pre-v0.29.14 code could not hit this because cmd.Stdout drained
 	// to EOF; the streaming rewrite has to drain explicitly. A ctx cancel
-	// still unblocks this, since CommandContext kills scc and the pipe then
-	// reaches EOF. Draining also makes counted.n the true report size
+	// still unblocks this: cmd.Cancel kills scc's whole process group, so
+	// every holder of the write end dies and the pipe reaches EOF. Draining
+	// also makes counted.n the true report size
 	// rather than "the bytes the decoder happened to consume".
 	// Drain the decoder's LEFTOVER buffer first, then the pipe.
 	// json.Decoder reads ahead in chunks, so by the time it consumed the
@@ -2432,24 +2493,29 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	waitErr := cmd.Wait()
 
 	if decodeErr != nil {
-		// execErr (SR-18, v0.28.18 pass 35): a `stop serve` that landed
-		// inside scc classifies as a cancellation, not a parse failure.
-		// scc's OWN non-zero exit is usually the real cause of a short
-		// report, so join it — but only when scc exited on its own.
-		// ProcessState.Exited() is false when it was signalled, and the
-		// "signal: killed" from the kill above is our doing: reporting it
-		// would name our symptom instead of scc's cause.
+		// scc's OWN failure is usually the real cause of a short report,
+		// so it is joined in. It is read from ProcessState, NOT from
+		// waitErr: after our own kill, waitErr can be an injected ctx
+		// error rather than scc's status (round 3, F1).
+		//
+		// execErr (SR-18, v0.28.18 pass 35) then returns ctx.Err() when a
+		// `stop serve` landed inside scc, discarding the cause, so a
+		// shutdown classifies as a cancellation whatever happened here.
+		//
+		// Nothing is logged here. scanSCC's errors are logged once, by
+		// logAnalysisPhaseErrors in AnalyzeRepo, which also skips
+		// cancellations. v0.29.16 logged a WARN here, and it was the ONLY
+		// log line for this failure (separate wait_error and decode_error
+		// fields; AnalyzeRepo logged just the error count). The unreleased
+		// v0.29.17 added logAnalysisPhaseErrors but kept that WARN, so in
+		// that tree every scc abnormal exit appeared twice. v0.29.18
+		// removed the WARN (round 4, R4-2) and, with it, the ctx gate the
+		// WARN needed to stay quiet on shutdown (round 3, F3). execErr
+		// already makes a shutdown classify as a cancellation. The history
+		// in this paragraph was itself misstated once (round 5, F2).
 		cause := decodeErr
-		if waitErr != nil && !sccKilledByUs(cmd.ProcessState) {
-			cause = errors.Join(decodeErr, waitErr)
-		}
-		if waitErr != nil {
-			// Logged unconditionally even when not joined: if scc died
-			// while we were also killing it, the exit status is still the
-			// only record of HOW, and "everything that errors is logged".
-			ac.logger.Warn("scc exited abnormally while its report was being decoded",
-				"repo_id", repoID, "wait_error", waitErr.Error(),
-				"decode_error", decodeErr.Error())
+		if own := sccOwnFailure(cmd.ProcessState, weKilled); own != nil {
+			cause = errors.Join(decodeErr, own)
 		}
 		return fmt.Errorf("parsing scc output: %w", execErr(ctx, cause))
 	}
@@ -2575,23 +2641,36 @@ func (w *nonSpaceCounter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// sccKilledByUs reports whether a finished scc died from the SIGKILL this
-// package sends on the decode-error path, as opposed to exiting on its own
-// or crashing. Only our own kill is uninformative; a non-zero exit or any
-// other signal (SIGSEGV, or SIGKILL from the kernel OOM-killer on the very
-// repo class this release exists for) is the real cause of a short report
-// and must reach the operator. Before this, the Exited() gate suppressed
-// every signal death — a segfaulting scc surfaced only as "unexpected EOF"
-// from our decoder, pointing at the wrong layer entirely.
-func sccKilledByUs(st *os.ProcessState) bool {
-	if st == nil {
-		return false
+// sccOwnFailure returns scc's own failure — a non-zero exit, or death by a
+// signal we did not send — or nil when scc succeeded or its only failure
+// is the SIGKILL this package sent (weKilled). It reads ProcessState rather
+// than Wait's error because after our kill os/exec may hand back an
+// injected ctx error instead of scc's status (round 3, F1).
+//
+// A SIGKILL is only presumed ours when weKilled is set, i.e. only on the
+// branch that actually killed. The kernel OOM-killer also sends SIGKILL,
+// and on the very repo class this release exists for it is the most
+// likely way scc dies; suppressing every SIGKILL hid it (round 3, F2). The
+// residual ambiguity — the OOM-killer striking in the instant between a
+// non-EOF decode error and our own kill — is accepted: that death is then
+// reported as a decode failure, which still fails the scan closed.
+func sccOwnFailure(st *os.ProcessState, weKilled bool) error {
+	if st == nil || st.Success() {
+		return nil
 	}
-	ws, ok := st.Sys().(syscall.WaitStatus)
-	if !ok {
-		return false
+	if weKilled {
+		if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
+			return nil
+		}
 	}
-	return ws.Signaled() && ws.Signal() == syscall.SIGKILL
+	return &exec.ExitError{ProcessState: st}
+}
+
+// sccStreamEnded reports whether a decode error means scc's stdout reached
+// EOF: the write end is closed, so there is no running report to abandon.
+// Every wrap in the decoder uses %w, so errors.Is sees through them.
+func sccStreamEnded(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // streamSCCLabor decodes scc's `--by-file` report incrementally from r,

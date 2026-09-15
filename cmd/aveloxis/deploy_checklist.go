@@ -144,6 +144,19 @@ var deployChecklists = map[string][]deployStep{
 	// operator instead of being swallowed. No schema change, no operator
 	// heal — same ladder.
 	"0.29.16": v029DeployChecklist,
+	// v0.29.17: round-3 review fixes to the scc streaming path — a corrupt
+	// report from an scc that exited 0 no longer classifies as a shutdown,
+	// an OOM-killed scc is no longer mistaken for our own kill, analysis
+	// phase errors are logged individually (they were only counted), and
+	// scc's process group is swept on every exit. No schema change, no
+	// operator heal — same ladder.
+	"0.29.17": v029DeployChecklist,
+	// v0.29.18: round-4 review fixes — scc failures are logged once (by the
+	// analysis phase logger) instead of twice, a shutdown-logging test that
+	// an ungated logger.Error escaped now checks every failure level, and
+	// two comments that overstated earlier fixes are corrected. No schema
+	// change, no operator heal — same ladder.
+	"0.29.18": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

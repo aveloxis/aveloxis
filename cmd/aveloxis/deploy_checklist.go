@@ -126,6 +126,37 @@ var deployChecklists = map[string][]deployStep{
 	// the real parameter list (glKeys was missing). Docs and a doc-drift test
 	// only — same ladder.
 	"0.29.13": v029DeployChecklist,
+	// v0.29.14: scc's per-file report is streamed off a pipe instead of
+	// buffered whole — the 1 GiB bytes.Buffer whose doubling to 2 GiB
+	// OOM-killed the scheduler on 2026-09-15 (repo 144636). No schema
+	// change, no operator heal — same ladder. A restart is the fix; the
+	// repo that crashed it re-queues on its own.
+	"0.29.14": v029DeployChecklist,
+	// v0.29.15: test-only — the fake scorecard fixture is warmed before a
+	// timed test uses it (macOS charges ~756 ms for the first exec of a new
+	// executable, more than the 500 ms per-attempt cap). No production
+	// code, no schema change, no operator heal — same ladder.
+	"0.29.15": v029DeployChecklist,
+	// v0.29.16: round-2 review fixes to the v0.29.14 scc streaming path —
+	// the decoder's read-ahead is now drained (trailing garbage in the
+	// same write was being accepted), scc's process group is killed so a
+	// straggler cannot block the drain, and a crash signal reaches the
+	// operator instead of being swallowed. No schema change, no operator
+	// heal — same ladder.
+	"0.29.16": v029DeployChecklist,
+	// v0.29.17: round-3 review fixes to the scc streaming path — a corrupt
+	// report from an scc that exited 0 no longer classifies as a shutdown,
+	// an OOM-killed scc is no longer mistaken for our own kill, analysis
+	// phase errors are logged individually (they were only counted), and
+	// scc's process group is swept on every exit. No schema change, no
+	// operator heal — same ladder.
+	"0.29.17": v029DeployChecklist,
+	// v0.29.18: round-4 review fixes — scc failures are logged once (by the
+	// analysis phase logger) instead of twice, a shutdown-logging test that
+	// an ungated logger.Error escaped now checks every failure level, and
+	// two comments that overstated earlier fixes are corrected. No schema
+	// change, no operator heal — same ladder.
+	"0.29.18": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

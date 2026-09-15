@@ -22,12 +22,16 @@ package collector
 // wired into network-canary.yml's weekly tools job.
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // Validated tool versions. EXTEND (don't replace) after eyeballing a
@@ -129,6 +133,70 @@ func TestLiveSCCOutputShape(t *testing.T) {
 			if !sccValidatedMajors[major] {
 				t.Errorf("scc major version %s not in the validated set — eyeball a green run and extend sccValidatedMajors", major)
 			}
+		}
+	}
+}
+
+// TestLiveSCCStreamingDecodeMatchesUnmarshal is the canary for the
+// v0.29.14 streaming decoder. TestLiveSCCOutputShape above proves the
+// INSTALLED scc still parses into our structs via json.Unmarshal; this
+// proves the streaming path — the one production actually uses — reads
+// the same real bytes into the same rows. A key-order or shape change in
+// a future scc that the incremental walk mishandles but Unmarshal
+// tolerates would otherwise be invisible until a fleet run.
+func TestLiveSCCStreamingDecodeMatchesUnmarshal(t *testing.T) {
+	skipUnlessTools(t, "scc")
+	dir := t.TempDir()
+	// More than one language and more than one file per language, so the
+	// outer-array walk and the inner Files walk are both exercised.
+	for name, body := range map[string]string{
+		"a.go":      mitHeader + "\nfunc A() int { return 1 }\n",
+		"b.go":      mitHeader + "\nfunc B() int { return 2 }\n",
+		"c.py":      "# comment\ndef c():\n    return 3\n",
+		"README.md": "# Title\n\nsome prose\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw, err := exec.Command("scc", "-f", "json", "--by-file", dir).Output()
+	if err != nil {
+		t.Fatalf("scc run failed: %v", err)
+	}
+
+	now := time.Now()
+	var streamed []*db.RepoLaborRow
+	if err := streamSCCLabor(json.NewDecoder(bytes.NewReader(raw)), dir, now, func(row *db.RepoLaborRow) {
+		streamed = append(streamed, row)
+	}); err != nil {
+		t.Fatalf("streaming decode of real scc output failed: %v", err)
+	}
+
+	var languages []sccLanguage
+	if err := json.Unmarshal(raw, &languages); err != nil {
+		t.Fatalf("reference unmarshal of real scc output failed: %v", err)
+	}
+	var want int
+	seen := map[string]bool{}
+	for _, l := range languages {
+		want += len(l.Files)
+		for _, f := range l.Files {
+			seen[l.Name+"\x00"+filepath.Base(f.Location)] = true
+		}
+	}
+	if want == 0 {
+		t.Fatal("installed scc reported zero files for the fixture — the comparison would be vacuous")
+	}
+	if len(streamed) != want {
+		t.Fatalf("streaming decode produced %d rows, Unmarshal produced %d — the incremental walk disagrees with the installed scc's shape", len(streamed), want)
+	}
+	for _, row := range streamed {
+		if !seen[row.Language+"\x00"+row.FileName] {
+			t.Errorf("streamed row %s/%s has no counterpart in the Unmarshal result — language stamping drifted", row.Language, row.FileName)
+		}
+		if row.Language == "" {
+			t.Errorf("streamed row %s carries an empty Language — scc key order changed and the stamp was lost", row.FileName)
 		}
 	}
 }

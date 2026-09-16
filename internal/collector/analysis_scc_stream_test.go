@@ -35,7 +35,7 @@ func collectStream(t *testing.T, r io.Reader, now time.Time) ([]*db.RepoLaborRow
 // parity oracle — streamSCCLabor must produce byte-identical rows. If the
 // two ever diverge the streaming rewrite changed observable behavior,
 // which it must not.
-func unmarshalReference(t *testing.T, doc []byte, now time.Time) []*db.RepoLaborRow {
+func unmarshalReference(t *testing.T, doc []byte, workDir string, now time.Time) []*db.RepoLaborRow {
 	t.Helper()
 	var languages []sccLanguage
 	if err := json.Unmarshal(doc, &languages); err != nil {
@@ -44,7 +44,7 @@ func unmarshalReference(t *testing.T, doc []byte, now time.Time) []*db.RepoLabor
 	var rows []*db.RepoLaborRow
 	for _, lang := range languages {
 		for _, file := range lang.Files {
-			relPath, relErr := filepath.Rel(sccStreamWorkDir, file.Location)
+			relPath, relErr := filepath.Rel(workDir, file.Location)
 			if relErr != nil || relPath == "" {
 				relPath = file.Location
 			}
@@ -94,7 +94,7 @@ func TestStreamSCCLaborMatchesUnmarshalReference(t *testing.T) {
 	doc := sccDoc("Go", "YAML", "Markdown")
 	now := time.Now()
 
-	want := unmarshalReference(t, []byte(doc), now)
+	want := unmarshalReference(t, []byte(doc), sccStreamWorkDir, now)
 	got, err := collectStream(t, strings.NewReader(doc), now)
 	if err != nil {
 		t.Fatalf("streamSCCLabor: %v", err)
@@ -137,7 +137,7 @@ func TestStreamSCCLaborKeyMatchingIsCaseInsensitive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("streamSCCLabor: %v", err)
 			}
-			want := unmarshalReference(t, []byte(tc.doc), now)
+			want := unmarshalReference(t, []byte(tc.doc), sccStreamWorkDir, now)
 			if len(want) == 0 {
 				t.Fatal("the oracle produced no rows — this case would assert nothing")
 			}
@@ -148,6 +148,38 @@ func TestStreamSCCLaborKeyMatchingIsCaseInsensitive(t *testing.T) {
 				if *got[i] != *want[i] {
 					t.Errorf("row %d: stream = %+v, json.Unmarshal = %+v", i, *got[i], *want[i])
 				}
+			}
+		})
+	}
+}
+
+// TestStreamSCCLaborRejectsDuplicateOuterKeys pins the one divergence from
+// encoding/json that the parity sweep found and that this walk deliberately
+// does NOT reproduce. Unmarshal is last-wins; a streaming walk cannot be,
+// because rows for an already-decoded Files array are long emitted. The
+// alternatives were both silent: first-wins stamps the wrong language, and
+// an additive second Files array duplicates rows — and either way the scan
+// succeeds and replaces the real snapshot. So duplicates fail closed.
+//
+// Unreachable from scc, which marshals a Go struct through encoding/json
+// and so cannot emit duplicate keys — but "unreachable" is what was assumed
+// before the casing bug, which was equally unreachable and equally silent.
+func TestStreamSCCLaborRejectsDuplicateOuterKeys(t *testing.T) {
+	const file = `{"Location":"` + sccStreamWorkDir + `/a.go","Lines":9,"Code":8}`
+	for _, tc := range []struct{ name, doc string }{
+		{"duplicate Name", `[{"Name":"Go","Files":[` + file + `],"Name":"Rust"}]`},
+		{"duplicate Name, different case", `[{"Name":"Go","Files":[` + file + `],"name":"Rust"}]`},
+		{"duplicate Files", `[{"Name":"Go","Files":[` + file + `],"Files":[` + file + `]}]`},
+		{"duplicate Files, different case", `[{"Name":"Go","Files":[` + file + `],"fILEs":[]}]`},
+		{"duplicate Files before Name", `[{"Files":[` + file + `],"Files":[` + file + `],"Name":"Go"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := collectStream(t, strings.NewReader(tc.doc), time.Now())
+			if err == nil {
+				t.Fatal("a duplicate outer key must fail the scan — silently guessing would stamp the wrong language or duplicate rows, and still replace the snapshot")
+			}
+			if !strings.Contains(err.Error(), "duplicate") {
+				t.Errorf("error = %v, want it to name the duplicate key", err)
 			}
 		})
 	}
@@ -334,7 +366,7 @@ func TestStreamSCCLaborRelPathHandling(t *testing.T) {
 			if rows[0].FilePath != tc.want {
 				t.Errorf("FilePath = %q, want %q", rows[0].FilePath, tc.want)
 			}
-			if ref := unmarshalReference(t, []byte(doc), rows[0].CloneDate); rows[0].FilePath != ref[0].FilePath {
+			if ref := unmarshalReference(t, []byte(doc), sccStreamWorkDir, rows[0].CloneDate); rows[0].FilePath != ref[0].FilePath {
 				t.Errorf("FilePath = %q, but the pre-v0.29.14 path produced %q — the streaming rewrite changed stored paths", rows[0].FilePath, ref[0].FilePath)
 			}
 		})
@@ -413,12 +445,12 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 	// bytes returned, 100,000 wedged. TestScanSCCDrainsTrailingOutput is
 	// the runtime proof; this pins the ordering that makes it work.
 	drain := strings.Index(body, "io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))")
-	reap := strings.Index(body, "waitErr := <-waitCh")
+	reap := strings.Index(body, "waitErr := swept.Wait()")
 	if drain < 0 {
 		t.Fatal("scanSCC must drain scc's pipe — without it any trailing output past 64 KiB wedges cmd.Wait() forever")
 	}
 	if reap < 0 {
-		t.Fatal("scanSCC must collect scc's exit status from the reap goroutine (waitErr := <-waitCh)")
+		t.Fatal("scanSCC must collect scc's exit status from the swept command (waitErr := swept.Wait())")
 	}
 	if drain > reap {
 		t.Error("scanSCC reaps scc BEFORE draining the pipe — cmd.Wait() then blocks forever on trailing output and the worker is lost")
@@ -482,30 +514,24 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 // streaming contract. TestStreamSCCLaborIsIncremental proves the decoder
 // streams and TestScanSCCStreamsRowsWhileSccIsStillWriting proves scanSCC
 // wires the live pipe into it; this bans the shapes that would materialize
-// the report instead.
+// the report instead, and pins that scanSCC gets its pipe from the swept
+// command rather than rolling its own.
 //
-// It bans the OPERATION, not an identifier. `cmd.Stdout = pw` is REQUIRED
-// here — pw is the write end of an os.Pipe, which streams, and owning the
-// pipe is what lets the leader's exit unblock the drain (PR #207). An
-// earlier version banned `cmd.Stdout =` outright, which would have blocked
-// that fix.
-//
-// Scope: in-body spellings only. Like any source pin over one function, it
-// is evaded by a helper that buffers the pipe and returns a bytes.Reader —
-// verified, it passes. That escape is held by
-// TestScanSCCStreamsRowsWhileSccIsStillWriting, which fails it at runtime,
-// and sccRowStreamed's doc says the same.
+// It bans the OPERATION, not an identifier. Scope: in-body spellings only.
+// Like any source pin over one function, it is evaded by a helper that
+// buffers the pipe and returns a bytes.Reader — verified, it passes. That
+// escape is held by TestScanSCCStreamsRowsWhileSccIsStillWriting, which
+// fails it at runtime, and sccRowStreamed's doc says the same.
 func TestScanSCCDoesNotBufferWholeReport(t *testing.T) {
 	body := scanSCCBody(t)
 
-	for _, required := range []string{"os.Pipe()", "cmd.Stdout = pw"} {
+	for _, required := range []string{"startSweptCommand(cmd)", "swept.Stdout"} {
 		if !strings.Contains(body, required) {
-			t.Errorf("scanSCC must own the pipe it reads scc's report from (missing %q) — see the 2026-09-15 OOM and the PR #207 wedge", required)
+			t.Errorf("scanSCC must read scc's report from the swept command's pipe (missing %q) — see the 2026-09-15 OOM and the PR #207 wedge", required)
 		}
 	}
-	// Exactly one stdout assignment, and it is the pipe's write end.
-	if n := strings.Count(body, "cmd.Stdout ="); n != 1 {
-		t.Errorf("scanSCC assigns cmd.Stdout %d times; want exactly 1 (the os.Pipe write end)", n)
+	if strings.Contains(body, "cmd.Stdout =") {
+		t.Error("scanSCC must not set cmd.Stdout itself — startSweptCommand owns the pipe, and an assignment BEFORE it would be silently overwritten (now rejected outright), while one after has no effect at all since Start has already dup'd the fd")
 	}
 	for _, banned := range []string{"bytes.Buffer", "io.ReadAll", "cmd.Output()", "cmd.CombinedOutput()", "ReadFrom("} {
 		if strings.Contains(body, banned) {

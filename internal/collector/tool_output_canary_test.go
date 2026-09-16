@@ -173,30 +173,20 @@ func TestLiveSCCStreamingDecodeMatchesUnmarshal(t *testing.T) {
 		t.Fatalf("streaming decode of real scc output failed: %v", err)
 	}
 
-	var languages []sccLanguage
-	if err := json.Unmarshal(raw, &languages); err != nil {
-		t.Fatalf("reference unmarshal of real scc output failed: %v", err)
-	}
-	var want int
-	seen := map[string]bool{}
-	for _, l := range languages {
-		want += len(l.Files)
-		for _, f := range l.Files {
-			seen[l.Name+"\x00"+filepath.Base(f.Location)] = true
-		}
-	}
-	if want == 0 {
+	// Compare FULL rows against the pre-rewrite path, not a row count plus
+	// a (Language, FileName) set: that weaker check would miss a future scc
+	// renaming a NUMERIC field's key, which the streaming walk and
+	// encoding/json could then disagree about silently.
+	want := unmarshalReference(t, raw, dir, now)
+	if len(want) == 0 {
 		t.Fatal("installed scc reported zero files for the fixture — the comparison would be vacuous")
 	}
-	if len(streamed) != want {
-		t.Fatalf("streaming decode produced %d rows, Unmarshal produced %d — the incremental walk disagrees with the installed scc's shape", len(streamed), want)
+	if len(streamed) != len(want) {
+		t.Fatalf("streaming decode produced %d rows, json.Unmarshal produced %d — the incremental walk disagrees with the installed scc's shape", len(streamed), len(want))
 	}
-	for _, row := range streamed {
-		if !seen[row.Language+"\x00"+row.FileName] {
-			t.Errorf("streamed row %s/%s has no counterpart in the Unmarshal result — language stamping drifted", row.Language, row.FileName)
-		}
-		if row.Language == "" {
-			t.Errorf("streamed row %s carries an empty Language — scc key order changed and the stamp was lost", row.FileName)
+	for i := range want {
+		if *streamed[i] != *want[i] {
+			t.Errorf("row %d differs against the installed scc's real output:\n stream        = %+v\n json.Unmarshal = %+v", i, *streamed[i], *want[i])
 		}
 	}
 }

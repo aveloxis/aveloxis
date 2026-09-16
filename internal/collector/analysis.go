@@ -2375,100 +2375,16 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	started := time.Now()
 	cmd := exec.CommandContext(sccCtx, sccPath, "-f", "json", "--by-file", workDir)
 
-	// The pipe is OURS, not cmd.StdoutPipe()'s. With an *os.File stdout,
-	// os/exec hands the descriptor straight to the child and starts no
-	// copying goroutine, so cmd.Wait returns the moment the LEADER exits —
-	// even while some child still holds the write end. That is what makes
-	// the reap-and-sweep goroutine below able to unblock the drain.
-	//
-	// With cmd.StdoutPipe() it could not: a leader that spawned a child
-	// inheriting stdout and then exited left the drain waiting on that
-	// child, so cmd.Wait was never called, and neither the group kill nor
-	// WaitDelay was ever reached. The worker wedged for as long as the
-	// child lived (Copilot review on PR #207; reproduced with
-	// `printf '<report>'; sleep 20 & exit 0` — no return in 8 s).
-	pr, pw, err := os.Pipe()
+	// startSweptCommand owns the stdout pipe and sweeps scc's process
+	// group when the leader exits; see its doc for why cmd.StdoutPipe()
+	// wedges this function and what WaitDelay does and does not buy.
+	swept, err := startSweptCommand(cmd)
 	if err != nil {
-		return fmt.Errorf("scc stdout pipe: %w", err)
-	}
-	defer pr.Close()
-	cmd.Stdout = pw
-	// Process-group cleanup. Required because this function DRAINS the
-	// pipe before reading scc's status: killing only the leader leaves any
-	// straggler holding the inherited stdout fd, and the drain then blocks
-	// until that straggler exits. cmd.Cancel kills the whole group, so a
-	// ctx cancel ends that at once; the reap goroutine below covers the
-	// case where the leader simply exits.
-	//
-	// Only HALF the same shape as scancode runOne and RunScorecard. They
-	// give os/exec an io.Writer stdout, so it owns a copying goroutine and
-	// their WaitDelay genuinely bounds the post-cancel wait. Here stdout is
-	// our own *os.File: os/exec never receives the read end, so WaitDelay's
-	// pipe-closing half cannot apply to it at all. What WaitDelay still
-	// buys is watchCtx's post-cancel Process.Kill backstop, which
-	// cmd.Cancel's group kill already covers. It is kept because it costs
-	// nothing, not because it bounds this drain.
-	//
-	// One consequence of sweeping the group at leader exit: a group member
-	// still writing the report TAIL is killed, so that report is truncated
-	// and the scan fails closed before the snapshot write. That is inherent
-	// — you cannot both wait for such a child and not wedge — and scc 3.7.0
-	// is a single process, so it does not arise. Bytes already written into
-	// the pipe are NOT lost when the writer is killed (measured).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		// "Already gone" is reported as os.ErrProcessDone, os/exec's
-		// documented return for a process that had already finished. Both
-		// alternatives are wrong. A raw errno becomes Wait's error ("exec:
-		// canceling Cmd: operation not permitted", observed). nil makes
-		// watchCtx believe it interrupted the command, so Wait returns
-		// ctx.Err() instead.
-		//
-		// This arm is NOT what fixed round 3's F1. That fix is the decode
-		// branch reading ProcessState instead of waitErr. Returning nil
-		// here leaves every test green, and the arm is deliberately
-		// unpinned. When it changes the result, on which OS, and why every
-		// outcome still writes nothing are recorded in
-		// summary/changelog/v0.29.md (v0.29.18), which distinguishes what
-		// was measured from what was read from source. That explanation
-		// lives there, not here, because the three versions of it written
-		// into this comment were each found wrong.
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) {
-				return os.ErrProcessDone
-			}
-			return err
-		}
-		return nil
-	}
-	cmd.WaitDelay = sccWaitDelay
-	if err := cmd.Start(); err != nil {
-		_ = pw.Close()
 		return fmt.Errorf("scc failed to start: %w", execErr(ctx, err))
 	}
-	// Drop the parent's write end immediately. Only scc and anything it
-	// spawned hold one now, so the drain below can actually reach EOF.
-	_ = pw.Close()
+	defer swept.Close()
 
-	// Reap in the background and sweep scc's process group the instant the
-	// leader exits. This is the straggler sweep (it replaces a deferred
-	// kill, which ran too late to help — see the pipe comment above), and
-	// it serves both shapes: a child holding stdout dies, its write end
-	// closes and the drain reaches EOF; a child that detached from stdout
-	// is reaped rather than orphaned. ESRCH on an already-empty group is
-	// expected and ignored.
-	pid := cmd.Process.Pid
-	waitCh := make(chan error, 1)
-	go func() {
-		werr := cmd.Wait()
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		waitCh <- werr
-	}()
-
-	counted := &countingReader{r: pr}
+	counted := &countingReader{r: swept.Stdout}
 	dec := json.NewDecoder(counted)
 	now := time.Now()
 	var laborRows []*db.RepoLaborRow
@@ -2524,7 +2440,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	trailing := &nonSpaceCounter{}
 	_, _ = io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))
 
-	waitErr := <-waitCh
+	waitErr := swept.Wait()
 
 	if decodeErr != nil {
 		// scc's OWN failure is usually the real cause of a short report,
@@ -2626,13 +2542,6 @@ type sccLanguage struct {
 // so the rare class is greppable without scanning the whole distribution.
 const sccOutputLargeBytes = 1 << 30
 
-// sccWaitDelay is the post-cancel allowance on scc's Cmd, matched to
-// scancodeWaitDelay rather than invented here. It does NOT bound a drain
-// blocked on the stdout pipe: scanSCC owns that pipe, so os/exec has no
-// handle on the read end to close. See the process-group comment in
-// scanSCC for what it does and does not buy.
-const sccWaitDelay = 10 * time.Second
-
 // sccRowStreamed is a TEST SEAM, nil in production. scanSCC calls it as
 // each labor row is built, which is the only way to observe that rows
 // appear WHILE scc is still writing — the property the whole rewrite
@@ -2730,6 +2639,12 @@ func streamSCCLabor(dec *json.Decoder, workDir string, now time.Time, emit func(
 		return err
 	}
 	for dec.More() {
+		// A null array element is a hard error here, where json.Unmarshal
+		// skipped it and carried on (`[null]` gave zero rows and no error;
+		// `[null,{…}]` gave the good row). Deliberate: this path fails
+		// CLOSED, returning before the snapshot write so the previous
+		// snapshot is retained, rather than silently replacing it with a
+		// partial one. Unreachable from scc, which marshals a struct.
 		if err := streamSCCLanguage(dec, workDir, now, emit); err != nil {
 			return err
 		}
@@ -2743,9 +2658,10 @@ func streamSCCLanguage(dec *json.Decoder, workDir string, now time.Time, emit fu
 		return err
 	}
 	var (
-		language string
-		named    bool
-		pending  []*db.RepoLaborRow // only ever used if Files precede Name
+		language  string
+		named     bool
+		seenFiles bool
+		pending   []*db.RepoLaborRow // only ever used if Files precede Name
 	)
 	for dec.More() {
 		tok, err := dec.Token()
@@ -2764,6 +2680,20 @@ func streamSCCLanguage(dec *json.Decoder, workDir string, now time.Time, emit fu
 		// affected, because encoding/json does the matching there.
 		switch {
 		case strings.EqualFold(key, "Name"):
+			// Duplicate keys are rejected rather than guessed at.
+			// encoding/json is last-wins; this walk cannot be, because
+			// rows for an already-decoded Files array have been emitted
+			// and buffering them to allow a late overwrite would undo the
+			// streaming that this whole rewrite exists for. First-wins
+			// would silently stamp the wrong language, and an additive
+			// second Files array would silently duplicate rows — in both
+			// cases with no error, so a wrong snapshot would replace the
+			// real one. scc marshals a Go struct through encoding/json,
+			// which cannot emit duplicate keys, so this only fires on a
+			// tool that is already misbehaving (round: parity sweep).
+			if named {
+				return fmt.Errorf("scc output: duplicate %q key in a language object", key)
+			}
 			if err := dec.Decode(&language); err != nil {
 				return fmt.Errorf("decoding scc language name: %w", err)
 			}
@@ -2774,6 +2704,10 @@ func streamSCCLanguage(dec *json.Decoder, workDir string, now time.Time, emit fu
 			}
 			pending = nil
 		case strings.EqualFold(key, "Files"):
+			if seenFiles {
+				return fmt.Errorf("scc output: duplicate %q key in a language object", key)
+			}
+			seenFiles = true
 			err := streamSCCFiles(dec, workDir, now, func(row *db.RepoLaborRow) {
 				if named {
 					row.Language = language

@@ -25,6 +25,7 @@ import (
 	"net/smtp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const gmailSMTPHost = "smtp.gmail.com:587"
@@ -88,15 +89,94 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 // with untrusted input (recipient addresses from the account-email
 // form, group names in approval subjects) could otherwise inject
 // arbitrary headers — CWE-93 / CodeQL go/email-injection.
-func sanitizeHeader(s string) string {
-	s = strings.ReplaceAll(s, "\r", "")
-	s = strings.ReplaceAll(s, "\n", "")
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+func sanitizeHeader(s string) string { return scrubUntrusted(s) }
+
+// sanitizeSample scrubs each entry of a user-submitted URL list and joins
+// them one per line. The list itself is structure the template intends; the
+// ENTRIES are attacker-supplied, so each is sanitized individually rather
+// than the joined blob, which would collapse the intended line breaks.
+func sanitizeSample(sample []string) string {
+	out := make([]string, 0, len(sample))
+	for _, s := range sample {
+		if v := sanitizeBodyValue(s); v != "" {
+			out = append(out, v)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// Subjects scrub their untrusted parts at the interpolation, even though
+// Send runs sanitizeHeader over the whole header value: the subject is the
+// first thing an admin reads, and relying on a distant boundary is what let
+// four subject lines look unsanitized to review. scrubUntrusted is
+// idempotent, so the second pass changes nothing.
+//
+// bodyValueMax caps one interpolated value. A login, group name, purl or
+// OSV summary is a label, not a document; the cap stops a single attacker-
+// supplied field from dominating an operator's mail. Presentation bound
+// only — nothing is hidden that the site does not also show.
+const bodyValueMax = 300
+
+// sanitizeBodyValue makes ONE untrusted value safe to interpolate into an
+// email body. Bodies are plain text after the header block, so a newline
+// cannot forge a header (net/smtp's DotWriter also dot-stuffs and
+// normalizes line endings, so it cannot end the DATA phase either). What it
+// CAN do is forge structure: a group name containing "\n\n— Aveloxis\n\nClick
+// here: http://evil" produces a message that reads as if Aveloxis wrote it,
+// mailed from this domain to an admin who is about to approve something
+// (CodeQL go/email-injection, alert 16). Terminal escapes and Unicode bidi
+// overrides do the same to a reader.
+//
+// So: line breaks collapse to a space, C0/C1 controls and Unicode bidi and
+// invisible-format runes are dropped, runs of whitespace collapse, and the
+// result is capped. Callers pass single-line values; multi-line body
+// TEMPLATES are the package's own and are not passed through this.
+func sanitizeBodyValue(s string) string { return scrubUntrusted(s) }
+
+// scrubUntrusted is the ONE normalizer for untrusted text in this package,
+// used for header values and body values alike. Subjects need it as much as
+// bodies: SendGroupApproved puts the same group name in both, and the
+// subject is the first thing the admin reads.
+//
+// Rune classes, chosen by CATEGORY rather than an enumerated list — an
+// earlier version listed specific bidi and zero-width runes and missed nine
+// of them (U+200E/200F/061C, U+00AD, U+2061-2064, U+FFF9-FFFB, the U+E0000
+// tag block used for ASCII smuggling):
+//
+//   - line separators (Zl/Zp, U+2028/U+2029) and CR/LF/TAB become a space,
+//     so they cannot forge structure. These were previously neutralized
+//     only as a side effect of strings.Fields, which a refactor could have
+//     silently undone.
+//   - all format runes (Unicode Cf) are dropped: bidi overrides and
+//     isolates, zero-width joiners, the BOM, interlinear annotation and the
+//     tag block all live here.
+//   - C0, DEL and C1 controls are dropped (terminal escapes).
+//
+// Then whitespace runs collapse and the value is capped.
+func scrubUntrusted(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\r' || r == '\n' || r == '\t':
+			return ' '
+		case unicode.In(r, unicode.Zl, unicode.Zp): // U+2028, U+2029
+			return ' '
+		case r < 0x20 || r == 0x7f: // C0 and DEL
+			return -1
+		case r >= 0x80 && r <= 0x9f: // C1
+			return -1
+		case unicode.Is(unicode.Cf, r): // every format rune
 			return -1
 		}
 		return r
 	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	// Truncate on RUNES: len() is bytes, and slicing mid-rune emitted
+	// invalid UTF-8 into a body declared charset=UTF-8 (a 300-byte cut
+	// through "项目" left an orphaned 0xe9 lead byte).
+	if r := []rune(s); len(r) > bodyValueMax {
+		s = string(r[:bodyValueMax]) + "…"
+	}
+	return s
 }
 
 // Send dispatches a single email. Subject and body are plain text.
@@ -158,7 +238,11 @@ func (m *Mailer) Send(to, subject, body string) error {
 		from, sanitizeHeader(to), sanitizeHeader(subject),
 		time.Now().Format(time.RFC1123Z), body))
 
-	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{to}, msg); err != nil {
+	// The envelope recipient is the SANITIZED address, matching the To:
+	// header. net/smtp rejects CR/LF in an address anyway, but passing the
+	// raw value here while the header carries a scrubbed one would mean the
+	// two could disagree.
+	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{sanitizeHeader(to)}, msg); err != nil {
 		if m.logger != nil {
 			m.logger.Warn("mailer.Send failed",
 				"to", to, "subject", subject, "error", err)
@@ -200,7 +284,7 @@ You'll get an email when your group is approved.
 Sign in: %s
 
 — Aveloxis
-`, login, provider, siteURL)
+`, sanitizeBodyValue(login), sanitizeBodyValue(provider), siteURL)
 	return m.Send(toEmail, subject, body)
 }
 
@@ -221,7 +305,7 @@ This link expires in 24 hours. If you didn't request this confirmation,
 ignore this email — your account email won't change without confirming.
 
 — Aveloxis
-`, login, confirmURL)
+`, sanitizeBodyValue(login), confirmURL)
 	return m.Send(toEmail, subject, body)
 }
 
@@ -229,7 +313,7 @@ ignore this email — your account email won't change without confirming.
 // an admin approves their pending group. Tells them collection has
 // started and points at the group's detail page.
 func (m *Mailer) SendGroupApproved(toEmail, login, groupName string, groupID int64) error {
-	subject := fmt.Sprintf("Your Aveloxis group '%s' has been approved", groupName)
+	subject := fmt.Sprintf("Your Aveloxis group '%s' has been approved", sanitizeBodyValue(groupName))
 	siteURL := strings.TrimRight(m.cfg.SiteURL, "/")
 	link := "(your Aveloxis site URL)"
 	if siteURL != "" {
@@ -245,7 +329,7 @@ requests can take longer for large repos.
 View your group: %s
 
 — Aveloxis
-`, login, groupName, link)
+`, sanitizeBodyValue(login), sanitizeBodyValue(groupName), link)
 	return m.Send(toEmail, subject, body)
 }
 
@@ -267,7 +351,7 @@ func (m *Mailer) SendAddRequestSubmitted(to, requesterLogin, groupName, kind str
 	if kind == "org" {
 		what = "an organization"
 	}
-	subject := fmt.Sprintf("Aveloxis: %s requested collection of %s", requesterLogin, what)
+	subject := fmt.Sprintf("Aveloxis: %s requested collection of %s", sanitizeBodyValue(requesterLogin), what)
 	if len(sample) > addRequestSampleMax {
 		sample = sample[:addRequestSampleMax]
 	}
@@ -285,7 +369,7 @@ not start until an administrator approves the request.
 Review pending additions: %s
 
 — Aveloxis
-`, requesterLogin, what, groupName, requestID, strings.Join(sample, "\n"), link)
+`, sanitizeBodyValue(requesterLogin), what, sanitizeBodyValue(groupName), requestID, sanitizeSample(sample), link)
 	return m.Send(to, subject, body)
 }
 
@@ -302,17 +386,17 @@ func (m *Mailer) SendAddRequestDecided(toEmail, login, groupName, kind string, a
 	}
 	var subject, verdict string
 	if approved {
-		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was approved", groupName)
+		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was approved", sanitizeBodyValue(groupName))
 		verdict = fmt.Sprintf(`An administrator approved adding %s to your group '%s'.
 Collection has been queued — first results typically appear within an
-hour; large repositories take longer.`, what, groupName)
+hour; large repositories take longer.`, what, sanitizeBodyValue(groupName))
 	} else {
-		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was declined", groupName)
+		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was declined", sanitizeBodyValue(groupName))
 		verdict = fmt.Sprintf(`An administrator declined adding %s to your group '%s'.
 Nothing was collected. If you believe this is a mistake, contact the
-site operator.`, what, groupName)
+site operator.`, what, sanitizeBodyValue(groupName))
 	}
-	body := fmt.Sprintf("Hello %s,\n\n%s\n\n— Aveloxis\n", login, verdict)
+	body := fmt.Sprintf("Hello %s,\n\n%s\n\n— Aveloxis\n", sanitizeBodyValue(login), verdict)
 	return m.Send(toEmail, subject, body)
 }
 
@@ -350,13 +434,18 @@ func (m *Mailer) SendVulnerabilityDigest(to string, since time.Time, items []Vul
 		shown = shown[:digestBodyMaxItems]
 	}
 	for _, it := range shown {
-		summary := it.Summary
-		if len(summary) > 100 {
-			summary = summary[:100] + "…"
+		// Every field here is external: the summary comes from the OSV
+		// feed, the rest from collected repo data.
+		// Rune-based for the same reason as scrubUntrusted's cap: an OSV
+		// summary is arbitrary third-party text and often non-ASCII.
+		summary := sanitizeBodyValue(it.Summary)
+		if r := []rune(summary); len(r) > 100 {
+			summary = string(r[:100]) + "…"
 		}
 		fmt.Fprintf(&b, "%-8s  %s/%s\n          %s  %s\n          %s\n\n",
-			strings.ToUpper(it.Severity), it.RepoOwner, it.RepoName,
-			it.VulnID, it.PackagePurl, summary)
+			sanitizeBodyValue(strings.ToUpper(it.Severity)),
+			sanitizeBodyValue(it.RepoOwner), sanitizeBodyValue(it.RepoName),
+			sanitizeBodyValue(it.VulnID), sanitizeBodyValue(it.PackagePurl), summary)
 	}
 	if len(items) > len(shown) {
 		fmt.Fprintf(&b, "…and %d more finding(s) not itemized here.\n\n", len(items)-len(shown))

@@ -179,6 +179,20 @@ var deployChecklists = map[string][]deployStep{
 	// error, and a zero-row success replaces the labor snapshot. Now
 	// matched with EqualFold. No schema change, no operator heal.
 	"0.29.22": v029DeployChecklist,
+	// v0.29.23: three items. The wedge fix is generalized into
+	// startSweptCommand and applied to the facade's git log and the
+	// whitespace walk, which shared the primitive; duplicate scc outer keys
+	// now fail closed; and email bodies scrub untrusted values (CodeQL
+	// alert 16). Plus golang.org/x/net 0.53.0 -> 0.59.0 (dependabot 2; the
+	// vulnerable x/net/html was never linked). No schema change, no
+	// operator heal — same ladder.
+	"0.29.23": v029DeployChecklist,
+	// v0.29.24: review of v0.29.23 — the mailer scrubber now drops format
+	// runes by CATEGORY and truncates on runes (byte-slicing emitted
+	// invalid UTF-8), subjects share the body filter, startSweptCommand
+	// enforces its preconditions, and two tripwires that could not see new
+	// sites were rewritten. No schema change, no operator heal.
+	"0.29.24": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

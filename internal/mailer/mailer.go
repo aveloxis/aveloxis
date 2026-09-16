@@ -22,6 +22,7 @@ package mailer
 import (
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -210,6 +211,26 @@ func (m *Mailer) Send(to, subject, body string) error {
 		}
 		return nil
 	}
+	// PARSE the recipient rather than only scrubbing characters out of it.
+	// `to` reaches here straight from a web form (r.FormValue("email") in
+	// handleAccountEmail), and the callers only check for a stray "@".
+	// mail.ParseAddress yields a structured address, so what goes into the
+	// header and the envelope is an addr-spec by construction, not a string
+	// that merely survived a filter — a validation barrier rather than a
+	// denylist. CodeQL's go/email-injection (alert 197) flags this sink for
+	// exactly that reason: request data reaching the message.
+	//
+	// Skip-with-a-WARN, matching the empty-recipient case above: a bad
+	// address must not break account creation or group approval.
+	parsed, parseErr := mail.ParseAddress(strings.TrimSpace(to))
+	if parseErr != nil {
+		if m.logger != nil {
+			m.logger.Warn("mailer.Send skipped — unparseable recipient address",
+				"subject", subject, "error", parseErr)
+		}
+		return nil
+	}
+	recipient := parsed.Address
 
 	// v0.20.14: strip display-format spaces from the App Password
 	// (`abcd efgh ijkl mnop` → `abcdefghijklmnop`) so the value
@@ -235,14 +256,13 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, sanitizeHeader(to), sanitizeHeader(subject),
+		from, sanitizeHeader(recipient), sanitizeHeader(subject),
 		time.Now().Format(time.RFC1123Z), body))
 
-	// The envelope recipient is the SANITIZED address, matching the To:
-	// header. net/smtp rejects CR/LF in an address anyway, but passing the
-	// raw value here while the header carries a scrubbed one would mean the
-	// two could disagree.
-	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{sanitizeHeader(to)}, msg); err != nil {
+	// Envelope and To: header carry the SAME parsed address. net/smtp
+	// rejects CR/LF in an address anyway, but passing a different value to
+	// each would let the two disagree.
+	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{recipient}, msg); err != nil {
 		if m.logger != nil {
 			m.logger.Warn("mailer.Send failed",
 				"to", to, "subject", subject, "error", err)

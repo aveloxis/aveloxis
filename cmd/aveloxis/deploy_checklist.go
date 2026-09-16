@@ -200,6 +200,12 @@ var deployChecklists = map[string][]deployStep{
 	// loopback. OPERATORS: set mail.site_url; without it, confirmation
 	// emails are refused on any non-loopback host (logged at ERROR).
 	"0.29.25": v029DeployChecklist,
+	// v0.29.26: the email recipient is PARSED into an addr-spec
+	// (mail.ParseAddress) instead of only being character-scrubbed — it
+	// arrives straight from a web form. An unparseable address is skipped
+	// with a WARN, matching the empty-recipient contract. Addresses CodeQL
+	// alert 197's sink. No schema change, no operator heal.
+	"0.29.26": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

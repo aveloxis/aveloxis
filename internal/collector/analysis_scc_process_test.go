@@ -271,6 +271,33 @@ touch `+marker)
 	}
 }
 
+// TestScanSCCDoesNotWedgeOnInheritedStdoutChild is the regression test for
+// the wedge Copilot found on PR #207. The leader writes a complete report,
+// spawns a child that INHERITS stdout, and exits 0. The decoder finishes,
+// but the child still holds the write end, so the drain cannot reach EOF on
+// its own. Before the fix, cmd.Wait was never called and neither the group
+// kill nor WaitDelay was ever reached: the worker was lost for as long as
+// the child lived. TestScanSCCKillsDetachedStragglers could not catch it,
+// because its child redirects stdout to /dev/null.
+//
+// The bound is derived from the fixture: returning in less than the child's
+// sleep IS the claim "the leader's exit unblocked the drain".
+func TestScanSCCDoesNotWedgeOnInheritedStdoutChild(t *testing.T) {
+	const childSleep = 20 * time.Second
+
+	fakeSCC(t, `printf '`+sccMinimalReport+`'
+sleep `+fmt.Sprint(int(childSleep.Seconds()))+` &
+exit 0`)
+
+	start := time.Now()
+	if err := runScanSCC(t, context.Background(), childSleep-5*time.Second); !errors.Is(err, errStoreReached) {
+		t.Fatalf("scanSCC = %v, want the complete report to reach the snapshot write", err)
+	}
+	if elapsed := time.Since(start); elapsed >= childSleep {
+		t.Errorf("scanSCC took %s, the child's full %s — the drain waited for a child holding stdout instead of being unblocked by the leader's exit", elapsed, childSleep)
+	}
+}
+
 // TestSCCRowStreamedSeamDefaultsToNil pins the seam's production default.
 // A hook left installed would run on every labor row of every repo.
 func TestSCCRowStreamedSeamDefaultsToNil(t *testing.T) {

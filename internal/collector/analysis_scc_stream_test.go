@@ -372,12 +372,12 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 	// bytes returned, 100,000 wedged. TestScanSCCDrainsTrailingOutput is
 	// the runtime proof; this pins the ordering that makes it work.
 	drain := strings.Index(body, "io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))")
-	reap := strings.Index(body, "waitErr := cmd.Wait()")
+	reap := strings.Index(body, "waitErr := <-waitCh")
 	if drain < 0 {
 		t.Fatal("scanSCC must drain scc's pipe — without it any trailing output past 64 KiB wedges cmd.Wait() forever")
 	}
 	if reap < 0 {
-		t.Fatal("scanSCC must reap scc via cmd.Wait()")
+		t.Fatal("scanSCC must collect scc's exit status from the reap goroutine (waitErr := <-waitCh)")
 	}
 	if drain > reap {
 		t.Error("scanSCC reaps scc BEFORE draining the pipe — cmd.Wait() then blocks forever on trailing output and the worker is lost")
@@ -439,16 +439,30 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 
 // TestScanSCCDoesNotBufferWholeReport is the negative half of the
 // streaming contract. TestStreamSCCLaborIsIncremental proves the decoder
-// streams; this proves scanSCC actually hands it the live pipe rather
-// than a filled buffer, which is the wiring the incident turned on.
+// streams and TestScanSCCStreamsRowsWhileSccIsStillWriting proves scanSCC
+// wires the live pipe into it; this bans the shapes that would materialize
+// the report instead.
+//
+// It bans the OPERATION, not an identifier. `cmd.Stdout = pw` is REQUIRED
+// here — pw is the write end of an os.Pipe, which streams, and owning the
+// pipe is what lets the leader's exit unblock the drain (PR #207). An
+// earlier version banned `cmd.Stdout =` outright, which would have blocked
+// that fix while still permitting a bytes.Buffer behind a helper.
 func TestScanSCCDoesNotBufferWholeReport(t *testing.T) {
 	body := scanSCCBody(t)
-	if !strings.Contains(body, "cmd.StdoutPipe()") {
-		t.Error("scanSCC must read scc's report from a pipe — see the 2026-09-15 OOM")
+
+	for _, required := range []string{"os.Pipe()", "cmd.Stdout = pw"} {
+		if !strings.Contains(body, required) {
+			t.Errorf("scanSCC must own the pipe it reads scc's report from (missing %q) — see the 2026-09-15 OOM and the PR #207 wedge", required)
+		}
 	}
-	for _, banned := range []string{"cmd.Stdout =", "cmd.Output()", "cmd.CombinedOutput()", "io.ReadAll"} {
+	// Exactly one stdout assignment, and it is the pipe's write end.
+	if n := strings.Count(body, "cmd.Stdout ="); n != 1 {
+		t.Errorf("scanSCC assigns cmd.Stdout %d times; want exactly 1 (the os.Pipe write end)", n)
+	}
+	for _, banned := range []string{"bytes.Buffer", "io.ReadAll", "cmd.Output()", "cmd.CombinedOutput()", "ReadFrom("} {
 		if strings.Contains(body, banned) {
-			t.Errorf("scanSCC uses %q — that buffers scc's whole report, the allocation shape that OOM-killed the scheduler on 2026-09-15 (repo 144636, 1 GiB buffer doubling to 2 GiB under vm.overcommit_memory=2)", banned)
+			t.Errorf("scanSCC uses %q — that materializes scc's whole report, the allocation shape that OOM-killed the scheduler on 2026-09-15 (repo 144636, 1 GiB buffer doubling to 2 GiB under vm.overcommit_memory=2)", banned)
 		}
 	}
 }

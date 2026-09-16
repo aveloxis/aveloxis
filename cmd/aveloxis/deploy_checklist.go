@@ -162,6 +162,12 @@ var deployChecklists = map[string][]deployStep{
 	// returns a ../ walk for it. Comment corrected and the path handling pinned
 	// case by case. No behaviour change, no schema change — same ladder.
 	"0.29.19": v029DeployChecklist,
+	// v0.29.20: Copilot review on PR #207 — a child that inherited scc's
+	// stdout and outlived the leader wedged the collection worker for the
+	// child's lifetime. scanSCC now owns the pipe and sweeps scc's process
+	// group as soon as the leader exits. No schema change, no operator
+	// heal — same ladder.
+	"0.29.20": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

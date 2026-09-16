@@ -2374,10 +2374,25 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 
 	started := time.Now()
 	cmd := exec.CommandContext(sccCtx, sccPath, "-f", "json", "--by-file", workDir)
-	stdout, err := cmd.StdoutPipe()
+
+	// The pipe is OURS, not cmd.StdoutPipe()'s. With an *os.File stdout,
+	// os/exec hands the descriptor straight to the child and starts no
+	// copying goroutine, so cmd.Wait returns the moment the LEADER exits —
+	// even while some child still holds the write end. That is what makes
+	// the reap-and-sweep goroutine below able to unblock the drain.
+	//
+	// With cmd.StdoutPipe() it could not: a leader that spawned a child
+	// inheriting stdout and then exited left the drain waiting on that
+	// child, so cmd.Wait was never called, and neither the group kill nor
+	// WaitDelay was ever reached. The worker wedged for as long as the
+	// child lived (Copilot review on PR #207; reproduced with
+	// `printf '<report>'; sleep 20 & exit 0` — no return in 8 s).
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("scc stdout pipe: %w", err)
 	}
+	defer pr.Close()
+	cmd.Stdout = pw
 	// Process-group cleanup, same shape as scancode runOne and
 	// RunScorecard. Required because this function DRAINS the pipe before
 	// reaping: killing only the immediate child leaves any straggler
@@ -2423,18 +2438,29 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	}
 	cmd.WaitDelay = sccWaitDelay
 	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
 		return fmt.Errorf("scc failed to start: %w", execErr(ctx, err))
 	}
-	// Straggler sweep on every exit path, same as scancode runOne and
-	// RunScorecard. The Cancel above only fires on ctx cancellation, and
-	// the drain only waits for group members that hold stdout; a member
-	// that detached from it survived scanSCC's return (round 3, F7 —
-	// measured with `(sleep 3; touch marker) >/dev/null &`). ESRCH on an
-	// already-empty group is expected and ignored.
-	pid := cmd.Process.Pid
-	defer func() { _ = syscall.Kill(-pid, syscall.SIGKILL) }()
+	// Drop the parent's write end immediately. Only scc and anything it
+	// spawned hold one now, so the drain below can actually reach EOF.
+	_ = pw.Close()
 
-	counted := &countingReader{r: stdout}
+	// Reap in the background and sweep scc's process group the instant the
+	// leader exits. This is the straggler sweep (it replaces a deferred
+	// kill, which ran too late to help — see the pipe comment above), and
+	// it serves both shapes: a child holding stdout dies, its write end
+	// closes and the drain reaches EOF; a child that detached from stdout
+	// is reaped rather than orphaned. ESRCH on an already-empty group is
+	// expected and ignored.
+	pid := cmd.Process.Pid
+	waitCh := make(chan error, 1)
+	go func() {
+		werr := cmd.Wait()
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		waitCh <- werr
+	}()
+
+	counted := &countingReader{r: pr}
 	dec := json.NewDecoder(counted)
 	now := time.Now()
 	var laborRows []*db.RepoLaborRow
@@ -2490,7 +2516,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	trailing := &nonSpaceCounter{}
 	_, _ = io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))
 
-	waitErr := cmd.Wait()
+	waitErr := <-waitCh
 
 	if decodeErr != nil {
 		// scc's OWN failure is usually the real cause of a short report,

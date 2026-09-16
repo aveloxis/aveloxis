@@ -2475,9 +2475,11 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 // repos (e.g. a fully-collected org added to a second group) link
 // into the new group within seconds of the add/approval (v0.27.52).
 //
-// Non-admin adds never fire this: their orgs pend in
-// collection_add_requests, and no user_org_requests row exists until
-// an admin approves (v0.27.20). Rejected-group orgs are excluded by
+// A non-admin's add of a NEW org never fires this: it pends in
+// collection_add_requests, and no user_org_requests row exists until an
+// admin approves (v0.27.20). A non-admin's add of an org already registered
+// in a group that is not rejected auto-approves and registers at once
+// (v0.27.84), so it does fire this. Rejected-group orgs are excluded by
 // the probe itself — the scan's rejected gate deliberately never
 // stamps them, so counting them would re-fire the probe every tick.
 // A failed enumeration is also safe: MarkOrgRequestScanned stamps

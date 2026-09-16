@@ -48,9 +48,11 @@ func TestAddRepoToGroupByIDStaysEnqueueFree(t *testing.T) {
 }
 
 // TestOrgRegistrationGatedOnAdmin pins the v0.27.20 org rule: an org
-// registration is an unbounded mass add, so non-admins ALWAYS pend
-// (kind='org' add-request); only admins insert into user_org_requests
-// directly. Presence in user_org_requests = approved to scan.
+// registration is an unbounded mass add, so a non-admin's add of a NEW org
+// pends (kind='org' add-request); an admin registers directly, and a
+// non-admin's add of an org already registered in a group that is not
+// rejected auto-approves (v0.27.84). Presence in user_org_requests =
+// approved to scan.
 func TestOrgRegistrationGatedOnAdmin(t *testing.T) {
 	// Comments excluded, and the registration matched by its call: after
 	// v0.29.39 the INSERT lives in registerApprovedOrg, and a

@@ -298,6 +298,11 @@ var deployChecklists = map[string][]deployStep{
 	// The generated showcase pages link the blog from their footer; rerun
 	// `aveloxis generate-showcase` to publish that. No schema change.
 	"0.29.40": v029DeployChecklist,
+	// v0.29.41: round 15. An auto-approved repos add (only with
+	// web.auto_approve_add_limit > 0) keeps processing when the user's
+	// request is cancelled; the admin org add's transaction errors are
+	// tested. No schema change.
+	"0.29.41": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

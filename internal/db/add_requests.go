@@ -189,7 +189,11 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 			return out, err
 		}
 		out.RequestID = reqID
-		if _, err := s.ProcessApprovedAddRequest(ctx, reqID); err != nil {
+		// The request is committed as approved and no admin will see it,
+		// so its processing must not stop with the caller's request context
+		// (a client disconnect used to leave its items unprocessed for good;
+		// round-14 review).
+		if _, err := s.ProcessApprovedAddRequest(context.WithoutCancel(ctx), reqID); err != nil {
 			return out, err
 		}
 		out.Enqueued += len(unknown)
@@ -385,9 +389,11 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 // registerApprovedOrg records an approved org request in user_org_requests,
 // which is what lets the scheduler scan it, and reports whether it added the
 // row (false: it was already registered). Idempotent. It takes a transaction,
-// never the pool: every caller writes the approval that justifies the
-// registration in the same transaction, and a pool argument used to compile
-// at those call sites (round-14 review).
+// never the pool, so a caller that writes the approval justifying the
+// registration (DecideAddRequest's flip, AddOrgToGroup's auto-approve audit
+// request) cannot register outside that transaction — a pool argument used
+// to compile there (round-14 review). The admin add and the half-state
+// re-approve pass a transaction that holds only the registration.
 func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, error) {
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
 	tag, err := tx.Exec(ctx, `

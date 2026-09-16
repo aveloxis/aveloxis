@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDecideAddRequestReapproveFinishesAnOrgApproval (AVELOXIS_TEST_DB): an
@@ -405,5 +406,145 @@ func TestAddOrgToGroupAutoApproveIsAtomic(t *testing.T) {
 	approved, registered := counts()
 	if err != nil || !out.Registered || out.RequestID == 0 || approved != 1 || registered != 1 {
 		t.Errorf("the retry = %+v, %v; approved requests %d, registrations %d; want registered with one of each", out, err, approved, registered)
+	}
+}
+
+// TestAddOrgToGroupAdminRegistrationFailures (AVELOXIS_TEST_DB): an admin's
+// org add registers in a transaction of its own, so a failure at the INSERT or
+// at COMMIT is an error that names its cause, reports nothing registered, and
+// leaves no row (round-15 review: ignoring either error passed every test, and
+// an ignored COMMIT error reported Registered=true with nothing committed).
+func TestAddOrgToGroupAdminRegistrationFailures(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+
+	const login = "_avadmin_orgadd_failure_probe"
+	const orgURL = "https://github.com/_avadmin-orgadd-failure-probe"
+	clean := func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAdmin(ctx, uid, true); err != nil {
+		t.Fatal(err)
+	}
+	if admin, err := store.IsUserAdmin(ctx, uid); err != nil || !admin {
+		t.Fatalf("fixture user must be an admin (admin=%v, err=%v)", admin, err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "admin org add probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrations := func() int {
+		t.Helper()
+		var n int
+		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, gid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	for _, atCommit := range []bool{false, true} {
+		name := "_avtest_fail_admin_orgadd"
+		if atCommit {
+			name += "_commit"
+		}
+		drop := injectOrgRegistrationFailure(ctx, t, store, name, orgURL, atCommit)
+		out, err := store.AddOrgToGroup(ctx, uid, gid, orgURL)
+		if err == nil || !strings.Contains(err.Error(), "injected registration failure") || out.Registered || registrations() != 0 {
+			t.Errorf("admin add with the registration failing (at COMMIT: %v) = %+v, %v; registrations %d; want an error naming the injected failure, not registered, none", atCommit, out, err, registrations())
+		}
+		drop()
+	}
+	if out, err := store.AddOrgToGroup(ctx, uid, gid, orgURL); err != nil || !out.Registered || out.RequestID != 0 || registrations() != 1 {
+		t.Errorf("admin add = %+v, %v; registrations %d; want registered directly (no request) with one row", out, err, registrations())
+	}
+}
+
+// TestAddReposToGroupAutoApproveSurvivesACancelledRequest (AVELOXIS_TEST_DB):
+// with web.auto_approve_add_limit > 0 a small non-admin batch commits an
+// approved request, then processes it. The request is already approved and no
+// admin will ever see it, so processing must not stop when the HTTP request's
+// context is cancelled (a client disconnect) — it used to, leaving the items
+// unprocessed for good (round-14 review, deferred item; folded into round 15).
+// A trigger slows the processing step so the cancel lands inside it.
+func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+
+	const login = "_avrepos_autoapprove_cancel_probe"
+	const repoURL = "https://github.com/_avrepos-cancel-owner/_avrepos-cancel-repo"
+	const trigger = "_avtest_slow_user_repos"
+	clean := func() {
+		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+trigger+` ON aveloxis_ops.user_repos`)
+		_, _ = store.pool.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+trigger+`()`)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1)`, repoURL)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git = $1`, repoURL)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin, err := store.IsUserAdmin(ctx, uid); err != nil || admin {
+		t.Fatalf("fixture user must be a non-admin (admin=%v, err=%v)", admin, err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "repos auto-approve cancel probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Linking the repo into the group sleeps, so processing is still running
+	// when the request's context is cancelled.
+	if _, err := store.pool.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION aveloxis_ops.`+trigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
+		BEGIN IF NEW.group_id = %d THEN PERFORM pg_sleep(2); END IF; RETURN NEW; END $f$`, gid)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+trigger+` BEFORE INSERT ON aveloxis_ops.user_repos FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+trigger+`()`); err != nil {
+		t.Fatal(err)
+	}
+
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	time.AfterFunc(500*time.Millisecond, cancel)
+	out, err := store.AddReposToGroup(reqCtx, uid, gid, []string{repoURL}, 5)
+	if reqCtx.Err() == nil {
+		t.Fatal("the request context was not cancelled during the add; the probe did not exercise the cancel")
+	}
+	var status string
+	var unprocessed int
+	_ = store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, out.RequestID).Scan(&status)
+	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND repo_id IS NULL`, out.RequestID).Scan(&unprocessed)
+	if err != nil || out.RequestID == 0 || status != "approved" || unprocessed != 0 {
+		t.Errorf("auto-approved add cancelled mid-processing = %+v, %v; request %q with %d unprocessed items; want no error and every item processed", out, err, status, unprocessed)
 	}
 }

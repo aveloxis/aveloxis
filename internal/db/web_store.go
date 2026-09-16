@@ -599,11 +599,12 @@ func (s *PostgresStore) GetOrgRequests(ctx context.Context) ([]GroupOrg, error) 
 
 // HasNeverScannedOrgs reports whether any tracked org has never been
 // enumerated (last_scanned IS NULL). This is the scheduler's demand
-// signal for an immediate org scan (v0.27.52): both registration paths
-// — an admin adding an org directly (web/portal AddOrgToGroup) and an
-// admin approving a pending org request (DecideAddRequest) — insert
-// the user_org_requests row with a NULL last_scanned, so the row
-// itself carries "scan me now" across processes with no RPC.
+// signal for an immediate org scan (v0.27.52): every registration path —
+// an admin adding an org directly and a non-admin's auto-approved add of an
+// already-registered org (both AddOrgToGroup), and an admin approving a
+// pending org request (DecideAddRequest) — inserts the user_org_requests row
+// with a NULL last_scanned, so the row itself carries "scan me now" across
+// processes with no RPC.
 //
 // Orgs whose owning group is 'rejected' are EXCLUDED: the scan's
 // rejected gate skips them without ever stamping last_scanned, so

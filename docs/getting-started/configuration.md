@@ -372,7 +372,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. |
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
 | `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). |
-| `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and ALL org registrations — wait for admin approval on the Approvals page. `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
+| `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
 
 ### Monitor (dashboard, v0.23.0)
 
@@ -580,13 +580,13 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 
 ### Validation at startup
 
-`aveloxis web` runs `mailer.ValidateConfig` against the supplied block when the server boots. If validation fails, the WARN line is emitted before any user can sign up:
+`aveloxis web`, `aveloxis api` and `aveloxis serve` each run `mailer.ValidateConfig` against the supplied block when they start, and log the result: `mailer configured` (with `operator_email`), `mailer disabled`, or a WARN. If validation fails, the WARN line is emitted before any user can sign up:
 
 - `mail.gmail_user "aveloxis.io" is not an email address` — you set the bare domain. Use the full address (`ops@aveloxis.io`).
 - `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.
 - `mail.gmail_user is empty but mail.gmail_app_password is set` (or vice versa) — partial config. Either fill both fields or empty both.
 
-When validation fails, the mailer falls back to disabled behavior (no email sent, no errors raised by calling code) so the rest of the application keeps working. Fix the config and restart `aveloxis web` to enable the mailer.
+When validation fails, the mailer falls back to disabled behavior (no email sent, no errors raised by calling code) so the rest of the application keeps working. Fix the config and restart the processes (`aveloxis stop all`, then `aveloxis start all`) to enable the mailer.
 
 ### Verifying the setup with `aveloxis test-mail`
 

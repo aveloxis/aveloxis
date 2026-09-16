@@ -21,7 +21,6 @@
 # undocumented sibling in the same file shipped green.
 #
 # Regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run GodocIsAttached
-cmd/aveloxis/main.go::mailerConfigFrom<-digestMailerAdapter
 cmd/aveloxis/shadow_diff.go::shadowTable<-shadowTables
 internal/api/analytics.go::recordComparison<-resolveEntityRepos
 internal/api/portal.go::homeReposMaxLimit<-homeCacheKey

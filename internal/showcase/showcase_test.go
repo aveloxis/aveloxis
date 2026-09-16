@@ -519,3 +519,47 @@ func TestShowcaseCarriesEcosystemAssociation(t *testing.T) {
 		}
 	}
 }
+
+// TestShowcaseFooterLinksTheBlog: every generated showcase page links the blog
+// from its footer row, as the hand-written pages do from their nav (the
+// showcase pages have no top nav). Scoped to the rendered footer row so a link
+// elsewhere on the page does not satisfy it.
+func TestShowcaseFooterLinksTheBlog(t *testing.T) {
+	render := map[string]func(*strings.Builder) error{
+		"index": func(b *strings.Builder) error {
+			return RenderIndex(b, IndexData{BaseURL: "https://aveloxis.io",
+				GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
+				Collections: []CollectionCard{{Slug: "cncf", Name: "CNCF", Groups: 1, Repos: 180}}})
+		},
+		"collection": func(b *strings.Builder) error { return RenderCollection(b, hostileCollection()) },
+		"repo":       func(b *strings.Builder) error { return RenderRepo(b, hostileRepoPage()) },
+		"compare-demo": func(b *strings.Builder) error {
+			return RenderComparePage(b, ComparePageData{
+				BaseURL:     "https://aveloxis.io",
+				GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
+				WindowLabel: "trailing 12 months, weekly",
+				Repos:       []CompareRepoRef{{Label: "pandas-dev/pandas", Slug: "pandas-dev-pandas", Color: "#2563eb"}},
+				Charts:      []RepoChart{{Title: "Issues", SVG: template.HTML("<svg><polyline/></svg>")}},
+			})
+		},
+	}
+	for name, fn := range render {
+		var b strings.Builder
+		if err := fn(&b); err != nil {
+			t.Fatalf("%s render: %v", name, err)
+		}
+		out := b.String()
+		i := strings.Index(out, `<div class="foot">`)
+		if i < 0 {
+			t.Errorf("%s page has no footer row", name)
+			continue
+		}
+		foot := out[i:]
+		if j := strings.Index(foot, "</div>"); j >= 0 {
+			foot = foot[:j]
+		}
+		if !strings.Contains(foot, `<a href="/blog/index.html">Blog</a>`) {
+			t.Errorf("%s page's footer row does not link the blog:\n%s", name, foot)
+		}
+	}
+}

@@ -258,6 +258,46 @@ var deployChecklists = map[string][]deployStep{
 	// binary without a seam, and WithSendFunc panics outside tests. No
 	// schema change.
 	"0.29.33": v029DeployChecklist,
+	// v0.29.34: round 8. The production mail deliverer's wiring is tested
+	// (a wrong flag would have refused every production Send with CI
+	// green); confirming a link reads the token's owner in the same SQL
+	// statement that consumes it. No schema change.
+	"0.29.34": v029DeployChecklist,
+	// v0.29.35: round 9. How serve, web and api get their mailer is tested
+	// from a JSON config; the confirmation email and dashboard banner state
+	// db.EmailConfirmationLifetime instead of a hard-coded "24 hours"; the
+	// API logs a failed add-request lookup. serve now logs its mailer line
+	// ("mailer configured" / "mailer disabled", or the "mailer configuration
+	// invalid" WARN) at startup even without mail.operator_email. No schema
+	// change.
+	"0.29.35": v029DeployChecklist,
+	// v0.29.36: round 10. Approving a pending group mails its requester only
+	// from the request that approved it (ApproveGroup returns the requester),
+	// and a failed API group decision is logged; the dashboard banner states
+	// how long confirmation links are valid instead of a countdown. No schema
+	// change.
+	"0.29.36": v029DeployChecklist,
+	// v0.29.37: round 11. Re-approving an approved repos add-request now
+	// resumes its processing pass, as the processing WARN and
+	// docs/guide/api.md always said; re-approving an org request re-runs its
+	// registration. A failed API add-request decision is logged. No schema
+	// change.
+	"0.29.37": v029DeployChecklist,
+	// v0.29.38: round 12. An org approval's flip and registration are one
+	// transaction; re-approving an approved org request that lacks its
+	// registration completes it and notifies the requester. A registration in
+	// a rejected group no longer auto-approves another group's add of the same
+	// org, so such adds pend for review again. No schema change.
+	"0.29.38": v029DeployChecklist,
+	// v0.29.39: round 13. A non-admin's auto-approved org add writes its
+	// audit request and the registration in one transaction (a failure used
+	// to leave an approved request with nothing tracked). No schema change.
+	"0.29.39": v029DeployChecklist,
+	// v0.29.40: round 14. Org registration only accepts a transaction (the
+	// admin add gets its own); the tests fail each write of an approval.
+	// The generated showcase pages link the blog from their footer; rerun
+	// `aveloxis generate-showcase` to publish that. No schema change.
+	"0.29.40": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

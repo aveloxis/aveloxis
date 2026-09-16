@@ -164,6 +164,20 @@ func TestConfirmEmailTokenEndToEnd(t *testing.T) {
 		t.Errorf("a used token must be invalid, got %v", err)
 	}
 
+	// Another account's EXPIRED link is just invalid, not a replay worth a
+	// WARN: the owner lookup must apply the same liveness rule.
+	stale, err := store.CreateEmailConfirmation(ctx, a, "a2@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_ops.email_confirmations SET expires_at = NOW() - INTERVAL '1 minute' WHERE token = $1`, stale); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ConfirmEmailToken(ctx, stale, b)
+	if !errors.Is(err, ErrConfirmationTokenInvalid) || errors.As(err, &mismatch) {
+		t.Errorf("another account's expired link = %v, want plain ErrConfirmationTokenInvalid (no owner mismatch)", err)
+	}
+
 	// An expired token is not live and does not confirm.
 	if err := store.SetUserPendingEmail(ctx, b, "b@example.com"); err != nil {
 		t.Fatal(err)

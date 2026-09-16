@@ -72,10 +72,11 @@ type Config struct {
 	GitLab *config.PlatformConfig
 }
 
-// digestMailer is the narrow mailer surface the digest ticker needs
+// DigestMailer is the narrow mailer surface the digest ticker needs
 // (v0.25.38 role-interface pattern). *mailer.Mailer satisfies it via
-// the SendVulnerabilityDigest adapter in cmd/aveloxis/main.go.
-type digestMailer interface {
+// the SendVulnerabilityDigest adapter in cmd/aveloxis/main.go. Exported so
+// that wiring can be tested there (TestProcessMailWiring).
+type DigestMailer interface {
 	SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error
 	// Deliverable reports whether a digest to `to` could reach SMTP at all
 	// (mailer.Mailer.Deliverable), checked once before the ticker starts.
@@ -164,7 +165,7 @@ type Scheduler struct {
 	// vulnerability digest. mailer is injected via SetDigestMailer
 	// from runServe; stampPath defaults to ~/.aveloxis/vuln-digest-last
 	// and is overridable in tests.
-	digestMailer    digestMailer
+	digestMailer    DigestMailer
 	digestStampPath string
 
 	// breadthWorker is constructed ONCE and reused across ticks
@@ -183,9 +184,9 @@ type Scheduler struct {
 }
 
 // SetDigestMailer injects the operator-notification mailer (v0.27.12).
-// Called by runServe after constructing the Gmail mailer; the digest
-// ticker only runs when both this and cfg.Mail.OperatorEmail are set.
-func (s *Scheduler) SetDigestMailer(m digestMailer) {
+// runServe always injects one (wireDigestMailer); whether the digest
+// ticker runs is decided once, at Run, by vulnDigestReady.
+func (s *Scheduler) SetDigestMailer(m DigestMailer) {
 	s.digestMailer = m
 }
 

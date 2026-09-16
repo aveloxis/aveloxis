@@ -125,6 +125,16 @@ func TestDashboardEmailGateThroughTheHandler(t *testing.T) {
 		if !strings.Contains(w.Body.String(), "Check your inbox to confirm your email") || !strings.Contains(w.Body.String(), "p@example.com") {
 			t.Error("the dashboard must show the pending-address banner")
 		}
+		// The banner states how long links are valid, not a countdown it
+		// cannot keep: it renders on every visit while the address is
+		// pending (round-10 review: "expires in 24 hours" was shown 23h
+		// later too).
+		if want := "Confirmation links are valid for " + mailer.DurationPhrase(db.EmailConfirmationLifetime) + " after they are sent."; !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the banner must say %q", want)
+		}
+		if strings.Contains(w.Body.String(), "The link expires in") {
+			t.Error("the banner must not count down from the full lifetime")
+		}
 	})
 
 	t.Run("an expired link no longer counts as pending", func(t *testing.T) {

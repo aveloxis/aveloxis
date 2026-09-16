@@ -21,6 +21,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/jackc/pgx/v5"
 )
 
 // AddOutcome reports what AddReposToGroup did with a batch of URLs so
@@ -213,8 +214,22 @@ func (s *PostgresStore) createAddRequest(ctx context.Context, userID int, groupI
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	requestID, err := insertAddRequest(ctx, tx, userID, groupID, kind, orgURL, urls, status)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return requestID, nil
+}
 
+// insertAddRequest writes a request and its items inside the caller's
+// transaction; createAddRequest is the stand-alone form. AddOrgToGroup's
+// auto-approve uses it to commit the audit request with the registration.
+func insertAddRequest(ctx context.Context, tx pgx.Tx, userID int, groupID int64, kind, orgURL string, urls []string, status string) (int64, error) {
 	var requestID int64
+	var err error
 	if status == "approved" {
 		err = tx.QueryRow(ctx, `
 			INSERT INTO aveloxis_ops.collection_add_requests
@@ -240,9 +255,6 @@ func (s *PostgresStore) createAddRequest(ctx context.Context, userID int, groupI
 			requestID, u); err != nil {
 			return 0, fmt.Errorf("create add request item: %w", err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
 	}
 	return requestID, nil
 }
@@ -296,8 +308,10 @@ func (s *PostgresStore) ListPendingAddRequests(ctx context.Context) ([]AddReques
 
 // DecideAddRequest flips a pending request to approved/rejected and
 // returns the request (joined to requester + group for notification).
-// changed=false means the request was already decided (double click) —
-// callers skip processing and emails. For kind='org' approvals the org
+// changed=true means this call made the decision (or completed an
+// approval, below): callers process, scan and notify. changed=false means
+// the request was already decided (double click): callers notify nobody,
+// but re-approving an approved repos request resumes its processing pass. For kind='org' approvals the org
 // registration happens HERE (INSERT into user_org_requests): presence
 // in that table means "approved to scan", which is what keeps the
 // scheduler's org tickers gate-free by construction.
@@ -320,7 +334,16 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 	if approve {
 		newStatus = "approved"
 	}
-	tag, err := s.pool.Exec(ctx, `
+	// The flip and an org approval's registration are one transaction: a
+	// failed registration approves nothing, so the admin's retry approves
+	// and notifies normally (round-12 review: registering after the flip
+	// could leave an approved org untracked, its requester never told).
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return req, false, fmt.Errorf("decide add request: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_add_requests
 		SET status = $2, decided_by = $3, decided_at = NOW()
 		WHERE request_id = $1 AND status = 'pending'`,
@@ -329,22 +352,54 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		return req, false, fmt.Errorf("decide add request: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return req, false, nil // already decided
+		// Already decided. An approved org request can still lack its
+		// registration if a release before v0.29.39 lost it (this function
+		// registered after the flip until v0.29.38, AddOrgToGroup's
+		// auto-approve until v0.29.39); re-approving registers it, and that
+		// completes the approval, so it reports changed=true and the caller
+		// notifies the requester then.
+		if approve && req.Status == "approved" && req.Kind == "org" {
+			inserted, err := registerApprovedOrg(ctx, tx, req)
+			if err != nil {
+				return req, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return req, false, fmt.Errorf("register approved org: %w", err)
+			}
+			return req, inserted, nil
+		}
+		return req, false, nil
 	}
-	req.Status = newStatus
-
 	if approve && req.Kind == "org" {
-		orgName, platformName := parseOrgURLMeta(req.OrgURL)
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO aveloxis_ops.user_org_requests
-				(user_id, group_id, org_url, org_name, platform)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (group_id, org_url) DO NOTHING`,
-			req.UserID, req.GroupID, req.OrgURL, orgName, platformName); err != nil {
-			return req, true, fmt.Errorf("register approved org: %w", err)
+		if _, err := registerApprovedOrg(ctx, tx, req); err != nil {
+			return req, false, err
 		}
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return req, false, fmt.Errorf("decide add request: %w", err)
+	}
+	req.Status = newStatus
 	return req, true, nil
+}
+
+// registerApprovedOrg records an approved org request in user_org_requests,
+// which is what lets the scheduler scan it, and reports whether it added the
+// row (false: it was already registered). Idempotent. It takes a transaction,
+// never the pool: every caller writes the approval that justifies the
+// registration in the same transaction, and a pool argument used to compile
+// at those call sites (round-14 review).
+func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, error) {
+	orgName, platformName := parseOrgURLMeta(req.OrgURL)
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO aveloxis_ops.user_org_requests
+			(user_id, group_id, org_url, org_name, platform)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (group_id, org_url) DO NOTHING`,
+		req.UserID, req.GroupID, req.OrgURL, orgName, platformName)
+	if err != nil {
+		return false, fmt.Errorf("register approved org: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // ProcessApprovedAddRequest walks the request's unprocessed items and

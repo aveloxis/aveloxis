@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,11 +29,13 @@ func TestDigestMailerAdapterReportsSkips(t *testing.T) {
 		t.Error("a disabled mailer must not report the operator address deliverable")
 	}
 	configured := digestMailerAdapter{mailer.New(mailer.Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil)}
-	if err := configured.SendVulnerabilityDigest("sec@example.com, ops@example.com", time.Now(), items); !mailer.IsSkip(err) {
-		t.Errorf("adapter with a list-valued operator_email = %v, want a skip error (no SMTP attempt)", err)
+	// ErrRecipientSkipped, not just any skip: ErrNotConfigured here would
+	// mean the adapter lost the configured mailer.
+	if err := configured.SendVulnerabilityDigest("sec@example.com, ops@example.com", time.Now(), items); !errors.Is(err, mailer.ErrRecipientSkipped) {
+		t.Errorf("adapter with a list-valued operator_email = %v, want ErrRecipientSkipped (no SMTP attempt)", err)
 	}
-	if err := configured.Deliverable("sec@example.com, ops@example.com"); err == nil {
-		t.Error("a list-valued operator_email must not be reported deliverable")
+	if err := configured.Deliverable("sec@example.com, ops@example.com"); !errors.Is(err, mailer.ErrRecipientSkipped) {
+		t.Errorf("a list-valued operator_email: Deliverable = %v, want ErrRecipientSkipped", err)
 	}
 }
 
@@ -54,8 +57,11 @@ func TestTestMailReportsWhatItDidNotSend(t *testing.T) {
 	if err := run(t, `{"mail": {}}`, "ops@example.com"); !mailer.IsSkip(err) {
 		t.Errorf("test-mail with an empty mail block = %v, want a skip error", err)
 	}
+	// ErrRecipientSkipped, not just any skip: it proves test-mail loaded the
+	// --config file (round-9 review: test-mail ignoring --config passed,
+	// because its defaults disable the mailer and that is a skip too).
 	valid := `{"mail": {"gmail_user": "ops@example.com", "gmail_app_password": "abcdefghijklmnop"}}`
-	if err := run(t, valid, "sec@example.com, ops@example.com"); !mailer.IsSkip(err) {
-		t.Errorf("test-mail with a list recipient = %v, want a skip error", err)
+	if err := run(t, valid, "sec@example.com, ops@example.com"); !errors.Is(err, mailer.ErrRecipientSkipped) {
+		t.Errorf("test-mail with a list recipient = %v, want ErrRecipientSkipped", err)
 	}
 }

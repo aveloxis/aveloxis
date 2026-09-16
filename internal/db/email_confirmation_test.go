@@ -111,9 +111,11 @@ func TestAccountEmailPostUsesPendingFlow(t *testing.T) {
 	}
 }
 
-// TestDashboardShowsPendingEmail pins that the dashboard renders a
-// banner when the user has a live pending address (they submitted an email,
-// a confirmation link for it is still valid, and they haven't clicked it).
+// TestDashboardShowsPendingEmail is a wiring check: server.go and the
+// dashboard template both reference PendingEmail, the key the pending-address
+// banner renders from. Whether the banner shows only for a live link is
+// tested through the handler in internal/web
+// (TestDashboardEmailGateThroughTheHandler).
 // The gate's redirect behavior is tested through the handler in
 // internal/web (TestDashboardEmailGateThroughTheHandler).
 func TestDashboardShowsPendingEmail(t *testing.T) {

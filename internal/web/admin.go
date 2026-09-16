@@ -59,13 +59,18 @@ func (s *Server) notifyAddRequestSubmitted(requestID int64) {
 // request, notify the requester, and (on approval) run the item
 // processing / org scan in the background so a 50K-item approval
 // doesn't block the admin's redirect. Idempotent — a double click
-// finds the request already decided and does nothing.
+// finds the request already decided (changed=false) and notifies nobody;
+// re-approving an approved repos request resumes its processing pass (items
+// are stamped as they process, so a finished pass does nothing). An org
+// re-approve that completes a missing registration is changed=true, so it
+// scans and notifies like a first approval.
 func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID int, approve bool) error {
 	req, changed, err := s.store.DecideAddRequest(ctx, requestID, adminID, approve)
 	if err != nil {
 		return err
 	}
-	if !changed {
+	resume := !changed && approve && req.Status == "approved" && req.Kind != "org"
+	if !changed && !resume {
 		return nil
 	}
 	if approve {
@@ -86,6 +91,9 @@ func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID 
 				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)
 			})
 		}
+	}
+	if !changed {
+		return nil
 	}
 	if s.mailer != nil && req.UserEmail != "" {
 		req := req
@@ -232,30 +240,22 @@ func (s *Server) handleApproveGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the requesting user + group name BEFORE flipping
-	// status, so we can email them after the flip succeeds.
-	var requesterEmail, requesterLogin, groupName string
-	_ = s.store.Pool().QueryRow(r.Context(), `
-		SELECT u.email, u.login_name, g.name
-		FROM aveloxis_ops.user_groups g
-		JOIN aveloxis_ops.users u ON u.user_id = g.user_id
-		WHERE g.group_id = $1`,
-		groupID).Scan(&requesterEmail, &requesterLogin, &groupName)
-
-	if err := s.store.ApproveGroup(r.Context(), groupID, sess.UserID); err != nil {
+	approval, approved, err := s.store.ApproveGroup(r.Context(), groupID, sess.UserID)
+	if err != nil {
 		s.logger.Warn("failed to approve group", "group_id", groupID, "error", err)
 		http.Error(w, "Failed to approve group: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Notify the requester. Best-effort — don't block the redirect on
-	// email delivery.
-	if s.mailer != nil && requesterEmail != "" {
+	// Notify the requester — only when this request approved the group, so
+	// a second click mails nobody. Best-effort — don't block the redirect
+	// on email delivery.
+	if approved && s.mailer != nil && approval.RequesterEmail != "" {
 		go func() {
 			defer safego.Recover(s.logger, "group-approved-email")
-			if err := s.mailer.SendGroupApproved(requesterEmail, requesterLogin, groupName, groupID); err != nil && !mailer.IsSkip(err) {
+			if err := s.mailer.SendGroupApproved(approval.RequesterEmail, approval.RequesterLogin, approval.GroupName, groupID); err != nil && !mailer.IsSkip(err) {
 				s.logger.Warn("failed to send group-approved email",
-					"group_id", groupID, "to", requesterEmail, "error", err)
+					"group_id", groupID, "to", approval.RequesterEmail, "error", err)
 			}
 		}()
 	}

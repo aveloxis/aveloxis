@@ -12,6 +12,7 @@ package mailer
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/mail"
@@ -239,7 +240,7 @@ func TestSendEmailConfirmationMailsTheWholeLink(t *testing.T) {
 		t.Fatalf("fixture is %d runes; it must exceed bodyValueMax (%d) to exercise the cap", n, bodyValueMax)
 	}
 	m, sent, _ := captureMailer(t)
-	if err := m.SendEmailConfirmation("user@example.com", "alice", longURL); err != nil {
+	if err := m.SendEmailConfirmation("user@example.com", "alice", longURL, time.Hour); err != nil {
 		t.Fatalf("SendEmailConfirmation = %v", err)
 	}
 	if len(*sent) != 1 {
@@ -251,7 +252,7 @@ func TestSendEmailConfirmationMailsTheWholeLink(t *testing.T) {
 	}
 
 	m, sent, _ = captureMailer(t)
-	if err := m.SendEmailConfirmation("user@example.com", "alice", "http://localhost:8082/account/email/confirm?token=ab\u202ecd"); err != nil {
+	if err := m.SendEmailConfirmation("user@example.com", "alice", "http://localhost:8082/account/email/confirm?token=ab\u202ecd", time.Hour); err != nil {
 		t.Fatalf("SendEmailConfirmation = %v", err)
 	}
 	if len(*sent) != 1 {
@@ -376,6 +377,29 @@ func TestDelivererDefaults(t *testing.T) {
 	}
 }
 
+// TestProductionDelivererWiring pins the wiring TestDelivererDefaults cannot
+// see: deliverer() must ask the real test-binary check, and with that check
+// saying "not a test" a New mailer must resolve to smtp.SendMail (round-8
+// review: `return m.delivererFor(true)` left every production Send refusing
+// with CI green). Both by function pointer — nothing is called, so nothing
+// can dial.
+func TestProductionDelivererWiring(t *testing.T) {
+	if reflect.ValueOf(inTestBinary).Pointer() != reflect.ValueOf(testing.Testing).Pointer() {
+		t.Fatal("inTestBinary must be testing.Testing")
+	}
+	saved := inTestBinary
+	t.Cleanup(func() { inTestBinary = saved })
+	inTestBinary = func() bool { return false }
+	m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil)
+	if reflect.ValueOf(m.deliverer()).Pointer() != reflect.ValueOf(smtp.SendMail).Pointer() {
+		t.Error("outside a test binary, deliverer() must be smtp.SendMail")
+	}
+	inTestBinary = func() bool { return true }
+	if reflect.ValueOf(m.deliverer()).Pointer() == reflect.ValueOf(smtp.SendMail).Pointer() {
+		t.Error("inside a test binary, deliverer() must not be smtp.SendMail")
+	}
+}
+
 // TestSendWithoutASeamRefusesInTests: a configured mailer with no seam, used
 // from a test, returns an error instead of reaching SMTP — and that error is
 // a delivery failure, not a skip.
@@ -471,6 +495,70 @@ func TestSiteURLNormalizedOnce(t *testing.T) {
 		if !strings.Contains(string(sent), "View your group: "+wantLink+"\r\n") && !strings.Contains(string(sent), "View your group: "+wantLink+"\n") {
 			t.Errorf("site_url %q: group link is not %q:\n%s", tc.in, wantLink, sent)
 		}
+	}
+}
+
+// TestSendEmailConfirmationStatesTheLifetimeItIsGiven: the body tells the
+// user the lifetime the caller passes (db.EmailConfirmationLifetime), not a
+// number of its own (round-9 review: "24 hours" was written in the body, the
+// dashboard banner and the constant, and changing the constant passed every
+// test).
+func TestSendEmailConfirmationStatesTheLifetimeItIsGiven(t *testing.T) {
+	m, sent, _ := captureMailer(t)
+	if err := m.SendEmailConfirmation("user@example.com", "alice", "https://aveloxis.io/account/email/confirm?token=t", 90*time.Minute); err != nil {
+		t.Fatalf("SendEmailConfirmation = %v", err)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("delivered %d messages, want 1", len(*sent))
+	}
+	_, body := readSent(t, (*sent)[0])
+	if !strings.Contains(body, "This link expires in 90 minutes.") || strings.Contains(body, "24 hours") {
+		t.Errorf("the body must state the 90-minute lifetime it was given:\n%s", body)
+	}
+}
+
+func TestDurationPhrase(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{24 * time.Hour, "24 hours"},
+		{time.Hour, "1 hour"},
+		{36 * time.Hour, "36 hours"},
+		{90 * time.Minute, "90 minutes"},
+		{time.Minute, "1 minute"},
+		{90 * time.Second, "90 seconds"},
+		{time.Second, "1 second"},
+		// A sub-second remainder is dropped before the unit is chosen: a
+		// phrase may understate a lifetime, never overstate it.
+		{time.Minute + 500*time.Millisecond, "1 minute"},
+		{90*time.Second + 999*time.Millisecond, "90 seconds"},
+	} {
+		if got := DurationPhrase(tc.d); got != tc.want {
+			t.Errorf("DurationPhrase(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// TestWithSendFuncRefusesOutsideTests: the production refusal, observed by
+// swapping the test-binary check (round-9 review: the guard could be
+// deleted with every test green). The panic comes before the seam is
+// installed.
+func TestWithSendFuncRefusesOutsideTests(t *testing.T) {
+	saved := inTestBinary
+	t.Cleanup(func() { inTestBinary = saved })
+	inTestBinary = func() bool { return false }
+	m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil)
+	func() {
+		defer func() {
+			if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "test seam") {
+				t.Errorf("WithSendFunc outside a test binary: recovered %v, want a panic naming the test seam", r)
+			}
+		}()
+		m.WithSendFunc(func(string, smtp.Auth, string, []string, []byte) error { return nil })
+	}()
+	if m.sendMail != nil {
+		t.Error("WithSendFunc installed the seam outside a test binary")
 	}
 }
 

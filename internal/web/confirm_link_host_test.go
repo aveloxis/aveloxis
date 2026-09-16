@@ -16,7 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -269,8 +271,9 @@ func TestSubmitAccountEmail(t *testing.T) {
 				if len(m.sent) != 0 {
 					t.Errorf("mailed %+v, want nothing", m.sent)
 				}
-			} else if len(m.sent) != 1 || m.sent[0] != (sentConfirmation{tc.wantStored, "alice", tc.wantLink}) {
-				t.Errorf("mailed %+v, want one confirmation to %q with link %q", m.sent, tc.wantStored, tc.wantLink)
+			} else if len(m.sent) != 1 || m.sent[0] != (sentConfirmation{tc.wantStored, "alice", tc.wantLink, db.EmailConfirmationLifetime}) {
+				// The lifetime the mail states is the one the tokens have.
+				t.Errorf("mailed %+v, want one confirmation to %q with link %q stating db.EmailConfirmationLifetime", m.sent, tc.wantStored, tc.wantLink)
 			}
 			if tc.wantLog != "" && !strings.Contains(logs.String(), tc.wantLog) {
 				t.Errorf("log lacks %q:\n%s", tc.wantLog, logs.String())
@@ -309,7 +312,10 @@ func (f *fakeEmailStore) CreateEmailConfirmation(_ context.Context, userID int, 
 	return "tok123", nil
 }
 
-type sentConfirmation struct{ to, login, link string }
+type sentConfirmation struct {
+	to, login, link string
+	lifetime        time.Duration
+}
 
 type fakeConfirmMailer struct {
 	site    string
@@ -320,8 +326,8 @@ type fakeConfirmMailer struct {
 
 func (f *fakeConfirmMailer) SiteURL() string { return f.site }
 func (f *fakeConfirmMailer) Enabled() bool   { return f.enabled }
-func (f *fakeConfirmMailer) SendEmailConfirmation(to, login, link string) error {
-	f.sent = append(f.sent, sentConfirmation{to, login, link})
+func (f *fakeConfirmMailer) SendEmailConfirmation(to, login, link string, lifetime time.Duration) error {
+	f.sent = append(f.sent, sentConfirmation{to, login, link, lifetime})
 	return f.sendErr
 }
 

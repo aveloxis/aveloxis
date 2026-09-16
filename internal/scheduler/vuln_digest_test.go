@@ -276,7 +276,7 @@ func TestVulnDigestReady(t *testing.T) {
 	mail := &config.MailConfig{OperatorEmail: "ops@example.com"}
 	for _, tc := range []struct {
 		name    string
-		mailer  digestMailer
+		mailer  DigestMailer
 		mail    *config.MailConfig
 		wantOK  bool
 		wantErr bool // a deliverability error the caller logs at ERROR
@@ -305,7 +305,7 @@ func TestStartVulnDigest(t *testing.T) {
 	mail := &config.MailConfig{OperatorEmail: "ops@example.com"}
 	for _, tc := range []struct {
 		name     string
-		mailer   digestMailer
+		mailer   DigestMailer
 		mail     *config.MailConfig
 		wantTick bool
 		wantLog  string

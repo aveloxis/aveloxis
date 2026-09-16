@@ -205,7 +205,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   {{end}}
   <div class="foot">
     <span>© 2026 University of Missouri · MIT License</span>
-    <span><a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a> · <a href="https://aveloxis.readthedocs.io">Docs</a></span>
+    <span><a href="/">aveloxis.io</a> · <a href="/blog/index.html">Blog</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a> · <a href="https://aveloxis.readthedocs.io">Docs</a></span>
   </div>
   {{template "foot-eco"}}
 </div>
@@ -282,7 +282,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   {{end}}
   <div class="foot">
     <span>© 2026 University of Missouri · MIT License</span>
-    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
+    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="/blog/index.html">Blog</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
   </div>
   {{template "foot-eco"}}
 </div>
@@ -458,7 +458,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   </div>
   <div class="foot">
     <span>© 2026 University of Missouri · MIT License</span>
-    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
+    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="/blog/index.html">Blog</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
   </div>
   {{template "foot-eco"}}
 </div>
@@ -520,7 +520,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
   </div>
   <div class="foot">
     <span>© 2026 University of Missouri · MIT License</span>
-    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
+    <span><a href="/showcase/index.html">All collections</a> · <a href="/">aveloxis.io</a> · <a href="/blog/index.html">Blog</a> · <a href="https://github.com/aveloxis/aveloxis">GitHub</a></span>
   </div>
   {{template "foot-eco"}}
 </div>

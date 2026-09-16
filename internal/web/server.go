@@ -190,6 +190,10 @@ func (s *Server) WithMailer(m *mailer.Mailer) *Server {
 	return s
 }
 
+// Mailer returns the mailer WithMailer attached, or nil. `aveloxis web`'s
+// wiring test reads it (cmd/aveloxis TestProcessMailWiring).
+func (s *Server) Mailer() *mailer.Mailer { return s.mailer }
+
 // Handler returns the HTTP handler for the web GUI.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -807,6 +811,10 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Groups":       groups,
 		"PendingOnly":  pendingOnly,
 		"PendingEmail": pendingEmail,
+		// How long links are valid. The banner shows on every visit while
+		// the address is pending, so it states the validity window, not
+		// time left on this link.
+		"ConfirmationLifetime": mailer.DurationPhrase(db.EmailConfirmationLifetime),
 	})
 }
 
@@ -944,7 +952,7 @@ type accountEmailStore interface {
 type confirmationMailer interface {
 	SiteURL() string
 	Enabled() bool
-	SendEmailConfirmation(toEmail, login, confirmURL string) error
+	SendEmailConfirmation(toEmail, login, confirmURL string, lifetime time.Duration) error
 }
 
 var (
@@ -987,7 +995,7 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmatio
 		logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
 		return "Could not generate confirmation. Try again."
 	}
-	if err := p.mailer.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token)); err != nil {
+	if err := p.mailer.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token), db.EmailConfirmationLifetime); err != nil {
 		if !mailer.IsSkip(err) { // a skip was already logged by the mailer
 			logger.Warn("failed to send confirmation email",
 				"user_id", sess.UserID, "email", email, "error", err)
@@ -1113,7 +1121,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 // logged-in user and redirects to the dashboard. A link that is not a live
 // token for THIS account — unknown, expired, used, or another account's —
 // redirects to /account/email?expired=1 and changes nothing (the owner's
-// link stays usable; another account's link is logged at WARN); a database
+// link stays usable; another account's still-live link is logged at WARN); a database
 // failure redirects to ?error=1 with the transaction rolled back, so the
 // link still works. The form explains both.
 func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {

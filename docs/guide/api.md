@@ -1041,7 +1041,7 @@ Per-user:
   `{linked, enqueued, pending_approval?, request_id?, registered?}`.
   Org outcomes (v0.27.84): `registered: 1` means the org is tracked
   NOW — admin adds always register, and a non-admin's add of an org
-  that is ALREADY registered in any group auto-approves (it adds zero
+  that is ALREADY registered in a group that is not rejected auto-approves (it adds zero
   new collection: the org's repos are already tracked and its future
   repos already auto-enqueue via the existing registration; an
   auto-approved audit row is still recorded). A non-admin's add of a
@@ -1093,7 +1093,9 @@ Admin-only:
   Approving a `repos` request creates + enqueues + links each item
   in the background (resumable — re-approving picks up unprocessed
   items); approving an `org` request registers the org for tracking
-  (the scheduler's next org-scan tick collects its repos). The
+  (the scheduler's next org-scan tick collects its repos; re-approving
+  an approved org request whose registration is missing registers it,
+  returns `changed: true` and notifies the requester). The
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
   request was already decided (idempotent double-click).

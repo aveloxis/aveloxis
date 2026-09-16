@@ -4,6 +4,8 @@
 package mailer
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -130,5 +132,20 @@ func TestNormalizedAppPassword_StripsSpaces(t *testing.T) {
 	want := "abcdefghijklmnop"
 	if got != want {
 		t.Errorf("normalizeAppPassword(%q) = %q, want %q — Gmail's UI displays App Passwords with spaces every 4 chars but the auth token is the contiguous 16 chars. Without stripping, smtp.PlainAuth sends the spaced version and Gmail rejects with 535.", "abcd efgh ijkl mnop", got, want)
+	}
+}
+
+// TestValidateAndLogNamesTheOperatorAddress: the startup line of a
+// configured mailer says where operator notifications go (round-9 review:
+// an operator_email lost between aveloxis.json and the mailer silenced the
+// add-request notices and the digest with nothing in any log).
+func TestValidateAndLogNamesTheOperatorAddress(t *testing.T) {
+	var logs bytes.Buffer
+	cfg := Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", OperatorEmail: "operator@example.com"}
+	if err := ValidateAndLog(cfg, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "operator_email=operator@example.com") {
+		t.Errorf("the configured-mailer line must name operator_email; log:\n%s", logs.String())
 	}
 }

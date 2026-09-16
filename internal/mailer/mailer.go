@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/mail"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,17 +78,24 @@ type Mailer struct {
 // with it). It panics outside a test binary, so a production caller fails
 // on first use rather than silently dropping mail.
 func (m *Mailer) WithSendFunc(f func(addr string, a smtp.Auth, from string, to []string, msg []byte) error) *Mailer {
-	if !testing.Testing() {
+	if !inTestBinary() {
 		panic("mailer.WithSendFunc is a test seam; production mail goes through smtp.SendMail")
 	}
 	m.sendMail = f
 	return m
 }
 
-// deliverer resolves the sender Send uses. TestDelivererDefaults pins both
-// defaults.
+// inTestBinary is testing.Testing, held in a variable only so tests can check
+// production behavior without running in a production binary: the deliverer
+// resolution (TestProductionDelivererWiring) and WithSendFunc's refusal
+// (TestWithSendFuncRefusesOutsideTests).
+var inTestBinary = testing.Testing
+
+// deliverer resolves the sender Send uses. TestDelivererDefaults pins what
+// each answer resolves to; TestProductionDelivererWiring pins that this asks
+// the real check.
 func (m *Mailer) deliverer() func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
-	return m.delivererFor(testing.Testing())
+	return m.delivererFor(inTestBinary())
 }
 
 // delivererFor is the test seam when one is installed, smtp.SendMail in a
@@ -483,12 +491,12 @@ Sign in: %s
 	return m.Send(toEmail, subject, body)
 }
 
-// SendEmailConfirmation is the email sent when a user submits an
-// email at /account/email. Contains a click-through link to
-// /account/email/confirm?token=... that consumes the token and
-// promotes the token's address to users.email. v0.20.4. Tokens expire in
-// EmailConfirmationLifetime (24 hours by default).
-// SendEmailConfirmation mails a click-to-confirm link.
+// SendEmailConfirmation mails the click-to-confirm link sent when a user
+// submits an address at /account/email (v0.20.4). Following the link
+// consumes its token and promotes the token's address to users.email.
+// lifetime is how long the token lives, and the body states it. The web
+// caller passes db.EmailConfirmationLifetime (TestSubmitAccountEmail pins
+// that), so the email and the token agree (round-9 review).
 //
 // confirmURL is scrubbed like any other caller-supplied value, not exempted
 // as package-built: it USED to be assembled from the request Host header
@@ -500,7 +508,7 @@ Sign in: %s
 // layer. Scrubbed with the UNCAPPED sanitizer: a legitimate site_url plus
 // path and token can exceed bodyValueMax, and truncating would silently
 // mail a broken link.
-func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string) error {
+func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string, lifetime time.Duration) error {
 	subject := "Confirm your Aveloxis email address"
 	body := fmt.Sprintf(`Hello %s,
 
@@ -508,11 +516,11 @@ Please confirm your email address by clicking the link below:
 
 %s
 
-This link expires in 24 hours. If you didn't request this confirmation,
+This link expires in %s. If you didn't request this confirmation,
 ignore this email — your account email won't change without confirming.
 
 — Aveloxis
-`, sanitizeBodyValue(login), sanitizeBodyURL(confirmURL))
+`, sanitizeBodyValue(login), sanitizeBodyURL(confirmURL), DurationPhrase(lifetime))
 	return m.Send(toEmail, subject, body)
 }
 
@@ -675,4 +683,25 @@ type VulnDigestItem struct {
 	Severity    string
 	PackagePurl string
 	Summary     string
+}
+
+// DurationPhrase renders a positive lifetime for a person to read:
+// "24 hours", "1 hour", "90 minutes", "45 seconds". Any sub-second remainder
+// is dropped first (a phrase may understate a lifetime, never overstate it),
+// then the largest unit that states the rest exactly is used. The
+// confirmation email and the dashboard banner both render
+// db.EmailConfirmationLifetime with it.
+func DurationPhrase(d time.Duration) string {
+	d = d.Truncate(time.Second)
+	n, unit := int64(d/time.Second), "second"
+	switch {
+	case d%time.Hour == 0:
+		n, unit = int64(d/time.Hour), "hour"
+	case d%time.Minute == 0:
+		n, unit = int64(d/time.Minute), "minute"
+	}
+	if n == 1 {
+		return "1 " + unit
+	}
+	return strconv.FormatInt(n, 10) + " " + unit + "s"
 }

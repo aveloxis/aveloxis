@@ -101,7 +101,7 @@ to log in as a different user.
 {{if .PendingEmail}}
 <div class="card" style="background:#dbeafe;border:1px solid #3b82f6">
 <strong>Check your inbox to confirm your email.</strong>
-<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>{{.PendingEmail}}</code>. Click the link in that email to finish setting up your account. The link expires in 24 hours. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
+<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>{{.PendingEmail}}</code>. Click the link in that email to finish setting up your account. Confirmation links are valid for {{.ConfirmationLifetime}} after they are sent. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
 </div>
 {{end}}
 {{if .PendingOnly}}

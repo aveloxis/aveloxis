@@ -63,8 +63,9 @@ func (s *PostgresStore) CreateEmailConfirmation(ctx context.Context, userID int,
 
 // ErrConfirmationTokenInvalid is returned when the supplied token is not
 // a live token for the user presenting it: unknown, expired, already used,
-// or issued to another account. Callers treat all of these the same —
-// invite the user to start a fresh confirmation.
+// or issued to another account. The user is told the same thing in every
+// case — start a fresh confirmation; TokenOwnerMismatchError (which wraps
+// this) only lets a caller log another account's live link as such.
 var ErrConfirmationTokenInvalid = errors.New("confirmation token is invalid, expired, or not this account's")
 
 // TokenOwnerMismatchError is the ErrConfirmationTokenInvalid returned when
@@ -107,31 +108,34 @@ func (s *PostgresStore) ConfirmEmailToken(ctx context.Context, token string, use
 		}
 		return "", err
 	}
-	var email string
+	// One statement consumes the token AND reads who owns it, so the owner
+	// lookup cannot drift outside the transaction or grow its own error arm
+	// (round-8 review). A data-modifying CTE and its outer query share one
+	// snapshot, so the owner subquery still sees the row the CTE deletes.
+	var email *string
+	var owner *int
 	if err := tx.QueryRow(ctx, `
-		DELETE FROM aveloxis_ops.email_confirmations
-		WHERE token = $1 AND user_id = $2 AND expires_at > NOW()
-		RETURNING email`, token, userID).Scan(&email); err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return "", err
+		WITH consumed AS (
+		    DELETE FROM aveloxis_ops.email_confirmations
+		    WHERE token = $1 AND user_id = $2 AND expires_at > NOW()
+		    RETURNING email)
+		SELECT (SELECT email FROM consumed),
+		       (SELECT user_id FROM aveloxis_ops.email_confirmations
+		        WHERE token = $1 AND expires_at > NOW())`, token, userID).Scan(&email, &owner); err != nil {
+		return "", err
+	}
+	if email == nil {
+		if owner != nil && *owner != userID {
+			return "", &TokenOwnerMismatchError{OwnerID: *owner}
 		}
-		var owner int
-		switch ownerErr := tx.QueryRow(ctx,
-			`SELECT user_id FROM aveloxis_ops.email_confirmations WHERE token = $1 AND expires_at > NOW()`, token).Scan(&owner); {
-		case ownerErr == nil && owner != userID:
-			return "", &TokenOwnerMismatchError{OwnerID: owner}
-		case ownerErr == nil || errors.Is(ownerErr, pgx.ErrNoRows):
-			return "", ErrConfirmationTokenInvalid
-		default:
-			return "", ownerErr
-		}
+		return "", ErrConfirmationTokenInvalid
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE aveloxis_ops.users
 		SET email = $2,
 		    email_pending = NULL,
 		    email_confirmed_at = NOW()
-		WHERE user_id = $1`, userID, email); err != nil {
+		WHERE user_id = $1`, userID, *email); err != nil {
 		return "", err
 	}
 	// Once one is confirmed, the user's other outstanding tokens are stale.
@@ -142,7 +146,7 @@ func (s *PostgresStore) ConfirmEmailToken(ctx context.Context, token string, use
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	return email, nil
+	return *email, nil
 }
 
 // GetUserLivePendingEmail returns the address awaiting confirmation for

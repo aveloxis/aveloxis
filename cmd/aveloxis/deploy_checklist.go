@@ -303,6 +303,10 @@ var deployChecklists = map[string][]deployStep{
 	// request is cancelled; the admin org add's transaction errors are
 	// tested. No schema change.
 	"0.29.41": v029DeployChecklist,
+	// v0.29.42: round 16. Tests and comments only (the auto-approve cancel
+	// test checks the repo reached the group; the admin org-add test cleans
+	// up the rows it exists to catch). No schema change.
+	"0.29.42": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

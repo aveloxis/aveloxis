@@ -2468,7 +2468,9 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 // maybeScanNewOrgs runs on every poll tick (default 10s). A
 // user_org_requests row with last_scanned IS NULL is the
 // cross-process signal that an org was just registered — an admin
-// added it directly (portal API or web GUI), or an admin approved a
+// added it directly, a non-admin's add of an org already registered in a
+// group that is not rejected auto-approved (both through AddOrgToGroup:
+// portal API, web GUI or the CLI org loaders), or an admin approved a
 // pending org request (DecideAddRequest inserts the registration).
 // Instead of waiting up to 4 hours for orgRefreshTicker, launch an
 // immediate scan scoped to the never-scanned orgs so already-tracked
@@ -2477,9 +2479,9 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 //
 // A non-admin's add of a NEW org never fires this: it pends in
 // collection_add_requests, and no user_org_requests row exists until an
-// admin approves (v0.27.20). A non-admin's add of an org already registered
-// in a group that is not rejected auto-approves and registers at once
-// (v0.27.84), so it does fire this. Rejected-group orgs are excluded by
+// admin approves (v0.27.20). A non-admin's auto-approved add (v0.27.84) and
+// an admin's add fire it only when they add a row: re-adding an org this
+// group already registers inserts nothing, so nothing is never-scanned. Rejected-group orgs are excluded by
 // the probe itself — the scan's rejected gate deliberately never
 // stamps them, so counting them would re-fire the probe every tick.
 // A failed enumeration is also safe: MarkOrgRequestScanned stamps

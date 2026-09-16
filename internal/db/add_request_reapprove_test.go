@@ -431,6 +431,11 @@ func TestAddOrgToGroupAdminRegistrationFailures(t *testing.T) {
 	const orgURL = "https://github.com/_avadmin-orgadd-failure-probe"
 	clean := func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		// Requests too: the test exists to catch the admin path writing one,
+		// and a leftover request blocks the group and user deletes below,
+		// leaving an admin user in the shared DB (round-16 review).
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
 	}
@@ -541,10 +546,14 @@ func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
 		t.Fatal("the request context was not cancelled during the add; the probe did not exercise the cancel")
 	}
 	var status string
-	var unprocessed int
+	var notDone, links int
 	_ = store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, out.RequestID).Scan(&status)
-	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND repo_id IS NULL`, out.RequestID).Scan(&unprocessed)
-	if err != nil || out.RequestID == 0 || status != "approved" || unprocessed != 0 {
-		t.Errorf("auto-approved add cancelled mid-processing = %+v, %v; request %q with %d unprocessed items; want no error and every item processed", out, err, status, unprocessed)
+	// An item stamped -1 (processed-with-error) is not done either: a
+	// cancelled link stamped that way left the repo out of the group with
+	// this test green (round-16 review).
+	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND (repo_id IS NULL OR repo_id <= 0)`, out.RequestID).Scan(&notDone)
+	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_repos WHERE group_id = $1`, gid).Scan(&links)
+	if err != nil || out.RequestID == 0 || status != "approved" || notDone != 0 || links != 1 {
+		t.Errorf("auto-approved add cancelled mid-processing = %+v, %v; request %q with %d items unprocessed or failed, %d repos linked; want no error, every item processed, the repo in the group", out, err, status, notDone, links)
 	}
 }

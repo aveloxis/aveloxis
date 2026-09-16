@@ -1334,12 +1334,14 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			s.logger.Warn("failed to add org to group", "error", err)
 		case out.Registered:
-			// Registered now (an admin's add, or a non-admin's auto-approved
-			// add of an org already tracked elsewhere): scan immediately.
+			// Registered (an admin's add, or a non-admin's auto-approved add of
+			// an org already registered in a group that is not rejected —
+			// including this group, when the add inserted nothing): scan
+			// immediately.
 			// Use a detached context — the HTTP request context gets canceled on redirect.
 			safego.Go(s.logger, "org-repo-scan", func() { s.scanOrgRepos(context.Background(), groupID, orgURL) })
 		default:
-			// v0.27.20: non-admin org registrations pend on an
+			// v0.27.20: a non-admin's add of a NEW org pends on an
 			// add-request — nothing scans until an admin approves.
 			s.notifyAddRequestSubmitted(out.RequestID)
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_pending=1", groupID), http.StatusFound)

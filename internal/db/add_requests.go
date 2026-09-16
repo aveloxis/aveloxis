@@ -388,12 +388,15 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 
 // registerApprovedOrg records an approved org request in user_org_requests,
 // which is what lets the scheduler scan it, and reports whether it added the
-// row (false: it was already registered). Idempotent. It takes a transaction,
-// never the pool, so a caller that writes the approval justifying the
-// registration (DecideAddRequest's flip, AddOrgToGroup's auto-approve audit
-// request) cannot register outside that transaction — a pool argument used
-// to compile there (round-14 review). The admin add and the half-state
-// re-approve pass a transaction that holds only the registration.
+// row (false: it was already registered). Idempotent. It takes a
+// transaction, never the pool: a caller that writes the approval justifying
+// the registration (DecideAddRequest's flip, AddOrgToGroup's auto-approve
+// audit request) must register in that same transaction, and a pool argument
+// used to compile there (round-14 review). The type cannot stop a caller from
+// opening a second transaction; the first-write-fails-at-COMMIT cases in
+// TestDecideAddRequestOrgRegistrationFailures and
+// TestAddOrgToGroupAutoApproveIsAtomic catch that. The admin add and the
+// half-state re-approve pass a transaction that holds only the registration.
 func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, error) {
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
 	tag, err := tx.Exec(ctx, `

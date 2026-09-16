@@ -61,7 +61,7 @@ func TestOrgRegistrationGatedOnAdmin(t *testing.T) {
 	for _, needle := range []string{"IsUserAdmin", "createAddRequest", "registerApprovedOrg(", `"rejected"`, "IsOrgRegisteredAnywhere"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("AddOrgToGroup must gate registration on admin role (needle %q missing) — "+
-				"a non-admin org registration must pend on an add-request, never reach "+
+				"a non-admin's add of a NEW org must pend on an add-request, never reach "+
 				"user_org_requests directly", needle)
 		}
 	}

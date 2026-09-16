@@ -4,18 +4,24 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"crypto/tls"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// TestEmailConfirmURL pins which Host headers may be trusted to build an
+// TestEmailConfirmBase pins which Host headers may be trusted to build an
 // emailed confirmation link when mail.site_url is unset. Everything
 // non-loopback is attacker-reachable: the client sets Host, and a proxy
 // forwarding it (nginx's usual `proxy_set_header Host $host`) passes it
@@ -29,9 +35,9 @@ import (
 // into the mailed link. Malformed brackets and bracketed non-IPv6 hosts are
 // refused, and every IPv6 literal — IPv4-mapped included — is bracketed in
 // the link.
-func TestEmailConfirmURL(t *testing.T) {
+func TestEmailConfirmBase(t *testing.T) {
 	const token = "0123abcd"
-	const path = "/account/email/confirm?token=" + token
+	const path = ""
 	for _, tc := range []struct {
 		name    string
 		siteURL string
@@ -87,16 +93,17 @@ func TestEmailConfirmURL(t *testing.T) {
 			if tc.tls {
 				r.TLS = &tls.ConnectionState{}
 			}
-			got, ok := emailConfirmURL(tc.siteURL, r, token)
+			got, ok := emailConfirmBase(tc.siteURL, r)
 			if tc.want == "" {
 				if ok {
-					t.Fatalf("emailConfirmURL(site_url=%q, Host=%q) = %q — this Host must be refused", tc.siteURL, tc.host, got)
+					t.Fatalf("emailConfirmBase(site_url=%q, Host=%q) = %q — this Host must be refused", tc.siteURL, tc.host, got)
 				}
 				return
 			}
 			if !ok || got != tc.want {
-				t.Fatalf("emailConfirmURL(site_url=%q, Host=%q) = %q, %v; want %q", tc.siteURL, tc.host, got, ok, tc.want)
+				t.Fatalf("emailConfirmBase(site_url=%q, Host=%q) = %q, %v; want %q", tc.siteURL, tc.host, got, ok, tc.want)
 			}
+			got = confirmationLink(got, token)
 			if tc.siteURL != "" {
 				return
 			}
@@ -123,26 +130,185 @@ func TestEmailConfirmURL(t *testing.T) {
 	}
 }
 
-// TestHandleAccountEmailUsesTheSharedParsers is the wiring half of the two
-// runtime tests: the handler must take the address through the mailer's
-// recipient parser (the same one Send enforces) and build the link only
-// through emailConfirmURL. Assembling a URL inline from r.Host is how the
-// unchecked Host reached the mail before.
-func TestHandleAccountEmailUsesTheSharedParsers(t *testing.T) {
-	src := srctest.Read(t, "internal/web/server.go")
-	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) handleAccountEmail("))
-	for _, needle := range []string{
-		"email, err := mailer.ParseRecipient(r.FormValue(\"email\"))",
-		"confirmURL, ok := emailConfirmURL(s.mailer.SiteURL(), r, token)",
-		"s.mailer.SendEmailConfirmation(email, sess.LoginName, confirmURL)",
+// TestSubmitAccountEmail drives the account-email POST end to end against
+// fakes of the two things it touches. It replaces a source pin that a
+// round-2 review escaped twice with every test green: re-deriving the link
+// as `(&url.URL{Host: r.Host, ...}).String()` (the original attacker-Host
+// bug) and storing the raw form value.
+//
+// The order is part of the contract: whether a link can be mailed at all is
+// decided BEFORE anything is stored, so a refusal leaves no email_pending
+// behind for the dashboard to announce as "we sent a confirmation link".
+func TestSubmitAccountEmail(t *testing.T) {
+	const (
+		invalid    = "Please enter a valid email address."
+		notEnabled = "Email confirmation is not configured on this site. Contact the operator."
+		saveFailed = "Could not save email. Try again."
+		tokenFail  = "Could not generate confirmation. Try again."
+	)
+	for _, tc := range []struct {
+		name       string
+		form       string
+		site       string
+		enabled    bool
+		host       string
+		pendingErr error
+		confirmErr error
+		sendErr    error
+		wantMsg    string // "" = accepted (the handler redirects)
+		wantStored string // the address both store calls receive; "" = no store call
+		wantLink   string // the mailed link; "" = nothing mailed
+		wantLog    string // a log line that must appear
+		noLog      string // a log line that must not appear
+	}{
+		{name: "site_url wins over a hostile Host; the bare addr-spec is stored and mailed",
+			form: "Real Name <user@example.com>", site: "https://aveloxis.io", enabled: true, host: "evil.example.com",
+			wantStored: "user@example.com", wantLink: "https://aveloxis.io/account/email/confirm?token=tok123"},
+		{name: "loopback Host without site_url",
+			form: "user@example.com", enabled: true, host: "localhost:8082",
+			wantStored: "user@example.com", wantLink: "http://localhost:8082/account/email/confirm?token=tok123"},
+		{name: "hostile Host without site_url is refused before anything is stored",
+			form: "user@example.com", enabled: true, host: "evil.example.com",
+			wantMsg: notEnabled, wantLog: "refusing to send an email confirmation link"},
+		{name: "text in a loopback port is refused before anything is stored",
+			form: "user@example.com", enabled: true, host: "localhost:URGENT-reverify-at-evil.example.com",
+			wantMsg: notEnabled},
+		{name: "a disabled mailer is refused before anything is stored",
+			form: "user@example.com", site: "https://aveloxis.io", enabled: false, host: "aveloxis.io",
+			wantMsg: notEnabled, wantLog: "mail is not configured"},
+		{name: "an address that needs quoting is refused",
+			form: `"john  smith"@example.com`, site: "https://aveloxis.io", enabled: true, wantMsg: invalid},
+		{name: "an over-long address is refused",
+			form: strings.Repeat("a", 65) + "@example.com", site: "https://aveloxis.io", enabled: true, wantMsg: invalid},
+		{name: "not an address", form: "not-an-address", site: "https://aveloxis.io", enabled: true, wantMsg: invalid},
+		{name: "store failure stops before a token or a mail",
+			form: "user@example.com", site: "https://aveloxis.io", enabled: true, pendingErr: errors.New("db down"),
+			wantMsg: saveFailed, wantStored: "user@example.com", wantLog: "failed to set pending email"},
+		{name: "token failure stops before a mail",
+			form: "user@example.com", site: "https://aveloxis.io", enabled: true, confirmErr: errors.New("db down"),
+			wantMsg: tokenFail, wantStored: "user@example.com", wantLog: "failed to create email confirmation"},
+		{name: "a delivery failure is logged and the user is still redirected",
+			form: "user@example.com", site: "https://aveloxis.io", enabled: true, sendErr: errors.New("535 rejected"),
+			wantStored: "user@example.com", wantLink: "https://aveloxis.io/account/email/confirm?token=tok123",
+			wantLog: "failed to send confirmation email"},
+		{name: "a mailer skip is not logged again",
+			form: "user@example.com", site: "https://aveloxis.io", enabled: true, sendErr: mailer.ErrRecipientSkipped,
+			wantStored: "user@example.com", wantLink: "https://aveloxis.io/account/email/confirm?token=tok123",
+			noLog: "failed to send confirmation email"},
 	} {
-		if n := strings.Count(body, needle); n != 1 {
-			t.Errorf("handleAccountEmail contains %q %d times, want exactly once", needle, n)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeEmailStore{pendingErr: tc.pendingErr, confirmErr: tc.confirmErr}
+			m := &fakeConfirmMailer{site: tc.site, enabled: tc.enabled, sendErr: tc.sendErr}
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			r := httptest.NewRequest("POST", "/account/email", strings.NewReader(url.Values{"email": {tc.form}}.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if tc.host != "" {
+				r.Host = tc.host
+			}
+
+			msg := submitAccountEmail(r.Context(), st, m, logger, r, &Session{UserID: 7, LoginName: "alice"})
+
+			if msg != tc.wantMsg {
+				t.Errorf("message = %q, want %q", msg, tc.wantMsg)
+			}
+			var wantCalls []string
+			if tc.wantStored != "" {
+				wantCalls = []string{tc.wantStored}
+			}
+			if !slices.Equal(st.pending, wantCalls) {
+				t.Errorf("SetUserPendingEmail received %q, want %q", st.pending, wantCalls)
+			}
+			wantTokens := wantCalls
+			if tc.pendingErr != nil {
+				wantTokens = nil
+			}
+			if !slices.Equal(st.confirmations, wantTokens) {
+				t.Errorf("CreateEmailConfirmation received %q, want %q", st.confirmations, wantTokens)
+			}
+			if tc.wantLink == "" {
+				if len(m.sent) != 0 {
+					t.Errorf("mailed %+v, want nothing", m.sent)
+				}
+			} else if len(m.sent) != 1 || m.sent[0] != (sentConfirmation{tc.wantStored, "alice", tc.wantLink}) {
+				t.Errorf("mailed %+v, want one confirmation to %q with link %q", m.sent, tc.wantStored, tc.wantLink)
+			}
+			if tc.wantLog != "" && !strings.Contains(logs.String(), tc.wantLog) {
+				t.Errorf("log lacks %q:\n%s", tc.wantLog, logs.String())
+			}
+			if tc.noLog != "" && strings.Contains(logs.String(), tc.noLog) {
+				t.Errorf("log has %q:\n%s", tc.noLog, logs.String())
+			}
+		})
 	}
-	// Any "://" — `scheme + "://"`, `"http://" + r.Host` — means a URL is
-	// being assembled here rather than in emailConfirmURL.
-	if strings.Contains(body, "://") {
-		t.Error("handleAccountEmail assembles a URL inline — build the confirmation link only through emailConfirmURL, which validates the Host")
+}
+
+type fakeEmailStore struct {
+	pending, confirmations []string
+	pendingErr, confirmErr error
+}
+
+func (f *fakeEmailStore) SetUserPendingEmail(_ context.Context, _ int, email string) error {
+	f.pending = append(f.pending, email)
+	return f.pendingErr
+}
+
+func (f *fakeEmailStore) CreateEmailConfirmation(_ context.Context, _ int, email string) (string, error) {
+	f.confirmations = append(f.confirmations, email)
+	if f.confirmErr != nil {
+		return "", f.confirmErr
+	}
+	return "tok123", nil
+}
+
+type sentConfirmation struct{ to, login, link string }
+
+type fakeConfirmMailer struct {
+	site    string
+	enabled bool
+	sendErr error
+	sent    []sentConfirmation
+}
+
+func (f *fakeConfirmMailer) SiteURL() string { return f.site }
+func (f *fakeConfirmMailer) Enabled() bool   { return f.enabled }
+func (f *fakeConfirmMailer) SendEmailConfirmation(to, login, link string) error {
+	f.sent = append(f.sent, sentConfirmation{to, login, link})
+	return f.sendErr
+}
+
+// TestAccountEmailSubmissionHasOneEntryPoint is the wiring half of
+// TestSubmitAccountEmail: the handler must hand the POST to
+// submitAccountEmail with the real store and mailer, and the operations
+// that submission guards — reading the form address, storing it, mailing
+// the link — must happen nowhere else in the package. The call sites are
+// DERIVED from the package's sources, so a second path added anywhere
+// fails here, not only a change inside handleAccountEmail.
+func TestAccountEmailSubmissionHasOneEntryPoint(t *testing.T) {
+	src := srctest.Read(t, "internal/web/server.go")
+	handler := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) handleAccountEmail("))
+	const call = "submitAccountEmail(r.Context(), s.store, s.mailer, s.logger, r, sess)"
+	if n := strings.Count(handler, call); n != 1 {
+		t.Errorf("handleAccountEmail contains %q %d times, want exactly once", call, n)
+	}
+	submit := srctest.StripGoComments(srctest.FuncBody(t, src, "func submitAccountEmail("))
+	files := srctest.PackageFiles(t, "internal/web", 4)
+	if _, ok := files["internal/web/server.go"]; !ok {
+		t.Fatalf("package scan did not include server.go (found %d files) — the derived call-site count would be vacuous", len(files))
+	}
+	// Call sites, with the receiver's dot: the narrow interfaces declare
+	// these methods without one.
+	for _, op := range []string{".SetUserPendingEmail(", ".CreateEmailConfirmation(", ".SendEmailConfirmation(", `.FormValue("email")`} {
+		inside := strings.Count(submit, op)
+		if inside == 0 {
+			t.Errorf("submitAccountEmail no longer performs %s — this pin has lost its subject", op)
+		}
+		total := 0
+		for _, body := range files { // PackageFiles excludes _test.go
+			total += strings.Count(srctest.StripGoComments(body), op)
+		}
+		if total != inside {
+			t.Errorf("%s appears %d times in internal/web but %d times in submitAccountEmail — every account-email store or mail operation must go through the tested submission", op, total, inside)
+		}
 	}
 }

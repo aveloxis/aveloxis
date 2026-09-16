@@ -16,8 +16,10 @@ import (
 	"log/slog"
 	"net/mail"
 	"net/smtp"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type sentMail struct {
@@ -107,10 +109,12 @@ func TestSendHeaderAndEnvelopeCarryTheSameAddress(t *testing.T) {
 	}
 }
 
-// TestSendSkipsRecipientsItCannotDeliver: a recipient that does not parse,
-// or whose addr-spec needs quoting, is skipped with a WARN and no error —
-// the empty-recipient contract; a bad address must not break account
-// creation or group approval.
+// TestSendSkipsRecipientsItCannotDeliver: a recipient that is empty, does
+// not parse, or whose addr-spec needs quoting is skipped with a WARN and a
+// typed ErrRecipientSkipped — never nil. A nil made the vulnerability digest
+// log "sent" and advance its window, and `aveloxis test-mail` report
+// success, for mail that was never attempted (round-2 review). Callers that
+// must not break on a bad address filter it with IsSkip.
 //
 // Quoting is refused because the envelope cannot carry it: net/smtp writes
 // `RCPT TO:<%s>` raw, so `"john  smith"@example.com` goes on the wire as an
@@ -122,6 +126,7 @@ func TestSendSkipsRecipientsItCannotDeliver(t *testing.T) {
 		{"quoted angle bracket closes the envelope path", `"x> NOTIFY=SUCCESS ORCPT=rfc822;a"@attacker.example`},
 		{"quoted at sign", `"a@b"@example.com`},
 		{"quoted escaped quote", `"a\"b"@example.com`},
+		{"local part over 64 octets", strings.Repeat("a", 65) + "@example.com"},
 		{"header injection attempt", "user@example.com\r\nBcc: victim@example.com"},
 		{"no at sign", "not-an-address"},
 		{"two addresses", "a@example.com, b@example.com"},
@@ -130,8 +135,9 @@ func TestSendSkipsRecipientsItCannotDeliver(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, sent, logs := captureMailer(t)
-			if err := m.Send(tc.to, "subject", "body"); err != nil {
-				t.Errorf("Send(%q) = %v, want nil (skip, not error)", tc.to, err)
+			err := m.Send(tc.to, "subject", "body")
+			if !errors.Is(err, ErrRecipientSkipped) || !IsSkip(err) {
+				t.Errorf("Send(%q) = %v, want an ErrRecipientSkipped that IsSkip reports", tc.to, err)
 			}
 			if len(*sent) != 0 {
 				t.Errorf("Send(%q) delivered to envelope %q — it must be skipped", tc.to, (*sent)[0].to)
@@ -140,6 +146,58 @@ func TestSendSkipsRecipientsItCannotDeliver(t *testing.T) {
 				t.Errorf("Send(%q) skipped without a WARN; log:\n%s", tc.to, logs)
 			}
 		})
+	}
+}
+
+// TestSendReportsWhatItDidNotDo: a disabled mailer returns ErrNotConfigured
+// (a nil *Mailer too), and a delivery failure is an error IsSkip does NOT
+// report — the digest must retry that, and the web flows must log it.
+func TestSendReportsWhatItDidNotDo(t *testing.T) {
+	var nilMailer *Mailer
+	if err := nilMailer.Send("user@example.com", "s", "b"); !errors.Is(err, ErrNotConfigured) || !IsSkip(err) {
+		t.Errorf("nil mailer Send = %v, want ErrNotConfigured", err)
+	}
+	m, sent, _ := captureMailer(t)
+	m.cfg.GmailUser = ""
+	if err := m.Send("user@example.com", "s", "b"); !errors.Is(err, ErrNotConfigured) || !IsSkip(err) {
+		t.Errorf("unconfigured Send = %v, want ErrNotConfigured", err)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("an unconfigured mailer delivered %d messages", len(*sent))
+	}
+
+	m, _, logs := captureMailer(t)
+	m.sendMail = func(string, smtp.Auth, string, []string, []byte) error { return errors.New("535 5.7.8 rejected") }
+	longComment := strings.Repeat("c", 4000)
+	err := m.Send("Real Name <user@example.com> ("+longComment+")", "s", "b")
+	if err == nil || IsSkip(err) {
+		t.Errorf("a delivery failure must be a non-skip error, got %v", err)
+	}
+	if !strings.Contains(logs.String(), "mailer.Send failed") {
+		t.Errorf("a delivery failure must be logged; log:\n%s", logs)
+	}
+	if strings.Contains(logs.String(), longComment[:400]) {
+		t.Error("the failure log carries the raw recipient input; it must log the parsed, length-bounded address")
+	}
+	if IsSkip(nil) || IsSkip(errors.New("other")) {
+		t.Error("IsSkip must be false for nil and for unrelated errors")
+	}
+}
+
+// TestSendVulnerabilityDigestReportsASkippedRecipient: the digest is the
+// caller that needs to know. An operator_email written as a list, or with a
+// quoted local part, must come back as a skip — not nil, which advanced the
+// digest window and dropped those findings for good.
+func TestSendVulnerabilityDigestReportsASkippedRecipient(t *testing.T) {
+	items := []VulnDigestItem{{RepoOwner: "o", RepoName: "r", VulnID: "GHSA-1", Severity: "CRITICAL", PackagePurl: "pkg:npm/x@1", Summary: "s"}}
+	for _, to := range []string{"sec@example.com, ops@example.com", `"sec team"@example.com`} {
+		m, sent, _ := captureMailer(t)
+		if err := m.SendVulnerabilityDigest(to, time.Now(), items); !IsSkip(err) {
+			t.Errorf("SendVulnerabilityDigest(%q) = %v, want a skip error", to, err)
+		}
+		if len(*sent) != 0 {
+			t.Errorf("SendVulnerabilityDigest(%q) delivered", to)
+		}
 	}
 }
 
@@ -212,6 +270,7 @@ func TestParseRecipient(t *testing.T) {
 	for _, tc := range []struct {
 		name, in, want string
 		quoting        bool // want ErrRecipientNeedsQuoting
+		tooLong        bool // want ErrRecipientTooLong
 		refused        bool // want some other error
 	}{
 		{name: "plain", in: "user@example.com", want: "user@example.com"},
@@ -230,6 +289,13 @@ func TestParseRecipient(t *testing.T) {
 		{name: "space in the domain", in: "user@exa mple.com", refused: true},
 		{name: "non-IP domain literal", in: "user@[1.2.3.4> X]", refused: true},
 		{name: "empty", in: "", refused: true},
+		// RFC 5321 section 4.5.3.1: a local part is at most 64 octets and a
+		// path (the addr-spec in angle brackets) at most 256 octets, so an
+		// addr-spec at most 254. Equality is allowed on both.
+		{name: "64-octet local part", in: strings.Repeat("a", 64) + "@example.com", want: strings.Repeat("a", 64) + "@example.com"},
+		{name: "65-octet local part", in: strings.Repeat("a", 65) + "@example.com", tooLong: true},
+		{name: "254-octet address", in: "a@" + domainOfLength(252), want: "a@" + domainOfLength(252)},
+		{name: "255-octet address", in: "a@" + domainOfLength(253), tooLong: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ParseRecipient(tc.in)
@@ -238,8 +304,12 @@ func TestParseRecipient(t *testing.T) {
 				if !errors.Is(err, ErrRecipientNeedsQuoting) {
 					t.Errorf("ParseRecipient(%q) = %q, %v; want ErrRecipientNeedsQuoting", tc.in, got, err)
 				}
+			case tc.tooLong:
+				if !errors.Is(err, ErrRecipientTooLong) {
+					t.Errorf("ParseRecipient(%d octets) = %v; want ErrRecipientTooLong", len(tc.in), err)
+				}
 			case tc.refused:
-				if err == nil || errors.Is(err, ErrRecipientNeedsQuoting) {
+				if err == nil || errors.Is(err, ErrRecipientNeedsQuoting) || errors.Is(err, ErrRecipientTooLong) {
 					t.Errorf("ParseRecipient(%q) = %q, %v; want a parse error", tc.in, got, err)
 				}
 			default:
@@ -251,17 +321,44 @@ func TestParseRecipient(t *testing.T) {
 	}
 }
 
-// TestNewLeavesTheSMTPSender: the capture seam is for tests only. New must
-// leave sendMail nil, which Send resolves to smtp.SendMail — for a valid
-// config and for the disabled fallback alike.
-func TestNewLeavesTheSMTPSender(t *testing.T) {
+// domainOfLength returns a syntactically valid domain of exactly n octets
+// (labels of at most 63 octets, as DNS requires).
+func domainOfLength(n int) string {
+	var labels []string
+	for n > 0 {
+		size := n
+		if size > 63 {
+			size = 63
+		}
+		if n-size == 1 { // a lone trailing octet cannot be a label after a dot
+			size--
+		}
+		labels = append(labels, strings.Repeat("d", size))
+		n -= size
+		if n > 0 {
+			n-- // the dot
+		}
+	}
+	return strings.Join(labels, ".")
+}
+
+// TestNewDeliversThroughSMTPSendMail pins the seam's production default:
+// the sender a New mailer resolves to IS smtp.SendMail. Checking only that
+// the field is nil let `send := m.sendMail` pass every test while every
+// configured production Send would call a nil func.
+func TestNewDeliversThroughSMTPSendMail(t *testing.T) {
+	want := reflect.ValueOf(smtp.SendMail).Pointer()
 	for _, cfg := range []Config{
 		{},
 		{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"},
 		{GmailUser: "not-an-address", GmailAppPassword: "short"},
 	} {
-		if m := New(cfg, nil); m.sendMail != nil {
-			t.Errorf("New(%+v) set sendMail — production mail must go through smtp.SendMail", cfg)
+		m := New(cfg, nil)
+		if m.sendMail != nil {
+			t.Errorf("New(%+v) set sendMail — the seam is for tests only", cfg)
+		}
+		if got := reflect.ValueOf(m.deliverer()).Pointer(); got != want {
+			t.Errorf("New(%+v).deliverer() is not smtp.SendMail", cfg)
 		}
 	}
 }

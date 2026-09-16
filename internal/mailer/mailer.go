@@ -9,10 +9,11 @@
 //  2. Generate an "App Password" for "Mail"
 //  3. Add the credentials to aveloxis.json under the "mail" block
 //
-// The mailer is a no-op when GmailUser is empty so deployments without
-// email config keep working — Send returns nil immediately. Operators
-// who want email enable it by populating the config block; nothing
-// else has to change in the calling code.
+// The mailer sends nothing when GmailUser is empty, so deployments without
+// email config keep working — Send returns ErrNotConfigured, which the
+// fire-and-forget callers ignore via IsSkip. Operators who want email
+// enable it by populating the config block; nothing else has to change in
+// the calling code.
 //
 // Hard-coded transport: smtp.gmail.com:587 with STARTTLS. The user
 // asked for Gmail specifically (not a generic SMTP block), so the
@@ -68,9 +69,18 @@ type Mailer struct {
 	sendMail func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
 
+// deliverer resolves the sender Send uses: the test seam when set, else
+// smtp.SendMail. TestNewDeliversThroughSMTPSendMail pins the default.
+func (m *Mailer) deliverer() func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	if m.sendMail != nil {
+		return m.sendMail
+	}
+	return smtp.SendMail
+}
+
 // New returns a Mailer. Safe to call with a zero Config — Send will
-// then early-return on every call (no-op fallback for deployments
-// that haven't configured email yet).
+// then return ErrNotConfigured on every call without attempting SMTP
+// (the fallback for deployments that haven't configured email yet).
 //
 // v0.20.14: runs ValidateAndLog against the supplied config. If
 // validation fails (typo in gmail_user, wrong App Password format,
@@ -103,6 +113,37 @@ func sanitizeHeader(s string) string { return scrubUntrusted(s) }
 // valid in quoted form. See ParseRecipient.
 var ErrRecipientNeedsQuoting = errors.New("mail: the address needs a quoted local part, which the SMTP envelope cannot carry")
 
+// ErrRecipientTooLong reports an address over the SMTP length limits. See
+// ParseRecipient.
+var ErrRecipientTooLong = errors.New("mail: the address exceeds the SMTP length limits (RFC 5321 section 4.5.3.1)")
+
+// RFC 5321 section 4.5.3.1.1: a local part is at most 64 octets. Section
+// 4.5.3.1.3: a path — the addr-spec inside its angle brackets — is at most
+// 256 octets, so the addr-spec itself at most 254.
+const (
+	maxLocalPartOctets = 64
+	maxPathOctets      = 256
+)
+
+// ErrNotConfigured and ErrRecipientSkipped are what Send returns when it
+// deliberately sends nothing: the mailer is disabled, or the recipient is
+// empty or not a deliverable address. They are errors, not nil, because a
+// nil read as "delivered": the vulnerability digest advanced its window
+// and `aveloxis test-mail` reported success for mail never attempted.
+var (
+	ErrNotConfigured    = errors.New("mailer: mail is not configured")
+	ErrRecipientSkipped = errors.New("mailer: recipient skipped")
+)
+
+// IsSkip reports whether err is one of Send's deliberate skips. Send has
+// already logged the skip, so fire-and-forget callers — the account,
+// approval and add-request notifications, which must not break on a user
+// without an address or a deployment without mail — ignore it. Callers
+// that report delivery must not.
+func IsSkip(err error) bool {
+	return errors.Is(err, ErrNotConfigured) || errors.Is(err, ErrRecipientSkipped)
+}
+
 // ParseRecipient turns one caller-supplied address into the addr-spec that
 // Send puts in BOTH the To: header and the SMTP envelope, or says why it
 // cannot be sent. It is the one recipient rule: Send enforces it on every
@@ -121,14 +162,23 @@ var ErrRecipientNeedsQuoting = errors.New("mail: the address needs a quoted loca
 // `<john  smith@example.com>`, and a quoted `>` closes the path early and
 // appends SMTP parameters of the sender's choosing. Checking the local part
 // is sufficient: ParseAddress admits only a dot-atom domain or an IP domain
-// literal, neither of which can hold `>` or whitespace. Such addresses are
-// vanishingly rare in real mailboxes.
+// literal, neither of which can hold `>` or an ASCII space or tab. (Both
+// halves can still hold non-ASCII runes, including Unicode spaces; those
+// cannot close the path.) Such addresses are vanishingly rare in real
+// mailboxes.
+//
+// An address over the RFC 5321 limits (maxLocalPartOctets,
+// maxPathOctets) is refused too: net/smtp writes any length it is given,
+// and the form that feeds this is bounded only by the request size.
 func ParseRecipient(s string) (string, error) {
 	parsed, err := mail.ParseAddress(strings.TrimSpace(s))
 	if err != nil {
 		return "", err
 	}
 	addr := parsed.Address
+	if len("<"+addr+">") > maxPathOctets || strings.LastIndex(addr, "@") > maxLocalPartOctets {
+		return "", ErrRecipientTooLong
+	}
 	if (&mail.Address{Address: addr}).String() != "<"+addr+">" {
 		return "", ErrRecipientNeedsQuoting
 	}
@@ -244,23 +294,20 @@ func scrubRunes(s string) string {
 }
 
 // Send dispatches a single email. Subject and body are plain text.
-// to must be a single address ParseRecipient accepts; anything else is
-// skipped with a WARN.
+// to must be a single address ParseRecipient accepts.
 //
-// Returns nil and logs at DEBUG level when the mailer is unconfigured
-// (GmailUser == ""). This keeps the rest of the application code
-// simple — callers don't need to special-case "is mail configured?"
-// in their flow.
+// Send returns nil only when the message was handed to SMTP. When it
+// deliberately sends nothing it returns ErrNotConfigured (the mailer is
+// disabled — logged at DEBUG, since deployments without email are normal)
+// or ErrRecipientSkipped (logged at WARN); IsSkip recognizes both, so
+// fire-and-forget callers need not special-case "is mail configured?".
 func (m *Mailer) Send(to, subject, body string) error {
 	if m == nil || m.cfg.GmailUser == "" {
-		// Unconfigured: silent no-op so deployments without email
-		// keep working. Log at debug so the absence is observable
-		// without flooding production logs.
 		if m != nil && m.logger != nil {
 			m.logger.Debug("mailer.Send skipped — gmail_user not configured",
-				"to", to, "subject", subject)
+				"to", scrubUntrusted(to), "subject", subject)
 		}
-		return nil
+		return ErrNotConfigured
 	}
 	if strings.TrimSpace(to) == "" {
 		// Recipient missing — log and skip rather than error. The
@@ -271,7 +318,7 @@ func (m *Mailer) Send(to, subject, body string) error {
 			m.logger.Warn("mailer.Send skipped — empty recipient",
 				"subject", subject)
 		}
-		return nil
+		return fmt.Errorf("%w: empty recipient", ErrRecipientSkipped)
 	}
 	// PARSE the recipient rather than only scrubbing characters out of it
 	// (ParseRecipient says why). Send enforces the rule itself instead of
@@ -279,15 +326,15 @@ func (m *Mailer) Send(to, subject, body string) error {
 	// and confirmed stored emails, operator config, and the account-email
 	// form, which runs the same parser first.
 	//
-	// Skip-with-a-WARN, matching the empty-recipient case above: a bad
-	// address must not break account creation or group approval.
+	// Skip-with-a-WARN, matching the empty-recipient case above; callers
+	// that must not break on a bad address filter the error with IsSkip.
 	recipient, parseErr := ParseRecipient(to)
 	if parseErr != nil {
 		if m.logger != nil {
 			m.logger.Warn("mailer.Send skipped — recipient is not a deliverable address",
 				"subject", subject, "error", parseErr)
 		}
-		return nil
+		return fmt.Errorf("%w: %w", ErrRecipientSkipped, parseErr)
 	}
 
 	// v0.20.14: strip display-format spaces from the App Password
@@ -308,9 +355,9 @@ func (m *Mailer) Send(to, subject, body string) error {
 	// treatment.
 	//
 	// The To: address is NOT scrubbed: ParseRecipient has already refused
-	// anything with a CR, LF, whitespace or quoting, and a scrub that
-	// changed the header but not the envelope (dropping a format rune the
-	// envelope keeps, say) would make the two name different mailboxes.
+	// anything with a CR, LF, ASCII space or tab, or quoting, and a scrub
+	// that changed the header but not the envelope (dropping a format rune
+	// the envelope keeps, say) would make the two name different mailboxes.
 	// "<" + recipient + ">" is byte-identical to the envelope path net/smtp
 	// writes below.
 	msg := []byte(fmt.Sprintf(
@@ -327,18 +374,23 @@ func (m *Mailer) Send(to, subject, body string) error {
 
 	// The envelope carries the same addr-spec: net/smtp writes it as
 	// `RCPT TO:<recipient>`, exactly the To: header value above.
-	send := smtp.SendMail
-	if m.sendMail != nil {
-		send = m.sendMail
-	}
-	if err := send(gmailSMTPHost, auth, m.cfg.GmailUser, []string{recipient}, msg); err != nil {
+	if err := m.deliverer()(gmailSMTPHost, auth, m.cfg.GmailUser, []string{recipient}, msg); err != nil {
 		if m.logger != nil {
+			// The parsed address, not the raw parameter: a display name
+			// or comment in `to` is unbounded.
 			m.logger.Warn("mailer.Send failed",
-				"to", to, "subject", subject, "error", err)
+				"to", recipient, "subject", subject, "error", err)
 		}
 		return fmt.Errorf("smtp send: %w", err)
 	}
 	return nil
+}
+
+// Enabled reports whether Send can attempt delivery at all — false for a
+// nil mailer, an empty config, or a config New refused. Callers that would
+// promise the user an email check it first. Safe on a nil mailer.
+func (m *Mailer) Enabled() bool {
+	return m != nil && m.cfg.GmailUser != ""
 }
 
 // SendWelcome is the email sent on first signup. Confirms the

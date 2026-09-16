@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
@@ -380,7 +381,7 @@ func (s *Server) notifyAddRequestSubmitted(requestID int64) {
 				sample = []string{req.OrgURL}
 			}
 			if err := s.mailer.SendAddRequestSubmitted(s.mailer.OperatorEmail(),
-				req.UserLogin, req.GroupName, req.Kind, req.ItemCount, sample, req.RequestID); err != nil {
+				req.UserLogin, req.GroupName, req.Kind, req.ItemCount, sample, req.RequestID); err != nil && !mailer.IsSkip(err) {
 				s.logger.Warn("failed to send add-request email", "request_id", requestID, "error", err)
 			}
 			return
@@ -470,7 +471,7 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 			go func() {
 				defer safego.Recover(s.logger, "add-request-decided-email")
 				if err := s.mailer.SendAddRequestDecided(req.UserEmail, req.UserLogin,
-					req.GroupName, req.Kind, approve, req.ItemCount); err != nil {
+					req.GroupName, req.Kind, approve, req.ItemCount); err != nil && !mailer.IsSkip(err) {
 					s.logger.Warn("failed to send add-request decision email",
 						"request_id", req.RequestID, "error", err)
 				}
@@ -607,7 +608,7 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 		if requesterEmail != "" {
 			go func() {
 				defer safego.Recover(s.logger, "group-approved-email")
-				if err := s.mailer.SendGroupApproved(requesterEmail, requesterLogin, groupName, groupID); err != nil {
+				if err := s.mailer.SendGroupApproved(requesterEmail, requesterLogin, groupName, groupID); err != nil && !mailer.IsSkip(err) {
 					s.logger.Warn("failed to send group-approved email", "group_id", groupID, "error", err)
 				}
 			}()

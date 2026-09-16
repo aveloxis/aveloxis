@@ -4,6 +4,7 @@
 package mailer
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -33,11 +34,12 @@ func TestSendVulnerabilityDigestFormatsAndCaps(t *testing.T) {
 			PackagePurl: "pkg:pypi/x@1.0", Summary: strings.Repeat("s", 150),
 		}
 	}
-	// Unconfigured mailer: Send no-ops, so this pins "formatting
-	// never errors/panics" for the cap + truncation paths.
+	// Unconfigured mailer: the formatting runs, then Send reports the
+	// disabled mailer — so this pins "formatting never panics" for the cap
+	// + truncation paths and that nothing but ErrNotConfigured comes back.
 	m := New(Config{}, nil)
-	if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), items); err != nil {
-		t.Fatalf("digest over the cap must still send cleanly, got %v", err)
+	if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), items); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("digest over the cap on a disabled mailer = %v, want ErrNotConfigured", err)
 	}
 	if digestBodyMaxItems != 50 {
 		t.Errorf("digestBodyMaxItems changed (%d) — update configuration.md's documented cap", digestBodyMaxItems)

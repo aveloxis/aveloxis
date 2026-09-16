@@ -207,12 +207,23 @@ var deployChecklists = map[string][]deployStep{
 	// alert 197's sink. No schema change, no operator heal.
 	"0.29.26": v029DeployChecklist,
 	// v0.29.27: review of Copilot's PR #207 fixes. The loopback Host
-	// fallback for confirmation links now requires a numeric port and
-	// balanced IPv6 brackets (text after "localhost:" rode into the mailed
-	// link); recipients whose local part needs quoting are refused, because
-	// the SMTP envelope cannot carry them; the account-email form uses the
-	// mailer's recipient parser. No schema change, no operator heal.
+	// fallback for confirmation links now requires any port to be numeric
+	// and IPv6 brackets to be balanced (text after "localhost:" rode into
+	// the mailed link); recipients whose local part needs quoting are
+	// refused, because the SMTP envelope cannot carry them; the
+	// account-email form uses the mailer's recipient parser. No schema
+	// change, no operator heal.
 	"0.29.27": v029DeployChecklist,
+	// v0.29.28: round 2 of that review. mailer.Send now returns an error
+	// when it sends nothing (mail not configured, or an empty or
+	// undeliverable recipient) instead of nil, so the vulnerability digest
+	// no longer advances its window over findings it never mailed and
+	// `aveloxis test-mail` exits nonzero. Addresses over the RFC 5321
+	// length limits are refused. The account-email form refuses before
+	// storing anything when no link can be sent. OPERATORS: a malformed
+	// mail.operator_email (a list, say) now logs "vuln digest: send failed"
+	// every hour until fixed. No schema change, no operator heal.
+	"0.29.28": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

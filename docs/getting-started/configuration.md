@@ -573,7 +573,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 
 | Field | Required format | Purpose |
 |---|---|---|
-| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer (silent no-op). |
+| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer: no email is sent, and the account-email form refuses new addresses, since no confirmation link could reach them. |
 | `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
 | `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
 | `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links on any non-loopback host: the request `Host` header is client-controlled, so it is never used to build a link a victim could receive. |
@@ -598,7 +598,8 @@ aveloxis test-mail your-personal-address@example.com
 
 The command runs the same `ValidateConfig` check, then calls `mailer.Send` against `smtp.gmail.com:587`. Output:
 
-- **Success**: `test email sent successfully to=...` — credentials are working. The test email arrives within seconds.
+- **Success**: `test email sent successfully to=...` — Gmail accepted the message, so the credentials are working. The test email arrives within seconds.
+- **Not sent**: `send failed: mailer: mail is not configured` (the `mail` block is empty) or `send failed: mailer: recipient skipped: …` (the recipient is not one deliverable address — a list, a quoted local part, or longer than the SMTP limits). The command exits non-zero; no SMTP attempt is made.
 - **Validation error**: command exits non-zero with a clear message. Fix `aveloxis.json` and try again. No SMTP attempt is made.
 - **SMTP error from Gmail itself** (e.g. `535 5.7.8 Username and Password not accepted`): credentials look syntactically correct but Gmail rejected them. Most likely: App Password generated against a different account, or 2-Step Verification was just disabled on the account that owns the App Password.
 
@@ -699,7 +700,12 @@ Semantics worth knowing:
   not dump the entire findings table into one email.
 - A failed send is retried with the SAME window on the next hourly
   check (nothing is dropped); the window only advances after a
-  successful send or a quiet evaluation.
+  successful send or a quiet evaluation. A send that never reaches
+  SMTP counts as failed too: an unconfigured mailer, or an
+  `operator_email` that is not one deliverable address (a comma list,
+  say), logs `vuln digest: send failed — window will retry` every hour
+  until the config is fixed (v0.29.28; before, the window advanced and
+  those findings were never mailed).
 - The email body itemizes up to 50 findings (most severe first) and
   always states the total; the state lives in
   `~/.aveloxis/vuln-digest-last`.

@@ -60,7 +60,6 @@ internal/db/web_store_oauth_test.go extractFunc
 internal/db/web_store_oauth_test.go mustReadSource
 internal/importers/numfocus/crawler_test.go readFixture
 internal/mailer/helpers_test.go readSrc
-internal/mailer/mailer_test.go extractMailerFunc
 internal/monitor/dashboard_freshness_test.go extractMonitorFn
 internal/monitor/matview_banner_test.go mustReadMonitorSource
 internal/monitor/queue_stats_cache_test.go mustReadFileMon

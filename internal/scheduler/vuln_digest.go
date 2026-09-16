@@ -33,8 +33,9 @@ func digestWindow(now, last time.Time, interval time.Duration) (since time.Time,
 //
 // Stamp semantics: the stamp advances after EVERY evaluated window —
 // including quiet ones (no findings → no email, window still moves) —
-// but NOT after a failed send, so an SMTP outage retries the same
-// window on the next tick instead of dropping findings.
+// but NOT after a failed send (a mailer skip included), so an SMTP outage
+// retries the same window on the next tick instead of dropping findings;
+// holdDigestWindow covers a failure before any stamp exists.
 func (s *Scheduler) runVulnDigest(ctx context.Context) {
 	if s.digestMailer == nil || s.cfg.Mail == nil || s.cfg.Mail.OperatorEmail == "" {
 		return
@@ -50,7 +51,8 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 	}
 
 	now := time.Now()
-	since, due := digestWindow(now, readDigestStamp(stampPath), s.cfg.Mail.VulnDigestInterval())
+	last := readDigestStamp(stampPath)
+	since, due := digestWindow(now, last, s.cfg.Mail.VulnDigestInterval())
 	if !due {
 		return
 	}
@@ -67,8 +69,12 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 	}
 	if len(items) > 0 {
 		if err := s.digestMailer.SendVulnerabilityDigest(s.cfg.Mail.OperatorEmail, since, items); err != nil {
-			// No stamp: retry this same window on the next tick.
+			// Retry this same window on the next tick. A mailer skip
+			// is a failure here too: nothing was delivered.
 			s.logger.Warn("vuln digest: send failed — window will retry", "error", err, "findings", len(items))
+			if holdErr := holdDigestWindow(stampPath, last, since); holdErr != nil {
+				s.logger.Warn("vuln digest: could not pin the retry window", "path", stampPath, "error", holdErr)
+			}
 			return
 		}
 		s.logger.Info("vuln digest sent", "to", s.cfg.Mail.OperatorEmail,
@@ -98,4 +104,34 @@ func writeDigestStamp(path string, t time.Time) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(strconv.FormatInt(t.Unix(), 10)), 0o644)
+}
+
+// vulnDigestReady decides whether Run starts the digest ticker. It returns
+// false and no error when the digest is simply not configured (no mailer
+// injected, or no operator_email), and false with the reason when it is
+// configured but could never deliver — a disabled mailer or an
+// operator_email that is not one deliverable address. Before v0.29.29 that
+// case logged "operator vulnerability digest enabled" and then ran the
+// findings query every hour without sending. The mailer is built once at
+// startup, so a fixed config takes effect on restart.
+func (s *Scheduler) vulnDigestReady() (bool, error) {
+	if !(s.digestMailer != nil && s.cfg.Mail != nil && s.cfg.Mail.OperatorEmail != "") {
+		return false, nil
+	}
+	if err := s.digestMailer.Deliverable(s.cfg.Mail.OperatorEmail); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// holdDigestWindow keeps a failed send's window for the next tick. With a
+// stamp, leaving it untouched does that. Without one (first run),
+// digestWindow opens the window one interval back from NOW, so every failed
+// tick would slide it forward and drop its oldest findings; writing `since`
+// pins it instead.
+func holdDigestWindow(stampPath string, last, since time.Time) error {
+	if !last.IsZero() {
+		return nil
+	}
+	return writeDigestStamp(stampPath, since)
 }

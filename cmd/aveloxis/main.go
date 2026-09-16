@@ -2122,3 +2122,7 @@ func (a digestMailerAdapter) SendVulnerabilityDigest(to string, since time.Time,
 	}
 	return a.m.SendVulnerabilityDigest(to, since, conv)
 }
+
+// Deliverable forwards the mailer's up-front check so the scheduler can
+// refuse to start a digest that could never be delivered (v0.29.29).
+func (a digestMailerAdapter) Deliverable(to string) error { return a.m.Deliverable(to) }

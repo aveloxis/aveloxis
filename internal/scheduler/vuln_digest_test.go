@@ -6,6 +6,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 )
 
 // TestDigestWindow pins the pure window semantics: first run opens one
@@ -69,9 +71,9 @@ func TestDigestStampRoundTrip(t *testing.T) {
 	}
 }
 
-// TestVulnDigestTickerGating pins the run-loop wiring: the ticker
-// channel stays nil (disabled) unless BOTH a mailer was injected and
-// an operator email is configured, and the select loop routes the
+// TestVulnDigestTickerGating pins the run-loop wiring: the ticker is
+// created only when vulnDigestReady says so (its decision is tested
+// behaviorally in TestVulnDigestReady), and the select loop routes the
 // tick through safego to runVulnDigest.
 func TestVulnDigestTickerGating(t *testing.T) {
 	src, err := os.ReadFile("scheduler.go")
@@ -79,8 +81,8 @@ func TestVulnDigestTickerGating(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, `s.digestMailer != nil && s.cfg.Mail != nil && s.cfg.Mail.OperatorEmail != ""`) {
-		t.Error("digest ticker must be gated on injected mailer AND configured operator_email")
+	if !strings.Contains(s, "digestReady, digestErr := s.vulnDigestReady()") || !strings.Contains(s, "if digestReady {") {
+		t.Error("digest ticker must be gated on vulnDigestReady — an injected mailer, a configured operator_email, and a deliverable one")
 	}
 	if !strings.Contains(s, "case <-vulnDigestC:") {
 		t.Error("run loop must consume the digest ticker channel")
@@ -91,11 +93,14 @@ func TestVulnDigestTickerGating(t *testing.T) {
 }
 
 type recordingDigestMailer struct {
-	calls int
-	since time.Time
-	items []db.VulnDigestItem
-	err   error
+	calls      int
+	since      time.Time
+	items      []db.VulnDigestItem
+	err        error
+	deliverErr error
 }
+
+func (r *recordingDigestMailer) Deliverable(string) error { return r.deliverErr }
 
 func (r *recordingDigestMailer) SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error {
 	r.calls++
@@ -199,7 +204,78 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 	if rec2.calls != 1 {
 		t.Fatalf("expected the failed send to have been attempted once, got %d", rec2.calls)
 	}
-	if !readDigestStamp(stamp).IsZero() {
-		t.Error("stamp must NOT advance after a failed send — the window must retry")
+	// v0.29.29: with no stamp (first run) the window opens one interval
+	// back from NOW, so leaving the stamp absent slid the window forward
+	// on every failed tick. The failed send pins it at `since` instead.
+	if got := readDigestStamp(stamp); got.Unix() != rec2.since.Unix() {
+		t.Errorf("a failed first-run send must pin the window at since=%v, stamp is %v", rec2.since, got)
+	}
+	pinned := readDigestStamp(stamp)
+	s.runVulnDigest(ctx)
+	if got := readDigestStamp(stamp); !got.Equal(pinned) {
+		t.Errorf("a second failed send must not move the window: %v -> %v", pinned, got)
+	}
+
+	// A mailer skip is a failure too, never a delivery.
+	os.Remove(stamp)
+	rec3 := &recordingDigestMailer{err: fmt.Errorf("%w: test", mailer.ErrRecipientSkipped)}
+	s.digestMailer = rec3
+	s.runVulnDigest(ctx)
+	if rec3.calls != 1 {
+		t.Fatalf("expected the skipped send to have been attempted once, got %d", rec3.calls)
+	}
+	if got := readDigestStamp(stamp); got.Unix() != rec3.since.Unix() {
+		t.Errorf("a skipped send is a failed send: the window must stay at since=%v, stamp is %v", rec3.since, got)
+	}
+}
+
+// TestHoldDigestWindow pins the failed-send rule without a database: an
+// existing stamp is left as is, and a missing one is written as `since`,
+// so repeated failures keep the same window.
+func TestHoldDigestWindow(t *testing.T) {
+	stamp := filepath.Join(t.TempDir(), "vuln-digest-last")
+	since := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	if err := holdDigestWindow(stamp, time.Time{}, since); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDigestStamp(stamp); !got.Equal(since) {
+		t.Errorf("first-run failure: stamp = %v, want since %v", got, since)
+	}
+	later := since.Add(3 * time.Hour)
+	if err := holdDigestWindow(stamp, since, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDigestStamp(stamp); !got.Equal(since) {
+		t.Errorf("with a stamp, a failure must leave it: got %v, want %v", got, since)
+	}
+}
+
+// TestVulnDigestReady: the ticker starts only when a digest could ever be
+// delivered. A disabled mailer or an undeliverable operator_email used to
+// log "operator vulnerability digest enabled" and then query every hour
+// without sending (round-3 review of v0.29.28).
+func TestVulnDigestReady(t *testing.T) {
+	mail := &config.MailConfig{OperatorEmail: "ops@example.com"}
+	for _, tc := range []struct {
+		name    string
+		mailer  digestMailer
+		mail    *config.MailConfig
+		wantOK  bool
+		wantErr bool // a deliverability error the caller logs at ERROR
+	}{
+		{name: "no mailer injected", mail: mail},
+		{name: "no mail block", mailer: &recordingDigestMailer{}},
+		{name: "no operator_email", mailer: &recordingDigestMailer{}, mail: &config.MailConfig{}},
+		{name: "deliverable", mailer: &recordingDigestMailer{}, mail: mail, wantOK: true},
+		{name: "mailer disabled", mailer: &recordingDigestMailer{deliverErr: mailer.ErrNotConfigured}, mail: mail, wantErr: true},
+		{name: "undeliverable operator_email", mailer: &recordingDigestMailer{deliverErr: mailer.ErrRecipientSkipped}, mail: mail, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Scheduler{cfg: Config{Mail: tc.mail}, digestMailer: tc.mailer}
+			ok, err := s.vulnDigestReady()
+			if ok != tc.wantOK || (err != nil) != tc.wantErr {
+				t.Errorf("vulnDigestReady() = %v, %v; want ok=%v err=%v", ok, err, tc.wantOK, tc.wantErr)
+			}
+		})
 	}
 }

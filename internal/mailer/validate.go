@@ -47,8 +47,8 @@ func isValidAppPassword(p string) bool {
 // config-load time. Returns nil for both:
 //   - a fully-configured block (gmail_user contains @ AND the
 //     normalized app password is 16 lowercase letters), and
-//   - a fully-empty block (mailer disabled — all email Send
-//     calls become no-ops).
+//   - a fully-empty block (mailer disabled — Send attempts nothing
+//     and returns ErrNotConfigured).
 //
 // Returns a descriptive error for everything else. The error
 // message names the exact field that's wrong so operators don't

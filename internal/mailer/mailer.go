@@ -90,6 +90,10 @@ func (m *Mailer) deliverer() func(addr string, a smtp.Auth, from string, to []st
 // The caller does not need to inspect a return error; the mailer
 // is always usable.
 func New(cfg Config, logger *slog.Logger) *Mailer {
+	// Trimmed once, here: ValidateConfig trims too and calls a
+	// whitespace-only gmail_user "empty" (mailer disabled), so the stored
+	// value must agree or Enabled would say on while the log said off.
+	cfg.GmailUser = strings.TrimSpace(cfg.GmailUser)
 	if err := ValidateAndLog(cfg, logger); err != nil {
 		// Validation failed: drop the bad config and behave as
 		// if email were unconfigured. Send will hit its empty-
@@ -234,7 +238,7 @@ func sanitizeBodyValue(s string) string { return scrubUntrusted(s) }
 // exceed the cap, and truncation would silently mail a broken link ending
 // in an ellipsis (Copilot review on PR #207). Its one caller's link is
 // built from mail.site_url or, in local development, from a Host that
-// internal/web's emailConfirmURL has parsed down to a loopback host and a
+// internal/web's emailConfirmBase has parsed down to a loopback host and a
 // numeric port — so no free text reaches this uncapped.
 func sanitizeBodyURL(s string) string { return scrubRunes(s) }
 
@@ -302,39 +306,26 @@ func scrubRunes(s string) string {
 // or ErrRecipientSkipped (logged at WARN); IsSkip recognizes both, so
 // fire-and-forget callers need not special-case "is mail configured?".
 func (m *Mailer) Send(to, subject, body string) error {
-	if m == nil || m.cfg.GmailUser == "" {
+	// The recipient is PARSED rather than only scrubbed (ParseRecipient
+	// says why), and Send enforces that itself instead of trusting callers:
+	// every recipient passes through here — OAuth-provided and confirmed
+	// stored emails, operator config, and the account-email form, which
+	// runs the same parser first. A missing address is common (an OAuth
+	// provider that returned none) and a disabled mailer is a normal
+	// deployment, so both are returned as skips for fire-and-forget callers
+	// to filter with IsSkip, not treated as failures here.
+	recipient, err := m.recipientFor(to)
+	if err != nil {
 		if m != nil && m.logger != nil {
-			m.logger.Debug("mailer.Send skipped — gmail_user not configured",
-				"to", scrubUntrusted(to), "subject", subject)
+			if errors.Is(err, ErrNotConfigured) {
+				m.logger.Debug("mailer.Send skipped — gmail_user not configured",
+					"to", scrubUntrusted(to), "subject", subject)
+			} else {
+				m.logger.Warn("mailer.Send skipped — recipient is not deliverable",
+					"subject", subject, "error", err)
+			}
 		}
-		return ErrNotConfigured
-	}
-	if strings.TrimSpace(to) == "" {
-		// Recipient missing — log and skip rather than error. The
-		// most common case is a user whose OAuth provider didn't
-		// return an email address; we don't want that to break
-		// the calling code path (account creation, group approval).
-		if m.logger != nil {
-			m.logger.Warn("mailer.Send skipped — empty recipient",
-				"subject", subject)
-		}
-		return fmt.Errorf("%w: empty recipient", ErrRecipientSkipped)
-	}
-	// PARSE the recipient rather than only scrubbing characters out of it
-	// (ParseRecipient says why). Send enforces the rule itself instead of
-	// trusting callers: every recipient passes through here — OAuth-provided
-	// and confirmed stored emails, operator config, and the account-email
-	// form, which runs the same parser first.
-	//
-	// Skip-with-a-WARN, matching the empty-recipient case above; callers
-	// that must not break on a bad address filter the error with IsSkip.
-	recipient, parseErr := ParseRecipient(to)
-	if parseErr != nil {
-		if m.logger != nil {
-			m.logger.Warn("mailer.Send skipped — recipient is not a deliverable address",
-				"subject", subject, "error", parseErr)
-		}
-		return fmt.Errorf("%w: %w", ErrRecipientSkipped, parseErr)
+		return err
 	}
 
 	// v0.20.14: strip display-format spaces from the App Password
@@ -387,10 +378,38 @@ func (m *Mailer) Send(to, subject, body string) error {
 }
 
 // Enabled reports whether Send can attempt delivery at all — false for a
-// nil mailer, an empty config, or a config New refused. Callers that would
-// promise the user an email check it first. Safe on a nil mailer.
+// nil mailer, an empty or whitespace-only gmail_user, or a config New
+// refused. Callers that would promise the user an email check it first.
+// Safe on a nil mailer. It is the one "is mail on?" test: Send and
+// Deliverable use it too.
 func (m *Mailer) Enabled() bool {
 	return m != nil && m.cfg.GmailUser != ""
+}
+
+// Deliverable reports, before anything is composed, whether Send could
+// hand a message for to to SMTP: nil, ErrNotConfigured, or an
+// ErrRecipientSkipped wrapping the reason. It applies exactly Send's own
+// refusals, for callers that must decide up front — the vulnerability
+// digest checks mail.operator_email once at startup.
+func (m *Mailer) Deliverable(to string) error {
+	_, err := m.recipientFor(to)
+	return err
+}
+
+// recipientFor is Send's and Deliverable's shared check: the addr-spec to
+// send to, or why nothing can be sent.
+func (m *Mailer) recipientFor(to string) (string, error) {
+	if !m.Enabled() {
+		return "", ErrNotConfigured
+	}
+	if strings.TrimSpace(to) == "" {
+		return "", fmt.Errorf("%w: empty recipient", ErrRecipientSkipped)
+	}
+	addr, err := ParseRecipient(to)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrRecipientSkipped, err)
+	}
+	return addr, nil
 }
 
 // SendWelcome is the email sent on first signup. Confirms the
@@ -441,7 +460,7 @@ Sign in: %s
 // when mail.site_url was unset, which let an authenticated attacker mail a
 // victim a link to the attacker's server carrying the victim's token
 // (Copilot review on PR #207; CodeQL alert 197). internal/web's
-// emailConfirmURL now builds it from mail.site_url, or from a Host parsed
+// emailConfirmBase now builds it from mail.site_url, or from a Host parsed
 // down to a loopback host and a numeric port, and this scrub is the second
 // layer. Scrubbed with the UNCAPPED sanitizer: a legitimate site_url plus
 // path and token can exceed bodyValueMax, and truncating would silently
@@ -561,8 +580,9 @@ const digestBodyMaxItems = 50
 
 // SendVulnerabilityDigest emails the operator a digest of findings
 // first detected since the previous digest window (v0.27.12). Called
-// by the scheduler's digest ticker; no-op when the mailer is
-// unconfigured (Send handles that). items must already be filtered to
+// by the scheduler's digest ticker. On an unconfigured mailer nothing is
+// sent and Send's ErrNotConfigured comes back, which the digest treats as
+// a failed send. items must already be filtered to
 // the operator's severity floor and ordered most-severe-first.
 func (m *Mailer) SendVulnerabilityDigest(to string, since time.Time, items []VulnDigestItem) error {
 	if len(items) == 0 {

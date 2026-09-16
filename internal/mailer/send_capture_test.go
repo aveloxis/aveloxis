@@ -296,6 +296,10 @@ func TestParseRecipient(t *testing.T) {
 		{name: "65-octet local part", in: strings.Repeat("a", 65) + "@example.com", tooLong: true},
 		{name: "254-octet address", in: "a@" + domainOfLength(252), want: "a@" + domainOfLength(252)},
 		{name: "255-octet address", in: "a@" + domainOfLength(253), tooLong: true},
+		// Octets, not runes: "é" is two octets in UTF-8.
+		{name: "64-octet multi-byte local part", in: strings.Repeat("\u00e9", 32) + "@example.com", want: strings.Repeat("\u00e9", 32) + "@example.com"},
+		{name: "66-octet multi-byte local part", in: strings.Repeat("\u00e9", 33) + "@example.com", tooLong: true},
+		{name: "65 octets but 64 runes", in: strings.Repeat("a", 63) + "\u00e9@example.com", tooLong: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ParseRecipient(tc.in)
@@ -360,5 +364,54 @@ func TestNewDeliversThroughSMTPSendMail(t *testing.T) {
 		if got := reflect.ValueOf(m.deliverer()).Pointer(); got != want {
 			t.Errorf("New(%+v).deliverer() is not smtp.SendMail", cfg)
 		}
+	}
+}
+
+// TestEnabledAgreesWithSend: Enabled is what callers check before promising
+// a user an email, so it must be false exactly when Send reports
+// ErrNotConfigured — including a whitespace-only gmail_user, which
+// validation calls "empty" and used to leave Send dialing SMTP anyway.
+func TestEnabledAgreesWithSend(t *testing.T) {
+	var nilMailer *Mailer
+	cases := map[string]*Mailer{
+		"nil":                   nilMailer,
+		"empty config":          New(Config{}, nil),
+		"config New refused":    New(Config{GmailUser: "not-an-address", GmailAppPassword: "short"}, nil),
+		"whitespace gmail_user": New(Config{GmailUser: "   "}, nil),
+		"valid config":          New(Config{GmailUser: " ops@example.com ", GmailAppPassword: "abcdefghijklmnop"}, nil),
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if m != nil {
+				m.sendMail = func(string, smtp.Auth, string, []string, []byte) error { return nil }
+			}
+			err := m.Send("user@example.com", "s", "b")
+			if disabled := errors.Is(err, ErrNotConfigured); m.Enabled() == disabled {
+				t.Errorf("Enabled() = %v but Send returned %v", m.Enabled(), err)
+			}
+			if got := m.Deliverable("user@example.com"); (got == nil) != m.Enabled() {
+				t.Errorf("Deliverable(valid address) = %v with Enabled() = %v", got, m.Enabled())
+			}
+		})
+	}
+	if m := New(Config{GmailUser: " ops@example.com ", GmailAppPassword: "abcdefghijklmnop"}, nil); m.cfg.GmailUser != "ops@example.com" {
+		t.Errorf("New must store the trimmed gmail_user, got %q", m.cfg.GmailUser)
+	}
+}
+
+// TestDeliverable: the up-front form of Send's own refusals, for callers
+// that must decide before there is anything to send (the digest ticker).
+func TestDeliverable(t *testing.T) {
+	m, _, _ := captureMailer(t)
+	if err := m.Deliverable("ops@example.com"); err != nil {
+		t.Errorf("Deliverable(valid) = %v", err)
+	}
+	for _, to := range []string{"", "sec@example.com, ops@example.com", `"sec team"@example.com`} {
+		if err := m.Deliverable(to); !errors.Is(err, ErrRecipientSkipped) {
+			t.Errorf("Deliverable(%q) = %v, want ErrRecipientSkipped", to, err)
+		}
+	}
+	if err := New(Config{}, nil).Deliverable("ops@example.com"); !errors.Is(err, ErrNotConfigured) {
+		t.Errorf("disabled Deliverable = %v, want ErrNotConfigured", err)
 	}
 }

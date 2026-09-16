@@ -145,6 +145,7 @@ func TestSubmitAccountEmail(t *testing.T) {
 		notEnabled = "Email confirmation is not configured on this site. Contact the operator."
 		saveFailed = "Could not save email. Try again."
 		tokenFail  = "Could not generate confirmation. Try again."
+		sendFailed = "We couldn't send the confirmation email. Try again later."
 	)
 	for _, tc := range []struct {
 		name       string
@@ -157,9 +158,12 @@ func TestSubmitAccountEmail(t *testing.T) {
 		sendErr    error
 		wantMsg    string // "" = accepted (the handler redirects)
 		wantStored string // the address both store calls receive; "" = no store call
-		wantLink   string // the mailed link; "" = nothing mailed
-		wantLog    string // a log line that must appear
-		noLog      string // a log line that must not appear
+		// wantPending overrides the SetUserPendingEmail calls when they
+		// differ from [wantStored] (a failed send clears it again).
+		wantPending []string
+		wantLink    string // the mailed link; "" = nothing mailed
+		wantLog     string // a log line that must appear
+		noLog       string // a log line that must not appear
 	}{
 		{name: "site_url wins over a hostile Host; the bare addr-spec is stored and mailed",
 			form: "Real Name <user@example.com>", site: "https://aveloxis.io", enabled: true, host: "evil.example.com",
@@ -169,7 +173,7 @@ func TestSubmitAccountEmail(t *testing.T) {
 			wantStored: "user@example.com", wantLink: "http://localhost:8082/account/email/confirm?token=tok123"},
 		{name: "hostile Host without site_url is refused before anything is stored",
 			form: "user@example.com", enabled: true, host: "evil.example.com",
-			wantMsg: notEnabled, wantLog: "refusing to send an email confirmation link"},
+			wantMsg: notEnabled, wantLog: "request Host is not a loopback host"},
 		{name: "text in a loopback port is refused before anything is stored",
 			form: "user@example.com", enabled: true, host: "localhost:URGENT-reverify-at-evil.example.com",
 			wantMsg: notEnabled},
@@ -187,14 +191,17 @@ func TestSubmitAccountEmail(t *testing.T) {
 		{name: "token failure stops before a mail",
 			form: "user@example.com", site: "https://aveloxis.io", enabled: true, confirmErr: errors.New("db down"),
 			wantMsg: tokenFail, wantStored: "user@example.com", wantLog: "failed to create email confirmation"},
-		{name: "a delivery failure is logged and the user is still redirected",
+		// Nothing reached the user, so nothing may say it did: the pending
+		// address the dashboard announces as "we sent a link" is cleared
+		// and the form says the send failed (operator decision, round 3).
+		{name: "a delivery failure clears the pending address and says so",
 			form: "user@example.com", site: "https://aveloxis.io", enabled: true, sendErr: errors.New("535 rejected"),
-			wantStored: "user@example.com", wantLink: "https://aveloxis.io/account/email/confirm?token=tok123",
-			wantLog: "failed to send confirmation email"},
-		{name: "a mailer skip is not logged again",
+			wantMsg: sendFailed, wantStored: "user@example.com", wantPending: []string{"user@example.com", ""},
+			wantLink: "https://aveloxis.io/account/email/confirm?token=tok123", wantLog: "failed to send confirmation email"},
+		{name: "a mailer skip is treated as unsent but not logged again",
 			form: "user@example.com", site: "https://aveloxis.io", enabled: true, sendErr: mailer.ErrRecipientSkipped,
-			wantStored: "user@example.com", wantLink: "https://aveloxis.io/account/email/confirm?token=tok123",
-			noLog: "failed to send confirmation email"},
+			wantMsg: sendFailed, wantStored: "user@example.com", wantPending: []string{"user@example.com", ""},
+			wantLink: "https://aveloxis.io/account/email/confirm?token=tok123", noLog: "failed to send confirmation email"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &fakeEmailStore{pendingErr: tc.pendingErr, confirmErr: tc.confirmErr}
@@ -216,8 +223,12 @@ func TestSubmitAccountEmail(t *testing.T) {
 			if tc.wantStored != "" {
 				wantCalls = []string{tc.wantStored}
 			}
-			if !slices.Equal(st.pending, wantCalls) {
-				t.Errorf("SetUserPendingEmail received %q, want %q", st.pending, wantCalls)
+			wantPending := wantCalls
+			if tc.wantPending != nil {
+				wantPending = tc.wantPending
+			}
+			if !slices.Equal(st.pending, wantPending) {
+				t.Errorf("SetUserPendingEmail received %q, want %q", st.pending, wantPending)
 			}
 			wantTokens := wantCalls
 			if tc.pendingErr != nil {
@@ -296,9 +307,10 @@ func TestAccountEmailSubmissionHasOneEntryPoint(t *testing.T) {
 	if _, ok := files["internal/web/server.go"]; !ok {
 		t.Fatalf("package scan did not include server.go (found %d files) — the derived call-site count would be vacuous", len(files))
 	}
-	// Call sites, with the receiver's dot: the narrow interfaces declare
-	// these methods without one.
-	for _, op := range []string{".SetUserPendingEmail(", ".CreateEmailConfirmation(", ".SendEmailConfirmation(", `.FormValue("email")`} {
+	// Selectors, with the receiver's dot and without the call parenthesis:
+	// the narrow interfaces declare these methods without a dot, and a
+	// method value (`f := s.store.SetUserPendingEmail`) is a call site too.
+	for _, op := range []string{".SetUserPendingEmail", ".CreateEmailConfirmation", ".SendEmailConfirmation", `.FormValue("email")`} {
 		inside := strings.Count(submit, op)
 		if inside == 0 {
 			t.Errorf("submitAccountEmail no longer performs %s — this pin has lost its subject", op)
@@ -310,5 +322,56 @@ func TestAccountEmailSubmissionHasOneEntryPoint(t *testing.T) {
 		if total != inside {
 			t.Errorf("%s appears %d times in internal/web but %d times in submitAccountEmail — every account-email store or mail operation must go through the tested submission", op, total, inside)
 		}
+	}
+}
+
+// TestEmailGateRedirect: the dashboard sends a user without an address to
+// /account/email only when that form could actually confirm one. Where no
+// confirmation can be sent — mail off, or no trustworthy link base — the
+// form refuses, so redirecting locked the user out of the dashboard
+// (round-3 review of v0.29.28); the operator chose to let them in.
+func TestEmailGateRedirect(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		confirmed, pending string
+		enabled            bool
+		site, host         string
+		want               bool
+	}{
+		{name: "confirmed address", confirmed: "a@example.com", enabled: true, site: "https://aveloxis.io", want: false},
+		{name: "pending address", pending: "a@example.com", enabled: true, site: "https://aveloxis.io", want: false},
+		{name: "no address, confirmation possible", enabled: true, site: "https://aveloxis.io", host: "aveloxis.io", want: true},
+		{name: "no address, loopback dev without site_url", enabled: true, host: "localhost:8082", want: true},
+		{name: "no address, mail disabled", enabled: false, site: "https://aveloxis.io", want: false},
+		{name: "no address, no site_url behind a proxy", enabled: true, host: "aveloxis.io", want: false},
+		{name: "whitespace addresses count as none", confirmed: "  ", pending: " ", enabled: true, site: "https://aveloxis.io", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/dashboard", nil)
+			if tc.host != "" {
+				r.Host = tc.host
+			}
+			m := &fakeConfirmMailer{site: tc.site, enabled: tc.enabled}
+			if got := emailGateRedirect(tc.confirmed, tc.pending, m, r); got != tc.want {
+				t.Errorf("emailGateRedirect = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	var nilMailer *mailer.Mailer
+	if emailGateRedirect("", "", nilMailer, httptest.NewRequest("GET", "/dashboard", nil)) {
+		t.Error("a nil mailer cannot confirm anything; the gate must let the user in")
+	}
+}
+
+// TestDashboardEmailGateIsTheOnlyRedirect is the wiring half: the dashboard
+// decides through emailGateRedirect and has no other path to the form.
+func TestDashboardEmailGateIsTheOnlyRedirect(t *testing.T) {
+	src := srctest.Read(t, "internal/web/server.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) handleDashboard("))
+	if n := strings.Count(body, "emailGateRedirect(confirmedEmail, pendingEmail, s.mailer, r)"); n != 1 {
+		t.Errorf("handleDashboard calls emailGateRedirect %d times, want exactly once", n)
+	}
+	if n := strings.Count(body, `"/account/email"`); n != 1 {
+		t.Errorf("handleDashboard names /account/email %d times, want exactly once (the gated redirect)", n)
 	}
 }

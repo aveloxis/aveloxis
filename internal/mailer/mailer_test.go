@@ -22,6 +22,8 @@
 package mailer
 
 import (
+	"errors"
+	"net/smtp"
 	"strings"
 	"testing"
 )
@@ -69,36 +71,24 @@ func TestMailerUsesGmailSMTPHost(t *testing.T) {
 	}
 }
 
-// TestMailerDisabledWhenUnconfigured pins the no-op fallback. If
-// gmail_user is empty (operator hasn't configured the mailer), Send
-// should silently skip rather than error out — the rest of the app
-// must work without email.
+// TestMailerDisabledWhenUnconfigured pins the disabled-mailer fallback
+// behaviorally: with no gmail_user, Send attempts nothing and returns
+// ErrNotConfigured (v0.29.28 — it used to return nil, which callers that
+// report delivery read as "sent"). Fire-and-forget callers filter it with
+// IsSkip, so the rest of the app still works without email.
 func TestMailerDisabledWhenUnconfigured(t *testing.T) {
-	src := mustReadMailerSource(t, "mailer.go")
-	body := extractMailerFunc(src, "Send")
-	if body == "" {
-		t.Skip("Send not yet defined")
+	m := New(Config{}, nil)
+	attempted := false
+	m.sendMail = func(string, smtp.Auth, string, []string, []byte) error { attempted = true; return nil }
+	if err := m.Send("user@example.com", "s", "b"); !errors.Is(err, ErrNotConfigured) || !IsSkip(err) {
+		t.Errorf("Send on an unconfigured mailer = %v, want ErrNotConfigured", err)
 	}
-	// We expect an early-return when GmailUser is empty.
-	if !strings.Contains(body, "GmailUser") || !strings.Contains(body, `== ""`) {
-		t.Error("Mailer.Send must early-return (no error) when GmailUser is empty so deployments without email config still work")
+	if attempted {
+		t.Error("an unconfigured mailer must not attempt delivery")
 	}
 }
 
 func mustReadMailerSource(t *testing.T, name string) string {
 	t.Helper()
 	return readSrc(t, name)
-}
-
-func extractMailerFunc(src, name string) string {
-	marker := "func (m *Mailer) " + name + "("
-	idx := strings.Index(src, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := src[idx:]
-	if end := strings.Index(rest[1:], "\nfunc "); end > 0 {
-		return rest[:end+1]
-	}
-	return rest
 }

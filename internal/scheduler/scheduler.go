@@ -77,6 +77,9 @@ type Config struct {
 // the SendVulnerabilityDigest adapter in cmd/aveloxis/main.go.
 type digestMailer interface {
 	SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error
+	// Deliverable reports whether a digest to `to` could reach SMTP at all
+	// (mailer.Mailer.Deliverable), checked once before the ticker starts.
+	Deliverable(to string) error
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -534,10 +537,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// hourly as a CHECK cadence; runVulnDigest itself enforces the
 	// configured interval (default 24h) via the stamp file, sends
 	// only when new findings exist, and advances the window
-	// monotonically. Disabled entirely (channel stays nil) unless an
-	// operator email is configured AND a mailer was injected.
+	// monotonically. Disabled entirely (channel stays nil) unless
+	// vulnDigestReady says a digest could be delivered.
 	var vulnDigestC <-chan time.Time
-	if s.digestMailer != nil && s.cfg.Mail != nil && s.cfg.Mail.OperatorEmail != "" {
+	digestReady, digestErr := s.vulnDigestReady()
+	if digestErr != nil {
+		s.logger.Error("operator vulnerability digest NOT started: no digest could be delivered — fix the mail block or mail.operator_email, then restart serve",
+			"operator_email", s.cfg.Mail.OperatorEmail, "error", digestErr)
+	}
+	if digestReady {
 		vulnDigestTicker := time.NewTicker(1 * time.Hour)
 		defer vulnDigestTicker.Stop()
 		vulnDigestC = vulnDigestTicker.C

@@ -405,7 +405,7 @@ func runGenerateShowcase(ctx context.Context, store *db.PostgresStore, logger *s
 		matches, _ := filepath.Glob(filepath.Join(opts.GUIRoot, "blog", "*.html"))
 		for _, m := range matches {
 			base := filepath.Base(m)
-			if strings.HasPrefix(base, "_") { // _template.html scaffold
+			if strings.HasPrefix(base, "_") { // _-prefixed scaffolds and copies
 				continue
 			}
 			blog = append(blog, "blog/"+base)

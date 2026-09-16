@@ -390,7 +390,7 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 
 | Field | Type | Description |
 |---|---|---|
-| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer (no-op). |
+| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer: nothing is sent, and features that need email say so (see [Disabling](#disabling)). |
 | `mail.operator_email` | string | Where fleet-level operator notifications go (v0.27.12) — currently the new-vulnerabilities digest. Empty (default) disables operator notifications entirely. |
 | `mail.vuln_digest_min_severity` | string | Severity floor for the vulnerability digest: `CRITICAL`, `HIGH` (default — admits CRITICAL+HIGH), `MEDIUM`, `LOW`, or `ALL`. Unrecognized values fall back to `HIGH`. |
 | `mail.vuln_digest_interval_hours` | int | Minimum gap between digest emails (default 24). The scheduler checks hourly; a digest is sent only when the interval has elapsed AND new findings exist — quiet windows produce no email. |
@@ -573,10 +573,10 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 
 | Field | Required format | Purpose |
 |---|---|---|
-| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer: no email is sent, and the account-email form refuses new addresses, since no confirmation link could reach them. |
+| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer: no email is sent, the account-email form refuses new addresses (no confirmation link could reach them), and users without an address are let into the dashboard instead of being sent to that form. |
 | `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
 | `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
-| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links on any non-loopback host: the request `Host` header is client-controlled, so it is never used to build a link a victim could receive. |
+| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links on any non-loopback host: the request `Host` header is client-controlled, so it is never used to build a link a victim could receive. Without it, the account-email form refuses new addresses there, and users without an address are let into the dashboard. |
 
 ### Validation at startup
 
@@ -615,7 +615,11 @@ The mailer uses Go's stdlib `net/smtp` against `smtp.gmail.com:587` with STARTTL
 
 ### Disabling
 
-Remove or empty BOTH `gmail_user` AND `gmail_app_password`. Setting only one without the other is treated as a misconfiguration. With both empty, the mailer is a silent no-op and the rest of the application continues to work.
+Remove or empty BOTH `gmail_user` AND `gmail_app_password`. Setting only one without the other is treated as a misconfiguration. With both empty, nothing is sent and the rest of the application continues to work, with these visible differences:
+
+- The account-email form refuses new addresses ("Email confirmation is not configured on this site"), and a user whose login provided no address goes straight to the dashboard.
+- `aveloxis serve` does not start the operator vulnerability digest and logs `operator vulnerability digest NOT started` at ERROR if `mail.operator_email` is set.
+- `aveloxis test-mail` exits non-zero with `mail is not configured`.
 
 ---
 
@@ -700,12 +704,17 @@ Semantics worth knowing:
   not dump the entire findings table into one email.
 - A failed send is retried with the SAME window on the next hourly
   check (nothing is dropped); the window only advances after a
-  successful send or a quiet evaluation. A send that never reaches
-  SMTP counts as failed too: an unconfigured mailer, or an
-  `operator_email` that is not one deliverable address (a comma list,
-  say), logs `vuln digest: send failed — window will retry` every hour
-  until the config is fixed (v0.29.28; before, the window advanced and
-  those findings were never mailed).
+  successful send or a quiet evaluation. That holds on the very first
+  run too: a first send that fails pins its window in the stamp file
+  (v0.29.29).
+- The digest only starts when it could be delivered. With the mailer
+  disabled, or an `operator_email` that is not one deliverable address
+  (a comma list, say), `aveloxis serve` logs
+  `operator vulnerability digest NOT started` at ERROR once and runs no
+  digest queries. The mailer is built at startup, so fix the config and
+  restart `serve` (v0.29.29; v0.29.28 logged "enabled" and retried
+  hourly, and earlier releases advanced the window and never mailed
+  those findings).
 - The email body itemizes up to 50 findings (most severe first) and
   always states the total; the state lives in
   `~/.aveloxis/vuln-digest-last`.

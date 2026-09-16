@@ -224,6 +224,15 @@ var deployChecklists = map[string][]deployStep{
 	// mail.operator_email (a list, say) now logs "vuln digest: send failed"
 	// every hour until fixed. No schema change, no operator heal.
 	"0.29.28": v029DeployChecklist,
+	// v0.29.29: round 3. Users whose login provided no email are let into
+	// the dashboard when this site cannot send a confirmation (mail off,
+	// or no mail.site_url behind a proxy) instead of being looped back to
+	// a form that refuses; a failed confirmation send clears the pending
+	// address and says so; the vulnerability digest refuses to START when
+	// it could never deliver (ERROR at startup, no hourly queries) and a
+	// failed first send pins its window. OPERATORS: after fixing the mail
+	// block or operator_email, restart serve. No schema change.
+	"0.29.29": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

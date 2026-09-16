@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -137,9 +138,12 @@ func TestConfirmEmailTokenEndToEnd(t *testing.T) {
 		t.Errorf("a pending address with a live token must be returned, got %q", got)
 	}
 
-	// Another account's click neither confirms nor burns A's link.
-	if _, err := store.ConfirmEmailToken(ctx, token, b); !errors.Is(err, ErrConfirmationTokenInvalid) {
-		t.Errorf("ConfirmEmailToken by another user = %v, want ErrConfirmationTokenInvalid", err)
+	// Another account's click neither confirms nor burns A's link, and it
+	// says whose link it was (for the WARN a replay deserves).
+	_, err = store.ConfirmEmailToken(ctx, token, b)
+	var mismatch *TokenOwnerMismatchError
+	if !errors.Is(err, ErrConfirmationTokenInvalid) || !errors.As(err, &mismatch) || mismatch.OwnerID != a {
+		t.Errorf("ConfirmEmailToken by another user = %v, want a TokenOwnerMismatchError naming user %d that is also ErrConfirmationTokenInvalid", err, a)
 	}
 	if got, _ := store.GetUserLivePendingEmail(ctx, a); got != "a@example.com" {
 		t.Errorf("another account's click must leave A's link live, got %q", got)
@@ -176,5 +180,71 @@ func TestConfirmEmailTokenEndToEnd(t *testing.T) {
 	}
 	if _, err := store.ConfirmEmailToken(ctx, old, b); !errors.Is(err, ErrConfirmationTokenInvalid) {
 		t.Errorf("an expired token must be invalid, got %v", err)
+	}
+}
+
+// TestConfirmEmailTokenConcurrentClicks (AVELOXIS_TEST_DB): two different
+// live links for the same user clicked at the same moment must not
+// deadlock — one confirms, the other is simply no longer valid (round-7
+// review: the token row, user row, other-tokens lock order deadlocked 297
+// of 300 pairs; the user row is now locked first).
+func TestConfirmEmailTokenConcurrentClicks(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	const login = "_avconfirm_concurrent"
+	clean := func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.email_confirmations WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 20; round++ {
+		if err := store.SetUserPendingEmail(ctx, uid, "c@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		t1, err := store.CreateEmailConfirmation(ctx, uid, "c@example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t2, err := store.CreateEmailConfirmation(ctx, uid, "c@example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i, tok := range []string{t1, t2} {
+			wg.Add(1)
+			go func(i int, tok string) {
+				defer wg.Done()
+				_, errs[i] = store.ConfirmEmailToken(ctx, tok, uid)
+			}(i, tok)
+		}
+		wg.Wait()
+		ok := 0
+		for _, e := range errs {
+			switch {
+			case e == nil:
+				ok++
+			case errors.Is(e, ErrConfirmationTokenInvalid):
+			default:
+				t.Fatalf("round %d: concurrent confirmation failed with %v (want success or ErrConfirmationTokenInvalid)", round, e)
+			}
+		}
+		if ok != 1 {
+			t.Fatalf("round %d: %d confirmations succeeded, want exactly 1", round, ok)
+		}
 	}
 }

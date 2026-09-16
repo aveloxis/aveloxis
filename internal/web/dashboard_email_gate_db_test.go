@@ -6,6 +6,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -300,9 +301,15 @@ func TestAccountEmailFlowThroughTheHandler(t *testing.T) {
 		}
 		u, _ := url.Parse(c.links[0])
 		confirm := u.RequestURI()
+		var logs strings.Builder
+		s.logger = slog.New(slog.NewTextHandler(&logs, nil))
 		w := do(s, http.MethodGet, confirm, "aveloxis.io", "b", "")
 		if w.Code != http.StatusFound || w.Header().Get("Location") != "/account/email?expired=1" {
 			t.Errorf("B's click = %d %q, want 302 /account/email?expired=1", w.Code, w.Header().Get("Location"))
+		}
+		// A replay of another account's link is logged as one, with its owner.
+		if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), fmt.Sprintf("token_user_id=%d", uidA)) {
+			t.Errorf("another account's click must be a WARN naming the token's owner; log:\n%s", logs.String())
 		}
 		if got, _ := store.GetUserLivePendingEmail(ctx, uidA); got != "a@example.com" {
 			t.Errorf("A's link must still be live after B's click, pending = %q", got)

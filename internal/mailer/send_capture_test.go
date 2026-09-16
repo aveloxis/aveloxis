@@ -13,18 +13,13 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/mail"
 	"net/smtp"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 type sentMail struct {
@@ -351,12 +346,14 @@ func domainOfLength(n int) string {
 	return strings.Join(labels, ".")
 }
 
-// TestNewDeliversThroughSMTPSendMail pins the seam's production default:
-// the sender a New mailer resolves to IS smtp.SendMail. Checking only that
-// the field is nil let `send := m.sendMail` pass every test while every
-// configured production Send would call a nil func.
-func TestNewDeliversThroughSMTPSendMail(t *testing.T) {
-	want := reflect.ValueOf(smtp.SendMail).Pointer()
+// TestDelivererDefaults pins both defaults of the send seam: a production
+// binary's mailer delivers through smtp.SendMail, and inside a test binary
+// a mailer with no seam installed refuses instead of dialing (round-7
+// review: a broken seam made handler tests dial smtp.gmail.com). The
+// refusal is checked by pointer BEFORE it is called, so even a mutation
+// that restores smtp.SendMail here cannot dial.
+func TestDelivererDefaults(t *testing.T) {
+	sendMail := reflect.ValueOf(smtp.SendMail).Pointer()
 	for _, cfg := range []Config{
 		{},
 		{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"},
@@ -366,9 +363,30 @@ func TestNewDeliversThroughSMTPSendMail(t *testing.T) {
 		if m.sendMail != nil {
 			t.Errorf("New(%+v) set sendMail — the seam is for tests only", cfg)
 		}
-		if got := reflect.ValueOf(m.deliverer()).Pointer(); got != want {
-			t.Errorf("New(%+v).deliverer() is not smtp.SendMail", cfg)
+		if got := reflect.ValueOf(m.delivererFor(false)).Pointer(); got != sendMail {
+			t.Errorf("New(%+v): the production deliverer is not smtp.SendMail", cfg)
 		}
+		inTest := m.delivererFor(true)
+		if reflect.ValueOf(inTest).Pointer() == sendMail {
+			t.Fatalf("New(%+v): inside a test binary a mailer without a seam must not get smtp.SendMail", cfg)
+		}
+		if err := inTest(gmailSMTPHost, nil, "ops@example.com", []string{"user@example.com"}, nil); err == nil || !strings.Contains(err.Error(), "test seam") {
+			t.Errorf("New(%+v): the in-test deliverer = %v, want a refusal naming the test seam", cfg, err)
+		}
+	}
+}
+
+// TestSendWithoutASeamRefusesInTests: a configured mailer with no seam, used
+// from a test, returns an error instead of reaching SMTP — and that error is
+// a delivery failure, not a skip.
+func TestSendWithoutASeamRefusesInTests(t *testing.T) {
+	m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil)
+	if reflect.ValueOf(m.deliverer()).Pointer() == reflect.ValueOf(smtp.SendMail).Pointer() {
+		t.Fatal("this test would dial smtp.gmail.com — the in-test refusal is gone")
+	}
+	err := m.Send("user@example.com", "s", "b")
+	if err == nil || IsSkip(err) || !strings.Contains(err.Error(), "test seam") {
+		t.Errorf("Send without a seam in a test = %v, want a non-skip refusal naming the test seam", err)
 	}
 }
 
@@ -456,9 +474,11 @@ func TestSiteURLNormalizedOnce(t *testing.T) {
 	}
 }
 
-// TestWithSendFunc: the exported capture hook for callers' tests outside
-// this package. It must be the same seam Send uses, and production code
-// must never call it.
+// TestWithSendFunc: the exported capture hook for other packages' tests is
+// the same seam Send uses. Production use is refused where the method lives
+// (it panics outside a test binary), not by scanning sources for a
+// spelling (round-7 review: a multi-line call and a method value both
+// escaped the scan).
 func TestWithSendFunc(t *testing.T) {
 	var to []string
 	m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil).
@@ -466,30 +486,4 @@ func TestWithSendFunc(t *testing.T) {
 	if err := m.Send("user@example.com", "s", "b"); err != nil || len(to) != 1 || to[0] != "user@example.com" {
 		t.Errorf("Send through WithSendFunc: err=%v to=%q", err, to)
 	}
-	root := srctest.Root(t)
-	calls := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
-			return filepath.SkipDir
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		b, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		if strings.Contains(srctest.StripGoComments(string(b)), ".WithSendFunc(") {
-			calls++
-			t.Errorf("%s calls WithSendFunc — it is a test seam; production mail must go through smtp.SendMail", path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = calls
 }

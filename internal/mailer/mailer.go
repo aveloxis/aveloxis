@@ -27,6 +27,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"strings"
+	"testing"
 	"time"
 	"unicode"
 )
@@ -64,7 +65,8 @@ type Mailer struct {
 	logger *slog.Logger
 
 	// sendMail delivers the message Send composed. nil — what New leaves —
-	// means smtp.SendMail. Tests set it (directly in this package, through
+	// means smtp.SendMail in production (and a refusal in a test binary; see
+	// delivererFor). Tests set it (directly in this package, through
 	// WithSendFunc elsewhere) to capture the envelope and the composed
 	// message, which nothing else can observe.
 	sendMail func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
@@ -72,20 +74,38 @@ type Mailer struct {
 
 // WithSendFunc replaces smtp.SendMail for this mailer and returns it. It is
 // a test seam for other packages' tests (internal/web drives its handlers
-// with it, so a test can never dial SMTP); production code never calls it,
-// and TestWithSendFunc fails the build if it does.
+// with it). It panics outside a test binary, so a production caller fails
+// on first use rather than silently dropping mail.
 func (m *Mailer) WithSendFunc(f func(addr string, a smtp.Auth, from string, to []string, msg []byte) error) *Mailer {
+	if !testing.Testing() {
+		panic("mailer.WithSendFunc is a test seam; production mail goes through smtp.SendMail")
+	}
 	m.sendMail = f
 	return m
 }
 
-// deliverer resolves the sender Send uses: the test seam when set, else
-// smtp.SendMail. TestNewDeliversThroughSMTPSendMail pins the default.
+// deliverer resolves the sender Send uses. TestDelivererDefaults pins both
+// defaults.
 func (m *Mailer) deliverer() func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	return m.delivererFor(testing.Testing())
+}
+
+// delivererFor is the test seam when one is installed, smtp.SendMail in a
+// production binary, and a refusal inside a test binary: a test that forgot
+// its seam (or a broken seam) fails instead of dialing smtp.gmail.com with
+// test credentials (round-7 review).
+func (m *Mailer) delivererFor(inTestBinary bool) func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
 	if m.sendMail != nil {
 		return m.sendMail
 	}
+	if inTestBinary {
+		return refuseSMTPInTests
+	}
 	return smtp.SendMail
+}
+
+func refuseSMTPInTests(addr string, _ smtp.Auth, _ string, _ []string, _ []byte) error {
+	return fmt.Errorf("mailer: refusing to dial %s from a test binary — install a test seam (WithSendFunc, or sendMail inside this package)", addr)
 }
 
 // New returns a Mailer. Safe to call with a zero Config — Send will
@@ -426,10 +446,6 @@ func (m *Mailer) recipientFor(to string) (string, error) {
 	return addr, nil
 }
 
-// SendWelcome is the email sent on first signup. Confirms the
-// account exists, names the OAuth provider, and points at the
-// site URL. No verification link — GitHub/GitLab have already
-// verified the email before handing it to us.
 // SiteURL returns the configured site URL (e.g. "https://chaoss.tv"),
 // normalized by New (no surrounding spaces, no trailing slash), or "" if
 // unset. v0.20.4 uses this to build click-to-confirm links
@@ -441,6 +457,10 @@ func (m *Mailer) SiteURL() string {
 	return m.cfg.SiteURL
 }
 
+// SendWelcome is the email sent on first signup. Confirms the
+// account exists, names the OAuth provider, and points at the
+// site URL. No verification link — GitHub/GitLab have already
+// verified the email before handing it to us.
 func (m *Mailer) SendWelcome(toEmail, login, provider string) error {
 	subject := "Welcome to Aveloxis"
 	siteURL := m.cfg.SiteURL
@@ -466,7 +486,7 @@ Sign in: %s
 // SendEmailConfirmation is the email sent when a user submits an
 // email at /account/email. Contains a click-through link to
 // /account/email/confirm?token=... that consumes the token and
-// promotes email_pending to email. v0.20.4. Tokens expire in
+// promotes the token's address to users.email. v0.20.4. Tokens expire in
 // EmailConfirmationLifetime (24 hours by default).
 // SendEmailConfirmation mails a click-to-confirm link.
 //

@@ -112,10 +112,10 @@ func TestAccountEmailPostUsesPendingFlow(t *testing.T) {
 }
 
 // TestDashboardShowsPendingEmail pins that the dashboard renders a
-// banner when the user has email_pending set (i.e., they submitted an
-// email but haven't clicked the confirmation link yet). Also pins that
-// the dashboard email-gate doesn't redirect to /account/email when
-// email_pending is set — otherwise the user gets stuck in a loop.
+// banner when the user has a live pending address (they submitted an email,
+// a confirmation link for it is still valid, and they haven't clicked it).
+// The gate's redirect behavior is tested through the handler in
+// internal/web (TestDashboardEmailGateThroughTheHandler).
 func TestDashboardShowsPendingEmail(t *testing.T) {
 	srv, err := os.ReadFile("../web/server.go")
 	if err != nil {

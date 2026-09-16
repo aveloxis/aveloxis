@@ -4,13 +4,15 @@
 // Email-verification token flow (v0.20.4). Defense-in-depth on top of
 // v0.19.10's manual-entry path at /account/email — a user who enters
 // an email there has NOT been verified by the OAuth provider, so we
-// require click-to-confirm before promoting their email_pending value
-// to users.email.
+// require click-to-confirm before promoting the confirmed address (the
+// token's, which is the one they submitted) to users.email.
 //
 // Two columns / one table:
 //   - users.email_pending TEXT — the email awaiting confirmation
 //   - email_confirmations (token, user_id, email, expires_at) — one row
-//     per outstanding confirmation request; deleted on consume or expiry
+//     per outstanding confirmation request; a user's rows are deleted when
+//     one is confirmed. Expired rows are never swept; every reader filters
+//     on expires_at.
 //
 // OAuth-callback emails (the /user and /user/emails fallback paths in
 // v0.19.10) bypass this flow entirely — those emails are already
@@ -65,6 +67,17 @@ func (s *PostgresStore) CreateEmailConfirmation(ctx context.Context, userID int,
 // invite the user to start a fresh confirmation.
 var ErrConfirmationTokenInvalid = errors.New("confirmation token is invalid, expired, or not this account's")
 
+// TokenOwnerMismatchError is the ErrConfirmationTokenInvalid returned when
+// the token is live but issued to another account — the replay a crafted
+// link attempts — so the caller can log it as one (round-7 review).
+type TokenOwnerMismatchError struct{ OwnerID int }
+
+func (e *TokenOwnerMismatchError) Error() string {
+	return fmt.Sprintf("confirmation token belongs to user %d", e.OwnerID)
+}
+
+func (e *TokenOwnerMismatchError) Unwrap() error { return ErrConfirmationTokenInvalid }
+
 // ConfirmEmailToken confirms a click-to-confirm link for the user
 // presenting it, in ONE transaction: it consumes the token only when the
 // token is live AND belongs to userID, promotes that token's address to
@@ -74,21 +87,44 @@ var ErrConfirmationTokenInvalid = errors.New("confirmation token is invalid, exp
 // click no longer burns the owner's link, and a failed promotion rolls the
 // token back instead of leaving a dead link behind (round-6 review,
 // v0.29.32). It replaced ConsumeEmailConfirmation + ConfirmUserEmail.
+//
+// The user row is locked FIRST: locking the token, then the user, then the
+// user's other tokens deadlocked two different links of one user clicked
+// at once (round-7 review, v0.29.33). With the user row first, the second
+// click waits, then finds its token already deleted and is simply invalid.
+// A live token of another account returns TokenOwnerMismatchError.
 func (s *PostgresStore) ConfirmEmailToken(ctx context.Context, token string, userID int) (string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback(ctx)
+	var locked int
+	if err := tx.QueryRow(ctx,
+		`SELECT user_id FROM aveloxis_ops.users WHERE user_id = $1 FOR UPDATE`, userID).Scan(&locked); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrConfirmationTokenInvalid
+		}
+		return "", err
+	}
 	var email string
 	if err := tx.QueryRow(ctx, `
 		DELETE FROM aveloxis_ops.email_confirmations
 		WHERE token = $1 AND user_id = $2 AND expires_at > NOW()
 		RETURNING email`, token, userID).Scan(&email); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrConfirmationTokenInvalid
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", err
 		}
-		return "", err
+		var owner int
+		switch ownerErr := tx.QueryRow(ctx,
+			`SELECT user_id FROM aveloxis_ops.email_confirmations WHERE token = $1 AND expires_at > NOW()`, token).Scan(&owner); {
+		case ownerErr == nil && owner != userID:
+			return "", &TokenOwnerMismatchError{OwnerID: owner}
+		case ownerErr == nil || errors.Is(ownerErr, pgx.ErrNoRows):
+			return "", ErrConfirmationTokenInvalid
+		default:
+			return "", ownerErr
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE aveloxis_ops.users

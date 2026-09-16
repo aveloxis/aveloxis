@@ -252,6 +252,12 @@ var deployChecklists = map[string][]deployStep{
 	// form explains expired and failed links; mail.site_url is normalized
 	// once. No schema change, no operator heal.
 	"0.29.32": v029DeployChecklist,
+	// v0.29.33: round 7. Confirming locks the user row first (two links of
+	// one user clicked at once deadlocked); another account's link is logged
+	// at WARN with its owner; the mailer refuses to dial SMTP from a test
+	// binary without a seam, and WithSendFunc panics outside tests. No
+	// schema change.
+	"0.29.33": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

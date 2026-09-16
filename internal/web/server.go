@@ -1113,8 +1113,9 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 // logged-in user and redirects to the dashboard. A link that is not a live
 // token for THIS account — unknown, expired, used, or another account's —
 // redirects to /account/email?expired=1 and changes nothing (the owner's
-// link stays usable); a database failure redirects to ?error=1 with the
-// token rolled back. The form explains both.
+// link stays usable; another account's link is logged at WARN); a database
+// failure redirects to ?error=1 with the transaction rolled back, so the
+// link still works. The form explains both.
 func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -1123,8 +1124,16 @@ func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.store.ConfirmEmailToken(r.Context(), token, sess.UserID); err != nil {
+		var mismatch *db.TokenOwnerMismatchError
+		if errors.As(err, &mismatch) {
+			// The replay emailConfirmBase exists to prevent: say so.
+			s.logger.Warn("email confirmation link belongs to another account",
+				"token_user_id", mismatch.OwnerID, "session_user_id", sess.UserID)
+			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
+			return
+		}
 		if errors.Is(err, db.ErrConfirmationTokenInvalid) {
-			s.logger.Info("email confirmation link rejected: unknown, expired, used, or another account's",
+			s.logger.Info("email confirmation link rejected: unknown, expired, or already used",
 				"session_user_id", sess.UserID)
 			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
 			return

@@ -831,6 +831,19 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
+// bracketBareIPv6 wraps an unbracketed IPv6 Host header in square brackets
+// so it can form a valid URL authority. isLoopbackHost accepts the bare
+// "::1" form, but concatenating it into a URL yields the invalid
+// "http://::1/..." — IPv6 literals in authorities must be bracketed
+// (RFC 3986 §3.2.2; Copilot review on PR #207). Already-bracketed hosts,
+// hostnames and IPv4 literals pass through unchanged.
+func bracketBareIPv6(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return "[" + host + "]"
+	}
+	return host
+}
+
 // handleAccountEmail renders (GET) and processes (POST) the
 // email-collection form. This is the v0.19.10 fallback when both /user
 // and /user/emails came back empty during OAuth callback. After the
@@ -898,7 +911,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 			if r.TLS == nil {
 				scheme = "http"
 			}
-			base = scheme + "://" + r.Host
+			base = scheme + "://" + bracketBareIPv6(r.Host)
 		}
 		confirmURL := base + "/account/email/confirm?token=" + token
 		if s.mailer != nil {

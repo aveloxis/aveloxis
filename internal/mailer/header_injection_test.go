@@ -10,6 +10,7 @@ package mailer
 // group-approval email's Subject embeds the group name.
 
 import (
+	"net/mail"
 	"os"
 	"strings"
 	"testing"
@@ -52,7 +53,7 @@ func TestSendSanitizesHeaderValues(t *testing.T) {
 	for _, needle := range []string{
 		"mail.ParseAddress(strings.TrimSpace(to))",
 		"recipient := parsed.Address",
-		"sanitizeHeader(recipient)",
+		"(&mail.Address{Address: recipient}).String()",
 		"sanitizeHeader(subject)",
 	} {
 		if !strings.Contains(body, needle) {
@@ -61,10 +62,43 @@ func TestSendSanitizesHeaderValues(t *testing.T) {
 				"the recipient arrives straight from a web form", needle)
 		}
 	}
-	// The raw parameter must not reach the header block or the envelope.
-	for _, banned := range []string{"sanitizeHeader(to)", "[]string{to}", "[]string{sanitizeHeader(to)}"} {
+	// The raw parameter must not reach the header block or the envelope,
+	// and the parsed recipient must not pass through the body-value
+	// normalizer — it collapses whitespace and truncates, which can
+	// mutate a valid mailbox (spaces in a quoted local part are
+	// significant) while the envelope keeps the unmodified value.
+	for _, banned := range []string{"sanitizeHeader(to)", "[]string{to}", "[]string{sanitizeHeader(to)}", "sanitizeHeader(recipient)"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("Send uses %q — the raw recipient parameter must not reach the message; use the parsed address", banned)
+		}
+	}
+}
+
+// TestToHeaderSerializationPreservesParsedMailbox: the To: header is built
+// by re-serializing the parsed addr-spec with net/mail, NOT by passing it
+// through scrubUntrusted — the normalizer collapses whitespace, which
+// mutates a quoted local part where spaces are significant, while the
+// envelope keeps the unmodified address (Copilot review on PR #207). The
+// serialized form must re-parse to the identical addr-spec.
+func TestToHeaderSerializationPreservesParsedMailbox(t *testing.T) {
+	for _, in := range []string{
+		"user@example.com",
+		`"john  smith"@example.com`, // significant double space in a quoted local part
+	} {
+		parsed, err := mail.ParseAddress(in)
+		if err != nil {
+			t.Fatalf("ParseAddress(%q): %v", in, err)
+		}
+		serialized := (&mail.Address{Address: parsed.Address}).String()
+		if strings.ContainsAny(serialized, "\r\n") {
+			t.Errorf("serialized To header %q contains CR/LF", serialized)
+		}
+		back, err := mail.ParseAddress(serialized)
+		if err != nil {
+			t.Fatalf("re-parse %q: %v", serialized, err)
+		}
+		if back.Address != parsed.Address {
+			t.Errorf("To header round-trip changed the addr-spec: %q -> %q", parsed.Address, back.Address)
 		}
 	}
 }

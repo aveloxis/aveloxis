@@ -134,6 +134,14 @@ const bodyValueMax = 300
 // TEMPLATES are the package's own and are not passed through this.
 func sanitizeBodyValue(s string) string { return scrubUntrusted(s) }
 
+// sanitizeBodyURL scrubs a URL destined for an email body with the same
+// control/format-rune filtering as sanitizeBodyValue but WITHOUT the
+// bodyValueMax cap. URLs are not label-sized values: a configured site_url
+// plus the confirmation path and a 64-character token can legitimately
+// exceed the cap, and truncation would silently mail a broken link ending
+// in an ellipsis (Copilot review on PR #207).
+func sanitizeBodyURL(s string) string { return scrubRunes(s) }
+
 // scrubUntrusted is the ONE normalizer for untrusted text in this package,
 // used for header values and body values alike. Subjects need it as much as
 // bodies: SendGroupApproved puts the same group name in both, and the
@@ -155,6 +163,21 @@ func sanitizeBodyValue(s string) string { return scrubUntrusted(s) }
 //
 // Then whitespace runs collapse and the value is capped.
 func scrubUntrusted(s string) string {
+	s = scrubRunes(s)
+	// Truncate on RUNES: len() is bytes, and slicing mid-rune emitted
+	// invalid UTF-8 into a body declared charset=UTF-8 (a 300-byte cut
+	// through "项目" left an orphaned 0xe9 lead byte).
+	if r := []rune(s); len(r) > bodyValueMax {
+		s = string(r[:bodyValueMax]) + "…"
+	}
+	return s
+}
+
+// scrubRunes is scrubUntrusted's filtering pass without the length cap:
+// line breaks become spaces, controls and format runes are dropped, and
+// whitespace runs collapse. Shared by the capped label normalizer and the
+// uncapped URL sanitizer.
+func scrubRunes(s string) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
 		case r == '\r' || r == '\n' || r == '\t':
@@ -170,14 +193,7 @@ func scrubUntrusted(s string) string {
 		}
 		return r
 	}, s)
-	s = strings.Join(strings.Fields(s), " ")
-	// Truncate on RUNES: len() is bytes, and slicing mid-rune emitted
-	// invalid UTF-8 into a body declared charset=UTF-8 (a 300-byte cut
-	// through "项目" left an orphaned 0xe9 lead byte).
-	if r := []rune(s); len(r) > bodyValueMax {
-		s = string(r[:bodyValueMax]) + "…"
-	}
-	return s
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // Send dispatches a single email. Subject and body are plain text.
@@ -247,6 +263,14 @@ func (m *Mailer) Send(to, subject, body string) error {
 	// a group named "x\r\nBcc: ..." reaching the Subject line via the
 	// approval email). Strip line breaks from every header value; the
 	// body sits after the blank line and needs no such treatment.
+	//
+	// The To: header is SERIALIZED with net/mail rather than passed
+	// through scrubUntrusted: the normalizer collapses whitespace and
+	// truncates, which can mutate a valid parsed mailbox (spaces inside a
+	// quoted local part are significant) while the envelope still carries
+	// the unmodified `recipient` — breaking the same-address invariant
+	// below. mail.Address.String() re-quotes the addr-spec correctly and
+	// cannot emit CR/LF for an address ParseAddress accepted.
 	msg := []byte(fmt.Sprintf(
 		"From: %s\r\n"+
 			"To: %s\r\n"+
@@ -256,7 +280,7 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, sanitizeHeader(recipient), sanitizeHeader(subject),
+		from, (&mail.Address{Address: recipient}).String(), sanitizeHeader(subject),
 		time.Now().Format(time.RFC1123Z), body))
 
 	// Envelope and To: header carry the SAME parsed address. net/smtp
@@ -320,7 +344,9 @@ Sign in: %s
 // when mail.site_url was unset, which let an authenticated attacker mail a
 // victim a link to the attacker's server carrying the victim's token
 // (Copilot review on PR #207; CodeQL alert 197). internal/web now refuses a
-// non-loopback Host, and this is the second layer.
+// non-loopback Host, and this is the second layer. Scrubbed with the
+// UNCAPPED sanitizer: a legitimate site_url plus path and token can exceed
+// bodyValueMax, and truncating would silently mail a broken link.
 func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string) error {
 	subject := "Confirm your Aveloxis email address"
 	body := fmt.Sprintf(`Hello %s,
@@ -333,7 +359,7 @@ This link expires in 24 hours. If you didn't request this confirmation,
 ignore this email — your account email won't change without confirming.
 
 — Aveloxis
-`, sanitizeBodyValue(login), sanitizeBodyValue(confirmURL))
+`, sanitizeBodyValue(login), sanitizeBodyURL(confirmURL))
 	return m.Send(toEmail, subject, body)
 }
 

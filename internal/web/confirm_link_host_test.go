@@ -41,3 +41,25 @@ func TestIsLoopbackHost(t *testing.T) {
 		})
 	}
 }
+
+// TestBracketBareIPv6 pins the URL-authority normalization for the bare
+// IPv6 form isLoopbackHost accepts: "::1" concatenated into a URL would
+// yield the invalid "http://::1/..." — IPv6 literals in authorities must
+// be bracketed (RFC 3986 §3.2.2; Copilot review on PR #207).
+func TestBracketBareIPv6(t *testing.T) {
+	for _, tc := range []struct{ host, want string }{
+		{"::1", "[::1]"},
+		{"[::1]:8082", "[::1]:8082"}, // already bracketed — unchanged
+		{"localhost", "localhost"},
+		{"localhost:8082", "localhost:8082"},
+		{"127.0.0.1", "127.0.0.1"},
+		{"127.0.0.1:8082", "127.0.0.1:8082"},
+		{"", ""},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := bracketBareIPv6(tc.host); got != tc.want {
+				t.Errorf("bracketBareIPv6(%q) = %q, want %q", tc.host, got, tc.want)
+			}
+		})
+	}
+}

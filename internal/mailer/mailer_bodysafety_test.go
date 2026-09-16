@@ -106,6 +106,28 @@ func TestSanitizeHeaderSharesTheBodyFilter(t *testing.T) {
 	}
 }
 
+// TestSanitizeBodyURLScrubsWithoutTruncating: a confirmation URL whose
+// configured site_url plus path and 64-character token exceeds bodyValueMax
+// must survive intact — truncation silently mails a broken link ending in
+// an ellipsis (Copilot review on PR #207). The control/format scrubbing is
+// kept: same filter, no cap.
+func TestSanitizeBodyURLScrubsWithoutTruncating(t *testing.T) {
+	longURL := "https://" + strings.Repeat("sub.", 80) + "example.com/account/email/confirm?token=" + strings.Repeat("a", 64)
+	if len([]rune(longURL)) <= bodyValueMax {
+		t.Fatalf("fixture too short (%d runes) to exercise the cap", len([]rune(longURL)))
+	}
+	if got := sanitizeBodyURL(longURL); got != longURL {
+		t.Errorf("sanitizeBodyURL mutated a clean over-cap URL:\n got %q\nwant %q", got, longURL)
+	}
+	// The scrubbing itself must match sanitizeBodyValue's for values
+	// under the cap: only the truncation differs.
+	for _, in := range []string{"http://x\r\nBcc: y", "http://a\u202Eb", "http://a\u200bb", "http://gr\x1b[2Joup"} {
+		if got, want := sanitizeBodyURL(in), sanitizeBodyValue(in); got != want {
+			t.Errorf("sanitizeBodyURL(%q) = %q but sanitizeBodyValue gives %q — they must share the same filter", in, got, want)
+		}
+	}
+}
+
 // TestSanitizeSampleKeepsListStructure: the entries are attacker-supplied,
 // the line breaks between them are the template's.
 func TestSanitizeSampleKeepsListStructure(t *testing.T) {
@@ -191,6 +213,7 @@ func TestEveryUntrustedBodyInterpolationIsSanitized(t *testing.T) {
 	sanitizers := map[string]bool{
 		"sanitizeBodyValue": true, "sanitizeSample": true,
 		"sanitizeHeader": true, "scrubUntrusted": true,
+		"sanitizeBodyURL": true,
 	}
 	// Values this package assembles or takes from operator config.
 	// `body` is the assembled message: its parts are sanitized

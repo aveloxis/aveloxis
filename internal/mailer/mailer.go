@@ -293,6 +293,14 @@ Sign in: %s
 // /account/email/confirm?token=... that consumes the token and
 // promotes email_pending to email. v0.20.4. Tokens expire in
 // EmailConfirmationLifetime (24 hours by default).
+// SendEmailConfirmation mails a click-to-confirm link.
+//
+// confirmURL is scrubbed like any other caller-supplied value, not exempted
+// as package-built: it USED to be assembled from the request Host header
+// when mail.site_url was unset, which let an authenticated attacker mail a
+// victim a link to the attacker's server carrying the victim's token
+// (Copilot review on PR #207; CodeQL alert 197). internal/web now refuses a
+// non-loopback Host, and this is the second layer.
 func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string) error {
 	subject := "Confirm your Aveloxis email address"
 	body := fmt.Sprintf(`Hello %s,
@@ -305,7 +313,7 @@ This link expires in 24 hours. If you didn't request this confirmation,
 ignore this email — your account email won't change without confirming.
 
 — Aveloxis
-`, sanitizeBodyValue(login), confirmURL)
+`, sanitizeBodyValue(login), sanitizeBodyValue(confirmURL))
 	return m.Send(toEmail, subject, body)
 }
 

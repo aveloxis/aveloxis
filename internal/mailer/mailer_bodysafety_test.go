@@ -119,20 +119,26 @@ func TestSanitizeSampleKeepsListStructure(t *testing.T) {
 }
 
 // TestEveryUntrustedBodyInterpolationIsSanitized is the tripwire. Every
-// Send* builder interpolates caller-supplied strings into a body, and each
-// must pass through sanitizeBodyValue (or sanitizeSample). Forgetting is
-// exactly how CodeQL alert 16 came about.
+// Send* builder interpolates caller-supplied data into a message, and every
+// untrusted value must reach fmt through a sanitizer. Forgetting is exactly
+// how CodeQL alert 16 came about.
 //
-// It parses the file (AST) rather than matching line shapes. The first
-// version matched three shapes and was blind to two real sites — the
-// multi-line raw-string verdicts in SendAddRequestDecided, whose argument
-// line begins with prose — and to the whole SendVulnerabilityDigest
-// builder, which uses fmt.Fprintf. Verified: unwrapping either verdict's
-// groupName left it PASSING.
+// It traces argument EXPRESSIONS recursively, not bare identifiers. Two
+// earlier versions were escapable, both mutation-proved:
+//   - matching three line shapes missed the multi-line raw-string verdicts
+//     in SendAddRequestDecided and all of SendVulnerabilityDigest;
+//   - accepting only a bare `ident` missed any wrapper — `strings.ToUpper(
+//     requesterLogin)` — and every field of a non-string parameter, which
+//     is precisely how the digest's `it.Summary` reaches fmt.
 //
-// The untrusted set is DERIVED from each Send* function's own string
-// parameters, not hand-listed, so a new builder taking `orgName` or
-// `userName` is covered the day it is written.
+// So: a call to a sanitizer makes its subtree safe; anything else is
+// descended into; an untrusted leaf reached without passing through one is
+// a failure. Locals are tracked too, since builders assemble values in
+// steps (`summary := sanitizeBodyValue(it.Summary)` is safe; a local
+// assigned from an unsanitized untrusted value is not).
+//
+// The untrusted set is DERIVED from each builder's own parameters, so a new
+// builder taking `orgName` is covered the day it is written.
 func TestEveryUntrustedBodyInterpolationIsSanitized(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "mailer.go", nil, 0)
@@ -140,26 +146,38 @@ func TestEveryUntrustedBodyInterpolationIsSanitized(t *testing.T) {
 		t.Fatalf("parse mailer.go: %v", err)
 	}
 
-	// Values the package derives itself, or that come from operator config
-	// rather than from a user: not attacker-controlled.
-	trusted := map[string]bool{
-		"to": true, "toEmail": true, "subject": true, "body": true,
-		"what": true, "verdict": true, "link": true, "siteURL": true,
-		"confirmURL": true, "kind": true, "summary": true,
+	sanitizers := map[string]bool{
+		"sanitizeBodyValue": true, "sanitizeSample": true,
+		"sanitizeHeader": true, "scrubUntrusted": true,
+	}
+	// Values this package assembles or takes from operator config.
+	// `body` is the assembled message: its parts are sanitized
+	// individually by the builders, and scrubbing it here would collapse
+	// the templates' own line breaks. `confirmURL` is NOT exempt — it is
+	// built from a site URL that used to come from the request Host.
+	trusted := map[string]bool{"to": true, "toEmail": true, "subject": true, "body": true}
+
+	// untrustedType: the shapes that can carry attacker text.
+	untrustedType := func(e ast.Expr) bool {
+		switch typ := e.(type) {
+		case *ast.Ident:
+			return typ.Name == "string"
+		case *ast.ArrayType: // []string, []VulnDigestItem
+			_, isIdent := typ.Elt.(*ast.Ident)
+			return isIdent
+		}
+		return false
 	}
 
-	sanitizers := map[string]bool{"sanitizeBodyValue": true, "sanitizeSample": true, "sanitizeHeader": true, "scrubUntrusted": true}
-
-	checked := 0
+	builders := 0
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || !strings.HasPrefix(fn.Name.Name, "Send") || fn.Recv == nil {
+		if !ok || fn.Recv == nil || !strings.HasPrefix(fn.Name.Name, "Send") {
 			continue
 		}
-		// String parameters of this builder = its untrusted inputs.
 		untrusted := map[string]bool{}
 		for _, p := range fn.Type.Params.List {
-			if id, ok := p.Type.(*ast.Ident); !ok || id.Name != "string" {
+			if !untrustedType(p.Type) {
 				continue
 			}
 			for _, n := range p.Names {
@@ -171,34 +189,99 @@ func TestEveryUntrustedBodyInterpolationIsSanitized(t *testing.T) {
 		if len(untrusted) == 0 {
 			continue
 		}
-		ast.Inspect(fn, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Sprintf" && sel.Sel.Name != "Fprintf" {
-				return true
-			}
-			for _, arg := range call.Args {
-				id, ok := arg.(*ast.Ident) // a BARE identifier argument
-				if !ok || !untrusted[id.Name] {
-					continue
+		builders++
+
+		// tainted reports whether expr reaches an untrusted leaf without
+		// passing through a sanitizer.
+		var tainted func(ast.Expr) (string, bool)
+		tainted = func(expr ast.Expr) (string, bool) {
+			switch e := expr.(type) {
+			case *ast.CallExpr:
+				if id, ok := e.Fun.(*ast.Ident); ok {
+					if sanitizers[id.Name] {
+						return "", false // sanitized subtree
+					}
+					// len/cap of untrusted data yield an int, which cannot
+					// carry text into the message.
+					if id.Name == "len" || id.Name == "cap" {
+						return "", false
+					}
 				}
-				checked++
-				t.Errorf("%s interpolates %s unsanitized at %s — wrap it in sanitizeBodyValue (CodeQL alert 16: a forged sign-off and link inside a group name reads as if Aveloxis sent it)",
-					fn.Name.Name, id.Name, fset.Position(id.Pos()))
+				for _, a := range e.Args {
+					if name, bad := tainted(a); bad {
+						return name, true
+					}
+				}
+			case *ast.Ident:
+				if untrusted[e.Name] {
+					return e.Name, true
+				}
+			case *ast.SelectorExpr: // it.Summary, where `it` ranges over items
+				return tainted(e.X)
+			case *ast.IndexExpr:
+				return tainted(e.X)
+			case *ast.SliceExpr:
+				return tainted(e.X)
+			case *ast.BinaryExpr:
+				if name, bad := tainted(e.X); bad {
+					return name, true
+				}
+				return tainted(e.Y)
+			case *ast.ParenExpr:
+				return tainted(e.X)
+			case *ast.StarExpr:
+				return tainted(e.X)
+			case *ast.UnaryExpr:
+				return tainted(e.X)
+			}
+			return "", false
+		}
+
+		// Walk the body in order so locals and range vars pick up taint
+		// before the fmt call that uses them.
+		ast.Inspect(fn, func(n ast.Node) bool {
+			switch stmt := n.(type) {
+			case *ast.RangeStmt: // for _, it := range items
+				if _, bad := tainted(stmt.X); bad {
+					if id, ok := stmt.Value.(*ast.Ident); ok && id.Name != "_" {
+						untrusted[id.Name] = true
+					}
+				}
+			case *ast.AssignStmt:
+				for i, rhs := range stmt.Rhs {
+					if i >= len(stmt.Lhs) {
+						break
+					}
+					id, ok := stmt.Lhs[i].(*ast.Ident)
+					if !ok || id.Name == "_" {
+						continue
+					}
+					if _, bad := tainted(rhs); bad {
+						untrusted[id.Name] = true
+					} else {
+						delete(untrusted, id.Name) // reassigned from a safe value
+					}
+				}
+			case *ast.CallExpr:
+				sel, ok := stmt.Fun.(*ast.SelectorExpr)
+				if !ok || (sel.Sel.Name != "Sprintf" && sel.Sel.Name != "Fprintf") {
+					return true
+				}
+				for _, arg := range stmt.Args {
+					if name, bad := tainted(arg); bad {
+						t.Errorf("%s interpolates %s unsanitized at %s — wrap it in sanitizeBodyValue (CodeQL alert 16: a forged sign-off and link inside a group name reads as if Aveloxis sent it)",
+							fn.Name.Name, name, fset.Position(arg.Pos()))
+					}
+				}
 			}
 			return true
 		})
-		checked++
 	}
 	// Denominator guard: count builders EXAMINED, so the pin cannot pass by
 	// having quietly stopped finding any.
-	if checked < 5 {
-		t.Fatalf("examined only %d Send* builders — the scan is not reaching them", checked)
+	if builders < 5 {
+		t.Fatalf("examined only %d Send* builders — the scan is not reaching them", builders)
 	}
-	_ = sanitizers
 }
 
 // TestSendUsesTheSanitizedRecipientForTheEnvelope: the envelope address and

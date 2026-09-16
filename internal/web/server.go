@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -806,6 +807,30 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// isLoopbackHost reports whether an HTTP Host header names the loopback
+// interface. Used to decide whether a request's Host may be trusted to
+// build an emailed link: it may not, in general — the client sets it — but
+// a loopback Host cannot reach anyone else's machine, which is exactly the
+// local-dev case. The port is optional and ignored; a bare IPv6 form
+// ("[::1]:8082" or "::1") is accepted.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	h := host
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		h = parsed
+	}
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // handleAccountEmail renders (GET) and processes (POST) the
 // email-collection form. This is the v0.19.10 fallback when both /user
 // and /user/emails came back empty during OAuth callback. After the
@@ -843,13 +868,34 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// Build the confirmation URL — operator-configured site URL
-		// from MailConfig.SiteURL when set; otherwise derive from the
-		// request host (works for local dev).
+		// Build the confirmation URL from the operator-configured site
+		// URL. The request Host header is attacker-controlled — a proxy
+		// that forwards Host (the usual nginx `proxy_set_header Host
+		// $host`) passes whatever the client sent — so deriving the link
+		// from it let an authenticated attacker submit a VICTIM's address
+		// with a crafted Host, have the victim receive a link to the
+		// attacker's server carrying the confirmation token, and replay
+		// that token to bind the victim's email to their own account
+		// (Copilot review on PR #207; CodeQL go/email-injection alert 197
+		// traces the same request data into the message).
+		//
+		// So the Host is trusted ONLY for loopback, which is the local-dev
+		// case that fallback existed for. Anywhere else an unconfigured
+		// site URL means no link is sent at all: the token is already in
+		// the database, and refusing beats mailing an attacker's URL.
 		base := strings.TrimRight(s.mailer.SiteURL(), "/")
 		if base == "" {
+			if !isLoopbackHost(r.Host) {
+				s.logger.Error("refusing to send an email confirmation link: mail.site_url is not configured and the request Host is not loopback, so a link built from it could point anywhere",
+					"user_id", sess.UserID, "host", r.Host)
+				s.render(w, "account_email", map[string]any{
+					"Session": sess,
+					"Error":   "Email confirmation is not configured on this site. Contact the operator.",
+				})
+				return
+			}
 			scheme := "https"
-			if r.TLS == nil && (strings.HasPrefix(r.Host, "localhost") || strings.HasPrefix(r.Host, "127.")) {
+			if r.TLS == nil {
 				scheme = "http"
 			}
 			base = scheme + "://" + r.Host

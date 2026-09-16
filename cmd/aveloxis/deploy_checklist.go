@@ -193,6 +193,13 @@ var deployChecklists = map[string][]deployStep{
 	// enforces its preconditions, and two tripwires that could not see new
 	// sites were rewritten. No schema change, no operator heal.
 	"0.29.24": v029DeployChecklist,
+	// v0.29.25: SECURITY — email confirmation links were built from the
+	// request Host header when mail.site_url was unset, so an attacker
+	// could mail a victim a link to the attacker's server carrying the
+	// victim's confirmation token. The Host is now trusted only for
+	// loopback. OPERATORS: set mail.site_url; without it, confirmation
+	// emails are refused on any non-loopback host (logged at ERROR).
+	"0.29.25": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

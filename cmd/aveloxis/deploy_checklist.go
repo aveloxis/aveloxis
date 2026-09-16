@@ -320,6 +320,9 @@ var deployChecklists = map[string][]deployStep{
 	// batch; the API drops its token cache when a processing pass ends. No
 	// schema change.
 	"0.29.46": v029DeployChecklist,
+	// v0.29.47: Copilot's second review of PR #207. Documentation only (the
+	// web.base_url row). No schema change.
+	"0.29.47": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

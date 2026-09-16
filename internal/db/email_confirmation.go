@@ -42,7 +42,7 @@ const EmailConfirmationLifetime = 24 * time.Hour
 // If the user already has an outstanding confirmation, it stays valid
 // until the new one is confirmed — multiple outstanding tokens are
 // allowed (a user might re-submit if they didn't get the first email).
-// All tokens for a user are cleared on a successful ConfirmUserEmail.
+// All tokens for a user are cleared when ConfirmEmailToken succeeds.
 func (s *PostgresStore) CreateEmailConfirmation(ctx context.Context, userID int, email string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -59,37 +59,73 @@ func (s *PostgresStore) CreateEmailConfirmation(ctx context.Context, userID int,
 	return token, nil
 }
 
-// ErrConfirmationTokenInvalid is returned when the supplied token is
-// not in email_confirmations OR has expired. Caller should treat both
-// cases the same — invite the user to start a fresh confirmation.
-var ErrConfirmationTokenInvalid = errors.New("confirmation token is invalid or expired")
+// ErrConfirmationTokenInvalid is returned when the supplied token is not
+// a live token for the user presenting it: unknown, expired, already used,
+// or issued to another account. Callers treat all of these the same —
+// invite the user to start a fresh confirmation.
+var ErrConfirmationTokenInvalid = errors.New("confirmation token is invalid, expired, or not this account's")
 
-// ConsumeEmailConfirmation looks up the token, validates it hasn't
-// expired, deletes the row (single-use), and returns the user_id and
-// email so the caller can promote email_pending → email.
-func (s *PostgresStore) ConsumeEmailConfirmation(ctx context.Context, token string) (int, string, error) {
-	var userID int
-	var email string
-	err := s.pool.QueryRow(ctx, `
-		DELETE FROM aveloxis_ops.email_confirmations
-		WHERE token = $1 AND expires_at > NOW()
-		RETURNING user_id, email`, token).Scan(&userID, &email)
+// ConfirmEmailToken confirms a click-to-confirm link for the user
+// presenting it, in ONE transaction: it consumes the token only when the
+// token is live AND belongs to userID, promotes that token's address to
+// users.email, clears email_pending and stamps email_confirmed_at, and
+// deletes the user's other outstanding tokens. Anything else returns
+// ErrConfirmationTokenInvalid and changes nothing — so another account's
+// click no longer burns the owner's link, and a failed promotion rolls the
+// token back instead of leaving a dead link behind (round-6 review,
+// v0.29.32). It replaced ConsumeEmailConfirmation + ConfirmUserEmail.
+func (s *PostgresStore) ConfirmEmailToken(ctx context.Context, token string, userID int) (string, error) {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, "", ErrConfirmationTokenInvalid
-		}
-		return 0, "", err
+		return "", err
 	}
-	return userID, email, nil
+	defer tx.Rollback(ctx)
+	var email string
+	if err := tx.QueryRow(ctx, `
+		DELETE FROM aveloxis_ops.email_confirmations
+		WHERE token = $1 AND user_id = $2 AND expires_at > NOW()
+		RETURNING email`, token, userID).Scan(&email); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrConfirmationTokenInvalid
+		}
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE aveloxis_ops.users
+		SET email = $2,
+		    email_pending = NULL,
+		    email_confirmed_at = NOW()
+		WHERE user_id = $1`, userID, email); err != nil {
+		return "", err
+	}
+	// Once one is confirmed, the user's other outstanding tokens are stale.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM aveloxis_ops.email_confirmations WHERE user_id = $1`, userID); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return email, nil
 }
 
-// GetUserPendingEmail returns the email awaiting confirmation for the
-// given user_id, or "" if none. Used by the dashboard to render the
-// v0.20.4 "check your inbox" banner.
-func (s *PostgresStore) GetUserPendingEmail(ctx context.Context, userID int) (string, error) {
+// GetUserLivePendingEmail returns the address awaiting confirmation for
+// userID, or "" when there is none that can still be confirmed: a pending
+// address counts only while a live (unexpired) token for that address
+// exists. The dashboard uses it for the "check your inbox" banner, which
+// must not tell a user to click a link that has expired (round-6 review,
+// v0.29.32).
+func (s *PostgresStore) GetUserLivePendingEmail(ctx context.Context, userID int) (string, error) {
 	var pending *string
-	err := s.pool.QueryRow(ctx,
-		`SELECT email_pending FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&pending)
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.email_pending
+		FROM aveloxis_ops.users u
+		WHERE u.user_id = $1
+		  AND EXISTS (
+		      SELECT 1 FROM aveloxis_ops.email_confirmations c
+		      WHERE c.user_id = u.user_id
+		        AND c.email = u.email_pending
+		        AND c.expires_at > NOW())`, userID).Scan(&pending)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil
@@ -129,31 +165,4 @@ func (s *PostgresStore) ClearUserPendingEmailIf(ctx context.Context, userID int,
 	_, err := s.pool.Exec(ctx,
 		`UPDATE aveloxis_ops.users SET email_pending = NULL WHERE user_id = $1 AND email_pending = $2`, userID, email)
 	return err
-}
-
-// ConfirmUserEmail promotes email_pending to email, clears email_pending,
-// stamps email_confirmed_at, and clears any other outstanding tokens for
-// this user. Called by handleEmailConfirm after ConsumeEmailConfirmation
-// succeeds.
-func (s *PostgresStore) ConfirmUserEmail(ctx context.Context, userID int, email string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `
-		UPDATE aveloxis_ops.users
-		SET email = $2,
-		    email_pending = NULL,
-		    email_confirmed_at = NOW()
-		WHERE user_id = $1`, userID, email); err != nil {
-		return err
-	}
-	// Clear any other outstanding tokens for this user — once one is
-	// confirmed, the rest are stale.
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM aveloxis_ops.email_confirmations WHERE user_id = $1`, userID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }

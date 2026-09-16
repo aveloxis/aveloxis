@@ -45,9 +45,9 @@ func TestEmailConfirmBase(t *testing.T) {
 		tls     bool
 		want    string // "" = refused
 	}{
-		{"site_url wins over a hostile Host", "https://aveloxis.io/", "evil.example.com", true, "https://aveloxis.io" + path},
+		// site_url arrives normalized from mailer.New (no trailing slash).
+		{"site_url wins over a hostile Host", "https://aveloxis.io", "evil.example.com", true, "https://aveloxis.io" + path},
 		{"site_url wins over a loopback Host", "https://aveloxis.io", "localhost:8082", false, "https://aveloxis.io" + path},
-		{"whitespace-only site_url is unset", "   ", "evil.example.com", false, ""},
 
 		{"localhost", "", "localhost", false, "http://localhost" + path},
 		{"localhost with port", "", "localhost:8082", false, "http://localhost:8082" + path},
@@ -98,7 +98,7 @@ func TestEmailConfirmBase(t *testing.T) {
 			// same-host proxy that does not forward Host makes every
 			// visitor look like 127.0.0.1. Without dev_mode no Host may
 			// build a link; a configured site_url is unaffected.
-			site := strings.TrimSpace(tc.siteURL)
+			site := tc.siteURL
 			if base, ok := emailConfirmBase(tc.siteURL, r, false); site == "" && ok {
 				t.Errorf("emailConfirmBase(site_url=%q, Host=%q) without dev_mode = %q — a request Host must not build a link outside dev_mode", tc.siteURL, tc.host, base)
 			} else if site != "" && (!ok || base != tc.want) {
@@ -115,7 +115,7 @@ func TestEmailConfirmBase(t *testing.T) {
 				t.Fatalf("emailConfirmBase(site_url=%q, Host=%q) = %q, %v; want %q", tc.siteURL, tc.host, got, ok, tc.want)
 			}
 			got = confirmationLink(got, token)
-			if strings.TrimSpace(tc.siteURL) != "" {
+			if tc.siteURL != "" {
 				return
 			}
 			// Every link built from a Host must be a valid URL whose host is
@@ -453,7 +453,7 @@ func (f *fakeEmailLookup) GetUserEmail(context.Context, int) (string, error) {
 	return f.email, f.emailErr
 }
 
-func (f *fakeEmailLookup) GetUserPendingEmail(context.Context, int) (string, error) {
+func (f *fakeEmailLookup) GetUserLivePendingEmail(context.Context, int) (string, error) {
 	return f.pending, f.pendingErr
 }
 

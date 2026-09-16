@@ -57,3 +57,37 @@ func TestSendVulnerabilityDigestFormatsAndCaps(t *testing.T) {
 		t.Errorf("digestBodyMaxItems changed (%d) — update configuration.md's documented cap", digestBodyMaxItems)
 	}
 }
+
+// TestSendVulnerabilityDigestAtAndUnderTheCap: the "…and N more" line
+// appears only past the cap, and items keep the caller's order (round-6
+// review: `>=` in place of `>` and a reversed listing both passed).
+func TestSendVulnerabilityDigestAtAndUnderTheCap(t *testing.T) {
+	for _, n := range []int{1, 10, digestBodyMaxItems, digestBodyMaxItems + 1} {
+		items := make([]VulnDigestItem, n)
+		for i := range items {
+			sev := "HIGH"
+			if i%3 == 0 {
+				sev = "CRITICAL"
+			}
+			items[i] = VulnDigestItem{RepoOwner: "o", RepoName: "r", VulnID: fmt.Sprintf("GHSA-%04d", i), Severity: sev, PackagePurl: "pkg:npm/x@1", Summary: "s"}
+		}
+		m, sent, _ := captureMailer(t)
+		if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), items); err != nil {
+			t.Fatalf("n=%d: %v", n, err)
+		}
+		_, body := readSent(t, (*sent)[0])
+		more := strings.Contains(body, "more finding(s) not itemized")
+		if more != (n > digestBodyMaxItems) {
+			t.Errorf("n=%d: \"more\" line present = %v, want %v", n, more, n > digestBodyMaxItems)
+		}
+		last := -1
+		for i := 0; i < n && i < digestBodyMaxItems; i++ {
+			at := strings.Index(body, fmt.Sprintf("GHSA-%04d", i))
+			if at <= last {
+				t.Errorf("n=%d: GHSA-%04d is out of the caller's order", n, i)
+				break
+			}
+			last = at
+		}
+	}
+}

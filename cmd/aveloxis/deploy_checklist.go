@@ -246,6 +246,12 @@ var deployChecklists = map[string][]deployStep{
 	// handler; the refusal ERROR and a new startup WARN say to set
 	// mail.site_url, not web.dev_mode. No schema change.
 	"0.29.31": v029DeployChecklist,
+	// v0.29.32: round 6. A confirmation link is consumed only by its own
+	// account, in one transaction with the promotion; the dashboard banner
+	// counts a pending address only while a live link backs it; the email
+	// form explains expired and failed links; mail.site_url is normalized
+	// once. No schema change, no operator heal.
+	"0.29.32": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

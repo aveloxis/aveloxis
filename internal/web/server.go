@@ -184,7 +184,7 @@ func (s *Server) WithMailer(m *mailer.Mailer) *Server {
 	s.mailer = m
 	// Said once at startup, where an operator looks: the refusal it
 	// predicts otherwise shows up only when a user submits the form.
-	if m.Enabled() && strings.TrimSpace(m.SiteURL()) == "" && !s.cfg.DevMode && s.logger != nil {
+	if m.Enabled() && m.SiteURL() == "" && !s.cfg.DevMode && s.logger != nil {
 		s.logger.Warn("mail.site_url is not set: account-email confirmation links will be refused and users without an email address go straight to the dashboard — set mail.site_url to this site's public URL (not web.dev_mode, which is for local development)")
 	}
 	return s
@@ -812,7 +812,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // emailConfirmBase returns the base URL for the click-to-confirm link
 // submitAccountEmail mails: the operator-configured site URL (which may carry
-// a path), trailing slashes trimmed. The
+// a path; mailer.New has already trimmed it). The
 // request Host header is attacker-controlled — a proxy that forwards Host
 // (the usual nginx `proxy_set_header Host $host`) passes whatever the client
 // sent — so deriving the link from it let an authenticated attacker submit a
@@ -831,8 +831,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 // returns false and no link is mailed. It does not need the token, so the
 // decision is made before anything is stored.
 func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bool) {
-	if base := strings.TrimRight(strings.TrimSpace(siteURL), "/"); base != "" {
-		return base, true
+	if siteURL != "" { // normalized once, by mailer.New
+		return siteURL, true
 	}
 	if !devMode {
 		return "", false
@@ -908,7 +908,7 @@ func emailGateRedirect(confirmed, pending string, p confirmationPolicy, r *http.
 // accountEmailLookup is the store surface the dashboard's email gate reads.
 type accountEmailLookup interface {
 	GetUserEmail(ctx context.Context, userID int) (string, error)
-	GetUserPendingEmail(ctx context.Context, userID int) (string, error)
+	GetUserLivePendingEmail(ctx context.Context, userID int) (string, error)
 }
 
 // dashboardEmailGate reads the user's addresses, decides through
@@ -924,7 +924,7 @@ func dashboardEmailGate(ctx context.Context, st accountEmailLookup, p confirmati
 			"user_id", userID, "error", err)
 		return false, ""
 	}
-	pending, err = st.GetUserPendingEmail(ctx, userID)
+	pending, err = st.GetUserLivePendingEmail(ctx, userID)
 	if err != nil {
 		logger.Warn("dashboard: could not read the user's pending email; rendering without the email-form redirect",
 			"user_id", userID, "error", err)
@@ -1095,15 +1095,26 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
+	// The confirm handler sends users here with a reason; say it.
+	var notice string
+	switch {
+	case r.URL.Query().Get("expired") == "1":
+		notice = "That confirmation link has expired, was already used, or belongs to another account. Enter your email to get a new one."
+	case r.URL.Query().Get("error") == "1":
+		notice = "We couldn't confirm your email just now. Try the link again, or enter your email to get a new one."
+	}
 	s.render(w, "account_email", map[string]any{
 		"Session": sess,
+		"Error":   notice,
 	})
 }
 
-// handleEmailConfirm consumes the v0.20.4 confirmation token from the
-// query string, promotes email_pending to users.email, and redirects
-// back to the dashboard. On token error (expired or unknown), redirects
-// to /account/email with a flag so the form shows a fresh-start prompt.
+// handleEmailConfirm confirms the v0.20.4 click-to-confirm link for the
+// logged-in user and redirects to the dashboard. A link that is not a live
+// token for THIS account — unknown, expired, used, or another account's —
+// redirects to /account/email?expired=1 and changes nothing (the owner's
+// link stays usable); a database failure redirects to ?error=1 with the
+// token rolled back. The form explains both.
 func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -1111,24 +1122,14 @@ func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
 		return
 	}
-	userID, email, err := s.store.ConsumeEmailConfirmation(r.Context(), token)
-	if err != nil {
-		s.logger.Info("email confirmation token rejected",
-			"session_user_id", sess.UserID, "error", err)
-		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
-		return
-	}
-	// Defense in depth: confirm the token belongs to the logged-in
-	// user. A leaked link from another user's inbox shouldn't grant
-	// the clicker an email change on their own account.
-	if userID != sess.UserID {
-		s.logger.Warn("email confirmation token user mismatch",
-			"token_user_id", userID, "session_user_id", sess.UserID)
-		http.Redirect(w, r, "/dashboard", http.StatusFound)
-		return
-	}
-	if err := s.store.ConfirmUserEmail(r.Context(), userID, email); err != nil {
-		s.logger.Warn("failed to confirm user email", "user_id", userID, "error", err)
+	if _, err := s.store.ConfirmEmailToken(r.Context(), token, sess.UserID); err != nil {
+		if errors.Is(err, db.ErrConfirmationTokenInvalid) {
+			s.logger.Info("email confirmation link rejected: unknown, expired, used, or another account's",
+				"session_user_id", sess.UserID)
+			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
+			return
+		}
+		s.logger.Warn("failed to confirm user email", "user_id", sess.UserID, "error", err)
 		http.Redirect(w, r, "/account/email?error=1", http.StatusFound)
 		return
 	}

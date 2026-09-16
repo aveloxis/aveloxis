@@ -64,9 +64,19 @@ type Mailer struct {
 	logger *slog.Logger
 
 	// sendMail delivers the message Send composed. nil — what New leaves —
-	// means smtp.SendMail. Tests set it to capture the envelope and the
-	// composed message, which nothing else can observe.
+	// means smtp.SendMail. Tests set it (directly in this package, through
+	// WithSendFunc elsewhere) to capture the envelope and the composed
+	// message, which nothing else can observe.
 	sendMail func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
+}
+
+// WithSendFunc replaces smtp.SendMail for this mailer and returns it. It is
+// a test seam for other packages' tests (internal/web drives its handlers
+// with it, so a test can never dial SMTP); production code never calls it,
+// and TestWithSendFunc fails the build if it does.
+func (m *Mailer) WithSendFunc(f func(addr string, a smtp.Auth, from string, to []string, msg []byte) error) *Mailer {
+	m.sendMail = f
+	return m
 }
 
 // deliverer resolves the sender Send uses: the test seam when set, else
@@ -94,6 +104,10 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 	// whitespace-only gmail_user "empty" (mailer disabled), so the stored
 	// value must agree or Enabled would say on while the log said off.
 	cfg.GmailUser = strings.TrimSpace(cfg.GmailUser)
+	// site_url likewise, once, for every link builder here and for
+	// internal/web (confirmation links, the startup WARN): a stray space
+	// or trailing slash used to break some links and not others.
+	cfg.SiteURL = strings.TrimRight(strings.TrimSpace(cfg.SiteURL), "/")
 	if err := ValidateAndLog(cfg, logger); err != nil {
 		// Validation failed: drop the bad config and behave as
 		// if email were unconfigured. Send will hit its empty-
@@ -416,8 +430,9 @@ func (m *Mailer) recipientFor(to string) (string, error) {
 // account exists, names the OAuth provider, and points at the
 // site URL. No verification link — GitHub/GitLab have already
 // verified the email before handing it to us.
-// SiteURL returns the configured site URL (e.g. "https://chaoss.tv")
-// or "" if unset. v0.20.4 uses this to build click-to-confirm links
+// SiteURL returns the configured site URL (e.g. "https://chaoss.tv"),
+// normalized by New (no surrounding spaces, no trailing slash), or "" if
+// unset. v0.20.4 uses this to build click-to-confirm links
 // in email bodies. Safely handles a nil mailer (returns "").
 func (m *Mailer) SiteURL() string {
 	if m == nil {
@@ -486,7 +501,7 @@ ignore this email — your account email won't change without confirming.
 // started and points at the group's detail page.
 func (m *Mailer) SendGroupApproved(toEmail, login, groupName string, groupID int64) error {
 	subject := fmt.Sprintf("Your Aveloxis group '%s' has been approved", sanitizeBodyValue(groupName))
-	siteURL := strings.TrimRight(m.cfg.SiteURL, "/")
+	siteURL := m.cfg.SiteURL
 	link := "(your Aveloxis site URL)"
 	if siteURL != "" {
 		link = fmt.Sprintf("%s/groups/%d", siteURL, groupID)
@@ -527,7 +542,7 @@ func (m *Mailer) SendAddRequestSubmitted(to, requesterLogin, groupName, kind str
 	if len(sample) > addRequestSampleMax {
 		sample = sample[:addRequestSampleMax]
 	}
-	siteURL := strings.TrimRight(m.cfg.SiteURL, "/")
+	siteURL := m.cfg.SiteURL
 	link := "(your Aveloxis site URL)/admin/groups/pending"
 	if siteURL != "" {
 		link = siteURL + "/admin/groups/pending"

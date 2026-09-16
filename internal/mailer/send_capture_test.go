@@ -13,13 +13,18 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/mail"
 	"net/smtp"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 type sentMail struct {
@@ -414,4 +419,77 @@ func TestDeliverable(t *testing.T) {
 	if err := New(Config{}, nil).Deliverable("ops@example.com"); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("disabled Deliverable = %v, want ErrNotConfigured", err)
 	}
+}
+
+// TestSiteURLNormalizedOnce: mail.site_url is normalized in New — spaces
+// and trailing slashes removed — so every link builder, the web package's
+// confirmation link and its startup WARN read one value (round-6 review: a
+// trailing space broke group and add-request links while confirmation
+// links were fine).
+func TestSiteURLNormalizedOnce(t *testing.T) {
+	valid := Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}
+	for _, tc := range []struct{ in, want string }{
+		{" https://aveloxis.io/ ", "https://aveloxis.io"},
+		{"https://aveloxis.io//", "https://aveloxis.io"},
+		{"   ", ""},
+		{"", ""},
+	} {
+		cfg := valid
+		cfg.SiteURL = tc.in
+		m := New(cfg, nil)
+		if got := m.SiteURL(); got != tc.want {
+			t.Errorf("SiteURL() for %q = %q, want %q", tc.in, got, tc.want)
+		}
+		m.sendMail = func(string, smtp.Auth, string, []string, []byte) error { return nil }
+		var sent []byte
+		m.sendMail = func(_ string, _ smtp.Auth, _ string, _ []string, msg []byte) error { sent = msg; return nil }
+		if err := m.SendGroupApproved("user@example.com", "alice", "g", 5); err != nil {
+			t.Fatal(err)
+		}
+		wantLink := "(your Aveloxis site URL)"
+		if tc.want != "" {
+			wantLink = tc.want + "/groups/5"
+		}
+		if !strings.Contains(string(sent), "View your group: "+wantLink+"\r\n") && !strings.Contains(string(sent), "View your group: "+wantLink+"\n") {
+			t.Errorf("site_url %q: group link is not %q:\n%s", tc.in, wantLink, sent)
+		}
+	}
+}
+
+// TestWithSendFunc: the exported capture hook for callers' tests outside
+// this package. It must be the same seam Send uses, and production code
+// must never call it.
+func TestWithSendFunc(t *testing.T) {
+	var to []string
+	m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil).
+		WithSendFunc(func(_ string, _ smtp.Auth, _ string, rcpt []string, _ []byte) error { to = rcpt; return nil })
+	if err := m.Send("user@example.com", "s", "b"); err != nil || len(to) != 1 || to[0] != "user@example.com" {
+		t.Errorf("Send through WithSendFunc: err=%v to=%q", err, to)
+	}
+	root := srctest.Root(t)
+	calls := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(srctest.StripGoComments(string(b)), ".WithSendFunc(") {
+			calls++
+			t.Errorf("%s calls WithSendFunc — it is a test seam; production mail must go through smtp.SendMail", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = calls
 }

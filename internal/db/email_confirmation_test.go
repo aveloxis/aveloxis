@@ -22,10 +22,9 @@ func TestEmailConfirmationStoreMethodsExist(t *testing.T) {
 	src := string(data)
 	for _, sig := range []string{
 		"func (s *PostgresStore) CreateEmailConfirmation(",
-		"func (s *PostgresStore) ConsumeEmailConfirmation(",
-		"func (s *PostgresStore) GetUserPendingEmail(",
+		"func (s *PostgresStore) ConfirmEmailToken(",
+		"func (s *PostgresStore) GetUserLivePendingEmail(",
 		"func (s *PostgresStore) SetUserPendingEmail(",
-		"func (s *PostgresStore) ConfirmUserEmail(",
 	} {
 		if !strings.Contains(src, sig) {
 			t.Errorf("email_confirmation.go must define %q", sig)
@@ -123,7 +122,7 @@ func TestDashboardShowsPendingEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(srv), "PendingEmail") &&
-		!strings.Contains(string(srv), "GetUserPendingEmail") {
+		!strings.Contains(string(srv), "GetUserLivePendingEmail") {
 		t.Error("handleDashboard must look up the user's email_pending " +
 			"and pass it to the template (e.g., as a PendingEmail key) so " +
 			"the v0.20.4 \"check your inbox\" banner can render.")

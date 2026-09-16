@@ -568,3 +568,95 @@ func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
 		t.Errorf("auto-approved add cancelled mid-processing: request %q with %d items unprocessed or failed, %d repos linked; want approved, every item processed, the repo in the group", status, notDone, links)
 	}
 }
+
+// TestProcessApprovedAddRequestPassesDoNotRepeatWork (AVELOXIS_TEST_DB): two
+// processing passes over the same request at once — an admin's second approve
+// click while the first pass runs — each claim an item before working on it,
+// so every item is processed exactly once instead of both passes walking the
+// whole batch (Copilot review of PR #207: both passes loaded the same
+// unprocessed items up front and repeated a 50K-item batch).
+func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+
+	const login = "_avprocess_passes_probe"
+	const urlPrefix = "https://github.com/_avprocess-passes-owner/_avprocess-passes-repo-"
+	const trigger = "_avtest_slow_user_repos_passes"
+	clean := func() {
+		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+trigger+` ON aveloxis_ops.user_repos`)
+		_, _ = store.pool.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+trigger+`()`)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%')`, urlPrefix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%'`, urlPrefix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "processing passes probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const items = 4
+	urls := make([]string, items)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("%s%d", urlPrefix, i)
+	}
+	reqID, err := store.createAddRequest(ctx, uid, gid, "repos", "", urls, "approved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each link into the group sleeps, so the first pass is mid-batch when the
+	// second starts.
+	if _, err := store.pool.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION aveloxis_ops.`+trigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
+		BEGIN IF NEW.group_id = %d THEN PERFORM pg_sleep(0.3); END IF; RETURN NEW; END $f$`, gid)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+trigger+` BEFORE INSERT ON aveloxis_ops.user_repos FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+trigger+`()`); err != nil {
+		t.Fatal(err)
+	}
+
+	type pass struct {
+		n   int
+		err error
+	}
+	first := make(chan pass, 1)
+	go func() {
+		n, err := store.ProcessApprovedAddRequest(ctx, reqID)
+		first <- pass{n, err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	secondN, secondErr := store.ProcessApprovedAddRequest(ctx, reqID)
+	firstPass := <-first
+	if firstPass.err != nil || secondErr != nil {
+		t.Fatalf("passes returned errors: first %v, second %v", firstPass.err, secondErr)
+	}
+	if total := firstPass.n + secondN; total != items {
+		t.Errorf("the two passes processed %d + %d = %d items, want %d (each item exactly once)", firstPass.n, secondN, total, items)
+	}
+	var notDone, links int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND (repo_id IS NULL OR repo_id <= 0)`, reqID).Scan(&notDone); err != nil {
+		t.Fatalf("count unfinished items: %v", err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_repos WHERE group_id = $1`, gid).Scan(&links); err != nil {
+		t.Fatalf("count the group's repos: %v", err)
+	}
+	if notDone != 0 || links != items {
+		t.Errorf("after both passes: %d items unfinished or failed, %d repos linked; want 0 and %d", notDone, links, items)
+	}
+}

@@ -462,6 +462,10 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		if approve && req.Kind != "org" {
 			go func() {
 				defer safego.Recover(s.logger, "approved-add-request")
+				// The pass links repos into the requester's scope, so drop the
+				// token cache again when it ends — a request resolved while it
+				// ran cached the old scope (Copilot review of PR #207).
+				defer s.auth.invalidateAll()
 				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",

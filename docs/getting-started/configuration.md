@@ -586,7 +586,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 - `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.
 - `mail.gmail_user is empty but mail.gmail_app_password is set` (or vice versa) — partial config. Either fill both fields or empty both.
 
-When validation fails, the mailer falls back to disabled behavior (no email sent, no errors raised by calling code) so the rest of the application keeps working. Fix the config and restart the processes (`aveloxis stop all`, then `aveloxis start all`) to enable the mailer.
+When validation fails, the mailer falls back to disabled behavior so the rest of the application keeps working: no email is sent, and every send returns a "not configured" error. Notification emails (welcome, approval and add-request) ignore that error; `aveloxis test-mail` exits non-zero with it, `aveloxis serve` does not start the vulnerability digest and logs an ERROR saying why, and the account-email form refuses new addresses. Fix the config and restart the processes (`aveloxis stop all`, then `aveloxis start all`) to enable the mailer.
 
 ### Verifying the setup with `aveloxis test-mail`
 

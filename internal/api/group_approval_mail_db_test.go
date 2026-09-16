@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -385,4 +386,118 @@ func TestAdminOrgApprovalNotifiesWhenItRegisters(t *testing.T) {
 		t.Errorf("re-approve with the registration present = %d %s, want 200 changed=false", w.Code, w.Body.String())
 	}
 	mails(0)
+}
+
+// TestAdminAddRequestProcessingInvalidatesTheAuthCache (AVELOXIS_TEST_DB): the
+// requester's repo scope changes as the background pass links repos, so the
+// token cache is dropped again when that pass ends — after a first approval
+// and after a resume — not only before it starts (Copilot review of PR #207,
+// suppressed comment: a request during processing cached the old scope for
+// the full TTL, and a resume never invalidated at all).
+func TestAdminAddRequestProcessingInvalidatesTheAuthCache(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := db.NewPostgresStore(ctx, dsn, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const login = "_avapi_scope_cache_probe"
+	const repoURL = "https://github.com/_avapi-scope-cache-owner/_avapi-scope-cache-repo"
+	const trigger = "_avapi_slow_user_repos"
+	p := store.Pool()
+	clean := func() {
+		_, _ = p.Exec(ctx, `DROP TRIGGER IF EXISTS `+trigger+` ON aveloxis_ops.user_repos`)
+		_, _ = p.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+trigger+`()`)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%')`, repoURL)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%'`, repoURL)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, db.OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "api scope cache probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Linking into the group sleeps, so the pass is still running after the
+	// handler returns.
+	if _, err := p.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION aveloxis_ops.`+trigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
+		BEGIN IF NEW.group_id = %d THEN PERFORM pg_sleep(0.5); END IF; RETURN NEW; END $f$`, gid)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Exec(ctx, `CREATE TRIGGER `+trigger+` BEFORE INSERT ON aveloxis_ops.user_repos FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+trigger+`()`); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{store: store, logger: discard, auth: newAuthenticator(store, false)}
+	unprocessed := func(reqID int64) int {
+		t.Helper()
+		var n int
+		if err := p.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND repo_id IS NULL`, reqID).Scan(&n); err != nil {
+			t.Fatalf("count unprocessed items: %v", err)
+		}
+		return n
+	}
+	cached := func() int {
+		s.auth.mu.Lock()
+		defer s.auth.mu.Unlock()
+		return len(s.auth.cache)
+	}
+	approveAndWatch := func(t *testing.T, reqID int64, wantChanged string) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/add-requests/x/approve", nil)
+		r.SetPathValue("requestID", strconv.FormatInt(reqID, 10))
+		r.SetPathValue("decision", "approve")
+		r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: uid, IsAdmin: true}))
+		w := httptest.NewRecorder()
+		s.handleAdminAddRequestDecision(w, r)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), wantChanged) {
+			t.Fatalf("approve = %d %s, want 200 with %s", w.Code, w.Body.String(), wantChanged)
+		}
+		// A request that resolves its token while the pass runs caches the
+		// old scope.
+		s.auth.mu.Lock()
+		s.auth.cache["probe-token"] = cachedAuth{info: authInfo{UserID: uid}, expires: time.Now().Add(authCacheTTL)}
+		s.auth.mu.Unlock()
+		if unprocessed(reqID) == 0 {
+			t.Fatal("the pass finished before the cached entry was added; the probe did not exercise the window")
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for unprocessed(reqID) != 0 || cached() != 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("10s after approving: %d items unprocessed, %d cached tokens; want the pass done and the cache dropped", unprocessed(reqID), cached())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	out, err := store.AddReposToGroup(ctx, uid, gid, []string{repoURL}, 0)
+	if err != nil || out.RequestID == 0 {
+		t.Fatalf("AddReposToGroup = %+v, %v; want a pending request", out, err)
+	}
+	t.Run("first approval", func(t *testing.T) { approveAndWatch(t, out.RequestID, `"changed":true`) })
+
+	resumed, err := store.AddReposToGroup(ctx, uid, gid, []string{repoURL + "-resume"}, 0)
+	if err != nil || resumed.RequestID == 0 {
+		t.Fatalf("AddReposToGroup = %+v, %v; want a pending request", resumed, err)
+	}
+	if _, changed, err := store.DecideAddRequest(ctx, resumed.RequestID, uid, true); err != nil || !changed {
+		t.Fatalf("first approval (processing never ran): changed=%v err=%v", changed, err)
+	}
+	t.Run("resume", func(t *testing.T) { approveAndWatch(t, resumed.RequestID, `"changed":false`) })
 }

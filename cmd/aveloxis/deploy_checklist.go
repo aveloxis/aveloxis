@@ -315,6 +315,11 @@ var deployChecklists = map[string][]deployStep{
 	"0.29.44": v029DeployChecklist,
 	// v0.29.45: round 19. One test's failure message only. No schema change.
 	"0.29.45": v029DeployChecklist,
+	// v0.29.46: Copilot review of PR #207. Approved add-request processing
+	// claims each item, so a second approve click no longer repeats the
+	// batch; the API drops its token cache when a processing pass ends. No
+	// schema change.
+	"0.29.46": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

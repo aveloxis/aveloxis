@@ -290,7 +290,9 @@ sleep `+fmt.Sprint(int(childSleep.Seconds()))+` &
 exit 0`)
 
 	start := time.Now()
-	if err := runScanSCC(t, context.Background(), childSleep-5*time.Second); !errors.Is(err, errStoreReached) {
+	// The budget must EXCEED the fixture's sleep, or runScanSCC's generic
+	// timeout fires first and the fixture-derived check below is dead code.
+	if err := runScanSCC(t, context.Background(), childSleep+10*time.Second); !errors.Is(err, errStoreReached) {
 		t.Fatalf("scanSCC = %v, want the complete report to reach the snapshot write", err)
 	}
 	if elapsed := time.Since(start); elapsed >= childSleep {

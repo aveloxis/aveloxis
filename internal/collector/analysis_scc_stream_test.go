@@ -447,7 +447,13 @@ func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 // here — pw is the write end of an os.Pipe, which streams, and owning the
 // pipe is what lets the leader's exit unblock the drain (PR #207). An
 // earlier version banned `cmd.Stdout =` outright, which would have blocked
-// that fix while still permitting a bytes.Buffer behind a helper.
+// that fix.
+//
+// Scope: in-body spellings only. Like any source pin over one function, it
+// is evaded by a helper that buffers the pipe and returns a bytes.Reader —
+// verified, it passes. That escape is held by
+// TestScanSCCStreamsRowsWhileSccIsStillWriting, which fails it at runtime,
+// and sccRowStreamed's doc says the same.
 func TestScanSCCDoesNotBufferWholeReport(t *testing.T) {
 	body := scanSCCBody(t)
 

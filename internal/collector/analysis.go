@@ -2393,20 +2393,28 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	}
 	defer pr.Close()
 	cmd.Stdout = pw
-	// Process-group cleanup, same shape as scancode runOne and
-	// RunScorecard. Required because this function DRAINS the pipe before
-	// reaping: killing only the immediate child leaves any straggler
-	// holding the inherited stdout fd, and the drain then blocks until
-	// that straggler exits.
+	// Process-group cleanup. Required because this function DRAINS the
+	// pipe before reading scc's status: killing only the leader leaves any
+	// straggler holding the inherited stdout fd, and the drain then blocks
+	// until that straggler exits. cmd.Cancel kills the whole group, so a
+	// ctx cancel ends that at once; the reap goroutine below covers the
+	// case where the leader simply exits.
 	//
-	// WaitDelay alone does NOT cover this, despite what an earlier version
-	// of this comment claimed. os/exec closes the parent pipe ends on
-	// WaitDelay only when it owns copying goroutines (the
-	// c.goroutineErr != nil branch); StdoutPipe starts none, so WaitDelay
-	// is inert for this Cmd. Measured: with WaitDelay=10s and a straggler
-	// holding stdout, the drain still took 30.08s — the straggler's full
-	// lifetime. With the group kill below, ctx cancellation ends it at
-	// once. WaitDelay is kept as the belt to this braces.
+	// Only HALF the same shape as scancode runOne and RunScorecard. They
+	// give os/exec an io.Writer stdout, so it owns a copying goroutine and
+	// their WaitDelay genuinely bounds the post-cancel wait. Here stdout is
+	// our own *os.File: os/exec never receives the read end, so WaitDelay's
+	// pipe-closing half cannot apply to it at all. What WaitDelay still
+	// buys is watchCtx's post-cancel Process.Kill backstop, which
+	// cmd.Cancel's group kill already covers. It is kept because it costs
+	// nothing, not because it bounds this drain.
+	//
+	// One consequence of sweeping the group at leader exit: a group member
+	// still writing the report TAIL is killed, so that report is truncated
+	// and the scan fails closed before the snapshot write. That is inherent
+	// — you cannot both wait for such a child and not wedge — and scc 3.7.0
+	// is a single process, so it does not arise. Bytes already written into
+	// the pipe are NOT lost when the writer is killed (measured).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -2618,9 +2626,11 @@ type sccLanguage struct {
 // so the rare class is greppable without scanning the whole distribution.
 const sccOutputLargeBytes = 1 << 30
 
-// sccWaitDelay bounds how long cmd.Wait blocks after scc is killed while
-// something still holds the stdout pipe. Matched to scancodeWaitDelay —
-// same failure mode, same 10 s allowance — rather than invented here.
+// sccWaitDelay is the post-cancel allowance on scc's Cmd, matched to
+// scancodeWaitDelay rather than invented here. It does NOT bound a drain
+// blocked on the stdout pipe: scanSCC owns that pipe, so os/exec has no
+// handle on the read end to close. See the process-group comment in
+// scanSCC for what it does and does not buy.
 const sccWaitDelay = 10 * time.Second
 
 // sccRowStreamed is a TEST SEAM, nil in production. scanSCC calls it as

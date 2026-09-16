@@ -168,6 +168,11 @@ var deployChecklists = map[string][]deployStep{
 	// group as soon as the leader exits. No schema change, no operator
 	// heal — same ladder.
 	"0.29.20": v029DeployChecklist,
+	// v0.29.21: review of the v0.29.20 wedge fix — stale WaitDelay prose
+	// that still reasoned from StdoutPipe, a dead timing assertion in the
+	// wedge test, and a pin comment that overstated its reach. Comments and
+	// one test bound; no behaviour change. Same ladder.
+	"0.29.21": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

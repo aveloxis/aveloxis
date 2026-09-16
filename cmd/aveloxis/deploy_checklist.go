@@ -307,6 +307,14 @@ var deployChecklists = map[string][]deployStep{
 	// test checks the repo reached the group; the admin org-add test cleans
 	// up the rows it exists to catch). No schema change.
 	"0.29.42": v029DeployChecklist,
+	// v0.29.43: round 17. Comments and one test's result checks only. No
+	// schema change.
+	"0.29.43": v029DeployChecklist,
+	// v0.29.44: round 18. A test's failure message and comments only. No
+	// schema change.
+	"0.29.44": v029DeployChecklist,
+	// v0.29.45: round 19. One test's failure message only. No schema change.
+	"0.29.45": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

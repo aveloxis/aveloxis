@@ -543,17 +543,28 @@ func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
 	time.AfterFunc(500*time.Millisecond, cancel)
 	out, err := store.AddReposToGroup(reqCtx, uid, gid, []string{repoURL}, 5)
 	if reqCtx.Err() == nil {
-		t.Fatal("the request context was not cancelled during the add; the probe did not exercise the cancel")
+		t.Fatalf("the request context was not cancelled during the add (add = %+v, %v); the probe did not exercise the cancel", out, err)
+	}
+	if err != nil || out.RequestID == 0 {
+		t.Fatalf("auto-approved add cancelled mid-processing = %+v, %v; want no error and a recorded request", out, err)
 	}
 	var status string
 	var notDone, links int
-	_ = store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, out.RequestID).Scan(&status)
+	// A broken query fails the test as itself (round-17 review: the notDone
+	// count used to read as 0 on error and pass).
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, out.RequestID).Scan(&status); err != nil {
+		t.Fatalf("read the request status: %v", err)
+	}
 	// An item stamped -1 (processed-with-error) is not done either: a
 	// cancelled link stamped that way left the repo out of the group with
 	// this test green (round-16 review).
-	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND (repo_id IS NULL OR repo_id <= 0)`, out.RequestID).Scan(&notDone)
-	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_repos WHERE group_id = $1`, gid).Scan(&links)
-	if err != nil || out.RequestID == 0 || status != "approved" || notDone != 0 || links != 1 {
-		t.Errorf("auto-approved add cancelled mid-processing = %+v, %v; request %q with %d items unprocessed or failed, %d repos linked; want no error, every item processed, the repo in the group", out, err, status, notDone, links)
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND (repo_id IS NULL OR repo_id <= 0)`, out.RequestID).Scan(&notDone); err != nil {
+		t.Fatalf("count unfinished items: %v", err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_repos WHERE group_id = $1`, gid).Scan(&links); err != nil {
+		t.Fatalf("count the group's repos: %v", err)
+	}
+	if status != "approved" || notDone != 0 || links != 1 {
+		t.Errorf("auto-approved add cancelled mid-processing: request %q with %d items unprocessed or failed, %d repos linked; want approved, every item processed, the repo in the group", status, notDone, links)
 	}
 }

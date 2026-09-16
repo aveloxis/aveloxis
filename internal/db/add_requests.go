@@ -392,11 +392,12 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 // transaction, never the pool: a caller that writes the approval justifying
 // the registration (DecideAddRequest's flip, AddOrgToGroup's auto-approve
 // audit request) must register in that same transaction, and a pool argument
-// used to compile there (round-14 review). The type cannot stop a caller from
-// opening a second transaction; the first-write-fails-at-COMMIT cases in
-// TestDecideAddRequestOrgRegistrationFailures and
-// TestAddOrgToGroupAutoApproveIsAtomic catch that. The admin add and the
-// half-state re-approve pass a transaction that holds only the registration.
+// used to compile there (round-14 review). The type does not stop a caller
+// from opening a second transaction, so keep the registration in the
+// approval's transaction; TestDecideAddRequestOrgRegistrationFailures and
+// TestAddOrgToGroupAutoApproveIsAtomic inject failures into both writes. The
+// admin add and the half-state re-approve pass a transaction that holds only
+// the registration.
 func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, error) {
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
 	tag, err := tx.Exec(ctx, `

@@ -2480,8 +2480,10 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 // A non-admin's add of a NEW org never fires this: it pends in
 // collection_add_requests, and no user_org_requests row exists until an
 // admin approves (v0.27.20). A non-admin's auto-approved add (v0.27.84) and
-// an admin's add fire it only when they add a row: re-adding an org this
-// group already registers inserts nothing, so nothing is never-scanned. Rejected-group orgs are excluded by
+// an admin's add fire it only when registerApprovedOrg inserts a row:
+// re-adding the same org_url to a group that registers it inserts nothing.
+// The unique key on (group_id, org_url) is case-sensitive, so a re-add that
+// differs only in letter case does insert a row and does fire this. Rejected-group orgs are excluded by
 // the probe itself — the scan's rejected gate deliberately never
 // stamps them, so counting them would re-fire the probe every tick.
 // A failed enumeration is also safe: MarkOrgRequestScanned stamps

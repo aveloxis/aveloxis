@@ -118,6 +118,16 @@ func (s *PostgresStore) SetUserPendingEmail(ctx context.Context, userID int, ema
 	return nil
 }
 
+// ClearUserPendingEmailIf clears email_pending only while it still holds
+// email, so a failed confirmation send clears its own submission and never
+// a newer one made from another tab (v0.29.30). Matching nothing — the
+// address already changed, or the user is gone — is not an error.
+func (s *PostgresStore) ClearUserPendingEmailIf(ctx context.Context, userID int, email string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE aveloxis_ops.users SET email_pending = NULL WHERE user_id = $1 AND email_pending = $2`, userID, email)
+	return err
+}
+
 // ConfirmUserEmail promotes email_pending to email, clears email_pending,
 // stamps email_confirmed_at, and clears any other outstanding tokens for
 // this user. Called by handleEmailConfirm after ConsumeEmailConfirmation

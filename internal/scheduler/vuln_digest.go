@@ -135,3 +135,25 @@ func holdDigestWindow(stampPath string, last, since time.Time) error {
 	}
 	return writeDigestStamp(stampPath, since)
 }
+
+// startVulnDigest starts the hourly digest check when vulnDigestReady allows
+// it, and says so in the log either way: ERROR once when a configured digest
+// could never be delivered, INFO when it starts, nothing when it is not
+// configured. It returns the tick channel (nil = disabled) and the stop
+// function Run defers.
+func (s *Scheduler) startVulnDigest() (<-chan time.Time, func()) {
+	ready, err := s.vulnDigestReady()
+	if err != nil {
+		s.logger.Error("operator vulnerability digest NOT started: no digest could be delivered — fix the mail block or mail.operator_email, then restart serve",
+			"operator_email", s.cfg.Mail.OperatorEmail, "error", err)
+	}
+	if !ready {
+		return nil, func() {}
+	}
+	ticker := time.NewTicker(1 * time.Hour)
+	s.logger.Info("operator vulnerability digest enabled",
+		"operator_email", s.cfg.Mail.OperatorEmail,
+		"min_severity", s.cfg.Mail.VulnDigestMinSeverityOrDefault(),
+		"interval", s.cfg.Mail.VulnDigestInterval())
+	return ticker.C, ticker.Stop
+}

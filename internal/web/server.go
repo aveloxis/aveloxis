@@ -175,10 +175,11 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 }
 
 // WithMailer attaches a transactional mailer to the server. Returns
-// the server for chaining. Optional — when not called, mailer-related
-// hooks (welcome email on signup, group-approved notification) are
-// silently skipped, matching mailer.Send's no-op-when-unconfigured
-// semantics.
+// the server for chaining. Optional — without one (or with a disabled
+// one) the notification hooks (welcome email, group and add-request
+// decisions) send nothing, the account-email form refuses new addresses,
+// and users without an address reach the dashboard; see
+// confirmationBaseFor.
 func (s *Server) WithMailer(m *mailer.Mailer) *Server {
 	s.mailer = m
 	return s
@@ -772,10 +773,10 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
 	// v0.19.10 email gate, v0.20.4 pending-aware, v0.29.29
-	// confirmable-only: see emailGateRedirect.
-	confirmedEmail, _ := s.store.GetUserEmail(r.Context(), sess.UserID)
-	pendingEmail, _ := s.store.GetUserPendingEmail(r.Context(), sess.UserID)
-	if emailGateRedirect(confirmedEmail, pendingEmail, s.mailer, r) {
+	// confirmable-only, v0.29.30 lookup errors logged: see
+	// dashboardEmailGate.
+	needsEmailForm, pendingEmail := dashboardEmailGate(r.Context(), s.store, s.mailer, s.logger, r, sess.UserID, s.cfg.DevMode)
+	if needsEmailForm {
 		http.Redirect(w, r, "/account/email", http.StatusFound)
 		return
 	}
@@ -816,14 +817,20 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 // PR #207; CodeQL go/email-injection alert 197 traces the same request data
 // into the message).
 //
-// So without a site URL the Host is used ONLY when loopbackAuthority accepts
-// it — the local-dev case that fallback existed for. Anywhere else this
-// returns false and no link is mailed: refusing beats mailing an attacker's
-// URL. It does not need the token, so the decision is made before anything
-// is stored.
-func emailConfirmBase(siteURL string, r *http.Request) (string, bool) {
+// So without a site URL the Host is used ONLY with web.dev_mode on AND when
+// loopbackAuthority accepts it — the local-dev case that fallback existed
+// for. dev_mode is required because a reverse proxy on the same host that
+// does not forward Host (nginx's default for proxy_pass to 127.0.0.1) makes
+// every visitor's request look loopback; the link would point at their own
+// machine (round-4 review, operator decision, v0.29.30). Anywhere else this
+// returns false and no link is mailed. It does not need the token, so the
+// decision is made before anything is stored.
+func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bool) {
 	if base := strings.TrimRight(siteURL, "/"); base != "" {
 		return base, true
+	}
+	if !devMode {
+		return "", false
 	}
 	authority, ok := loopbackAuthority(r.Host)
 	if !ok {
@@ -844,7 +851,7 @@ func confirmationLink(base, token string) string {
 // Why a confirmation link cannot be sent from this request.
 var (
 	errConfirmationMailDisabled = errors.New("mail is not configured, so no confirmation link can be sent")
-	errConfirmationNoLinkBase   = errors.New("mail.site_url is not configured and the request Host is not a loopback host (with a numeric port, if any), so a link built from it could point anywhere")
+	errConfirmationNoLinkBase   = errors.New("mail.site_url is not configured, and a request Host may build the link only for a loopback request with web.dev_mode on")
 )
 
 // confirmationBaseFor decides whether this request's user can be mailed a
@@ -852,11 +859,11 @@ var (
 // submitAccountEmail refuses on an error; the dashboard's email gate uses
 // the same decision so it never sends a user to a form that would refuse
 // them.
-func confirmationBaseFor(m confirmationMailer, r *http.Request) (string, error) {
+func confirmationBaseFor(m confirmationMailer, r *http.Request, devMode bool) (string, error) {
 	if !m.Enabled() {
 		return "", errConfirmationMailDisabled
 	}
-	base, ok := emailConfirmBase(m.SiteURL(), r)
+	base, ok := emailConfirmBase(m.SiteURL(), r, devMode)
 	if !ok {
 		return "", errConfirmationNoLinkBase
 	}
@@ -870,18 +877,47 @@ func confirmationBaseFor(m confirmationMailer, r *http.Request) (string, error) 
 // Where it could not — mail off, or no trustworthy link base — the form
 // refuses, so redirecting locked the user out of the dashboard; the
 // operator chose to let them in without an address (v0.29.29).
-func emailGateRedirect(confirmed, pending string, m confirmationMailer, r *http.Request) bool {
+func emailGateRedirect(confirmed, pending string, m confirmationMailer, r *http.Request, devMode bool) bool {
 	if strings.TrimSpace(confirmed) != "" || strings.TrimSpace(pending) != "" {
 		return false
 	}
-	_, err := confirmationBaseFor(m, r)
+	_, err := confirmationBaseFor(m, r, devMode)
 	return err == nil
+}
+
+// accountEmailLookup is the store surface the dashboard's email gate reads.
+type accountEmailLookup interface {
+	GetUserEmail(ctx context.Context, userID int) (string, error)
+	GetUserPendingEmail(ctx context.Context, userID int) (string, error)
+}
+
+// dashboardEmailGate reads the user's addresses, decides through
+// emailGateRedirect whether the dashboard sends them to /account/email, and
+// returns the pending address for the dashboard's banner. A lookup ERROR is
+// not "no address" (SR-5): it is logged and the dashboard renders, rather
+// than sending a user who has a confirmed address to the email form during
+// a database blip.
+func dashboardEmailGate(ctx context.Context, st accountEmailLookup, m confirmationMailer, logger *slog.Logger, r *http.Request, userID int, devMode bool) (needsForm bool, pending string) {
+	confirmed, err := st.GetUserEmail(ctx, userID)
+	if err != nil {
+		logger.Warn("dashboard: could not read the user's email; rendering without the email-form redirect",
+			"user_id", userID, "error", err)
+		return false, ""
+	}
+	pending, err = st.GetUserPendingEmail(ctx, userID)
+	if err != nil {
+		logger.Warn("dashboard: could not read the user's pending email; rendering without the email-form redirect",
+			"user_id", userID, "error", err)
+		return false, ""
+	}
+	return emailGateRedirect(confirmed, pending, m, r, devMode), pending
 }
 
 // accountEmailStore and confirmationMailer are the narrow surfaces
 // submitAccountEmail needs, so it runs against fakes in tests.
 type accountEmailStore interface {
 	SetUserPendingEmail(ctx context.Context, userID int, email string) error
+	ClearUserPendingEmailIf(ctx context.Context, userID int, email string) error
 	CreateEmailConfirmation(ctx context.Context, userID int, email string) (string, error)
 }
 
@@ -893,6 +929,7 @@ type confirmationMailer interface {
 
 var (
 	_ accountEmailStore  = (*db.PostgresStore)(nil)
+	_ accountEmailLookup = (*db.PostgresStore)(nil)
 	_ confirmationMailer = (*mailer.Mailer)(nil)
 )
 
@@ -907,15 +944,15 @@ var (
 // bare addr-spec Send will accept) and confirmationBaseFor allows it.
 // Storing first left an email_pending behind on a refusal, and the
 // dashboard then told the user a link had been sent. For the same reason a
-// send that fails after storing clears the pending address again.
-func submitAccountEmail(ctx context.Context, st accountEmailStore, m confirmationMailer, logger *slog.Logger, r *http.Request, sess *Session) string {
+// send that fails after storing clears that pending address again.
+func submitAccountEmail(ctx context.Context, st accountEmailStore, m confirmationMailer, logger *slog.Logger, r *http.Request, sess *Session, devMode bool) string {
 	email, err := mailer.ParseRecipient(r.FormValue("email"))
 	if err != nil {
 		logger.Info("account email rejected: not a deliverable address",
 			"user_id", sess.UserID, "error", truncateForLog([]byte(err.Error()), 200))
 		return "Please enter a valid email address."
 	}
-	base, err := confirmationBaseFor(m, r)
+	base, err := confirmationBaseFor(m, r, devMode)
 	if err != nil {
 		logger.Error("refusing an account email: "+err.Error(),
 			"user_id", sess.UserID, "host", truncateForLog([]byte(r.Host), 200))
@@ -935,15 +972,18 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, m confirmatio
 			logger.Warn("failed to send confirmation email",
 				"user_id", sess.UserID, "email", email, "error", err)
 		}
-		// Nothing reached the user, so nothing may say it did: clear the
-		// pending address the dashboard would announce as "we sent a
-		// confirmation link" (operator decision, v0.29.29). The token
-		// stays; it was never mailed, so no one holds it, and it expires.
-		if clearErr := st.SetUserPendingEmail(ctx, sess.UserID, ""); clearErr != nil {
+		// Don't leave the dashboard announcing "we sent a confirmation
+		// link" (operator decision, v0.29.29) — but the mail may still have
+		// gone out: net/smtp reports QUIT's error after the server has
+		// accepted the message. So clear the pending address only while it
+		// is still this submission's (a second tab may have replaced it,
+		// v0.29.30), and tell the user a link that does arrive still works:
+		// its token is in the database until it expires.
+		if clearErr := st.ClearUserPendingEmailIf(ctx, sess.UserID, email); clearErr != nil {
 			logger.Warn("failed to clear the pending email after a failed confirmation send",
 				"user_id", sess.UserID, "error", clearErr)
 		}
-		return "We couldn't send the confirmation email. Try again later."
+		return "We couldn't send the confirmation email. If one does arrive, its link still works; otherwise try again later."
 	}
 	return ""
 }
@@ -1013,7 +1053,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
 	if r.Method == http.MethodPost {
-		if msg := submitAccountEmail(r.Context(), s.store, s.mailer, s.logger, r, sess); msg != "" {
+		if msg := submitAccountEmail(r.Context(), s.store, s.mailer, s.logger, r, sess, s.cfg.DevMode); msg != "" {
 			s.render(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   msg,
@@ -1026,7 +1066,12 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 
 	// GET: show the form. If the user already has a confirmed email,
 	// they don't need to be here — bounce them back to dashboard.
-	if email, _ := s.store.GetUserEmail(r.Context(), sess.UserID); strings.TrimSpace(email) != "" {
+	email, err := s.store.GetUserEmail(r.Context(), sess.UserID)
+	if err != nil {
+		// Showing the form is the safe fallback; the error is still logged.
+		s.logger.Warn("account email form: could not read the user's email", "user_id", sess.UserID, "error", err)
+	}
+	if strings.TrimSpace(email) != "" {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}

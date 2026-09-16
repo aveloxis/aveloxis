@@ -539,21 +539,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// only when new findings exist, and advances the window
 	// monotonically. Disabled entirely (channel stays nil) unless
 	// vulnDigestReady says a digest could be delivered.
-	var vulnDigestC <-chan time.Time
-	digestReady, digestErr := s.vulnDigestReady()
-	if digestErr != nil {
-		s.logger.Error("operator vulnerability digest NOT started: no digest could be delivered — fix the mail block or mail.operator_email, then restart serve",
-			"operator_email", s.cfg.Mail.OperatorEmail, "error", digestErr)
-	}
-	if digestReady {
-		vulnDigestTicker := time.NewTicker(1 * time.Hour)
-		defer vulnDigestTicker.Stop()
-		vulnDigestC = vulnDigestTicker.C
-		s.logger.Info("operator vulnerability digest enabled",
-			"operator_email", s.cfg.Mail.OperatorEmail,
-			"min_severity", s.cfg.Mail.VulnDigestMinSeverityOrDefault(),
-			"interval", s.cfg.Mail.VulnDigestInterval())
-	}
+	vulnDigestC, stopVulnDigest := s.startVulnDigest()
+	defer stopVulnDigest()
 
 	// v0.19.2: search-resolve background task. Takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email at

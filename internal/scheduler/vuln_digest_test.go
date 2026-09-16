@@ -4,6 +4,7 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -81,8 +82,8 @@ func TestVulnDigestTickerGating(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "digestReady, digestErr := s.vulnDigestReady()") || !strings.Contains(s, "if digestReady {") {
-		t.Error("digest ticker must be gated on vulnDigestReady — an injected mailer, a configured operator_email, and a deliverable one")
+	if !strings.Contains(s, "vulnDigestC, stopVulnDigest := s.startVulnDigest()") || !strings.Contains(s, "defer stopVulnDigest()") {
+		t.Error("Run must take the digest tick channel from startVulnDigest (tested in TestStartVulnDigest) and stop it on return")
 	}
 	if !strings.Contains(s, "case <-vulnDigestC:") {
 		t.Error("run loop must consume the digest ticker channel")
@@ -216,6 +217,23 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 		t.Errorf("a second failed send must not move the window: %v -> %v", pinned, got)
 	}
 
+	// An unwritable stamp path: the window cannot be pinned, and that is
+	// logged rather than lost.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var holdLogs bytes.Buffer
+	s.logger = slog.New(slog.NewTextHandler(&holdLogs, nil))
+	s.digestStampPath = filepath.Join(blocker, "vuln-digest-last")
+	s.digestMailer = &recordingDigestMailer{err: errors.New("smtp down")}
+	s.runVulnDigest(ctx)
+	if !strings.Contains(holdLogs.String(), "could not pin the retry window") {
+		t.Errorf("a failed pin must be logged; log:\n%s", holdLogs.String())
+	}
+	s.logger = logger
+	s.digestStampPath = stamp
+
 	// A mailer skip is a failure too, never a delivery.
 	os.Remove(stamp)
 	rec3 := &recordingDigestMailer{err: fmt.Errorf("%w: test", mailer.ErrRecipientSkipped)}
@@ -275,6 +293,42 @@ func TestVulnDigestReady(t *testing.T) {
 			ok, err := s.vulnDigestReady()
 			if ok != tc.wantOK || (err != nil) != tc.wantErr {
 				t.Errorf("vulnDigestReady() = %v, %v; want ok=%v err=%v", ok, err, tc.wantOK, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestStartVulnDigest: the startup decision and what it logs — the ERROR
+// configuration.md promises when a configured digest could never be
+// delivered, INFO when it starts, and nothing when it is not configured.
+func TestStartVulnDigest(t *testing.T) {
+	mail := &config.MailConfig{OperatorEmail: "ops@example.com"}
+	for _, tc := range []struct {
+		name     string
+		mailer   digestMailer
+		mail     *config.MailConfig
+		wantTick bool
+		wantLog  string
+		noLog    string
+	}{
+		{name: "deliverable", mailer: &recordingDigestMailer{}, mail: mail, wantTick: true, wantLog: "level=INFO msg=\"operator vulnerability digest enabled\""},
+		{name: "undeliverable", mailer: &recordingDigestMailer{deliverErr: mailer.ErrNotConfigured}, mail: mail,
+			wantLog: "level=ERROR msg=\"operator vulnerability digest NOT started", noLog: "digest enabled"},
+		{name: "not configured", mailer: &recordingDigestMailer{}, mail: &config.MailConfig{}, noLog: "digest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			s := &Scheduler{logger: slog.New(slog.NewTextHandler(&logs, nil)), cfg: Config{Mail: tc.mail}, digestMailer: tc.mailer}
+			c, stop := s.startVulnDigest()
+			defer stop()
+			if (c != nil) != tc.wantTick {
+				t.Errorf("tick channel present = %v, want %v", c != nil, tc.wantTick)
+			}
+			if tc.wantLog != "" && !strings.Contains(logs.String(), tc.wantLog) {
+				t.Errorf("log lacks %q:\n%s", tc.wantLog, logs.String())
+			}
+			if tc.noLog != "" && strings.Contains(logs.String(), tc.noLog) {
+				t.Errorf("log has %q:\n%s", tc.noLog, logs.String())
 			}
 		})
 	}

@@ -93,8 +93,8 @@ func ValidateConfig(cfg Config) error {
 
 // ValidateAndLog runs ValidateConfig and emits a clear WARN line
 // when it fails. Returns the same error for callers that want to
-// decide what to do (e.g. fail-fast in a CLI vs no-op-mailer in
-// the web server). When the config is empty (mailer disabled),
+// decide what to do (e.g. fail-fast in a CLI vs a disabled mailer
+// in the web server). When the config is empty (mailer disabled),
 // logs an INFO so operators see the absence is intentional.
 func ValidateAndLog(cfg Config, logger *slog.Logger) error {
 	err := ValidateConfig(cfg)

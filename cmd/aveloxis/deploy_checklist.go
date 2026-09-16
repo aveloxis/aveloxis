@@ -233,6 +233,14 @@ var deployChecklists = map[string][]deployStep{
 	// failed first send pins its window. OPERATORS: after fixing the mail
 	// block or operator_email, restart serve. No schema change.
 	"0.29.29": v029DeployChecklist,
+	// v0.29.30: round 4. The request Host builds a confirmation link only
+	// with web.dev_mode on (a same-host proxy that does not forward Host
+	// made every visitor look like 127.0.0.1). A failed confirmation send
+	// clears only its own pending address and tells the user a link that
+	// does arrive still works; dashboard email lookups that fail are logged
+	// and no longer read as "no address". OPERATORS: production needs
+	// mail.site_url for confirmation links. No schema change.
+	"0.29.30": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

@@ -364,7 +364,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.addr` | string | `":8082"` | Listen address for the web GUI. |
 | `web.session_secret` | string | (none) | Secret used to sign session cookies. Generate a random 32+ byte string. Without this, sessions don't survive restarts. |
 | `web.base_url` | string | (none) | Public-facing external URL of the web GUI (e.g. `https://aveloxis.example.com`). Used to build OAuth callback URLs and outbound email links. |
-| `web.dev_mode` | boolean | `false` | When `true`, disables the `Secure` flag on cookies so the GUI works over plain HTTP. **Production must leave this `false`** so browsers only send cookies over HTTPS. `HttpOnly` is always set regardless. |
+| `web.dev_mode` | boolean | `false` | When `true`, disables the `Secure` flag on cookies so the GUI works over plain HTTP, and lets a loopback request (`localhost`, `127.0.0.1`, `[::1]`) build email confirmation links when `mail.site_url` is unset. **Production must leave this `false`** so browsers only send cookies over HTTPS and confirmation links always come from `mail.site_url`. `HttpOnly` is always set regardless. |
 | `web.github_client_id` | string | (none) | GitHub OAuth App client ID. Create one at <https://github.com/settings/developers>. The callback URL must match `<base_url>/auth/github/callback`. |
 | `web.github_client_secret` | string | (none) | GitHub OAuth App client secret. |
 | `web.gitlab_client_id` | string | (none) | GitLab OAuth Application ID. Create one at <https://gitlab.com/-/profile/applications> (or your self-hosted instance's `/admin/applications`). |
@@ -390,15 +390,15 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 
 | Field | Type | Description |
 |---|---|---|
-| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer: nothing is sent, and features that need email say so (see [Disabling](#disabling)). |
-| `mail.operator_email` | string | Where fleet-level operator notifications go (v0.27.12) — currently the new-vulnerabilities digest. Empty (default) disables operator notifications entirely. |
+| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer: nothing is sent (see [Disabling](#disabling) for what changes). |
+| `mail.operator_email` | string | Where fleet-level operator notifications go: the new-vulnerabilities digest (v0.27.12) and new add-request submissions awaiting approval (v0.27.20). Empty (default) disables operator notifications entirely. |
 | `mail.vuln_digest_min_severity` | string | Severity floor for the vulnerability digest: `CRITICAL`, `HIGH` (default — admits CRITICAL+HIGH), `MEDIUM`, `LOW`, or `ALL`. Unrecognized values fall back to `HIGH`. |
 | `mail.vuln_digest_interval_hours` | int | Minimum gap between digest emails (default 24). The scheduler checks hourly; a digest is sent only when the interval has elapsed AND new findings exist — quiet windows produce no email. |
 | `mail.vuln_digest_include_transitive` | bool | `false` | Include `dependency_kind='transitive'` findings in the operator vulnerability digest (v0.27.21). Default off so the first transitive-enabled cycles don't flood the digest with utility-package findings. |
 | `mail.vuln_digest_include_dev` | bool | `false` | v0.27.46 (summary/19 P3): include findings on non-runtime-scope dependencies (dev/test/build/optional/peer) in the operator digest. Default off so the `dev_build_deps` Python expansion never floods the email; runtime-scope findings always digest. |
 | `mail.gmail_app_password` | string | The 16-character App Password (spaces allowed). Not the account's regular password. |
 | `mail.from_name` | string | Display name shown in recipients' inboxes. |
-| `mail.site_url` | string | Public-facing URL used in email body links. Set it in production: without it, email confirmation links are sent only when the request Host is loopback (`localhost`, `127.0.0.1`, `[::1]`, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. |
+| `mail.site_url` | string | Public-facing URL used in email body links. Set it in production: without it, email confirmation links are sent only with `web.dev_mode` on and a loopback request Host (`localhost`, `127.0.0.1`, `[::1]`, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. A reverse proxy on the same host that does not forward `Host` makes every request look loopback, which is why dev_mode is required. |
 
 ### Logging
 
@@ -576,7 +576,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 | `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer: no email is sent, the account-email form refuses new addresses (no confirmation link could reach them), and users without an address are let into the dashboard instead of being sent to that form. |
 | `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
 | `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
-| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links on any non-loopback host: the request `Host` header is client-controlled, so it is never used to build a link a victim could receive. Without it, the account-email form refuses new addresses there, and users without an address are let into the dashboard. |
+| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links outside local development: the request `Host` header is client-controlled (and a same-host proxy can make it read `127.0.0.1`), so it builds a link only when `web.dev_mode` is on. Without `site_url`, the account-email form refuses new addresses and users without an address are let into the dashboard. |
 
 ### Validation at startup
 

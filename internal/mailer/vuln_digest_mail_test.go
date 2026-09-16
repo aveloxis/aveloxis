@@ -11,12 +11,10 @@ import (
 	"time"
 )
 
-// The unconfigured mailer no-ops on Send, so digest formatting is
-// pinned by building the body through a configured-looking mailer...
-// except Send would then dial SMTP. Instead: zero items must send
-// nothing at all, and the formatting internals are exercised through
-// the exported method with an unconfigured mailer (Send no-ops but
-// the formatting code still runs — a panic or bad format fails here).
+// A configured mailer would dial SMTP, so digest formatting is exercised
+// through an unconfigured one: zero items must send nothing at all, and
+// with items the formatting still runs before Send returns
+// ErrNotConfigured — a panic or bad format fails here.
 func TestSendVulnerabilityDigestZeroItemsIsNoop(t *testing.T) {
 	m := New(Config{}, nil)
 	if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), nil); err != nil {

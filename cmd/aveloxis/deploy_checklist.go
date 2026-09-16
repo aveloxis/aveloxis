@@ -157,6 +157,11 @@ var deployChecklists = map[string][]deployStep{
 	// two comments that overstated earlier fixes are corrected. No schema
 	// change, no operator heal — same ladder.
 	"0.29.18": v029DeployChecklist,
+	// v0.29.19: Copilot review on PR #207 — the scc labor-row path comment
+	// claimed an absolute Location outside workDir was preserved; filepath.Rel
+	// returns a ../ walk for it. Comment corrected and the path handling pinned
+	// case by case. No behaviour change, no schema change — same ladder.
+	"0.29.19": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

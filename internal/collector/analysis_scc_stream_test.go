@@ -258,21 +258,45 @@ func TestStreamSCCLaborRejectsMalformed(t *testing.T) {
 	}
 }
 
-// TestStreamSCCLaborRelPathFallback pins the path handling the pre-fix
-// code had: a Location outside workDir keeps its absolute path rather
-// than becoming a ../../.. walk.
-func TestStreamSCCLaborRelPathFallback(t *testing.T) {
-	doc := `[{"Name":"Go","Files":[{"Location":"relative/elsewhere.go","Lines":1,"Code":1}]}]`
-	rows, err := collectStream(t, strings.NewReader(doc), time.Now())
-	if err != nil {
-		t.Fatalf("streamSCCLabor: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("got %d rows, want 1", len(rows))
-	}
-	want := unmarshalReference(t, []byte(doc), rows[0].CloneDate)
-	if rows[0].FilePath != want[0].FilePath {
-		t.Errorf("FilePath = %q, want %q (must match the pre-v0.29.14 filepath.Rel fallback)", rows[0].FilePath, want[0].FilePath)
+// TestStreamSCCLaborRelPathHandling is the inventory of how a Location
+// becomes FilePath. Each row is checked against an explicit value AND
+// against the pre-rewrite oracle (unmarshalReference), so the streaming
+// decoder cannot drift from what scanSCC stored before v0.29.14.
+//
+// It replaces TestStreamSCCLaborRelPathFallback, whose doc claimed "a
+// Location outside workDir keeps its absolute path". That was false.
+// filepath.Rel does not treat an absolute path outside workDir as an error,
+// and the old test only exercised a RELATIVE Location, which is the
+// abs/relative mismatch Rel does reject (Copilot review on PR #207). The
+// fallback keeps the original Location only when Rel returns an error.
+func TestStreamSCCLaborRelPathHandling(t *testing.T) {
+	for _, tc := range []struct {
+		name, location, want string
+	}{
+		{"inside workDir", sccStreamWorkDir + "/pkg/a.go", "pkg/a.go"},
+		// Rel cannot relate a relative target to the absolute workDir, so
+		// the original Location is kept.
+		{"relative Location, Rel errors", "relative/elsewhere.go", "relative/elsewhere.go"},
+		// Not an error to Rel: an absolute path outside workDir becomes a
+		// ../ walk. sccStreamWorkDir is three levels below /.
+		{"absolute Location outside workDir", "/outside/a.go", "../../../outside/a.go"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := `[{"Name":"Go","Files":[{"Location":"` + tc.location + `","Lines":1,"Code":1}]}]`
+			rows, err := collectStream(t, strings.NewReader(doc), time.Now())
+			if err != nil {
+				t.Fatalf("streamSCCLabor: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows, want 1", len(rows))
+			}
+			if rows[0].FilePath != tc.want {
+				t.Errorf("FilePath = %q, want %q", rows[0].FilePath, tc.want)
+			}
+			if ref := unmarshalReference(t, []byte(doc), rows[0].CloneDate); rows[0].FilePath != ref[0].FilePath {
+				t.Errorf("FilePath = %q, but the pre-v0.29.14 path produced %q — the streaming rewrite changed stored paths", rows[0].FilePath, ref[0].FilePath)
+			}
+		})
 	}
 }
 

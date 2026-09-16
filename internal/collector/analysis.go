@@ -2786,9 +2786,14 @@ func streamSCCFiles(dec *json.Decoder, workDir string, now time.Time, emit func(
 	return expectSCCDelim(dec, ']')
 }
 
-// sccLaborRow converts one scc file entry into a labor row. The
-// filepath.Rel fallback is the pre-v0.29.14 behavior: a Location outside
-// workDir keeps its original path rather than becoming a ../../.. walk.
+// sccLaborRow converts one scc file entry into a labor row. FilePath is
+// Location relative to workDir; the original Location is kept only when
+// filepath.Rel returns an error, i.e. when the two paths cannot be related.
+// An absolute Location outside workDir is not an error to Rel and becomes
+// a ../ walk. This is unchanged from before the v0.29.14 streaming rewrite;
+// TestStreamSCCLaborRelPathHandling is the inventory of each case. (An
+// earlier version of this comment said an outside path was preserved; it
+// never was — Copilot review on PR #207.)
 func sccLaborRow(f *sccFile, workDir string, now time.Time) *db.RepoLaborRow {
 	relPath, relErr := filepath.Rel(workDir, f.Location)
 	if relErr != nil || relPath == "" {

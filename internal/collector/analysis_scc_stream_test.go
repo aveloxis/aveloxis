@@ -112,6 +112,47 @@ func TestStreamSCCLaborMatchesUnmarshalReference(t *testing.T) {
 	}
 }
 
+// TestStreamSCCLaborKeyMatchingIsCaseInsensitive pins parity with
+// encoding/json, which prefers an exact key match but also accepts a
+// case-insensitive one. The streaming decoder switched on exact outer keys,
+// so {"name":…,"files":[…]} produced ZERO rows and NO error where
+// json.Unmarshal produced the row. That is the worst shape available here:
+// a zero-row success still calls ReplaceRepoLaborSnapshot, which rotates
+// the real snapshot into history and installs an empty one (Copilot review
+// on PR #207).
+//
+// Each case is compared against the pre-rewrite oracle, so the rule is
+// "whatever json.Unmarshal accepted", not a list someone has to maintain.
+func TestStreamSCCLaborKeyMatchingIsCaseInsensitive(t *testing.T) {
+	for _, tc := range []struct{ name, doc string }{
+		{"canonical", `[{"Name":"Go","Files":[{"Location":"` + sccStreamWorkDir + `/a.go","Lines":9,"Code":8}]}]`},
+		{"lowercase outer keys", `[{"name":"Go","files":[{"Location":"` + sccStreamWorkDir + `/a.go","Lines":9,"Code":8}]}]`},
+		{"uppercase outer keys", `[{"NAME":"Go","FILES":[{"Location":"` + sccStreamWorkDir + `/a.go","Lines":9,"Code":8}]}]`},
+		{"mixed outer keys", `[{"nAmE":"Go","fILes":[{"Location":"` + sccStreamWorkDir + `/a.go","Lines":9,"Code":8}]}]`},
+		{"lowercase nested keys", `[{"Name":"Go","Files":[{"location":"` + sccStreamWorkDir + `/a.go","lines":9,"code":8}]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			got, err := collectStream(t, strings.NewReader(tc.doc), now)
+			if err != nil {
+				t.Fatalf("streamSCCLabor: %v", err)
+			}
+			want := unmarshalReference(t, []byte(tc.doc), now)
+			if len(want) == 0 {
+				t.Fatal("the oracle produced no rows — this case would assert nothing")
+			}
+			if len(got) != len(want) {
+				t.Fatalf("stream produced %d rows, json.Unmarshal produced %d — a casing variant silently yields an EMPTY snapshot, which replaces the real one", len(got), len(want))
+			}
+			for i := range want {
+				if *got[i] != *want[i] {
+					t.Errorf("row %d: stream = %+v, json.Unmarshal = %+v", i, *got[i], *want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestStreamSCCLaborIsIncremental is the behavioral pin for the fix: rows
 // must be produced while scc is still writing. A reader that hands over
 // the first language object and then blocks (no EOF) must still yield

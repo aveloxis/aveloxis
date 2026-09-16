@@ -173,6 +173,12 @@ var deployChecklists = map[string][]deployStep{
 	// wedge test, and a pin comment that overstated its reach. Comments and
 	// one test bound; no behaviour change. Same ladder.
 	"0.29.21": v029DeployChecklist,
+	// v0.29.22: Copilot review on PR #207 — the streaming decoder matched
+	// scc's outer keys exactly, while encoding/json matches them
+	// case-insensitively. A casing variant produced zero rows with no
+	// error, and a zero-row success replaces the labor snapshot. Now
+	// matched with EqualFold. No schema change, no operator heal.
+	"0.29.22": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

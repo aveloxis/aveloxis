@@ -2753,8 +2753,17 @@ func streamSCCLanguage(dec *json.Decoder, workDir string, now time.Time, emit fu
 			return fmt.Errorf("reading scc language key: %w", err)
 		}
 		key, _ := tok.(string)
-		switch key {
-		case "Name":
+		// Case-INSENSITIVE, matching encoding/json: Unmarshal prefers an
+		// exact key match but also accepts a case-insensitive one, so the
+		// pre-v0.29.14 path parsed {"name":…,"files":[…]}. An exact switch
+		// here skipped those and returned ZERO rows with NO error — and a
+		// zero-row success still replaces the snapshot, rotating the real
+		// one into history and installing an empty one. Verified: stream 0
+		// rows vs Unmarshal 1 row for "name"/"files" and "NAME"/"FILES"
+		// (Copilot review on PR #207). The nested sccFile decode was never
+		// affected, because encoding/json does the matching there.
+		switch {
+		case strings.EqualFold(key, "Name"):
 			if err := dec.Decode(&language); err != nil {
 				return fmt.Errorf("decoding scc language name: %w", err)
 			}
@@ -2764,7 +2773,7 @@ func streamSCCLanguage(dec *json.Decoder, workDir string, now time.Time, emit fu
 				emit(row)
 			}
 			pending = nil
-		case "Files":
+		case strings.EqualFold(key, "Files"):
 			err := streamSCCFiles(dec, workDir, now, func(row *db.RepoLaborRow) {
 				if named {
 					row.Language = language

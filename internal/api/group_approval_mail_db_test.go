@@ -470,7 +470,23 @@ func TestAdminAddRequestProcessingInvalidatesTheAuthCache(t *testing.T) {
 			t.Fatalf("approve = %d %s, want 200 with %s", w.Code, w.Body.String(), wantChanged)
 		}
 		// A request that resolves its token while the pass runs caches the
-		// old scope.
+		// old scope. Wait until the pass is really mid-item (a backend in the
+		// trigger's pg_sleep), so a cache drop at the START of the pass
+		// cannot satisfy this test (round-21 review).
+		sleeping := time.Now().Add(10 * time.Second)
+		for {
+			var n int
+			if err := p.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'PgSleep' AND query ILIKE '%user_repos%'`).Scan(&n); err != nil {
+				t.Fatalf("watch for the pass: %v", err)
+			}
+			if n > 0 {
+				break
+			}
+			if time.Now().After(sleeping) {
+				t.Fatal("the pass never reached its slow step")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		s.auth.mu.Lock()
 		s.auth.cache["probe-token"] = cachedAuth{info: authInfo{UserID: uid}, expires: time.Now().Add(authCacheTTL)}
 		s.auth.mu.Unlock()

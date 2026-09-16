@@ -13,12 +13,14 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
@@ -83,6 +85,10 @@ func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID 
 		} else {
 			safego.Go(s.logger, "approved-add-request", func() {
 				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				if errors.Is(err, db.ErrAddRequestInProgress) {
+					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
+					return
+				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
 						"request_id", req.RequestID, "processed", n, "error", err)

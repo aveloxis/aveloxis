@@ -18,6 +18,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -467,6 +468,10 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 				// ran cached the old scope (Copilot review of PR #207).
 				defer s.auth.invalidateAll()
 				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				if errors.Is(err, db.ErrAddRequestInProgress) {
+					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
+					return
+				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
 						"request_id", req.RequestID, "processed", n, "error", err)

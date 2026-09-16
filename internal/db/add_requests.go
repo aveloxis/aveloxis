@@ -412,6 +412,11 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, 
 	return tag.RowsAffected() == 1, nil
 }
 
+// ErrAddRequestInProgress is ProcessApprovedAddRequest's answer when this
+// process is already processing the request: the running pass finishes the
+// batch, so the caller has nothing to do.
+var ErrAddRequestInProgress = errors.New("add request is already being processed")
+
 // ProcessApprovedAddRequest walks the request's unprocessed items and
 // runs the shared add machinery for each. Idempotent + resumable:
 // items with repo_id already stamped are skipped, so an interrupted
@@ -419,11 +424,20 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, 
 // repo_id = -1 (processed-with-error) so it can't wedge the request
 // forever; the failure is logged.
 //
-// Each item is claimed before it is processed (processNextAddRequestItem),
-// so two passes over one request — an admin's second approve click while the
-// first pass runs — share the batch instead of both walking all of it
-// (Copilot review of PR #207).
+// One pass per request at a time in this process: a second call while one
+// runs (an admin's second approve click) returns ErrAddRequestInProgress
+// instead of walking the batch again (Copilot review of PR #207). The pass
+// holds no database connection or transaction across items: v0.29.46 held
+// one per pass while the add machinery took a second connection, and as many
+// passes as the pool has connections deadlocked the pool (round-21 review).
+// Passes in two processes (web and api) can still overlap; each step is
+// idempotent and a stamp only fills an unstamped item.
 func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (int, error) {
+	if !s.startAddRequestPass(requestID) {
+		return 0, ErrAddRequestInProgress
+	}
+	defer s.finishAddRequestPass(requestID)
+
 	var groupID int64
 	var status string
 	if err := s.pool.QueryRow(ctx, `
@@ -435,66 +449,74 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 		return 0, fmt.Errorf("request %d is %s, not approved", requestID, status)
 	}
 
+	rows, err := s.pool.Query(ctx, `
+		SELECT item_id, repo_url FROM aveloxis_ops.collection_add_request_items
+		WHERE request_id = $1 AND repo_id IS NULL ORDER BY item_id`, requestID)
+	if err != nil {
+		return 0, fmt.Errorf("read add-request items: %w", err)
+	}
+	type item struct {
+		id  int64
+		url string
+	}
+	var items []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.id, &it.url); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("read add-request items: %w", err)
+		}
+		items = append(items, it)
+	}
+	rows.Close()
+	// A read that fails partway must not look like a shorter batch.
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read add-request items: %w", err)
+	}
+
 	processed := 0
-	for {
-		repoID, done, err := s.processNextAddRequestItem(ctx, requestID, groupID)
-		if err != nil {
+	for _, it := range items {
+		repoID, err := s.ensureRepoCollectedInGroup(ctx, groupID, it.url)
+		if errors.Is(err, context.Canceled) {
+			// Not a defect: leave the item unprocessed for a later pass.
 			return processed, err
 		}
-		if done {
-			return processed, nil
+		if err != nil {
+			s.logger.Warn("add-request item failed — marking processed-with-error",
+				"request_id", requestID, "url", it.url, "error", err)
+			repoID = -1
+		}
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_ops.collection_add_request_items
+			SET repo_id = $2 WHERE item_id = $1 AND repo_id IS NULL`, it.id, repoID); err != nil {
+			return processed, err
 		}
 		if repoID > 0 {
 			processed++
 		}
 	}
+	return processed, nil
 }
 
-// processNextAddRequestItem claims one unprocessed item of the request, runs
-// the add machinery for it and stamps the result, all while the claim holds.
-// The claim is a row lock taken with SKIP LOCKED inside a transaction: a
-// concurrent pass skips the item, and if this pass fails before its stamp
-// commits (a cancelled context, a lost connection) the transaction rolls back
-// and the item stays unprocessed for a later pass. done reports that no
-// unclaimed item was left.
-func (s *PostgresStore) processNextAddRequestItem(ctx context.Context, requestID, groupID int64) (repoID int64, done bool, err error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return 0, false, err
+// startAddRequestPass records that this process is processing requestID, and
+// reports false when a pass for it is already running here.
+func (s *PostgresStore) startAddRequestPass(requestID int64) bool {
+	s.addPassMu.Lock()
+	defer s.addPassMu.Unlock()
+	if _, running := s.addPasses[requestID]; running {
+		return false
 	}
-	defer tx.Rollback(ctx)
-	var itemID int64
-	var repoURL string
-	err = tx.QueryRow(ctx, `
-		SELECT item_id, repo_url FROM aveloxis_ops.collection_add_request_items
-		WHERE request_id = $1 AND repo_id IS NULL
-		ORDER BY item_id LIMIT 1
-		FOR UPDATE SKIP LOCKED`, requestID).Scan(&itemID, &repoURL)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, true, nil
+	if s.addPasses == nil {
+		s.addPasses = map[int64]struct{}{}
 	}
-	if err != nil {
-		return 0, false, fmt.Errorf("claim add-request item: %w", err)
-	}
-	repoID, err = s.ensureRepoCollectedInGroup(ctx, groupID, repoURL)
-	if err != nil {
-		// A cancelled context is a `stop serve`, not a defect: the stamp
-		// below fails with it and the item stays unprocessed.
-		if !errors.Is(err, context.Canceled) {
-			s.logger.Warn("add-request item failed — marking processed-with-error",
-				"request_id", requestID, "url", repoURL, "error", err)
-		}
-		repoID = -1
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE aveloxis_ops.collection_add_request_items
-		SET repo_id = $2 WHERE item_id = $1`, itemID, repoID); err != nil {
-		return 0, false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, err
-	}
-	return repoID, false, nil
+	s.addPasses[requestID] = struct{}{}
+	return true
+}
+
+func (s *PostgresStore) finishAddRequestPass(requestID int64) {
+	s.addPassMu.Lock()
+	defer s.addPassMu.Unlock()
+	delete(s.addPasses, requestID)
 }
 
 // PendingAddItem is one awaiting-approval URL for the group page's

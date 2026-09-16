@@ -5,11 +5,13 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -569,12 +571,11 @@ func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
 	}
 }
 
-// TestProcessApprovedAddRequestPassesDoNotRepeatWork (AVELOXIS_TEST_DB): two
-// processing passes over the same request at once — an admin's second approve
-// click while the first pass runs — each claim an item before working on it,
-// so every item is processed exactly once instead of both passes walking the
-// whole batch (Copilot review of PR #207: both passes loaded the same
-// unprocessed items up front and repeated a 50K-item batch).
+// TestProcessApprovedAddRequestPassesDoNotRepeatWork (AVELOXIS_TEST_DB): a
+// second processing pass over a request this process is already processing —
+// an admin's second approve click while the first pass runs — returns
+// ErrAddRequestInProgress at once instead of walking the whole batch again
+// (Copilot review of PR #207: both passes repeated a 50K-item batch).
 func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
@@ -643,11 +644,19 @@ func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	secondN, secondErr := store.ProcessApprovedAddRequest(ctx, reqID)
 	firstPass := <-first
-	if firstPass.err != nil || secondErr != nil {
-		t.Fatalf("passes returned errors: first %v, second %v", firstPass.err, secondErr)
+	if firstPass.err != nil {
+		t.Fatalf("the first pass returned %v", firstPass.err)
+	}
+	if !errors.Is(secondErr, ErrAddRequestInProgress) || secondN != 0 {
+		t.Errorf("a second pass while the first runs = %d, %v; want 0, ErrAddRequestInProgress", secondN, secondErr)
 	}
 	if total := firstPass.n + secondN; total != items {
 		t.Errorf("the two passes processed %d + %d = %d items, want %d (each item exactly once)", firstPass.n, secondN, total, items)
+	}
+	// The guard is released when a pass ends: a later pass runs (and finds
+	// nothing left to do).
+	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 0 {
+		t.Errorf("a pass after the first finished = %d, %v; want 0, nil", n, err)
 	}
 	var notDone, links int
 	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND (repo_id IS NULL OR repo_id <= 0)`, reqID).Scan(&notDone); err != nil {
@@ -658,5 +667,94 @@ func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	}
 	if notDone != 0 || links != items {
 		t.Errorf("after both passes: %d items unfinished or failed, %d repos linked; want 0 and %d", notDone, links, items)
+	}
+}
+
+// TestProcessApprovedAddRequestHoldsNoConnectionAcrossItems (AVELOXIS_TEST_DB):
+// processing holds no connection while it works on an item, so more
+// concurrent passes than the pool has connections all finish (round-21
+// review: v0.29.46 held a transaction per pass while its helpers needed a
+// second connection, and as many passes as MaxConns deadlocked the pool —
+// every DB call in the web or api process hung until a restart). Each pass
+// runs with a deadline so a regression fails here instead of hanging.
+func TestProcessApprovedAddRequestHoldsNoConnectionAcrossItems(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	setup, err := NewPostgresStore(ctx, dsn, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(setup.Close)
+	testMigrate(ctx, t, setup)
+	const poolSize = 4
+	store, err := NewPostgresStore(ctx, dsn, discard, poolSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	const login = "_avprocess_pool_probe"
+	const urlPrefix = "https://github.com/_avprocess-pool-owner/_avprocess-pool-repo-"
+	clean := func() {
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%')`, urlPrefix)
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%'`, urlPrefix)
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = setup.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := setup.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := setup.CreateUserGroup(ctx, uid, "processing pool probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const passes, itemsEach = 2 * poolSize, 3
+	requests := make([]int64, passes)
+	for p := range requests {
+		urls := make([]string, itemsEach)
+		for i := range urls {
+			urls[i] = fmt.Sprintf("%s%d-%d", urlPrefix, p, i)
+		}
+		if requests[p], err = setup.createAddRequest(ctx, uid, gid, "repos", "", urls, "approved"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	start := make(chan struct{})
+	errs := make([]error, passes)
+	var wg sync.WaitGroup
+	for p := range requests {
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			<-start
+			_, errs[p] = store.ProcessApprovedAddRequest(deadline, requests[p])
+		}(p)
+	}
+	close(start)
+	wg.Wait()
+	for p, err := range errs {
+		if err != nil {
+			t.Errorf("pass %d of %d on a %d-connection pool = %v; want every pass to finish", p+1, passes, poolSize, err)
+		}
+	}
+	var notDone int
+	if err := setup.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_request_items WHERE request_id = ANY($1) AND (repo_id IS NULL OR repo_id <= 0)`, requests).Scan(&notDone); err != nil {
+		t.Fatalf("count unfinished items: %v", err)
+	}
+	if notDone != 0 {
+		t.Errorf("%d items unfinished or failed after all passes, want 0", notDone)
 	}
 }

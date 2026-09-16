@@ -323,6 +323,13 @@ var deployChecklists = map[string][]deployStep{
 	// v0.29.47: Copilot's second review of PR #207. Documentation only (the
 	// web.base_url row). No schema change.
 	"0.29.47": v029DeployChecklist,
+	// v0.29.48: round 21. Fixes a v0.29.46 regression — do not deploy
+	// v0.29.46 or v0.29.47: approved add-request processing held a
+	// transaction per pass while taking a second pool connection, so as many
+	// concurrent passes as the pool size hung the web or api process until a
+	// restart. Processing now holds no connection across items and runs one
+	// pass per request per process. No schema change.
+	"0.29.48": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

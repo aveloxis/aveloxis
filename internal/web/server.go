@@ -182,6 +182,11 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 // confirmationBaseFor.
 func (s *Server) WithMailer(m *mailer.Mailer) *Server {
 	s.mailer = m
+	// Said once at startup, where an operator looks: the refusal it
+	// predicts otherwise shows up only when a user submits the form.
+	if m.Enabled() && strings.TrimSpace(m.SiteURL()) == "" && !s.cfg.DevMode && s.logger != nil {
+		s.logger.Warn("mail.site_url is not set: account-email confirmation links will be refused and users without an email address go straight to the dashboard — set mail.site_url to this site's public URL (not web.dev_mode, which is for local development)")
+	}
 	return s
 }
 
@@ -775,7 +780,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// v0.19.10 email gate, v0.20.4 pending-aware, v0.29.29
 	// confirmable-only, v0.29.30 lookup errors logged: see
 	// dashboardEmailGate.
-	needsEmailForm, pendingEmail := dashboardEmailGate(r.Context(), s.store, s.mailer, s.logger, r, sess.UserID, s.cfg.DevMode)
+	needsEmailForm, pendingEmail := dashboardEmailGate(r.Context(), s.store, s.confirmationPolicy(), s.logger, r, sess.UserID)
 	if needsEmailForm {
 		http.Redirect(w, r, "/account/email", http.StatusFound)
 		return
@@ -826,7 +831,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 // returns false and no link is mailed. It does not need the token, so the
 // decision is made before anything is stored.
 func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bool) {
-	if base := strings.TrimRight(siteURL, "/"); base != "" {
+	if base := strings.TrimRight(strings.TrimSpace(siteURL), "/"); base != "" {
 		return base, true
 	}
 	if !devMode {
@@ -851,19 +856,34 @@ func confirmationLink(base, token string) string {
 // Why a confirmation link cannot be sent from this request.
 var (
 	errConfirmationMailDisabled = errors.New("mail is not configured, so no confirmation link can be sent")
-	errConfirmationNoLinkBase   = errors.New("mail.site_url is not configured, and a request Host may build the link only for a loopback request with web.dev_mode on")
+	errConfirmationNoLinkBase   = errors.New("mail.site_url is not set — set it to this site's public URL to send confirmation links (web.dev_mode lets a loopback request build one for local development only; keep dev_mode off in production)")
 )
+
+// confirmationPolicy is everything that decides whether a confirmation
+// link can be sent: the mailer and web.dev_mode. Both call sites — the
+// account-email POST and the dashboard's email gate — take it from
+// Server.confirmationPolicy, so they cannot disagree (round-5 review: the
+// dashboard passed dev_mode separately, and a wrong value there brought
+// back the v0.29.29 lockout with every test green).
+type confirmationPolicy struct {
+	mailer  confirmationMailer
+	devMode bool
+}
+
+func (s *Server) confirmationPolicy() confirmationPolicy {
+	return confirmationPolicy{mailer: s.mailer, devMode: s.cfg.DevMode}
+}
 
 // confirmationBaseFor decides whether this request's user can be mailed a
 // working confirmation link, and returns the link base when so.
 // submitAccountEmail refuses on an error; the dashboard's email gate uses
 // the same decision so it never sends a user to a form that would refuse
 // them.
-func confirmationBaseFor(m confirmationMailer, r *http.Request, devMode bool) (string, error) {
-	if !m.Enabled() {
+func confirmationBaseFor(p confirmationPolicy, r *http.Request) (string, error) {
+	if !p.mailer.Enabled() {
 		return "", errConfirmationMailDisabled
 	}
-	base, ok := emailConfirmBase(m.SiteURL(), r, devMode)
+	base, ok := emailConfirmBase(p.mailer.SiteURL(), r, p.devMode)
 	if !ok {
 		return "", errConfirmationNoLinkBase
 	}
@@ -877,11 +897,11 @@ func confirmationBaseFor(m confirmationMailer, r *http.Request, devMode bool) (s
 // Where it could not — mail off, or no trustworthy link base — the form
 // refuses, so redirecting locked the user out of the dashboard; the
 // operator chose to let them in without an address (v0.29.29).
-func emailGateRedirect(confirmed, pending string, m confirmationMailer, r *http.Request, devMode bool) bool {
+func emailGateRedirect(confirmed, pending string, p confirmationPolicy, r *http.Request) bool {
 	if strings.TrimSpace(confirmed) != "" || strings.TrimSpace(pending) != "" {
 		return false
 	}
-	_, err := confirmationBaseFor(m, r, devMode)
+	_, err := confirmationBaseFor(p, r)
 	return err == nil
 }
 
@@ -897,7 +917,7 @@ type accountEmailLookup interface {
 // not "no address" (SR-5): it is logged and the dashboard renders, rather
 // than sending a user who has a confirmed address to the email form during
 // a database blip.
-func dashboardEmailGate(ctx context.Context, st accountEmailLookup, m confirmationMailer, logger *slog.Logger, r *http.Request, userID int, devMode bool) (needsForm bool, pending string) {
+func dashboardEmailGate(ctx context.Context, st accountEmailLookup, p confirmationPolicy, logger *slog.Logger, r *http.Request, userID int) (needsForm bool, pending string) {
 	confirmed, err := st.GetUserEmail(ctx, userID)
 	if err != nil {
 		logger.Warn("dashboard: could not read the user's email; rendering without the email-form redirect",
@@ -910,7 +930,7 @@ func dashboardEmailGate(ctx context.Context, st accountEmailLookup, m confirmati
 			"user_id", userID, "error", err)
 		return false, ""
 	}
-	return emailGateRedirect(confirmed, pending, m, r, devMode), pending
+	return emailGateRedirect(confirmed, pending, p, r), pending
 }
 
 // accountEmailStore and confirmationMailer are the narrow surfaces
@@ -945,14 +965,14 @@ var (
 // Storing first left an email_pending behind on a refusal, and the
 // dashboard then told the user a link had been sent. For the same reason a
 // send that fails after storing clears that pending address again.
-func submitAccountEmail(ctx context.Context, st accountEmailStore, m confirmationMailer, logger *slog.Logger, r *http.Request, sess *Session, devMode bool) string {
+func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmationPolicy, logger *slog.Logger, r *http.Request, sess *Session) string {
 	email, err := mailer.ParseRecipient(r.FormValue("email"))
 	if err != nil {
 		logger.Info("account email rejected: not a deliverable address",
 			"user_id", sess.UserID, "error", truncateForLog([]byte(err.Error()), 200))
 		return "Please enter a valid email address."
 	}
-	base, err := confirmationBaseFor(m, r, devMode)
+	base, err := confirmationBaseFor(p, r)
 	if err != nil {
 		logger.Error("refusing an account email: "+err.Error(),
 			"user_id", sess.UserID, "host", truncateForLog([]byte(r.Host), 200))
@@ -967,7 +987,7 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, m confirmatio
 		logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
 		return "Could not generate confirmation. Try again."
 	}
-	if err := m.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token)); err != nil {
+	if err := p.mailer.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token)); err != nil {
 		if !mailer.IsSkip(err) { // a skip was already logged by the mailer
 			logger.Warn("failed to send confirmation email",
 				"user_id", sess.UserID, "email", email, "error", err)
@@ -1053,7 +1073,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
 	if r.Method == http.MethodPost {
-		if msg := submitAccountEmail(r.Context(), s.store, s.mailer, s.logger, r, sess, s.cfg.DevMode); msg != "" {
+		if msg := submitAccountEmail(r.Context(), s.store, s.confirmationPolicy(), s.logger, r, sess); msg != "" {
 			s.render(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   msg,

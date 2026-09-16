@@ -121,9 +121,11 @@ type WebConfig struct {
 	// BaseURL is the external URL for OAuth callbacks (e.g., "https://aveloxis.example.com").
 	BaseURL string `json:"base_url"`
 
-	// DevMode disables the Secure flag on cookies, allowing the web GUI to work
-	// over plain HTTP during local development. In production (the default),
-	// cookies are always marked Secure so browsers only send them over HTTPS.
+	// DevMode is for local development only. It disables the Secure flag on
+	// cookies, allowing the web GUI to work over plain HTTP, and lets a
+	// loopback request build an email confirmation link when mail.site_url
+	// is unset (v0.29.30). In production (the default), cookies are always
+	// marked Secure and confirmation links come only from mail.site_url.
 	// HttpOnly is always set regardless of this flag.
 	DevMode bool `json:"dev_mode"`
 

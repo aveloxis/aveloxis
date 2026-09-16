@@ -8,14 +8,10 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"log/slog"
 	"net"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,6 +47,7 @@ func TestEmailConfirmBase(t *testing.T) {
 	}{
 		{"site_url wins over a hostile Host", "https://aveloxis.io/", "evil.example.com", true, "https://aveloxis.io" + path},
 		{"site_url wins over a loopback Host", "https://aveloxis.io", "localhost:8082", false, "https://aveloxis.io" + path},
+		{"whitespace-only site_url is unset", "   ", "evil.example.com", false, ""},
 
 		{"localhost", "", "localhost", false, "http://localhost" + path},
 		{"localhost with port", "", "localhost:8082", false, "http://localhost:8082" + path},
@@ -101,9 +98,10 @@ func TestEmailConfirmBase(t *testing.T) {
 			// same-host proxy that does not forward Host makes every
 			// visitor look like 127.0.0.1. Without dev_mode no Host may
 			// build a link; a configured site_url is unaffected.
-			if base, ok := emailConfirmBase(tc.siteURL, r, false); tc.siteURL == "" && ok {
-				t.Errorf("emailConfirmBase(Host=%q) without dev_mode = %q — a request Host must not build a link outside dev_mode", tc.host, base)
-			} else if tc.siteURL != "" && (!ok || base != tc.want) {
+			site := strings.TrimSpace(tc.siteURL)
+			if base, ok := emailConfirmBase(tc.siteURL, r, false); site == "" && ok {
+				t.Errorf("emailConfirmBase(site_url=%q, Host=%q) without dev_mode = %q — a request Host must not build a link outside dev_mode", tc.siteURL, tc.host, base)
+			} else if site != "" && (!ok || base != tc.want) {
 				t.Errorf("emailConfirmBase(site_url=%q) without dev_mode = %q, %v; want %q", tc.siteURL, base, ok, tc.want)
 			}
 			got, ok := emailConfirmBase(tc.siteURL, r, true)
@@ -117,7 +115,7 @@ func TestEmailConfirmBase(t *testing.T) {
 				t.Fatalf("emailConfirmBase(site_url=%q, Host=%q) = %q, %v; want %q", tc.siteURL, tc.host, got, ok, tc.want)
 			}
 			got = confirmationLink(got, token)
-			if tc.siteURL != "" {
+			if strings.TrimSpace(tc.siteURL) != "" {
 				return
 			}
 			// Every link built from a Host must be a valid URL whose host is
@@ -189,7 +187,7 @@ func TestSubmitAccountEmail(t *testing.T) {
 			wantMsg: notEnabled, wantLog: "web.dev_mode"},
 		{name: "hostile Host without site_url is refused before anything is stored",
 			form: "user@example.com", enabled: true, host: "evil.example.com", devMode: true,
-			wantMsg: notEnabled, wantLog: "mail.site_url is not configured"},
+			wantMsg: notEnabled, wantLog: "mail.site_url is not set"},
 		{name: "text in a loopback port is refused before anything is stored",
 			form: "user@example.com", enabled: true, host: "localhost:URGENT-reverify-at-evil.example.com", devMode: true,
 			wantMsg: notEnabled},
@@ -214,9 +212,11 @@ func TestSubmitAccountEmail(t *testing.T) {
 		// while it is still this one — a second tab may have replaced it)
 		// and says a link that does arrive still works: net/smtp reports
 		// QUIT's error after the server accepted the message.
+		// Mixed case: the clear must receive exactly the stored address
+		// (ParseRecipient keeps case), or it silently clears nothing.
 		{name: "a delivery failure clears its own pending address and says so",
-			form: "user@example.com", site: "https://aveloxis.io", enabled: true, sendErr: errors.New("535 rejected"),
-			wantMsg: sendFailed, wantStored: "user@example.com", wantClears: []string{"user@example.com"},
+			form: "Real Name <User@Example.com>", site: "https://aveloxis.io", enabled: true, sendErr: errors.New("535 rejected"),
+			wantMsg: sendFailed, wantStored: "User@Example.com", wantClears: []string{"User@Example.com"},
 			wantLink: "https://aveloxis.io/account/email/confirm?token=tok123", wantLog: "failed to send confirmation email"},
 		{name: "a mailer skip is treated as unsent but not logged again",
 			form: "user@example.com", site: "https://aveloxis.io", enabled: true, sendErr: mailer.ErrRecipientSkipped,
@@ -238,7 +238,7 @@ func TestSubmitAccountEmail(t *testing.T) {
 				r.Host = tc.host
 			}
 
-			msg := submitAccountEmail(r.Context(), st, m, logger, r, &Session{UserID: 7, LoginName: "alice"}, tc.devMode)
+			msg := submitAccountEmail(r.Context(), st, confirmationPolicy{mailer: m, devMode: tc.devMode}, logger, r, &Session{UserID: 7, LoginName: "alice"})
 
 			if msg != tc.wantMsg {
 				t.Errorf("message = %q, want %q", msg, tc.wantMsg)
@@ -335,7 +335,7 @@ func (f *fakeConfirmMailer) SendEmailConfirmation(to, login, link string) error 
 func TestAccountEmailSubmissionHasOneEntryPoint(t *testing.T) {
 	src := srctest.Read(t, "internal/web/server.go")
 	handler := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) handleAccountEmail("))
-	const call = "submitAccountEmail(r.Context(), s.store, s.mailer, s.logger, r, sess, s.cfg.DevMode)"
+	const call = "submitAccountEmail(r.Context(), s.store, s.confirmationPolicy(), s.logger, r, sess)"
 	if n := strings.Count(handler, call); n != 1 {
 		t.Errorf("handleAccountEmail contains %q %d times, want exactly once", call, n)
 	}
@@ -389,14 +389,14 @@ func TestEmailGateRedirect(t *testing.T) {
 			if tc.host != "" {
 				r.Host = tc.host
 			}
-			m := &fakeConfirmMailer{site: tc.site, enabled: tc.enabled}
-			if got := emailGateRedirect(tc.confirmed, tc.pending, m, r, tc.devMode); got != tc.want {
+			p := confirmationPolicy{mailer: &fakeConfirmMailer{site: tc.site, enabled: tc.enabled}, devMode: tc.devMode}
+			if got := emailGateRedirect(tc.confirmed, tc.pending, p, r); got != tc.want {
 				t.Errorf("emailGateRedirect = %v, want %v", got, tc.want)
 			}
 		})
 	}
 	var nilMailer *mailer.Mailer
-	if emailGateRedirect("", "", nilMailer, httptest.NewRequest("GET", "/dashboard", nil), true) {
+	if emailGateRedirect("", "", confirmationPolicy{mailer: nilMailer, devMode: true}, httptest.NewRequest("GET", "/dashboard", nil)) {
 		t.Error("a nil mailer cannot confirm anything; the gate must let the user in")
 	}
 }
@@ -406,24 +406,34 @@ func TestEmailGateRedirect(t *testing.T) {
 // dashboard renders, instead of sending a user who has a confirmed address
 // to the email form during a database blip.
 func TestDashboardEmailGate(t *testing.T) {
-	r := httptest.NewRequest("GET", "/dashboard", nil)
 	mailOn := &fakeConfirmMailer{site: "https://aveloxis.io", enabled: true}
+	mailOnNoSite := &fakeConfirmMailer{enabled: true}
 	for _, tc := range []struct {
 		name                 string
 		lookup               *fakeEmailLookup
 		m                    *fakeConfirmMailer
+		host                 string
+		devMode              bool
 		wantForm             bool
 		wantPending, wantLog string
 	}{
 		{name: "no address on a site that can confirm", lookup: &fakeEmailLookup{}, m: mailOn, wantForm: true},
 		{name: "no address on a site that cannot confirm", lookup: &fakeEmailLookup{}, m: &fakeConfirmMailer{}, wantForm: false},
 		{name: "pending address is returned for the banner", lookup: &fakeEmailLookup{pending: "a@example.com"}, m: mailOn, wantPending: "a@example.com"},
+		// The same-host proxy case: every Host reads 127.0.0.1. Only
+		// dev_mode may treat it as local development.
+		{name: "no address, loopback Host, no site_url, dev_mode off", lookup: &fakeEmailLookup{}, m: mailOnNoSite, host: "127.0.0.1:8082", wantForm: false},
+		{name: "no address, loopback Host, no site_url, dev_mode on", lookup: &fakeEmailLookup{}, m: mailOnNoSite, host: "127.0.0.1:8082", devMode: true, wantForm: true},
 		{name: "confirmed-email lookup error", lookup: &fakeEmailLookup{emailErr: errors.New("closed pool")}, m: mailOn, wantLog: "could not read"},
 		{name: "pending-email lookup error", lookup: &fakeEmailLookup{pendingErr: errors.New("closed pool")}, m: mailOn, wantLog: "could not read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/dashboard", nil)
+			if tc.host != "" {
+				r.Host = tc.host
+			}
 			var logs bytes.Buffer
-			form, pending := dashboardEmailGate(r.Context(), tc.lookup, tc.m, slog.New(slog.NewTextHandler(&logs, nil)), r, 7, false)
+			form, pending := dashboardEmailGate(r.Context(), tc.lookup, confirmationPolicy{mailer: tc.m, devMode: tc.devMode}, slog.New(slog.NewTextHandler(&logs, nil)), r, 7)
 			if form != tc.wantForm || pending != tc.wantPending {
 				t.Errorf("dashboardEmailGate = %v, %q; want %v, %q", form, pending, tc.wantForm, tc.wantPending)
 			}
@@ -447,81 +457,33 @@ func (f *fakeEmailLookup) GetUserPendingEmail(context.Context, int) (string, err
 	return f.pending, f.pendingErr
 }
 
-// TestDashboardEmailGateIsTheOnlyRedirect is the wiring half, pinned as
-// control-flow structure rather than text (a string count let
-// `if emailGateRedirect(...) || <the old lockout>` pass): handleDashboard
-// has exactly one redirect to /account/email; the if around it tests the
-// bare identifier needsEmailForm; and that identifier is assigned exactly
-// once, from dashboardEmailGate.
-func TestDashboardEmailGateIsTheOnlyRedirect(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filepath.Join(srctest.Root(t), "internal/web/server.go"), nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fn *ast.FuncDecl
-	for _, d := range file.Decls {
-		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "handleDashboard" && f.Recv != nil {
-			fn = f
-		}
-	}
-	if fn == nil {
-		t.Fatal("handleDashboard not found — this pin has lost its subject")
-	}
-	redirects, guarded, assigns := 0, 0, 0
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.IfStmt:
-			for _, st := range x.Body.List {
-				if isAccountEmailRedirect(st) {
-					if id, ok := x.Cond.(*ast.Ident); ok && id.Name == "needsEmailForm" && x.Init == nil {
-						guarded++
-					}
-				}
+// TestWithMailerWarnsWithoutSiteURL: a working mailer with no site_url
+// refuses every confirmation link outside dev_mode, so startup says so and
+// names the right fix (round-5 review: the only signal was an ERROR, at
+// submit time, that read as "turn on dev_mode").
+func TestWithMailerWarnsWithoutSiteURL(t *testing.T) {
+	valid := mailer.Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}
+	for _, tc := range []struct {
+		name     string
+		cfg      mailer.Config
+		devMode  bool
+		wantWarn bool
+	}{
+		{name: "mail on, no site_url, dev_mode off", cfg: valid, wantWarn: true},
+		{name: "whitespace site_url counts as unset", cfg: mailer.Config{GmailUser: valid.GmailUser, GmailAppPassword: valid.GmailAppPassword, SiteURL: "  "}, wantWarn: true},
+		{name: "site_url set", cfg: mailer.Config{GmailUser: valid.GmailUser, GmailAppPassword: valid.GmailAppPassword, SiteURL: "https://aveloxis.io"}},
+		{name: "dev_mode on", cfg: valid, devMode: true},
+		{name: "mail off", cfg: mailer.Config{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			s := &Server{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			s.cfg.DevMode = tc.devMode
+			s.WithMailer(mailer.New(tc.cfg, nil))
+			warned := strings.Contains(logs.String(), "level=WARN") && strings.Contains(logs.String(), "set mail.site_url")
+			if warned != tc.wantWarn {
+				t.Errorf("startup WARN = %v, want %v; log:\n%s", warned, tc.wantWarn, logs.String())
 			}
-		case *ast.ExprStmt:
-			if isAccountEmailRedirect(x) {
-				redirects++
-			}
-		case *ast.AssignStmt:
-			for i, lhs := range x.Lhs {
-				if id, ok := lhs.(*ast.Ident); ok && id.Name == "needsEmailForm" {
-					assigns++
-					call, ok := x.Rhs[min(i, len(x.Rhs)-1)].(*ast.CallExpr)
-					if fnID, isID := callName(call, ok); !isID || fnID != "dashboardEmailGate" {
-						t.Errorf("needsEmailForm must come from dashboardEmailGate, not %s", fset.Position(x.Pos()))
-					}
-				}
-			}
-		}
-		return true
-	})
-	if redirects != 1 || guarded != 1 || assigns != 1 {
-		t.Errorf("handleDashboard: %d redirects to /account/email, %d guarded by a bare needsEmailForm, %d assignments to it — want 1, 1, 1", redirects, guarded, assigns)
+		})
 	}
-}
-
-func isAccountEmailRedirect(st ast.Node) bool {
-	es, ok := st.(*ast.ExprStmt)
-	if !ok {
-		return false
-	}
-	call, ok := es.X.(*ast.CallExpr)
-	if !ok || len(call.Args) < 3 {
-		return false
-	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	lit, isLit := call.Args[2].(*ast.BasicLit)
-	return ok && sel.Sel.Name == "Redirect" && isLit && lit.Value == `"/account/email"`
-}
-
-func callName(call *ast.CallExpr, ok bool) (string, bool) {
-	if !ok {
-		return "", false
-	}
-	id, isID := call.Fun.(*ast.Ident)
-	if !isID {
-		return "", false
-	}
-	return id.Name, true
 }

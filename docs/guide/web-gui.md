@@ -61,7 +61,7 @@ All web GUI settings live under the `web` key in `aveloxis.json`:
 | `web.addr` | Listen address for the web server | `":8082"` |
 | `web.base_url` | External URL used to construct OAuth callback URLs | `"http://localhost:8082"` |
 | `web.session_secret` | Secret key for signing session cookies. Use a long random string. | (required) |
-| `web.dev_mode` | Set `true` for local HTTP development. Disables the `Secure` flag on cookies so they work without HTTPS. **Do not enable in production.** `HttpOnly` is always set regardless. | `false` |
+| `web.dev_mode` | Set `true` for local HTTP development. Disables the `Secure` flag on cookies so they work without HTTPS, and lets a loopback request build email confirmation links when `mail.site_url` is unset. **Do not enable in production** — set `mail.site_url` instead. `HttpOnly` is always set regardless. | `false` |
 | `web.github_client_id` | Client ID from your GitHub OAuth app | `""` |
 | `web.github_client_secret` | Client secret from your GitHub OAuth app | `""` |
 | `web.gitlab_client_id` | Application ID from your GitLab OAuth app | `""` |
@@ -191,6 +191,6 @@ You can run them on different hosts as long as both can reach the database.
 - **OAuth tokens**: The access tokens obtained during login are used only to fetch the user's profile and are not stored persistently. They are held in the session for the duration of the login.
 - **Session cookies**: Signed with `web.session_secret`. Use a strong, random secret in production. If the secret is compromised, an attacker could forge session cookies. All cookies set `HttpOnly` to prevent JavaScript access. The `Secure` flag is set in production (default) but can be disabled for local HTTP development via `"dev_mode": true`.
 - **HTTPS**: In production, run `aveloxis web` behind a reverse proxy (nginx, Caddy, etc.) that terminates TLS. OAuth providers require HTTPS callback URLs for production apps (localhost is exempt during development). Leave `dev_mode` at its default (`false`) in production — this ensures cookies are only sent over HTTPS.
-- **Development mode**: For local development over plain HTTP, set `"dev_mode": true` in the `web` section of `aveloxis.json`. This disables the `Secure` cookie flag so session cookies work without HTTPS. `HttpOnly` remains enabled even in dev mode. Never deploy with `dev_mode` enabled.
+- **Development mode**: For local development over plain HTTP, set `"dev_mode": true` in the `web` section of `aveloxis.json`. This disables the `Secure` cookie flag so session cookies work without HTTPS, and lets a loopback request build email confirmation links when `mail.site_url` is unset. `HttpOnly` remains enabled even in dev mode. Never deploy with `dev_mode` enabled; production confirmation links need `mail.site_url`.
 - **Client secrets**: The `web.github_client_secret` and `web.gitlab_client_secret` values in `aveloxis.json` are sensitive. Protect the config file with appropriate file permissions (`chmod 600 aveloxis.json`).
 - **No role-based access control**: Currently all authenticated users have the same permissions. Any logged-in user can create groups and add repos. If you need to restrict access, control who can reach the web GUI at the network level.

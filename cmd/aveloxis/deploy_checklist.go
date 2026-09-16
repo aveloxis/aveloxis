@@ -241,6 +241,11 @@ var deployChecklists = map[string][]deployStep{
 	// and no longer read as "no address". OPERATORS: production needs
 	// mail.site_url for confirmation links. No schema change.
 	"0.29.30": v029DeployChecklist,
+	// v0.29.31: round 5. The account-email POST and the dashboard gate share
+	// one confirmation policy (mailer + dev_mode), tested through the real
+	// handler; the refusal ERROR and a new startup WARN say to set
+	// mail.site_url, not web.dev_mode. No schema change.
+	"0.29.31": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

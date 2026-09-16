@@ -4,17 +4,13 @@
 package mailer
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
 
-// A configured mailer would dial SMTP, so digest formatting is exercised
-// through an unconfigured one: zero items must send nothing at all, and
-// with items the formatting still runs before Send returns
-// ErrNotConfigured — a panic or bad format fails here.
+// Zero items must send nothing at all, even on a disabled mailer.
 func TestSendVulnerabilityDigestZeroItemsIsNoop(t *testing.T) {
 	m := New(Config{}, nil)
 	if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), nil); err != nil {
@@ -23,7 +19,9 @@ func TestSendVulnerabilityDigestZeroItemsIsNoop(t *testing.T) {
 }
 
 func TestSendVulnerabilityDigestFormatsAndCaps(t *testing.T) {
-	// 60 items exercises the 50-item body cap.
+	// 60 items exercises the 50-item body cap; 150-rune summaries the
+	// 100-rune summary cut. captureMailer records the composed message
+	// through the sendMail hook, so nothing dials SMTP.
 	items := make([]VulnDigestItem, 60)
 	for i := range items {
 		items[i] = VulnDigestItem{
@@ -32,12 +30,28 @@ func TestSendVulnerabilityDigestFormatsAndCaps(t *testing.T) {
 			PackagePurl: "pkg:pypi/x@1.0", Summary: strings.Repeat("s", 150),
 		}
 	}
-	// Unconfigured mailer: the formatting runs, then Send reports the
-	// disabled mailer — so this pins "formatting never panics" for the cap
-	// + truncation paths and that nothing but ErrNotConfigured comes back.
-	m := New(Config{}, nil)
-	if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), items); !errors.Is(err, ErrNotConfigured) {
-		t.Fatalf("digest over the cap on a disabled mailer = %v, want ErrNotConfigured", err)
+	m, sent, _ := captureMailer(t)
+	if err := m.SendVulnerabilityDigest("ops@example.com", time.Now(), items); err != nil {
+		t.Fatalf("SendVulnerabilityDigest = %v", err)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("delivered %d messages, want 1", len(*sent))
+	}
+	msg, body := readSent(t, (*sent)[0])
+	if got := msg.Header.Get("Subject"); !strings.Contains(got, "60 new vulnerability finding(s) (60 critical)") {
+		t.Errorf("Subject = %q, want the total and critical counts", got)
+	}
+	if n := strings.Count(body, "GHSA-"); n != digestBodyMaxItems {
+		t.Errorf("body lists %d findings, want exactly %d", n, digestBodyMaxItems)
+	}
+	if !strings.Contains(body, "GHSA-0049") || strings.Contains(body, "GHSA-0050") {
+		t.Error("the body must list the first 50 findings in order and no more")
+	}
+	if !strings.Contains(body, "…and 10 more finding(s) not itemized here.") {
+		t.Errorf("the body must state the findings it did not list:\n%s", body)
+	}
+	if !strings.Contains(body, strings.Repeat("s", 100)+"…") || strings.Contains(body, strings.Repeat("s", 101)) {
+		t.Error("summaries must be cut to 100 runes with an ellipsis")
 	}
 	if digestBodyMaxItems != 50 {
 		t.Errorf("digestBodyMaxItems changed (%d) — update configuration.md's documented cap", digestBodyMaxItems)

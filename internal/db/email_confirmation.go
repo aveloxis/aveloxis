@@ -119,9 +119,12 @@ func (s *PostgresStore) SetUserPendingEmail(ctx context.Context, userID int, ema
 }
 
 // ClearUserPendingEmailIf clears email_pending only while it still holds
-// email, so a failed confirmation send clears its own submission and never
-// a newer one made from another tab (v0.29.30). Matching nothing — the
-// address already changed, or the user is gone — is not an error.
+// exactly email (case-sensitive: callers pass the same parsed address they
+// stored), so a failed confirmation send never clears a newer submission of
+// a DIFFERENT address from another tab (v0.29.30). A second tab that
+// submitted the same address is cleared too, which is harmless: its link
+// still confirms. Matching nothing — the address already changed, or the
+// user is gone — is not an error.
 func (s *PostgresStore) ClearUserPendingEmailIf(ctx context.Context, userID int, email string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE aveloxis_ops.users SET email_pending = NULL WHERE user_id = $1 AND email_pending = $2`, userID, email)

@@ -50,7 +50,18 @@ func TestClearUserPendingEmailIfEndToEnd(t *testing.T) {
 	if got, _ := store.GetUserPendingEmail(ctx, uid); got != "b@example.com" {
 		t.Errorf("another submission's pending address was cleared: got %q", got)
 	}
+	// Exact match: a case variant of the stored address is a different
+	// string to this clear (callers pass the same parsed value they stored).
+	if err := store.SetUserPendingEmail(ctx, uid, "B@Example.com"); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.ClearUserPendingEmailIf(ctx, uid, "b@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.GetUserPendingEmail(ctx, uid); got != "B@Example.com" {
+		t.Errorf("a case-variant clear must not match: got %q", got)
+	}
+	if err := store.ClearUserPendingEmailIf(ctx, uid, "B@Example.com"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := store.GetUserPendingEmail(ctx, uid); got != "" {

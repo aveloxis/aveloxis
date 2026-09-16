@@ -807,54 +807,110 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isLoopbackHost reports whether an HTTP Host header names the loopback
-// interface. Used to decide whether a request's Host may be trusted to
-// build an emailed link: it may not, in general — the client sets it — but
-// a loopback Host cannot reach anyone else's machine, which is exactly the
-// local-dev case. The port is optional and ignored; a bare IPv6 form
-// ("[::1]:8082" or "::1") is accepted.
-func isLoopbackHost(host string) bool {
-	if host == "" {
-		return false
+// emailConfirmURL builds the click-to-confirm link handleAccountEmail mails,
+// from the operator-configured site URL. The request Host header is
+// attacker-controlled — a proxy that forwards Host (the usual nginx
+// `proxy_set_header Host $host`) passes whatever the client sent — so
+// deriving the link from it let an authenticated attacker submit a VICTIM's
+// address with a crafted Host, have the victim receive a link to the
+// attacker's server carrying the confirmation token, and replay that token
+// to bind the victim's email to their own account (Copilot review on PR
+// #207; CodeQL go/email-injection alert 197 traces the same request data
+// into the message).
+//
+// So without a site URL the Host is used ONLY when loopbackAuthority accepts
+// it — the local-dev case that fallback existed for. Anywhere else this
+// returns false and no link is mailed: refusing beats mailing an attacker's
+// URL.
+func emailConfirmURL(siteURL string, r *http.Request, token string) (string, bool) {
+	base := strings.TrimRight(siteURL, "/")
+	if base == "" {
+		authority, ok := loopbackAuthority(r.Host)
+		if !ok {
+			return "", false
+		}
+		scheme := "https"
+		if r.TLS == nil {
+			scheme = "http"
+		}
+		base = scheme + "://" + authority
 	}
-	h := host
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		h = parsed
-	}
-	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
-	if strings.EqualFold(h, "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(h); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
+	return base + "/account/email/confirm?token=" + token, true
 }
 
-// bracketBareIPv6 wraps an unbracketed IPv6 Host header in square brackets
-// so it can form a valid URL authority. isLoopbackHost accepts the bare
-// "::1" form, but concatenating it into a URL yields the invalid
-// "http://::1/..." — IPv6 literals in authorities must be bracketed
-// (RFC 3986 §3.2.2; Copilot review on PR #207). Already-bracketed hosts,
-// hostnames and IPv4 literals pass through unchanged.
-func bracketBareIPv6(host string) string {
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		return "[" + host + "]"
+// loopbackAuthority parses an HTTP Host header ONCE and, when it names the
+// loopback interface, returns it as a URL authority for an emailed link. A
+// client-set Host may be trusted for that only when it is loopback: a
+// loopback Host cannot reach anyone else's machine.
+//
+// The same parse feeds the decision and the link, and it is strict because
+// its output is mailed:
+//   - a port, when present, must be a canonical decimal in 1-65535 — an
+//     earlier check ignored the port, so `localhost:<any text>` passed and
+//     the text rode into the link;
+//   - brackets must be balanced and may hold only an IPv6 literal;
+//   - every IPv6 literal, IPv4-mapped included, comes back bracketed, as a
+//     URL authority requires (RFC 3986 section 3.2.2). A bare "::1" is not
+//     something a browser sends, but net/http accepts it.
+func loopbackAuthority(hostHeader string) (string, bool) {
+	host, port := hostHeader, ""
+	bracketed := strings.HasPrefix(hostHeader, "[")
+	if h, p, err := net.SplitHostPort(hostHeader); err == nil {
+		if !isCanonicalPort(p) {
+			return "", false
+		}
+		host, port = h, p
+	} else if bracketed {
+		// "[::1]" — SplitHostPort wants a port, so strip the brackets here.
+		if !strings.HasSuffix(hostHeader, "]") {
+			return "", false
+		}
+		host = hostHeader[1 : len(hostHeader)-1]
 	}
-	return host
+	ip := net.ParseIP(host)
+	ipv6Literal := ip != nil && strings.Contains(host, ":")
+	switch {
+	case bracketed && !ipv6Literal:
+		return "", false
+	case ip != nil && !ip.IsLoopback():
+		return "", false
+	case ip == nil && !strings.EqualFold(host, "localhost"):
+		return "", false
+	}
+	if port != "" {
+		return net.JoinHostPort(host, port), true
+	}
+	if ipv6Literal {
+		return "[" + host + "]", true
+	}
+	return host, true
+}
+
+// isCanonicalPort reports whether p is a port in 1-65535 written as a
+// canonical decimal: digits only, no sign, no leading zero.
+func isCanonicalPort(p string) bool {
+	n, err := strconv.ParseUint(p, 10, 16)
+	return err == nil && n > 0 && strconv.FormatUint(n, 10) == p
 }
 
 // handleAccountEmail renders (GET) and processes (POST) the
 // email-collection form. This is the v0.19.10 fallback when both /user
-// and /user/emails came back empty during OAuth callback. After the
-// form is submitted, users.email is set and the user redirects to
-// /dashboard.
+// and /user/emails came back empty during OAuth callback. A submitted
+// address is stored as email_pending, a click-to-confirm link is mailed
+// (v0.20.4), and the user redirects to /dashboard; users.email changes
+// only when the link is followed.
 func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
 	if r.Method == http.MethodPost {
-		email := strings.TrimSpace(r.FormValue("email"))
-		if email == "" || !strings.Contains(email, "@") {
+		// The address goes through the mailer's own recipient rule — the
+		// one Send enforces — so an address Send would skip is refused
+		// here, before the user is told to check an inbox that will
+		// receive nothing, and what is stored is the bare addr-spec.
+		email, err := mailer.ParseRecipient(r.FormValue("email"))
+		if err != nil {
+			s.logger.Info("account email rejected: not a deliverable address",
+				"user_id", sess.UserID, "error", truncateForLog([]byte(err.Error()), 200))
 			s.render(w, "account_email", map[string]any{
 				"Session": sess,
 				"Error":   "Please enter a valid email address.",
@@ -881,39 +937,20 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// Build the confirmation URL from the operator-configured site
-		// URL. The request Host header is attacker-controlled — a proxy
-		// that forwards Host (the usual nginx `proxy_set_header Host
-		// $host`) passes whatever the client sent — so deriving the link
-		// from it let an authenticated attacker submit a VICTIM's address
-		// with a crafted Host, have the victim receive a link to the
-		// attacker's server carrying the confirmation token, and replay
-		// that token to bind the victim's email to their own account
-		// (Copilot review on PR #207; CodeQL go/email-injection alert 197
-		// traces the same request data into the message).
-		//
-		// So the Host is trusted ONLY for loopback, which is the local-dev
-		// case that fallback existed for. Anywhere else an unconfigured
-		// site URL means no link is sent at all: the token is already in
-		// the database, and refusing beats mailing an attacker's URL.
-		base := strings.TrimRight(s.mailer.SiteURL(), "/")
-		if base == "" {
-			if !isLoopbackHost(r.Host) {
-				s.logger.Error("refusing to send an email confirmation link: mail.site_url is not configured and the request Host is not loopback, so a link built from it could point anywhere",
-					"user_id", sess.UserID, "host", r.Host)
-				s.render(w, "account_email", map[string]any{
-					"Session": sess,
-					"Error":   "Email confirmation is not configured on this site. Contact the operator.",
-				})
-				return
-			}
-			scheme := "https"
-			if r.TLS == nil {
-				scheme = "http"
-			}
-			base = scheme + "://" + bracketBareIPv6(r.Host)
+		// Only mail.site_url or a loopback Host may shape the link (see
+		// emailConfirmURL). When neither applies no link is mailed: the
+		// token is already in the database, and refusing beats mailing an
+		// attacker's URL.
+		confirmURL, ok := emailConfirmURL(s.mailer.SiteURL(), r, token)
+		if !ok {
+			s.logger.Error("refusing to send an email confirmation link: mail.site_url is not configured and the request Host is not a loopback host with a valid port, so a link built from it could point anywhere",
+				"user_id", sess.UserID, "host", truncateForLog([]byte(r.Host), 200))
+			s.render(w, "account_email", map[string]any{
+				"Session": sess,
+				"Error":   "Email confirmation is not configured on this site. Contact the operator.",
+			})
+			return
 		}
-		confirmURL := base + "/account/email/confirm?token=" + token
 		if s.mailer != nil {
 			if err := s.mailer.SendEmailConfirmation(email, sess.LoginName, confirmURL); err != nil {
 				s.logger.Warn("failed to send confirmation email",

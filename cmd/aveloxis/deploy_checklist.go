@@ -206,6 +206,13 @@ var deployChecklists = map[string][]deployStep{
 	// with a WARN, matching the empty-recipient contract. Addresses CodeQL
 	// alert 197's sink. No schema change, no operator heal.
 	"0.29.26": v029DeployChecklist,
+	// v0.29.27: review of Copilot's PR #207 fixes. The loopback Host
+	// fallback for confirmation links now requires a numeric port and
+	// balanced IPv6 brackets (text after "localhost:" rode into the mailed
+	// link); recipients whose local part needs quoting are refused, because
+	// the SMTP envelope cannot carry them; the account-email form uses the
+	// mailer's recipient parser. No schema change, no operator heal.
+	"0.29.27": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

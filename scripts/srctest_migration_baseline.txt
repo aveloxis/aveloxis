@@ -59,7 +59,6 @@ internal/db/vuln_lifecycle_test.go mustReadFileStr
 internal/db/web_store_oauth_test.go extractFunc
 internal/db/web_store_oauth_test.go mustReadSource
 internal/importers/numfocus/crawler_test.go readFixture
-internal/mailer/header_injection_test.go mustRead
 internal/mailer/helpers_test.go readSrc
 internal/mailer/mailer_test.go extractMailerFunc
 internal/monitor/dashboard_freshness_test.go extractMonitorFn

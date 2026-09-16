@@ -398,7 +398,7 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 | `mail.vuln_digest_include_dev` | bool | `false` | v0.27.46 (summary/19 P3): include findings on non-runtime-scope dependencies (dev/test/build/optional/peer) in the operator digest. Default off so the `dev_build_deps` Python expansion never floods the email; runtime-scope findings always digest. |
 | `mail.gmail_app_password` | string | The 16-character App Password (spaces allowed). Not the account's regular password. |
 | `mail.from_name` | string | Display name shown in recipients' inboxes. |
-| `mail.site_url` | string | Public-facing URL used in email body links. |
+| `mail.site_url` | string | Public-facing URL used in email body links. Set it in production: without it, email confirmation links are sent only when the request Host is loopback (`localhost`, `127.0.0.1`, `[::1]`, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. |
 
 ### Logging
 
@@ -576,7 +576,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 | `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer (silent no-op). |
 | `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
 | `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
-| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. |
+| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links on any non-loopback host: the request `Host` header is client-controlled, so it is never used to build a link a victim could receive. |
 
 ### Validation at startup
 

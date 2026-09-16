@@ -7,8 +7,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"net/mail"
-	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -138,47 +136,6 @@ func TestSanitizeSampleKeepsListStructure(t *testing.T) {
 	}
 	if strings.Count(got, "\n") != 2 {
 		t.Errorf("got %d line breaks, want 2 — one per surviving entry", strings.Count(got, "\n"))
-	}
-}
-
-// TestSendRejectsUnparseableRecipients: `to` arrives straight from a web
-// form, where the only check is a stray "@". Parsing is what makes the
-// header and envelope an addr-spec by construction. A bad address must be
-// SKIPPED with a WARN, not error — it must not break account creation or
-// group approval, which is the same contract the empty-recipient case has.
-func TestSendRejectsUnparseableRecipients(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		to   string
-		send bool
-	}{
-		{"plain address", "user@example.com", true},
-		{"display name form", "Real Name <user@example.com>", true},
-		{"header injection attempt", "user@example.com\r\nBcc: victim@example.com", false},
-		// A TRAILING newline is stripped by TrimSpace before parsing, so
-		// this is a valid address — the dangerous shape is an INNER CR/LF,
-		// covered above, which ParseAddress rejects.
-		{"trailing newline is trimmed", "user@example.com\n", true},
-		{"no at sign", "not-an-address", false},
-		{"two addresses", "a@example.com, b@example.com", false},
-		{"empty", "", false},
-		{"spaces", "   ", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			addr, err := mail.ParseAddress(strings.TrimSpace(tc.to))
-			if tc.send {
-				if err != nil {
-					t.Fatalf("ParseAddress(%q) = %v, want it accepted", tc.to, err)
-				}
-				if strings.ContainsAny(addr.Address, "\r\n ") {
-					t.Errorf("parsed address %q still contains CR/LF or a space", addr.Address)
-				}
-				return
-			}
-			if err == nil && strings.TrimSpace(tc.to) != "" {
-				t.Errorf("ParseAddress(%q) = %q with no error — an unparseable recipient must not reach the header or envelope", tc.to, addr.Address)
-			}
-		})
 	}
 }
 
@@ -346,21 +303,5 @@ func TestEveryUntrustedBodyInterpolationIsSanitized(t *testing.T) {
 	// having quietly stopped finding any.
 	if builders < 5 {
 		t.Fatalf("examined only %d Send* builders — the scan is not reaching them", builders)
-	}
-}
-
-// TestSendUsesTheParsedRecipientForTheEnvelope: the envelope address and
-// the To: header must carry the SAME parsed address, not one of each and
-// not the raw form value.
-func TestSendUsesTheParsedRecipientForTheEnvelope(t *testing.T) {
-	src, err := os.ReadFile("mailer.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "[]string{recipient}") {
-		t.Error("smtp.SendMail must receive the parsed recipient, the same value the To: header carries")
-	}
-	if !strings.Contains(string(src), "mail.ParseAddress(") {
-		t.Error("the recipient must be parsed into an addr-spec, not merely scrubbed — it arrives straight from a web form (CodeQL alert 197)")
 	}
 }

@@ -20,6 +20,7 @@
 package mailer
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -60,6 +61,11 @@ func (m *Mailer) OperatorEmail() string {
 type Mailer struct {
 	cfg    Config
 	logger *slog.Logger
+
+	// sendMail delivers the message Send composed. nil — what New leaves —
+	// means smtp.SendMail. Tests set it to capture the envelope and the
+	// composed message, which nothing else can observe.
+	sendMail func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
 
 // New returns a Mailer. Safe to call with a zero Config — Send will
@@ -85,12 +91,49 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 	return &Mailer{cfg: cfg, logger: logger}
 }
 
-// sanitizeHeader strips CR/LF (and other ASCII control characters)
-// from a value destined for an SMTP header line. Header values built
-// with untrusted input (recipient addresses from the account-email
-// form, group names in approval subjects) could otherwise inject
-// arbitrary headers — CWE-93 / CodeQL go/email-injection.
+// sanitizeHeader strips CR/LF (and other control and format runes) from a
+// value destined for an SMTP header line. Header values built with
+// untrusted input (the From display name, group names in approval
+// subjects) could otherwise inject arbitrary headers — CWE-93 / CodeQL
+// go/email-injection. The To: address does not pass through it:
+// ParseRecipient validates the address instead, and Send explains why.
 func sanitizeHeader(s string) string { return scrubUntrusted(s) }
+
+// ErrRecipientNeedsQuoting reports an address whose local part is only
+// valid in quoted form. See ParseRecipient.
+var ErrRecipientNeedsQuoting = errors.New("mail: the address needs a quoted local part, which the SMTP envelope cannot carry")
+
+// ParseRecipient turns one caller-supplied address into the addr-spec that
+// Send puts in BOTH the To: header and the SMTP envelope, or says why it
+// cannot be sent. It is the one recipient rule: Send enforces it on every
+// message, and the account-email form runs it so an address Send would
+// skip is refused before the user is told to check their inbox.
+//
+// Parsing, not character scrubbing: mail.ParseAddress yields a structured
+// address, so what reaches the message is an addr-spec by construction (a
+// validation barrier, not a denylist; CodeQL go/email-injection alert 197
+// is about request data reaching the message). A display name or comment
+// is dropped; the addr-spec is what is returned.
+//
+// An addr-spec whose local part needs QUOTING is refused. net/smtp writes
+// the envelope as `RCPT TO:<%s>` with no quoting and only a CR/LF check, so
+// `"john  smith"@example.com` goes on the wire as the invalid path
+// `<john  smith@example.com>`, and a quoted `>` closes the path early and
+// appends SMTP parameters of the sender's choosing. Checking the local part
+// is sufficient: ParseAddress admits only a dot-atom domain or an IP domain
+// literal, neither of which can hold `>` or whitespace. Such addresses are
+// vanishingly rare in real mailboxes.
+func ParseRecipient(s string) (string, error) {
+	parsed, err := mail.ParseAddress(strings.TrimSpace(s))
+	if err != nil {
+		return "", err
+	}
+	addr := parsed.Address
+	if (&mail.Address{Address: addr}).String() != "<"+addr+">" {
+		return "", ErrRecipientNeedsQuoting
+	}
+	return addr, nil
+}
 
 // sanitizeSample scrubs each entry of a user-submitted URL list and joins
 // them one per line. The list itself is structure the template intends; the
@@ -139,13 +182,32 @@ func sanitizeBodyValue(s string) string { return scrubUntrusted(s) }
 // bodyValueMax cap. URLs are not label-sized values: a configured site_url
 // plus the confirmation path and a 64-character token can legitimately
 // exceed the cap, and truncation would silently mail a broken link ending
-// in an ellipsis (Copilot review on PR #207).
+// in an ellipsis (Copilot review on PR #207). Its one caller's link is
+// built from mail.site_url or, in local development, from a Host that
+// internal/web's emailConfirmURL has parsed down to a loopback host and a
+// numeric port — so no free text reaches this uncapped.
 func sanitizeBodyURL(s string) string { return scrubRunes(s) }
 
-// scrubUntrusted is the ONE normalizer for untrusted text in this package,
-// used for header values and body values alike. Subjects need it as much as
-// bodies: SendGroupApproved puts the same group name in both, and the
-// subject is the first thing the admin reads.
+// scrubUntrusted is the normalizer for untrusted LABEL text in this
+// package, used for header values and body values alike: scrubRunes'
+// filter, then the bodyValueMax cap. Subjects need it as much as bodies:
+// SendGroupApproved puts the same group name in both, and the subject is
+// the first thing the admin reads. A link skips only the cap
+// (sanitizeBodyURL); the To: address skips both, because ParseRecipient
+// validates it instead.
+func scrubUntrusted(s string) string {
+	s = scrubRunes(s)
+	// Truncate on RUNES: len() is bytes, and slicing mid-rune emitted
+	// invalid UTF-8 into a body declared charset=UTF-8 (a 300-byte cut
+	// through "项目" left an orphaned 0xe9 lead byte).
+	if r := []rune(s); len(r) > bodyValueMax {
+		s = string(r[:bodyValueMax]) + "…"
+	}
+	return s
+}
+
+// scrubRunes is the filter every scrubbed value in this package passes
+// through, capped (scrubUntrusted) or not (sanitizeBodyURL).
 //
 // Rune classes, chosen by CATEGORY rather than an enumerated list — an
 // earlier version listed specific bidi and zero-width runes and missed nine
@@ -161,22 +223,7 @@ func sanitizeBodyURL(s string) string { return scrubRunes(s) }
 //     tag block all live here.
 //   - C0, DEL and C1 controls are dropped (terminal escapes).
 //
-// Then whitespace runs collapse and the value is capped.
-func scrubUntrusted(s string) string {
-	s = scrubRunes(s)
-	// Truncate on RUNES: len() is bytes, and slicing mid-rune emitted
-	// invalid UTF-8 into a body declared charset=UTF-8 (a 300-byte cut
-	// through "项目" left an orphaned 0xe9 lead byte).
-	if r := []rune(s); len(r) > bodyValueMax {
-		s = string(r[:bodyValueMax]) + "…"
-	}
-	return s
-}
-
-// scrubRunes is scrubUntrusted's filtering pass without the length cap:
-// line breaks become spaces, controls and format runes are dropped, and
-// whitespace runs collapse. Shared by the capped label normalizer and the
-// uncapped URL sanitizer.
+// Then whitespace runs collapse.
 func scrubRunes(s string) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
@@ -197,11 +244,10 @@ func scrubRunes(s string) string {
 }
 
 // Send dispatches a single email. Subject and body are plain text.
-// to should be a single RFC-5322 address; the bare local-part forms
-// like "alice" without an "@" will be rejected by Gmail's submission
-// host.
+// to must be a single address ParseRecipient accepts; anything else is
+// skipped with a WARN.
 //
-// Returns nil and logs at INFO level when the mailer is unconfigured
+// Returns nil and logs at DEBUG level when the mailer is unconfigured
 // (GmailUser == ""). This keeps the rest of the application code
 // simple — callers don't need to special-case "is mail configured?"
 // in their flow.
@@ -227,26 +273,22 @@ func (m *Mailer) Send(to, subject, body string) error {
 		}
 		return nil
 	}
-	// PARSE the recipient rather than only scrubbing characters out of it.
-	// `to` reaches here straight from a web form (r.FormValue("email") in
-	// handleAccountEmail), and the callers only check for a stray "@".
-	// mail.ParseAddress yields a structured address, so what goes into the
-	// header and the envelope is an addr-spec by construction, not a string
-	// that merely survived a filter — a validation barrier rather than a
-	// denylist. CodeQL's go/email-injection (alert 197) flags this sink for
-	// exactly that reason: request data reaching the message.
+	// PARSE the recipient rather than only scrubbing characters out of it
+	// (ParseRecipient says why). Send enforces the rule itself instead of
+	// trusting callers: every recipient passes through here — OAuth-provided
+	// and confirmed stored emails, operator config, and the account-email
+	// form, which runs the same parser first.
 	//
 	// Skip-with-a-WARN, matching the empty-recipient case above: a bad
 	// address must not break account creation or group approval.
-	parsed, parseErr := mail.ParseAddress(strings.TrimSpace(to))
+	recipient, parseErr := ParseRecipient(to)
 	if parseErr != nil {
 		if m.logger != nil {
-			m.logger.Warn("mailer.Send skipped — unparseable recipient address",
+			m.logger.Warn("mailer.Send skipped — recipient is not a deliverable address",
 				"subject", subject, "error", parseErr)
 		}
 		return nil
 	}
-	recipient := parsed.Address
 
 	// v0.20.14: strip display-format spaces from the App Password
 	// (`abcd efgh ijkl mnop` → `abcdefghijklmnop`) so the value
@@ -261,16 +303,16 @@ func (m *Mailer) Send(to, subject, body string) error {
 	// Header values are interpolated into the RFC 5322 header block, so
 	// a CR/LF inside one would inject arbitrary headers (CWE-93 — e.g.
 	// a group named "x\r\nBcc: ..." reaching the Subject line via the
-	// approval email). Strip line breaks from every header value; the
-	// body sits after the blank line and needs no such treatment.
+	// approval email). The From display name and the Subject go through
+	// sanitizeHeader; the body sits after the blank line and needs no such
+	// treatment.
 	//
-	// The To: header is SERIALIZED with net/mail rather than passed
-	// through scrubUntrusted: the normalizer collapses whitespace and
-	// truncates, which can mutate a valid parsed mailbox (spaces inside a
-	// quoted local part are significant) while the envelope still carries
-	// the unmodified `recipient` — breaking the same-address invariant
-	// below. mail.Address.String() re-quotes the addr-spec correctly and
-	// cannot emit CR/LF for an address ParseAddress accepted.
+	// The To: address is NOT scrubbed: ParseRecipient has already refused
+	// anything with a CR, LF, whitespace or quoting, and a scrub that
+	// changed the header but not the envelope (dropping a format rune the
+	// envelope keeps, say) would make the two name different mailboxes.
+	// "<" + recipient + ">" is byte-identical to the envelope path net/smtp
+	// writes below.
 	msg := []byte(fmt.Sprintf(
 		"From: %s\r\n"+
 			"To: %s\r\n"+
@@ -280,13 +322,16 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, (&mail.Address{Address: recipient}).String(), sanitizeHeader(subject),
+		from, "<"+recipient+">", sanitizeHeader(subject),
 		time.Now().Format(time.RFC1123Z), body))
 
-	// Envelope and To: header carry the SAME parsed address. net/smtp
-	// rejects CR/LF in an address anyway, but passing a different value to
-	// each would let the two disagree.
-	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{recipient}, msg); err != nil {
+	// The envelope carries the same addr-spec: net/smtp writes it as
+	// `RCPT TO:<recipient>`, exactly the To: header value above.
+	send := smtp.SendMail
+	if m.sendMail != nil {
+		send = m.sendMail
+	}
+	if err := send(gmailSMTPHost, auth, m.cfg.GmailUser, []string{recipient}, msg); err != nil {
 		if m.logger != nil {
 			m.logger.Warn("mailer.Send failed",
 				"to", to, "subject", subject, "error", err)
@@ -343,10 +388,12 @@ Sign in: %s
 // as package-built: it USED to be assembled from the request Host header
 // when mail.site_url was unset, which let an authenticated attacker mail a
 // victim a link to the attacker's server carrying the victim's token
-// (Copilot review on PR #207; CodeQL alert 197). internal/web now refuses a
-// non-loopback Host, and this is the second layer. Scrubbed with the
-// UNCAPPED sanitizer: a legitimate site_url plus path and token can exceed
-// bodyValueMax, and truncating would silently mail a broken link.
+// (Copilot review on PR #207; CodeQL alert 197). internal/web's
+// emailConfirmURL now builds it from mail.site_url, or from a Host parsed
+// down to a loopback host and a numeric port, and this scrub is the second
+// layer. Scrubbed with the UNCAPPED sanitizer: a legitimate site_url plus
+// path and token can exceed bodyValueMax, and truncating would silently
+// mail a broken link.
 func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string) error {
 	subject := "Confirm your Aveloxis email address"
 	body := fmt.Sprintf(`Hello %s,

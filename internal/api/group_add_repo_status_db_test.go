@@ -118,6 +118,10 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 		{"NUL in a URL", store, gid, `{"urls":["` + urlPrefix + `nul\u0000x"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
 		{"NUL in an org URL", store, gid, `{"url":"https://github.com/_avapi-add-status-nul\u0000x","kind":"org"}`, http.StatusBadRequest, "invalid or too long", false},
 		{"URL too long", store, gid, `{"urls":["` + urlPrefix + incompressible(6000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
+		// Round 27: past 8191 bytes Postgres's index-size error named no index
+		// and was answered 500.
+		{"URL far too long", store, gid, `{"urls":["` + urlPrefix + incompressible(9000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
+		{"org URL too long", store, gid, `{"url":"https://github.com/` + incompressible(9000) + `","kind":"org"}`, http.StatusBadRequest, "invalid or too long", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}

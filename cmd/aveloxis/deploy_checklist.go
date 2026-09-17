@@ -359,6 +359,10 @@ var deployChecklists = map[string][]deployStep{
 	// transaction-ID wraparound stop (SQLSTATE 54000 with no index) as a
 	// logged 500, not a 400 "invalid URL". No schema change.
 	"0.29.53": v029DeployChecklist,
+	// v0.29.54: round 27 on v0.29.53. Repo and org adds refuse a URL longer
+	// than db.MaxAddURLBytes before anything is written (the API answers
+	// 400); every SQLSTATE 54000 is now a server-side 500. No schema change.
+	"0.29.54": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

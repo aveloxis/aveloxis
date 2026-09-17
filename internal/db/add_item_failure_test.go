@@ -54,11 +54,12 @@ func TestAddItemFailurePermanent(t *testing.T) {
 }
 
 // TestIsRejectedValue: the errors that mean the database refused a value the
-// caller sent — a data exception (class 22) or an index row too large (54000
-// naming the index) — and nothing else (round-25 review: the API answered a URL
-// with a NUL byte, or one too long to index, with a 500 saying "try again").
-// 54000 without a constraint is a server-wide stop such as transaction ID
-// wraparound protection (round-26 review: it was answered 400 "invalid URL").
+// caller sent — a data exception (class 22) — and nothing else (round-25
+// review: the API answered a URL with a NUL byte with a 500 saying "try
+// again"). No 54000 counts: it is also a server-wide stop such as transaction
+// ID wraparound protection (round 26), and over-long URLs are refused before
+// the database (round 27). Errors naming a constraint do not count either
+// (round 27: dropping the code check passed).
 func TestIsRejectedValue(t *testing.T) {
 	pg := func(code string) error { return &pgconn.PgError{Code: code} }
 	cases := []struct {
@@ -68,8 +69,12 @@ func TestIsRejectedValue(t *testing.T) {
 	}{
 		{"invalid byte sequence (22021)", pg("22021"), true},
 		{"string data right truncation (22001)", pg("22001"), true},
-		{"wrapped index row too large (54000)", fmt.Errorf("create add request item: %w", &pgconn.PgError{Code: "54000", ConstraintName: "collection_add_request_items_request_id_repo_url_key"}), true},
-		{"transaction ID wraparound stop (54000, no constraint)", pg("54000"), false},
+		{"invalid text representation (22P02)", pg("22P02"), true},
+		{"wrapped NUL byte (22021)", fmt.Errorf("resolve repo URL: %w", pg("22021")), true},
+		{"btree index row too large (54000, names the index)", &pgconn.PgError{Code: "54000", ConstraintName: "collection_add_request_items_request_id_repo_url_key"}, false},
+		{"index row too large (54000, names nothing)", pg("54000"), false},
+		{"foreign key violation (23503, names the constraint)", &pgconn.PgError{Code: "23503", ConstraintName: "user_repos_group_id_fkey"}, false},
+		{"unique violation (23505, names the index)", &pgconn.PgError{Code: "23505", ConstraintName: "uq_repos_repo_git_ci"}, false},
 		{"statement too complex (54001)", pg("54001"), false},
 		{"not-null violation (23502)", pg("23502"), false},
 		{"serialization failure (40001)", pg("40001"), false},

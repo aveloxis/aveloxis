@@ -140,6 +140,12 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 	if status == "rejected" {
 		return out, ErrGroupRejected
 	}
+	// Checked before anything is written, so a refused add changes nothing.
+	for _, raw := range repoURLs {
+		if len(strings.TrimSpace(raw)) > MaxAddURLBytes {
+			return out, ErrURLTooLong
+		}
+	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 
 	var unknown []string
@@ -422,6 +428,20 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, 
 	return tag.RowsAffected() == 1, nil
 }
 
+// MaxAddURLBytes is the longest URL, in bytes, an add accepts. Every index an
+// add writes a URL into is a btree, whose rows hold at most 2704 bytes on 8 KB
+// pages; a row carries up to 20 bytes before the URL (the tuple header, a
+// bigint key, the text length), and the rest is halved because
+// lower(repo_git) lengthens some characters: U+023A by half in en_US.UTF-8,
+// and ASCII 'I' to the 2-byte dotless i under an ICU Turkish collation. Longer
+// URLs reached the database, which refused them with SQLSTATE 54000 — also the
+// code for a server-wide stop, so the API could not tell the caller's mistake
+// from an outage (round-27 review).
+const MaxAddURLBytes = (2704 - 20) / 2
+
+// ErrURLTooLong means a URL in an add is longer than MaxAddURLBytes.
+var ErrURLTooLong = fmt.Errorf("a URL is longer than %d bytes", MaxAddURLBytes)
+
 // ErrAddItemsFailed means some repositories of an auto-approved add could not
 // be added; the rest were.
 var ErrAddItemsFailed = errors.New("repositories could not be added")
@@ -545,18 +565,18 @@ func addItemFailurePermanent(err error) bool {
 }
 
 // IsRejectedValue reports whether the database refused a value it was given
-// rather than failing: a data exception (SQLSTATE class 22, such as a NUL byte)
-// or an index row too large (54000 naming the index). An add's only values are
-// the caller's URLs, so the API answers these with a 400 (round-25 review).
-// 54000 without a constraint name is not about a value: Postgres also raises it
-// when it stops assigning transaction IDs to avoid wraparound (round-26
-// review).
+// rather than failing: a data exception (SQLSTATE class 22, such as a NUL
+// byte). An add's only values are the caller's URLs, so the API answers these
+// with a 400 (round-25 review). A URL too long for an index never reaches the
+// database (ErrURLTooLong), so 54000 is not matched: Postgres also uses it when
+// it stops assigning transaction IDs to avoid wraparound (round 26), and one of
+// its two index-size errors names no index (round 27).
 func IsRejectedValue(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return false
 	}
-	return strings.HasPrefix(pgErr.Code, "22") || pgErr.Code == "54000" && pgErr.ConstraintName != ""
+	return strings.HasPrefix(pgErr.Code, "22")
 }
 
 // startAddRequestPass records that this process is processing requestID, and

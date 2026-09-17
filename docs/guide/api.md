@@ -1043,9 +1043,9 @@ Per-user:
   repositories cannot be added, the others are still added and the call
   fails with an error saying how many could not be; sending the same
   URLs again retries them (v0.29.50). A group the caller does not own,
-  or a rejected group, is a `400` with the reason, and so is a URL the
-  database refuses while adding (a NUL byte, or too long for an index;
-  v0.29.52); repositories
+  or a rejected group, is a `400` with the reason, and so is a URL
+  longer than 1342 bytes (v0.29.54) or one the database refuses (such as
+  one with a NUL byte; v0.29.52); repositories
   that could not be added and any server-side failure are a `500` with a
   plain message and no database text (v0.29.51).
   Org outcomes (v0.27.84): `registered: 1` means the org is tracked

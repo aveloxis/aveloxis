@@ -326,9 +326,9 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
 			http.Error(w, err.Error(), http.StatusBadRequest)
-		case db.IsRejectedValue(err):
-			// The database refused a URL itself; retrying cannot help
-			// (round-25 review).
+		case errors.Is(err, db.ErrURLTooLong), db.IsRejectedValue(err):
+			// A URL too long, or one the database refused; retrying cannot
+			// help (rounds 25 and 27).
 			http.Error(w, "a URL in the request is invalid or too long", http.StatusBadRequest)
 		case errors.Is(err, db.ErrAddItemsFailed):
 			// The message holds counts only, no database text.

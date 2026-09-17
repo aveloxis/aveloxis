@@ -520,6 +520,9 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 	if orgURL != "" && !strings.Contains(orgURL, "://") {
 		orgURL = "https://" + orgURL
 	}
+	if len(orgURL) > MaxAddURLBytes {
+		return out, ErrURLTooLong
+	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 	if !isAdmin {
 		registered, regErr := s.IsOrgRegisteredAnywhere(ctx, orgURL)

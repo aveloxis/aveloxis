@@ -421,8 +421,9 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 
 		case resp.StatusCode == http.StatusForbidden:
 			_ = resp.Body.Close()
-			// Same policy as REST Get: Retry-After or X-RateLimit-Remaining=0
-			// means wait; otherwise it's a permission error.
+			// Retry-After is a secondary limit (rest the key, pace this
+			// attempt); a primary refusal (isPrimaryRefusal) rotates to another
+			// key; anything else is a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait,
@@ -465,7 +466,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// reuse. The budget THIS client's checkout reads was
 				// marked before release (markBudgetExhausted, above).
 				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-					message: "graphql rate limit exhausted (403 + X-RateLimit-Remaining: 0) persisted through the retry budget"}
+					message: "graphql rate limit exhausted (403 primary refusal, remaining 0) persisted through the retry budget"}
 				rateLimitAttempt = attempt
 				// 2026-09-17: a refusal is a key ROTATION like the in-body
 				// arm, not a transport retry. The key is benched pool-wide,
@@ -487,7 +488,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			c.logger.Info("graphql rate limit exhausted", "url", url, "status", resp.StatusCode,
 				"token_prefix", tokenPrefix(key.Token))
 			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-				message: "graphql rate limit exhausted (429 + X-RateLimit-Remaining: 0) persisted through the retry budget"}
+				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}
 			rateLimitAttempt = attempt
 			if rotations < maxRotations {
 				rotations++

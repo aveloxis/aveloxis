@@ -457,6 +457,49 @@ func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
 			}
 			return false
 		}, true},
+		// Review of the PR #209 fixes: every emptyAnswer site needs its own
+		// off-host case, or any one of them can drift back to swallowing the
+		// refusal as "nothing there" unnoticed.
+		"release listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/releases" {
+				w.Header().Set("Location", "https://elsewhere.example/repos/x/y/releases")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"packages listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/users/x/packages" {
+				w.Header().Set("Location", "https://elsewhere.example/users/x/packages")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"org packages listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/users/x/packages":
+				w.WriteHeader(http.StatusNotFound) // the user endpoint 404s → org fallback
+				return true
+			case "/orgs/x/packages":
+				w.Header().Set("Location", "https://elsewhere.example/orgs/x/packages")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"manifest content redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/repos/x/y/contents":
+				_, _ = io.WriteString(w, `[{"type":"file","name":"package.json","path":"package.json"}]`)
+				return true
+			case "/repos/x/y/contents/package.json":
+				w.Header().Set("Location", "https://elsewhere.example/repos/x/y/contents/package.json")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
 		"root listing 404": {func(w http.ResponseWriter, r *http.Request) bool {
 			if r.URL.Path == "/repos/x/y/contents" {
 				w.WriteHeader(http.StatusNotFound)

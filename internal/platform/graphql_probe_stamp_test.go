@@ -19,7 +19,7 @@ import (
 // and the earliestWake scan skips a zero wake — so without a probe stamp
 // the key is stuck forever and non-fast-fail callers poll the 30s
 // fallback indefinitely. Acquire must stamp the same bounded probe
-// deadline MarkGraphQLExhausted uses.
+// deadline MarkBudgetExhausted uses when a response carries no reset.
 func TestAcquireStampsProbeWhenResetUnknown(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	kp := NewKeyPool([]string{"t"}, quiet)

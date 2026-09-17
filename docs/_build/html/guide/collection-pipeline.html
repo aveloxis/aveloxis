@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.55 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -584,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+<li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -1107,7 +1108,10 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#interface-hierarchy">Interface hierarchy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
@@ -2024,7 +2028,7 @@ scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<spa
 </section>
 <section id="openssf-scorecard-remote-first-local-fallback">
 <h3>OpenSSF Scorecard (remote-first, local fallback)<a class="headerlink" href="#openssf-scorecard-remote-first-local-fallback" title="Link to this heading"></a></h3>
-<p>After dependency scanning, libyear, and SCC complete, the <a class="reference external" href="https://github.com/ossf/scorecard">OpenSSF Scorecard</a> tool runs. Since v0.27.5 GitHub repos run <strong>remote-first</strong> (<code class="docutils literal notranslate"><span class="pre">--repo</span></code>, 18 checks, round-robining the key pool’s tokens) and fall back to <code class="docutils literal notranslate"><span class="pre">--local</span></code> against the temporary checkout on error or timeout; GitLab and generic-git repos run local-only (11 checks). If no GitHub token can be lent — no GitHub keys configured, or every key quarantined or cooling down on a secondary rate limit — a GitHub repo skips remote mode entirely (v0.29.10): scorecard without a token waits up to an hour for GitHub’s rate limit, longer than the default 15-minute timeout. It runs <code class="docutils literal notranslate"><span class="pre">--local</span></code> at once instead, or, with no checkout, is skipped with a WARN (<code class="docutils literal notranslate"><span class="pre">skip_reason=no_usable_token</span></code>) and retried next cycle. Local mode’s advantages when it applies:</p>
+<p>After dependency scanning, libyear, and SCC complete, the <a class="reference external" href="https://github.com/ossf/scorecard">OpenSSF Scorecard</a> tool runs. Since v0.27.5 GitHub repos run <strong>remote-first</strong> (<code class="docutils literal notranslate"><span class="pre">--repo</span></code>, 18 checks, round-robining the key pool’s tokens) and fall back to <code class="docutils literal notranslate"><span class="pre">--local</span></code> against the temporary checkout on error or timeout; GitLab and generic-git repos run local-only (11 checks). If no GitHub token can be lent — no GitHub keys configured, or every key quarantined, cooling down on a secondary rate limit, or refused by GitHub until its reset (v0.29.55) — a GitHub repo skips remote mode entirely (v0.29.10): scorecard without a token waits up to an hour for GitHub’s rate limit, longer than the default 15-minute timeout. It runs <code class="docutils literal notranslate"><span class="pre">--local</span></code> at once instead, or, with no checkout, is skipped with a WARN (<code class="docutils literal notranslate"><span class="pre">skip_reason=no_usable_token</span></code>) and retried next cycle. Local mode’s advantages when it applies:</p>
 <ul class="simple">
 <li><p><strong>No redundant clone</strong>: Scorecard reuses the existing checkout instead of cloning the repo again.</p></li>
 <li><p><strong>No GitHub API calls</strong>: the local check set (11 checks: Binary-Artifacts, Pinned-Dependencies, Dangerous-Workflow, Token-Permissions and the other file-based checks) evaluates the checkout without a token. Two local checks still use the network: Fuzzing reads OSS-Fuzz’s public build status file and Vulnerabilities queries api.osv.dev, so a host with no outbound access fails those two. The GitHub-API checks (Code-Review, Maintained, Branch-Protection, CI-Tests, CII-Best-Practices, Contributors, Signed-Releases) exist only in remote mode.</p></li>

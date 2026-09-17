@@ -365,11 +365,13 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
 		if err != nil {
 			if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
-				continue
+				continue // an answer about this directory: nothing to list
 			}
-			// One bad dir doesn't sink the whole list; log via the
-			// platform layer and move on.
-			continue
+			// Any other failure says nothing about the directory. Returning
+			// the partial list with a nil error let the scanner store it as
+			// the repo's complete manifest snapshot (v0.29.55 review round 3);
+			// the error fails the scan instead, so nothing is replaced.
+			return nil, fmt.Errorf("list %s contents for %s/%s: %w", dir, owner, repo, err)
 		}
 		for _, e := range entries {
 			if e.Type != "file" {
@@ -428,7 +430,9 @@ func (c *Client) FetchManifestContent(ctx context.Context, owner, repo, filePath
 	clean = strings.ReplaceAll(clean, "\r", "")
 	decoded, err := base64.StdEncoding.DecodeString(clean)
 	if err != nil {
-		return "", nil // unparseable encoding — treat as no content
+		// Not "no content": the manifest would be stored with its declared
+		// name blanked (v0.29.55 review round 3).
+		return "", fmt.Errorf("decode manifest %s: %w", filePath, err)
 	}
 	return string(decoded), nil
 }

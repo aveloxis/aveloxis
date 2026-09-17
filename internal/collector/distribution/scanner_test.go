@@ -360,3 +360,81 @@ func buildTestScanner(t *testing.T, depsURL, ecoURL, ghURL string, crossCheck bo
 // linter complaints in CI.
 var _ = db.ToolVersion
 var _ json.Decoder
+
+// TestCompositeScannerGitHubNonAnswerFailsTheScan (v0.29.55 review round 3;
+// operator decision (a), 2026-09-17): GitHub source errors never failed or
+// marked a scan, on the grounds that 403/404/304 from these endpoints are
+// routinely benign. That covers ANSWERS; it also swallowed failures that say
+// nothing (retries exhausted — four "github manifests failed … exhausted 10
+// retries" lines in the 2026-09-17 incident log — a cut-off body, an empty
+// key pool), so the scan was stored complete: the manifest snapshot replaced
+// by what little was seen and the repo held for the 180-day cadence. A GitHub
+// non-answer now FAILS the scan (the worker records a strike; nothing is
+// replaced; quadratic backoff; the 10-strike sideline). Marking it incomplete
+// instead was rejected: an incomplete row re-claims immediately at the head
+// of the queue with no backoff. A GitHub answer (404) still does neither.
+func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
+	depsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"versions":[]}`)
+	}))
+	t.Cleanup(depsServer.Close)
+	ecoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(ecoServer.Close)
+
+	for name, tc := range map[string]struct {
+		handle  func(w http.ResponseWriter, r *http.Request) bool // true = handled
+		wantErr bool
+	}{
+		"root listing cut off": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/contents" {
+				_, _ = io.WriteString(w, `[{"type":"fi`)
+				return true
+			}
+			return false
+		}, true},
+		"manifest content cut off": {func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/repos/x/y/contents":
+				_, _ = io.WriteString(w, `[{"type":"file","name":"package.json","path":"package.json"}]`)
+				return true
+			case "/repos/x/y/contents/package.json":
+				_, _ = io.WriteString(w, `{"encoding":"base64","content":"eyJuYW1l`)
+				return true
+			}
+			return false
+		}, true},
+		"root listing 404": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/contents" {
+				w.WriteHeader(http.StatusNotFound)
+				return true
+			}
+			return false
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.handle(w, r) {
+					return
+				}
+				_, _ = io.WriteString(w, `[]`)
+			}))
+			t.Cleanup(ghServer.Close)
+			scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
+			_, manifests, complete, err := scanner.Scan(context.Background(), 1, "x", "y", "https://github.com/x/y")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("scan succeeded (complete=%v, manifests=%v) — a GitHub non-answer must fail the scan so nothing is replaced", complete, manifests)
+				}
+				return
+			}
+			if err != nil || !complete {
+				t.Fatalf("err=%v complete=%v — a GitHub 404 is an answer: the scan succeeds and is complete", err, complete)
+			}
+		})
+	}
+}

@@ -122,6 +122,33 @@ aveloxis add-key ghp_new_token --platform github
 - Rate limit exhaustion is handled automatically. The key is skipped until its reset window.
 - If you see persistent 403 errors, check the token's scopes. GitHub tokens need `repo` or `public_repo` scope. GitLab tokens need `read_api`.
 
+### `rate limit exhausted` repeats for one key while other keys have budget
+
+**Symptom:** Many `rate limit exhausted` lines carry the same `token_prefix`,
+often the same URL several times in a row. Collection steps fail with
+`exhausted 10 retries … transient`.
+
+**Cause (fixed in v0.29.55):** the key pool kept one tracked window per key
+and ignored a refusal whose reset was earlier than that window, so it kept
+leasing the refused key. Since v0.29.55 a refusal benches the key for every
+collector until the refusal's reset, and the collector immediately takes
+another key (see [Key pool contract](../architecture/platform-layer.md#key-pool-contract)).
+On the REST client, a refusal the pool benched for the request's own budget
+(`core`, or `search` on a `/search/` request) logs `rotating_to_another_key=true`,
+and the same key should not repeat for the same URL. A refusal on any other
+resource, or on a budget that does not match the request, logs
+`rotating_to_another_key=false` with a `wait` until its reset. GraphQL refusals log
+`graphql rate limit exhausted` (no such field) and rotate the same way.
+
+**Checking key budgets:** read the response headers, not `GET /rate_limit`.
+GitHub recommends the headers. On 2026-09-17, for the same token,
+`/rate_limit` reported an unused budget while its response headers showed
+hundreds of calls used. `scripts/check-keys.sh` reads `/rate_limit`, so a
+`5000 / 5000` row there does not prove a key is unused. The 5-minute
+`key pool summary` line reports `refused_core_now`, `refused_graphql_now`,
+`refused_search_now` and `refusals_lifetime` next to the tracked
+`core_remaining_*` balances.
+
 ---
 
 ## FK constraint violations

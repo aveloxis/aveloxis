@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.55 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -584,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+<li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -1107,7 +1108,10 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#interface-hierarchy">Interface hierarchy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
@@ -2825,9 +2829,18 @@ batched add (one approval unit per v0.27.20). <code class="docutils literal notr
 fields are present; the single-<code class="docutils literal notranslate"><span class="pre">url</span></code> body remains accepted. The
 response carries <code class="docutils literal notranslate"><span class="pre">submitted</span></code> plus the outcome counts
 <code class="docutils literal notranslate"><span class="pre">{linked,</span> <span class="pre">enqueued,</span> <span class="pre">pending_approval?,</span> <span class="pre">request_id?,</span> <span class="pre">registered?}</span></code>.
+When <code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code> lets a batch through and some of its
+repositories cannot be added, the others are still added and the call
+fails with an error saying how many could not be; sending the same
+URLs again retries them (v0.29.50). A group the caller does not own,
+or a rejected group, is a <code class="docutils literal notranslate"><span class="pre">400</span></code> with the reason, and so is a URL
+longer than 1342 bytes (v0.29.54) or one the database refuses (such as
+one with a NUL byte; v0.29.52); repositories
+that could not be added and any server-side failure are a <code class="docutils literal notranslate"><span class="pre">500</span></code> with a
+plain message and no database text (v0.29.51).
 Org outcomes (v0.27.84): <code class="docutils literal notranslate"><span class="pre">registered:</span> <span class="pre">1</span></code> means the org is tracked
 NOW — admin adds always register, and a non-admin’s add of an org
-that is ALREADY registered in any group auto-approves (it adds zero
+that is ALREADY registered in a group that is not rejected auto-approves (it adds zero
 new collection: the org’s repos are already tracked and its future
 repos already auto-enqueue via the existing registration; an
 auto-approved audit row is still recorded). A non-admin’s add of a
@@ -2866,7 +2879,9 @@ route remains for pre-conversion pending groups.</p></li>
 awaiting-approval content (v0.27.20): repo URLs from pending
 add-requests plus pending org registrations, each with
 <code class="docutils literal notranslate"><span class="pre">request_id</span></code>, <code class="docutils literal notranslate"><span class="pre">kind</span></code>, <code class="docutils literal notranslate"><span class="pre">url</span></code>, <code class="docutils literal notranslate"><span class="pre">created_at</span></code>. Ownership-checked for
-non-admins. Envelope: <code class="docutils literal notranslate"><span class="pre">{pending:</span> <span class="pre">[...]}</span></code>.</p></li>
+non-admins (a group the caller does not own is a <code class="docutils literal notranslate"><span class="pre">403</span></code>; a server-side
+failure is a <code class="docutils literal notranslate"><span class="pre">500</span></code> without database text, v0.29.52). Envelope:
+<code class="docutils literal notranslate"><span class="pre">{pending:</span> <span class="pre">[...]}</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/add-requests</span></code> — the v0.27.20 per-add approval
 queue: pending additions of not-yet-collected repos/orgs by
 non-admins. Each entry carries the requester (<code class="docutils literal notranslate"><span class="pre">user_login</span></code>,
@@ -2878,7 +2893,9 @@ decision is <code class="docutils literal notranslate"><span class="pre">approve
 Approving a <code class="docutils literal notranslate"><span class="pre">repos</span></code> request creates + enqueues + links each item
 in the background (resumable — re-approving picks up unprocessed
 items); approving an <code class="docutils literal notranslate"><span class="pre">org</span></code> request registers the org for tracking
-(the scheduler’s next org-scan tick collects its repos). The
+(the scheduler’s next org-scan tick collects its repos; re-approving
+an approved org request whose registration is missing registers it,
+returns <code class="docutils literal notranslate"><span class="pre">changed:</span> <span class="pre">true</span></code> and notifies the requester). The
 requester is notified by email when a mailer is configured.
 Response: <code class="docutils literal notranslate"><span class="pre">{ok:</span> <span class="pre">true,</span> <span class="pre">changed:</span> <span class="pre">bool}</span></code> — <code class="docutils literal notranslate"><span class="pre">changed=false</span></code> means the
 request was already decided (idempotent double-click).</p></li>

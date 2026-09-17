@@ -58,8 +58,9 @@ type Client interface {
 
 	// SearchCommitByAuthorEmail resolves a login by searching for any commit
 	// authored with the given email, across the whole platform. Same return
-	// contract as SearchUserByEmail: ("", 0, nil) on no hit, error only on
-	// transport/5xx. This catches users whose profile email is private but
+	// contract as SearchUserByEmail: ("", 0, nil) on no hit (including a
+	// commit with no linked account, or an input that is not an email); any
+	// other non-hit outcome is an error. This catches users whose profile email is private but
 	// who authored commits with the address — the load-bearing step of the
 	// shared email→identity resolver (summary/12 §5g; bootstrap: ~35% vs
 	// ~8-11% for SearchUserByEmail on the same cohort).

@@ -11,9 +11,12 @@
 // gh_user_id on contributors observed by email-only paths (commit
 // author resolution, ghosted issue authors).
 //
-// Contract: returns ("", 0, nil) when search returns zero hits — not
-// an error. Returns the actual error only on transport / 5xx
-// failures the caller would want to retry.
+// Contract: returns ("", 0, nil) — no hit, not an error — when search
+// returns zero results or the input is not an email address (no search is
+// made). Every other outcome that is not a hit is an error: a transport or
+// 5xx failure, a rate limit that outlasted the retries, a rejected query
+// (400/422, ErrRequestRejected), or a body that did not decode. Callers
+// record (stamp) only what platform.IsDefinitiveAnswer accepts.
 
 package github
 
@@ -55,10 +58,11 @@ func (c *Client) SearchUserByEmail(ctx context.Context, email string) (string, i
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		// Don't propagate decode errors — search responses can be
-		// rate-limited with non-JSON bodies, and the caller treats
-		// "no result" the same way.
-		return "", 0, nil
+		// A body that does not decode is not an answer (SR-5): returning
+		// the no-hit ("", 0, nil) let a cut-off 200 stamp a cooldown or
+		// create an email-only contributor (review round 2 on v0.29.55).
+		// Rate-limit refusals never reach here — Get handles 403/429.
+		return "", 0, fmt.Errorf("decode search/users response: %w", err)
 	}
 
 	if data.TotalCount == 0 || len(data.Items) == 0 {

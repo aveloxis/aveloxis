@@ -19,6 +19,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // mailingListIdleInterval is how long a runner waits before re-polling when
@@ -179,6 +180,10 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 			}
 			linked := 0
 			created := 0
+			// Resolutions that failed without an answer: not stamped,
+			// retried next tick; one WARN after the loop.
+			unanswered := 0
+			var firstUnanswered error
 			for _, c := range cands {
 				if ctx.Err() != nil {
 					return
@@ -190,9 +195,31 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 				}
 				login, ghUserID, source, rerr := collector.ResolveEmailToIdentity(ctx, s.store, s.ghClient, c.SenderEmail)
 				if rerr != nil {
-					// Transient (transport/5xx): stamp the attempt so we back off
-					// to the cooldown rather than hammering on a persistent error.
-					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					if !platform.IsDefinitiveAnswer(rerr) {
+						// Rate limit, transient or auth failure, shutdown, an
+						// empty key pool, a body that did not decode: nothing
+						// was learned about this sender, so the 30-day stamp
+						// would hide them with their messages unattributed
+						// (SR-5; review round 2 on v0.29.55). The batch keeps
+						// going rather than stopping: a failure that recurs for
+						// every candidate every tick is pool-wide (no keys,
+						// keys invalidated), costs no API calls, and blocks
+						// progress whether the loop stops or not — and
+						// continuing lets senders whose searches succeed
+						// resolve. Such a tick is visible in the WARN below.
+						unanswered++
+						if firstUnanswered == nil {
+							firstUnanswered = rerr
+						}
+						s.logger.Debug("mailing-list: sender resolve failed without an answer — not stamped, retried next tick", "email", c.SenderEmail, "error", rerr)
+						continue
+					}
+					// The forge rejected the query for this sender: stamp so the
+					// same query is not re-sent before the cooldown.
+					s.logger.Debug("mailing-list: sender resolve rejected", "email", c.SenderEmail, "error", rerr)
+					if mErr := s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""); mErr != nil {
+						s.logger.Debug("mailing-list: failed to stamp the sender-resolve attempt", "email", c.SenderEmail, "error", mErr)
+					}
 					continue
 				}
 				if login == "" {
@@ -239,6 +266,10 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 				}
 				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
 				linked++
+			}
+			if unanswered > 0 && ctx.Err() == nil {
+				s.logger.Warn("mailing-list: sender resolves failed without an answer — not stamped, retried next tick",
+					"failed", unanswered, "of", len(cands), "first_error", firstUnanswered)
 			}
 			if linked > 0 || created > 0 {
 				s.logger.Info("mailing-list: sender resolution pass",

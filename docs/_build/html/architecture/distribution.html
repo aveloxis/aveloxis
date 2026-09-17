@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.55 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -584,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -1107,7 +1108,10 @@
 <li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#interface-hierarchy">Interface hierarchy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="platform-layer.html#key-pool-contract">Key pool contract</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
@@ -1974,11 +1978,12 @@ repo_distribution_manifest_history   — prior manifest snapshots
 <ol class="arabic simple">
 <li><p><strong>Dispatcher tick</strong>: every <code class="docutils literal notranslate"><span class="pre">distribution_tracking_start_interval_s</span></code> (default 30s) the dispatcher checks <code class="docutils literal notranslate"><span class="pre">scanner.Healthy()</span></code>. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls <code class="docutils literal notranslate"><span class="pre">ClaimNextDistributionRepo</span></code>.</p></li>
 <li><p><strong>Claim</strong>: SQL acquires the row lock with <code class="docutils literal notranslate"><span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> and returns a <code class="docutils literal notranslate"><span class="pre">DistributionJob</span></code> carrying the open transaction. Worker death rolls back; row becomes immediately re-claimable.</p></li>
-<li><p><strong>Scanner runs</strong>: the CompositeScanner consults all five sources sequentially. Per-source errors are tracked (v0.25.0 per-source-class accounting); the scanner returns a partial result if any sources succeeded.</p></li>
+<li><p><strong>Scanner runs</strong>: the CompositeScanner consults all five sources sequentially. Per-source errors are tracked (v0.25.0 per-source-class accounting); the scanner returns a partial result if any sources succeeded, with one exception (v0.29.55): a GitHub source that failed <strong>without an answer</strong> fails the whole scan.</p></li>
 <li><p><strong>Mark complete or record failure</strong>:</p>
 <ul class="simple">
+<li><p>A GitHub source (release assets, packages, the manifest listing including its first-level directories, or a manifest’s content) failed without an answer → the scan fails, and <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> records it as below. Nothing is rotated or replaced. “Without an answer” means anything other than an answer about the repository (404, 410, a 403 that is not a rate limit, 204, the pagination cap, a rejected request) or a 304: for example retries exhausted, a body that did not decode, an empty key pool. Before v0.29.55 these errors were swallowed, so the stored manifest snapshot was replaced by whatever part was seen and the scan stamped complete for the 180-day cadence. Marking such a scan incomplete was rejected, because an incomplete row re-claims immediately with no backoff.</p></li>
 <li><p>All sources succeeded OR at least one returned clean data → <code class="docutils literal notranslate"><span class="pre">MarkDistributionComplete</span></code> rotates rows to history, inserts the fresh observations, stamps <code class="docutils literal notranslate"><span class="pre">scan_complete</span> <span class="pre">=</span> <span class="pre">TRUE</span></code> (or <code class="docutils literal notranslate"><span class="pre">FALSE</span></code> if any source was incomplete), commits.</p></li>
-<li><p>Every enabled source errored AND zero data collected → <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> increments the failure counter, stamps <code class="docutils literal notranslate"><span class="pre">last_failed_at</span> <span class="pre">=</span> <span class="pre">NOW()</span></code>, commits. On the 10th consecutive failure, also stamps <code class="docutils literal notranslate"><span class="pre">last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> so the cadence gate sidelines the row.</p></li>
+<li><p>Every enabled source errored AND zero data collected → <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> increments the failure counter, stamps <code class="docutils literal notranslate"><span class="pre">last_failed_at</span> <span class="pre">=</span> <span class="pre">NOW()</span></code>, commits. On the 10th consecutive failure, also stamps <code class="docutils literal notranslate"><span class="pre">last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> so the cadence gate sidelines the row. Retries back off quadratically in the failure count.</p></li>
 </ul>
 </li>
 </ol>

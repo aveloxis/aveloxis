@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.55 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -584,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -1107,7 +1108,10 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Platform Abstraction Layer</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#interface-hierarchy">Interface hierarchy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#key-pool-contract">Key pool contract</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
@@ -1697,13 +1701,57 @@
 <hr class="docutils" />
 <section id="key-pool-keypool">
 <h2>Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)<a class="headerlink" href="#key-pool-keypool" title="Link to this heading"></a></h2>
-<p>Manages multiple API tokens with round-robin rotation for maximum throughput.</p>
+<p>Manages every API token for one platform, and hands them to every collector.</p>
+<section id="key-pool-contract">
+<h3>Key pool contract<a class="headerlink" href="#key-pool-contract" title="Link to this heading"></a></h3>
+<p>These rules are the contract; tests enforce each one.</p>
+<ol class="arabic simple">
+<li><p><strong>One shared budget.</strong> Rate-limit budget is a single resource shared by
+every collector in a process: staged collection, commit resolution,
+enrichment, search resolution, breadth, org scans, distribution, and the
+tokens lent to scorecard subprocesses. All of them lease a platform’s keys
+from that platform’s one <code class="docutils literal notranslate"><span class="pre">KeyPool</span></code> (one for GitHub, one for GitLab)
+through <code class="docutils literal notranslate"><span class="pre">Acquire</span></code>, the only in-process path to a key; scorecard
+subprocesses borrow through <code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>, which is accounted.</p></li>
+<li><p><strong>A refusal benches the key for everyone.</strong> When GitHub refuses a key
+(HTTP 403 or 429 with <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Remaining:</span> <span class="pre">0</span></code> and no <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>), the
+pool benches that key for that budget (<code class="docutils literal notranslate"><span class="pre">core</span></code>, <code class="docutils literal notranslate"><span class="pre">graphql</span></code> or <code class="docutils literal notranslate"><span class="pre">search</span></code>) until
+the refusal’s <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Reset</span></code>. If the reset is missing or already past,
+the bench lasts a five-minute probe window. No later response header can
+lift a bench early. The pool keeps no balance for <code class="docutils literal notranslate"><span class="pre">search</span></code> (30 requests a
+minute per user); a search refusal benches the key for search only.</p></li>
+<li><p><strong>The collector goes back for another key.</strong> On a refusal, the REST and
+GraphQL clients return to <code class="docutils literal notranslate"><span class="pre">Acquire</span></code> straight away and get a different key.
+The rotation does not use up one of the request’s retries. Rotations are
+capped at the number of keys, so a request can pass through every key
+before refusals start using up its retries. The exception is a GraphQL
+caller that opts into fast-fail (<code class="docutils literal notranslate"><span class="pre">WithGraphQLFastFail</span></code>, used where batch
+subdivision is the retry): its rotations spend its short retry budget.
+When a REST refusal names a budget the pool did not bench for that request
+(a resource other than <code class="docutils literal notranslate"><span class="pre">core</span></code>, <code class="docutils literal notranslate"><span class="pre">graphql</span></code> or <code class="docutils literal notranslate"><span class="pre">search</span></code>, or a budget that does
+not match the request, such as a <code class="docutils literal notranslate"><span class="pre">search</span></code> refusal on a non-search path),
+there is no key to rotate away from, so the client waits for that refusal’s
+reset instead of re-sending at once.</p></li>
+<li><p><strong>Wait only when nothing has budget.</strong> For a foreground caller, <code class="docutils literal notranslate"><span class="pre">Acquire</span></code>
+blocks for budget only when no key has any. It then wakes at the earliest
+bench end, rest end or window reset. When only the in-flight ceilings are
+full, it waits for a request slot to free. A fast-fail GraphQL caller gets
+<code class="docutils literal notranslate"><span class="pre">ErrGraphQLBudgetExhausted</span></code> instead of waiting, and a background GraphQL
+sweep also waits while the pool is at the foreground reserve line.
+Keys refused for <code class="docutils literal notranslate"><span class="pre">core</span></code> or <code class="docutils literal notranslate"><span class="pre">graphql</span></code>, quarantined or resting are not lent to
+scorecard either.</p></li>
+</ol>
+<p>Other behaviour:</p>
 <ul class="simple">
-<li><p><strong>Round-robin rotation</strong>: Every key’s rate limit is fully utilized before the pool waits.</p></li>
-<li><p><strong>Configurable buffer</strong>: Stops using a key when <code class="docutils literal notranslate"><span class="pre">remaining</span></code> drops to <code class="docutils literal notranslate"><span class="pre">buffer</span></code> (default 15), preventing 403s from concurrent workers that checked out a key before the count was updated.</p></li>
-<li><p><strong>Automatic refill</strong>: Keys are refilled to 5000 when the rate-limit window resets.</p></li>
-<li><p><strong>Resource-aware</strong>: Only core API responses update the key’s rate-limit counter. Search and GraphQL responses (which have separate buckets) are ignored to prevent premature key rotation.</p></li>
+<li><p><strong>Selection</strong>: among eligible keys, fewest in-flight requests first, then the most remaining budget.</p></li>
+<li><p><strong>Per-key and pool-wide in-flight ceilings</strong> for the GitHub pool (<code class="docutils literal notranslate"><span class="pre">collection.github_max_inflight_per_key</span></code>, <code class="docutils literal notranslate"><span class="pre">collection.github_max_inflight</span></code>), and a foreground reserve that background GraphQL sweeps cannot spend into (<code class="docutils literal notranslate"><span class="pre">collection.github_budget_foreground_reserve_pct</span></code>). The GitLab pool has no per-key ceiling.</p></li>
+<li><p><strong>Configurable buffer</strong>: stops using a key when <code class="docutils literal notranslate"><span class="pre">remaining</span></code> drops to <code class="docutils literal notranslate"><span class="pre">buffer</span></code> (default 15).</p></li>
+<li><p><strong>Resource-aware</strong>: <code class="docutils literal notranslate"><span class="pre">core</span></code> and <code class="docutils literal notranslate"><span class="pre">graphql</span></code> balances are tracked separately; <code class="docutils literal notranslate"><span class="pre">search</span></code> is refusal-only (rule 2). Other resources are not tracked.</p></li>
+<li><p><strong>Secondary limits</strong> (<code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>): the key rests in the pool for the <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>, and the refused request waits it out before retrying. GitHub warns that continuing while secondary-limited can get an integration banned, and tokens owned by the same GitHub account share limits.</p></li>
+<li><p><strong>Not shared across processes</strong>: <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> org scans, one-shot CLI commands and scorecard subprocesses spend the same tokens outside <code class="docutils literal notranslate"><span class="pre">serve</span></code>’s pool. <code class="docutils literal notranslate"><span class="pre">serve</span></code> sees that spend in the next response it gets on each key, and at the latest in the first refusal (rule 2).</p></li>
+<li><p><strong>Observability</strong>: the 5-minute <code class="docutils literal notranslate"><span class="pre">key</span> <span class="pre">pool</span> <span class="pre">summary</span></code> log line reports tracked balances plus <code class="docutils literal notranslate"><span class="pre">refused_core_now</span></code>, <code class="docutils literal notranslate"><span class="pre">refused_graphql_now</span></code>, <code class="docutils literal notranslate"><span class="pre">refused_search_now</span></code> and <code class="docutils literal notranslate"><span class="pre">refusals_lifetime</span></code> (one per refused response).</p></li>
 </ul>
+</section>
 </section>
 <hr class="docutils" />
 <section id="graphql-transport-the-github-default">

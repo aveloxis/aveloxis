@@ -363,6 +363,12 @@ var deployChecklists = map[string][]deployStep{
 	// than db.MaxAddURLBytes before anything is written (the API answers
 	// 400); every SQLSTATE 54000 is now a server-side 500. No schema change.
 	"0.29.54": v029DeployChecklist,
+	// v0.29.55: the key pool benches a key GitHub refuses (403/429 +
+	// Remaining: 0) for every collector until the refusal's reset, and the
+	// clients rotate to another key without spending a retry (SR-20);
+	// enrichment no longer stamps rate-limited lookups as enriched. No
+	// schema change, no new operator step.
+	"0.29.55": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

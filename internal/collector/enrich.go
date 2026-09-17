@@ -56,6 +56,11 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 	logger.Info("enriching thin contributor profiles", "count", len(logins))
 	enriched := make([]model.Contributor, 0, len(logins))
 	successLogins := make([]string, 0, len(logins))
+	// Lookups that failed without an answer about the login: not marked,
+	// so the next tick retries them. One WARN after the loop, not one per
+	// login (the v0.27.91 flood class).
+	unanswered := 0
+	var firstUnanswered error
 
 	for _, login := range logins {
 		if ctx.Err() != nil {
@@ -63,9 +68,22 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 		}
 		contrib, err := client.EnrichContributor(ctx, login)
 		if err != nil {
-			// User may be deleted, suspended, or rate-limited. Still mark
-			// as enriched to avoid retrying on the next pass — the user
-			// likely won't become available within the cooldown window.
+			if !platform.IsDefinitiveAnswer(err) {
+				// Rate limit, transient or auth failure, shutdown, an empty
+				// key pool, a cut-off body: nothing was learned about this
+				// login, so stamping the 30-day cooldown would hide it with
+				// no data. On chaoss.tv, 2026-09-17, ~500 rate-limited
+				// lookups were stamped that way (SR-5).
+				unanswered++
+				if firstUnanswered == nil {
+					firstUnanswered = err
+				}
+				logger.Debug("contributor enrichment lookup failed without an answer — not marked, retried next tick", "login", login, "error", err)
+				continue
+			}
+			// The forge answered about the login (not found, gone, not
+			// visible, or the request rejected): mark it so it is not
+			// retried before the cooldown.
 			if mErr := resolver.MarkContributorEnriched(ctx, login); mErr != nil {
 				logger.Debug("failed to mark contributor enriched", "login", login, "error", mErr)
 			}
@@ -74,6 +92,11 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 		}
 		enriched = append(enriched, *contrib)
 		successLogins = append(successLogins, login)
+	}
+
+	if unanswered > 0 && ctx.Err() == nil {
+		logger.Warn("contributor enrichment: lookups failed without an answer about the login — not marked enriched, retried next tick",
+			"failed", unanswered, "of", len(logins), "first_error", firstUnanswered)
 	}
 
 	// Single batch flush. UpsertContributorBatch dedupes by login in

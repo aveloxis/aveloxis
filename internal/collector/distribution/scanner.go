@@ -6,6 +6,7 @@ package distribution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -138,11 +139,25 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		// way; their partial-scan rows rotate to history on the
 		// next snapshot replace.
 		//
-		// GitHub source errors do NOT set scanIncomplete — 403/404/
-		// 304 from those endpoints are routinely benign (private
-		// repos, missing OAuth scope, archived/empty repos) and
-		// shouldn't force a re-scan.
+		// GitHub source errors do NOT set scanIncomplete. An ANSWER
+		// (403/404/304 — private repos, missing OAuth scope,
+		// archived/empty repos) is routinely benign and changes nothing;
+		// a NON-answer fails the whole scan instead (githubNonAnswers,
+		// below — v0.29.55).
 		scanIncomplete bool
+
+		// githubNonAnswers collects GitHub source errors that say nothing
+		// about the repository (githubErrorIsNonAnswer: retries exhausted,
+		// a body that did not decode, an empty key pool). Any one fails the
+		// scan: the worker records a strike (quadratic backoff, the 10-strike
+		// sideline) and replaces nothing. Before v0.29.55 they were swallowed
+		// and the scan stored as complete — the manifest snapshot replaced by
+		// what little was seen, the repo held for the 180-day cadence.
+		// Marking the scan incomplete was rejected: an incomplete row
+		// re-claims immediately, first in the claim order, with no backoff,
+		// so a repo whose GitHub source keeps failing would loop at the head
+		// of the queue (operator decision (a), 2026-09-17).
+		githubNonAnswers []error
 	)
 
 	// Source 1: deps.dev (external package registry, primary)
@@ -237,6 +252,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
+			if githubErrorIsNonAnswer(err) {
+				githubNonAnswers = append(githubNonAnswers, err)
+			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -254,6 +272,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
+			if githubErrorIsNonAnswer(err) {
+				githubNonAnswers = append(githubNonAnswers, err)
+			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -271,6 +292,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
+			if githubErrorIsNonAnswer(err) {
+				githubNonAnswers = append(githubNonAnswers, err)
+			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -286,6 +310,12 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 				// useful intent signal.
 				content, fetchErr := s.GitHub.FetchManifestContent(ctx, owner, repo, m.ManifestPath)
 				if fetchErr != nil {
+					// An unreadable manifest would be stored with its declared
+					// name blanked; a non-answer fails the scan instead (the
+					// worker logs the scan error).
+					if githubErrorIsNonAnswer(fetchErr) {
+						githubNonAnswers = append(githubNonAnswers, fetchErr)
+					}
 					s.Logger.Debug("distribution: manifest content fetch failed",
 						"repo_id", repoID, "path", m.ManifestPath, "error", fetchErr)
 				} else if content != "" {
@@ -294,6 +324,13 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 				manifests = append(manifests, m)
 			}
 		}
+	}
+
+	// v0.29.55: a GitHub source that failed without an answer fails the
+	// scan whatever the other sources returned (githubNonAnswers above), so
+	// the stored snapshot is never replaced by a partial GitHub view.
+	if len(githubNonAnswers) > 0 {
+		return nil, nil, false, fmt.Errorf("github source failed without an answer; scan failed so the stored snapshot is kept: %w", errors.Join(githubNonAnswers...))
 	}
 
 	// v0.25.0 contract: fail the scan ONLY when EVERY enabled
@@ -344,4 +381,18 @@ func (s *CompositeScanner) Healthy() bool {
 		return false
 	}
 	return true
+}
+
+// githubErrorIsNonAnswer reports whether a GitHub source error says nothing
+// about the repository, so the scan must fail rather than be stored: any
+// error that is not an answer (platform.IsDefinitiveAnswer). Answers — 404,
+// 410, a non-rate-limit 403, 204, the pagination cap, a rejected request —
+// and 304 keep the pre-v0.29.55 treatment (routinely benign);
+// a cancelled context is a shutdown, which the worker releases without a
+// strike.
+func githubErrorIsNonAnswer(err error) bool {
+	if errors.Is(err, context.Canceled) || platform.ClassifyError(err) == platform.ClassNotModified {
+		return false
+	}
+	return !platform.IsDefinitiveAnswer(err)
 }

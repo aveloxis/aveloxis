@@ -109,6 +109,12 @@ type Scheduler struct {
 	// NewWithKeys from the effective config value.
 	scorecardSem chan struct{}
 
+	// analysisGitHubAPI (v0.29.56) is the one key-pooled GitHub REST client
+	// every analysis shares for the libyear lookups GitHub hosts (Go module
+	// licenses, SwiftPM releases). Built once: a client per repo would open
+	// a transport per job. nil without GitHub keys.
+	analysisGitHubAPI *platform.HTTPClient
+
 	// matviewPending is set by the weekly matview ticker and cleared by the
 	// rebuild goroutine. The poll loop starts the rebuild once active worker
 	// count drops below the ShouldStartMatviewRebuild threshold — see
@@ -236,6 +242,10 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		// httptest GitHub (v0.27.83 dedup behavioral suite).
 		ghAPIBase:    "https://api.github.com",
 		scorecardSem: make(chan struct{}, cfg.Collection.ScorecardMaxConcurrentValue()),
+	}
+
+	if ghKeys != nil {
+		s.analysisGitHubAPI = platform.NewHTTPClient(s.ghAPIBase, ghKeys, logger, platform.AuthGitHub)
 	}
 
 	// Install a permanent-redirect hook on both platform clients so that a
@@ -598,6 +608,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// was reachable at startup (migrate succeeded), so start healthy.
 	s.dbHealthy.Store(true)
 	safego.Go(s.logger, "db-health-monitor", func() { s.runDBHealthMonitor(ctx) })
+
+	// Stall detector (v0.29.56): a heartbeat that reports how late it was
+	// woken, so a process-wide stall is distinguishable from workers
+	// waiting on the database. Observation only.
+	safego.Go(s.logger, "stall-detector", func() { s.runStallDetector(ctx) })
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -1627,6 +1642,16 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	facadeResult = result
 
+	// A repository with no clone at all (DMCA takedown, disabled by
+	// GitHub, deleted) cannot be analysed or scored: analysis fails on the
+	// missing clone and scorecard spends a remote run to be told the same
+	// (v0.29.56). The facade WARN above already says why.
+	if err != nil && !collector.HasBareClone(s.cfg.Collection.RepoCloneDir, repoID) {
+		s.logger.Info("skipping analysis and scorecard — the repository has no clone",
+			"repo_id", repoID)
+		return facadeResult, nil
+	}
+
 	// GitLab commit_count backfill: GitLab's API commonly reports 0 commits
 	// (nil statistics object when the token lacks Reporter+ access, or stale
 	// stats cache for freshly-mirrored projects). Now that facade has
@@ -1657,6 +1682,11 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitiveValue()
 	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
 	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
+	if s.analysisGitHubAPI != nil {
+		// Guarded: a nil *HTTPClient in the interface field would read as
+		// a client and panic on the first lookup.
+		ac.GitHubAPI = s.analysisGitHubAPI
+	}
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if errors.Is(aErr, context.Canceled) {
 		return facadeResult, nil

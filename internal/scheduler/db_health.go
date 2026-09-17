@@ -113,8 +113,9 @@ func (s *Scheduler) runDBHealthMonitor(ctx context.Context) {
 				downSince = time.Now()
 				lastReminder = downSince
 				s.logger.Warn("database unavailable — pausing new collection until it returns",
-					"error", lastErr, "consecutive_failures", consecutiveFail,
-					"probe_interval", dbHealthProbeInterval.String())
+					append([]any{"error", lastErr, "consecutive_failures", consecutiveFail,
+						"probe_interval", dbHealthProbeInterval.String()},
+						poolStateLogArgs(s.store.PoolState())...)...)
 				// Best-effort: the DB is down, so this write typically fails.
 				_ = s.store.SetAveloxisStatus(ctx, dbHealthStatusName, dbStatusUnavailable,
 					"database probe failed "+intString(consecutiveFail)+"x consecutively ("+errString(lastErr)+") — collection paused", dbHealthSource)
@@ -128,7 +129,8 @@ func (s *Scheduler) runDBHealthMonitor(ctx context.Context) {
 				case !healthy && time.Since(lastReminder) >= dbHealthReminderInterval:
 					lastReminder = time.Now()
 					s.logger.Warn("collection still paused — database unavailable",
-						"unavailable_for", time.Since(downSince).Round(time.Second).String())
+						append([]any{"unavailable_for", time.Since(downSince).Round(time.Second).String()},
+							poolStateLogArgs(s.store.PoolState())...)...)
 				case err != nil && healthy:
 					// Sub-threshold transient failure: a CPU-pressure connect/auth
 					// blip, not an outage. Visible at DEBUG for investigation,

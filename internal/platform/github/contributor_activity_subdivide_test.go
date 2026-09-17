@@ -113,7 +113,7 @@ func TestFetchContributorActivitySubdividesAroundExpensiveAccount(t *testing.T) 
 	logins[7] = poison // mid-batch so both halves get exercised
 
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	got, err := client.FetchContributorActivity(t.Context(), logins)
+	got, _, err := client.FetchContributorActivity(t.Context(), logins)
 	if err != nil {
 		t.Fatalf("one expensive account must not fail the batch (the 2026-08-04 wedge): %v", err)
 	}
@@ -160,7 +160,7 @@ func TestFetchContributorActivityAllExpensiveFailsSystemic(t *testing.T) {
 		logins[i] = fmt.Sprintf("user%d", i)
 	}
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	_, err := client.FetchContributorActivity(t.Context(), logins)
+	_, _, err := client.FetchContributorActivity(t.Context(), logins)
 	if err == nil {
 		t.Fatal("a chunk where every account RLEs at size 1 is the systemic incident shape and must FAIL")
 	}
@@ -218,7 +218,7 @@ func TestFetchContributorActivityServerErrorFastFailAndSkip(t *testing.T) {
 	defer srv.Close()
 
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	got, err := client.FetchContributorActivity(t.Context(), []string{poison, "healthy-user"})
+	got, _, err := client.FetchContributorActivity(t.Context(), []string{poison, "healthy-user"})
 	if err != nil {
 		t.Fatalf("a single 500-drawing account must not fail the batch: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestFetchContributorActivityRateLimitedBubblesWithoutSubdivision(t *testing
 	defer srv.Close()
 
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	_, err := client.FetchContributorActivity(t.Context(), []string{"alice", "bob"})
+	_, _, err := client.FetchContributorActivity(t.Context(), []string{"alice", "bob"})
 	if err == nil {
 		t.Fatal("RATE_LIMITED must fail the fetch")
 	}

@@ -473,7 +473,9 @@ func TestWhitespaceWalkRefusesToStampOverMissingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(store)
-	if !strings.Contains(s, "func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat) (updated, matched int64, err error)") {
+	// v0.29.56 added the unmatched-key sample the refusal message names;
+	// the matched count itself is unchanged.
+	if !strings.Contains(s, "func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat, sampleRoom int) (updated, matched int64, unmatched []string, err error)") {
 		t.Error("UpdateCommitWhitespaceBatch must return a matched count independent of the IS DISTINCT guard (the existence probe)")
 	}
 	walk, err := os.ReadFile("../collector/whitespace.go")
@@ -601,7 +603,13 @@ func TestWhitespaceProbeSharesUpdateSnapshot(t *testing.T) {
 		t.Error("the update and the existence probe must run as ONE statement (CTE) — two statements = two snapshots = false coverage from concurrent inserts")
 	}
 	if strings.Count(body, "s.pool.QueryRow") != 1 || strings.Contains(body, "s.pool.Exec") {
-		t.Error("UpdateCommitWhitespaceBatch must issue exactly one SQL statement per chunk")
+		t.Error("UpdateCommitWhitespaceBatch's COVERAGE accounting must be one SQL statement per chunk (the unmatched-key sample is a separate read-only query in its own function, and only for a short chunk)")
+	}
+	// v0.29.56: the unmatched-key sample is a separate read-only query in
+	// its own function, and runs only for a chunk that came back short, so
+	// the coverage accounting still comes from the single CTE above.
+	if strings.Contains(body, "LEFT JOIN") {
+		t.Error("the unmatched-key sample (a LEFT JOIN anti-join) must not be inlined into the coverage statement")
 	}
 }
 

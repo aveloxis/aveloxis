@@ -50,7 +50,7 @@ func TestFetchContributorActivityBatchesAndDecodes(t *testing.T) {
 	defer srv.Close()
 
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	got, err := client.FetchContributorActivity(t.Context(), []string{"active-user", "gone-user", "new-user"})
+	got, _, err := client.FetchContributorActivity(t.Context(), []string{"active-user", "gone-user", "new-user"})
 	if err != nil {
 		t.Fatalf("FetchContributorActivity: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestFetchContributorActivitySplitsLargeBatches(t *testing.T) {
 		logins[i] = fmt.Sprintf("user%d", i)
 	}
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	if _, err := client.FetchContributorActivity(t.Context(), logins); err != nil {
+	if _, _, err := client.FetchContributorActivity(t.Context(), logins); err != nil {
 		t.Fatalf("FetchContributorActivity: %v", err)
 	}
 	if queries != 2 {

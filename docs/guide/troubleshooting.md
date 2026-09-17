@@ -822,9 +822,54 @@ level=WARN msg="collection still paused — database unavailable" unavailable_fo
 level=INFO  msg="database back — resuming collection" unavailable_for=...
 ```
 
+Since v0.29.56 both WARN lines also carry the connection pool's state
+(`pool_max_conns`, `pool_total_conns`, `pool_acquired_conns`, `pool_idle_conns`,
+`pool_empty_acquires`, `pool_acquire_wait_total`). That is what separates the
+two causes: every connection acquired with waiters piling up means the pool was
+too small for the work in flight, while idle connections mean the server stopped
+answering.
+
 and the outage is recorded in `aveloxis_ops.aveloxis_status` (`status_name='database'`; `status='unavailable'` during the outage where writable, `status='ok'` with the recovery duration in `status_detail` afterward). In-flight jobs running at the instant of the restart still error and re-queue (that's expected), but no *new* work is dispatched into the dead window, which also avoids the reconnect deadlock pile-up.
 
 Still fix the host trigger (above) — pausing is graceful degradation, not a substitute for not restarting Postgres under a live fleet. The pre-v0.25.25 behavior (no backoff → `57P03` storm) is what bloats the log; if you're on an older build, truncate on restart (`aveloxis stop all && : > ~/.aveloxis/aveloxis.log && aveloxis start all`).
+
+---
+
+## `process stalled` — the whole collector stops for seconds at a time
+
+**Symptom (v0.29.56+)**
+
+```
+level=WARN msg="process stalled — the scheduler heartbeat was late; collection threads were not running"
+  late=12.4s heartbeat_interval=1s goroutines=412 gc_pause_total=1m2s gc_cycles=8123
+  heap_in_use_mb=1840 host_pressure="cpu=41.20 io=8.90 memory=0.00"
+```
+
+`aveloxis serve` runs a heartbeat that wakes every second. It reports only when
+it was woken later than the database probe deadline (5 s) — a stall that long is
+one that can also fail a probe and pause collection.
+
+**What the line tells you**
+
+- **A late heartbeat means the process itself was not running.** Nothing in the
+  collector can delay it: it does no I/O and takes no locks. The causes are
+  outside it — the host is short of CPU, the process is being swapped, or the Go
+  runtime paused the world.
+- `host_pressure` is Linux's pressure-stall information (the share of the last
+  10 seconds during which work was stalled waiting for that resource). `cpu`
+  high means the host is oversubscribed; `io` high means the disk is the
+  bottleneck; `memory` above zero means reclaim, often the start of swapping.
+  It is empty on macOS and on kernels without it.
+- `gc_pause_total` is cumulative for the process, so compare consecutive lines:
+  a jump of seconds between two stalls points at garbage collection, a flat
+  figure rules it out.
+
+**What it rules out.** If the log goes quiet but the heartbeat stays on time,
+the process was running and the workers were blocked — on the database, on a
+subprocess, or on the network. Check the pool state in the
+`database unavailable` lines above, and `pg_stat_activity` for lock waits.
+
+The detector only observes. It never cancels or kills anything.
 
 ---
 

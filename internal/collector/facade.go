@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -119,7 +120,7 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 }
 
 func (f *FacadeCollector) clonePath(repoID int64) string {
-	return filepath.Join(f.repoDir, fmt.Sprintf("repo_%d", repoID))
+	return BareClonePath(f.repoDir, repoID)
 }
 
 // ensureClone either fetches updates for an existing bare clone or creates a new one.
@@ -771,4 +772,31 @@ func resolveDefaultBranch(ctx context.Context, clonePath string) string {
 	ref := strings.TrimSpace(string(out))
 	// Return the full ref so git log can use it directly.
 	return ref
+}
+
+// BareClonePath is where a repo's bare clone lives under a clone
+// directory. One spelling for the facade (which creates it), analysis
+// (which needs it) and the scheduler (which skips phases without it).
+func BareClonePath(cloneDir string, repoID int64) string {
+	return filepath.Join(cloneDir, fmt.Sprintf("repo_%d", repoID))
+}
+
+// HasBareClone reports whether a repo's bare clone exists. A repository
+// that could not be fetched at all (DMCA takedown, disabled by GitHub,
+// deleted) has none, and every phase that reads the clone — analysis,
+// scorecard's local mode — can only fail (v0.29.56: 8 repos in two hours
+// of the 2026-09-17 log logged "analysis failed: no bare clone" and then
+// spent a remote scorecard run each to be told the repository is
+// unreachable).
+func HasBareClone(cloneDir string, repoID int64) bool {
+	_, err := os.Stat(filepath.Join(BareClonePath(cloneDir, repoID), "HEAD"))
+	if err == nil {
+		return true
+	}
+	// Only a genuine "not there" means there is no clone. A stat that fails
+	// for any other reason (an unreadable or unmounted clone directory) says
+	// nothing, and reading it as "no clone" would assert a takedown or
+	// deletion that did not happen — and silently skip analysis and
+	// scorecard fleet-wide (SR-16: a probe needs an error arm).
+	return !errors.Is(err, fs.ErrNotExist)
 }

@@ -220,16 +220,59 @@ func sliceContains(list []string, s string) bool {
 	return false
 }
 
-// purlWithVersion swaps the version suffix of a purl
-// ("pkg:npm/express@4.18.0" → "pkg:npm/express@4.19.2"). The version
-// separator is the LAST '@' — npm scoped names ("pkg:npm/@scope/name@1.0")
-// carry an earlier '@' that must not be touched; an '@' followed by a
-// '/' is a scope marker, not a version separator.
-func purlWithVersion(purl, version string) string {
-	if at := strings.LastIndex(purl, "@"); at > 0 && !strings.Contains(purl[at:], "/") {
-		return purl[:at+1] + version
+// TWO purl version rules live in this file, and they answer different
+// questions (v0.29.56 — a review asked whether they could be one):
+//
+//   - purlSplitVersion — "where would OSV split this?" The receiver's
+//     rule: the LAST '@', whatever follows it. Used by wireValidPurl,
+//     because what matters at the gate is what the RECEIVER will parse.
+//     This is what catches a name region that OSV reads as empty
+//     ("purl is missing name", the 2026-09-17 batch failure).
+//   - purlScopeAwareBase — "where do I replace the version?" Our rule:
+//     an '@' followed by a '/' is a scope marker, not a version
+//     separator, so "pkg:npm/@scope/name" keeps its name. Used by the
+//     two rebuilders; OSV's rule would cut that purl to "pkg:npm/".
+//
+// They cannot be merged without breaking one of the two.
+//
+// Known, accepted consequence: a legacy row whose stored purl is already
+// mis-split ("pkg:npm/registry.npmjs.org/@jest/transform/26.0.1", the shape
+// v0.29.56's lockfile fix stops producing) is REJECTED by the gate as it
+// stands, but once a lockfile supplies a resolved version the rebuilt purl
+// ends in a real version and passes. It then queries OSV under a name no
+// package has, which matches nothing — a wasted query, not a wrong finding
+// — and the row heals on the repo's next analysis. Guarding the rebuilders
+// on the gate was tried and reverted: purlReplaceVersion exists to clean
+// exactly these malformed stored purls at read time (v0.27.72, the
+// heal-vulnerabilities path), so refusing to rebuild them defeats the heal.
+func purlSplitVersion(purl string) (base, version string) {
+	cut := purl
+	if i := strings.LastIndexByte(cut, '#'); i >= 0 {
+		cut = cut[:i]
 	}
-	return purl + "@" + version
+	if i := strings.IndexByte(cut, '?'); i >= 0 {
+		cut = cut[:i]
+	}
+	at := strings.LastIndexByte(cut, '@')
+	if at < 0 {
+		return purl, ""
+	}
+	return purl[:at], purl[at+1:]
+}
+
+// purlScopeAwareBase returns a purl without its version, treating an '@'
+// followed by a '/' as a scope marker. See the note on purlSplitVersion.
+func purlScopeAwareBase(purl string) string {
+	if at := strings.LastIndex(purl, "@"); at > 0 && !strings.Contains(purl[at:], "/") {
+		return purl[:at]
+	}
+	return purl
+}
+
+// purlWithVersion swaps the version suffix of a purl
+// ("pkg:npm/express@4.18.0" → "pkg:npm/express@4.19.2").
+func purlWithVersion(purl, version string) string {
+	return purlScopeAwareBase(purl) + "@" + version
 }
 
 // wireValidPurl (v0.27.73) is the last-line syntactic gate before a
@@ -267,14 +310,23 @@ func wireValidPurl(p string) bool {
 			}
 		}
 	}
-	nameRegion := rest[slash+1:]
-	if at := strings.LastIndex(nameRegion, "@"); at >= 0 && !strings.Contains(nameRegion[at:], "/") {
-		nameRegion = nameRegion[:at]
+	// Parse like the purl spec (and OSV): drop "#subpath" and "?qualifiers",
+	// then split the version at the LAST '@'. What remains must be a
+	// non-blank name with no empty path segment. v0.29.56: the gate kept an
+	// '@' followed by '/' in the name, so a mis-split pnpm lockfile key
+	// ("pkg:npm/registry.npmjs.org/@jest/transform/26.0.1") passed here and
+	// OSV rejected the repository's whole batch: "purl is missing name".
+	nameRegion, _ := purlSplitVersion(rest[slash+1:])
+	if i := strings.LastIndexByte(nameRegion, '#'); i >= 0 {
+		nameRegion = nameRegion[:i]
+	}
+	if i := strings.IndexByte(nameRegion, '?'); i >= 0 {
+		nameRegion = nameRegion[:i]
 	}
 	if strings.Trim(strings.ReplaceAll(nameRegion, "%20", " "), " /") == "" {
 		return false
 	}
-	return true
+	return !strings.HasSuffix(nameRegion, "/") && !strings.Contains(nameRegion, "//")
 }
 
 func isHexByte(c byte) bool {
@@ -288,17 +340,16 @@ func isHexByte(c byte) bool {
 // until each repo's analysis re-runs, so the scan rebuilds purls from
 // normalizeParsedVersion output at READ time — which is what lets
 // `aveloxis heal-vulnerabilities` clean up the malformed-purl false
-// positives immediately after deploy. Same scope-marker rule as
-// purlWithVersion.
+// positives immediately after deploy. Uses the scope-aware base — see the
+// note on purlSplitVersion for why the gate and the rebuilders split
+// differently.
 func purlReplaceVersion(purl, version string) string {
 	if purl == "" {
 		return ""
 	}
-	if at := strings.LastIndex(purl, "@"); at > 0 && !strings.Contains(purl[at:], "/") {
-		purl = purl[:at]
-	}
+	base := purlScopeAwareBase(purl)
 	if version == "" {
-		return purl
+		return base
 	}
-	return purl + "@" + purlEscapeSegment(version)
+	return base + "@" + purlEscapeSegment(version)
 }

@@ -47,7 +47,7 @@ func TestFetchContributorActivityFailsOnResourceLimits(t *testing.T) {
 	defer srv.Close()
 
 	client := New(srv.URL, platform.NewKeyPool([]string{"t"}, logger), logger)
-	_, err := client.FetchContributorActivity(t.Context(), []string{"alice", "bob"})
+	_, _, err := client.FetchContributorActivity(t.Context(), []string{"alice", "bob"})
 	if err == nil {
 		t.Fatal("RESOURCE_LIMITS_EXCEEDED on every alias must FAIL the fetch — " +
 			"an empty-but-successful result gets every claimed contributor " +
@@ -71,7 +71,7 @@ func TestLiveFetchContributorActivity(t *testing.T) {
 	keys := platform.NewKeyPool([]string{tok}, logger)
 	client := New("https://api.github.com", keys, logger)
 
-	got, err := client.FetchContributorActivity(t.Context(),
+	got, _, err := client.FetchContributorActivity(t.Context(),
 		[]string{"torvalds", "sgoggins", "this-login-does-not-exist-avx"})
 	if err != nil {
 		t.Fatalf("FetchContributorActivity: %v", err)

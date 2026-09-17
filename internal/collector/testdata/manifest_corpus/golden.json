@@ -19,14 +19,16 @@
       "version": "",
       "requirement": "fork = { git = \"https://github.com/x/y\" }",
       "type": "runtime",
-      "manager": "cargo"
+      "manager": "cargo",
+      "non_registry": true
     },
     {
       "name": "local",
       "version": "",
       "requirement": "local = { path = \"../..\" }",
       "type": "runtime",
-      "manager": "cargo"
+      "manager": "cargo",
+      "non_registry": true
     },
     {
       "name": "serde",
@@ -291,7 +293,8 @@
       "version": "",
       "requirement": "workspace:^",
       "type": "runtime",
-      "manager": "npm"
+      "manager": "npm",
+      "non_registry": true
     },
     {
       "name": "internal-b",
@@ -305,7 +308,8 @@
       "version": "",
       "requirement": "file:../../../tools/eslint",
       "type": "runtime",
-      "manager": "npm"
+      "manager": "npm",
+      "non_registry": true
     },
     {
       "name": "typescript",

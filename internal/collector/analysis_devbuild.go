@@ -157,23 +157,25 @@ func parsePyprojectDevBuildVersions(content string) []libyearDep {
 		case kvScope != "" && strings.Contains(trimmed, "=") && !strings.HasPrefix(trimmed, "#"):
 			parts := strings.SplitN(trimmed, "=", 2)
 			name := strings.TrimSpace(parts[0])
-			version := cleanVersion(strings.Trim(strings.TrimSpace(parts[1]), "\"'^~>= {}"))
-			// Poetry table values ({version = "...", optional = true})
-			// carry the version inside; fall back to the raw trim.
-			if strings.Contains(parts[1], "version") {
-				for _, kv := range strings.Split(strings.Trim(strings.TrimSpace(parts[1]), "{}"), ",") {
-					kv = strings.TrimSpace(kv)
-					if strings.HasPrefix(kv, "version") {
-						if _, v, found := strings.Cut(kv, "="); found {
-							version = cleanVersion(strings.Trim(strings.TrimSpace(v), "\"'^~>="))
-						}
-						break
-					}
+			raw := strings.TrimSpace(parts[1])
+			if name == "" || name == "python" {
+				continue
+			}
+			version := ""
+			if strings.HasPrefix(raw, "{") {
+				// Poetry's group tables build deps the same way its runtime
+				// table does, so they take the same rule through the same
+				// helpers (SR-17): a path/git/url source is not the PyPI
+				// package of that name, and the version lives under the
+				// version key, not in the table body.
+				if pythonTableIsNonRegistry(raw) {
+					continue
 				}
+				version = cleanVersion(pythonTableVersion(raw))
+			} else {
+				version = cleanVersion(strings.Trim(raw, "\"'^~>="))
 			}
-			if name != "" && name != "python" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: kvScope, Manager: "pypi"})
-			}
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: kvScope, Manager: "pypi"})
 		}
 	}
 	return deps

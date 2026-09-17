@@ -94,26 +94,10 @@ func TestNPMResolverNoLongerExecsNPM(t *testing.T) {
 	}
 }
 
-// TestRegistryFetchSendsUserAgent pins the crates.io fix: every
-// registry curl carries an identifying User-Agent (crates.io 403s
-// curl's default UA, which zeroed ALL cargo rows since inception).
-func TestRegistryFetchSendsUserAgent(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	idx := strings.Index(s, "func fetchRegistryJSON(")
-	if idx < 0 {
-		t.Fatal("fetchRegistryJSON not found")
-	}
-	// v0.27.30: the transport moved curl → net/http; the invariant
-	// (identifying UA on every registry request) is transport-agnostic.
-	body := s[idx : idx+1200]
-	if !strings.Contains(body, `req.Header.Set("User-Agent", "aveloxis/"`) {
-		t.Error("fetchRegistryJSON must send an identifying User-Agent — crates.io rejects anonymous default UAs with 403 (zeroed ALL cargo rows since inception)")
-	}
-}
+// TestRegistryFetchSendsUserAgent (the v0.27.30 source pin on
+// fetchRegistryJSON's body) was replaced in v0.29.56 by the behavioral
+// TestRegistryRequestsIdentifyThemselves: the request is now built in
+// doRegistryRequest and HEAD requests need the same header.
 
 // TestLibyearResolveFailuresAreLogged pins the house everything-that-
 // errors-is-logged rule on the resolve loop: the silent `continue`

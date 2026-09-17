@@ -369,6 +369,14 @@ var deployChecklists = map[string][]deployStep{
 	// enrichment no longer stamps rate-limited lookups as enriched. No
 	// schema change, no new operator step.
 	"0.29.55": v029DeployChecklist,
+	// v0.29.56: the libyear registry layer (Go proxy case encoding, Maven
+	// Central's repository instead of the search API, GitHub lookups
+	// through the key pool, a shared answer cache and crates.io pacing),
+	// the JavaScript lockfile name split, GitHub's in-body GraphQL
+	// execution timeout classified retryable, and a stall detector. No
+	// schema change, no new operator step: the affected rows are rewritten
+	// by each repo's next analysis.
+	"0.29.56": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

@@ -48,10 +48,11 @@ const whitespaceUpdateChunk = 5000
 // incremental walk would never revisit their whitespace. The caller
 // compares matched against its emitted-stat total and refuses the
 // stamp on shortfall.
-func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat) (updated, matched int64, err error) {
+func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID int64, stats []CommitWhitespaceStat, sampleRoom int) (updated, matched int64, unmatched []string, err error) {
 	for start := 0; start < len(stats); start += whitespaceUpdateChunk {
 		end := min(start+whitespaceUpdateChunk, len(stats))
 		chunk := stats[start:end]
+		matchedBefore := matched
 		hashes := make([]string, len(chunk))
 		files := make([]string, len(chunk))
 		added := make([]int32, len(chunk))
@@ -113,10 +114,73 @@ func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID 
 			return perr
 		})
 		if cerr != nil {
-			return updated, matched, fmt.Errorf("whitespace batch update (chunk at %d): %w", start, cerr)
+			return updated, matched, unmatched, fmt.Errorf("whitespace batch update (chunk at %d): %w", start, cerr)
+		}
+		// v0.29.56: name the rows that matched nothing. The walker refuses
+		// to stamp its marker when any stat is unmatched, and the WARN
+		// carried only counts ("1 of 266"), which is not enough to tell a
+		// missing commit row from a filename the two walks spell
+		// differently. Only runs for a chunk that is actually short AND
+		// while the caller still has room for more keys (sampleRoom), so
+		// neither the happy path nor a repo where everything misses pays
+		// for samples nobody reads.
+		if matchedChunk := matched - matchedBefore; matchedChunk < int64(len(chunk)) && len(unmatched) < sampleRoom {
+			sample, serr := s.unmatchedWhitespaceKeys(ctx, repoID, hashes, files, sampleRoom-len(unmatched))
+			if serr != nil && !errors.Is(serr, context.Canceled) {
+				// A cancelled context is a `stop serve`, not a failure; the
+				// walk is redone next cycle either way.
+				s.logger.Warn("whitespace: could not list the unmatched commit rows", "repo_id", repoID, "error", serr)
+			}
+			unmatched = append(unmatched, sample...)
 		}
 	}
-	return updated, matched, nil
+	return updated, matched, unmatched, nil
+}
+
+// WhitespaceUnmatchedSample is how many unmatched keys the WALK reports.
+// The walker passes what is left of it as sampleRoom, so this file no
+// longer caps anything itself.
+const WhitespaceUnmatchedSample = 5
+
+// unmatchedWhitespaceKeys lists up to limit "hash filename" keys from this
+// chunk that have no commit row.
+func (s *PostgresStore) unmatchedWhitespaceKeys(ctx context.Context, repoID int64, hashes, files []string, limit int) ([]string, error) {
+	var out []string
+	// Same deadlock retry (40P01) as the coverage statement above — that is
+	// all withRetry covers. Any other failure returns on the first attempt
+	// and the caller logs it, so the refusal message says "none reported"
+	// rather than implying there were no unmatched rows.
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		keys, qerr := s.unmatchedWhitespaceKeysOnce(ctx, repoID, hashes, files, limit)
+		out = keys
+		return qerr
+	})
+	return out, err
+}
+
+func (s *PostgresStore) unmatchedWhitespaceKeysOnce(ctx context.Context, repoID int64, hashes, files []string, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT v.hash || ' ' || v.filename
+		FROM (SELECT unnest($2::text[]) AS hash, unnest($3::text[]) AS filename) v
+		LEFT JOIN aveloxis_data.commits c
+		       ON c.repo_id = $1
+		      AND c.cmt_commit_hash = v.hash
+		      AND c.cmt_filename = v.filename
+		WHERE c.cmt_commit_hash IS NULL
+		LIMIT $4`, repoID, hashes, files, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return out, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
 }
 
 // GetWhitespaceHead reads the repo's whitespace walk marker — the

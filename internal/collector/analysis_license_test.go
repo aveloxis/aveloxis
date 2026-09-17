@@ -113,31 +113,10 @@ func TestParsePyPIClassifierLicense(t *testing.T) {
 	}
 }
 
-// TestGoLibyearHasLicenseFallback verifies the Go resolver fetches license from
-// the GitHub API when the Go proxy doesn't provide one.
-func TestGoLibyearHasLicenseFallback(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	idx := strings.Index(code, "func resolveGoLibyear(")
-	if idx < 0 {
-		t.Fatal("cannot find resolveGoLibyear")
-	}
-	fnBody := code[idx:]
-	// Find end of function (next func declaration or reasonable boundary)
-	endIdx := strings.Index(fnBody[100:], "\nfunc ")
-	if endIdx > 0 {
-		fnBody = fnBody[:endIdx+100]
-	}
-
-	// Must have a license fallback — not just the empty string comment.
-	if strings.Contains(fnBody, `License:            ""`) && !strings.Contains(fnBody, "fetchGoModuleLicense") {
-		t.Error("resolveGoLibyear must not hardcode empty license — needs a fallback (fetchGoModuleLicense)")
-	}
-}
+// TestGoLibyearHasLicenseFallback (a source pin on resolveGoLibyear
+// calling the anonymous fetchGoModuleLicense) was replaced in v0.29.56 by
+// TestGoModuleLicenseUsesKeyedGitHubClientAndCaches: the lookup now runs
+// in scanLibyear through the key pool, cached per owner/repo.
 
 // TestCargoVersionNormalization verifies cargo resolver normalizes versions
 // before matching. "1.0" in Cargo.toml should match "1.0.0" on crates.io.

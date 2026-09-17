@@ -53,6 +53,10 @@ type corpusDep struct {
 	Requirement string `json:"requirement"`
 	Type        string `json:"type"`
 	Manager     string `json:"manager"`
+	// NonRegistry (v0.29.56) records the classification that decides
+	// whether a dep is looked up in its registry at all, so the golden
+	// diff shows it.
+	NonRegistry bool `json:"non_registry,omitempty"`
 }
 
 // parseCorpusFile dispatches a fixture to the same parser the analysis

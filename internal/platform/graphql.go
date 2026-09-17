@@ -190,6 +190,10 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// F3).
 	var lastRateLimit error
 	rateLimitAttempt := -1
+	// lastTimeout / timeoutAttempt: the same final-attempt rule for GitHub's
+	// in-body execution timeout (v0.29.56), so an exhausted budget names it.
+	var lastTimeout error
+	timeoutAttempt := -1
 
 	// Copilot round 24 (PR #193): an in-body rate-limit rotation swaps to a
 	// FRESH key — it is not a transport retry and must not spend the fixed
@@ -406,6 +410,21 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				}
 				continue
 			}
+			if errors.Is(parsed, ErrGraphQLExecutionTimeout) {
+				// v0.29.56: GitHub could not finish the query. It is
+				// intermittent, so retry it like a 5xx (same backoff, same
+				// budget); an exhausted budget returns the timeout itself,
+				// which classifies ClassTransient for subdivision callers.
+				lastTimeout = parsed
+				timeoutAttempt = attempt
+				wait := jitteredBackoff(attempt)
+				c.logger.Warn("graphql execution timeout, retrying with backoff",
+					"url", url, "query", query, "wait", wait, "attempt", attempt+1, "error", parsed)
+				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+					return err
+				}
+				continue
+			}
 			return parsed
 
 		case resp.StatusCode == http.StatusUnauthorized:
@@ -557,6 +576,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		// transient wrap.
 		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastRateLimit)
 	}
+	if lastTimeout != nil && timeoutAttempt == budget-1 {
+		// The final attempt was GitHub's execution timeout: return it (it
+		// classifies ClassTransient and names the condition).
+		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastTimeout)
+	}
 	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
 }
 
@@ -670,7 +694,14 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 		// rate limit left in the partial arm returns an
 		// empty-but-successful result that bypasses the mark/rotate
 		// machinery entirely.
-		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" || isGraphQLRateLimitError(e) {
+		// v0.29.56: the execution timeout hoists for the same reason. The
+		// 2026-09-17 samples were all pathless, but its two siblings above
+		// both arrive per-path, and left in the partial arm it would be
+		// logged, swallowed, and its null nodes read as ABSENT — which for
+		// the activity sweep means mark-stamping those contributors for a
+		// whole cooldown on a query that never ran.
+		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" || isGraphQLRateLimitError(e) ||
+			isGraphQLExecutionTimeout(e) {
 			globalErrs = append(globalErrs, e)
 		} else {
 			partialErrs = append(partialErrs, e)
@@ -724,6 +755,14 @@ func isGraphQLRateLimitError(e graphqlError) bool {
 		strings.Contains(strings.ToLower(e.Message), "rate limit")
 }
 
+// isGraphQLExecutionTimeout recognizes GitHub's answer for a query its
+// resolver could not finish (ErrGraphQLExecutionTimeout). The error has no
+// type, so the message prefix is the only signal; a typed error is never
+// read as one.
+func isGraphQLExecutionTimeout(e graphqlError) bool {
+	return e.Type == "" && strings.HasPrefix(e.Message, "Something went wrong while executing your query")
+}
+
 // rateLimitTypeOrDefault names the rate-limit error type in the message,
 // falling back to the documented spelling for typeless variants.
 func rateLimitTypeOrDefault(t string) string {
@@ -764,6 +803,15 @@ func classifyGraphQLErrors(errs []graphqlError) error {
 				class:   ClassTransient,
 				message: "graphql RESOURCE_LIMITS_EXCEEDED (query too expensive — subdivide the batch): " + e.Message,
 				wrapped: ErrResourceLimits,
+			}
+		}
+	}
+	for _, e := range errs {
+		if isGraphQLExecutionTimeout(e) {
+			return &classifiedGraphQLError{
+				class:   ClassTransient,
+				message: "graphql execution timeout (GitHub could not finish the query; retry, then subdivide): " + e.Message,
+				wrapped: ErrGraphQLExecutionTimeout,
 			}
 		}
 	}
@@ -834,6 +882,19 @@ var ErrNotGraphQLClassified = errors.New("graphql: not classified")
 // are in the batch, so no fixed batch size is safe without
 // subdivision.
 var ErrResourceLimits = errors.New("graphql resource limits exceeded")
+
+// ErrGraphQLExecutionTimeout (v0.29.56) marks GitHub's answer for a query
+// its resolver could not finish: HTTP 200 with a single TYPELESS
+// top-level error, "Something went wrong while executing your query …
+// Please include `ID` when reporting this issue." GitHub's own text for
+// it says it may be the result of a timeout. It is intermittent (the
+// 2026-09-17 probe re-ran the batch that had failed 7 production ticks
+// running and all 100 queries succeeded), so the GraphQL loop retries it
+// like a 5xx and an exhausted budget classifies ClassTransient, which is
+// what subdivision callers act on. It is deliberately NOT
+// ErrResourceLimits: that is the one condition where halving provably
+// helps.
+var ErrGraphQLExecutionTimeout = errors.New("graphql execution timeout")
 
 // isRetryableReadError classifies an error surfaced while READING or
 // DECODING a 200-OK response body — GraphQL (io.ReadAll) and REST

@@ -335,6 +335,15 @@ var deployChecklists = map[string][]deployStep{
 	// retries it) instead of being marked failed for good; only an error in
 	// the item's own data marks it failed. No schema change.
 	"0.29.49": v029DeployChecklist,
+	// v0.29.50: Copilot reviews of PR #207 on eb248eb and review round 23. A
+	// foreign-key or unique violation while adding an approved item is
+	// retryable (a concurrent delete or dedup can cause it), not a permanent
+	// failure; an auto-approved add marks a failed repo failed, adds the rest
+	// and tells the user; a failed digest query keeps its window. OPERATORS:
+	// mail.site_url must now be an absolute http(s) URL with a host and no
+	// query or fragment, or the mailer is disabled at startup (WARN "mailer
+	// configuration invalid"). No schema change.
+	"0.29.50": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

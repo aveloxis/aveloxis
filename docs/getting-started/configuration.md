@@ -398,7 +398,7 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 | `mail.vuln_digest_include_dev` | bool | `false` | v0.27.46 (summary/19 P3): include findings on non-runtime-scope dependencies (dev/test/build/optional/peer) in the operator digest. Default off so the `dev_build_deps` Python expansion never floods the email; runtime-scope findings always digest. |
 | `mail.gmail_app_password` | string | The 16-character App Password (spaces allowed). Not the account's regular password. |
 | `mail.from_name` | string | Display name shown in recipients' inboxes. |
-| `mail.site_url` | string | Public-facing URL used in email body links. Set it in production: without it, email confirmation links are sent only with `web.dev_mode` on and a loopback request Host (`localhost`, `127.0.0.1`, `[::1]`, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. A reverse proxy on the same host that does not forward `Host` makes every request look loopback, which is why dev_mode is required. |
+| `mail.site_url` | string | Public-facing URL used in email body links: an absolute `http://` or `https://` URL with a host and no query, fragment or user name (any other value fails mail validation, which disables the mailer). Set it in production: without it, email confirmation links are sent only with `web.dev_mode` on and a loopback request Host (`localhost`, `127.0.0.1`, `[::1]`, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. A reverse proxy on the same host that does not forward `Host` makes every request look loopback, which is why dev_mode is required. |
 
 ### Logging
 
@@ -576,7 +576,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 | `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer: no email is sent, the account-email form refuses new addresses (no confirmation link could reach them), and users without an address are let into the dashboard instead of being sent to that form. |
 | `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
 | `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
-| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Required for email confirmation links outside local development: the request `Host` header is client-controlled (and a same-host proxy can make it read `127.0.0.1`), so it builds a link only when `web.dev_mode` is on. Without `site_url`, the account-email form refuses new addresses and users without an address are let into the dashboard. |
+| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Must be an absolute `http://` or `https://` URL with a host and no query, fragment or user name; any other value fails validation. Required for email confirmation links outside local development: the request `Host` header is client-controlled (and a same-host proxy can make it read `127.0.0.1`), so it builds a link only when `web.dev_mode` is on. Without `site_url`, the account-email form refuses new addresses and users without an address are let into the dashboard. |
 
 ### Validation at startup
 
@@ -585,6 +585,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 - `mail.gmail_user "aveloxis.io" is not an email address` — you set the bare domain. Use the full address (`ops@aveloxis.io`).
 - `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.
 - `mail.gmail_user is empty but mail.gmail_app_password is set` (or vice versa) — partial config. Either fill both fields or empty both.
+- `mail.site_url must be an absolute http:// or https:// URL with a host` (or `must not contain a query (?), a fragment (#), a user name or spaces`) — the value would make links that cannot be followed, such as a bare domain. Use the full public URL (`https://aveloxis.example`).
 
 When validation fails, the mailer falls back to disabled behavior so the rest of the application keeps working: no email is sent, and every send returns a "not configured" error. Notification emails (welcome, approval and add-request) ignore that error; `aveloxis test-mail` refuses before sending and exits non-zero with the validation error, `aveloxis serve` does not start the vulnerability digest and logs an ERROR saying why, and the account-email form refuses new addresses. Fix the config and restart the processes (`aveloxis stop all`, then `aveloxis start all`) to enable the mailer.
 
@@ -702,11 +703,12 @@ Semantics worth knowing:
 - The very first digest after enabling covers only one interval back,
   NOT all history — enabling the feature on an established fleet does
   not dump the entire findings table into one email.
-- A failed send is retried with the SAME window on the next hourly
-  check (nothing is dropped); the window only advances after a
-  successful send or a quiet evaluation. That holds on the very first
-  run too: a first send that fails pins its window in the stamp file
-  (v0.29.29).
+- A failed send, or a findings query that fails or is interrupted by a
+  shutdown, is retried with the SAME window on the next check (nothing
+  is dropped); the window only advances after a successful send or a
+  quiet evaluation. That holds on the very first run too: a first run
+  whose query or send fails pins its window in the stamp file (v0.29.29
+  for a send, v0.29.50 for the query).
 - The digest only starts when it could be delivered. With the mailer
   disabled, or an `operator_email` that is not one deliverable address
   (a comma list, say), `aveloxis serve` logs

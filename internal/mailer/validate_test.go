@@ -149,3 +149,53 @@ func TestValidateAndLogNamesTheOperatorAddress(t *testing.T) {
 		t.Errorf("the configured-mailer line must name operator_email; log:\n%s", logs.String())
 	}
 }
+
+// TestValidateConfigSiteURL: mail.site_url starts every link the mailer
+// writes, so an enabled mailer accepts only an absolute http or https URL with
+// a host and no query, fragment or user info; anything else fails validation,
+// which disables the mailer. "aveloxis.example" made a relative confirmation
+// link and "https://aveloxis.example?x=1" put the token inside another query
+// (Copilot review of PR #207 on eb248eb). A disabled mailer ignores site_url.
+func TestValidateConfigSiteURL(t *testing.T) {
+	for _, site := range []string{
+		"",
+		"https://aveloxis.example",
+		"http://localhost:8082",
+		"https://aveloxis.example/aveloxis/",
+		" https://aveloxis.example ",
+		"HTTPS://Aveloxis.example",
+		"https://[::1]:8443",
+	} {
+		if err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site}); err != nil {
+			t.Errorf("site_url %q: %v; want it accepted", site, err)
+		}
+	}
+	for _, site := range []string{
+		"aveloxis.example",
+		"//aveloxis.example",
+		"/account",
+		"ftp://aveloxis.example",
+		"javascript:alert(1)",
+		"https:aveloxis.example",
+		"https://",
+		"https://:8443",
+		"https://aveloxis.example?x=1",
+		"https://aveloxis.example/?",
+		"https://aveloxis.example#top",
+		"https://aveloxis.example/#",
+		"https://ops:secret@aveloxis.example",
+		"https://aveloxis.example/a b",
+		"https://aveloxis .example",
+	} {
+		err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site})
+		if err == nil || !strings.Contains(err.Error(), "mail.site_url") {
+			t.Errorf("site_url %q: %v; want an error naming mail.site_url", site, err)
+		}
+		if err := ValidateConfig(Config{SiteURL: site}); err != nil {
+			t.Errorf("site_url %q with the mailer disabled: %v; want nil", site, err)
+		}
+	}
+	if m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: "aveloxis.example"}, nil); m.Enabled() || m.SiteURL() != "" {
+		t.Errorf("New with site_url %q: enabled=%v site=%q; want the mailer disabled", "aveloxis.example", m.Enabled(), m.SiteURL())
+	}
+}

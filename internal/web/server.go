@@ -1259,6 +1259,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"TotalRepos": totalRepos,
 		"Query":      query,
 		"PageWindow": pageWindow,
+		"AddError":   r.URL.Query().Get("add_error") == "1",
 	})
 }
 
@@ -1302,14 +1303,17 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				s.cfg.AutoApproveAddLimitValue())
 			if err != nil {
 				s.logger.Warn("failed to add repos to group", "group_id", groupID, "error", err)
-			} else {
-				s.logger.Info("repo add", "group_id", groupID,
-					"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
-				if out.Pending > 0 {
-					s.notifyAddRequestSubmitted(out.RequestID)
-					http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
-					return
-				}
+				// Tell the user, who otherwise sees the page a success shows
+				// (Copilot review of PR #207).
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=1", groupID), http.StatusFound)
+				return
+			}
+			s.logger.Info("repo add", "group_id", groupID,
+				"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
+			if out.Pending > 0 {
+				s.notifyAddRequestSubmitted(out.RequestID)
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
+				return
 			}
 		}
 		if len(invalid) > 0 {

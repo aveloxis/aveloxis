@@ -31,6 +31,7 @@ type AddOutcome struct {
 	Linked    int   // known repos linked into the group (no new collection)
 	Enqueued  int   // new repos created + enqueued (admin or auto-approved path)
 	Pending   int   // URLs parked on a pending add-request
+	Failed    int   // auto-approved repos whose add failed (their items are stamped -1)
 	RequestID int64 // non-zero when a pending request was created
 }
 
@@ -193,11 +194,19 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		// The request is committed as approved and no admin will see it,
 		// so its processing must not stop with the caller's request context
 		// (a client disconnect used to leave its items unprocessed for good;
-		// round-14 review).
-		if _, err := s.ProcessApprovedAddRequest(context.WithoutCancel(ctx), reqID); err != nil {
-			return out, err
+		// round-14 review), and a failed item is final for it: the pass marks
+		// it processed-with-error and goes on, and the add reports the count
+		// (round-23 review: a retryable failure left it and every later item
+		// unprocessed for good).
+		processed, failed, err := s.processAddRequest(context.WithoutCancel(ctx), reqID, true)
+		out.Enqueued += processed
+		out.Failed = failed
+		if err != nil {
+			return out, fmt.Errorf("add request %d: %w", reqID, err)
 		}
-		out.Enqueued += len(unknown)
+		if failed > 0 {
+			return out, fmt.Errorf("add request %d: %d of %d repositories could not be added", reqID, failed, len(unknown))
+		}
 		return out, nil
 	}
 
@@ -437,8 +446,16 @@ var ErrAddRequestInProgress = errors.New("add request is already being processed
 // Passes in two processes (web and api) can still overlap; each step is
 // idempotent and a stamp only fills an unstamped item.
 func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (int, error) {
+	processed, _, err := s.processAddRequest(ctx, requestID, false)
+	return processed, err
+}
+
+// processAddRequest is the processing pass. With everyFailureFinal, used for
+// an auto-approved add that nobody re-approves, every failed item is stamped
+// processed-with-error and the pass goes on; failed counts those items.
+func (s *PostgresStore) processAddRequest(ctx context.Context, requestID int64, everyFailureFinal bool) (int, int, error) {
 	if !s.startAddRequestPass(requestID) {
-		return 0, ErrAddRequestInProgress
+		return 0, 0, ErrAddRequestInProgress
 	}
 	defer s.finishAddRequestPass(requestID)
 
@@ -447,17 +464,17 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 	if err := s.pool.QueryRow(ctx, `
 		SELECT group_id, status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`,
 		requestID).Scan(&groupID, &status); err != nil {
-		return 0, fmt.Errorf("load add request: %w", err)
+		return 0, 0, fmt.Errorf("load add request: %w", err)
 	}
 	if status != "approved" {
-		return 0, fmt.Errorf("request %d is %s, not approved", requestID, status)
+		return 0, 0, fmt.Errorf("request %d is %s, not approved", requestID, status)
 	}
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT item_id, repo_url FROM aveloxis_ops.collection_add_request_items
 		WHERE request_id = $1 AND repo_id IS NULL ORDER BY item_id`, requestID)
 	if err != nil {
-		return 0, fmt.Errorf("read add-request items: %w", err)
+		return 0, 0, fmt.Errorf("read add-request items: %w", err)
 	}
 	type item struct {
 		id  int64
@@ -468,26 +485,26 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 		var it item
 		if err := rows.Scan(&it.id, &it.url); err != nil {
 			rows.Close()
-			return 0, fmt.Errorf("read add-request items: %w", err)
+			return 0, 0, fmt.Errorf("read add-request items: %w", err)
 		}
 		items = append(items, it)
 	}
 	rows.Close()
 	// A read that fails partway must not look like a shorter batch.
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("read add-request items: %w", err)
+		return 0, 0, fmt.Errorf("read add-request items: %w", err)
 	}
 
-	processed := 0
+	processed, failed := 0, 0
 	for _, it := range items {
 		repoID, err := s.ensureRepoCollectedInGroup(ctx, groupID, it.url)
 		if errors.Is(err, context.Canceled) {
 			// A stopped process, not a failure: leave the item unprocessed.
-			return processed, err
+			return processed, failed, err
 		}
-		if err != nil && !addItemFailurePermanent(err) {
+		if err != nil && !everyFailureFinal && !addItemFailurePermanent(err) {
 			// Leave this item and the rest unprocessed for a later pass.
-			return processed, fmt.Errorf("add-request item %q: %w", it.url, err)
+			return processed, failed, fmt.Errorf("add-request item %q: %w", it.url, err)
 		}
 		if err != nil {
 			s.logger.Warn("add-request item failed — marking processed-with-error",
@@ -497,23 +514,30 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_ops.collection_add_request_items
 			SET repo_id = $2 WHERE item_id = $1 AND repo_id IS NULL`, it.id, repoID); err != nil {
-			return processed, err
+			return processed, failed, err
 		}
 		if repoID > 0 {
 			processed++
+		} else {
+			failed++
 		}
 	}
-	return processed, nil
+	return processed, failed, nil
 }
 
 // addItemFailurePermanent reports whether an add-machinery error is a property
-// of the item itself — the database rejected its data (SQLSTATE class 22, data
-// exception, or 23, integrity constraint violation) — which retrying cannot
-// fix. Anything else (a lost connection, a timeout, a serialization failure, a
-// cancelled context) may succeed later.
+// of the item's own values, which retrying cannot fix: a data exception
+// (SQLSTATE class 22), a not-null violation (23502) or a check violation
+// (23514). Anything else may succeed later — a lost connection, a timeout, a
+// serialization failure, a cancelled context, and the constraint violations a
+// concurrent delete or dedup can cause (a foreign key, 23503; a unique index,
+// 23505; an exclusion, 23P01).
 func addItemFailurePermanent(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && (strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23"))
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "22") || pgErr.Code == "23502" || pgErr.Code == "23514"
 }
 
 // startAddRequestPass records that this process is processing requestID, and

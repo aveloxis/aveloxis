@@ -135,7 +135,7 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 	// site_url likewise, once, for every link builder here and for
 	// internal/web (confirmation links, the startup WARN): a stray space
 	// or trailing slash used to break some links and not others.
-	cfg.SiteURL = strings.TrimRight(strings.TrimSpace(cfg.SiteURL), "/")
+	cfg.SiteURL = normalizeSiteURL(cfg.SiteURL)
 	if err := ValidateAndLog(cfg, logger); err != nil {
 		// Validation failed: drop the bad config and behave as
 		// if email were unconfigured. Send will hit its empty-

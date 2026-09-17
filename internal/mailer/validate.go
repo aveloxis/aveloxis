@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 )
 
@@ -23,6 +24,33 @@ import (
 // rejected with `535 5.7.8 Username and Password not accepted`.
 func normalizeAppPassword(p string) string {
 	return strings.ReplaceAll(p, " ", "")
+}
+
+// normalizeSiteURL is mail.site_url as the mailer stores it: no surrounding
+// spaces and no trailing slash, so every link builder appends paths the same
+// way.
+func normalizeSiteURL(site string) string {
+	return strings.TrimRight(strings.TrimSpace(site), "/")
+}
+
+// validateSiteURL accepts an empty site_url or an absolute http or https URL
+// with a host and no query, fragment, user info or spaces: the value starts
+// every link the mailer writes, and "aveloxis.example" made a relative link
+// while "https://aveloxis.example?x=1" put the token inside another query
+// (Copilot review of PR #207). The errors do not repeat the value, which could
+// carry a password.
+func validateSiteURL(site string) error {
+	if site == "" {
+		return nil
+	}
+	u, err := url.Parse(site)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errors.New("mail.site_url must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
+	}
+	if u.User != nil || strings.ContainsAny(site, "?# \t") {
+		return errors.New("mail.site_url must not contain a query (?), a fragment (#), a user name or spaces")
+	}
+	return nil
 }
 
 // appPasswordPattern: 16 lowercase ASCII letters, no digits, no
@@ -88,7 +116,8 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("mail.gmail_app_password is %d character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters. Generate one at https://myaccount.google.com/apppasswords (2-Step Verification must be enabled on the account). The displayed format `abcd efgh ijkl mnop` is fine — spaces are stripped on load. Regular account passwords do NOT work with SMTP since Google deprecated 'less secure app access' in 2022", len(pass))
 	}
 
-	return nil
+	// site_url starts every link the mailer writes.
+	return validateSiteURL(normalizeSiteURL(cfg.SiteURL))
 }
 
 // ValidateAndLog runs ValidateConfig and emits a clear WARN line

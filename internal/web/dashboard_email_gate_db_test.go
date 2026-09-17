@@ -97,6 +97,11 @@ func TestDashboardEmailGateThroughTheHandler(t *testing.T) {
 	}{
 		{name: "no mailer", host: "aveloxis.io", want: false},
 		{name: "mail on, site_url set", m: mailOn("https://aveloxis.io"), host: "aveloxis.io", want: true},
+		// A site_url that cannot start a link disables the mailer (Copilot
+		// review of PR #207 on eb248eb: these sent users to the form, then
+		// mailed a link that could not confirm).
+		{name: "mail on, site_url without a scheme", m: mailOn("aveloxis.io"), host: "aveloxis.io", want: false},
+		{name: "mail on, site_url with a query", m: mailOn("https://aveloxis.io?x=1"), host: "aveloxis.io", want: false},
 		{name: "mail on, no site_url, same-host proxy, dev_mode off", m: mailOn(""), host: "127.0.0.1:8082", want: false},
 		{name: "mail on, no site_url, loopback, dev_mode on", m: mailOn(""), devMode: true, host: "localhost:8082", want: true},
 	} {

@@ -245,6 +245,46 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 	if got := readDigestStamp(stamp); got.Unix() != rec3.since.Unix() {
 		t.Errorf("a skipped send is a failed send: the window must stay at since=%v, stamp is %v", rec3.since, got)
 	}
+
+	// A findings query that fails, or is cancelled at shutdown, before any
+	// stamp exists pins the first-run window too; otherwise the next tick
+	// opens it one interval back from its own now and the elapsed hour's
+	// findings are never sent (Copilot review of PR #207 on eb248eb).
+	closed, err := db.NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	closed.Close()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	interval := s.cfg.Mail.VulnDigestInterval()
+	for _, tc := range []struct {
+		name  string
+		store *db.PostgresStore
+		ctx   context.Context
+	}{
+		{"query error", closed, ctx},
+		{"shutdown", store, cancelled},
+	} {
+		os.Remove(stamp)
+		rec4 := &recordingDigestMailer{}
+		s.store, s.digestMailer = tc.store, rec4
+		before := time.Now()
+		s.runVulnDigest(tc.ctx)
+		after := time.Now()
+		if rec4.calls != 0 {
+			t.Fatalf("%s: the query did not fail (%d sends)", tc.name, rec4.calls)
+		}
+		pinnedAt := readDigestStamp(stamp)
+		if pinnedAt.Before(before.Add(-interval).Truncate(time.Second)) || pinnedAt.After(after.Add(-interval)) {
+			t.Fatalf("%s before any stamp: stamp = %v; want the window start, one interval (%v) before the run", tc.name, pinnedAt, interval)
+		}
+		s.runVulnDigest(tc.ctx)
+		if got := readDigestStamp(stamp); !got.Equal(pinnedAt) {
+			t.Errorf("%s: a second failed tick moved the window: %v -> %v", tc.name, pinnedAt, got)
+		}
+	}
+	s.store = store
 }
 
 // TestHoldDigestWindow pins the failed-send rule without a database: an

@@ -4,6 +4,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -761,14 +762,15 @@ func TestProcessApprovedAddRequestHoldsNoConnectionAcrossItems(t *testing.T) {
 }
 
 // TestProcessApprovedAddRequestRetriesTransientFailures (AVELOXIS_TEST_DB): an
-// item whose add fails with a transient database error stays unprocessed, the
+// item whose add fails with a retryable database error stays unprocessed, the
 // pass reports the error, and a later pass (re-approving) processes it; only
-// an error in the item's own data (SQLSTATE class 22 or 23) marks it
+// an error in the item's own values (addItemFailurePermanent) marks it
 // processed-with-error, and the pass carries on past it (Copilot review of
 // PR #207: every failure was stamped -1, so a database blip permanently
-// dropped an approved repository while the pass reported success). The
-// failures are injected by a trigger on the group link, keyed to each item's
-// repo.
+// dropped an approved repository while the pass reported success). An
+// auto-approved add, which nobody re-approves, marks every failed item
+// processed-with-error and reports how many failed. The failures are injected
+// by a trigger on the group link, keyed to each item's repo.
 func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
@@ -840,33 +842,38 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 		}
 	}
 
-	// A transient failure (40001, serialization failure) leaves the item
-	// unprocessed and reports the error; a later pass processes it.
-	transient := urlPrefix + "transient"
-	reqID, err := store.createAddRequest(ctx, uid, gid, "repos", "", []string{transient}, "approved")
-	if err != nil {
-		t.Fatal(err)
-	}
-	failLink("transient", "40001")
-	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
-		t.Errorf("a pass whose only item failed transiently = %d, %v; want 0 and the error", n, err)
-	}
-	if stamp := stampOf(reqID, transient); stamp != "NULL" {
-		t.Errorf("a transiently failed item was stamped %s; want it left unprocessed so re-approving retries it", stamp)
-	}
-	dropTrigger()
-	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
-		t.Errorf("the retry pass = %d, %v; want 1, nil", n, err)
-	}
-	if stamp := stampOf(reqID, transient); !positive(stamp) {
-		t.Errorf("after the retry the item's stamp is %s; want the repo id", stamp)
+	// A failure that can succeed later leaves the item unprocessed and reports
+	// the error; a later pass processes it. That includes a serialization
+	// failure (40001) and the constraint violations a concurrent delete or
+	// dedup can cause: a foreign key (23503) or a unique index (23505)
+	// (Copilot review of PR #207 on eb248eb).
+	for _, code := range []string{"40001", "23503", "23505"} {
+		transient := urlPrefix + "transient-" + code
+		reqID, err := store.createAddRequest(ctx, uid, gid, "repos", "", []string{transient}, "approved")
+		if err != nil {
+			t.Fatal(err)
+		}
+		failLink("transient-"+code, code)
+		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
+			t.Errorf("%s: a pass whose only item failed retryably = %d, %v; want 0 and the error", code, n, err)
+		}
+		if stamp := stampOf(reqID, transient); stamp != "NULL" {
+			t.Errorf("%s: a retryably failed item was stamped %s; want it left unprocessed so re-approving retries it", code, stamp)
+		}
+		dropTrigger()
+		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+			t.Errorf("%s: the retry pass = %d, %v; want 1, nil", code, n, err)
+		}
+		if stamp := stampOf(reqID, transient); !positive(stamp) {
+			t.Errorf("%s: after the retry the item's stamp is %s; want the repo id", code, stamp)
+		}
 	}
 
-	// An error in the item's own data — a data exception (22001, string data
-	// right truncation) or an integrity constraint violation (23514, check
-	// violation) — marks it processed-with-error, and the pass continues to
-	// the next item.
-	for _, code := range []string{"22001", "23514"} {
+	// An error in the item's own values — a data exception (22001, string
+	// data right truncation), a check violation (23514) or a not-null
+	// violation (23502) — marks it processed-with-error, and the pass
+	// continues to the next item.
+	for _, code := range []string{"22001", "23514", "23502"} {
 		bad, good := urlPrefix+"bad-data-"+code, urlPrefix+"good-"+code
 		reqID, err := store.createAddRequest(ctx, uid, gid, "repos", "", []string{bad, good}, "approved")
 		if err != nil {
@@ -882,5 +889,73 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 		if stamp := stampOf(reqID, good); !positive(stamp) {
 			t.Errorf("%s: the good item's stamp is %s; want the repo id", code, stamp)
 		}
+	}
+
+	// An auto-approved add has no admin to re-approve it, so a failed item,
+	// retryable or not, is marked processed-with-error, the later items are
+	// still added, and the add returns an error naming the request and how
+	// many failed; each failure is logged with the request id and URL
+	// (round-23 review: a retryable failure left the item and every later one
+	// unprocessed for good, logged without the request id, while the web GUI
+	// redirected as on success).
+	var logBuf bytes.Buffer
+	store.logger = slog.New(slog.NewTextHandler(&logBuf, nil))
+	for _, code := range []string{"40001", "22001"} {
+		failed, later1, later2 := urlPrefix+"auto-fail-"+code, urlPrefix+"auto-later1-"+code, urlPrefix+"auto-later2-"+code
+		failLink("auto-fail-"+code, code)
+		out, err := store.AddReposToGroup(ctx, uid, gid, []string{failed, later1, later2}, 5)
+		if out.RequestID == 0 || out.Enqueued != 2 || out.Failed != 1 {
+			t.Errorf("%s: auto-approved add with one failing item = %+v; want a request, 2 enqueued, 1 failed", code, out)
+		}
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("add request %d", out.RequestID)) || !strings.Contains(err.Error(), "1 of 3") {
+			t.Errorf("%s: auto-approved add with one failing item returned %v; want an error naming the request and 1 of 3", code, err)
+		}
+		if out.RequestID == 0 {
+			continue
+		}
+		if stamp := stampOf(out.RequestID, failed); stamp != "-1" {
+			t.Errorf("%s: the failed item's stamp is %s; want -1 (processed-with-error)", code, stamp)
+		}
+		for _, later := range []string{later1, later2} {
+			if stamp := stampOf(out.RequestID, later); !positive(stamp) {
+				t.Errorf("%s: the later item %s has stamp %s; want the repo id", code, later, stamp)
+			}
+		}
+		want := fmt.Sprintf("request_id=%d url=%s", out.RequestID, failed)
+		warned := false
+		for _, line := range strings.Split(logBuf.String(), "\n") {
+			warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, want)
+		}
+		if !warned {
+			t.Errorf("%s: no WARN line with %q; log:\n%s", code, want, logBuf.String())
+		}
+	}
+	dropTrigger()
+
+	// A pass that stops on its own error (here the stamp write) names the
+	// request, so the log line the handlers write can be traced to it. The
+	// item's add fails too, and it is not counted failed: it was never
+	// stamped -1.
+	const stampTrigger = "_avtest_fail_add_item_stamp"
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+stampTrigger+` ON aveloxis_ops.collection_add_request_items`)
+		_, _ = store.pool.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+stampTrigger+`()`)
+	})
+	if _, err := store.pool.Exec(ctx, `CREATE FUNCTION aveloxis_ops.`+stampTrigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
+		BEGIN
+			IF NEW.repo_url LIKE '%auto-stamp-fails' THEN
+				RAISE EXCEPTION 'injected stamp failure' USING ERRCODE = '40001';
+			END IF;
+			RETURN NEW;
+		END $f$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+stampTrigger+` BEFORE UPDATE ON aveloxis_ops.collection_add_request_items FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+stampTrigger+`()`); err != nil {
+		t.Fatal(err)
+	}
+	failLink("auto-stamp-fails", "40001")
+	out, err := store.AddReposToGroup(ctx, uid, gid, []string{urlPrefix + "auto-stamp-fails"}, 5)
+	if out.RequestID == 0 || out.Failed != 0 || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("add request %d:", out.RequestID)) || !strings.Contains(err.Error(), "injected stamp failure") {
+		t.Errorf("auto-approved add whose add and stamp write both fail = %+v, %v; want 0 failed and an error naming the request and the stamp failure", out, err)
 	}
 }

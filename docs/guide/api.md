@@ -1039,6 +1039,10 @@ Per-user:
   fields are present; the single-`url` body remains accepted. The
   response carries `submitted` plus the outcome counts
   `{linked, enqueued, pending_approval?, request_id?, registered?}`.
+  When `web.auto_approve_add_limit` lets a batch through and some of its
+  repositories cannot be added, the others are still added and the call
+  fails with an error saying how many could not be; sending the same
+  URLs again retries them (v0.29.50).
   Org outcomes (v0.27.84): `registered: 1` means the org is tracked
   NOW — admin adds always register, and a non-admin's add of an org
   that is ALREADY registered in a group that is not rejected auto-approves (it adds zero

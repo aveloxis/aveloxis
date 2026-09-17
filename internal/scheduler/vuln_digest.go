@@ -33,7 +33,7 @@ func digestWindow(now, last time.Time, interval time.Duration) (since time.Time,
 //
 // Stamp semantics: the stamp advances after EVERY evaluated window —
 // including quiet ones (no findings → no email, window still moves) —
-// but NOT after a failed send (a mailer skip included), so an SMTP outage
+// but NOT after a failed query or send (a mailer skip included), so an outage
 // retries the same window on the next tick instead of dropping findings;
 // holdDigestWindow covers a failure before any stamp exists.
 func (s *Scheduler) runVulnDigest(ctx context.Context) {
@@ -60,10 +60,15 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 	items, err := s.store.GetNewVulnerabilityFindings(ctx, since,
 		s.cfg.Mail.VulnDigestMinSeverityOrDefault(), s.cfg.Mail.VulnDigestIncludeTransitive,
 		s.cfg.Mail.VulnDigestIncludeDev)
-	if errors.Is(err, context.Canceled) {
-		return // shutdown, not a failure: the stamp is untouched, the window retries next hour
-	}
 	if err != nil {
+		// The next run retries this window (Copilot review of PR #207 on
+		// eb248eb: before any stamp exists it used to open a later one).
+		if holdErr := holdDigestWindow(stampPath, last, since); holdErr != nil {
+			s.logger.Warn("vuln digest: could not pin the retry window", "path", stampPath, "error", holdErr)
+		}
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
 		s.logger.Warn("vuln digest: query failed", "error", err)
 		return
 	}
@@ -124,7 +129,7 @@ func (s *Scheduler) vulnDigestReady() (bool, error) {
 	return true, nil
 }
 
-// holdDigestWindow keeps a failed send's window for the next tick. With a
+// holdDigestWindow keeps a failed run's window for the next tick. With a
 // stamp, leaving it untouched does that. Without one (first run),
 // digestWindow opens the window one interval back from NOW, so every failed
 // tick would slide it forward and drop its oldest findings; writing `since`

@@ -527,7 +527,10 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 		// leaves neither — not an approved request with nothing tracked, and
 		// no leftover audit row for the user's retry after a failure
 		// (round-13 review). Two successful adds still record two audit rows,
-		// as before.
+		// as before. The registration check above runs outside this
+		// transaction; a RejectGroup that commits in between leaves the same
+		// rows as this add committing just before it (declined, Copilot review
+		// of PR #207 on eb248eb).
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return out, err

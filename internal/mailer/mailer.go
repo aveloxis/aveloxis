@@ -9,10 +9,11 @@
 //  2. Generate an "App Password" for "Mail"
 //  3. Add the credentials to aveloxis.json under the "mail" block
 //
-// The mailer is a no-op when GmailUser is empty so deployments without
-// email config keep working — Send returns nil immediately. Operators
-// who want email enable it by populating the config block; nothing
-// else has to change in the calling code.
+// The mailer sends nothing when GmailUser is empty, so deployments without
+// email config keep working — Send returns ErrNotConfigured, which the
+// fire-and-forget callers ignore via IsSkip. Operators who want email
+// enable it by populating the config block; nothing else has to change in
+// the calling code.
 //
 // Hard-coded transport: smtp.gmail.com:587 with STARTTLS. The user
 // asked for Gmail specifically (not a generic SMTP block), so the
@@ -20,11 +21,16 @@
 package mailer
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/smtp"
+	"strconv"
 	"strings"
+	"testing"
 	"time"
+	"unicode"
 )
 
 const gmailSMTPHost = "smtp.gmail.com:587"
@@ -58,11 +64,61 @@ func (m *Mailer) OperatorEmail() string {
 type Mailer struct {
 	cfg    Config
 	logger *slog.Logger
+
+	// sendMail delivers the message Send composed. nil — what New leaves —
+	// means smtp.SendMail in production (and a refusal in a test binary; see
+	// delivererFor). Tests set it (directly in this package, through
+	// WithSendFunc elsewhere) to capture the envelope and the composed
+	// message, which nothing else can observe.
+	sendMail func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
+}
+
+// WithSendFunc replaces smtp.SendMail for this mailer and returns it. It is
+// a test seam for other packages' tests (internal/web drives its handlers
+// with it). It panics outside a test binary, so a production caller fails
+// on first use rather than silently dropping mail.
+func (m *Mailer) WithSendFunc(f func(addr string, a smtp.Auth, from string, to []string, msg []byte) error) *Mailer {
+	if !inTestBinary() {
+		panic("mailer.WithSendFunc is a test seam; production mail goes through smtp.SendMail")
+	}
+	m.sendMail = f
+	return m
+}
+
+// inTestBinary is testing.Testing, held in a variable only so tests can check
+// production behavior without running in a production binary: the deliverer
+// resolution (TestProductionDelivererWiring) and WithSendFunc's refusal
+// (TestWithSendFuncRefusesOutsideTests).
+var inTestBinary = testing.Testing
+
+// deliverer resolves the sender Send uses. TestDelivererDefaults pins what
+// each answer resolves to; TestProductionDelivererWiring pins that this asks
+// the real check.
+func (m *Mailer) deliverer() func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	return m.delivererFor(inTestBinary())
+}
+
+// delivererFor is the test seam when one is installed, smtp.SendMail in a
+// production binary, and a refusal inside a test binary: a test that forgot
+// its seam (or a broken seam) fails instead of dialing smtp.gmail.com with
+// test credentials (round-7 review).
+func (m *Mailer) delivererFor(inTestBinary bool) func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	if m.sendMail != nil {
+		return m.sendMail
+	}
+	if inTestBinary {
+		return refuseSMTPInTests
+	}
+	return smtp.SendMail
+}
+
+func refuseSMTPInTests(addr string, _ smtp.Auth, _ string, _ []string, _ []byte) error {
+	return fmt.Errorf("mailer: refusing to dial %s from a test binary — install a test seam (WithSendFunc, or sendMail inside this package)", addr)
 }
 
 // New returns a Mailer. Safe to call with a zero Config — Send will
-// then early-return on every call (no-op fallback for deployments
-// that haven't configured email yet).
+// then return ErrNotConfigured on every call without attempting SMTP
+// (the fallback for deployments that haven't configured email yet).
 //
 // v0.20.14: runs ValidateAndLog against the supplied config. If
 // validation fails (typo in gmail_user, wrong App Password format,
@@ -72,6 +128,14 @@ type Mailer struct {
 // The caller does not need to inspect a return error; the mailer
 // is always usable.
 func New(cfg Config, logger *slog.Logger) *Mailer {
+	// Trimmed once, here: ValidateConfig trims too and calls a
+	// whitespace-only gmail_user "empty" (mailer disabled), so the stored
+	// value must agree or Enabled would say on while the log said off.
+	cfg.GmailUser = strings.TrimSpace(cfg.GmailUser)
+	// site_url likewise, once, for every link builder here and for
+	// internal/web (confirmation links, the startup WARN): a stray space
+	// or trailing slash used to break some links and not others.
+	cfg.SiteURL = normalizeSiteURL(cfg.SiteURL)
 	if err := ValidateAndLog(cfg, logger); err != nil {
 		// Validation failed: drop the bad config and behave as
 		// if email were unconfigured. Send will hit its empty-
@@ -83,52 +147,227 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 	return &Mailer{cfg: cfg, logger: logger}
 }
 
-// sanitizeHeader strips CR/LF (and other ASCII control characters)
-// from a value destined for an SMTP header line. Header values built
-// with untrusted input (recipient addresses from the account-email
-// form, group names in approval subjects) could otherwise inject
-// arbitrary headers — CWE-93 / CodeQL go/email-injection.
-func sanitizeHeader(s string) string {
-	s = strings.ReplaceAll(s, "\r", "")
-	s = strings.ReplaceAll(s, "\n", "")
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+// sanitizeHeader strips CR/LF (and other control and format runes) from a
+// value destined for an SMTP header line. Header values built with
+// untrusted input (the From display name, group names in approval
+// subjects) could otherwise inject arbitrary headers — CWE-93 / CodeQL
+// go/email-injection. The To: address does not pass through it:
+// ParseRecipient validates the address instead, and Send explains why.
+func sanitizeHeader(s string) string { return scrubUntrusted(s) }
+
+// ErrRecipientNeedsQuoting reports an address whose local part is only
+// valid in quoted form. See ParseRecipient.
+var ErrRecipientNeedsQuoting = errors.New("mail: the address needs a quoted local part, which the SMTP envelope cannot carry")
+
+// ErrRecipientTooLong reports an address over the SMTP length limits. See
+// ParseRecipient.
+var ErrRecipientTooLong = errors.New("mail: the address exceeds the SMTP length limits (RFC 5321 section 4.5.3.1)")
+
+// RFC 5321 section 4.5.3.1.1: a local part is at most 64 octets. Section
+// 4.5.3.1.3: a path — the addr-spec inside its angle brackets — is at most
+// 256 octets, so the addr-spec itself at most 254.
+const (
+	maxLocalPartOctets = 64
+	maxPathOctets      = 256
+)
+
+// ErrNotConfigured and ErrRecipientSkipped are what Send returns when it
+// deliberately sends nothing: the mailer is disabled, or the recipient is
+// empty or not a deliverable address. They are errors, not nil, because a
+// nil read as "delivered": the vulnerability digest advanced its window
+// and `aveloxis test-mail` reported success for mail never attempted.
+var (
+	ErrNotConfigured    = errors.New("mailer: mail is not configured")
+	ErrRecipientSkipped = errors.New("mailer: recipient skipped")
+)
+
+// IsSkip reports whether err is one of Send's deliberate skips. Send has
+// already logged the skip, so fire-and-forget callers — the account,
+// approval and add-request notifications, which must not break on a user
+// without an address or a deployment without mail — ignore it. Callers
+// that report delivery must not.
+func IsSkip(err error) bool {
+	return errors.Is(err, ErrNotConfigured) || errors.Is(err, ErrRecipientSkipped)
+}
+
+// ParseRecipient turns one caller-supplied address into the addr-spec that
+// Send puts in BOTH the To: header and the SMTP envelope, or says why it
+// cannot be sent. It is the one recipient rule: Send enforces it on every
+// message, and the account-email form runs it so an address Send would
+// skip is refused before the user is told to check their inbox.
+//
+// Parsing, not character scrubbing: mail.ParseAddress yields a structured
+// address, so what reaches the message is an addr-spec by construction (a
+// validation barrier, not a denylist; CodeQL go/email-injection alert 197
+// is about request data reaching the message). A display name or comment
+// is dropped; the addr-spec is what is returned.
+//
+// An addr-spec whose local part needs QUOTING is refused. net/smtp writes
+// the envelope as `RCPT TO:<%s>` with no quoting and only a CR/LF check, so
+// `"john  smith"@example.com` goes on the wire as the invalid path
+// `<john  smith@example.com>`, and a quoted `>` closes the path early and
+// appends SMTP parameters of the sender's choosing. Checking the local part
+// is sufficient: ParseAddress admits only a dot-atom domain or an IP domain
+// literal, neither of which can hold `>` or an ASCII space or tab. (Both
+// halves can still hold non-ASCII runes, including Unicode spaces; those
+// cannot close the path.) Such addresses are vanishingly rare in real
+// mailboxes.
+//
+// An address over the RFC 5321 limits (maxLocalPartOctets,
+// maxPathOctets) is refused too: net/smtp writes any length it is given,
+// and the form that feeds this is bounded only by the request size.
+func ParseRecipient(s string) (string, error) {
+	parsed, err := mail.ParseAddress(strings.TrimSpace(s))
+	if err != nil {
+		return "", err
+	}
+	addr := parsed.Address
+	if len("<"+addr+">") > maxPathOctets || strings.LastIndex(addr, "@") > maxLocalPartOctets {
+		return "", ErrRecipientTooLong
+	}
+	if (&mail.Address{Address: addr}).String() != "<"+addr+">" {
+		return "", ErrRecipientNeedsQuoting
+	}
+	return addr, nil
+}
+
+// sanitizeSample scrubs each entry of a user-submitted URL list and joins
+// them one per line. The list itself is structure the template intends; the
+// ENTRIES are attacker-supplied, so each is sanitized individually rather
+// than the joined blob, which would collapse the intended line breaks.
+func sanitizeSample(sample []string) string {
+	out := make([]string, 0, len(sample))
+	for _, s := range sample {
+		if v := sanitizeBodyValue(s); v != "" {
+			out = append(out, v)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// Subjects scrub their untrusted parts at the interpolation, even though
+// Send runs sanitizeHeader over the whole header value: the subject is the
+// first thing an admin reads, and relying on a distant boundary is what let
+// four subject lines look unsanitized to review. scrubUntrusted is
+// idempotent, so the second pass changes nothing.
+//
+// bodyValueMax caps one interpolated value. A login, group name, purl or
+// OSV summary is a label, not a document; the cap stops a single attacker-
+// supplied field from dominating an operator's mail. Presentation bound
+// only — nothing is hidden that the site does not also show.
+const bodyValueMax = 300
+
+// sanitizeBodyValue makes ONE untrusted value safe to interpolate into an
+// email body. Bodies are plain text after the header block, so a newline
+// cannot forge a header (net/smtp's DotWriter also dot-stuffs and
+// normalizes line endings, so it cannot end the DATA phase either). What it
+// CAN do is forge structure: a group name containing "\n\n— Aveloxis\n\nClick
+// here: http://evil" produces a message that reads as if Aveloxis wrote it,
+// mailed from this domain to an admin who is about to approve something
+// (CodeQL go/email-injection, alert 16). Terminal escapes and Unicode bidi
+// overrides do the same to a reader.
+//
+// So: line breaks collapse to a space, C0/C1 controls and Unicode bidi and
+// invisible-format runes are dropped, runs of whitespace collapse, and the
+// result is capped. Callers pass single-line values; multi-line body
+// TEMPLATES are the package's own and are not passed through this.
+func sanitizeBodyValue(s string) string { return scrubUntrusted(s) }
+
+// sanitizeBodyURL scrubs a URL destined for an email body with the same
+// control/format-rune filtering as sanitizeBodyValue but WITHOUT the
+// bodyValueMax cap. URLs are not label-sized values: a configured site_url
+// plus the confirmation path and a 64-character token can legitimately
+// exceed the cap, and truncation would silently mail a broken link ending
+// in an ellipsis (Copilot review on PR #207). Its one caller's link is
+// built from mail.site_url or, in local development, from a Host that
+// internal/web's emailConfirmBase has parsed down to a loopback host and a
+// numeric port — so no free text reaches this uncapped.
+func sanitizeBodyURL(s string) string { return scrubRunes(s) }
+
+// scrubUntrusted is the normalizer for untrusted LABEL text in this
+// package, used for header values and body values alike: scrubRunes'
+// filter, then the bodyValueMax cap. Subjects need it as much as bodies:
+// SendGroupApproved puts the same group name in both, and the subject is
+// the first thing the admin reads. A link skips only the cap
+// (sanitizeBodyURL); the To: address skips both, because ParseRecipient
+// validates it instead.
+func scrubUntrusted(s string) string {
+	s = scrubRunes(s)
+	// Truncate on RUNES: len() is bytes, and slicing mid-rune emitted
+	// invalid UTF-8 into a body declared charset=UTF-8 (a 300-byte cut
+	// through "项目" left an orphaned 0xe9 lead byte).
+	if r := []rune(s); len(r) > bodyValueMax {
+		s = string(r[:bodyValueMax]) + "…"
+	}
+	return s
+}
+
+// scrubRunes is the filter every scrubbed value in this package passes
+// through, capped (scrubUntrusted) or not (sanitizeBodyURL).
+//
+// Rune classes, chosen by CATEGORY rather than an enumerated list — an
+// earlier version listed specific bidi and zero-width runes and missed nine
+// of them (U+200E/200F/061C, U+00AD, U+2061-2064, U+FFF9-FFFB, the U+E0000
+// tag block used for ASCII smuggling):
+//
+//   - line separators (Zl/Zp, U+2028/U+2029) and CR/LF/TAB become a space,
+//     so they cannot forge structure. These were previously neutralized
+//     only as a side effect of strings.Fields, which a refactor could have
+//     silently undone.
+//   - all format runes (Unicode Cf) are dropped: bidi overrides and
+//     isolates, zero-width joiners, the BOM, interlinear annotation and the
+//     tag block all live here.
+//   - C0, DEL and C1 controls are dropped (terminal escapes).
+//
+// Then whitespace runs collapse.
+func scrubRunes(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\r' || r == '\n' || r == '\t':
+			return ' '
+		case unicode.In(r, unicode.Zl, unicode.Zp): // U+2028, U+2029
+			return ' '
+		case r < 0x20 || r == 0x7f: // C0 and DEL
+			return -1
+		case r >= 0x80 && r <= 0x9f: // C1
+			return -1
+		case unicode.Is(unicode.Cf, r): // every format rune
 			return -1
 		}
 		return r
 	}, s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // Send dispatches a single email. Subject and body are plain text.
-// to should be a single RFC-5322 address; the bare local-part forms
-// like "alice" without an "@" will be rejected by Gmail's submission
-// host.
+// to must be a single address ParseRecipient accepts.
 //
-// Returns nil and logs at INFO level when the mailer is unconfigured
-// (GmailUser == ""). This keeps the rest of the application code
-// simple — callers don't need to special-case "is mail configured?"
-// in their flow.
+// Send returns nil only when the message was handed to SMTP. When it
+// deliberately sends nothing it returns ErrNotConfigured (the mailer is
+// disabled — logged at DEBUG, since deployments without email are normal)
+// or ErrRecipientSkipped (logged at WARN); IsSkip recognizes both, so
+// fire-and-forget callers need not special-case "is mail configured?".
 func (m *Mailer) Send(to, subject, body string) error {
-	if m == nil || m.cfg.GmailUser == "" {
-		// Unconfigured: silent no-op so deployments without email
-		// keep working. Log at debug so the absence is observable
-		// without flooding production logs.
+	// The recipient is PARSED rather than only scrubbed (ParseRecipient
+	// says why), and Send enforces that itself instead of trusting callers:
+	// every recipient passes through here — OAuth-provided and confirmed
+	// stored emails, operator config, and the account-email form, which
+	// runs the same parser first. A missing address is common (an OAuth
+	// provider that returned none) and a disabled mailer is a normal
+	// deployment, so both are returned as skips for fire-and-forget callers
+	// to filter with IsSkip, not treated as failures here.
+	recipient, err := m.recipientFor(to)
+	if err != nil {
 		if m != nil && m.logger != nil {
-			m.logger.Debug("mailer.Send skipped — gmail_user not configured",
-				"to", to, "subject", subject)
+			if errors.Is(err, ErrNotConfigured) {
+				m.logger.Debug("mailer.Send skipped — gmail_user not configured",
+					"to", scrubUntrusted(to), "subject", subject)
+			} else {
+				m.logger.Warn("mailer.Send skipped — recipient is not deliverable",
+					"subject", subject, "error", err)
+			}
 		}
-		return nil
-	}
-	if strings.TrimSpace(to) == "" {
-		// Recipient missing — log and skip rather than error. The
-		// most common case is a user whose OAuth provider didn't
-		// return an email address; we don't want that to break
-		// the calling code path (account creation, group approval).
-		if m.logger != nil {
-			m.logger.Warn("mailer.Send skipped — empty recipient",
-				"subject", subject)
-		}
-		return nil
+		return err
 	}
 
 	// v0.20.14: strip display-format spaces from the App Password
@@ -144,8 +383,16 @@ func (m *Mailer) Send(to, subject, body string) error {
 	// Header values are interpolated into the RFC 5322 header block, so
 	// a CR/LF inside one would inject arbitrary headers (CWE-93 — e.g.
 	// a group named "x\r\nBcc: ..." reaching the Subject line via the
-	// approval email). Strip line breaks from every header value; the
-	// body sits after the blank line and needs no such treatment.
+	// approval email). The From display name and the Subject go through
+	// sanitizeHeader; the body sits after the blank line and needs no such
+	// treatment.
+	//
+	// The To: address is NOT scrubbed: ParseRecipient has already refused
+	// anything with a CR, LF, ASCII space or tab, or quoting, and a scrub
+	// that changed the header but not the envelope (dropping a format rune
+	// the envelope keeps, say) would make the two name different mailboxes.
+	// "<" + recipient + ">" is byte-identical to the envelope path net/smtp
+	// writes below.
 	msg := []byte(fmt.Sprintf(
 		"From: %s\r\n"+
 			"To: %s\r\n"+
@@ -155,25 +402,61 @@ func (m *Mailer) Send(to, subject, body string) error {
 			"Content-Type: text/plain; charset=UTF-8\r\n"+
 			"\r\n"+
 			"%s\r\n",
-		from, sanitizeHeader(to), sanitizeHeader(subject),
+		from, "<"+recipient+">", sanitizeHeader(subject),
 		time.Now().Format(time.RFC1123Z), body))
 
-	if err := smtp.SendMail(gmailSMTPHost, auth, m.cfg.GmailUser, []string{to}, msg); err != nil {
+	// The envelope carries the same addr-spec: net/smtp writes it as
+	// `RCPT TO:<recipient>`, exactly the To: header value above.
+	if err := m.deliverer()(gmailSMTPHost, auth, m.cfg.GmailUser, []string{recipient}, msg); err != nil {
 		if m.logger != nil {
+			// The parsed address, not the raw parameter: a display name
+			// or comment in `to` is unbounded.
 			m.logger.Warn("mailer.Send failed",
-				"to", to, "subject", subject, "error", err)
+				"to", recipient, "subject", subject, "error", err)
 		}
 		return fmt.Errorf("smtp send: %w", err)
 	}
 	return nil
 }
 
-// SendWelcome is the email sent on first signup. Confirms the
-// account exists, names the OAuth provider, and points at the
-// site URL. No verification link — GitHub/GitLab have already
-// verified the email before handing it to us.
-// SiteURL returns the configured site URL (e.g. "https://chaoss.tv")
-// or "" if unset. v0.20.4 uses this to build click-to-confirm links
+// Enabled reports whether Send can attempt delivery at all — false for a
+// nil mailer, an empty or whitespace-only gmail_user, or a config New
+// refused. Callers that would promise the user an email check it first.
+// Safe on a nil mailer. It is the one "is mail on?" test: Send and
+// Deliverable use it too.
+func (m *Mailer) Enabled() bool {
+	return m != nil && m.cfg.GmailUser != ""
+}
+
+// Deliverable reports, before anything is composed, whether Send could
+// hand a message for to to SMTP: nil, ErrNotConfigured, or an
+// ErrRecipientSkipped wrapping the reason. It applies exactly Send's own
+// refusals, for callers that must decide up front — the vulnerability
+// digest checks mail.operator_email once at startup.
+func (m *Mailer) Deliverable(to string) error {
+	_, err := m.recipientFor(to)
+	return err
+}
+
+// recipientFor is Send's and Deliverable's shared check: the addr-spec to
+// send to, or why nothing can be sent.
+func (m *Mailer) recipientFor(to string) (string, error) {
+	if !m.Enabled() {
+		return "", ErrNotConfigured
+	}
+	if strings.TrimSpace(to) == "" {
+		return "", fmt.Errorf("%w: empty recipient", ErrRecipientSkipped)
+	}
+	addr, err := ParseRecipient(to)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrRecipientSkipped, err)
+	}
+	return addr, nil
+}
+
+// SiteURL returns the configured site URL (e.g. "https://chaoss.tv"),
+// normalized by New (no surrounding spaces, no trailing slash), or "" if
+// unset. v0.20.4 uses this to build click-to-confirm links
 // in email bodies. Safely handles a nil mailer (returns "").
 func (m *Mailer) SiteURL() string {
 	if m == nil {
@@ -182,6 +465,10 @@ func (m *Mailer) SiteURL() string {
 	return m.cfg.SiteURL
 }
 
+// SendWelcome is the email sent on first signup. Confirms the
+// account exists, names the OAuth provider, and points at the
+// site URL. No verification link — GitHub/GitLab have already
+// verified the email before handing it to us.
 func (m *Mailer) SendWelcome(toEmail, login, provider string) error {
 	subject := "Welcome to Aveloxis"
 	siteURL := m.cfg.SiteURL
@@ -200,16 +487,28 @@ You'll get an email when your group is approved.
 Sign in: %s
 
 — Aveloxis
-`, login, provider, siteURL)
+`, sanitizeBodyValue(login), sanitizeBodyValue(provider), siteURL)
 	return m.Send(toEmail, subject, body)
 }
 
-// SendEmailConfirmation is the email sent when a user submits an
-// email at /account/email. Contains a click-through link to
-// /account/email/confirm?token=... that consumes the token and
-// promotes email_pending to email. v0.20.4. Tokens expire in
-// EmailConfirmationLifetime (24 hours by default).
-func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string) error {
+// SendEmailConfirmation mails the click-to-confirm link sent when a user
+// submits an address at /account/email (v0.20.4). Following the link
+// consumes its token and promotes the token's address to users.email.
+// lifetime is how long the token lives, and the body states it. The web
+// caller passes db.EmailConfirmationLifetime (TestSubmitAccountEmail pins
+// that), so the email and the token agree (round-9 review).
+//
+// confirmURL is scrubbed like any other caller-supplied value, not exempted
+// as package-built: it USED to be assembled from the request Host header
+// when mail.site_url was unset, which let an authenticated attacker mail a
+// victim a link to the attacker's server carrying the victim's token
+// (Copilot review on PR #207; CodeQL alert 197). internal/web's
+// emailConfirmBase now builds it from mail.site_url, or from a Host parsed
+// down to a loopback host and a numeric port, and this scrub is the second
+// layer. Scrubbed with the UNCAPPED sanitizer: a legitimate site_url plus
+// path and token can exceed bodyValueMax, and truncating would silently
+// mail a broken link.
+func (m *Mailer) SendEmailConfirmation(toEmail, login, confirmURL string, lifetime time.Duration) error {
 	subject := "Confirm your Aveloxis email address"
 	body := fmt.Sprintf(`Hello %s,
 
@@ -217,11 +516,11 @@ Please confirm your email address by clicking the link below:
 
 %s
 
-This link expires in 24 hours. If you didn't request this confirmation,
+This link expires in %s. If you didn't request this confirmation,
 ignore this email — your account email won't change without confirming.
 
 — Aveloxis
-`, login, confirmURL)
+`, sanitizeBodyValue(login), sanitizeBodyURL(confirmURL), DurationPhrase(lifetime))
 	return m.Send(toEmail, subject, body)
 }
 
@@ -229,8 +528,8 @@ ignore this email — your account email won't change without confirming.
 // an admin approves their pending group. Tells them collection has
 // started and points at the group's detail page.
 func (m *Mailer) SendGroupApproved(toEmail, login, groupName string, groupID int64) error {
-	subject := fmt.Sprintf("Your Aveloxis group '%s' has been approved", groupName)
-	siteURL := strings.TrimRight(m.cfg.SiteURL, "/")
+	subject := fmt.Sprintf("Your Aveloxis group '%s' has been approved", sanitizeBodyValue(groupName))
+	siteURL := m.cfg.SiteURL
 	link := "(your Aveloxis site URL)"
 	if siteURL != "" {
 		link = fmt.Sprintf("%s/groups/%d", siteURL, groupID)
@@ -245,7 +544,7 @@ requests can take longer for large repos.
 View your group: %s
 
 — Aveloxis
-`, login, groupName, link)
+`, sanitizeBodyValue(login), sanitizeBodyValue(groupName), link)
 	return m.Send(toEmail, subject, body)
 }
 
@@ -267,11 +566,11 @@ func (m *Mailer) SendAddRequestSubmitted(to, requesterLogin, groupName, kind str
 	if kind == "org" {
 		what = "an organization"
 	}
-	subject := fmt.Sprintf("Aveloxis: %s requested collection of %s", requesterLogin, what)
+	subject := fmt.Sprintf("Aveloxis: %s requested collection of %s", sanitizeBodyValue(requesterLogin), what)
 	if len(sample) > addRequestSampleMax {
 		sample = sample[:addRequestSampleMax]
 	}
-	siteURL := strings.TrimRight(m.cfg.SiteURL, "/")
+	siteURL := m.cfg.SiteURL
 	link := "(your Aveloxis site URL)/admin/groups/pending"
 	if siteURL != "" {
 		link = siteURL + "/admin/groups/pending"
@@ -285,7 +584,7 @@ not start until an administrator approves the request.
 Review pending additions: %s
 
 — Aveloxis
-`, requesterLogin, what, groupName, requestID, strings.Join(sample, "\n"), link)
+`, sanitizeBodyValue(requesterLogin), what, sanitizeBodyValue(groupName), requestID, sanitizeSample(sample), link)
 	return m.Send(to, subject, body)
 }
 
@@ -302,17 +601,17 @@ func (m *Mailer) SendAddRequestDecided(toEmail, login, groupName, kind string, a
 	}
 	var subject, verdict string
 	if approved {
-		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was approved", groupName)
+		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was approved", sanitizeBodyValue(groupName))
 		verdict = fmt.Sprintf(`An administrator approved adding %s to your group '%s'.
 Collection has been queued — first results typically appear within an
-hour; large repositories take longer.`, what, groupName)
+hour; large repositories take longer.`, what, sanitizeBodyValue(groupName))
 	} else {
-		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was declined", groupName)
+		subject = fmt.Sprintf("Your Aveloxis addition to '%s' was declined", sanitizeBodyValue(groupName))
 		verdict = fmt.Sprintf(`An administrator declined adding %s to your group '%s'.
 Nothing was collected. If you believe this is a mistake, contact the
-site operator.`, what, groupName)
+site operator.`, what, sanitizeBodyValue(groupName))
 	}
-	body := fmt.Sprintf("Hello %s,\n\n%s\n\n— Aveloxis\n", login, verdict)
+	body := fmt.Sprintf("Hello %s,\n\n%s\n\n— Aveloxis\n", sanitizeBodyValue(login), verdict)
 	return m.Send(toEmail, subject, body)
 }
 
@@ -324,8 +623,9 @@ const digestBodyMaxItems = 50
 
 // SendVulnerabilityDigest emails the operator a digest of findings
 // first detected since the previous digest window (v0.27.12). Called
-// by the scheduler's digest ticker; no-op when the mailer is
-// unconfigured (Send handles that). items must already be filtered to
+// by the scheduler's digest ticker. On an unconfigured mailer nothing is
+// sent and Send's ErrNotConfigured comes back, which the digest treats as
+// a failed send. items must already be filtered to
 // the operator's severity floor and ordered most-severe-first.
 func (m *Mailer) SendVulnerabilityDigest(to string, since time.Time, items []VulnDigestItem) error {
 	if len(items) == 0 {
@@ -350,13 +650,18 @@ func (m *Mailer) SendVulnerabilityDigest(to string, since time.Time, items []Vul
 		shown = shown[:digestBodyMaxItems]
 	}
 	for _, it := range shown {
-		summary := it.Summary
-		if len(summary) > 100 {
-			summary = summary[:100] + "…"
+		// Every field here is external: the summary comes from the OSV
+		// feed, the rest from collected repo data.
+		// Rune-based for the same reason as scrubUntrusted's cap: an OSV
+		// summary is arbitrary third-party text and often non-ASCII.
+		summary := sanitizeBodyValue(it.Summary)
+		if r := []rune(summary); len(r) > 100 {
+			summary = string(r[:100]) + "…"
 		}
 		fmt.Fprintf(&b, "%-8s  %s/%s\n          %s  %s\n          %s\n\n",
-			strings.ToUpper(it.Severity), it.RepoOwner, it.RepoName,
-			it.VulnID, it.PackagePurl, summary)
+			sanitizeBodyValue(strings.ToUpper(it.Severity)),
+			sanitizeBodyValue(it.RepoOwner), sanitizeBodyValue(it.RepoName),
+			sanitizeBodyValue(it.VulnID), sanitizeBodyValue(it.PackagePurl), summary)
 	}
 	if len(items) > len(shown) {
 		fmt.Fprintf(&b, "…and %d more finding(s) not itemized here.\n\n", len(items)-len(shown))
@@ -378,4 +683,25 @@ type VulnDigestItem struct {
 	Severity    string
 	PackagePurl string
 	Summary     string
+}
+
+// DurationPhrase renders a positive lifetime for a person to read:
+// "24 hours", "1 hour", "90 minutes", "45 seconds". Any sub-second remainder
+// is dropped first (a phrase may understate a lifetime, never overstate it),
+// then the largest unit that states the rest exactly is used. The
+// confirmation email and the dashboard banner both render
+// db.EmailConfirmationLifetime with it.
+func DurationPhrase(d time.Duration) string {
+	d = d.Truncate(time.Second)
+	n, unit := int64(d/time.Second), "second"
+	switch {
+	case d%time.Hour == 0:
+		n, unit = int64(d/time.Hour), "hour"
+	case d%time.Minute == 0:
+		n, unit = int64(d/time.Minute), "minute"
+	}
+	if n == 1 {
+		return "1 " + unit
+	}
+	return strconv.FormatInt(n, 10) + " " + unit + "s"
 }

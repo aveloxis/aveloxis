@@ -101,7 +101,7 @@ to log in as a different user.
 {{if .PendingEmail}}
 <div class="card" style="background:#dbeafe;border:1px solid #3b82f6">
 <strong>Check your inbox to confirm your email.</strong>
-<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>{{.PendingEmail}}</code>. Click the link in that email to finish setting up your account. The link expires in 24 hours. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
+<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>{{.PendingEmail}}</code>. Click the link in that email to finish setting up your account. Confirmation links are valid for {{.ConfirmationLifetime}} after they are sent. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
 </div>
 {{end}}
 {{if .PendingOnly}}
@@ -181,6 +181,7 @@ to log in as a different user.
 <div class="container">
 <div class="card">
 <h2>{{.Group.Name}}</h2>
+{{if eq .AddError "rejected"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">These repositories were not added: an administrator rejected this group.</p>{{else if eq .AddError "1"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">Some of those repositories could not be added. You can try adding them again.</p>{{end}}
 
 <div class="section">
 <h3>Add Repositories</h3>

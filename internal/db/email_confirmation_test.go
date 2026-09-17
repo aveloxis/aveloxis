@@ -22,10 +22,9 @@ func TestEmailConfirmationStoreMethodsExist(t *testing.T) {
 	src := string(data)
 	for _, sig := range []string{
 		"func (s *PostgresStore) CreateEmailConfirmation(",
-		"func (s *PostgresStore) ConsumeEmailConfirmation(",
-		"func (s *PostgresStore) GetUserPendingEmail(",
+		"func (s *PostgresStore) ConfirmEmailToken(",
+		"func (s *PostgresStore) GetUserLivePendingEmail(",
 		"func (s *PostgresStore) SetUserPendingEmail(",
-		"func (s *PostgresStore) ConfirmUserEmail(",
 	} {
 		if !strings.Contains(src, sig) {
 			t.Errorf("email_confirmation.go must define %q", sig)
@@ -112,18 +111,20 @@ func TestAccountEmailPostUsesPendingFlow(t *testing.T) {
 	}
 }
 
-// TestDashboardShowsPendingEmail pins that the dashboard renders a
-// banner when the user has email_pending set (i.e., they submitted an
-// email but haven't clicked the confirmation link yet). Also pins that
-// the dashboard email-gate doesn't redirect to /account/email when
-// email_pending is set — otherwise the user gets stuck in a loop.
+// TestDashboardShowsPendingEmail is a wiring check: server.go and the
+// dashboard template both reference PendingEmail, the key the pending-address
+// banner renders from. Whether the banner shows only for a live link is
+// tested through the handler in internal/web
+// (TestDashboardEmailGateThroughTheHandler).
+// The gate's redirect behavior is tested through the handler in
+// internal/web (TestDashboardEmailGateThroughTheHandler).
 func TestDashboardShowsPendingEmail(t *testing.T) {
 	srv, err := os.ReadFile("../web/server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(srv), "PendingEmail") &&
-		!strings.Contains(string(srv), "GetUserPendingEmail") {
+		!strings.Contains(string(srv), "GetUserLivePendingEmail") {
 		t.Error("handleDashboard must look up the user's email_pending " +
 			"and pass it to the template (e.g., as a PendingEmail key) so " +
 			"the v0.20.4 \"check your inbox\" banner can render.")

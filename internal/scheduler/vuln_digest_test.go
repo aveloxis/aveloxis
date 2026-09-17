@@ -4,8 +4,10 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 )
 
 // TestDigestWindow pins the pure window semantics: first run opens one
@@ -69,9 +72,9 @@ func TestDigestStampRoundTrip(t *testing.T) {
 	}
 }
 
-// TestVulnDigestTickerGating pins the run-loop wiring: the ticker
-// channel stays nil (disabled) unless BOTH a mailer was injected and
-// an operator email is configured, and the select loop routes the
+// TestVulnDigestTickerGating pins the run-loop wiring: the ticker is
+// created only when vulnDigestReady says so (its decision is tested
+// behaviorally in TestVulnDigestReady), and the select loop routes the
 // tick through safego to runVulnDigest.
 func TestVulnDigestTickerGating(t *testing.T) {
 	src, err := os.ReadFile("scheduler.go")
@@ -79,8 +82,8 @@ func TestVulnDigestTickerGating(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, `s.digestMailer != nil && s.cfg.Mail != nil && s.cfg.Mail.OperatorEmail != ""`) {
-		t.Error("digest ticker must be gated on injected mailer AND configured operator_email")
+	if !strings.Contains(s, "vulnDigestC, stopVulnDigest := s.startVulnDigest()") || !strings.Contains(s, "defer stopVulnDigest()") {
+		t.Error("Run must take the digest tick channel from startVulnDigest (tested in TestStartVulnDigest) and stop it on return")
 	}
 	if !strings.Contains(s, "case <-vulnDigestC:") {
 		t.Error("run loop must consume the digest ticker channel")
@@ -91,11 +94,14 @@ func TestVulnDigestTickerGating(t *testing.T) {
 }
 
 type recordingDigestMailer struct {
-	calls int
-	since time.Time
-	items []db.VulnDigestItem
-	err   error
+	calls      int
+	since      time.Time
+	items      []db.VulnDigestItem
+	err        error
+	deliverErr error
 }
+
+func (r *recordingDigestMailer) Deliverable(string) error { return r.deliverErr }
 
 func (r *recordingDigestMailer) SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error {
 	r.calls++
@@ -199,7 +205,196 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 	if rec2.calls != 1 {
 		t.Fatalf("expected the failed send to have been attempted once, got %d", rec2.calls)
 	}
-	if !readDigestStamp(stamp).IsZero() {
-		t.Error("stamp must NOT advance after a failed send — the window must retry")
+	// v0.29.29: with no stamp (first run) the window opens one interval
+	// back from NOW, so leaving the stamp absent slid the window forward
+	// on every failed tick. The failed send pins it at `since` instead.
+	if got := readDigestStamp(stamp); got.Unix() != rec2.since.Unix() {
+		t.Errorf("a failed first-run send must pin the window at since=%v, stamp is %v", rec2.since, got)
+	}
+	pinned := readDigestStamp(stamp)
+	s.runVulnDigest(ctx)
+	if got := readDigestStamp(stamp); !got.Equal(pinned) {
+		t.Errorf("a second failed send must not move the window: %v -> %v", pinned, got)
+	}
+
+	// An unwritable stamp path: the window cannot be pinned, and that is
+	// logged rather than lost.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var holdLogs bytes.Buffer
+	s.logger = slog.New(slog.NewTextHandler(&holdLogs, nil))
+	s.digestStampPath = filepath.Join(blocker, "vuln-digest-last")
+	s.digestMailer = &recordingDigestMailer{err: errors.New("smtp down")}
+	s.runVulnDigest(ctx)
+	if !strings.Contains(holdLogs.String(), "could not pin the retry window") {
+		t.Errorf("a failed pin must be logged; log:\n%s", holdLogs.String())
+	}
+	s.logger = logger
+	s.digestStampPath = stamp
+
+	// A mailer skip is a failure too, never a delivery.
+	os.Remove(stamp)
+	rec3 := &recordingDigestMailer{err: fmt.Errorf("%w: test", mailer.ErrRecipientSkipped)}
+	s.digestMailer = rec3
+	s.runVulnDigest(ctx)
+	if rec3.calls != 1 {
+		t.Fatalf("expected the skipped send to have been attempted once, got %d", rec3.calls)
+	}
+	if got := readDigestStamp(stamp); got.Unix() != rec3.since.Unix() {
+		t.Errorf("a skipped send is a failed send: the window must stay at since=%v, stamp is %v", rec3.since, got)
+	}
+
+	// A findings query that fails, or is cancelled at shutdown, before any
+	// stamp exists pins the first-run window too; otherwise the next tick
+	// opens it one interval back from its own now and the elapsed hour's
+	// findings are never sent (Copilot review of PR #207 on eb248eb).
+	closed, err := db.NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	closed.Close()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	interval := s.cfg.Mail.VulnDigestInterval()
+	for _, tc := range []struct {
+		name  string
+		store *db.PostgresStore
+		ctx   context.Context
+	}{
+		{"query error", closed, ctx},
+		{"shutdown", store, cancelled},
+	} {
+		os.Remove(stamp)
+		rec4 := &recordingDigestMailer{}
+		s.store, s.digestMailer = tc.store, rec4
+		before := time.Now()
+		s.runVulnDigest(tc.ctx)
+		after := time.Now()
+		if rec4.calls != 0 {
+			t.Fatalf("%s: the query did not fail (%d sends)", tc.name, rec4.calls)
+		}
+		pinnedAt := readDigestStamp(stamp)
+		if pinnedAt.Before(before.Add(-interval).Truncate(time.Second)) || pinnedAt.After(after.Add(-interval)) {
+			t.Fatalf("%s before any stamp: stamp = %v; want the window start, one interval (%v) before the run", tc.name, pinnedAt, interval)
+		}
+		s.runVulnDigest(tc.ctx)
+		if got := readDigestStamp(stamp); !got.Equal(pinnedAt) {
+			t.Errorf("%s: a second failed tick moved the window: %v -> %v", tc.name, pinnedAt, got)
+		}
+	}
+	s.store = store
+
+	// With an unwritable stamp path, a failed query logs that the window could
+	// not be pinned; a shutdown logs nothing (Copilot review of PR #207 on
+	// d436880: a cancelled query logged the pin failure as a WARN).
+	unwritable := filepath.Join(blocker, "vuln-digest-last")
+	for _, tc := range []struct {
+		name  string
+		store *db.PostgresStore
+		ctx   context.Context
+		logs  bool
+	}{
+		{"query error", closed, ctx, true},
+		{"shutdown", store, cancelled, false},
+	} {
+		var logs bytes.Buffer
+		s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+		s.store, s.digestStampPath, s.digestMailer = tc.store, unwritable, &recordingDigestMailer{}
+		s.runVulnDigest(tc.ctx)
+		pinLogged := strings.Contains(logs.String(), "could not pin the retry window")
+		queryLogged := strings.Contains(logs.String(), "vuln digest: query failed")
+		if pinLogged != tc.logs || queryLogged != tc.logs {
+			t.Errorf("%s with an unwritable stamp: pin failure logged = %v, query failure logged = %v; want both %v; log:\n%s", tc.name, pinLogged, queryLogged, tc.logs, logs.String())
+		}
+	}
+	s.logger, s.store, s.digestStampPath = logger, store, stamp
+}
+
+// TestHoldDigestWindow pins the failed-send rule without a database: an
+// existing stamp is left as is, and a missing one is written as `since`,
+// so repeated failures keep the same window.
+func TestHoldDigestWindow(t *testing.T) {
+	stamp := filepath.Join(t.TempDir(), "vuln-digest-last")
+	since := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	if err := holdDigestWindow(stamp, time.Time{}, since); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDigestStamp(stamp); !got.Equal(since) {
+		t.Errorf("first-run failure: stamp = %v, want since %v", got, since)
+	}
+	later := since.Add(3 * time.Hour)
+	if err := holdDigestWindow(stamp, since, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDigestStamp(stamp); !got.Equal(since) {
+		t.Errorf("with a stamp, a failure must leave it: got %v, want %v", got, since)
+	}
+}
+
+// TestVulnDigestReady: the ticker starts only when a digest could ever be
+// delivered. A disabled mailer or an undeliverable operator_email used to
+// log "operator vulnerability digest enabled" and then query every hour
+// without sending (round-3 review of v0.29.28).
+func TestVulnDigestReady(t *testing.T) {
+	mail := &config.MailConfig{OperatorEmail: "ops@example.com"}
+	for _, tc := range []struct {
+		name    string
+		mailer  DigestMailer
+		mail    *config.MailConfig
+		wantOK  bool
+		wantErr bool // a deliverability error the caller logs at ERROR
+	}{
+		{name: "no mailer injected", mail: mail},
+		{name: "no mail block", mailer: &recordingDigestMailer{}},
+		{name: "no operator_email", mailer: &recordingDigestMailer{}, mail: &config.MailConfig{}},
+		{name: "deliverable", mailer: &recordingDigestMailer{}, mail: mail, wantOK: true},
+		{name: "mailer disabled", mailer: &recordingDigestMailer{deliverErr: mailer.ErrNotConfigured}, mail: mail, wantErr: true},
+		{name: "undeliverable operator_email", mailer: &recordingDigestMailer{deliverErr: mailer.ErrRecipientSkipped}, mail: mail, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Scheduler{cfg: Config{Mail: tc.mail}, digestMailer: tc.mailer}
+			ok, err := s.vulnDigestReady()
+			if ok != tc.wantOK || (err != nil) != tc.wantErr {
+				t.Errorf("vulnDigestReady() = %v, %v; want ok=%v err=%v", ok, err, tc.wantOK, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestStartVulnDigest: the startup decision and what it logs — the ERROR
+// configuration.md promises when a configured digest could never be
+// delivered, INFO when it starts, and nothing when it is not configured.
+func TestStartVulnDigest(t *testing.T) {
+	mail := &config.MailConfig{OperatorEmail: "ops@example.com"}
+	for _, tc := range []struct {
+		name     string
+		mailer   DigestMailer
+		mail     *config.MailConfig
+		wantTick bool
+		wantLog  string
+		noLog    string
+	}{
+		{name: "deliverable", mailer: &recordingDigestMailer{}, mail: mail, wantTick: true, wantLog: "level=INFO msg=\"operator vulnerability digest enabled\""},
+		{name: "undeliverable", mailer: &recordingDigestMailer{deliverErr: mailer.ErrNotConfigured}, mail: mail,
+			wantLog: "level=ERROR msg=\"operator vulnerability digest NOT started", noLog: "digest enabled"},
+		{name: "not configured", mailer: &recordingDigestMailer{}, mail: &config.MailConfig{}, noLog: "digest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			s := &Scheduler{logger: slog.New(slog.NewTextHandler(&logs, nil)), cfg: Config{Mail: tc.mail}, digestMailer: tc.mailer}
+			c, stop := s.startVulnDigest()
+			defer stop()
+			if (c != nil) != tc.wantTick {
+				t.Errorf("tick channel present = %v, want %v", c != nil, tc.wantTick)
+			}
+			if tc.wantLog != "" && !strings.Contains(logs.String(), tc.wantLog) {
+				t.Errorf("log lacks %q:\n%s", tc.wantLog, logs.String())
+			}
+			if tc.noLog != "" && strings.Contains(logs.String(), tc.noLog) {
+				t.Errorf("log has %q:\n%s", tc.noLog, logs.String())
+			}
+		})
 	}
 }

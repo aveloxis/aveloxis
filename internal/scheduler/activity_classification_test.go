@@ -6,7 +6,7 @@ package scheduler
 // activity_classification_test.go — TDD suite for the v0.27.57
 // contributor activity-classification ticker. Contracts pinned:
 //   - the GitHub-only fetch is reached via a NARROW capability
-//     interface satisfied by *github.Client (the digestMailer /
+//     interface satisfied by *github.Client (the DigestMailer /
 //     breadthStore pattern) — platform.Client is NOT widened, so no
 //     test fake or GitLab implementation changes (regression safety);
 //   - a failed fetch marks NOTHING (the whole batch retries next

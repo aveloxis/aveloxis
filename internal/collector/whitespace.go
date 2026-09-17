@@ -262,21 +262,23 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	}
 	// Derived context (ultrareview 2026-08-19, bug_001): when the parse
 	// loop bails early (a DB flush error), git is still writing and the
-	// pipe fills — calling cmd.Wait() with an undrained StdoutPipe then
-	// blocks FOREVER (git wedged in write(), Wait wedged on git's exit;
-	// the exact pattern the exec.StdoutPipe docs warn about). Cancelling
-	// this context on the error path SIGKILLs git so Wait() returns.
+	// pipe fills — waiting on an undrained pipe then blocks FOREVER (git
+	// wedged in write(), the wait wedged on git's exit). Cancelling this
+	// context on the error path SIGKILLs git's group so the wait returns.
 	walkCtx, cancelWalk := context.WithCancel(ctx)
 	defer cancelWalk()
 	cmd := exec.CommandContext(walkCtx, "git", "-C", clonePath, "log",
 		target, "--numstat", "-p", "--format=%x1e%H")
-	stdout, err := cmd.StdoutPipe()
+	// startSweptCommand (not cmd.StdoutPipe): same reason as the facade's
+	// git log — a child inheriting git's stdout that outlives the leader
+	// would otherwise wedge this walk, with no ctx cancel to rescue it.
+	// See PR #207.
+	swept, err := startSweptCommand(cmd)
 	if err != nil {
-		return 0, "", err
-	}
-	if err := cmd.Start(); err != nil {
 		return 0, "", fmt.Errorf("starting git log -p: %w", err)
 	}
+	defer swept.Close()
+	stdout := swept.Stdout
 
 	var (
 		updated int64
@@ -314,7 +316,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 		// Kill git before Wait — see the walkCtx comment above.
 		cancelWalk()
 	}
-	waitErr := cmd.Wait()
+	waitErr := swept.Wait()
 	if parseErr != nil {
 		return updated, head, fmt.Errorf("parse whitespace log: %w", parseErr)
 	}

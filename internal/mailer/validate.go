@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"strings"
+	"unicode"
 )
 
 // normalizeAppPassword removes the display-format spaces Google
@@ -23,6 +26,53 @@ import (
 // rejected with `535 5.7.8 Username and Password not accepted`.
 func normalizeAppPassword(p string) string {
 	return strings.ReplaceAll(p, " ", "")
+}
+
+// normalizeSiteURL is mail.site_url as the mailer stores it: no surrounding
+// spaces and no trailing slash, so every link builder appends paths the same
+// way.
+func normalizeSiteURL(site string) string {
+	return strings.TrimRight(strings.TrimSpace(site), "/")
+}
+
+// validateSiteURL accepts an empty site_url or an absolute http or https URL
+// whose host is a name or an IP address, with no query, fragment, user info or
+// spaces: the value starts every link the mailer writes, and "aveloxis.example"
+// made a relative link while "https://aveloxis.example?x=1" put the token
+// inside another query (Copilot review of PR #207). url.Parse also accepts a
+// list of URLs as one: "https://a.example,https://b.example" as one host
+// (round-24 review), "https://a.example/,https://b.example/" as a path
+// (round 25). The errors do not repeat the value, which could carry a
+// password.
+func validateSiteURL(site string) error {
+	if site == "" {
+		return nil
+	}
+	u, err := url.Parse(site)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !siteHost(u.Hostname()) || strings.Count(site, "://") > 1 {
+		return errors.New("mail.site_url must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
+	}
+	if u.User != nil || strings.ContainsAny(site, "?#") || strings.IndexFunc(site, unicode.IsSpace) >= 0 {
+		return errors.New("mail.site_url must not contain a query (?), a fragment (#), a user name or spaces")
+	}
+	return nil
+}
+
+// siteHost reports whether host is an IP address (an IPv6 zone allowed) or a
+// name made of letters, digits, '-', '.', '_' and non-ASCII characters.
+func siteHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if ip, _, _ := strings.Cut(host, "%"); net.ParseIP(ip) != nil {
+		return true
+	}
+	for _, r := range host {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_' || r > unicode.MaxASCII) {
+			return false
+		}
+	}
+	return true
 }
 
 // appPasswordPattern: 16 lowercase ASCII letters, no digits, no
@@ -47,8 +97,8 @@ func isValidAppPassword(p string) bool {
 // config-load time. Returns nil for both:
 //   - a fully-configured block (gmail_user contains @ AND the
 //     normalized app password is 16 lowercase letters), and
-//   - a fully-empty block (mailer disabled — all email Send
-//     calls become no-ops).
+//   - a fully-empty block (mailer disabled — Send attempts nothing
+//     and returns ErrNotConfigured).
 //
 // Returns a descriptive error for everything else. The error
 // message names the exact field that's wrong so operators don't
@@ -88,13 +138,14 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("mail.gmail_app_password is %d character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters. Generate one at https://myaccount.google.com/apppasswords (2-Step Verification must be enabled on the account). The displayed format `abcd efgh ijkl mnop` is fine — spaces are stripped on load. Regular account passwords do NOT work with SMTP since Google deprecated 'less secure app access' in 2022", len(pass))
 	}
 
-	return nil
+	// site_url starts every link the mailer writes.
+	return validateSiteURL(normalizeSiteURL(cfg.SiteURL))
 }
 
 // ValidateAndLog runs ValidateConfig and emits a clear WARN line
 // when it fails. Returns the same error for callers that want to
-// decide what to do (e.g. fail-fast in a CLI vs no-op-mailer in
-// the web server). When the config is empty (mailer disabled),
+// decide what to do (e.g. fail-fast in a CLI vs a disabled mailer
+// in the web server). When the config is empty (mailer disabled),
 // logs an INFO so operators see the absence is intentional.
 func ValidateAndLog(cfg Config, logger *slog.Logger) error {
 	err := ValidateConfig(cfg)
@@ -103,7 +154,9 @@ func ValidateAndLog(cfg Config, logger *slog.Logger) error {
 			if strings.TrimSpace(cfg.GmailUser) == "" {
 				logger.Info("mailer disabled — mail.gmail_user is empty, transactional emails will not be sent")
 			} else {
-				logger.Info("mailer configured", "user", cfg.GmailUser, "from_name", cfg.FromName, "site_url", cfg.SiteURL)
+				// operator_email too: a lost one silences the add-request
+				// notices and the digest, and nothing else would say so.
+				logger.Info("mailer configured", "user", cfg.GmailUser, "from_name", cfg.FromName, "site_url", cfg.SiteURL, "operator_email", cfg.OperatorEmail)
 			}
 		}
 		return nil

@@ -126,6 +126,243 @@ var deployChecklists = map[string][]deployStep{
 	// the real parameter list (glKeys was missing). Docs and a doc-drift test
 	// only — same ladder.
 	"0.29.13": v029DeployChecklist,
+	// v0.29.14: scc's per-file report is streamed off a pipe instead of
+	// buffered whole — the 1 GiB bytes.Buffer whose doubling to 2 GiB
+	// OOM-killed the scheduler on 2026-09-15 (repo 144636). No schema
+	// change, no operator heal — same ladder. A restart is the fix; the
+	// repo that crashed it re-queues on its own.
+	"0.29.14": v029DeployChecklist,
+	// v0.29.15: test-only — the fake scorecard fixture is warmed before a
+	// timed test uses it (macOS charges ~756 ms for the first exec of a new
+	// executable, more than the 500 ms per-attempt cap). No production
+	// code, no schema change, no operator heal — same ladder.
+	"0.29.15": v029DeployChecklist,
+	// v0.29.16: round-2 review fixes to the v0.29.14 scc streaming path —
+	// the decoder's read-ahead is now drained (trailing garbage in the
+	// same write was being accepted), scc's process group is killed so a
+	// straggler cannot block the drain, and a crash signal reaches the
+	// operator instead of being swallowed. No schema change, no operator
+	// heal — same ladder.
+	"0.29.16": v029DeployChecklist,
+	// v0.29.17: round-3 review fixes to the scc streaming path — a corrupt
+	// report from an scc that exited 0 no longer classifies as a shutdown,
+	// an OOM-killed scc is no longer mistaken for our own kill, analysis
+	// phase errors are logged individually (they were only counted), and
+	// scc's process group is swept on every exit. No schema change, no
+	// operator heal — same ladder.
+	"0.29.17": v029DeployChecklist,
+	// v0.29.18: round-4 review fixes — scc failures are logged once (by the
+	// analysis phase logger) instead of twice, a shutdown-logging test that
+	// an ungated logger.Error escaped now checks every failure level, and
+	// two comments that overstated earlier fixes are corrected. No schema
+	// change, no operator heal — same ladder.
+	"0.29.18": v029DeployChecklist,
+	// v0.29.19: Copilot review on PR #207 — the scc labor-row path comment
+	// claimed an absolute Location outside workDir was preserved; filepath.Rel
+	// returns a ../ walk for it. Comment corrected and the path handling pinned
+	// case by case. No behaviour change, no schema change — same ladder.
+	"0.29.19": v029DeployChecklist,
+	// v0.29.20: Copilot review on PR #207 — a child that inherited scc's
+	// stdout and outlived the leader wedged the collection worker for the
+	// child's lifetime. scanSCC now owns the pipe and sweeps scc's process
+	// group as soon as the leader exits. No schema change, no operator
+	// heal — same ladder.
+	"0.29.20": v029DeployChecklist,
+	// v0.29.21: review of the v0.29.20 wedge fix — stale WaitDelay prose
+	// that still reasoned from StdoutPipe, a dead timing assertion in the
+	// wedge test, and a pin comment that overstated its reach. Comments and
+	// one test bound; no behaviour change. Same ladder.
+	"0.29.21": v029DeployChecklist,
+	// v0.29.22: Copilot review on PR #207 — the streaming decoder matched
+	// scc's outer keys exactly, while encoding/json matches them
+	// case-insensitively. A casing variant produced zero rows with no
+	// error, and a zero-row success replaces the labor snapshot. Now
+	// matched with EqualFold. No schema change, no operator heal.
+	"0.29.22": v029DeployChecklist,
+	// v0.29.23: three items. The wedge fix is generalized into
+	// startSweptCommand and applied to the facade's git log and the
+	// whitespace walk, which shared the primitive; duplicate scc outer keys
+	// now fail closed; and email bodies scrub untrusted values (CodeQL
+	// alert 16). Plus golang.org/x/net 0.53.0 -> 0.59.0 (dependabot 2; the
+	// vulnerable x/net/html was never linked). No schema change, no
+	// operator heal — same ladder.
+	"0.29.23": v029DeployChecklist,
+	// v0.29.24: review of v0.29.23 — the mailer scrubber now drops format
+	// runes by CATEGORY and truncates on runes (byte-slicing emitted
+	// invalid UTF-8), subjects share the body filter, startSweptCommand
+	// enforces its preconditions, and two tripwires that could not see new
+	// sites were rewritten. No schema change, no operator heal.
+	"0.29.24": v029DeployChecklist,
+	// v0.29.25: SECURITY — email confirmation links were built from the
+	// request Host header when mail.site_url was unset, so an attacker
+	// could mail a victim a link to the attacker's server carrying the
+	// victim's confirmation token. The Host is now trusted only for
+	// loopback. OPERATORS: set mail.site_url; without it, confirmation
+	// emails are refused on any non-loopback host (logged at ERROR).
+	"0.29.25": v029DeployChecklist,
+	// v0.29.26: the email recipient is PARSED into an addr-spec
+	// (mail.ParseAddress) instead of only being character-scrubbed — it
+	// arrives straight from a web form. An unparseable address is skipped
+	// with a WARN, matching the empty-recipient contract. Addresses CodeQL
+	// alert 197's sink. No schema change, no operator heal.
+	"0.29.26": v029DeployChecklist,
+	// v0.29.27: review of Copilot's PR #207 fixes. The loopback Host
+	// fallback for confirmation links now requires any port to be numeric
+	// and IPv6 brackets to be balanced (text after "localhost:" rode into
+	// the mailed link); recipients whose local part needs quoting are
+	// refused, because the SMTP envelope cannot carry them; the
+	// account-email form uses the mailer's recipient parser. No schema
+	// change, no operator heal.
+	"0.29.27": v029DeployChecklist,
+	// v0.29.28: round 2 of that review. mailer.Send now returns an error
+	// when it sends nothing (mail not configured, or an empty or
+	// undeliverable recipient) instead of nil, so the vulnerability digest
+	// no longer advances its window over findings it never mailed and
+	// `aveloxis test-mail` exits nonzero. Addresses over the RFC 5321
+	// length limits are refused. The account-email form refuses before
+	// storing anything when no link can be sent. OPERATORS: a malformed
+	// mail.operator_email (a list, say) now logs "vuln digest: send failed"
+	// every hour until fixed. No schema change, no operator heal.
+	"0.29.28": v029DeployChecklist,
+	// v0.29.29: round 3. Users whose login provided no email are let into
+	// the dashboard when this site cannot send a confirmation (mail off,
+	// or no mail.site_url behind a proxy) instead of being looped back to
+	// a form that refuses; a failed confirmation send clears the pending
+	// address and says so; the vulnerability digest refuses to START when
+	// it could never deliver (ERROR at startup, no hourly queries) and a
+	// failed first send pins its window. OPERATORS: after fixing the mail
+	// block or operator_email, restart serve. No schema change.
+	"0.29.29": v029DeployChecklist,
+	// v0.29.30: round 4. The request Host builds a confirmation link only
+	// with web.dev_mode on (a same-host proxy that does not forward Host
+	// made every visitor look like 127.0.0.1). A failed confirmation send
+	// clears only its own pending address and tells the user a link that
+	// does arrive still works; dashboard email lookups that fail are logged
+	// and no longer read as "no address". OPERATORS: production needs
+	// mail.site_url for confirmation links. No schema change.
+	"0.29.30": v029DeployChecklist,
+	// v0.29.31: round 5. The account-email POST and the dashboard gate share
+	// one confirmation policy (mailer + dev_mode), tested through the real
+	// handler; the refusal ERROR and a new startup WARN say to set
+	// mail.site_url, not web.dev_mode. No schema change.
+	"0.29.31": v029DeployChecklist,
+	// v0.29.32: round 6. A confirmation link is consumed only by its own
+	// account, in one transaction with the promotion; the dashboard banner
+	// counts a pending address only while a live link backs it; the email
+	// form explains expired and failed links; mail.site_url is normalized
+	// once. No schema change, no operator heal.
+	"0.29.32": v029DeployChecklist,
+	// v0.29.33: round 7. Confirming locks the user row first (two links of
+	// one user clicked at once deadlocked); another account's link is logged
+	// at WARN with its owner; the mailer refuses to dial SMTP from a test
+	// binary without a seam, and WithSendFunc panics outside tests. No
+	// schema change.
+	"0.29.33": v029DeployChecklist,
+	// v0.29.34: round 8. The production mail deliverer's wiring is tested
+	// (a wrong flag would have refused every production Send with CI
+	// green); confirming a link reads the token's owner in the same SQL
+	// statement that consumes it. No schema change.
+	"0.29.34": v029DeployChecklist,
+	// v0.29.35: round 9. How serve, web and api get their mailer is tested
+	// from a JSON config; the confirmation email and dashboard banner state
+	// db.EmailConfirmationLifetime instead of a hard-coded "24 hours"; the
+	// API logs a failed add-request lookup. serve now logs its mailer line
+	// ("mailer configured" / "mailer disabled", or the "mailer configuration
+	// invalid" WARN) at startup even without mail.operator_email. No schema
+	// change.
+	"0.29.35": v029DeployChecklist,
+	// v0.29.36: round 10. Approving a pending group mails its requester only
+	// from the request that approved it (ApproveGroup returns the requester),
+	// and a failed API group decision is logged; the dashboard banner states
+	// how long confirmation links are valid instead of a countdown. No schema
+	// change.
+	"0.29.36": v029DeployChecklist,
+	// v0.29.37: round 11. Re-approving an approved repos add-request now
+	// resumes its processing pass, as the processing WARN and
+	// docs/guide/api.md always said; re-approving an org request re-runs its
+	// registration. A failed API add-request decision is logged. No schema
+	// change.
+	"0.29.37": v029DeployChecklist,
+	// v0.29.38: round 12. An org approval's flip and registration are one
+	// transaction; re-approving an approved org request that lacks its
+	// registration completes it and notifies the requester. A registration in
+	// a rejected group no longer auto-approves another group's add of the same
+	// org, so such adds pend for review again. No schema change.
+	"0.29.38": v029DeployChecklist,
+	// v0.29.39: round 13. A non-admin's auto-approved org add writes its
+	// audit request and the registration in one transaction (a failure used
+	// to leave an approved request with nothing tracked). No schema change.
+	"0.29.39": v029DeployChecklist,
+	// v0.29.40: round 14. Org registration only accepts a transaction (the
+	// admin add gets its own); the tests fail each write of an approval.
+	// The generated showcase pages link the blog from their footer; rerun
+	// `aveloxis generate-showcase` to publish that. No schema change.
+	"0.29.40": v029DeployChecklist,
+	// v0.29.41: round 15. An auto-approved repos add (only with
+	// web.auto_approve_add_limit > 0) keeps processing when the user's
+	// request is cancelled; the admin org add's transaction errors are
+	// tested. No schema change.
+	"0.29.41": v029DeployChecklist,
+	// v0.29.42: round 16. Tests and comments only (the auto-approve cancel
+	// test checks the repo reached the group; the admin org-add test cleans
+	// up the rows it exists to catch). No schema change.
+	"0.29.42": v029DeployChecklist,
+	// v0.29.43: round 17. Comments and one test's result checks only. No
+	// schema change.
+	"0.29.43": v029DeployChecklist,
+	// v0.29.44: round 18. A test's failure message and comments only. No
+	// schema change.
+	"0.29.44": v029DeployChecklist,
+	// v0.29.45: round 19. One test's failure message only. No schema change.
+	"0.29.45": v029DeployChecklist,
+	// v0.29.46: Copilot review of PR #207. Approved add-request processing
+	// claims each item, so a second approve click no longer repeats the
+	// batch; the API drops its token cache when a processing pass ends. No
+	// schema change.
+	"0.29.46": v029DeployChecklist,
+	// v0.29.47: Copilot's second review of PR #207. Documentation only (the
+	// web.base_url row). No schema change.
+	"0.29.47": v029DeployChecklist,
+	// v0.29.48: round 21. Fixes a v0.29.46 regression — do not deploy
+	// v0.29.46 or v0.29.47: approved add-request processing held a
+	// transaction per pass while taking a second pool connection, so as many
+	// concurrent passes as the pool size hung the web or api process until a
+	// restart. Processing now holds no connection across items and runs one
+	// pass per request per process. No schema change.
+	"0.29.48": v029DeployChecklist,
+	// v0.29.49: Copilot review of PR #207 on 0cd7927. An approved add-request
+	// item whose add fails transiently is left unprocessed (re-approving
+	// retries it) instead of being marked failed for good; only an error in
+	// the item's own data marks it failed. No schema change.
+	"0.29.49": v029DeployChecklist,
+	// v0.29.50: Copilot reviews of PR #207 on eb248eb and review round 23. A
+	// foreign-key or unique violation while adding an approved item is
+	// retryable (a concurrent delete or dedup can cause it), not a permanent
+	// failure; an auto-approved add marks a failed repo failed, adds the rest
+	// and tells the user; a failed digest query keeps its window. OPERATORS:
+	// mail.site_url must now be an absolute http(s) URL with a host and no
+	// query or fragment, or the mailer is disabled at startup (WARN "mailer
+	// configuration invalid"). No schema change.
+	"0.29.50": v029DeployChecklist,
+	// v0.29.51: Copilot review of PR #207 on d436880. The API's group add
+	// answers a server-side failure with a logged 500 instead of a 400
+	// carrying database text; a shutdown during the vulnerability digest
+	// query logs nothing. No schema change.
+	"0.29.51": v029DeployChecklist,
+	// v0.29.52: round 24 on v0.29.50 and round 25 on v0.29.51, plus the
+	// v0.29.51 changes that were not in its commit (the web add notices and
+	// the stricter mail.site_url check). The API's pending-adds endpoint and a
+	// URL the database refuses no longer show database text or a 500. No
+	// schema change.
+	"0.29.52": v029DeployChecklist,
+	// v0.29.53: round 26 on v0.29.52. The API's group add answers Postgres's
+	// transaction-ID wraparound stop (SQLSTATE 54000 with no index) as a
+	// logged 500, not a 400 "invalid URL". No schema change.
+	"0.29.53": v029DeployChecklist,
+	// v0.29.54: round 27 on v0.29.53. Repo and org adds refuse a URL longer
+	// than db.MaxAddURLBytes before anything is written (the API answers
+	// 400); every SQLSTATE 54000 is now a server-side 500. No schema change.
+	"0.29.54": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

@@ -392,7 +392,7 @@ The settings most operators tune (defaults shown for reference):
 | `collection.listing_mode` | `"graphql"` | Default since v0.26.0; `"rest"` restores the repo-wide REST issue/PR scans. |
 | `collection.threading_mode` | `"single"` | Set to `"sharded"` with `pr_child_mode=graphql` to parallelize large-repo PR batches (v0.18.3+). |
 | `collection.matview_rebuild_day` | `"saturday"` | Or `"disabled"` to turn off scheduled rebuilds. |
-| `web.dev_mode` | `false` | Set `true` for local HTTP development (see Development Mode below). Never enable in production. |
+| `web.dev_mode` | `false` | Set `true` for local HTTP development (see Development Mode below): plain-HTTP cookies, and loopback email confirmation links when `mail.site_url` is unset. Never enable in production. |
 | `log_level` | `"info"` | `debug` / `info` / `warn` / `error`. |
 
 Every other setting (mail/SMTP, periodic-task cadences, OAuth credentials, shutdown grace, etc.) is documented in [`docs/getting-started/configuration.md`](./docs/getting-started/configuration.md).

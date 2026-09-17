@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -76,6 +77,33 @@ func NewAnalysisCollector(store *db.PostgresStore, logger *slog.Logger, bareDir 
 		logger:  logger,
 		bareDir: bareDir,
 		tempDir: filepath.Join(os.TempDir(), "aveloxis-analysis"),
+	}
+}
+
+// logAnalysisPhaseErrors logs each analysis-phase failure. Before this,
+// AnalyzeRepo appended every phase error to result.Errors and logged only
+// the COUNT ("errors", len(result.Errors)), and the scheduler never reads
+// the slice. So any phase failure that its phase did not log itself never
+// reached a log line (round 3, F5). Two examples are scc exiting non-zero
+// or being killed after a COMPLETE report, and trailing garbage after the
+// report. In the 2026-09-06..15 production log, 35 of 138,397 analyses
+// carried errors, about 90 over nine days, so a WARN per error is cheap.
+//
+// This is the ONLY place scanSCC's errors are logged. Some other phases do
+// log before returning (libyear's rotation failure logs at ERROR), so
+// those failures appear twice: the phase's own line with its context,
+// then this one. That duplicate is accepted, because dropping it would
+// mean auditing every phase's internal logging to find which errors are
+// silent (round 4, R4-2).
+//
+// A cancellation is a shutdown, not a phase failure, so it is skipped
+// (the context.Canceled classification rule).
+func logAnalysisPhaseErrors(logger *slog.Logger, repoID int64, errs []error) {
+	for _, phaseErr := range errs {
+		if errors.Is(phaseErr, context.Canceled) {
+			continue
+		}
+		logger.Warn("analysis phase failed", "repo_id", repoID, "error", phaseErr)
 	}
 }
 
@@ -165,6 +193,8 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	// docs/architecture/scancode.md for the architectural rationale
 	// and TestAnalyzeRepoNoLongerInvokesScancode for the regression
 	// guard.
+
+	logAnalysisPhaseErrors(ac.logger, repoID, result.Errors)
 
 	// When RetainClone is true, hand the clone path to the caller for
 	// post-analysis work (e.g., local scorecard execution).
@@ -2314,39 +2344,159 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 
 	ac.logger.Info("running scc for code complexity", "repo_id", repoID)
 
-	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, sccPath, "-f", "json", "--by-file", workDir)
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("scc failed: %w", execErr(ctx, err))
-	}
+	// v0.29.14: scc's stdout is STREAMED, never buffered. The pre-v0.29.14
+	// code read the whole report into a bytes.Buffer and then
+	// json.Unmarshal'd it, holding the raw JSON, every sccFile struct and
+	// every labor row live at the same time — and bytes.Buffer grows by
+	// DOUBLING. On 2026-09-15 repo 144636
+	// (opendatahub-io/odh-build-metadata, a 73 GB store of generated build
+	// metadata) drove that buffer to 1 GiB; the doubling to 2 GiB asked the
+	// kernel for one contiguous 2 GiB mapping, kate runs
+	// vm.overcommit_memory=2 so the mmap was refused, and the process died
+	// with "fatal error: runtime: out of memory" — taking all 70 collection
+	// workers and every background subsystem with it.
+	//
+	// Streaming holds only the labor rows, each individually allocated, so
+	// no large contiguous request is ever made. Measured against
+	// benchSCCDoc(1_000_000) (a 479 MB report) with a faithful replica of
+	// the old path — a bytes.Buffer filled in 32 KiB writes, the way
+	// os/exec fills it: 397 MB allocated vs 1,793 MB, a 4.5x reduction,
+	// with CPU and allocation COUNT unchanged (the win is bytes, not
+	// churn). An earlier note here claimed 9.7x; that came from growing a
+	// raw []byte with append, which is not how bytes.Buffer grows.
+	//
+	// Derived context (same contract the facade's git log reader
+	// documents, v0.27.105): when decoding fails while scc may still be
+	// writing, scc is killed BEFORE the drain below, so a doomed report is
+	// abandoned rather than read to the end.
+	sccCtx, cancelSCC := context.WithCancel(ctx)
+	defer cancelSCC()
 
-	var languages []sccLanguage
-	if err := json.Unmarshal(out.Bytes(), &languages); err != nil {
-		return fmt.Errorf("parsing scc output: %w", err)
-	}
+	started := time.Now()
+	cmd := exec.CommandContext(sccCtx, sccPath, "-f", "json", "--by-file", workDir)
 
+	// startSweptCommand owns the stdout pipe and sweeps scc's process
+	// group when the leader exits; see its doc for why cmd.StdoutPipe()
+	// wedges this function and what WaitDelay does and does not buy.
+	swept, err := startSweptCommand(cmd)
+	if err != nil {
+		return fmt.Errorf("scc failed to start: %w", execErr(ctx, err))
+	}
+	defer swept.Close()
+
+	counted := &countingReader{r: swept.Stdout}
+	dec := json.NewDecoder(counted)
 	now := time.Now()
 	var laborRows []*db.RepoLaborRow
-	for _, lang := range languages {
-		for _, file := range lang.Files {
-			relPath, relErr := filepath.Rel(workDir, file.Location)
-			if relErr != nil || relPath == "" {
-				relPath = file.Location
-			}
-			laborRows = append(laborRows, &db.RepoLaborRow{
-				CloneDate:    now,
-				AnalysisDate: now,
-				Language:     lang.Name,
-				FilePath:     relPath,
-				FileName:     filepath.Base(file.Location),
-				TotalLines:   file.Lines,
-				CodeLines:    file.Code,
-				CommentLines: file.Comment,
-				BlankLines:   file.Blank,
-				Complexity:   file.Complexity,
-			})
+	decodeErr := streamSCCLabor(dec, workDir, now, func(row *db.RepoLaborRow) {
+		laborRows = append(laborRows, row)
+		if sccRowStreamed != nil {
+			sccRowStreamed()
 		}
+	})
+	// A decode failure makes the rest of the report worthless: kill scc
+	// rather than draining a scan that may still have minutes of work left
+	// — but ONLY when scc may still be writing. An EOF-class error means
+	// the write end is already closed, so there is nothing to abandon and
+	// the drain returns at once. Not killing in that case is what lets a
+	// death we did not cause stay visible: the kernel OOM-killer sends the
+	// same SIGKILL we do, and killing unconditionally made an OOM-killed
+	// scc indistinguishable from our own kill (round 3, F2). weKilled
+	// records the one case where a SIGKILL is ours.
+	weKilled := false
+	if decodeErr != nil && !sccStreamEnded(decodeErr) {
+		cancelSCC()
+		weKilled = true
+	}
+
+	// Drain BEFORE reaping. streamSCCLabor stops at the top-level "]", so
+	// anything scc writes after that stays in the pipe — and once it
+	// exceeds the OS pipe buffer (64 KiB) scc blocks in write() while
+	// cmd.Wait() blocks on it, wedging this worker FOREVER. Reproduced at
+	// exactly that boundary: 60,000 trailing bytes returned, 100,000 hung.
+	// The pre-v0.29.14 code could not hit this because cmd.Stdout drained
+	// to EOF; the streaming rewrite has to drain explicitly. A ctx cancel
+	// still unblocks this: cmd.Cancel kills scc's whole process group, so
+	// every holder of the write end dies and the pipe reaches EOF. Draining
+	// also makes counted.n the true report size
+	// rather than "the bytes the decoder happened to consume".
+	// Drain the decoder's LEFTOVER buffer first, then the pipe.
+	// json.Decoder reads ahead in chunks, so by the time it consumed the
+	// top-level "]" it has typically pulled ~445 more bytes off the pipe
+	// into its own buffer. Draining only `counted` therefore missed any
+	// trailing garbage that arrived in the SAME write as the report —
+	// measured: 1 and 50 trailing bytes were silently ACCEPTED, and 500
+	// were reported as "55 bytes". Whether garbage was caught came down to
+	// where scc happened to split its writes. dec.Buffered() is that
+	// leftover; MultiReader puts it back in front of the pipe.
+	//
+	// DECLINED (round 2, R2-6): killing scc on the first non-whitespace
+	// byte to bound the drain. It was implemented and reverted — the kill
+	// makes cmd.Wait() report our own "signal: killed", which then
+	// pre-empts the trailing-data error this drain exists to raise, and
+	// reports a self-inflicted cause to the operator. The unbounded case
+	// is hypothetical (scc 3.7.0 emits nothing after "]") and drains at
+	// pipe speed, so gigabytes cost seconds, not a wedge.
+	trailing := &nonSpaceCounter{}
+	_, _ = io.Copy(trailing, io.MultiReader(dec.Buffered(), counted))
+
+	waitErr := swept.Wait()
+
+	if decodeErr != nil {
+		// scc's OWN failure is usually the real cause of a short report,
+		// so it is joined in. It is read from ProcessState, NOT from
+		// waitErr: after our own kill, waitErr can be an injected ctx
+		// error rather than scc's status (round 3, F1).
+		//
+		// execErr (SR-18, v0.28.18 pass 35) then returns ctx.Err() when a
+		// `stop serve` landed inside scc, discarding the cause, so a
+		// shutdown classifies as a cancellation whatever happened here.
+		//
+		// Nothing is logged here. scanSCC's errors are logged once, by
+		// logAnalysisPhaseErrors in AnalyzeRepo, which also skips
+		// cancellations. v0.29.16 logged a WARN here, and it was the ONLY
+		// log line for this failure (separate wait_error and decode_error
+		// fields; AnalyzeRepo logged just the error count). The unreleased
+		// v0.29.17 added logAnalysisPhaseErrors but kept that WARN, so in
+		// that tree every scc abnormal exit appeared twice. v0.29.18
+		// removed the WARN (round 4, R4-2) and, with it, the ctx gate the
+		// WARN needed to stay quiet on shutdown (round 3, F3). execErr
+		// already makes a shutdown classify as a cancellation. The history
+		// in this paragraph was itself misstated once (round 5, F2).
+		cause := decodeErr
+		if own := sccOwnFailure(cmd.ProcessState, weKilled); own != nil {
+			cause = errors.Join(decodeErr, own)
+		}
+		return fmt.Errorf("parsing scc output: %w", execErr(ctx, cause))
+	}
+	if waitErr != nil {
+		return fmt.Errorf("scc failed: %w", execErr(ctx, waitErr))
+	}
+	if trailing.n > 0 {
+		// json.Unmarshal rejected any non-space data after the top-level
+		// value; the streaming walk stops at "]" and would silently accept
+		// it, so restore the rejection. Trailing WHITESPACE stays legal —
+		// a future scc adding a newline is not a corrupt report. scc 3.7.0
+		// emits nothing after "]" (verified with xxd).
+		return fmt.Errorf("scc output: %d bytes of trailing data after the top-level array", trailing.n)
+	}
+
+	// Observation only (SR-7): nothing here skips, truncates or caps a
+	// repo. The WARN exists so the frequency of the repo class that caused
+	// the 2026-09-15 OOM stays greppable now that it no longer announces
+	// itself by killing the process. See sccOutputLargeBytes for what the
+	// threshold is and — importantly — what it is not: scc_output_bytes
+	// did not exist before this release, so no repo can be SAID to have
+	// crossed it; what the 2026-09-06..15 log shows is that of 135,089
+	// repos exactly one failed to complete scc at all.
+	if counted.n >= sccOutputLargeBytes {
+		ac.logger.Warn("scc produced a very large per-file report — labor rows are held in memory until the snapshot is written; this is the repo class that OOM-killed the scheduler before v0.29.14",
+			"repo_id", repoID, "scc_output_bytes", counted.n,
+			"labor_files", len(laborRows), "duration", time.Since(started).String())
+	} else {
+		ac.logger.Info("scc complete", "repo_id", repoID,
+			"scc_output_bytes", counted.n, "labor_files", len(laborRows),
+			"duration", time.Since(started).String())
 	}
 
 	// v0.27.7: ONE atomic snapshot replace per analysis run. The store
@@ -2371,6 +2521,286 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 type sccLanguage struct {
 	Name  string    `json:"Name"`
 	Files []sccFile `json:"Files"`
+}
+
+// sccOutputLargeBytes marks a report big enough to be worth noticing. On
+// 2026-09-15 repo 144636 drove the old stdout bytes.Buffer to a 1 GiB
+// CAPACITY and the doubling to 2 GiB was refused by the kernel.
+//
+// Two caveats, because the number is easy to over-read: 1 GiB is the
+// buffer's capacity at death, not the report size that caused it (a
+// bytes.Buffer is between half and fully occupied, so the report was
+// somewhere in 512 MiB..1 GiB), and scc never finished, so its true size
+// is unknown. What IS known from the 2026-09-06..15 log is that of 135,089
+// repos exactly one failed to complete scc at all.
+//
+// Streaming removed the crash, so a repo past this line no longer breaks
+// anything — but its labor rows are still held in memory until the
+// snapshot is written, which is the residual risk this release accepted
+// deliberately. OBSERVATION only (SR-7): never a skip, truncation or cap.
+// Every run logs scc_output_bytes regardless; this only raises the level
+// so the rare class is greppable without scanning the whole distribution.
+const sccOutputLargeBytes = 1 << 30
+
+// sccRowStreamed is a TEST SEAM, nil in production. scanSCC calls it as
+// each labor row is built, which is the only way to observe that rows
+// appear WHILE scc is still writing — the property the whole rewrite
+// exists for. A source-level pin cannot prove it: banning "cmd.Stdout ="
+// and friends inside scanSCC is evaded by a one-line helper that buffers
+// the pipe and hands back a bytes.Reader, which a fresh-context review
+// demonstrated against an earlier version of this change. The nil default
+// is pinned by TestSCCRowStreamedSeamDefaultsToNil.
+var sccRowStreamed func()
+
+// countingReader counts bytes read through it. scc's report size is the
+// quantity that killed the scheduler, so it is the quantity worth logging
+// — the labor row count alone does not capture how much JSON produced it.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// nonSpaceCounter counts non-whitespace bytes written to it and discards
+// them. Used to drain scc's pipe after the report while still noticing
+// trailing garbage, which json.Unmarshal used to reject for us.
+type nonSpaceCounter struct{ n int64 }
+
+func (w *nonSpaceCounter) Write(p []byte) (int, error) {
+	for _, b := range p {
+		// Exactly encoding/json's isSpace, so what counts as "trailing
+		// data" here matches what json.Unmarshal rejected before the
+		// streaming rewrite. \v, \f, NUL and a BOM are NOT whitespace to
+		// either, and are correctly counted.
+		switch b {
+		case ' ', '\t', '\r', '\n':
+		default:
+			w.n++
+		}
+	}
+	return len(p), nil
+}
+
+// sccOwnFailure returns scc's own failure — a non-zero exit, or death by a
+// signal we did not send — or nil when scc succeeded or its only failure
+// is the SIGKILL this package sent (weKilled). It reads ProcessState rather
+// than Wait's error because after our kill os/exec may hand back an
+// injected ctx error instead of scc's status (round 3, F1).
+//
+// A SIGKILL is only presumed ours when weKilled is set, i.e. only on the
+// branch that actually killed. The kernel OOM-killer also sends SIGKILL,
+// and on the very repo class this release exists for it is the most
+// likely way scc dies; suppressing every SIGKILL hid it (round 3, F2). The
+// residual ambiguity — the OOM-killer striking in the instant between a
+// non-EOF decode error and our own kill — is accepted: that death is then
+// reported as a decode failure, which still fails the scan closed.
+func sccOwnFailure(st *os.ProcessState, weKilled bool) error {
+	if st == nil || st.Success() {
+		return nil
+	}
+	if weKilled {
+		if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
+			return nil
+		}
+	}
+	return &exec.ExitError{ProcessState: st}
+}
+
+// sccStreamEnded reports whether a decode error means scc's stdout reached
+// EOF: the write end is closed, so there is no running report to abandon.
+// Every wrap in the decoder uses %w, so errors.Is sees through them.
+func sccStreamEnded(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// streamSCCLabor decodes scc's `--by-file` report incrementally from r,
+// calling emit once per file.
+//
+// scc emits [{"Name":..., "Files":[{...}, ...]}, ...]. Walking the outer
+// array element-by-element — and each Files array element-by-element
+// inside it — means the process holds only what emit retains. Nothing
+// large and contiguous is ever allocated, which is what makes this safe
+// under vm.overcommit_memory=2. See scanSCC for the incident.
+//
+// scc 3.7.0 emits "Name" before "Files", so rows stream out as they are
+// decoded. Key order is not a correctness dependency: files decoded before
+// their language name is known are held for that ONE object and emitted
+// when it closes.
+// The caller owns the decoder so it can drain dec.Buffered() afterwards —
+// the read-ahead past the top-level "]" is part of the report's trailing
+// bytes and is invisible from the pipe alone (see scanSCC).
+func streamSCCLabor(dec *json.Decoder, workDir string, now time.Time, emit func(*db.RepoLaborRow)) error {
+	if err := expectSCCDelim(dec, '['); err != nil {
+		return err
+	}
+	for dec.More() {
+		// A null array element is a hard error here, where json.Unmarshal
+		// skipped it and carried on (`[null]` gave zero rows and no error;
+		// `[null,{…}]` gave the good row). Deliberate: this path fails
+		// CLOSED, returning before the snapshot write so the previous
+		// snapshot is retained, rather than silently replacing it with a
+		// partial one. Unreachable from scc, which marshals a struct.
+		if err := streamSCCLanguage(dec, workDir, now, emit); err != nil {
+			return err
+		}
+	}
+	return expectSCCDelim(dec, ']')
+}
+
+// streamSCCLanguage decodes one language object from dec.
+func streamSCCLanguage(dec *json.Decoder, workDir string, now time.Time, emit func(*db.RepoLaborRow)) error {
+	if err := expectSCCDelim(dec, '{'); err != nil {
+		return err
+	}
+	var (
+		language  string
+		named     bool
+		seenFiles bool
+		pending   []*db.RepoLaborRow // only ever used if Files precede Name
+	)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("reading scc language key: %w", err)
+		}
+		key, _ := tok.(string)
+		// Case-INSENSITIVE, matching encoding/json: Unmarshal prefers an
+		// exact key match but also accepts a case-insensitive one, so the
+		// pre-v0.29.14 path parsed {"name":…,"files":[…]}. An exact switch
+		// here skipped those and returned ZERO rows with NO error — and a
+		// zero-row success still replaces the snapshot, rotating the real
+		// one into history and installing an empty one. Verified: stream 0
+		// rows vs Unmarshal 1 row for "name"/"files" and "NAME"/"FILES"
+		// (Copilot review on PR #207). The nested sccFile decode was never
+		// affected, because encoding/json does the matching there.
+		switch {
+		case strings.EqualFold(key, "Name"):
+			// Duplicate keys are rejected rather than guessed at.
+			// encoding/json is last-wins; this walk cannot be, because
+			// rows for an already-decoded Files array have been emitted
+			// and buffering them to allow a late overwrite would undo the
+			// streaming that this whole rewrite exists for. First-wins
+			// would silently stamp the wrong language, and an additive
+			// second Files array would silently duplicate rows — in both
+			// cases with no error, so a wrong snapshot would replace the
+			// real one. scc marshals a Go struct through encoding/json,
+			// which cannot emit duplicate keys, so this only fires on a
+			// tool that is already misbehaving (round: parity sweep).
+			if named {
+				return fmt.Errorf("scc output: duplicate %q key in a language object", key)
+			}
+			if err := dec.Decode(&language); err != nil {
+				return fmt.Errorf("decoding scc language name: %w", err)
+			}
+			named = true
+			for _, row := range pending {
+				row.Language = language
+				emit(row)
+			}
+			pending = nil
+		case strings.EqualFold(key, "Files"):
+			if seenFiles {
+				return fmt.Errorf("scc output: duplicate %q key in a language object", key)
+			}
+			seenFiles = true
+			err := streamSCCFiles(dec, workDir, now, func(row *db.RepoLaborRow) {
+				if named {
+					row.Language = language
+					emit(row)
+					return
+				}
+				pending = append(pending, row)
+			})
+			if err != nil {
+				return err
+			}
+		default:
+			// Every other scc key is a scalar or a short array, so the
+			// RawMessage this materializes is bounded.
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return fmt.Errorf("skipping scc key %q: %w", key, err)
+			}
+		}
+	}
+	if err := expectSCCDelim(dec, '}'); err != nil {
+		return err
+	}
+	// "Name" never arrived. Emit anyway rather than silently dropping the
+	// files — a short snapshot would rotate the real one into history.
+	for _, row := range pending {
+		row.Language = language
+		emit(row)
+	}
+	return nil
+}
+
+// streamSCCFiles decodes one "Files" array, emitting a row per element.
+func streamSCCFiles(dec *json.Decoder, workDir string, now time.Time, emit func(*db.RepoLaborRow)) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("reading scc Files: %w", err)
+	}
+	if tok == nil {
+		return nil // "Files": null — a language with nothing to report
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return fmt.Errorf(`scc output: expected "[" for Files, got %v`, tok)
+	}
+	// One reused struct: the row built from it copies every field it
+	// needs, and strings are immutable, so no per-file sccFile survives.
+	var f sccFile
+	for dec.More() {
+		f = sccFile{} // absent keys must not inherit the previous file
+		if err := dec.Decode(&f); err != nil {
+			return fmt.Errorf("decoding scc file entry: %w", err)
+		}
+		emit(sccLaborRow(&f, workDir, now))
+	}
+	return expectSCCDelim(dec, ']')
+}
+
+// sccLaborRow converts one scc file entry into a labor row. FilePath is
+// Location relative to workDir; the original Location is kept only when
+// filepath.Rel returns an error, i.e. when the two paths cannot be related.
+// An absolute Location outside workDir is not an error to Rel and becomes
+// a ../ walk. This is unchanged from before the v0.29.14 streaming rewrite;
+// TestStreamSCCLaborRelPathHandling is the inventory of each case. (An
+// earlier version of this comment said an outside path was preserved; it
+// never was — Copilot review on PR #207.)
+func sccLaborRow(f *sccFile, workDir string, now time.Time) *db.RepoLaborRow {
+	relPath, relErr := filepath.Rel(workDir, f.Location)
+	if relErr != nil || relPath == "" {
+		relPath = f.Location
+	}
+	return &db.RepoLaborRow{
+		CloneDate:    now,
+		AnalysisDate: now,
+		FilePath:     relPath,
+		FileName:     filepath.Base(f.Location),
+		TotalLines:   f.Lines,
+		CodeLines:    f.Code,
+		CommentLines: f.Comment,
+		BlankLines:   f.Blank,
+		Complexity:   f.Complexity,
+	}
+}
+
+func expectSCCDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("scc output: reading %q: %w", want, err)
+	}
+	got, ok := tok.(json.Delim)
+	if !ok || got != want {
+		return fmt.Errorf("scc output: expected %q, got %v", want, tok)
+	}
+	return nil
 }
 
 type sccFile struct {

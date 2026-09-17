@@ -346,8 +346,8 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	// Run git log with --numstat for per-file stats on the default branch only.
 	// Derived context (v0.27.105 ultrareview, same class as the
 	// whitespace walker's bug_001): a scanner error (token too long)
-	// exits the read loop with git still writing; cmd.Wait() on an
-	// undrained pipe then blocks forever. Cancelling kills git first.
+	// exits the read loop with git still writing; waiting on an undrained
+	// pipe then blocks forever. Cancelling kills git's whole group first.
 	logCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()
 	cmd := exec.CommandContext(logCtx, "git", "-C", clonePath, "log",
@@ -356,13 +356,18 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 		"--format="+gitLogFormat,
 	)
 
-	stdout, err := cmd.StdoutPipe()
+	// startSweptCommand (not cmd.StdoutPipe) so a child that inherits
+	// git's stdout and outlives it cannot wedge this worker: the group is
+	// swept when the leader exits, the write end closes, and the read loop
+	// below reaches EOF. Same shape as scanSCC — see PR #207, where the
+	// wedge was found in scc and this site shared it with even less
+	// protection (no Setpgid, no Cancel, no WaitDelay).
+	swept, err := startSweptCommand(cmd)
 	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting git log: %w", err)
 	}
+	defer swept.Close()
+	stdout := swept.Stdout
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
@@ -391,7 +396,7 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 							// deadlock on the undrained pipe, then surface
 							// the cancel (pass 37).
 							cancelLog()
-							_ = cmd.Wait()
+							_ = swept.Wait()
 							return err
 						}
 						result.Errors = append(result.Errors, err)
@@ -431,7 +436,7 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 							// deadlock on the undrained pipe, then surface
 							// the cancel (pass 37).
 							cancelLog()
-							_ = cmd.Wait()
+							_ = swept.Wait()
 							return err
 						}
 						result.Errors = append(result.Errors, err)
@@ -456,7 +461,7 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	if len(batch) > 0 {
 		if err := f.insertCommitBatch(ctx, repoID, batch, result); err != nil {
 			if errors.Is(err, context.Canceled) {
-				_ = cmd.Wait()
+				_ = swept.Wait()
 				return err
 			}
 			result.Errors = append(result.Errors, err)
@@ -467,11 +472,11 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 		// Early scanner exit — kill git so Wait() below can return
 		// instead of deadlocking on the undrained pipe.
 		cancelLog()
-		_ = cmd.Wait()
+		_ = swept.Wait()
 		return fmt.Errorf("scanning git log: %w", scanErr)
 	}
 
-	if err := cmd.Wait(); err != nil {
+	if err := swept.Wait(); err != nil {
 		return fmt.Errorf("git log exited with error: %w", execErr(ctx, err))
 	}
 

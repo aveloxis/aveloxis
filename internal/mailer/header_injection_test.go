@@ -10,7 +10,6 @@ package mailer
 // group-approval email's Subject embeds the group name.
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -37,27 +36,6 @@ func TestSanitizeHeaderPassesCleanValues(t *testing.T) {
 	}
 }
 
-func TestSendSanitizesHeaderValues(t *testing.T) {
-	src := mustRead(t, "mailer.go")
-	// The header block Sprintf must consume sanitized values, not the
-	// raw parameters. Pin the sanitizer applications inside Send.
-	body := src[strings.Index(src, "func (m *Mailer) Send("):]
-	if next := strings.Index(body[1:], "\nfunc "); next > 0 {
-		body = body[:next+1]
-	}
-	for _, needle := range []string{"sanitizeHeader(to)", "sanitizeHeader(subject)"} {
-		if !strings.Contains(body, needle) {
-			t.Errorf("Send must apply %s before building the SMTP header block — "+
-				"raw CR/LF in a header value is SMTP header injection (CWE-93)", needle)
-		}
-	}
-}
-
-func mustRead(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
+// Header injection through Send itself — the Subject and the From display
+// name — is covered behaviorally by TestSendKeepsInjectedHeadersOut, which
+// reads the composed message back through net/mail.

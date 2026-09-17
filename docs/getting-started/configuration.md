@@ -363,8 +363,8 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 |---|---|---|---|
 | `web.addr` | string | `":8082"` | Listen address for the web GUI. |
 | `web.session_secret` | string | (none) | Secret used to sign session cookies. Generate a random 32+ byte string. Without this, sessions don't survive restarts. |
-| `web.base_url` | string | (none) | Public-facing external URL of the web GUI (e.g. `https://aveloxis.example.com`). Used to build OAuth callback URLs and outbound email links. |
-| `web.dev_mode` | boolean | `false` | When `true`, disables the `Secure` flag on cookies so the GUI works over plain HTTP. **Production must leave this `false`** so browsers only send cookies over HTTPS. `HttpOnly` is always set regardless. |
+| `web.base_url` | string | (none) | Public-facing external URL of the web GUI (e.g. `https://aveloxis.example.com`). Used to build OAuth callback URLs only. Links in emails, including account-email confirmation links, come from `mail.site_url`. |
+| `web.dev_mode` | boolean | `false` | When `true`, disables the `Secure` flag on cookies so the GUI works over plain HTTP, and lets a loopback request (`localhost`, `127.0.0.1`, `[::1]`) build email confirmation links when `mail.site_url` is unset. **Production must leave this `false`** so browsers only send cookies over HTTPS and confirmation links always come from `mail.site_url`. `HttpOnly` is always set regardless. |
 | `web.github_client_id` | string | (none) | GitHub OAuth App client ID. Create one at <https://github.com/settings/developers>. The callback URL must match `<base_url>/auth/github/callback`. |
 | `web.github_client_secret` | string | (none) | GitHub OAuth App client secret. |
 | `web.gitlab_client_id` | string | (none) | GitLab OAuth Application ID. Create one at <https://gitlab.com/-/profile/applications> (or your self-hosted instance's `/admin/applications`). |
@@ -372,7 +372,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. |
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
 | `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). |
-| `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and ALL org registrations — wait for admin approval on the Approvals page. `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
+| `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
 
 ### Monitor (dashboard, v0.23.0)
 
@@ -390,15 +390,15 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 
 | Field | Type | Description |
 |---|---|---|
-| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer (no-op). |
-| `mail.operator_email` | string | Where fleet-level operator notifications go (v0.27.12) — currently the new-vulnerabilities digest. Empty (default) disables operator notifications entirely. |
+| `mail.gmail_user` | string | Gmail address used for SMTP auth and as the `From` address. Empty disables the mailer: nothing is sent (see [Disabling](#disabling) for what changes). |
+| `mail.operator_email` | string | Where fleet-level operator notifications go: the new-vulnerabilities digest (v0.27.12) and new add-request submissions awaiting approval (v0.27.20). Empty (default) disables operator notifications entirely. |
 | `mail.vuln_digest_min_severity` | string | Severity floor for the vulnerability digest: `CRITICAL`, `HIGH` (default — admits CRITICAL+HIGH), `MEDIUM`, `LOW`, or `ALL`. Unrecognized values fall back to `HIGH`. |
 | `mail.vuln_digest_interval_hours` | int | Minimum gap between digest emails (default 24). The scheduler checks hourly; a digest is sent only when the interval has elapsed AND new findings exist — quiet windows produce no email. |
 | `mail.vuln_digest_include_transitive` | bool | `false` | Include `dependency_kind='transitive'` findings in the operator vulnerability digest (v0.27.21). Default off so the first transitive-enabled cycles don't flood the digest with utility-package findings. |
 | `mail.vuln_digest_include_dev` | bool | `false` | v0.27.46 (summary/19 P3): include findings on non-runtime-scope dependencies (dev/test/build/optional/peer) in the operator digest. Default off so the `dev_build_deps` Python expansion never floods the email; runtime-scope findings always digest. |
 | `mail.gmail_app_password` | string | The 16-character App Password (spaces allowed). Not the account's regular password. |
 | `mail.from_name` | string | Display name shown in recipients' inboxes. |
-| `mail.site_url` | string | Public-facing URL used in email body links. |
+| `mail.site_url` | string | Public-facing URL used in email body links: an absolute `http://` or `https://` URL with a host and no query, fragment or user name (any other value fails mail validation, which disables the mailer). Set it in production: without it, email confirmation links are sent only with `web.dev_mode` on and a loopback request Host (`localhost`, `127.0.0.1`, `[::1]`, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. A reverse proxy on the same host that does not forward `Host` makes every request look loopback, which is why dev_mode is required. |
 
 ### Logging
 
@@ -573,20 +573,21 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 
 | Field | Required format | Purpose |
 |---|---|---|
-| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer (silent no-op). |
+| `gmail_user` | Full email address with `@`. **Not** the bare domain. | Used both as the SMTP auth username and as the `From` address. Leaving this empty (along with `gmail_app_password`) disables the mailer: no email is sent, the account-email form refuses new addresses (no confirmation link could reach them), and users without an address are let into the dashboard instead of being sent to that form. |
 | `gmail_app_password` | Exactly 16 lowercase ASCII letters (display-format spaces fine). **Not** a regular account password. | The App Password generated in step 3. Validation rejects anything else at startup with a clear error message. |
 | `from_name` | Free-form string | Display name shown in recipients' inboxes. Defaults to the bare email address when omitted. |
-| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. |
+| `site_url` | Full URL | Public-facing URL for your Aveloxis deployment. Used in email body links. Must be an absolute `http://` or `https://` URL with a host and no query, fragment or user name; any other value fails validation. Required for email confirmation links outside local development: the request `Host` header is client-controlled (and a same-host proxy can make it read `127.0.0.1`), so it builds a link only when `web.dev_mode` is on. Without `site_url`, the account-email form refuses new addresses and users without an address are let into the dashboard. |
 
 ### Validation at startup
 
-`aveloxis web` runs `mailer.ValidateConfig` against the supplied block when the server boots. If validation fails, the WARN line is emitted before any user can sign up:
+`aveloxis web`, `aveloxis api` and `aveloxis serve` each run `mailer.ValidateConfig` against the supplied block when they start, and log the result: `mailer configured` (with `operator_email`), `mailer disabled`, or a WARN. If validation fails, the WARN line is emitted before any user can sign up:
 
 - `mail.gmail_user "aveloxis.io" is not an email address` — you set the bare domain. Use the full address (`ops@aveloxis.io`).
 - `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.
 - `mail.gmail_user is empty but mail.gmail_app_password is set` (or vice versa) — partial config. Either fill both fields or empty both.
+- `mail.site_url must be an absolute http:// or https:// URL with a host` (or `must not contain a query (?), a fragment (#), a user name or spaces`) — the value would make links that cannot be followed, such as a bare domain or a comma-separated list of URLs. Use the one full public URL (`https://aveloxis.example`).
 
-When validation fails, the mailer falls back to disabled behavior (no email sent, no errors raised by calling code) so the rest of the application keeps working. Fix the config and restart `aveloxis web` to enable the mailer.
+When validation fails, the mailer falls back to disabled behavior so the rest of the application keeps working: no email is sent, and every send returns a "not configured" error. Notification emails (welcome, approval and add-request) ignore that error; `aveloxis test-mail` refuses before sending and exits non-zero with the validation error, `aveloxis serve` does not start the vulnerability digest and logs an ERROR saying why, and the account-email form refuses new addresses. Fix the config and restart the processes (`aveloxis stop all`, then `aveloxis start all`) to enable the mailer.
 
 ### Verifying the setup with `aveloxis test-mail`
 
@@ -598,7 +599,8 @@ aveloxis test-mail your-personal-address@example.com
 
 The command runs the same `ValidateConfig` check, then calls `mailer.Send` against `smtp.gmail.com:587`. Output:
 
-- **Success**: `test email sent successfully to=...` — credentials are working. The test email arrives within seconds.
+- **Success**: `test email sent successfully to=...` — Gmail accepted the message, so the credentials are working. The test email arrives within seconds.
+- **Not sent**: `send failed: mailer: mail is not configured` (the `mail` block is empty) or `send failed: mailer: recipient skipped: …` (the recipient is not one deliverable address — a list, a quoted local part, or longer than the SMTP limits). The command exits non-zero; no SMTP attempt is made.
 - **Validation error**: command exits non-zero with a clear message. Fix `aveloxis.json` and try again. No SMTP attempt is made.
 - **SMTP error from Gmail itself** (e.g. `535 5.7.8 Username and Password not accepted`): credentials look syntactically correct but Gmail rejected them. Most likely: App Password generated against a different account, or 2-Step Verification was just disabled on the account that owns the App Password.
 
@@ -614,7 +616,11 @@ The mailer uses Go's stdlib `net/smtp` against `smtp.gmail.com:587` with STARTTL
 
 ### Disabling
 
-Remove or empty BOTH `gmail_user` AND `gmail_app_password`. Setting only one without the other is treated as a misconfiguration. With both empty, the mailer is a silent no-op and the rest of the application continues to work.
+Remove or empty BOTH `gmail_user` AND `gmail_app_password`. Setting only one without the other is treated as a misconfiguration. With both empty, nothing is sent and the rest of the application continues to work, with these visible differences:
+
+- The account-email form refuses new addresses ("Email confirmation is not configured on this site"), and a user whose login provided no address goes straight to the dashboard.
+- `aveloxis serve` does not start the operator vulnerability digest and logs `operator vulnerability digest NOT started` at ERROR if `mail.operator_email` is set.
+- `aveloxis test-mail` exits non-zero with `mail is not configured`.
 
 ---
 
@@ -697,9 +703,20 @@ Semantics worth knowing:
 - The very first digest after enabling covers only one interval back,
   NOT all history — enabling the feature on an established fleet does
   not dump the entire findings table into one email.
-- A failed send is retried with the SAME window on the next hourly
-  check (nothing is dropped); the window only advances after a
-  successful send or a quiet evaluation.
+- A failed send, or a findings query that fails or is interrupted by a
+  shutdown, is retried with the SAME window on the next check (nothing
+  is dropped); the window only advances after a successful send or a
+  quiet evaluation. That holds on the very first run too: a first run
+  whose query or send fails pins its window in the stamp file (v0.29.29
+  for a send, v0.29.50 for the query).
+- The digest only starts when it could be delivered. With the mailer
+  disabled, or an `operator_email` that is not one deliverable address
+  (a comma list, say), `aveloxis serve` logs
+  `operator vulnerability digest NOT started` at ERROR once and runs no
+  digest queries. The mailer is built at startup, so fix the config and
+  restart `serve` (v0.29.29; v0.29.28 logged "enabled" and retried
+  hourly, and earlier releases advanced the window and never mailed
+  those findings).
 - The email body itemizes up to 50 findings (most severe first) and
   always states the total; the state lives in
   `~/.aveloxis/vuln-digest-last`.

@@ -1039,9 +1039,18 @@ Per-user:
   fields are present; the single-`url` body remains accepted. The
   response carries `submitted` plus the outcome counts
   `{linked, enqueued, pending_approval?, request_id?, registered?}`.
+  When `web.auto_approve_add_limit` lets a batch through and some of its
+  repositories cannot be added, the others are still added and the call
+  fails with an error saying how many could not be; sending the same
+  URLs again retries them (v0.29.50). A group the caller does not own,
+  or a rejected group, is a `400` with the reason, and so is a URL
+  longer than 1342 bytes (v0.29.54) or one the database refuses (such as
+  one with a NUL byte; v0.29.52); repositories
+  that could not be added and any server-side failure are a `500` with a
+  plain message and no database text (v0.29.51).
   Org outcomes (v0.27.84): `registered: 1` means the org is tracked
   NOW — admin adds always register, and a non-admin's add of an org
-  that is ALREADY registered in any group auto-approves (it adds zero
+  that is ALREADY registered in a group that is not rejected auto-approves (it adds zero
   new collection: the org's repos are already tracked and its future
   repos already auto-enqueue via the existing registration; an
   auto-approved audit row is still recorded). A non-admin's add of a
@@ -1081,7 +1090,9 @@ Admin-only:
   awaiting-approval content (v0.27.20): repo URLs from pending
   add-requests plus pending org registrations, each with
   `request_id`, `kind`, `url`, `created_at`. Ownership-checked for
-  non-admins. Envelope: `{pending: [...]}`.
+  non-admins (a group the caller does not own is a `403`; a server-side
+  failure is a `500` without database text, v0.29.52). Envelope:
+  `{pending: [...]}`.
 - `GET /api/v1/admin/add-requests` — the v0.27.20 per-add approval
   queue: pending additions of not-yet-collected repos/orgs by
   non-admins. Each entry carries the requester (`user_login`,
@@ -1093,7 +1104,9 @@ Admin-only:
   Approving a `repos` request creates + enqueues + links each item
   in the background (resumable — re-approving picks up unprocessed
   items); approving an `org` request registers the org for tracking
-  (the scheduler's next org-scan tick collects its repos). The
+  (the scheduler's next org-scan tick collects its repos; re-approving
+  an approved org request whose registration is missing registers it,
+  returns `changed: true` and notifies the requester). The
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
   request was already decided (idempotent double-click).

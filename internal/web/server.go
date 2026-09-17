@@ -10,10 +10,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -173,14 +175,24 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 }
 
 // WithMailer attaches a transactional mailer to the server. Returns
-// the server for chaining. Optional — when not called, mailer-related
-// hooks (welcome email on signup, group-approved notification) are
-// silently skipped, matching mailer.Send's no-op-when-unconfigured
-// semantics.
+// the server for chaining. Optional — without one (or with a disabled
+// one) the notification hooks (welcome email, group and add-request
+// decisions) send nothing, the account-email form refuses new addresses,
+// and users without an address reach the dashboard; see
+// confirmationBaseFor.
 func (s *Server) WithMailer(m *mailer.Mailer) *Server {
 	s.mailer = m
+	// Said once at startup, where an operator looks: the refusal it
+	// predicts otherwise shows up only when a user submits the form.
+	if m.Enabled() && m.SiteURL() == "" && !s.cfg.DevMode && s.logger != nil {
+		s.logger.Warn("mail.site_url is not set: account-email confirmation links will be refused and users without an email address go straight to the dashboard — set mail.site_url to this site's public URL (not web.dev_mode, which is for local development)")
+	}
 	return s
 }
+
+// Mailer returns the mailer WithMailer attached, or nil. `aveloxis web`'s
+// wiring test reads it (cmd/aveloxis TestProcessMailWiring).
+func (s *Server) Mailer() *mailer.Mailer { return s.mailer }
 
 // Handler returns the HTTP handler for the web GUI.
 func (s *Server) Handler() http.Handler {
@@ -624,7 +636,7 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	// unconfigured. Failures here don't block login — the email is a
 	// nice-to-have, not a gate.
 	if wasNewUser && s.mailer != nil && info.Email != "" {
-		if err := s.mailer.SendWelcome(info.Email, info.Login, providerLabel); err != nil {
+		if err := s.mailer.SendWelcome(info.Email, info.Login, providerLabel); err != nil && !mailer.IsSkip(err) {
 			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(info.Login), 100), "error", err)
 		}
 	}
@@ -769,15 +781,11 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
-	// v0.19.10 email gate, v0.20.4 pending-aware: redirect to
-	// /account/email ONLY when the user has neither a confirmed email
-	// NOR a pending one. With a pending email the dashboard renders
-	// with a "check your inbox" banner instead of redirecting (avoids
-	// a loop where the user submits the form, gets redirected back,
-	// and never sees the confirmation prompt).
-	confirmedEmail, _ := s.store.GetUserEmail(r.Context(), sess.UserID)
-	pendingEmail, _ := s.store.GetUserPendingEmail(r.Context(), sess.UserID)
-	if strings.TrimSpace(confirmedEmail) == "" && strings.TrimSpace(pendingEmail) == "" {
+	// v0.19.10 email gate, v0.20.4 pending-aware, v0.29.29
+	// confirmable-only, v0.29.30 lookup errors logged: see
+	// dashboardEmailGate.
+	needsEmailForm, pendingEmail := dashboardEmailGate(r.Context(), s.store, s.confirmationPolicy(), s.logger, r, sess.UserID)
+	if needsEmailForm {
 		http.Redirect(w, r, "/account/email", http.StatusFound)
 		return
 	}
@@ -803,66 +811,282 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Groups":       groups,
 		"PendingOnly":  pendingOnly,
 		"PendingEmail": pendingEmail,
+		// How long links are valid. The banner shows on every visit while
+		// the address is pending, so it states the validity window, not
+		// time left on this link.
+		"ConfirmationLifetime": mailer.DurationPhrase(db.EmailConfirmationLifetime),
 	})
+}
+
+// emailConfirmBase returns the base URL for the click-to-confirm link
+// submitAccountEmail mails: the operator-configured site URL (which may carry
+// a path; mailer.New has already trimmed it). The
+// request Host header is attacker-controlled — a proxy that forwards Host
+// (the usual nginx `proxy_set_header Host $host`) passes whatever the client
+// sent — so deriving the link from it let an authenticated attacker submit a
+// VICTIM's address with a crafted Host, have the victim receive a link to
+// the attacker's server carrying the confirmation token, and replay that
+// token to bind the victim's email to their own account (Copilot review on
+// PR #207; CodeQL go/email-injection alert 197 traces the same request data
+// into the message).
+//
+// So without a site URL the Host is used ONLY with web.dev_mode on AND when
+// loopbackAuthority accepts it — the local-dev case that fallback existed
+// for. dev_mode is required because a reverse proxy on the same host that
+// does not forward Host (nginx's default for proxy_pass to 127.0.0.1) makes
+// every visitor's request look loopback; the link would point at their own
+// machine (round-4 review, operator decision, v0.29.30). Anywhere else this
+// returns false and no link is mailed. It does not need the token, so the
+// decision is made before anything is stored.
+func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bool) {
+	if siteURL != "" { // normalized once, by mailer.New
+		return siteURL, true
+	}
+	if !devMode {
+		return "", false
+	}
+	authority, ok := loopbackAuthority(r.Host)
+	if !ok {
+		return "", false
+	}
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	return scheme + "://" + authority, true
+}
+
+// confirmationLink is the mailed link for a base from emailConfirmBase.
+func confirmationLink(base, token string) string {
+	return base + "/account/email/confirm?token=" + token
+}
+
+// Why a confirmation link cannot be sent from this request.
+var (
+	errConfirmationMailDisabled = errors.New("mail is not configured, so no confirmation link can be sent")
+	errConfirmationNoLinkBase   = errors.New("mail.site_url is not set — set it to this site's public URL to send confirmation links (web.dev_mode lets a loopback request build one for local development only; keep dev_mode off in production)")
+)
+
+// confirmationPolicy is everything that decides whether a confirmation
+// link can be sent: the mailer and web.dev_mode. Both call sites — the
+// account-email POST and the dashboard's email gate — take it from
+// Server.confirmationPolicy, so they cannot disagree (round-5 review: the
+// dashboard passed dev_mode separately, and a wrong value there brought
+// back the v0.29.29 lockout with every test green).
+type confirmationPolicy struct {
+	mailer  confirmationMailer
+	devMode bool
+}
+
+func (s *Server) confirmationPolicy() confirmationPolicy {
+	return confirmationPolicy{mailer: s.mailer, devMode: s.cfg.DevMode}
+}
+
+// confirmationBaseFor decides whether this request's user can be mailed a
+// working confirmation link, and returns the link base when so.
+// submitAccountEmail refuses on an error; the dashboard's email gate uses
+// the same decision so it never sends a user to a form that would refuse
+// them.
+func confirmationBaseFor(p confirmationPolicy, r *http.Request) (string, error) {
+	if !p.mailer.Enabled() {
+		return "", errConfirmationMailDisabled
+	}
+	base, ok := emailConfirmBase(p.mailer.SiteURL(), r, p.devMode)
+	if !ok {
+		return "", errConfirmationNoLinkBase
+	}
+	return base, nil
+}
+
+// emailGateRedirect reports whether the dashboard must send the user to
+// /account/email: they have neither a confirmed nor a pending address
+// (v0.19.10; with a pending one the dashboard shows its "check your inbox"
+// banner instead), AND a confirmation could actually be sent from here.
+// Where it could not — mail off, or no trustworthy link base — the form
+// refuses, so redirecting locked the user out of the dashboard; the
+// operator chose to let them in without an address (v0.29.29).
+func emailGateRedirect(confirmed, pending string, p confirmationPolicy, r *http.Request) bool {
+	if strings.TrimSpace(confirmed) != "" || strings.TrimSpace(pending) != "" {
+		return false
+	}
+	_, err := confirmationBaseFor(p, r)
+	return err == nil
+}
+
+// accountEmailLookup is the store surface the dashboard's email gate reads.
+type accountEmailLookup interface {
+	GetUserEmail(ctx context.Context, userID int) (string, error)
+	GetUserLivePendingEmail(ctx context.Context, userID int) (string, error)
+}
+
+// dashboardEmailGate reads the user's addresses, decides through
+// emailGateRedirect whether the dashboard sends them to /account/email, and
+// returns the pending address for the dashboard's banner. A lookup ERROR is
+// not "no address" (SR-5): it is logged and the dashboard renders, rather
+// than sending a user who has a confirmed address to the email form during
+// a database blip.
+func dashboardEmailGate(ctx context.Context, st accountEmailLookup, p confirmationPolicy, logger *slog.Logger, r *http.Request, userID int) (needsForm bool, pending string) {
+	confirmed, err := st.GetUserEmail(ctx, userID)
+	if err != nil {
+		logger.Warn("dashboard: could not read the user's email; rendering without the email-form redirect",
+			"user_id", userID, "error", err)
+		return false, ""
+	}
+	pending, err = st.GetUserLivePendingEmail(ctx, userID)
+	if err != nil {
+		logger.Warn("dashboard: could not read the user's pending email; rendering without the email-form redirect",
+			"user_id", userID, "error", err)
+		return false, ""
+	}
+	return emailGateRedirect(confirmed, pending, p, r), pending
+}
+
+// accountEmailStore and confirmationMailer are the narrow surfaces
+// submitAccountEmail needs, so it runs against fakes in tests.
+type accountEmailStore interface {
+	SetUserPendingEmail(ctx context.Context, userID int, email string) error
+	ClearUserPendingEmailIf(ctx context.Context, userID int, email string) error
+	CreateEmailConfirmation(ctx context.Context, userID int, email string) (string, error)
+}
+
+type confirmationMailer interface {
+	SiteURL() string
+	Enabled() bool
+	SendEmailConfirmation(toEmail, login, confirmURL string, lifetime time.Duration) error
+}
+
+var (
+	_ accountEmailStore  = (*db.PostgresStore)(nil)
+	_ accountEmailLookup = (*db.PostgresStore)(nil)
+	_ confirmationMailer = (*mailer.Mailer)(nil)
+)
+
+// submitAccountEmail processes a POSTed /account/email: the v0.20.4 flow that
+// records the address as email_pending and mails a click-to-confirm link, so
+// the address becomes users.email only when the link is followed. It
+// returns "" when the address was recorded and the link handed to SMTP (the
+// handler redirects), or the message the form should show.
+//
+// Nothing is stored until the submission is known to be mailable: the
+// address passes the mailer's own recipient rule (so what is stored is the
+// bare addr-spec Send will accept) and confirmationBaseFor allows it.
+// Storing first left an email_pending behind on a refusal, and the
+// dashboard then told the user a link had been sent. For the same reason a
+// send that fails after storing clears that pending address again.
+func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmationPolicy, logger *slog.Logger, r *http.Request, sess *Session) string {
+	email, err := mailer.ParseRecipient(r.FormValue("email"))
+	if err != nil {
+		logger.Info("account email rejected: not a deliverable address",
+			"user_id", sess.UserID, "error", truncateForLog([]byte(err.Error()), 200))
+		return "Please enter a valid email address."
+	}
+	base, err := confirmationBaseFor(p, r)
+	if err != nil {
+		logger.Error("refusing an account email: "+err.Error(),
+			"user_id", sess.UserID, "host", truncateForLog([]byte(r.Host), 200))
+		return "Email confirmation is not configured on this site. Contact the operator."
+	}
+	if err := st.SetUserPendingEmail(ctx, sess.UserID, email); err != nil {
+		logger.Warn("failed to set pending email", "user_id", sess.UserID, "error", err)
+		return "Could not save email. Try again."
+	}
+	token, err := st.CreateEmailConfirmation(ctx, sess.UserID, email)
+	if err != nil {
+		logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
+		return "Could not generate confirmation. Try again."
+	}
+	if err := p.mailer.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token), db.EmailConfirmationLifetime); err != nil {
+		if !mailer.IsSkip(err) { // a skip was already logged by the mailer
+			logger.Warn("failed to send confirmation email",
+				"user_id", sess.UserID, "email", email, "error", err)
+		}
+		// Don't leave the dashboard announcing "we sent a confirmation
+		// link" (operator decision, v0.29.29) — but the mail may still have
+		// gone out: net/smtp reports QUIT's error after the server has
+		// accepted the message. So clear the pending address only while it
+		// is still this submission's (a second tab may have replaced it,
+		// v0.29.30), and tell the user a link that does arrive still works:
+		// its token is in the database until it expires.
+		if clearErr := st.ClearUserPendingEmailIf(ctx, sess.UserID, email); clearErr != nil {
+			logger.Warn("failed to clear the pending email after a failed confirmation send",
+				"user_id", sess.UserID, "error", clearErr)
+		}
+		return "We couldn't send the confirmation email. If one does arrive, its link still works; otherwise try again later."
+	}
+	return ""
+}
+
+// loopbackAuthority parses an HTTP Host header ONCE and, when it names the
+// loopback interface, returns it as a URL authority for an emailed link. A
+// client-set Host may be trusted for that only when it is loopback: a
+// loopback Host cannot reach anyone else's machine.
+//
+// The same parse feeds the decision and the link, and it is strict because
+// its output is mailed:
+//   - a port, when present, must be a canonical decimal in 1-65535 — an
+//     earlier check ignored the port, so `localhost:<any text>` passed and
+//     the text rode into the link;
+//   - brackets must be balanced and may hold only an IPv6 literal;
+//   - every IPv6 literal, IPv4-mapped included, comes back bracketed, as a
+//     URL authority requires (RFC 3986 section 3.2.2). A bare "::1" is not
+//     something a browser sends, but net/http accepts it.
+func loopbackAuthority(hostHeader string) (string, bool) {
+	host, port := hostHeader, ""
+	bracketed := strings.HasPrefix(hostHeader, "[")
+	if h, p, err := net.SplitHostPort(hostHeader); err == nil {
+		if !isCanonicalPort(p) {
+			return "", false
+		}
+		host, port = h, p
+	} else if bracketed {
+		// "[::1]" — SplitHostPort wants a port, so strip the brackets here.
+		if !strings.HasSuffix(hostHeader, "]") {
+			return "", false
+		}
+		host = hostHeader[1 : len(hostHeader)-1]
+	}
+	ip := net.ParseIP(host)
+	ipv6Literal := ip != nil && strings.Contains(host, ":")
+	switch {
+	case bracketed && !ipv6Literal:
+		return "", false
+	case ip != nil && !ip.IsLoopback():
+		return "", false
+	case ip == nil && !strings.EqualFold(host, "localhost"):
+		return "", false
+	}
+	if port != "" {
+		return net.JoinHostPort(host, port), true
+	}
+	if ipv6Literal {
+		return "[" + host + "]", true
+	}
+	return host, true
+}
+
+// isCanonicalPort reports whether p is a port in 1-65535 written as a
+// canonical decimal: digits only, no sign, no leading zero.
+func isCanonicalPort(p string) bool {
+	n, err := strconv.ParseUint(p, 10, 16)
+	return err == nil && n > 0 && strconv.FormatUint(n, 10) == p
 }
 
 // handleAccountEmail renders (GET) and processes (POST) the
 // email-collection form. This is the v0.19.10 fallback when both /user
-// and /user/emails came back empty during OAuth callback. After the
-// form is submitted, users.email is set and the user redirects to
-// /dashboard.
+// and /user/emails came back empty during OAuth callback. A submitted
+// address is stored as email_pending, a click-to-confirm link is mailed
+// (v0.20.4), and the user redirects to /dashboard; users.email changes
+// only when the link is followed.
 func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
 	if r.Method == http.MethodPost {
-		email := strings.TrimSpace(r.FormValue("email"))
-		if email == "" || !strings.Contains(email, "@") {
+		if msg := submitAccountEmail(r.Context(), s.store, s.confirmationPolicy(), s.logger, r, sess); msg != "" {
 			s.render(w, "account_email", map[string]any{
 				"Session": sess,
-				"Error":   "Please enter a valid email address.",
+				"Error":   msg,
 			})
 			return
-		}
-		// v0.20.4: write to email_pending (not users.email) and send
-		// a click-to-confirm link. The email becomes canonical only
-		// after the user clicks through.
-		if err := s.store.SetUserPendingEmail(r.Context(), sess.UserID, email); err != nil {
-			s.logger.Warn("failed to set pending email", "user_id", sess.UserID, "error", err)
-			s.render(w, "account_email", map[string]any{
-				"Session": sess,
-				"Error":   "Could not save email. Try again.",
-			})
-			return
-		}
-		token, err := s.store.CreateEmailConfirmation(r.Context(), sess.UserID, email)
-		if err != nil {
-			s.logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
-			s.render(w, "account_email", map[string]any{
-				"Session": sess,
-				"Error":   "Could not generate confirmation. Try again.",
-			})
-			return
-		}
-		// Build the confirmation URL — operator-configured site URL
-		// from MailConfig.SiteURL when set; otherwise derive from the
-		// request host (works for local dev).
-		base := strings.TrimRight(s.mailer.SiteURL(), "/")
-		if base == "" {
-			scheme := "https"
-			if r.TLS == nil && (strings.HasPrefix(r.Host, "localhost") || strings.HasPrefix(r.Host, "127.")) {
-				scheme = "http"
-			}
-			base = scheme + "://" + r.Host
-		}
-		confirmURL := base + "/account/email/confirm?token=" + token
-		if s.mailer != nil {
-			if err := s.mailer.SendEmailConfirmation(email, sess.LoginName, confirmURL); err != nil {
-				s.logger.Warn("failed to send confirmation email",
-					"user_id", sess.UserID, "email", email, "error", err)
-				// Don't fail the form — the token is in the DB and the
-				// operator can resend manually if needed. User sees the
-				// "check your inbox" banner regardless.
-			}
 		}
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
@@ -870,19 +1094,36 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 
 	// GET: show the form. If the user already has a confirmed email,
 	// they don't need to be here — bounce them back to dashboard.
-	if email, _ := s.store.GetUserEmail(r.Context(), sess.UserID); strings.TrimSpace(email) != "" {
+	email, err := s.store.GetUserEmail(r.Context(), sess.UserID)
+	if err != nil {
+		// Showing the form is the safe fallback; the error is still logged.
+		s.logger.Warn("account email form: could not read the user's email", "user_id", sess.UserID, "error", err)
+	}
+	if strings.TrimSpace(email) != "" {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 		return
 	}
+	// The confirm handler sends users here with a reason; say it.
+	var notice string
+	switch {
+	case r.URL.Query().Get("expired") == "1":
+		notice = "That confirmation link has expired, was already used, or belongs to another account. Enter your email to get a new one."
+	case r.URL.Query().Get("error") == "1":
+		notice = "We couldn't confirm your email just now. Try the link again, or enter your email to get a new one."
+	}
 	s.render(w, "account_email", map[string]any{
 		"Session": sess,
+		"Error":   notice,
 	})
 }
 
-// handleEmailConfirm consumes the v0.20.4 confirmation token from the
-// query string, promotes email_pending to users.email, and redirects
-// back to the dashboard. On token error (expired or unknown), redirects
-// to /account/email with a flag so the form shows a fresh-start prompt.
+// handleEmailConfirm confirms the v0.20.4 click-to-confirm link for the
+// logged-in user and redirects to the dashboard. A link that is not a live
+// token for THIS account — unknown, expired, used, or another account's —
+// redirects to /account/email?expired=1 and changes nothing (the owner's
+// link stays usable; another account's still-live link is logged at WARN); a database
+// failure redirects to ?error=1 with the transaction rolled back, so the
+// link still works. The form explains both.
 func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -890,24 +1131,22 @@ func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
 		return
 	}
-	userID, email, err := s.store.ConsumeEmailConfirmation(r.Context(), token)
-	if err != nil {
-		s.logger.Info("email confirmation token rejected",
-			"session_user_id", sess.UserID, "error", err)
-		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
-		return
-	}
-	// Defense in depth: confirm the token belongs to the logged-in
-	// user. A leaked link from another user's inbox shouldn't grant
-	// the clicker an email change on their own account.
-	if userID != sess.UserID {
-		s.logger.Warn("email confirmation token user mismatch",
-			"token_user_id", userID, "session_user_id", sess.UserID)
-		http.Redirect(w, r, "/dashboard", http.StatusFound)
-		return
-	}
-	if err := s.store.ConfirmUserEmail(r.Context(), userID, email); err != nil {
-		s.logger.Warn("failed to confirm user email", "user_id", userID, "error", err)
+	if _, err := s.store.ConfirmEmailToken(r.Context(), token, sess.UserID); err != nil {
+		var mismatch *db.TokenOwnerMismatchError
+		if errors.As(err, &mismatch) {
+			// The replay emailConfirmBase exists to prevent: say so.
+			s.logger.Warn("email confirmation link belongs to another account",
+				"token_user_id", mismatch.OwnerID, "session_user_id", sess.UserID)
+			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
+			return
+		}
+		if errors.Is(err, db.ErrConfirmationTokenInvalid) {
+			s.logger.Info("email confirmation link rejected: unknown, expired, or already used",
+				"session_user_id", sess.UserID)
+			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
+			return
+		}
+		s.logger.Warn("failed to confirm user email", "user_id", sess.UserID, "error", err)
 		http.Redirect(w, r, "/account/email?error=1", http.StatusFound)
 		return
 	}
@@ -1020,6 +1259,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"TotalRepos": totalRepos,
 		"Query":      query,
 		"PageWindow": pageWindow,
+		"AddError":   r.URL.Query().Get("add_error"),
 	})
 }
 
@@ -1063,14 +1303,22 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				s.cfg.AutoApproveAddLimitValue())
 			if err != nil {
 				s.logger.Warn("failed to add repos to group", "group_id", groupID, "error", err)
-			} else {
-				s.logger.Info("repo add", "group_id", groupID,
-					"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
-				if out.Pending > 0 {
-					s.notifyAddRequestSubmitted(out.RequestID)
-					http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
-					return
+				// Tell the user, who otherwise sees the page a success shows
+				// (Copilot review of PR #207); a rejected group gets its own
+				// notice, since trying again cannot work (round-24 review).
+				flag := "1"
+				if errors.Is(err, db.ErrGroupRejected) {
+					flag = "rejected"
 				}
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, flag), http.StatusFound)
+				return
+			}
+			s.logger.Info("repo add", "group_id", groupID,
+				"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
+			if out.Pending > 0 {
+				s.notifyAddRequestSubmitted(out.RequestID)
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
+				return
 			}
 		}
 		if len(invalid) > 0 {
@@ -1095,11 +1343,14 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			s.logger.Warn("failed to add org to group", "error", err)
 		case out.Registered:
-			// Admin registration: scan immediately, as before.
+			// Registered (an admin's add, or a non-admin's auto-approved add of
+			// an org already registered in a group that is not rejected —
+			// including this group, when the add inserted nothing): scan
+			// immediately.
 			// Use a detached context — the HTTP request context gets canceled on redirect.
 			safego.Go(s.logger, "org-repo-scan", func() { s.scanOrgRepos(context.Background(), groupID, orgURL) })
 		default:
-			// v0.27.20: non-admin org registrations pend on an
+			// v0.27.20: a non-admin's add of a NEW org pends on an
 			// add-request — nothing scans until an admin approves.
 			s.notifyAddRequestSubmitted(out.RequestID)
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_pending=1", groupID), http.StatusFound)

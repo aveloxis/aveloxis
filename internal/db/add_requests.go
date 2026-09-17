@@ -21,6 +21,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // AddOutcome reports what AddReposToGroup did with a batch of URLs so
@@ -29,6 +31,7 @@ type AddOutcome struct {
 	Linked    int   // known repos linked into the group (no new collection)
 	Enqueued  int   // new repos created + enqueued (admin or auto-approved path)
 	Pending   int   // URLs parked on a pending add-request
+	Failed    int   // auto-approved repos whose add failed (their items are stamped -1)
 	RequestID int64 // non-zero when a pending request was created
 }
 
@@ -135,7 +138,13 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		return out, fmt.Errorf("look up group status: %w", err)
 	}
 	if status == "rejected" {
-		return out, fmt.Errorf("group has been rejected by an administrator")
+		return out, ErrGroupRejected
+	}
+	// Checked before anything is written, so a refused add changes nothing.
+	for _, raw := range repoURLs {
+		if len(strings.TrimSpace(raw)) > MaxAddURLBytes {
+			return out, ErrURLTooLong
+		}
 	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 
@@ -188,10 +197,22 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 			return out, err
 		}
 		out.RequestID = reqID
-		if _, err := s.ProcessApprovedAddRequest(ctx, reqID); err != nil {
-			return out, err
+		// The request is committed as approved and no admin will see it,
+		// so its processing must not stop with the caller's request context
+		// (a client disconnect used to leave its items unprocessed for good;
+		// round-14 review), and a failed item is final for it: the pass marks
+		// it processed-with-error and goes on, and the add reports the count
+		// (round-23 review: a retryable failure left it and every later item
+		// unprocessed for good).
+		processed, failed, err := s.processAddRequest(context.WithoutCancel(ctx), reqID, true)
+		out.Enqueued += processed
+		out.Failed = failed
+		if err != nil {
+			return out, fmt.Errorf("add request %d: %w", reqID, err)
 		}
-		out.Enqueued += len(unknown)
+		if failed > 0 {
+			return out, fmt.Errorf("add request %d: %d of %d %w", reqID, failed, len(unknown), ErrAddItemsFailed)
+		}
 		return out, nil
 	}
 
@@ -213,8 +234,22 @@ func (s *PostgresStore) createAddRequest(ctx context.Context, userID int, groupI
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	requestID, err := insertAddRequest(ctx, tx, userID, groupID, kind, orgURL, urls, status)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return requestID, nil
+}
 
+// insertAddRequest writes a request and its items inside the caller's
+// transaction; createAddRequest is the stand-alone form. AddOrgToGroup's
+// auto-approve uses it to commit the audit request with the registration.
+func insertAddRequest(ctx context.Context, tx pgx.Tx, userID int, groupID int64, kind, orgURL string, urls []string, status string) (int64, error) {
 	var requestID int64
+	var err error
 	if status == "approved" {
 		err = tx.QueryRow(ctx, `
 			INSERT INTO aveloxis_ops.collection_add_requests
@@ -240,9 +275,6 @@ func (s *PostgresStore) createAddRequest(ctx context.Context, userID int, groupI
 			requestID, u); err != nil {
 			return 0, fmt.Errorf("create add request item: %w", err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
 	}
 	return requestID, nil
 }
@@ -296,8 +328,10 @@ func (s *PostgresStore) ListPendingAddRequests(ctx context.Context) ([]AddReques
 
 // DecideAddRequest flips a pending request to approved/rejected and
 // returns the request (joined to requester + group for notification).
-// changed=false means the request was already decided (double click) —
-// callers skip processing and emails. For kind='org' approvals the org
+// changed=true means this call made the decision (or completed an
+// approval, below): callers process, scan and notify. changed=false means
+// the request was already decided (double click): callers notify nobody,
+// but re-approving an approved repos request resumes its processing pass. For kind='org' approvals the org
 // registration happens HERE (INSERT into user_org_requests): presence
 // in that table means "approved to scan", which is what keeps the
 // scheduler's org tickers gate-free by construction.
@@ -320,7 +354,16 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 	if approve {
 		newStatus = "approved"
 	}
-	tag, err := s.pool.Exec(ctx, `
+	// The flip and an org approval's registration are one transaction: a
+	// failed registration approves nothing, so the admin's retry approves
+	// and notifies normally (round-12 review: registering after the flip
+	// could leave an approved org untracked, its requester never told).
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return req, false, fmt.Errorf("decide add request: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_add_requests
 		SET status = $2, decided_by = $3, decided_at = NOW()
 		WHERE request_id = $1 AND status = 'pending'`,
@@ -329,47 +372,133 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		return req, false, fmt.Errorf("decide add request: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return req, false, nil // already decided
+		// Already decided. An approved org request can still lack its
+		// registration if a release before v0.29.39 lost it (this function
+		// registered after the flip until v0.29.38, AddOrgToGroup's
+		// auto-approve until v0.29.39); re-approving registers it, and that
+		// completes the approval, so it reports changed=true and the caller
+		// notifies the requester then.
+		if approve && req.Status == "approved" && req.Kind == "org" {
+			inserted, err := registerApprovedOrg(ctx, tx, req)
+			if err != nil {
+				return req, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return req, false, fmt.Errorf("register approved org: %w", err)
+			}
+			return req, inserted, nil
+		}
+		return req, false, nil
 	}
-	req.Status = newStatus
-
 	if approve && req.Kind == "org" {
-		orgName, platformName := parseOrgURLMeta(req.OrgURL)
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO aveloxis_ops.user_org_requests
-				(user_id, group_id, org_url, org_name, platform)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (group_id, org_url) DO NOTHING`,
-			req.UserID, req.GroupID, req.OrgURL, orgName, platformName); err != nil {
-			return req, true, fmt.Errorf("register approved org: %w", err)
+		if _, err := registerApprovedOrg(ctx, tx, req); err != nil {
+			return req, false, err
 		}
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return req, false, fmt.Errorf("decide add request: %w", err)
+	}
+	req.Status = newStatus
 	return req, true, nil
 }
+
+// registerApprovedOrg records an approved org request in user_org_requests,
+// which is what lets the scheduler scan it, and reports whether it added the
+// row (false: it was already registered). Idempotent. It takes a
+// transaction, never the pool: a caller that writes the approval justifying
+// the registration (DecideAddRequest's flip, AddOrgToGroup's auto-approve
+// audit request) must register in that same transaction, and a pool argument
+// used to compile there (round-14 review). The type does not stop a caller
+// from opening a second transaction, so keep the registration in the
+// approval's transaction; TestDecideAddRequestOrgRegistrationFailures and
+// TestAddOrgToGroupAutoApproveIsAtomic inject failures into both writes. The
+// admin add and the half-state re-approve pass a transaction that holds only
+// the registration.
+func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, error) {
+	orgName, platformName := parseOrgURLMeta(req.OrgURL)
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO aveloxis_ops.user_org_requests
+			(user_id, group_id, org_url, org_name, platform)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (group_id, org_url) DO NOTHING`,
+		req.UserID, req.GroupID, req.OrgURL, orgName, platformName)
+	if err != nil {
+		return false, fmt.Errorf("register approved org: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MaxAddURLBytes is the longest URL, in bytes, an add accepts. Every index an
+// add writes a URL into is a btree, whose rows hold at most 2704 bytes on 8 KB
+// pages; a row carries up to 20 bytes before the URL (the tuple header, a
+// bigint key, the text length), and the rest is halved because
+// lower(repo_git) lengthens some characters: U+023A by half in en_US.UTF-8,
+// and ASCII 'I' to the 2-byte dotless i under an ICU Turkish collation. Longer
+// URLs reached the database, which refused them with SQLSTATE 54000 — also the
+// code for a server-wide stop, so the API could not tell the caller's mistake
+// from an outage (round-27 review).
+const MaxAddURLBytes = (2704 - 20) / 2
+
+// ErrURLTooLong means a URL in an add is longer than MaxAddURLBytes.
+var ErrURLTooLong = fmt.Errorf("a URL is longer than %d bytes", MaxAddURLBytes)
+
+// ErrAddItemsFailed means some repositories of an auto-approved add could not
+// be added; the rest were.
+var ErrAddItemsFailed = errors.New("repositories could not be added")
+
+// ErrAddRequestInProgress is ProcessApprovedAddRequest's answer when this
+// process is already processing the request: the running pass finishes the
+// batch, so the caller has nothing to do.
+var ErrAddRequestInProgress = errors.New("add request is already being processed")
 
 // ProcessApprovedAddRequest walks the request's unprocessed items and
 // runs the shared add machinery for each. Idempotent + resumable:
 // items with repo_id already stamped are skipped, so an interrupted
-// pass (or a double approval) picks up where it left off. An
-// unresolvable URL stamps repo_id = -1 (processed-with-error) so it
-// can't wedge the request forever; the failure is logged.
+// pass picks up where it left off. An item the database rejects for its own
+// data (addItemFailurePermanent) is stamped repo_id = -1
+// (processed-with-error) so it can't wedge the request forever, and the pass
+// continues; any other failure stops the pass with the item unprocessed, so
+// re-approving retries it (Copilot review of PR #207: every failure used to
+// be stamped -1, and a transient database error dropped the repository).
+//
+// One pass per request at a time in this process: a second call while one
+// runs (an admin's second approve click) returns ErrAddRequestInProgress
+// instead of walking the batch again (Copilot review of PR #207). The pass
+// holds no database connection or transaction across items: v0.29.46 held
+// one per pass while the add machinery took a second connection, and as many
+// passes as the pool has connections deadlocked the pool (round-21 review).
+// Passes in two processes (web and api) can still overlap; each step is
+// idempotent and a stamp only fills an unstamped item.
 func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (int, error) {
+	processed, _, err := s.processAddRequest(ctx, requestID, false)
+	return processed, err
+}
+
+// processAddRequest is the processing pass. With everyFailureFinal, used for
+// an auto-approved add that nobody re-approves, every failed item is stamped
+// processed-with-error and the pass goes on; failed counts those items.
+func (s *PostgresStore) processAddRequest(ctx context.Context, requestID int64, everyFailureFinal bool) (int, int, error) {
+	if !s.startAddRequestPass(requestID) {
+		return 0, 0, ErrAddRequestInProgress
+	}
+	defer s.finishAddRequestPass(requestID)
+
 	var groupID int64
 	var status string
 	if err := s.pool.QueryRow(ctx, `
 		SELECT group_id, status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`,
 		requestID).Scan(&groupID, &status); err != nil {
-		return 0, fmt.Errorf("load add request: %w", err)
+		return 0, 0, fmt.Errorf("load add request: %w", err)
 	}
 	if status != "approved" {
-		return 0, fmt.Errorf("request %d is %s, not approved", requestID, status)
+		return 0, 0, fmt.Errorf("request %d is %s, not approved", requestID, status)
 	}
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT item_id, repo_url FROM aveloxis_ops.collection_add_request_items
 		WHERE request_id = $1 AND repo_id IS NULL ORDER BY item_id`, requestID)
 	if err != nil {
-		return 0, err
+		return 0, 0, fmt.Errorf("read add-request items: %w", err)
 	}
 	type item struct {
 		id  int64
@@ -380,35 +509,95 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 		var it item
 		if err := rows.Scan(&it.id, &it.url); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, fmt.Errorf("read add-request items: %w", err)
 		}
 		items = append(items, it)
 	}
 	rows.Close()
+	// A read that fails partway must not look like a shorter batch.
+	if err := rows.Err(); err != nil {
+		return 0, 0, fmt.Errorf("read add-request items: %w", err)
+	}
 
-	processed := 0
+	processed, failed := 0, 0
 	for _, it := range items {
 		repoID, err := s.ensureRepoCollectedInGroup(ctx, groupID, it.url)
+		if errors.Is(err, context.Canceled) {
+			// A stopped process, not a failure: leave the item unprocessed.
+			return processed, failed, err
+		}
+		if err != nil && !everyFailureFinal && !addItemFailurePermanent(err) {
+			// Leave this item and the rest unprocessed for a later pass.
+			return processed, failed, fmt.Errorf("add-request item %q: %w", it.url, err)
+		}
 		if err != nil {
-			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-			// defect. Only the log is suppressed — surrounding behaviour is
-			// unchanged and the work is retried on the next cycle.
-			if !errors.Is(err, context.Canceled) {
-				s.logger.Warn("add-request item failed — marking processed-with-error",
-					"request_id", requestID, "url", it.url, "error", err)
-			}
+			s.logger.Warn("add-request item failed — marking processed-with-error",
+				"request_id", requestID, "url", it.url, "error", err)
 			repoID = -1
 		}
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_ops.collection_add_request_items
-			SET repo_id = $2 WHERE item_id = $1`, it.id, repoID); err != nil {
-			return processed, err
+			SET repo_id = $2 WHERE item_id = $1 AND repo_id IS NULL`, it.id, repoID); err != nil {
+			return processed, failed, err
 		}
 		if repoID > 0 {
 			processed++
+		} else {
+			failed++
 		}
 	}
-	return processed, nil
+	return processed, failed, nil
+}
+
+// addItemFailurePermanent reports whether an add-machinery error is a property
+// of the item's own values, which retrying cannot fix: a data exception
+// (SQLSTATE class 22), a not-null violation (23502) or a check violation
+// (23514). Anything else may succeed later — a lost connection, a timeout, a
+// serialization failure, a cancelled context, and the constraint violations a
+// concurrent delete or dedup can cause (a foreign key, 23503; a unique index,
+// 23505; an exclusion, 23P01).
+func addItemFailurePermanent(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "22") || pgErr.Code == "23502" || pgErr.Code == "23514"
+}
+
+// IsRejectedValue reports whether the database refused a value it was given
+// rather than failing: a data exception (SQLSTATE class 22, such as a NUL
+// byte). An add's only values are the caller's URLs, so the API answers these
+// with a 400 (round-25 review). A URL too long for an index never reaches the
+// database (ErrURLTooLong), so 54000 is not matched: Postgres also uses it when
+// it stops assigning transaction IDs to avoid wraparound (round 26), and one of
+// its two index-size errors names no index (round 27).
+func IsRejectedValue(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "22")
+}
+
+// startAddRequestPass records that this process is processing requestID, and
+// reports false when a pass for it is already running here.
+func (s *PostgresStore) startAddRequestPass(requestID int64) bool {
+	s.addPassMu.Lock()
+	defer s.addPassMu.Unlock()
+	if _, running := s.addPasses[requestID]; running {
+		return false
+	}
+	if s.addPasses == nil {
+		s.addPasses = map[int64]struct{}{}
+	}
+	s.addPasses[requestID] = struct{}{}
+	return true
+}
+
+func (s *PostgresStore) finishAddRequestPass(requestID int64) {
+	s.addPassMu.Lock()
+	defer s.addPassMu.Unlock()
+	delete(s.addPasses, requestID)
 }
 
 // PendingAddItem is one awaiting-approval URL for the group page's

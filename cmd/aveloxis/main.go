@@ -233,9 +233,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	})
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
-	if cfg.Mail.OperatorEmail != "" {
-		sched.SetDigestMailer(digestMailerAdapter{mailer.New(mailerConfigFrom(cfg), logger)})
-	}
+	wireDigestMailer(sched, cfg, logger)
 	// v0.27.36 (summary/18 Part 3b): the scheduler goroutine is
 	// JOINED on shutdown. Pre-fix, runServe returned as soon as
 	// ctx cancelled and the deferred store.Close() raced the
@@ -386,19 +384,7 @@ func runAPI(cfgPath, addr string) error {
 	// api does not run migrations — check if schema is current.
 	store.CheckSchemaVersion(ctx, logger)
 
-	apiServer, err := api.NewWithOptions(store, logger, api.Options{
-		RateLimitRPS:   cfg.API.RateLimitRPSOrDefault(),
-		RateLimitBurst: cfg.API.RateLimitBurstOrDefault(),
-		RateLimitDaily: cfg.API.RateLimitDailyOrDefault(),
-		ExemptCIDRs:    cfg.API.ExemptCIDRsOrDefault(),
-		CORSOrigins:    cfg.API.CORSOrigins,
-		TrustedProxy:   cfg.API.TrustedProxy,
-		RequireAuth:    cfg.API.RequireAuth,
-		// v0.27.20 per-add approval: add-request notifications +
-		// the auto-approve limit for the portal repo-add endpoint.
-		Mailer:              mailer.New(mailerConfigFrom(cfg), logger),
-		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
-	})
+	apiServer, err := api.NewWithOptions(store, logger, apiOptions(cfg, logger))
 	if err != nil {
 		return fmt.Errorf("api middleware config: %w", err)
 	}
@@ -1402,8 +1388,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 
 			warnAPIPortMismatch(cfg, logger)
 
-			webServer := web.New(store, cfg.Web, ghKeys, logger).
-				WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
+			webServer := newWebServer(store, cfg, ghKeys, logger)
 			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
 
 			go func() {
@@ -1983,12 +1968,7 @@ Common failures and what they mean:
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
 
-			mc := mailer.Config{
-				GmailUser:        cfg.Mail.GmailUser,
-				GmailAppPassword: cfg.Mail.GmailAppPassword,
-				FromName:         cfg.Mail.FromName,
-				SiteURL:          cfg.Mail.SiteURL,
-			}
+			mc := mailerConfigFrom(cfg)
 			if err := mailer.ValidateConfig(mc); err != nil {
 				return fmt.Errorf("mail config invalid — fix aveloxis.json and try again: %w", err)
 			}
@@ -2089,13 +2069,11 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	return gh, gl, nil
 }
 
-// digestMailerAdapter bridges *mailer.Mailer to the scheduler's
-// digestMailer role interface (v0.27.12). The mailer package stays
-// free of aveloxis imports, so the db→mailer item copy happens here.
 // mailerConfigFrom maps the aveloxis.json mail block onto the mailer
 // package's dependency-free Config (v0.27.20: single builder so every
-// process — serve digest, web, api — carries the same fields,
+// process — serve digest, web, api, test-mail — carries the same fields,
 // including OperatorEmail for add-request notifications).
+// TestMailerConfigFromCarriesEveryField checks every field.
 func mailerConfigFrom(cfg *config.Config) mailer.Config {
 	return mailer.Config{
 		GmailUser:        cfg.Mail.GmailUser,
@@ -2106,6 +2084,49 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config {
 	}
 }
 
+// newWebServer builds `aveloxis web`'s server with its mailer attached.
+// TestProcessMailWiring checks the mailer it carries.
+func newWebServer(store *db.PostgresStore, cfg *config.Config, ghKeys *platform.KeyPool, logger *slog.Logger) *web.Server {
+	return web.New(store, cfg.Web, ghKeys, logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
+}
+
+// apiOptions maps aveloxis.json onto `aveloxis api`'s server options.
+// TestProcessMailWiring checks the mailer it carries.
+func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
+	return api.Options{
+		RateLimitRPS:   cfg.API.RateLimitRPSOrDefault(),
+		RateLimitBurst: cfg.API.RateLimitBurstOrDefault(),
+		RateLimitDaily: cfg.API.RateLimitDailyOrDefault(),
+		ExemptCIDRs:    cfg.API.ExemptCIDRsOrDefault(),
+		CORSOrigins:    cfg.API.CORSOrigins,
+		TrustedProxy:   cfg.API.TrustedProxy,
+		RequireAuth:    cfg.API.RequireAuth,
+		// v0.27.20 per-add approval: add-request notifications +
+		// the auto-approve limit for the portal repo-add endpoint.
+		Mailer:              mailer.New(mailerConfigFrom(cfg), logger),
+		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
+	}
+}
+
+// digestMailerSetter is the scheduler method wireDigestMailer calls, as an
+// interface so TestProcessMailWiring can record the call without a database.
+type digestMailerSetter interface {
+	SetDigestMailer(scheduler.DigestMailer)
+}
+
+// wireDigestMailer gives serve's scheduler its operator-digest mailer. It is
+// attached whether or not mail.operator_email is set: the scheduler decides
+// at Run whether the digest runs, in one place (vulnDigestReady; without an
+// operator_email it silently doesn't, and startVulnDigest logs an ERROR when
+// one is set but could never be delivered). Before v0.29.35 serve also
+// checked operator_email here.
+func wireDigestMailer(sched digestMailerSetter, cfg *config.Config, logger *slog.Logger) {
+	sched.SetDigestMailer(digestMailerAdapter{mailer.New(mailerConfigFrom(cfg), logger)})
+}
+
+// digestMailerAdapter bridges *mailer.Mailer to the scheduler's
+// DigestMailer role interface (v0.27.12). The mailer package stays
+// free of aveloxis imports, so the db→mailer item copy happens here.
 type digestMailerAdapter struct{ m *mailer.Mailer }
 
 func (a digestMailerAdapter) SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error {
@@ -2122,3 +2143,7 @@ func (a digestMailerAdapter) SendVulnerabilityDigest(to string, since time.Time,
 	}
 	return a.m.SendVulnerabilityDigest(to, since, conv)
 }
+
+// Deliverable forwards the mailer's up-front check so the scheduler can
+// refuse to start a digest that could never be delivered (v0.29.29).
+func (a digestMailerAdapter) Deliverable(to string) error { return a.m.Deliverable(to) }

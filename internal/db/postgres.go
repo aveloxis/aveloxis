@@ -42,6 +42,11 @@ type PostgresStore struct {
 	// are the pooler's, so exclusion silently fails toward "live" (safe).
 	backendMu   sync.Mutex
 	backendPIDs map[uint32]struct{}
+
+	// addPasses are the add-request ids this process is processing right
+	// now (ProcessApprovedAddRequest runs one pass per request at a time).
+	addPassMu sync.Mutex
+	addPasses map[int64]struct{}
 }
 
 func (s *PostgresStore) trackBackend(pid uint32, alive bool) {

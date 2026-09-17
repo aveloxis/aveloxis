@@ -72,11 +72,15 @@ type Config struct {
 	GitLab *config.PlatformConfig
 }
 
-// digestMailer is the narrow mailer surface the digest ticker needs
+// DigestMailer is the narrow mailer surface the digest ticker needs
 // (v0.25.38 role-interface pattern). *mailer.Mailer satisfies it via
-// the SendVulnerabilityDigest adapter in cmd/aveloxis/main.go.
-type digestMailer interface {
+// the SendVulnerabilityDigest adapter in cmd/aveloxis/main.go. Exported so
+// that wiring can be tested there (TestProcessMailWiring).
+type DigestMailer interface {
 	SendVulnerabilityDigest(to string, since time.Time, items []db.VulnDigestItem) error
+	// Deliverable reports whether a digest to `to` could reach SMTP at all
+	// (mailer.Mailer.Deliverable), checked once before the ticker starts.
+	Deliverable(to string) error
 }
 
 // Scheduler polls the Postgres-backed queue and dispatches collection workers.
@@ -161,7 +165,7 @@ type Scheduler struct {
 	// vulnerability digest. mailer is injected via SetDigestMailer
 	// from runServe; stampPath defaults to ~/.aveloxis/vuln-digest-last
 	// and is overridable in tests.
-	digestMailer    digestMailer
+	digestMailer    DigestMailer
 	digestStampPath string
 
 	// breadthWorker is constructed ONCE and reused across ticks
@@ -180,9 +184,9 @@ type Scheduler struct {
 }
 
 // SetDigestMailer injects the operator-notification mailer (v0.27.12).
-// Called by runServe after constructing the Gmail mailer; the digest
-// ticker only runs when both this and cfg.Mail.OperatorEmail are set.
-func (s *Scheduler) SetDigestMailer(m digestMailer) {
+// runServe always injects one (wireDigestMailer); whether the digest
+// ticker runs is decided once, at Run, by vulnDigestReady.
+func (s *Scheduler) SetDigestMailer(m DigestMailer) {
 	s.digestMailer = m
 }
 
@@ -534,18 +538,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// hourly as a CHECK cadence; runVulnDigest itself enforces the
 	// configured interval (default 24h) via the stamp file, sends
 	// only when new findings exist, and advances the window
-	// monotonically. Disabled entirely (channel stays nil) unless an
-	// operator email is configured AND a mailer was injected.
-	var vulnDigestC <-chan time.Time
-	if s.digestMailer != nil && s.cfg.Mail != nil && s.cfg.Mail.OperatorEmail != "" {
-		vulnDigestTicker := time.NewTicker(1 * time.Hour)
-		defer vulnDigestTicker.Stop()
-		vulnDigestC = vulnDigestTicker.C
-		s.logger.Info("operator vulnerability digest enabled",
-			"operator_email", s.cfg.Mail.OperatorEmail,
-			"min_severity", s.cfg.Mail.VulnDigestMinSeverityOrDefault(),
-			"interval", s.cfg.Mail.VulnDigestInterval())
-	}
+	// monotonically. Disabled entirely (channel stays nil) unless
+	// vulnDigestReady says a digest could be delivered.
+	vulnDigestC, stopVulnDigest := s.startVulnDigest()
+	defer stopVulnDigest()
 
 	// v0.19.2: search-resolve background task. Takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email at
@@ -2472,16 +2468,22 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 // maybeScanNewOrgs runs on every poll tick (default 10s). A
 // user_org_requests row with last_scanned IS NULL is the
 // cross-process signal that an org was just registered — an admin
-// added it directly (portal API or web GUI), or an admin approved a
+// added it directly, a non-admin's add of an org already registered in a
+// group that is not rejected auto-approved (both through AddOrgToGroup:
+// portal API, web GUI or the CLI org loaders), or an admin approved a
 // pending org request (DecideAddRequest inserts the registration).
 // Instead of waiting up to 4 hours for orgRefreshTicker, launch an
 // immediate scan scoped to the never-scanned orgs so already-tracked
 // repos (e.g. a fully-collected org added to a second group) link
 // into the new group within seconds of the add/approval (v0.27.52).
 //
-// Non-admin adds never fire this: their orgs pend in
-// collection_add_requests, and no user_org_requests row exists until
-// an admin approves (v0.27.20). Rejected-group orgs are excluded by
+// A non-admin's add of a NEW org never fires this: it pends in
+// collection_add_requests, and no user_org_requests row exists until an
+// admin approves (v0.27.20). A non-admin's auto-approved add (v0.27.84) and
+// an admin's add fire it only when registerApprovedOrg inserts a row:
+// re-adding the same org_url to a group that registers it inserts nothing.
+// The unique key on (group_id, org_url) is case-sensitive, so a re-add that
+// differs only in letter case does insert a row and does fire this. Rejected-group orgs are excluded by
 // the probe itself — the scan's rejected gate deliberately never
 // stamps them, so counting them would re-fire the probe every tick.
 // A failed enumeration is also safe: MarkOrgRequestScanned stamps

@@ -32,7 +32,7 @@ import (
 // widened.
 
 // contributorActivityFetcher is the capability the sweep needs from
-// the GitHub client (the digestMailer / breadthStore narrow-interface
+// the GitHub client (the DigestMailer / breadthStore narrow-interface
 // pattern).
 type contributorActivityFetcher interface {
 	FetchContributorActivity(ctx context.Context, logins []string) (map[string]model.ContributionActivity, error)

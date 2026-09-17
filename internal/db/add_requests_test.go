@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,15 +48,20 @@ func TestAddRepoToGroupByIDStaysEnqueueFree(t *testing.T) {
 }
 
 // TestOrgRegistrationGatedOnAdmin pins the v0.27.20 org rule: an org
-// registration is an unbounded mass add, so non-admins ALWAYS pend
-// (kind='org' add-request); only admins insert into user_org_requests
-// directly. Presence in user_org_requests = approved to scan.
+// registration is an unbounded mass add, so a non-admin's add of a NEW org
+// pends (kind='org' add-request); an admin registers directly, and a
+// non-admin's add of an org already registered in a group that is not
+// rejected auto-approves (v0.27.84). Presence in user_org_requests =
+// approved to scan.
 func TestOrgRegistrationGatedOnAdmin(t *testing.T) {
-	body := extractFunctionBody(t, "web_store.go", "AddOrgToGroup")
-	for _, needle := range []string{"IsUserAdmin", "createAddRequest", "user_org_requests", `"rejected"`, "IsOrgRegisteredAnywhere"} {
+	// Comments excluded, and the registration matched by its call: after
+	// v0.29.39 the INSERT lives in registerApprovedOrg, and a
+	// "user_org_requests" needle matched only comments (round-14 review).
+	body := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "web_store.go"), "func (s *PostgresStore) AddOrgToGroup("))
+	for _, needle := range []string{"IsUserAdmin", "createAddRequest", "registerApprovedOrg(", `"rejected"`, "IsOrgRegisteredAnywhere"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("AddOrgToGroup must gate registration on admin role (needle %q missing) — "+
-				"a non-admin org registration must pend on an add-request, never reach "+
+				"a non-admin's add of a NEW org must pend on an add-request, never reach "+
 				"user_org_requests directly", needle)
 		}
 	}
@@ -65,9 +72,9 @@ func TestOrgRegistrationGatedOnAdmin(t *testing.T) {
 // gate that keeps the scheduler's org tickers approval-safe without
 // per-tick status checks.
 func TestOrgApprovalRegistersTracking(t *testing.T) {
-	body := extractFunctionBody(t, "add_requests.go", "DecideAddRequest")
-	if !strings.Contains(body, "user_org_requests") {
-		t.Error("DecideAddRequest must register approved org requests in user_org_requests")
+	body := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "add_requests.go"), "func (s *PostgresStore) DecideAddRequest("))
+	if !strings.Contains(body, "registerApprovedOrg(") {
+		t.Error("DecideAddRequest must register approved org requests in user_org_requests (registerApprovedOrg)")
 	}
 }
 

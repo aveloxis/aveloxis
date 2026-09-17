@@ -18,6 +18,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
@@ -321,7 +323,24 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		switch {
+		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, db.ErrURLTooLong), db.IsRejectedValue(err):
+			// A URL too long, or one the database refused; retrying cannot
+			// help (rounds 25 and 27).
+			http.Error(w, "a URL in the request is invalid or too long", http.StatusBadRequest)
+		case errors.Is(err, db.ErrAddItemsFailed):
+			// The message holds counts only, no database text.
+			s.logger.Warn("group add: some repositories could not be added", "group_id", groupID, "user_id", info.UserID, "error", err)
+			http.Error(w, err.Error()+"; try adding them again", http.StatusInternalServerError)
+		default:
+			// A server-side failure is a 500 without its database text
+			// (Copilot review of PR #207 on d436880: every error was a 400
+			// carrying it).
+			s.logger.Warn("group add failed", "group_id", groupID, "user_id", info.UserID, "kind", req.Kind, "error", err)
+			http.Error(w, "could not add to the group right now; try again", http.StatusInternalServerError)
+		}
 		return
 	}
 	jsonResponse(w, resp)
@@ -341,8 +360,15 @@ func (s *Server) handleGroupPendingAdds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	items, err := s.store.GetPendingAddItemsForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
-	if err != nil {
+	if errors.Is(err, db.ErrGroupNotOwned) {
 		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		// No database text in the body (round-25 review: the 403 showed a
+		// non-admin the database user, name, host and port during an outage).
+		s.logger.Warn("group pending adds failed", "group_id", groupID, "user_id", info.UserID, "error", err)
+		http.Error(w, "could not load the group's pending additions right now; try again", http.StatusInternalServerError)
 		return
 	}
 	type itemJSON struct {
@@ -369,6 +395,7 @@ func (s *Server) notifyAddRequestSubmitted(requestID int64) {
 		defer safego.Recover(s.logger, "add-request-submitted-email")
 		pending, err := s.store.ListPendingAddRequests(context.Background())
 		if err != nil {
+			s.logger.Warn("add-request email: list failed", "error", err)
 			return
 		}
 		for _, req := range pending {
@@ -380,7 +407,7 @@ func (s *Server) notifyAddRequestSubmitted(requestID int64) {
 				sample = []string{req.OrgURL}
 			}
 			if err := s.mailer.SendAddRequestSubmitted(s.mailer.OperatorEmail(),
-				req.UserLogin, req.GroupName, req.Kind, req.ItemCount, sample, req.RequestID); err != nil {
+				req.UserLogin, req.GroupName, req.Kind, req.ItemCount, sample, req.RequestID); err != nil && !mailer.IsSkip(err) {
 				s.logger.Warn("failed to send add-request email", "request_id", requestID, "error", err)
 			}
 			return
@@ -424,7 +451,8 @@ func (s *Server) handleAdminAddRequests(w http.ResponseWriter, r *http.Request) 
 // Approval processing (UpsertRepo + enqueue + link per item) runs in
 // the background so a large batch doesn't block the admin's request;
 // re-approving resumes an interrupted pass (items are stamped as they
-// process). Org approvals register tracking here; the actual repo
+// process), and re-approving an org request re-runs its registration
+// (DecideAddRequest). Org approvals register tracking here; the actual repo
 // scan happens on the scheduler's next refreshUserOrgs tick — the api
 // process deliberately has no platform API keys.
 func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Request) {
@@ -449,14 +477,25 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 	}
 	req, changed, err := s.store.DecideAddRequest(r.Context(), requestID, info.UserID, approve)
 	if err != nil {
+		s.logger.Warn("admin add-request decision failed", "request_id", requestID, "decision", r.PathValue("decision"), "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if changed {
+	// Re-approving an approved repos request resumes its processing pass.
+	resume := !changed && approve && req.Status == "approved" && req.Kind != "org"
+	if changed || resume {
 		if approve && req.Kind != "org" {
 			go func() {
 				defer safego.Recover(s.logger, "approved-add-request")
+				// The pass links repos into the requester's scope, so drop the
+				// token cache again when it ends — a request resolved while it
+				// ran cached the old scope (Copilot review of PR #207).
+				defer s.auth.invalidateAll()
 				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				if errors.Is(err, db.ErrAddRequestInProgress) {
+					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
+					return
+				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
 						"request_id", req.RequestID, "processed", n, "error", err)
@@ -465,12 +504,14 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)
 			}()
 		}
+	}
+	if changed {
 		if s.mailer != nil && req.UserEmail != "" {
 			req := req
 			go func() {
 				defer safego.Recover(s.logger, "add-request-decided-email")
 				if err := s.mailer.SendAddRequestDecided(req.UserEmail, req.UserLogin,
-					req.GroupName, req.Kind, approve, req.ItemCount); err != nil {
+					req.GroupName, req.Kind, approve, req.ItemCount); err != nil && !mailer.IsSkip(err) {
 					s.logger.Warn("failed to send add-request decision email",
 						"request_id", req.RequestID, "error", err)
 				}
@@ -581,9 +622,11 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 		return
 	}
 	decision := r.PathValue("decision")
+	var approval db.GroupApproval
+	var approved bool
 	switch decision {
 	case "approve":
-		err = s.store.ApproveGroup(r.Context(), groupID, info.UserID)
+		approval, approved, err = s.store.ApproveGroup(r.Context(), groupID, info.UserID)
 	case "reject":
 		err = s.store.RejectGroup(r.Context(), groupID, info.UserID)
 	default:
@@ -591,27 +634,21 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
+		s.logger.Warn("admin group decision failed", "group_id", groupID, "decision", decision, "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// v0.27.20 parity fix: the web handler has emailed the requester
 	// on approval since v0.19.0; the portal path silently didn't.
-	if decision == "approve" && s.mailer != nil {
-		var requesterEmail, requesterLogin, groupName string
-		_ = s.store.Pool().QueryRow(r.Context(), `
-			SELECT COALESCE(u.email, ''), u.login_name, g.name
-			FROM aveloxis_ops.user_groups g
-			JOIN aveloxis_ops.users u ON u.user_id = g.user_id
-			WHERE g.group_id = $1`,
-			groupID).Scan(&requesterEmail, &requesterLogin, &groupName)
-		if requesterEmail != "" {
-			go func() {
-				defer safego.Recover(s.logger, "group-approved-email")
-				if err := s.mailer.SendGroupApproved(requesterEmail, requesterLogin, groupName, groupID); err != nil {
-					s.logger.Warn("failed to send group-approved email", "group_id", groupID, "error", err)
-				}
-			}()
-		}
+	// Only when this request approved the group, so a second click
+	// mails nobody.
+	if approved && s.mailer != nil && approval.RequesterEmail != "" {
+		go func() {
+			defer safego.Recover(s.logger, "group-approved-email")
+			if err := s.mailer.SendGroupApproved(approval.RequesterEmail, approval.RequesterLogin, approval.GroupName, groupID); err != nil && !mailer.IsSkip(err) {
+				s.logger.Warn("failed to send group-approved email", "group_id", groupID, "error", err)
+			}
+		}()
 	}
 	// Approval changes the requester's repo scope — drop the
 	// token-validation cache so their next request sees it.

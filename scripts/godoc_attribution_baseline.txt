@@ -21,7 +21,6 @@
 # undocumented sibling in the same file shipped green.
 #
 # Regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run GodocIsAttached
-cmd/aveloxis/main.go::mailerConfigFrom<-digestMailerAdapter
 cmd/aveloxis/shadow_diff.go::shadowTable<-shadowTables
 internal/api/analytics.go::recordComparison<-resolveEntityRepos
 internal/api/portal.go::homeReposMaxLimit<-homeCacheKey
@@ -42,7 +41,6 @@ internal/db/gap_heal_store.go::nativeGatheredIssuesSQL<-GetGapHealCandidates
 internal/db/queue.go::archivedStretchCaseSQL<-CompleteJob
 internal/db/scancode_worker_store.go::RecordScancodeTimeout<-RecordScancodeFailure
 internal/db/vulnerability_store.go::SetVulnScanLastRun<-CountRepoVulnerabilities
-internal/mailer/mailer.go::SiteURL<-SendWelcome
 internal/platform/jira/walk.go::jiraMaxWestTZSkew<-maxStalePages
 internal/scheduler/scheduler.go::largeRepoExclusions<-fillWorkerSlots
 internal/scheduler/scheduler.go::singleFlight<-runSearchResolve

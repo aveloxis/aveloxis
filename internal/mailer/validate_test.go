@@ -4,6 +4,8 @@
 package mailer
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -130,5 +132,85 @@ func TestNormalizedAppPassword_StripsSpaces(t *testing.T) {
 	want := "abcdefghijklmnop"
 	if got != want {
 		t.Errorf("normalizeAppPassword(%q) = %q, want %q — Gmail's UI displays App Passwords with spaces every 4 chars but the auth token is the contiguous 16 chars. Without stripping, smtp.PlainAuth sends the spaced version and Gmail rejects with 535.", "abcd efgh ijkl mnop", got, want)
+	}
+}
+
+// TestValidateAndLogNamesTheOperatorAddress: the startup line of a
+// configured mailer says where operator notifications go (round-9 review:
+// an operator_email lost between aveloxis.json and the mailer silenced the
+// add-request notices and the digest with nothing in any log).
+func TestValidateAndLogNamesTheOperatorAddress(t *testing.T) {
+	var logs bytes.Buffer
+	cfg := Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", OperatorEmail: "operator@example.com"}
+	if err := ValidateAndLog(cfg, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "operator_email=operator@example.com") {
+		t.Errorf("the configured-mailer line must name operator_email; log:\n%s", logs.String())
+	}
+}
+
+// TestValidateConfigSiteURL: mail.site_url starts every link the mailer
+// writes, so an enabled mailer accepts only an absolute http or https URL with
+// a host and no query, fragment or user info; anything else fails validation,
+// which disables the mailer. "aveloxis.example" made a relative confirmation
+// link and "https://aveloxis.example?x=1" put the token inside another query
+// (Copilot review of PR #207 on eb248eb). A disabled mailer ignores site_url.
+func TestValidateConfigSiteURL(t *testing.T) {
+	for _, site := range []string{
+		"",
+		"https://aveloxis.example",
+		"http://localhost:8082",
+		"https://aveloxis.example/aveloxis/",
+		" https://aveloxis.example ",
+		"HTTPS://Aveloxis.example",
+		"https://[::1]:8443",
+		"https://[fe80::1%25en0]:8443",
+		"http://127.0.0.1:8082",
+		"https://bücher.example",
+		"https://xn--bcher-kva.example",
+		"https://under_score.example",
+	} {
+		if err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site}); err != nil {
+			t.Errorf("site_url %q: %v; want it accepted", site, err)
+		}
+	}
+	for _, site := range []string{
+		"aveloxis.example",
+		"//aveloxis.example",
+		"/account",
+		"ftp://aveloxis.example",
+		"javascript:alert(1)",
+		"https:aveloxis.example",
+		"https://",
+		"https://:8443",
+		"https://aveloxis.example?x=1",
+		"https://aveloxis.example/?",
+		"https://aveloxis.example#top",
+		"https://aveloxis.example/#",
+		"https://ops:secret@aveloxis.example",
+		"https://aveloxis.example/a b",
+		"https://aveloxis .example",
+		// round-24 review: url.Parse allows these in a host or path.
+		"https://aveloxis.io,https://rule.aveloxis.io",
+		"https://aveloxis.io,",
+		"https://*.aveloxis.example",
+		"https://aveloxis.example;x",
+		"https://aveloxis.example/a\u00a0b",
+		// round-25 review: a list whose comma sits in a path.
+		"https://aveloxis.io/,https://rule.aveloxis.io/",
+		"https://aveloxis.io/aveloxis,https://rule.aveloxis.io",
+		"https://aveloxis.io/;https://rule.aveloxis.io/",
+	} {
+		err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site})
+		if err == nil || !strings.Contains(err.Error(), "mail.site_url") {
+			t.Errorf("site_url %q: %v; want an error naming mail.site_url", site, err)
+		}
+		if err := ValidateConfig(Config{SiteURL: site}); err != nil {
+			t.Errorf("site_url %q with the mailer disabled: %v; want nil", site, err)
+		}
+	}
+	if m := New(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: "aveloxis.example"}, nil); m.Enabled() || m.SiteURL() != "" {
+		t.Errorf("New with site_url %q: enabled=%v site=%q; want the mailer disabled", "aveloxis.example", m.Enabled(), m.SiteURL())
 	}
 }

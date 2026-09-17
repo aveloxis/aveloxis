@@ -96,7 +96,7 @@ func TestCollectorShutdownBranchesPresent(t *testing.T) {
 func TestSubprocessErrorsRouteThroughExecErr(t *testing.T) {
 	for file, needles := range map[string][]string{
 		"internal/collector/facade.go":     {`"%w: %s", execErr(ctx, err), stderr.String()`, `"git log exited with error: %w", execErr(ctx, err)`},
-		"internal/collector/analysis.go":   {`"local clone failed: %w: %s", execErr(ctx, err)`, `"scc failed: %w", execErr(ctx, err)`, `return nil, execErr(ctx, err)`},
+		"internal/collector/analysis.go":   {`"local clone failed: %w: %s", execErr(ctx, err)`, `"scc failed: %w", execErr(ctx, waitErr)`, `"parsing scc output: %w", execErr(ctx, cause)`, `return nil, execErr(ctx, err)`},
 		"internal/collector/scorecard.go":  {`"scorecard failed: %w: %s", execErr(attemptCtx, runErr)`, `"git remote set-url failed: %w: %s", execErr(ctx, err)`},
 		"internal/collector/whitespace.go": {`"git log -p exited: %w", execErr(ctx, waitErr)`, `"rev-parse %s: %w", branch, execErr(ctx, err)`},
 	} {

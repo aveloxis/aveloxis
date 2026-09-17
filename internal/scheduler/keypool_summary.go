@@ -50,11 +50,16 @@ func (s *Scheduler) logKeyPoolSummary() {
 		minGQL, maxGQL, totalGQL             = -1, -1, 0
 	)
 	for _, k := range keys {
+		// Lifetime counters include invalidated keys: skipping them first
+		// made a "lifetime" total go down when a key was invalidated
+		// (Copilot review on PR #209). The current-state gauges below stay
+		// limited to live keys.
+		secondaryHits += k.SecondaryHits
+		refusals += k.Refusals
 		if k.Invalid {
 			continue
 		}
 		alive++
-		secondaryHits += k.SecondaryHits
 		lent += k.Lent
 		if now.Before(k.SecondaryUntil) {
 			resting++
@@ -71,7 +76,6 @@ func (s *Scheduler) logKeyPoolSummary() {
 		if now.Before(k.SearchRefusedUntil) {
 			refusedSrch++
 		}
-		refusals += k.Refusals
 		totalCore += k.Core
 		totalGQL += k.GraphQL
 		if minCore < 0 || k.Core < minCore {

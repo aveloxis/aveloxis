@@ -41,6 +41,11 @@ func TestIsDefinitiveAnswer(t *testing.T) {
 		{"403 not a rate limit", fmt.Errorf("%w: u", ErrForbidden), true},
 		{"400", fmt.Errorf("bad request: u: %w", ErrRequestRejected), true},
 		{"422 pagination cap", fmt.Errorf("%w: u", ErrPaginationLimitExceeded), true},
+		// Copilot review 5237013602 on PR #209: ClassSkip also holds the
+		// client's own off-host refusal, which is not the forge's answer about
+		// the item — an instance-wide redirect would otherwise stamp every
+		// lookup's cooldown.
+		{"off-host refusal", fmt.Errorf("%w (redirected from u)", ErrOffHostRefused), false},
 		{"empty pool", fmt.Errorf("getting API key: %w", emptyPoolErr), false},
 		{"retries exhausted", fmt.Errorf("exhausted 10 retries for u: %w", ErrTransient), false},
 		{"graphql budget", ErrGraphQLBudgetExhausted, false},

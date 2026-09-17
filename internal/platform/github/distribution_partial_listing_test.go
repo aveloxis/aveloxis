@@ -27,6 +27,13 @@ func TestListRootManifestsSubdirFailureIsAnError(t *testing.T) {
 	}{
 		"cut-off body": {func(w http.ResponseWriter) { _, _ = w.Write([]byte(`[{"type":"fi`)) }, true},
 		"not found":    {func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) }, false},
+		// Copilot review 5237013602 on PR #209: the client's own off-host
+		// refusal is not an answer about the directory; skipping it as one
+		// stored a partial list.
+		"off-host redirect": {func(w http.ResponseWriter) {
+			w.Header().Set("Location", "https://elsewhere.example/repos/o/r/contents/packages")
+			w.WriteHeader(http.StatusMovedPermanently)
+		}, true},
 		// Review round 6: a rejected request is an answer too
 		// (platform.IsDefinitiveAnswer). Returning it as an error threw
 		// the whole list away while the scanner — which counts it as an

@@ -448,7 +448,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				}
 				continue
 			}
-			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			// isPrimaryRefusal, the pool's predicate (SR-17), so a GitLab
+			// RateLimit-Remaining: 0 rotates here too instead of returning
+			// ErrForbidden for a key the pool just benched (Copilot review
+			// on PR #209).
+			if isPrimaryRefusal(resp) {
 				c.logger.Info("graphql rate limit exhausted", "url", url,
 					"token_prefix", tokenPrefix(key.Token))
 				// Copilot round 7 on PR #193: a 403 carrying

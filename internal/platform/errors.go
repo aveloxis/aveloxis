@@ -209,11 +209,15 @@ func ClassifyError(err error) ErrorClass {
 // an attempt). Everything else says nothing about the item and must be
 // retried, never recorded as "no" (SR-5/SR-16): rate limits, transient and
 // auth failures, shutdown, an empty key pool, a cut-off body, an unknown
-// error. It lists the definitive answers rather than the non-definitive
-// classes on purpose: the v0.29.55 draft did the opposite and an empty
-// pool's plain Fatal error stamped a whole enrichment batch (review round 1).
+// error — and the client's own off-host refusal (ErrOffHostRefused, also
+// ClassSkip), which is a security decision on our side, not the forge's
+// answer: a redirect that moves a whole instance elsewhere would otherwise
+// stamp every lookup (Copilot review on PR #209). It lists the definitive
+// answers rather than the non-definitive classes on purpose: the v0.29.55
+// draft did the opposite and an empty pool's plain Fatal error stamped a
+// whole enrichment batch (review round 1).
 func IsDefinitiveAnswer(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, ErrOffHostRefused) {
 		return false
 	}
 	return ClassifyError(err) == ClassSkip || errors.Is(err, ErrRequestRejected)

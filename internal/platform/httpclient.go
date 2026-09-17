@@ -752,7 +752,11 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			}
 			return respRetry, nil, nil
 		}
-		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		// isPrimaryRefusal, the pool's own predicate (SR-17): it also reads
+		// GitLab's RateLimit-Remaining. Testing only X-RateLimit-Remaining
+		// here benched the key in the pool and then returned the same
+		// response as ErrForbidden (Copilot review on PR #209).
+		if isPrimaryRefusal(resp) {
 			resp.Body.Close()
 			return c.primaryRefusal(ctx, resp, url, key, attempt, res)
 		}

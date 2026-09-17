@@ -446,6 +446,17 @@ func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
 			}
 			return false
 		}, false},
+		// Copilot review 5237013602 on PR #209: an off-host redirect refused by
+		// the client is not an answer; the root listing used to swallow it as
+		// "nothing here" and the scan was stored complete.
+		"root listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/contents" {
+				w.Header().Set("Location", "https://elsewhere.example/repos/x/y/contents")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
 		"root listing 404": {func(w http.ResponseWriter, r *http.Request) bool {
 			if r.URL.Path == "/repos/x/y/contents" {
 				w.WriteHeader(http.StatusNotFound)

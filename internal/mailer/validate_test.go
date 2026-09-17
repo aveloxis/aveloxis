@@ -165,6 +165,11 @@ func TestValidateConfigSiteURL(t *testing.T) {
 		" https://aveloxis.example ",
 		"HTTPS://Aveloxis.example",
 		"https://[::1]:8443",
+		"https://[fe80::1%25en0]:8443",
+		"http://127.0.0.1:8082",
+		"https://bücher.example",
+		"https://xn--bcher-kva.example",
+		"https://under_score.example",
 	} {
 		if err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site}); err != nil {
 			t.Errorf("site_url %q: %v; want it accepted", site, err)
@@ -186,6 +191,16 @@ func TestValidateConfigSiteURL(t *testing.T) {
 		"https://ops:secret@aveloxis.example",
 		"https://aveloxis.example/a b",
 		"https://aveloxis .example",
+		// round-24 review: url.Parse allows these in a host or path.
+		"https://aveloxis.io,https://rule.aveloxis.io",
+		"https://aveloxis.io,",
+		"https://*.aveloxis.example",
+		"https://aveloxis.example;x",
+		"https://aveloxis.example/a\u00a0b",
+		// round-25 review: a list whose comma sits in a path.
+		"https://aveloxis.io/,https://rule.aveloxis.io/",
+		"https://aveloxis.io/aveloxis,https://rule.aveloxis.io",
+		"https://aveloxis.io/;https://rule.aveloxis.io/",
 	} {
 		err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site})
 		if err == nil || !strings.Contains(err.Error(), "mail.site_url") {

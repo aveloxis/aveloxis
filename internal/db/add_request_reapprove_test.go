@@ -933,9 +933,11 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 	dropTrigger()
 
 	// A pass that stops on its own error (here the stamp write) names the
-	// request, so the log line the handlers write can be traced to it. The
-	// item's add fails too, and it is not counted failed: it was never
-	// stamped -1.
+	// request, so the log line the handlers write can be traced to it, and it
+	// is what the add returns even after an earlier item was counted failed
+	// (round 24: returning the count first hid it). The first item's add fails
+	// and is stamped -1; the second's add fails and its stamp write fails, so
+	// it is not counted.
 	const stampTrigger = "_avtest_fail_add_item_stamp"
 	t.Cleanup(func() {
 		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+stampTrigger+` ON aveloxis_ops.collection_add_request_items`)
@@ -953,9 +955,9 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+stampTrigger+` BEFORE UPDATE ON aveloxis_ops.collection_add_request_items FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+stampTrigger+`()`); err != nil {
 		t.Fatal(err)
 	}
-	failLink("auto-stamp-fails", "40001")
-	out, err := store.AddReposToGroup(ctx, uid, gid, []string{urlPrefix + "auto-stamp-fails"}, 5)
-	if out.RequestID == 0 || out.Failed != 0 || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("add request %d:", out.RequestID)) || !strings.Contains(err.Error(), "injected stamp failure") {
-		t.Errorf("auto-approved add whose add and stamp write both fail = %+v, %v; want 0 failed and an error naming the request and the stamp failure", out, err)
+	failLink("fails", "40001")
+	out, err := store.AddReposToGroup(ctx, uid, gid, []string{urlPrefix + "auto-first-fails", urlPrefix + "auto-stamp-fails"}, 5)
+	if out.RequestID == 0 || out.Failed != 1 || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("add request %d:", out.RequestID)) || !strings.Contains(err.Error(), "injected stamp failure") {
+		t.Errorf("auto-approved add whose first item fails and whose second item's stamp write fails = %+v, %v; want 1 failed and an error naming the request and the stamp failure", out, err)
 	}
 }

@@ -22,11 +22,13 @@ import (
 
 // TestAddRepoFailureIsShownToTheUser (AVELOXIS_TEST_DB) drives POST
 // /groups/add-repo through the real handler and store with
-// web.auto_approve_add_limit on, with the group link of one pasted repository
-// failing: the user is redirected to the group page with add_error=1, and the
-// page says some repositories could not be added (Copilot review of PR #207 on
-// eb248eb: the handler logged the error and redirected as on success, so the
-// user had no reason to retry).
+// web.auto_approve_add_limit on. With the group link of one pasted repository
+// failing, or the store failing, the user is redirected to the group page with
+// add_error=1 and the page says some repositories could not be added (Copilot
+// review of PR #207 on eb248eb: the handler logged the error and redirected as
+// on success, so the user had no reason to retry). A rejected group gets
+// add_error=rejected and says why instead, since trying again cannot work, and
+// a successful add shows no notice (round-24 review).
 func TestAddRepoFailureIsShownToTheUser(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
@@ -92,6 +94,17 @@ func TestAddRepoFailureIsShownToTheUser(t *testing.T) {
 		return w
 	}
 	const notice = "Some of those repositories could not be added"
+	const rejectedNotice = "These repositories were not added: an administrator rejected this group."
+	post := func(srv *Server, groupID int64, urls string) *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{"group_id": {fmt.Sprint(groupID)}, "repo_urls": {urls}}
+		r := httptest.NewRequest(http.MethodPost, "/groups/add-repo", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: "probe-token"})
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
 
 	form := url.Values{"group_id": {fmt.Sprint(gid)}, "repo_urls": {urlPrefix + "fails\n" + urlPrefix + "works"}}
 	r := httptest.NewRequest(http.MethodPost, "/groups/add-repo", strings.NewReader(form.Encode()))
@@ -105,8 +118,46 @@ func TestAddRepoFailureIsShownToTheUser(t *testing.T) {
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), notice) {
 		t.Errorf("GET %s = %d; want 200 and the page to say %q", w.Header().Get("Location"), page.Code, notice)
 	}
-	plain := serve(httptest.NewRequest(http.MethodGet, fmt.Sprintf("/groups/%d", gid), nil))
-	if plain.Code != http.StatusOK || strings.Contains(plain.Body.String(), notice) {
-		t.Errorf("GET /groups/%d = %d; want 200 without the add-failure notice", gid, plain.Code)
+	// Neither notice shows without its own value (round-25 review: nothing
+	// checked the rejected notice stayed off other pages).
+	for _, path := range []string{fmt.Sprintf("/groups/%d", gid), fmt.Sprintf("/groups/%d?add_error=other", gid)} {
+		plain := serve(httptest.NewRequest(http.MethodGet, path, nil))
+		if plain.Code != http.StatusOK || strings.Contains(plain.Body.String(), notice) || strings.Contains(plain.Body.String(), rejectedNotice) {
+			t.Errorf("GET %s = %d; want 200 without either add notice", path, plain.Code)
+		}
+	}
+
+	// A successful add redirects without a notice.
+	if w := post(s, gid, urlPrefix+"succeeds"); w.Code != http.StatusFound || w.Header().Get("Location") != fmt.Sprintf("/groups/%d", gid) {
+		t.Errorf("a successful add = %d Location %q; want 302 to /groups/%d", w.Code, w.Header().Get("Location"), gid)
+	}
+
+	// A rejected group says so, not "try again".
+	rejected, err := store.CreateUserGroup(ctx, uid, "web add error probe, rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectGroup(ctx, rejected, uid); err != nil {
+		t.Fatal(err)
+	}
+	w = post(s, rejected, urlPrefix+"to-rejected")
+	if want := fmt.Sprintf("/groups/%d?add_error=rejected", rejected); w.Code != http.StatusFound || w.Header().Get("Location") != want {
+		t.Fatalf("an add to a rejected group = %d Location %q; want 302 to %q", w.Code, w.Header().Get("Location"), want)
+	}
+	page = serve(httptest.NewRequest(http.MethodGet, w.Header().Get("Location"), nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), rejectedNotice) || strings.Contains(page.Body.String(), notice) {
+		t.Errorf("GET %s = %d; want 200 saying %q and not %q", w.Header().Get("Location"), page.Code, rejectedNotice, notice)
+	}
+
+	// A store failure, which is not an auto-approve failure, is shown too.
+	closed, err := db.NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	down := New(closed, config.WebConfig{AutoApproveAddLimit: 5}, nil, logger)
+	down.sessions["probe-token"] = &Session{UserID: uid, LoginName: login, ExpiresAt: time.Now().Add(time.Hour)}
+	if w := post(down, gid, urlPrefix+"store-down"); w.Code != http.StatusFound || w.Header().Get("Location") != fmt.Sprintf("/groups/%d?add_error=1", gid) {
+		t.Errorf("an add with the store down = %d Location %q; want 302 to /groups/%d?add_error=1", w.Code, w.Header().Get("Location"), gid)
 	}
 }

@@ -585,7 +585,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 - `mail.gmail_user "aveloxis.io" is not an email address` — you set the bare domain. Use the full address (`ops@aveloxis.io`).
 - `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.
 - `mail.gmail_user is empty but mail.gmail_app_password is set` (or vice versa) — partial config. Either fill both fields or empty both.
-- `mail.site_url must be an absolute http:// or https:// URL with a host` (or `must not contain a query (?), a fragment (#), a user name or spaces`) — the value would make links that cannot be followed, such as a bare domain. Use the full public URL (`https://aveloxis.example`).
+- `mail.site_url must be an absolute http:// or https:// URL with a host` (or `must not contain a query (?), a fragment (#), a user name or spaces`) — the value would make links that cannot be followed, such as a bare domain or a comma-separated list of URLs. Use the one full public URL (`https://aveloxis.example`).
 
 When validation fails, the mailer falls back to disabled behavior so the rest of the application keeps working: no email is sent, and every send returns a "not configured" error. Notification emails (welcome, approval and add-request) ignore that error; `aveloxis test-mail` refuses before sending and exits non-zero with the validation error, `aveloxis serve` does not start the vulnerability digest and logs an ERROR saying why, and the account-email form refuses new addresses. Fix the config and restart the processes (`aveloxis stop all`, then `aveloxis start all`) to enable the mailer.
 

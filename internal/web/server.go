@@ -1259,7 +1259,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"TotalRepos": totalRepos,
 		"Query":      query,
 		"PageWindow": pageWindow,
-		"AddError":   r.URL.Query().Get("add_error") == "1",
+		"AddError":   r.URL.Query().Get("add_error"),
 	})
 }
 
@@ -1304,8 +1304,13 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				s.logger.Warn("failed to add repos to group", "group_id", groupID, "error", err)
 				// Tell the user, who otherwise sees the page a success shows
-				// (Copilot review of PR #207).
-				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=1", groupID), http.StatusFound)
+				// (Copilot review of PR #207); a rejected group gets its own
+				// notice, since trying again cannot work (round-24 review).
+				flag := "1"
+				if errors.Is(err, db.ErrGroupRejected) {
+					flag = "rejected"
+				}
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, flag), http.StatusFound)
 				return
 			}
 			s.logger.Info("repo add", "group_id", groupID,

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 // normalizeAppPassword removes the display-format spaces Google
@@ -34,23 +36,43 @@ func normalizeSiteURL(site string) string {
 }
 
 // validateSiteURL accepts an empty site_url or an absolute http or https URL
-// with a host and no query, fragment, user info or spaces: the value starts
-// every link the mailer writes, and "aveloxis.example" made a relative link
-// while "https://aveloxis.example?x=1" put the token inside another query
-// (Copilot review of PR #207). The errors do not repeat the value, which could
-// carry a password.
+// whose host is a name or an IP address, with no query, fragment, user info or
+// spaces: the value starts every link the mailer writes, and "aveloxis.example"
+// made a relative link while "https://aveloxis.example?x=1" put the token
+// inside another query (Copilot review of PR #207). url.Parse also accepts a
+// list of URLs as one: "https://a.example,https://b.example" as one host
+// (round-24 review), "https://a.example/,https://b.example/" as a path
+// (round 25). The errors do not repeat the value, which could carry a
+// password.
 func validateSiteURL(site string) error {
 	if site == "" {
 		return nil
 	}
 	u, err := url.Parse(site)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !siteHost(u.Hostname()) || strings.Count(site, "://") > 1 {
 		return errors.New("mail.site_url must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
 	}
-	if u.User != nil || strings.ContainsAny(site, "?# \t") {
+	if u.User != nil || strings.ContainsAny(site, "?#") || strings.IndexFunc(site, unicode.IsSpace) >= 0 {
 		return errors.New("mail.site_url must not contain a query (?), a fragment (#), a user name or spaces")
 	}
 	return nil
+}
+
+// siteHost reports whether host is an IP address (an IPv6 zone allowed) or a
+// name made of letters, digits, '-', '.', '_' and non-ASCII characters.
+func siteHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if ip, _, _ := strings.Cut(host, "%"); net.ParseIP(ip) != nil {
+		return true
+	}
+	for _, r := range host {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_' || r > unicode.MaxASCII) {
+			return false
+		}
+	}
+	return true
 }
 
 // appPasswordPattern: 16 lowercase ASCII letters, no digits, no

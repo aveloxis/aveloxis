@@ -349,6 +349,12 @@ var deployChecklists = map[string][]deployStep{
 	// carrying database text; a shutdown during the vulnerability digest
 	// query logs nothing. No schema change.
 	"0.29.51": v029DeployChecklist,
+	// v0.29.52: round 24 on v0.29.50 and round 25 on v0.29.51, plus the
+	// v0.29.51 changes that were not in its commit (the web add notices and
+	// the stricter mail.site_url check). The API's pending-adds endpoint and a
+	// URL the database refuses no longer show database text or a 500. No
+	// schema change.
+	"0.29.52": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

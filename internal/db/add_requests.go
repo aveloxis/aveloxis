@@ -544,6 +544,19 @@ func addItemFailurePermanent(err error) bool {
 	return strings.HasPrefix(pgErr.Code, "22") || pgErr.Code == "23502" || pgErr.Code == "23514"
 }
 
+// IsRejectedValue reports whether the database refused a value it was given
+// rather than failing: a data exception (SQLSTATE class 22, such as a NUL byte)
+// or a value past a size limit (54000, such as an index row too large). An
+// add's only values are the caller's URLs, so the API answers these with a 400
+// (round-25 review).
+func IsRejectedValue(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "22") || pgErr.Code == "54000"
+}
+
 // startAddRequestPass records that this process is processing requestID, and
 // reports false when a pass for it is already running here.
 func (s *PostgresStore) startAddRequestPass(requestID int64) bool {

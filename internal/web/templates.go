@@ -181,7 +181,7 @@ to log in as a different user.
 <div class="container">
 <div class="card">
 <h2>{{.Group.Name}}</h2>
-{{if .AddError}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">Some of those repositories could not be added. You can try adding them again.</p>{{end}}
+{{if eq .AddError "rejected"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">These repositories were not added: an administrator rejected this group.</p>{{else if eq .AddError "1"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">Some of those repositories could not be added. You can try adding them again.</p>{{end}}
 
 <div class="section">
 <h3>Add Repositories</h3>

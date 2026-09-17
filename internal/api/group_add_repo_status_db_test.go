@@ -112,6 +112,12 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 		{"repositories could not be added", store, gid, `{"urls":["` + urlPrefix + `fails","` + urlPrefix + `works"],"kind":"repo"}`, http.StatusInternalServerError, "1 of 2 repositories could not be added", true},
 		{"store failure", closed, gid, `{"urls":["` + urlPrefix + `works"],"kind":"repo"}`, http.StatusInternalServerError, "could not add", true},
 		{"store failure, org", closed, gid, `{"url":"https://github.com/_avapi-add-status-org","kind":"org"}`, http.StatusInternalServerError, "could not add", true},
+		// A URL the database cannot store is the caller's mistake, not an
+		// outage (round-25 review: a NUL byte or an over-long URL was a 500
+		// saying "try again").
+		{"NUL in a URL", store, gid, `{"urls":["` + urlPrefix + `nul\u0000x"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
+		{"NUL in an org URL", store, gid, `{"url":"https://github.com/_avapi-add-status-nul\u0000x","kind":"org"}`, http.StatusBadRequest, "invalid or too long", false},
+		{"URL too long", store, gid, `{"urls":["` + urlPrefix + incompressible(6000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
@@ -125,7 +131,7 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 			if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.inBody) {
 				t.Errorf("= %d %q; want %d with %q", w.Code, w.Body.String(), tc.code, tc.inBody)
 			}
-			if strings.Contains(w.Body.String(), "SQLSTATE") || strings.Contains(w.Body.String(), "closed pool") || strings.Contains(w.Body.String(), "injected") {
+			if strings.Contains(w.Body.String(), "SQLSTATE") || strings.Contains(w.Body.String(), "closed pool") || strings.Contains(w.Body.String(), "injected") || strings.Contains(w.Body.String(), "0x00") || strings.Contains(w.Body.String(), "index row") {
 				t.Errorf("the response carries database text: %q", w.Body.String())
 			}
 			want := fmt.Sprintf("group_id=%d", tc.groupID)
@@ -138,4 +144,100 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGroupPendingAddsErrorStatus (AVELOXIS_TEST_DB): GET
+// /api/v1/groups/{groupID}/pending-adds answers a group the caller does not own
+// with a 403 and its reason, and a store failure with a logged 500 carrying no
+// database text (round-25 review: once the ownership lookup stopped hiding its
+// error, the 403 body showed a non-admin the database user, name, host and
+// port during an outage).
+func TestGroupPendingAddsErrorStatus(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := db.NewPostgresStore(ctx, dsn, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const login = "_avapi_pending_status_probe"
+	clean := func() {
+		_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, db.OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "api pending status probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notOwned int64
+	if err := store.Pool().QueryRow(ctx, `SELECT COALESCE(MAX(group_id), 0) + 1000000 FROM aveloxis_ops.user_groups`).Scan(&notOwned); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := db.NewPostgresStore(ctx, dsn, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+
+	for _, tc := range []struct {
+		name    string
+		store   *db.PostgresStore
+		groupID int64
+		code    int
+		inBody  string
+		warns   bool
+	}{
+		{"own group", store, gid, http.StatusOK, `"pending"`, false},
+		{"not owned", store, notOwned, http.StatusForbidden, "group not found or not owned by user", false},
+		{"store failure", closed, gid, http.StatusInternalServerError, "could not load", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &lockedBuffer{}
+			s := &Server{store: tc.store, logger: slog.New(slog.NewTextHandler(logs, nil)), auth: newAuthenticator(tc.store, false)}
+			id := strconv.FormatInt(tc.groupID, 10)
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/groups/"+id+"/pending-adds", nil)
+			r.SetPathValue("groupID", id)
+			r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: uid}))
+			w := httptest.NewRecorder()
+			s.handleGroupPendingAdds(w, r)
+			if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.inBody) {
+				t.Errorf("= %d %q; want %d with %q", w.Code, w.Body.String(), tc.code, tc.inBody)
+			}
+			if strings.Contains(w.Body.String(), "closed pool") || strings.Contains(w.Body.String(), "look up group") {
+				t.Errorf("the response carries database text: %q", w.Body.String())
+			}
+			warned := strings.Contains(logs.String(), "level=WARN") && strings.Contains(logs.String(), fmt.Sprintf("group_id=%d", tc.groupID))
+			if warned != tc.warns {
+				t.Errorf("WARN logged = %v, want %v; log:\n%s", warned, tc.warns, logs.String())
+			}
+		})
+	}
+}
+
+// incompressible returns n URL-safe characters that Postgres cannot compress
+// below its btree row limit (a run of one letter compresses and fits).
+func incompressible(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+	var b strings.Builder
+	x := uint64(88172645463325252)
+	for i := 0; i < n; i++ {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		b.WriteByte(alphabet[x%64])
+	}
+	return b.String()
 }

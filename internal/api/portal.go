@@ -326,6 +326,10 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
 			http.Error(w, err.Error(), http.StatusBadRequest)
+		case db.IsRejectedValue(err):
+			// The database refused a URL itself; retrying cannot help
+			// (round-25 review).
+			http.Error(w, "a URL in the request is invalid or too long", http.StatusBadRequest)
 		case errors.Is(err, db.ErrAddItemsFailed):
 			// The message holds counts only, no database text.
 			s.logger.Warn("group add: some repositories could not be added", "group_id", groupID, "user_id", info.UserID, "error", err)
@@ -356,8 +360,15 @@ func (s *Server) handleGroupPendingAdds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	items, err := s.store.GetPendingAddItemsForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
-	if err != nil {
+	if errors.Is(err, db.ErrGroupNotOwned) {
 		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		// No database text in the body (round-25 review: the 403 showed a
+		// non-admin the database user, name, host and port during an outage).
+		s.logger.Warn("group pending adds failed", "group_id", groupID, "user_id", info.UserID, "error", err)
+		http.Error(w, "could not load the group's pending additions right now; try again", http.StatusInternalServerError)
 		return
 	}
 	type itemJSON struct {

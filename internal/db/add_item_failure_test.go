@@ -52,3 +52,33 @@ func TestAddItemFailurePermanent(t *testing.T) {
 		}
 	}
 }
+
+// TestIsRejectedValue: the errors that mean the database refused a value the
+// caller sent — a data exception (class 22) or a value past a size limit
+// (54000, such as an index row too large) — and nothing else (round-25
+// review: the API answered a URL with a NUL byte, or one too long to index,
+// with a 500 saying "try again").
+func TestIsRejectedValue(t *testing.T) {
+	pg := func(code string) error { return &pgconn.PgError{Code: code} }
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"invalid byte sequence (22021)", pg("22021"), true},
+		{"string data right truncation (22001)", pg("22001"), true},
+		{"wrapped index row too large (54000)", fmt.Errorf("resolve repo URL: %w", pg("54000")), true},
+		{"statement too complex (54001)", pg("54001"), false},
+		{"not-null violation (23502)", pg("23502"), false},
+		{"serialization failure (40001)", pg("40001"), false},
+		{"admin shutdown (57P01)", pg("57P01"), false},
+		{"connection failure (08006)", pg("08006"), false},
+		{"not a Postgres error", errors.New("closed pool"), false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		if got := IsRejectedValue(c.err); got != c.want {
+			t.Errorf("IsRejectedValue(%s) = %v; want %v", c.name, got, c.want)
+		}
+	}
+}

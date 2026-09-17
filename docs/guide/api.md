@@ -1043,8 +1043,9 @@ Per-user:
   repositories cannot be added, the others are still added and the call
   fails with an error saying how many could not be; sending the same
   URLs again retries them (v0.29.50). A group the caller does not own,
-  or a rejected group, is a `400` with the reason; repositories that
-  could not be added and any server-side failure are a `500` with a
+  or a rejected group, is a `400` with the reason, and so is a URL the
+  database cannot store (a NUL byte, or too long; v0.29.52); repositories
+  that could not be added and any server-side failure are a `500` with a
   plain message and no database text (v0.29.51).
   Org outcomes (v0.27.84): `registered: 1` means the org is tracked
   NOW — admin adds always register, and a non-admin's add of an org
@@ -1088,7 +1089,9 @@ Admin-only:
   awaiting-approval content (v0.27.20): repo URLs from pending
   add-requests plus pending org registrations, each with
   `request_id`, `kind`, `url`, `created_at`. Ownership-checked for
-  non-admins. Envelope: `{pending: [...]}`.
+  non-admins (a group the caller does not own is a `403`; a server-side
+  failure is a `500` without database text, v0.29.52). Envelope:
+  `{pending: [...]}`.
 - `GET /api/v1/admin/add-requests` — the v0.27.20 per-add approval
   queue: pending additions of not-yet-collected repos/orgs by
   non-admins. Each entry carries the requester (`user_login`,

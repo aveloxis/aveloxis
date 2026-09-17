@@ -42,7 +42,9 @@ import (
 //
 // New contract: fail only when EVERY enabled source actually
 // errored AND no evidence was collected. At least one clean
-// completion = scan succeeded (the empty-truth answer).
+// completion = scan succeeded (the empty-truth answer). One exception
+// since v0.29.55: a GitHub source that failed WITHOUT an answer fails
+// the scan whatever the other sources returned (githubNonAnswers in Scan).
 //
 // Per-source-class diagnostic logging: external package-registry
 // sources (deps.dev + ecosyste.ms) get distinct treatment from
@@ -333,9 +335,10 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		return nil, nil, false, fmt.Errorf("github source failed without an answer; scan failed so the stored snapshot is kept: %w", errors.Join(githubNonAnswers...))
 	}
 
-	// v0.25.0 contract: fail the scan ONLY when EVERY enabled
-	// source actually errored AND no evidence was collected. Empty-
-	// but-clean responses from at least one source represent the
+	// v0.25.0 contract: otherwise (no GitHub non-answer, checked above),
+	// fail the scan only when EVERY enabled source actually errored AND
+	// no evidence was collected. Empty-but-clean responses from at
+	// least one source, with no GitHub non-answer, represent the
 	// truthful "this repo doesn't publish anywhere we can see"
 	// answer — that's a success, last_run gets stamped, no
 	// backoff, no 180-day sideline. The pre-v0.25.0 contract
@@ -390,6 +393,14 @@ func (s *CompositeScanner) Healthy() bool {
 // and 304 keep the pre-v0.29.55 treatment (routinely benign);
 // a cancelled context is a shutdown, which the worker releases without a
 // strike.
+//
+// An empty GitHub key pool ("no API keys configured") is a non-answer too,
+// so a serve without GitHub keys strikes previously collected GitHub repos
+// toward the sideline at the dispatcher's start rate (review round 5 on
+// v0.29.55). Kept on purpose: nothing is replaced, whereas through v0.29.54
+// the same scan wiped the repo's GitHub-sourced rows and stamped it complete
+// for the full cadence; a refused, rate-limited or quarantined pool never
+// errors here (Acquire waits).
 func githubErrorIsNonAnswer(err error) bool {
 	if errors.Is(err, context.Canceled) || platform.ClassifyError(err) == platform.ClassNotModified {
 		return false

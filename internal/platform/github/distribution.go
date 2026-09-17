@@ -364,8 +364,14 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 	for _, dir := range firstLevelDirs {
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
 		if err != nil {
-			if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
-				continue // an answer about this directory: nothing to list
+			// An answer about this directory (platform.IsDefinitiveAnswer:
+			// 404/410, a non-rate-limit 403, a rejected request) or a 304:
+			// nothing to list, keep the rest. The SAME rule as the scanner's
+			// githubErrorIsNonAnswer — round 6 caught a 422 here failing the
+			// listing while the scanner, counting it as an answer, stored the
+			// scan complete with no manifests.
+			if platform.IsDefinitiveAnswer(err) || platform.ClassifyError(err) == platform.ClassNotModified {
+				continue
 			}
 			// Any other failure says nothing about the directory. Returning
 			// the partial list with a nil error let the scanner store it as
@@ -392,7 +398,7 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 // fetchContentsDir lists a single directory in the repo. Empty
 // dirPath means root.
 func (c *Client) fetchContentsDir(ctx context.Context, owner, repo, dirPath string) ([]ghContentsEntry, error) {
-	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, dirPath)
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, contentsPath(dirPath))
 	apiPath = strings.TrimRight(apiPath, "/")
 	var entries []ghContentsEntry
 	if err := c.http.GetJSON(ctx, apiPath, &entries); err != nil {
@@ -411,7 +417,7 @@ func (c *Client) fetchContentsDir(ctx context.Context, owner, repo, dirPath stri
 func (c *Client) FetchManifestContent(ctx context.Context, owner, repo, filePath string) (string, error) {
 	// v0.25.0: bypass ETag — same rationale as ListRootManifests.
 	ctx = platform.WithoutETag(ctx)
-	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path.Clean(filePath))
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, contentsPath(path.Clean(filePath)))
 	var entry struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
@@ -435,4 +441,20 @@ func (c *Client) FetchManifestContent(ctx context.Context, owner, repo, filePath
 		return "", fmt.Errorf("decode manifest %s: %w", filePath, err)
 	}
 	return string(decoded), nil
+}
+
+// contentsPath escapes each segment of a repository path for a Contents API
+// URL. Names come from the repository tree, so a file or directory may
+// contain %, #, ? or spaces. Unescaped, "100%" failed to parse as a URL (no
+// request sent) — since v0.29.55 a non-answer that fails the distribution
+// scan, striking the repo toward the sideline every cycle; "C#" and "a?b"
+// requested "C" and "a" instead (usually a 404, so that directory's
+// manifests were silently skipped, or a scan failure when a same-named file
+// sits beside it), and "a?b c" drew a 400 (review rounds 5 and 6).
+func contentsPath(p string) string {
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
 }

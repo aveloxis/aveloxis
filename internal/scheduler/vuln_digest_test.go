@@ -285,6 +285,31 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 		}
 	}
 	s.store = store
+
+	// With an unwritable stamp path, a failed query logs that the window could
+	// not be pinned; a shutdown logs nothing (Copilot review of PR #207 on
+	// d436880: a cancelled query logged the pin failure as a WARN).
+	unwritable := filepath.Join(blocker, "vuln-digest-last")
+	for _, tc := range []struct {
+		name  string
+		store *db.PostgresStore
+		ctx   context.Context
+		logs  bool
+	}{
+		{"query error", closed, ctx, true},
+		{"shutdown", store, cancelled, false},
+	} {
+		var logs bytes.Buffer
+		s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+		s.store, s.digestStampPath, s.digestMailer = tc.store, unwritable, &recordingDigestMailer{}
+		s.runVulnDigest(tc.ctx)
+		pinLogged := strings.Contains(logs.String(), "could not pin the retry window")
+		queryLogged := strings.Contains(logs.String(), "vuln digest: query failed")
+		if pinLogged != tc.logs || queryLogged != tc.logs {
+			t.Errorf("%s with an unwritable stamp: pin failure logged = %v, query failure logged = %v; want both %v; log:\n%s", tc.name, pinLogged, queryLogged, tc.logs, logs.String())
+		}
+	}
+	s.logger, s.store, s.digestStampPath = logger, store, stamp
 }
 
 // TestHoldDigestWindow pins the failed-send rule without a database: an

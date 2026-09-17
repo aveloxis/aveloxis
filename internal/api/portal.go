@@ -323,7 +323,20 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		switch {
+		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, db.ErrAddItemsFailed):
+			// The message holds counts only, no database text.
+			s.logger.Warn("group add: some repositories could not be added", "group_id", groupID, "user_id", info.UserID, "error", err)
+			http.Error(w, err.Error()+"; try adding them again", http.StatusInternalServerError)
+		default:
+			// A server-side failure is a 500 without its database text
+			// (Copilot review of PR #207 on d436880: every error was a 400
+			// carrying it).
+			s.logger.Warn("group add failed", "group_id", groupID, "user_id", info.UserID, "kind", req.Kind, "error", err)
+			http.Error(w, "could not add to the group right now; try again", http.StatusInternalServerError)
+		}
 		return
 	}
 	jsonResponse(w, resp)

@@ -344,6 +344,11 @@ var deployChecklists = map[string][]deployStep{
 	// query or fragment, or the mailer is disabled at startup (WARN "mailer
 	// configuration invalid"). No schema change.
 	"0.29.50": v029DeployChecklist,
+	// v0.29.51: Copilot review of PR #207 on d436880. The API's group add
+	// answers a server-side failure with a logged 500 instead of a 400
+	// carrying database text; a shutdown during the vulnerability digest
+	// query logs nothing. No schema change.
+	"0.29.51": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

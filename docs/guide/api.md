@@ -1042,7 +1042,10 @@ Per-user:
   When `web.auto_approve_add_limit` lets a batch through and some of its
   repositories cannot be added, the others are still added and the call
   fails with an error saying how many could not be; sending the same
-  URLs again retries them (v0.29.50).
+  URLs again retries them (v0.29.50). A group the caller does not own,
+  or a rejected group, is a `400` with the reason; repositories that
+  could not be added and any server-side failure are a `500` with a
+  plain message and no database text (v0.29.51).
   Org outcomes (v0.27.84): `registered: 1` means the org is tracked
   NOW — admin adds always register, and a non-admin's add of an org
   that is ALREADY registered in a group that is not rejected auto-approves (it adds zero

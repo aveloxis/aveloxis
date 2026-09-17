@@ -176,11 +176,23 @@ func (s *PostgresStore) verifyGroupOwnership(ctx context.Context, userID int, gr
 	err := s.pool.QueryRow(ctx,
 		`SELECT name FROM aveloxis_ops.user_groups WHERE group_id = $1 AND user_id = $2`,
 		groupID, userID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrGroupNotOwned
+	}
 	if err != nil {
-		return "", fmt.Errorf("group not found or not owned by user")
+		// A failed lookup is not "not owned" (SR-5; Copilot review of PR #207
+		// on d436880: the API reported it as a client error).
+		return "", fmt.Errorf("look up group ownership: %w", err)
 	}
 	return name, nil
 }
+
+// ErrGroupNotOwned means the group does not exist or belongs to another user.
+var ErrGroupNotOwned = errors.New("group not found or not owned by user")
+
+// ErrGroupRejected means an administrator rejected the group, so it takes no
+// additions.
+var ErrGroupRejected = errors.New("group has been rejected by an administrator")
 
 // verifyGroupOwned is a convenience wrapper that only checks ownership
 // without returning the group name.
@@ -491,7 +503,7 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 		return out, fmt.Errorf("look up group status: %w", err)
 	}
 	if status == "rejected" {
-		return out, fmt.Errorf("group has been rejected by an administrator")
+		return out, ErrGroupRejected
 	}
 
 	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")

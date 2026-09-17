@@ -63,13 +63,14 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 	if err != nil {
 		// The next run retries this window (Copilot review of PR #207 on
 		// eb248eb: before any stamp exists it used to open a later one).
-		if holdErr := holdDigestWindow(stampPath, last, since); holdErr != nil {
-			s.logger.Warn("vuln digest: could not pin the retry window", "path", stampPath, "error", holdErr)
-		}
+		holdErr := holdDigestWindow(stampPath, last, since)
 		if errors.Is(err, context.Canceled) {
-			return // shutdown, not a failure
+			return // shutdown, not a failure: nothing is logged
 		}
 		s.logger.Warn("vuln digest: query failed", "error", err)
+		if holdErr != nil {
+			s.logger.Warn("vuln digest: could not pin the retry window", "path", stampPath, "error", holdErr)
+		}
 		return
 	}
 	if len(items) > 0 {

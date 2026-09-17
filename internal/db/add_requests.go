@@ -138,7 +138,7 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		return out, fmt.Errorf("look up group status: %w", err)
 	}
 	if status == "rejected" {
-		return out, fmt.Errorf("group has been rejected by an administrator")
+		return out, ErrGroupRejected
 	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 
@@ -205,7 +205,7 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 			return out, fmt.Errorf("add request %d: %w", reqID, err)
 		}
 		if failed > 0 {
-			return out, fmt.Errorf("add request %d: %d of %d repositories could not be added", reqID, failed, len(unknown))
+			return out, fmt.Errorf("add request %d: %d of %d %w", reqID, failed, len(unknown), ErrAddItemsFailed)
 		}
 		return out, nil
 	}
@@ -421,6 +421,10 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, 
 	}
 	return tag.RowsAffected() == 1, nil
 }
+
+// ErrAddItemsFailed means some repositories of an auto-approved add could not
+// be added; the rest were.
+var ErrAddItemsFailed = errors.New("repositories could not be added")
 
 // ErrAddRequestInProgress is ProcessApprovedAddRequest's answer when this
 // process is already processing the request: the running pass finishes the

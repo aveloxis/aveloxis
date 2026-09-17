@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -756,5 +757,130 @@ func TestProcessApprovedAddRequestHoldsNoConnectionAcrossItems(t *testing.T) {
 	}
 	if notDone != 0 {
 		t.Errorf("%d items unfinished or failed after all passes, want 0", notDone)
+	}
+}
+
+// TestProcessApprovedAddRequestRetriesTransientFailures (AVELOXIS_TEST_DB): an
+// item whose add fails with a transient database error stays unprocessed, the
+// pass reports the error, and a later pass (re-approving) processes it; only
+// an error in the item's own data (SQLSTATE class 22 or 23) marks it
+// processed-with-error, and the pass carries on past it (Copilot review of
+// PR #207: every failure was stamped -1, so a database blip permanently
+// dropped an approved repository while the pass reported success). The
+// failures are injected by a trigger on the group link, keyed to each item's
+// repo.
+func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+
+	const login = "_avprocess_transient_probe"
+	const urlPrefix = "https://github.com/_avprocess-transient-owner/_avprocess-transient-"
+	const trigger = "_avtest_fail_user_repos_link"
+	dropTrigger := func() {
+		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+trigger+` ON aveloxis_ops.user_repos`)
+		_, _ = store.pool.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+trigger+`()`)
+	}
+	clean := func() {
+		dropTrigger()
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%')`, urlPrefix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1 || '%'`, urlPrefix)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_request_items WHERE request_id IN (SELECT request_id FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "transient failure probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// stampOf is the item's repo_id stamp, or "NULL".
+	stampOf := func(reqID int64, url string) string {
+		t.Helper()
+		var stamp *int64
+		if err := store.pool.QueryRow(ctx, `SELECT repo_id FROM aveloxis_ops.collection_add_request_items WHERE request_id = $1 AND repo_url = $2`, reqID, url).Scan(&stamp); err != nil {
+			t.Fatalf("read the stamp of %s: %v", url, err)
+		}
+		if stamp == nil {
+			return "NULL"
+		}
+		return strconv.FormatInt(*stamp, 10)
+	}
+	positive := func(stamp string) bool { n, err := strconv.ParseInt(stamp, 10, 64); return err == nil && n > 0 }
+	// failLink makes linking the repo whose URL ends in suffix fail with code.
+	failLink := func(suffix, code string) {
+		t.Helper()
+		dropTrigger()
+		if _, err := store.pool.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION aveloxis_ops.`+trigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
+			BEGIN
+				IF EXISTS (SELECT 1 FROM aveloxis_data.repos WHERE repo_id = NEW.repo_id AND repo_git LIKE '%%%s') THEN
+					RAISE EXCEPTION 'injected link failure' USING ERRCODE = '%s';
+				END IF;
+				RETURN NEW;
+			END $f$`, suffix, code)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+trigger+` BEFORE INSERT ON aveloxis_ops.user_repos FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+trigger+`()`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A transient failure (40001, serialization failure) leaves the item
+	// unprocessed and reports the error; a later pass processes it.
+	transient := urlPrefix + "transient"
+	reqID, err := store.createAddRequest(ctx, uid, gid, "repos", "", []string{transient}, "approved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failLink("transient", "40001")
+	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
+		t.Errorf("a pass whose only item failed transiently = %d, %v; want 0 and the error", n, err)
+	}
+	if stamp := stampOf(reqID, transient); stamp != "NULL" {
+		t.Errorf("a transiently failed item was stamped %s; want it left unprocessed so re-approving retries it", stamp)
+	}
+	dropTrigger()
+	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+		t.Errorf("the retry pass = %d, %v; want 1, nil", n, err)
+	}
+	if stamp := stampOf(reqID, transient); !positive(stamp) {
+		t.Errorf("after the retry the item's stamp is %s; want the repo id", stamp)
+	}
+
+	// An error in the item's own data — a data exception (22001, string data
+	// right truncation) or an integrity constraint violation (23514, check
+	// violation) — marks it processed-with-error, and the pass continues to
+	// the next item.
+	for _, code := range []string{"22001", "23514"} {
+		bad, good := urlPrefix+"bad-data-"+code, urlPrefix+"good-"+code
+		reqID, err := store.createAddRequest(ctx, uid, gid, "repos", "", []string{bad, good}, "approved")
+		if err != nil {
+			t.Fatal(err)
+		}
+		failLink("bad-data-"+code, code)
+		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+			t.Errorf("%s: a pass with one bad-data item and one good item = %d, %v; want 1, nil", code, n, err)
+		}
+		if stamp := stampOf(reqID, bad); stamp != "-1" {
+			t.Errorf("%s: the bad-data item's stamp is %s; want -1 (processed-with-error)", code, stamp)
+		}
+		if stamp := stampOf(reqID, good); !positive(stamp) {
+			t.Errorf("%s: the good item's stamp is %s; want the repo id", code, stamp)
+		}
 	}
 }

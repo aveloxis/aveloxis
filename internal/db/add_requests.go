@@ -22,6 +22,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // AddOutcome reports what AddReposToGroup did with a batch of URLs so
@@ -420,9 +421,12 @@ var ErrAddRequestInProgress = errors.New("add request is already being processed
 // ProcessApprovedAddRequest walks the request's unprocessed items and
 // runs the shared add machinery for each. Idempotent + resumable:
 // items with repo_id already stamped are skipped, so an interrupted
-// pass picks up where it left off. An unresolvable URL stamps
-// repo_id = -1 (processed-with-error) so it can't wedge the request
-// forever; the failure is logged.
+// pass picks up where it left off. An item the database rejects for its own
+// data (addItemFailurePermanent) is stamped repo_id = -1
+// (processed-with-error) so it can't wedge the request forever, and the pass
+// continues; any other failure stops the pass with the item unprocessed, so
+// re-approving retries it (Copilot review of PR #207: every failure used to
+// be stamped -1, and a transient database error dropped the repository).
 //
 // One pass per request at a time in this process: a second call while one
 // runs (an admin's second approve click) returns ErrAddRequestInProgress
@@ -478,8 +482,12 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 	for _, it := range items {
 		repoID, err := s.ensureRepoCollectedInGroup(ctx, groupID, it.url)
 		if errors.Is(err, context.Canceled) {
-			// Not a defect: leave the item unprocessed for a later pass.
+			// A stopped process, not a failure: leave the item unprocessed.
 			return processed, err
+		}
+		if err != nil && !addItemFailurePermanent(err) {
+			// Leave this item and the rest unprocessed for a later pass.
+			return processed, fmt.Errorf("add-request item %q: %w", it.url, err)
 		}
 		if err != nil {
 			s.logger.Warn("add-request item failed — marking processed-with-error",
@@ -496,6 +504,16 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 		}
 	}
 	return processed, nil
+}
+
+// addItemFailurePermanent reports whether an add-machinery error is a property
+// of the item itself — the database rejected its data (SQLSTATE class 22, data
+// exception, or 23, integrity constraint violation) — which retrying cannot
+// fix. Anything else (a lost connection, a timeout, a serialization failure, a
+// cancelled context) may succeed later.
+func addItemFailurePermanent(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23"))
 }
 
 // startAddRequestPass records that this process is processing requestID, and

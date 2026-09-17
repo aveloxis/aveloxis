@@ -330,6 +330,11 @@ var deployChecklists = map[string][]deployStep{
 	// restart. Processing now holds no connection across items and runs one
 	// pass per request per process. No schema change.
 	"0.29.48": v029DeployChecklist,
+	// v0.29.49: Copilot review of PR #207 on 0cd7927. An approved add-request
+	// item whose add fails transiently is left unprocessed (re-approving
+	// retries it) instead of being marked failed for good; only an error in
+	// the item's own data marks it failed. No schema change.
+	"0.29.49": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

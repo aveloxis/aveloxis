@@ -203,6 +203,9 @@ func TestGroupPendingAddsErrorStatus(t *testing.T) {
 		{"own group", store, gid, http.StatusOK, `"pending"`, false},
 		{"not owned", store, notOwned, http.StatusForbidden, "group not found or not owned by user", false},
 		{"store failure", closed, gid, http.StatusInternalServerError, "could not load", true},
+		// An admin skips the ownership lookup; the listing's own failure is a
+		// 500 too (round-26 review: answering it 200 with an empty list passed).
+		{"store failure, admin", closed, gid, http.StatusInternalServerError, "could not load", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
@@ -210,7 +213,7 @@ func TestGroupPendingAddsErrorStatus(t *testing.T) {
 			id := strconv.FormatInt(tc.groupID, 10)
 			r := httptest.NewRequest(http.MethodGet, "/api/v1/groups/"+id+"/pending-adds", nil)
 			r.SetPathValue("groupID", id)
-			r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: uid}))
+			r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: uid, IsAdmin: strings.HasSuffix(tc.name, "admin")}))
 			w := httptest.NewRecorder()
 			s.handleGroupPendingAdds(w, r)
 			if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.inBody) {

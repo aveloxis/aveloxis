@@ -355,6 +355,10 @@ var deployChecklists = map[string][]deployStep{
 	// URL the database refuses no longer show database text or a 500. No
 	// schema change.
 	"0.29.52": v029DeployChecklist,
+	// v0.29.53: round 26 on v0.29.52. The API's group add answers Postgres's
+	// transaction-ID wraparound stop (SQLSTATE 54000 with no index) as a
+	// logged 500, not a 400 "invalid URL". No schema change.
+	"0.29.53": v029DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

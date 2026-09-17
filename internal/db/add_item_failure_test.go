@@ -54,10 +54,11 @@ func TestAddItemFailurePermanent(t *testing.T) {
 }
 
 // TestIsRejectedValue: the errors that mean the database refused a value the
-// caller sent — a data exception (class 22) or a value past a size limit
-// (54000, such as an index row too large) — and nothing else (round-25
-// review: the API answered a URL with a NUL byte, or one too long to index,
-// with a 500 saying "try again").
+// caller sent — a data exception (class 22) or an index row too large (54000
+// naming the index) — and nothing else (round-25 review: the API answered a URL
+// with a NUL byte, or one too long to index, with a 500 saying "try again").
+// 54000 without a constraint is a server-wide stop such as transaction ID
+// wraparound protection (round-26 review: it was answered 400 "invalid URL").
 func TestIsRejectedValue(t *testing.T) {
 	pg := func(code string) error { return &pgconn.PgError{Code: code} }
 	cases := []struct {
@@ -67,7 +68,8 @@ func TestIsRejectedValue(t *testing.T) {
 	}{
 		{"invalid byte sequence (22021)", pg("22021"), true},
 		{"string data right truncation (22001)", pg("22001"), true},
-		{"wrapped index row too large (54000)", fmt.Errorf("resolve repo URL: %w", pg("54000")), true},
+		{"wrapped index row too large (54000)", fmt.Errorf("create add request item: %w", &pgconn.PgError{Code: "54000", ConstraintName: "collection_add_request_items_request_id_repo_url_key"}), true},
+		{"transaction ID wraparound stop (54000, no constraint)", pg("54000"), false},
 		{"statement too complex (54001)", pg("54001"), false},
 		{"not-null violation (23502)", pg("23502"), false},
 		{"serialization failure (40001)", pg("40001"), false},

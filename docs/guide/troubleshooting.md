@@ -122,6 +122,33 @@ aveloxis add-key ghp_new_token --platform github
 - Rate limit exhaustion is handled automatically. The key is skipped until its reset window.
 - If you see persistent 403 errors, check the token's scopes. GitHub tokens need `repo` or `public_repo` scope. GitLab tokens need `read_api`.
 
+### `rate limit exhausted` repeats for one key while other keys have budget
+
+**Symptom:** Many `rate limit exhausted` lines carry the same `token_prefix`,
+often the same URL several times in a row. Collection steps fail with
+`exhausted 10 retries … transient`.
+
+**Cause (fixed in v0.29.55):** the key pool kept one tracked window per key
+and ignored a refusal whose reset was earlier than that window, so it kept
+leasing the refused key. Since v0.29.55 a refusal benches the key for every
+collector until the refusal's reset, and the collector immediately takes
+another key (see [Key pool contract](../architecture/platform-layer.md#key-pool-contract)).
+On the REST client, a refusal the pool benched for the request's own budget
+(`core`, or `search` on a `/search/` request) logs `rotating_to_another_key=true`,
+and the same key should not repeat for the same URL. A refusal on any other
+resource, or on a budget that does not match the request, logs
+`rotating_to_another_key=false` with a `wait` until its reset. GraphQL refusals log
+`graphql rate limit exhausted` (no such field) and rotate the same way.
+
+**Checking key budgets:** read the response headers, not `GET /rate_limit`.
+GitHub recommends the headers. On 2026-09-17, for the same token,
+`/rate_limit` reported an unused budget while its response headers showed
+hundreds of calls used. `scripts/check-keys.sh` reads `/rate_limit`, so a
+`5000 / 5000` row there does not prove a key is unused. The 5-minute
+`key pool summary` line reports `refused_core_now`, `refused_graphql_now`,
+`refused_search_now` and `refusals_lifetime` next to the tracked
+`core_remaining_*` balances.
+
 ---
 
 ## FK constraint violations
@@ -469,13 +496,13 @@ level=WARN msg="unexpected status" ... attempt=10
   ```
 - If `Location` is empty, one `WARN` is logged and the error wraps `platform.ErrGone` — `isOptionalEndpointSkip` treats it the same as 404/403 so the single endpoint is skipped and the rest of the collection proceeds.
 - If the chain exceeds 5 hops (pathological loop), same `ErrGone` treatment.
-- **Since v0.29.12 no request that carries an API key leaves the client's own API scheme and host** (`https://api.github.com`, or the scheme and host of `gitlab.base_url`). That covers a redirect's `Location`, a pagination `Link: <…>; rel="next"` continuation, and a GraphQL endpoint: a target on another host, a subdomain, plain `http`, or one carrying userinfo is refused rather than sent the key. Each refusal is logged at ERROR and the endpoint is skipped — the error wraps `platform.ErrOffHostRefused`, classified like 404/403:
+- **Since v0.29.12 no request that carries an API key leaves the client's own API scheme and host** (`https://api.github.com`, or the scheme and host of `gitlab.base_url`). That covers a redirect's `Location`, a pagination `Link: <…>; rel="next"` continuation, and a GraphQL endpoint: a target on another host, a subdomain, plain `http`, or one carrying userinfo is refused rather than sent the key. Each refusal is logged at ERROR and the endpoint is skipped — the error wraps `platform.ErrOffHostRefused`, classified like 404/403 — with two exceptions since v0.29.55: a GitHub distribution scan that hits a refusal fails as a whole (a strike toward the distribution sideline; nothing stored is replaced), and a contributor-enrichment, search-resolution or mailing-list sender lookup that hits one is not stamped and is retried on the next tick, because a refusal is not the forge's answer about that item:
   ```
   level=ERROR msg="redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there" url=... status=301 location=...
   level=ERROR msg="pagination stopped — the next-page link leaves this client's API host, scheme or base path, so no API key is sent there; the listing is incomplete" path=... error=...
   level=ERROR msg="off-host request refused — the URL leaves this client's API host or scheme, so no API key is sent" url=... error=...
   ```
-  GitHub's and GitLab's own redirects and page links stay on their API host, so these lines should not appear. If one does, the forge, or something between you and it, pointed a request at another host. A refusal on the first request skips that endpoint. A refusal part-way through a listing ("pagination stopped", or a redirect refused on a later page) fails the endpoint with `platform.ErrListingTruncated` instead, so the repository's `last_collected` does not advance past pages that were never listed, and the next cycle lists them again. A request URL that simply does not parse (for example a repository file name containing `%`) is not reported as off-host: nothing can be sent, and it fails the way it always did. Relative targets are resolved against the requested URL, so a GitLab base ending in `/api/v4` no longer doubles the path.
+  GitHub's and GitLab's own redirects and page links stay on their API host, so these lines should not appear. If one does, the forge, or something between you and it, pointed a request at another host. A refusal on the first request skips that endpoint (except in the two cases above). A refusal part-way through a listing ("pagination stopped", or a redirect refused on a later page) fails the endpoint with `platform.ErrListingTruncated` instead, so the repository's `last_collected` does not advance past pages that were never listed, and the next cycle lists them again. A request URL that simply does not parse is not reported as off-host: nothing can be sent, and it fails the way it always did. Relative targets are resolved against the requested URL, so a GitLab base ending in `/api/v4` no longer doubles the path.
 
 Repo-level renames (the underlying cause when the *whole* repo moves) are still caught by `prelim.RunPrelim`'s HEAD check against `repo.GitURL` — it calls `store.UpdateRepoURLs` to rewrite `repo_git`, `repo_owner`, and `repo_name`. That path is unchanged. The v0.16.10 fix is specifically for per-endpoint 3xx noise that prelim doesn't see.
 

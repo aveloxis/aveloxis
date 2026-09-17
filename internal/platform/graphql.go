@@ -323,13 +323,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if readErr == nil {
 				parsed = parseGraphQLResponse(respBody, dest, c.logger)
 				if parsed != nil && ClassifyError(parsed) == ClassRateLimit {
-					c.markBudgetExhausted(key)
+					c.markBudgetExhausted(key, resp)
 				}
 			}
-		case resp.StatusCode == http.StatusForbidden &&
-			resp.Header.Get("Retry-After") == "" &&
-			resp.Header.Get("X-RateLimit-Remaining") == "0":
-			c.markBudgetExhausted(key)
+		case isPrimaryRefusal(resp):
+			c.markBudgetExhausted(key, resp)
 		}
 		release()
 
@@ -423,8 +421,9 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 
 		case resp.StatusCode == http.StatusForbidden:
 			_ = resp.Body.Close()
-			// Same policy as REST Get: Retry-After or X-RateLimit-Remaining=0
-			// means wait; otherwise it's a permission error.
+			// Retry-After is a secondary limit (rest the key, pace this
+			// attempt); a primary refusal (isPrimaryRefusal) rotates to another
+			// key; anything else is a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait,
@@ -450,7 +449,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				}
 				continue
 			}
-			if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			// isPrimaryRefusal, the pool's predicate (SR-17), so a GitLab
+			// RateLimit-Remaining: 0 rotates here too instead of returning
+			// ErrForbidden for a key the pool just benched (Copilot review
+			// on PR #209).
+			if isPrimaryRefusal(resp) {
 				c.logger.Info("graphql rate limit exhausted", "url", url,
 					"token_prefix", tokenPrefix(key.Token))
 				// Copilot round 7 on PR #193: a 403 carrying
@@ -463,11 +466,35 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// reuse. The budget THIS client's checkout reads was
 				// marked before release (markBudgetExhausted, above).
 				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-					message: "graphql rate limit exhausted (403 + X-RateLimit-Remaining: 0) persisted through the retry budget"}
+					message: "graphql rate limit exhausted (403 primary refusal, remaining 0) persisted through the retry budget"}
 				rateLimitAttempt = attempt
+				// 2026-09-17: a refusal is a key ROTATION like the in-body
+				// arm, not a transport retry. The key is benched pool-wide,
+				// and spending the attempt let a pool with more refused keys
+				// than the budget give up with healthy keys unused.
+				if rotations < maxRotations {
+					rotations++
+					attempt--
+				}
 				continue
 			}
 			return fmt.Errorf("%w: %s (graphql 403, not a rate limit)", ErrForbidden, url)
+
+		case resp.StatusCode == http.StatusTooManyRequests && isPrimaryRefusal(resp):
+			// GitHub also spells primary exhaustion as a 429 (Remaining: 0,
+			// no Retry-After): the same rotation as the 403 arm above. The
+			// key's checkout budget was marked before release.
+			_ = resp.Body.Close()
+			c.logger.Info("graphql rate limit exhausted", "url", url, "status", resp.StatusCode,
+				"token_prefix", tokenPrefix(key.Token))
+			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
+				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}
+			rateLimitAttempt = attempt
+			if rotations < maxRotations {
+				rotations++
+				attempt--
+			}
+			continue
 
 		case resp.StatusCode == http.StatusTooManyRequests:
 			_ = resp.Body.Close()
@@ -533,21 +560,24 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
 }
 
-// markBudgetExhausted zeroes the budget THIS client's GraphQL checkout
-// reads, after a response that says the key is rate-limited but whose
-// headers may not have zeroed that bucket (an in-body RATE_LIMITED, or a
-// 403 + Remaining: 0 without X-RateLimit-Resource). Budget routing
+// markBudgetExhausted benches the bucket THIS client's GraphQL checkout
+// reads (KeyPool.MarkBudgetExhausted: a refusal until the response's reset,
+// else the probe window; the balance is zeroed only when no future window
+// is tracked), after a response
+// that says the key is rate-limited but whose headers may not have benched
+// that bucket (an in-body RATE_LIMITED, or a primary refusal without
+// X-RateLimit-Resource). Budget routing
 // (Copilot round 2 on PR #193, suppressed #2): GitLab's GraphQL shares
 // the UNIFIED core bucket (no X-RateLimit-Resource header; checkout
 // gates on ResourceCore), so a graphql-bucket mark would be decorative
 // there — the next Acquire would re-serve the same exhausted token.
-// Idempotent. Called only while the lease is held.
-func (c *HTTPClient) markBudgetExhausted(key *APIKey) {
+// Called only while the lease is held.
+func (c *HTTPClient) markBudgetExhausted(key *APIKey, resp *http.Response) {
+	res := ResourceGraphQL
 	if c.authStyle == AuthGitLab {
-		c.keys.MarkCoreExhausted(key)
-	} else {
-		c.keys.MarkGraphQLExhausted(key)
+		res = ResourceCore
 	}
+	c.keys.MarkBudgetExhausted(key, res, resp)
 }
 
 // graphqlFastFailRetries is the retry budget under WithGraphQLFastFail

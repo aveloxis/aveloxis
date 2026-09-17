@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.55 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -584,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -1107,7 +1108,10 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/platform-layer.html">Platform Abstraction Layer</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#interface-hierarchy">Interface hierarchy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
@@ -2207,7 +2211,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_token_count</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = every USABLE pool token — a key the pool would refuse to <code class="docutils literal notranslate"><span class="pre">Acquire</span></code> (quarantined after repeated 401s, or resting on a secondary limit) is not lent either; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed of those. If no token can be lent (no GitHub keys configured, or every key resting), remote mode is not attempted (v0.29.10): scorecard’s remote mode without a token waits up to an hour for GitHub’s rate limit, longer than the default 15-minute timeout. Instead the collection phase runs local mode at once on the retained analysis clone; without a clone it skips the repo with a WARN (<code class="docutils literal notranslate"><span class="pre">skip_reason=no_usable_token</span></code> on the phase line) and retries it next cycle. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
+<td><p>v0.27.5. How many key-pool tokens to hand scorecard as a comma-separated <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> (scorecard round-robins the list per request). <code class="docutils literal notranslate"><span class="pre">0</span></code> (the default) = every USABLE pool token — a key the pool would refuse to <code class="docutils literal notranslate"><span class="pre">Acquire</span></code> (quarantined after repeated 401s, resting on a secondary limit, or — since v0.29.55 — refused by GitHub until its rate-limit reset, on core or GraphQL) is not lent either; <code class="docutils literal notranslate"><span class="pre">N&gt;0</span></code> = the N least-borrowed of those. If no token can be lent (no GitHub keys configured, or every key resting or refused), remote mode is not attempted (v0.29.10): scorecard’s remote mode without a token waits up to an hour for GitHub’s rate limit, longer than the default 15-minute timeout. Instead the collection phase runs local mode at once on the retained analysis clone; without a clone it skips the repo with a WARN (<code class="docutils literal notranslate"><span class="pre">skip_reason=no_usable_token</span></code> on the phase line) and retries it next cycle. Multi-token is what makes remote-primary mode viable: a moderate repo costs ~40 API calls in remote mode, and spreading them across the pool prevents any single token from being drained by scorecard while collection workers share it. Negative values collapse to 0. Since v0.29.6 the tokens are BORROWED through the pool (<code class="docutils literal notranslate"><span class="pre">LendTokens</span></code>) rather than copied out of it, so the pool knows which keys each subprocess holds.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.scorecard_max_concurrent</span></code></p></td>
 <td><p>integer</p></td>
@@ -2227,7 +2231,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.github_budget_foreground_reserve_pct</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">25</span></code></p></td>
-<td><p>v0.29.6. Share of the pool’s hourly budget that BACKGROUND sweeps (contributor history and classification) may not spend into; foreground collection is admitted while any budget remains. Replaces the v0.29.0 per-key 500-point cliff, which shrank the background-eligible key set as keys depleted and funnelled the whole sweep onto the survivors. Derived: collection measured at ~9% of budget, × ~3 safety. Background is admitted while the usable pool total (keys resting on a secondary limit or a 401 quarantine do not count) is ABOVE the line. At or below it — while at least one usable key still holds spendable budget — a WAITING sweep (contributor history) waits for the next window reset or the next resting key’s return and logs <code class="docutils literal notranslate"><span class="pre">GraphQL</span> <span class="pre">background</span> <span class="pre">sweep</span> <span class="pre">paced</span> <span class="pre">by</span> <span class="pre">the</span> <span class="pre">foreground</span> <span class="pre">reserve</span></code>; the FAST-FAILING classification sweep instead receives <code class="docutils literal notranslate"><span class="pre">ErrGraphQLBudgetExhausted</span></code> and its ticker retries next interval — nothing is logged by the pool; the scheduler’s <code class="docutils literal notranslate"><span class="pre">activity</span> <span class="pre">classification:</span> <span class="pre">fetch</span> <span class="pre">failed</span> <span class="pre">—</span> <span class="pre">batch</span> <span class="pre">will</span> <span class="pre">retry</span> <span class="pre">next</span> <span class="pre">tick</span></code> WARN is where that starvation is visible. When no usable key holds spendable budget the pool is exhausted, not paced: the waiting sweep logs the same <code class="docutils literal notranslate"><span class="pre">all</span> <span class="pre">API</span> <span class="pre">keys</span> <span class="pre">exhausted</span> <span class="pre">for</span> <span class="pre">GraphQL</span></code> line foreground callers see, and the fast-failing sweep again gets the error rather than a log line. Absent or non-positive falls back to 25; explicit values are clamped to [1, 99] — the reservation is never a disable switch in either direction (1 = nominal; 100 would equal a full pool and switch background off entirely).</p></td>
+<td><p>v0.29.6. Share of the pool’s hourly budget that BACKGROUND sweeps (contributor history and classification) may not spend into; foreground collection is admitted while any budget remains. Replaces the v0.29.0 per-key 500-point cliff, which shrank the background-eligible key set as keys depleted and funnelled the whole sweep onto the survivors. Derived: collection measured at ~9% of budget, × ~3 safety. Background is admitted while the usable pool total (keys resting on a secondary limit or a 401 quarantine do not count, and since v0.29.55 neither does the tracked balance of a key GitHub has refused) is ABOVE the line. At or below it — while at least one usable key still holds spendable budget — a WAITING sweep (contributor history) waits for the next window reset, the next resting key’s return or the next refusal’s end and logs <code class="docutils literal notranslate"><span class="pre">GraphQL</span> <span class="pre">background</span> <span class="pre">sweep</span> <span class="pre">paced</span> <span class="pre">by</span> <span class="pre">the</span> <span class="pre">foreground</span> <span class="pre">reserve</span></code>; the FAST-FAILING classification sweep instead receives <code class="docutils literal notranslate"><span class="pre">ErrGraphQLBudgetExhausted</span></code> and its ticker retries next interval — nothing is logged by the pool; the scheduler’s <code class="docutils literal notranslate"><span class="pre">activity</span> <span class="pre">classification:</span> <span class="pre">fetch</span> <span class="pre">failed</span> <span class="pre">—</span> <span class="pre">batch</span> <span class="pre">will</span> <span class="pre">retry</span> <span class="pre">next</span> <span class="pre">tick</span></code> WARN is where that starvation is visible. When no usable key holds spendable budget the pool is exhausted, not paced: the waiting sweep logs the same <code class="docutils literal notranslate"><span class="pre">all</span> <span class="pre">API</span> <span class="pre">keys</span> <span class="pre">exhausted</span> <span class="pre">for</span> <span class="pre">GraphQL</span></code> line foreground callers see, and the fast-failing sweep again gets the error rather than a log line. Absent or non-positive falls back to 25; explicit values are clamped to [1, 99] — the reservation is never a disable switch in either direction (1 = nominal; 100 would equal a full pool and switch background off entirely).</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code></p></td>
 <td><p>integer</p></td>
@@ -2425,12 +2429,12 @@ a half against its own reference table below:</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.base_url</span></code></p></td>
 <td><p>string</p></td>
 <td><p>(none)</p></td>
-<td><p>Public-facing external URL of the web GUI (e.g. <code class="docutils literal notranslate"><span class="pre">https://aveloxis.example.com</span></code>). Used to build OAuth callback URLs and outbound email links.</p></td>
+<td><p>Public-facing external URL of the web GUI (e.g. <code class="docutils literal notranslate"><span class="pre">https://aveloxis.example.com</span></code>). Used to build OAuth callback URLs only. Links in emails, including account-email confirmation links, come from <code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.dev_mode</span></code></p></td>
 <td><p>boolean</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>When <code class="docutils literal notranslate"><span class="pre">true</span></code>, disables the <code class="docutils literal notranslate"><span class="pre">Secure</span></code> flag on cookies so the GUI works over plain HTTP. <strong>Production must leave this <code class="docutils literal notranslate"><span class="pre">false</span></code></strong> so browsers only send cookies over HTTPS. <code class="docutils literal notranslate"><span class="pre">HttpOnly</span></code> is always set regardless.</p></td>
+<td><p>When <code class="docutils literal notranslate"><span class="pre">true</span></code>, disables the <code class="docutils literal notranslate"><span class="pre">Secure</span></code> flag on cookies so the GUI works over plain HTTP, and lets a loopback request (<code class="docutils literal notranslate"><span class="pre">localhost</span></code>, <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>, <code class="docutils literal notranslate"><span class="pre">[::1]</span></code>) build email confirmation links when <code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code> is unset. <strong>Production must leave this <code class="docutils literal notranslate"><span class="pre">false</span></code></strong> so browsers only send cookies over HTTPS and confirmation links always come from <code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code>. <code class="docutils literal notranslate"><span class="pre">HttpOnly</span></code> is always set regardless.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.github_client_id</span></code></p></td>
 <td><p>string</p></td>
@@ -2470,7 +2474,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>Per-add approval (v0.27.20): when &gt; 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and ALL org registrations — wait for admin approval on the Approvals page. <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility.</p></td>
+<td><p>Per-add approval (v0.27.20): when &gt; 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility.</p></td>
 </tr>
 </tbody>
 </table>
@@ -2509,11 +2513,11 @@ a half against its own reference table below:</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mail.gmail_user</span></code></p></td>
 <td><p>string</p></td>
-<td><p>Gmail address used for SMTP auth and as the <code class="docutils literal notranslate"><span class="pre">From</span></code> address. Empty disables the mailer (no-op).</p></td>
+<td><p>Gmail address used for SMTP auth and as the <code class="docutils literal notranslate"><span class="pre">From</span></code> address. Empty disables the mailer: nothing is sent (see <a class="reference internal" href="#disabling">Disabling</a> for what changes).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mail.operator_email</span></code></p></td>
 <td><p>string</p></td>
-<td><p>Where fleet-level operator notifications go (v0.27.12) — currently the new-vulnerabilities digest. Empty (default) disables operator notifications entirely.</p></td>
+<td><p>Where fleet-level operator notifications go: the new-vulnerabilities digest (v0.27.12) and new add-request submissions awaiting approval (v0.27.20). Empty (default) disables operator notifications entirely.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mail.vuln_digest_min_severity</span></code></p></td>
 <td><p>string</p></td>
@@ -2541,7 +2545,7 @@ a half against its own reference table below:</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code></p></td>
 <td><p>string</p></td>
-<td><p>Public-facing URL used in email body links.</p></td>
+<td><p>Public-facing URL used in email body links: an absolute <code class="docutils literal notranslate"><span class="pre">http://</span></code> or <code class="docutils literal notranslate"><span class="pre">https://</span></code> URL with a host and no query, fragment or user name (any other value fails mail validation, which disables the mailer). Set it in production: without it, email confirmation links are sent only with <code class="docutils literal notranslate"><span class="pre">web.dev_mode</span></code> on and a loopback request Host (<code class="docutils literal notranslate"><span class="pre">localhost</span></code>, <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>, <code class="docutils literal notranslate"><span class="pre">[::1]</span></code>, optionally with a numeric port — the local-development case), and refused with an ERROR log line otherwise. A reverse proxy on the same host that does not forward <code class="docutils literal notranslate"><span class="pre">Host</span></code> makes every request look loopback, which is why dev_mode is required.</p></td>
 </tr>
 </tbody>
 </table>
@@ -2778,7 +2782,7 @@ repository’s README “Production deployment” section.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gmail_user</span></code></p></td>
 <td><p>Full email address with <code class="docutils literal notranslate"><span class="pre">&#64;</span></code>. <strong>Not</strong> the bare domain.</p></td>
-<td><p>Used both as the SMTP auth username and as the <code class="docutils literal notranslate"><span class="pre">From</span></code> address. Leaving this empty (along with <code class="docutils literal notranslate"><span class="pre">gmail_app_password</span></code>) disables the mailer (silent no-op).</p></td>
+<td><p>Used both as the SMTP auth username and as the <code class="docutils literal notranslate"><span class="pre">From</span></code> address. Leaving this empty (along with <code class="docutils literal notranslate"><span class="pre">gmail_app_password</span></code>) disables the mailer: no email is sent, the account-email form refuses new addresses (no confirmation link could reach them), and users without an address are let into the dashboard instead of being sent to that form.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gmail_app_password</span></code></p></td>
 <td><p>Exactly 16 lowercase ASCII letters (display-format spaces fine). <strong>Not</strong> a regular account password.</p></td>
@@ -2790,20 +2794,21 @@ repository’s README “Production deployment” section.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">site_url</span></code></p></td>
 <td><p>Full URL</p></td>
-<td><p>Public-facing URL for your Aveloxis deployment. Used in email body links.</p></td>
+<td><p>Public-facing URL for your Aveloxis deployment. Used in email body links. Must be an absolute <code class="docutils literal notranslate"><span class="pre">http://</span></code> or <code class="docutils literal notranslate"><span class="pre">https://</span></code> URL with a host and no query, fragment or user name; any other value fails validation. Required for email confirmation links outside local development: the request <code class="docutils literal notranslate"><span class="pre">Host</span></code> header is client-controlled (and a same-host proxy can make it read <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code>), so it builds a link only when <code class="docutils literal notranslate"><span class="pre">web.dev_mode</span></code> is on. Without <code class="docutils literal notranslate"><span class="pre">site_url</span></code>, the account-email form refuses new addresses and users without an address are let into the dashboard.</p></td>
 </tr>
 </tbody>
 </table>
 </section>
 <section id="validation-at-startup">
 <h3>Validation at startup<a class="headerlink" href="#validation-at-startup" title="Link to this heading"></a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> runs <code class="docutils literal notranslate"><span class="pre">mailer.ValidateConfig</span></code> against the supplied block when the server boots. If validation fails, the WARN line is emitted before any user can sign up:</p>
+<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> each run <code class="docutils literal notranslate"><span class="pre">mailer.ValidateConfig</span></code> against the supplied block when they start, and log the result: <code class="docutils literal notranslate"><span class="pre">mailer</span> <span class="pre">configured</span></code> (with <code class="docutils literal notranslate"><span class="pre">operator_email</span></code>), <code class="docutils literal notranslate"><span class="pre">mailer</span> <span class="pre">disabled</span></code>, or a WARN. If validation fails, the WARN line is emitted before any user can sign up:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">mail.gmail_user</span> <span class="pre">&quot;aveloxis.io&quot;</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">an</span> <span class="pre">email</span> <span class="pre">address</span></code> — you set the bare domain. Use the full address (<code class="docutils literal notranslate"><span class="pre">ops&#64;aveloxis.io</span></code>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mail.gmail_app_password</span> <span class="pre">is</span> <span class="pre">N</span> <span class="pre">character(s)</span> <span class="pre">after</span> <span class="pre">removing</span> <span class="pre">display-format</span> <span class="pre">spaces</span> <span class="pre">but</span> <span class="pre">Google</span> <span class="pre">App</span> <span class="pre">Passwords</span> <span class="pre">are</span> <span class="pre">exactly</span> <span class="pre">16</span> <span class="pre">lowercase</span> <span class="pre">letters</span></code> — you pasted a regular password or something else. Generate an actual App Password.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mail.gmail_user</span> <span class="pre">is</span> <span class="pre">empty</span> <span class="pre">but</span> <span class="pre">mail.gmail_app_password</span> <span class="pre">is</span> <span class="pre">set</span></code> (or vice versa) — partial config. Either fill both fields or empty both.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mail.site_url</span> <span class="pre">must</span> <span class="pre">be</span> <span class="pre">an</span> <span class="pre">absolute</span> <span class="pre">http://</span> <span class="pre">or</span> <span class="pre">https://</span> <span class="pre">URL</span> <span class="pre">with</span> <span class="pre">a</span> <span class="pre">host</span></code> (or <code class="docutils literal notranslate"><span class="pre">must</span> <span class="pre">not</span> <span class="pre">contain</span> <span class="pre">a</span> <span class="pre">query</span> <span class="pre">(?),</span> <span class="pre">a</span> <span class="pre">fragment</span> <span class="pre">(#),</span> <span class="pre">a</span> <span class="pre">user</span> <span class="pre">name</span> <span class="pre">or</span> <span class="pre">spaces</span></code>) — the value would make links that cannot be followed, such as a bare domain or a comma-separated list of URLs. Use the one full public URL (<code class="docutils literal notranslate"><span class="pre">https://aveloxis.example</span></code>).</p></li>
 </ul>
-<p>When validation fails, the mailer falls back to disabled behavior (no email sent, no errors raised by calling code) so the rest of the application keeps working. Fix the config and restart <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> to enable the mailer.</p>
+<p>When validation fails, the mailer falls back to disabled behavior so the rest of the application keeps working: no email is sent, and every send returns a “not configured” error. Notification emails (welcome, approval and add-request) ignore that error; <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code> refuses before sending and exits non-zero with the validation error, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> does not start the vulnerability digest and logs an ERROR saying why, and the account-email form refuses new addresses. Fix the config and restart the processes (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">all</span></code>, then <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code>) to enable the mailer.</p>
 </section>
 <section id="verifying-the-setup-with-aveloxis-test-mail">
 <h3>Verifying the setup with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code><a class="headerlink" href="#verifying-the-setup-with-aveloxis-test-mail" title="Link to this heading"></a></h3>
@@ -2813,7 +2818,8 @@ repository’s README “Production deployment” section.</p>
 </div>
 <p>The command runs the same <code class="docutils literal notranslate"><span class="pre">ValidateConfig</span></code> check, then calls <code class="docutils literal notranslate"><span class="pre">mailer.Send</span></code> against <code class="docutils literal notranslate"><span class="pre">smtp.gmail.com:587</span></code>. Output:</p>
 <ul class="simple">
-<li><p><strong>Success</strong>: <code class="docutils literal notranslate"><span class="pre">test</span> <span class="pre">email</span> <span class="pre">sent</span> <span class="pre">successfully</span> <span class="pre">to=...</span></code> — credentials are working. The test email arrives within seconds.</p></li>
+<li><p><strong>Success</strong>: <code class="docutils literal notranslate"><span class="pre">test</span> <span class="pre">email</span> <span class="pre">sent</span> <span class="pre">successfully</span> <span class="pre">to=...</span></code> — Gmail accepted the message, so the credentials are working. The test email arrives within seconds.</p></li>
+<li><p><strong>Not sent</strong>: <code class="docutils literal notranslate"><span class="pre">send</span> <span class="pre">failed:</span> <span class="pre">mailer:</span> <span class="pre">mail</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">configured</span></code> (the <code class="docutils literal notranslate"><span class="pre">mail</span></code> block is empty) or <code class="docutils literal notranslate"><span class="pre">send</span> <span class="pre">failed:</span> <span class="pre">mailer:</span> <span class="pre">recipient</span> <span class="pre">skipped:</span> <span class="pre">…</span></code> (the recipient is not one deliverable address — a list, a quoted local part, or longer than the SMTP limits). The command exits non-zero; no SMTP attempt is made.</p></li>
 <li><p><strong>Validation error</strong>: command exits non-zero with a clear message. Fix <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> and try again. No SMTP attempt is made.</p></li>
 <li><p><strong>SMTP error from Gmail itself</strong> (e.g. <code class="docutils literal notranslate"><span class="pre">535</span> <span class="pre">5.7.8</span> <span class="pre">Username</span> <span class="pre">and</span> <span class="pre">Password</span> <span class="pre">not</span> <span class="pre">accepted</span></code>): credentials look syntactically correct but Gmail rejected them. Most likely: App Password generated against a different account, or 2-Step Verification was just disabled on the account that owns the App Password.</p></li>
 </ul>
@@ -2832,7 +2838,12 @@ repository’s README “Production deployment” section.</p>
 </section>
 <section id="disabling">
 <h3>Disabling<a class="headerlink" href="#disabling" title="Link to this heading"></a></h3>
-<p>Remove or empty BOTH <code class="docutils literal notranslate"><span class="pre">gmail_user</span></code> AND <code class="docutils literal notranslate"><span class="pre">gmail_app_password</span></code>. Setting only one without the other is treated as a misconfiguration. With both empty, the mailer is a silent no-op and the rest of the application continues to work.</p>
+<p>Remove or empty BOTH <code class="docutils literal notranslate"><span class="pre">gmail_user</span></code> AND <code class="docutils literal notranslate"><span class="pre">gmail_app_password</span></code>. Setting only one without the other is treated as a misconfiguration. With both empty, nothing is sent and the rest of the application continues to work, with these visible differences:</p>
+<ul class="simple">
+<li><p>The account-email form refuses new addresses (“Email confirmation is not configured on this site”), and a user whose login provided no address goes straight to the dashboard.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> does not start the operator vulnerability digest and logs <code class="docutils literal notranslate"><span class="pre">operator</span> <span class="pre">vulnerability</span> <span class="pre">digest</span> <span class="pre">NOT</span> <span class="pre">started</span></code> at ERROR if <code class="docutils literal notranslate"><span class="pre">mail.operator_email</span></code> is set.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code> exits non-zero with <code class="docutils literal notranslate"><span class="pre">mail</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">configured</span></code>.</p></li>
+</ul>
 </section>
 </section>
 <hr class="docutils" />
@@ -2929,9 +2940,20 @@ findings) produce <strong>no email</strong> — the window still advances.</p></
 <li><p>The very first digest after enabling covers only one interval back,
 NOT all history — enabling the feature on an established fleet does
 not dump the entire findings table into one email.</p></li>
-<li><p>A failed send is retried with the SAME window on the next hourly
-check (nothing is dropped); the window only advances after a
-successful send or a quiet evaluation.</p></li>
+<li><p>A failed send, or a findings query that fails or is interrupted by a
+shutdown, is retried with the SAME window on the next check (nothing
+is dropped); the window only advances after a successful send or a
+quiet evaluation. That holds on the very first run too: a first run
+whose query or send fails pins its window in the stamp file (v0.29.29
+for a send, v0.29.50 for the query).</p></li>
+<li><p>The digest only starts when it could be delivered. With the mailer
+disabled, or an <code class="docutils literal notranslate"><span class="pre">operator_email</span></code> that is not one deliverable address
+(a comma list, say), <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> logs
+<code class="docutils literal notranslate"><span class="pre">operator</span> <span class="pre">vulnerability</span> <span class="pre">digest</span> <span class="pre">NOT</span> <span class="pre">started</span></code> at ERROR once and runs no
+digest queries. The mailer is built at startup, so fix the config and
+restart <code class="docutils literal notranslate"><span class="pre">serve</span></code> (v0.29.29; v0.29.28 logged “enabled” and retried
+hourly, and earlier releases advanced the window and never mailed
+those findings).</p></li>
 <li><p>The email body itemizes up to 50 findings (most severe first) and
 always states the total; the state lives in
 <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/vuln-digest-last</span></code>.</p></li>

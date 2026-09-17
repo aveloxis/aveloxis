@@ -24,8 +24,9 @@ import (
 // (bootstrap 2026-06-04: ~35% vs ~8-11% for Search alone; summary/12 §5g).
 //
 // Contract mirrors the platform search methods: a no-resolution outcome is
-// (`"", 0, "", nil`) — NOT an error. An error is returned only on transport /
-// 5xx failures the caller would want to retry.
+// (`"", 0, "", nil`) — NOT an error. Any other non-hit outcome is an error
+// (transport, 5xx, exhausted rate limit, rejected query, undecodable body);
+// callers stamp an attempt only when platform.IsDefinitiveAnswer accepts it.
 
 // emailSearchClient is the narrow slice of platform.Client this resolver
 // needs (kept narrow so it is trivially fakeable in tests; *platform.Client

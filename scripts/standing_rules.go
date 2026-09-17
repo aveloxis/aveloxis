@@ -108,4 +108,17 @@ var standingRules = []Rule{
 			"TestGapHealConvergesToZeroCandidates",
 			"TestWhitespaceRewalkClaimDrainsStampedRepos",
 			"TestMessageHealWorklistDrainsOnStamp"}},
+	// SR-20 (v0.29.55): the operator's contract after the 2026-09-17
+	// chaoss.tv incident, where one key GitHub had refused was leased
+	// 4,388 times in seven minutes while 53 keys sat idle.
+	{ID: "SR-20",
+		Statement: "API rate-limit budget is ONE resource shared by every collector: every forge request in a process leases its platform's keys from that platform's one KeyPool, and a key GitHub refuses (403/429 + Remaining: 0, core/graphql/search) is benched for every collector until the refusal's reset. On a refusal the collector immediately goes back for ANOTHER key without spending a retry (fast-fail GraphQL callers spend their short budget); a foreground caller waits for budget only when no key has any (a background GraphQL sweep also waits at the foreground reserve line), and REST waits for a refusal's reset only when the pool could not bench the key for that request (an untracked or mismatched budget).",
+		EnforcedBy: []string{"TestKeyPoolIsTheOnlyPathToAForgeKey",
+			"TestZeroRemaining403WithEarlierResetStillBenchesTheKey",
+			"TestGetRotatesAwayFromZeroRemaining403",
+			"TestRESTRefusalRotationsDoNotSpendRetryBudget",
+			"TestGraphQLRefusalRotationsDoNotSpendTransportBudget",
+			"TestAllKeysRefusedAcquireWaitsForTheEarliestRefusal",
+			"TestSearchRefusalRotatesToAnotherKey",
+			"TestUnbenchedRefusalWaitsForItsReset"}},
 }

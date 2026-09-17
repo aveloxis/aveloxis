@@ -19,8 +19,11 @@
 // message count + cooldown). The cloak-preview media type is GA, so the
 // HTTPClient's default Accept (application/json) works (verified 2026-06-04).
 //
-// Contract: identical to SearchUserByEmail — returns ("", 0, nil) on zero
-// hits (NOT an error); returns an error only on transport / 5xx failures.
+// Contract: as SearchUserByEmail — returns ("", 0, nil) (NOT an error) on
+// zero results, on a matched commit whose author GitHub cannot link to an
+// account, or on an input that is not an email address; every other non-hit
+// outcome is an error (transport, 5xx, exhausted rate limit, rejected query,
+// undecodable body).
 
 package github
 
@@ -67,9 +70,11 @@ func (c *Client) SearchCommitByAuthorEmail(ctx context.Context, email string) (s
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		// Match SearchUserByEmail: rate-limited search responses can be
-		// non-JSON; treat as "no result" rather than propagating.
-		return "", 0, nil
+		// A body that does not decode is not an answer (SR-5): returning
+		// the no-hit ("", 0, nil) let a cut-off 200 stamp a cooldown or
+		// create an email-only contributor (review round 2 on v0.29.55).
+		// Rate-limit refusals never reach here — Get handles 403/429.
+		return "", 0, fmt.Errorf("decode search/commits response: %w", err)
 	}
 
 	if data.TotalCount == 0 || len(data.Items) == 0 || data.Items[0].Author == nil {

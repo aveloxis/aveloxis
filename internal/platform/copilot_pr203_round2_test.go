@@ -164,7 +164,7 @@ func TestGraphQLBudgetMarksAppliedBeforeLeaseRelease(t *testing.T) {
 	t.Cleanup(SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil }))
 	inBodyRateLimited := func(w http.ResponseWriter, r *http.Request) {
 		// No rate-limit headers: the mark must not depend on the header
-		// belt (MarkGraphQLExhausted's own contract).
+		// belt (MarkBudgetExhausted's own contract).
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`)
 	}

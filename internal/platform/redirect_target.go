@@ -20,7 +20,8 @@ import (
 // built: a request path joined onto the base, a 3xx Location, a pagination
 // Link continuation, an explicit GraphQL endpoint. Classified ClassSkip: the
 // endpoint is skipped, the collection continues, and the refusal is logged at
-// ERROR.
+// ERROR. It is not a definitive answer for platform.IsDefinitiveAnswer (v0.29.55);
+// see that function's callers for what each does with it.
 var ErrOffHostRefused = errors.New("off-host request refused")
 
 // ErrListingTruncated wraps an ErrOffHostRefused that stopped a paginated
@@ -59,8 +60,8 @@ func onClientHost(baseURL string, target *url.URL) error {
 // onClientHostString is onClientHost for a URL still in string form. A URL
 // that does not parse is NOT refused here: it cannot be sent (request
 // construction fails on the same parse), so no key is at risk, and it keeps
-// its pre-v0.29.12 failure rather than an ERROR claiming a host was left —
-// a GitHub contents name like `100%-cover` is malformed, not hostile.
+// its pre-v0.29.12 failure rather than an ERROR claiming a host was left: a
+// malformed URL is not a hostile one.
 func onClientHostString(baseURL, rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {

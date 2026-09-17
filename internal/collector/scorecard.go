@@ -173,13 +173,13 @@ const rateLimitWindowSeconds = 3600
 // (GitHub) repository when the caller has no usable GitHub token AND no
 // clone to run local mode on. The loan is empty when no GitHub key is
 // configured (a GitLab-only deployment still claims GitHub repos) or when
-// every key is quarantined or cooling down on a secondary limit
-// (KeyPool.LendTokens lends only usable keys). Running `scorecard --repo` with an empty GITHUB_TOKEN is
+// every key is quarantined, cooling down on a secondary limit, or refused by
+// GitHub until its reset (KeyPool.LendTokens lends only usable, unrefused keys). Running `scorecard --repo` with an empty GITHUB_TOKEN is
 // never useful: probed 2026-09-13, scorecard goes unauthenticated, hits the
 // rate limit and logs "Rate limit exceeded. Waiting 46m50s to retry", holding
 // a subprocess slot for the whole per-attempt timeout. The repository is
 // retried on its next cycle.
-var ErrScorecardNoToken = errors.New("scorecard not run: no usable GitHub token lent (none configured, or every key quarantined or cooling down) and no clone for local mode")
+var ErrScorecardNoToken = errors.New("scorecard not run: no usable GitHub token lent (none configured, or every key quarantined, cooling down or refused) and no clone for local mode")
 
 // ScorecardAPICallsBasis labels every api_calls_used log value: a
 // /rate_limit used-delta on ONE token (the instrument token), which is a
@@ -192,7 +192,7 @@ const scorecardRateLimitURL = "https://api.github.com/rate_limit"
 
 // ScorecardTokens builds scorecard's comma-separated GITHUB_TOKEN value
 // from the key pool (v0.27.5). count 0 = every usable token (not
-// invalidated, quarantined or cooling down — KeyPool.LendTokens); N>0 =
+// invalidated, quarantined, cooling down or refused — KeyPool.LendTokens); N>0 =
 // the N least-borrowed of those. Empty when there are none. Returns the joined list, the first token
 // (used for the /rate_limit instrumentation probe), and the release the
 // caller MUST invoke once the subprocess has exited.
@@ -280,11 +280,11 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// layer that owns mode selection, so neither caller can reach it.
 	if opts.GithubToken == "" {
 		if opts.LocalPath == "" {
-			logger.Warn("scorecard not run — no usable GitHub token lent (none configured, or every key quarantined or cooling down) and no clone for local mode; retried next cycle",
+			logger.Warn("scorecard not run — no usable GitHub token lent (none configured, or every key quarantined, cooling down or refused) and no clone for local mode; retried next cycle",
 				"repo_id", repoID, "url", safeRepoURL)
 			return nil, ErrScorecardNoToken
 		}
-		logger.Warn("scorecard: no usable GitHub token lent (none configured, or every key quarantined or cooling down) — running local mode on the retained clone instead of remote",
+		logger.Warn("scorecard: no usable GitHub token lent (none configured, or every key quarantined, cooling down or refused) — running local mode on the retained clone instead of remote",
 			"repo_id", repoID, "url", safeRepoURL)
 		return runLocal()
 	}

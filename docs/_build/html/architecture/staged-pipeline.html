@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Staged Pipeline Architecture &mdash; Aveloxis 0.29.13 documentation</title>
+  <title>Staged Pipeline Architecture &mdash; Aveloxis 0.29.55 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9f48ff3d"></script>
+      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -584,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#token-invalidation-401-vs-403">Token invalidation (401 vs 403)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -1107,7 +1108,10 @@
 <li class="toctree-l1"><a class="reference internal" href="platform-layer.html">Platform Abstraction Layer</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#interface-hierarchy">Interface hierarchy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#http-client-httpclient">HTTP client (<code class="docutils literal notranslate"><span class="pre">HTTPClient</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="platform-layer.html#key-pool-keypool">Key pool (<code class="docutils literal notranslate"><span class="pre">KeyPool</span></code>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="platform-layer.html#key-pool-contract">Key pool contract</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>

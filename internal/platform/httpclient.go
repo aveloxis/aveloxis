@@ -56,6 +56,13 @@ var ErrGone = errors.New("gone")
 // unique repos = ~5.3h of wasted wall-clock per cycle.
 var ErrNoContent = errors.New("no content (204)")
 
+// ErrRequestRejected wraps a 400 or a non-pagination-cap 422: the forge
+// rejected the request itself (malformed query, validation failure). It is
+// still ClassFatal; the sentinel exists so IsDefinitiveAnswer can tell this
+// ANSWER apart from the Fatal-class failures that say nothing about the
+// item, such as an empty key pool (v0.29.55 review round 1).
+var ErrRequestRejected = errors.New("request rejected")
+
 // ErrTransient marks transient-class errors that should route
 // to ClassTransient via platform.ClassifyError. Originally added
 // v0.20.19 (Fix J) for "exhausted N retries" wrappers in
@@ -400,8 +407,26 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	// exhaust the retry budget, and a loop doesn't run forever.
 	redirectHops := 0
 	skipETag := bypassETag(ctx)
+	// 2026-09-17: a primary refusal (403/429 + Remaining: 0) is a key
+	// ROTATION, not a transport retry. The pool has benched the refused key
+	// for every collector, so the next Acquire returns a different key, or
+	// waits for the earliest reset when none has budget. A rotation hands
+	// its attempt back, bounded by the key count so every key is considered
+	// before the retry budget is spent: the GraphQL client's round-24 rule.
+	// On chaoss.tv one URL spent all ten attempts on one refused key while
+	// 53 others were idle.
+	maxRotations := c.keys.Len()
+	rotations := 0
+	// The bucket this request is admitted against. GitHub's search
+	// endpoints spend the separate per-user search budget (review round 1
+	// on v0.29.55), so a search refusal benches the key for search only and
+	// the request rotates like a core one. GitLab has one unified budget.
+	res := ResourceCore
+	if c.authStyle == AuthGitHub && strings.HasPrefix(path, "/search/") {
+		res = ResourceSearch
+	}
 
-	for attempt := range maxRetries {
+	for attempt := 0; attempt < maxRetries; attempt++ {
 		// v0.29.12: the layer that attaches the key enforces the host rule
 		// for every request, whatever built the URL (a path joined onto the
 		// base, a redirect, a pagination continuation) — before a key is
@@ -418,7 +443,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// Retry-After sleep — so a throttled caller never pins a slot
 		// while it waits. graphql.go is the twin with one difference: it
 		// holds the lease through a 200 body read, for its in-body mark.
-		key, release, err := c.keys.Acquire(ctx, ResourceCore)
+		key, release, err := c.keys.Acquire(ctx, res)
 		if err != nil {
 			return nil, fmt.Errorf("getting API key: %w", err)
 		}
@@ -514,9 +539,15 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			}
 		}
 
-		verdict, out, err := c.handleResponse(ctx, resp, &url, path, attempt, &redirectHops, key)
-		if verdict == respDone {
+		verdict, out, err := c.handleResponse(ctx, resp, &url, path, attempt, &redirectHops, key, res)
+		switch verdict {
+		case respDone:
 			return out, err
+		case respRotate:
+			if rotations < maxRotations {
+				rotations++
+				attempt-- // the loop post-increment re-adds it
+			}
 		}
 	}
 
@@ -538,6 +569,10 @@ const (
 	// rotation, and redirect URL rewrites have already happened
 	// inside handleResponse).
 	respRetry
+	// respRotate: the response was a primary refusal the pool has
+	// recorded; continue at once on another key without spending an
+	// attempt (bounded by the key count in Get).
+	respRotate
 )
 
 // handleResponse classifies one HTTP response and performs the arm's
@@ -547,7 +582,7 @@ const (
 // summary/18 Phase 4); behavior identical — the case arms below are
 // the accumulated production knowledge of five versions of retry
 // hardening and every line is load-bearing.
-func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, urlp *string, path string, attempt int, hopsp *int, key *APIKey) (respAction, *http.Response, error) {
+func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, urlp *string, path string, attempt int, hopsp *int, key *APIKey, res Resource) (respAction, *http.Response, error) {
 	url := *urlp
 	_ = url
 	switch {
@@ -649,12 +684,9 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 
 		url = newURL
 		*urlp = url
-		// Do not count this iteration against the retry budget — a
-		// redirect is not a retry. Decrement attempt so the outer
-		// `for attempt := range maxRetries` loop gives us a fresh slot.
-		// (range-int loops don't let us modify the iterator; instead we
-		// just `continue` and accept at most maxRetries hops total,
-		// which is fine because maxRedirectHops=5 < maxRetries=10.)
+		// A redirect spends an attempt like a retry does: at most
+		// maxRedirectHops=5 of the maxRetries=10, which leaves room for
+		// the request itself.
 		return respRetry, nil, nil
 	case resp.StatusCode == http.StatusUnauthorized:
 		// 401 = bad credentials — but GitHub's auth backend returns this
@@ -674,7 +706,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		resp.Body.Close()
 		c.logger.Warn("bad request (not retrying)",
 			"url", url, "status", 400, "body_snippet", truncateBody(string(body), 200))
-		return respDone, nil, fmt.Errorf("bad request: %s", url)
+		return respDone, nil, fmt.Errorf("bad request: %s: %w", url, ErrRequestRejected)
 	case resp.StatusCode == http.StatusUnprocessableEntity:
 		// 422 = validation failed. Not retryable for the same
 		// request shape. v0.20.19 (Fix K) carves out one
@@ -695,7 +727,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		c.logger.Warn("unprocessable entity (not retrying)",
 			"url", url, "status", 422, "body_snippet", truncateBody(bodyStr, 200))
-		return respDone, nil, fmt.Errorf("unprocessable entity: %s", url)
+		return respDone, nil, fmt.Errorf("unprocessable entity: %s: %w", url, ErrRequestRejected)
 	case resp.StatusCode == http.StatusForbidden:
 		// 403 can mean rate limit, secondary rate limit, or resource not
 		// accessible. Header signals are authoritative — they carry the
@@ -720,17 +752,13 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			}
 			return respRetry, nil, nil
 		}
-		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		// isPrimaryRefusal, the pool's own predicate (SR-17): it also reads
+		// GitLab's RateLimit-Remaining. Testing only X-RateLimit-Remaining
+		// here benched the key in the pool and then returned the same
+		// response as ErrForbidden (Copilot review on PR #209).
+		if isPrimaryRefusal(resp) {
 			resp.Body.Close()
-			resource := resp.Header.Get("X-RateLimit-Resource")
-			if resource == "" {
-				resource = "core"
-			}
-			resetStr := resp.Header.Get("X-RateLimit-Reset")
-			c.logger.Info("rate limit exhausted",
-				"url", url, "resource", resource, "reset", resetStr,
-				"token_prefix", tokenPrefix(key.Token))
-			return respRetry, nil, nil
+			return c.primaryRefusal(ctx, resp, url, key, attempt, res)
 		}
 		// Headers said nothing definitive. Read the body and check whether
 		// the message text reveals a rate limit anyway.
@@ -785,6 +813,10 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		return respDone, nil, fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
 	case resp.StatusCode == http.StatusTooManyRequests:
 		resp.Body.Close()
+		if isPrimaryRefusal(resp) {
+			// GitHub also spells primary exhaustion as a 429.
+			return c.primaryRefusal(ctx, resp, url, key, attempt, res)
+		}
 		wait := parseRetryAfter(resp)
 		c.logger.Info("rate limited", "url", url, "wait", wait,
 			"token_prefix", tokenPrefix(key.Token))
@@ -837,6 +869,45 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		return respRetry, nil, nil
 	}
+}
+
+// primaryRefusal logs a primary rate-limit refusal (isPrimaryRefusal) and
+// says how Get continues. When the refusal's bucket is the one this request
+// was admitted against (res), UpdateFromResponse has already benched the key
+// for it under the lease, so the request rotates at once: the next Acquire
+// cannot return this key. Otherwise nothing benched the key for res — an
+// untracked resource label, or a label that does not match the request —
+// and a rotation would hand the same key straight back, so the request
+// waits for the refusal's reset (a jittered backoff when the reset is
+// unknown), as GitHub instructs, then retries. "rate limit exhausted" is
+// the ops-grepped text.
+func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, url string, key *APIKey, attempt int, res Resource) (respAction, *http.Response, error) {
+	resource := resp.Header.Get("X-RateLimit-Resource")
+	if resource == "" {
+		resource = "core"
+	}
+	reset := firstHeader(resp, "X-RateLimit-Reset", "RateLimit-Reset")
+	if resource == res.String() && res != ResourceGraphQL {
+		c.logger.Info("rate limit exhausted",
+			"url", url, "status", resp.StatusCode, "resource", resource, "reset", reset,
+			"token_prefix", tokenPrefix(key.Token), "attempt", attempt+1,
+			"rotating_to_another_key", true)
+		return respRotate, nil, nil
+	}
+	wait := jitteredBackoff(attempt)
+	if t, ok := futureReset(reset, time.Now()); ok {
+		wait = time.Until(t)
+	}
+	c.logger.Info("rate limit exhausted",
+		"url", url, "status", resp.StatusCode, "resource", resource, "reset", reset,
+		"token_prefix", tokenPrefix(key.Token), "attempt", attempt+1,
+		"rotating_to_another_key", false, "wait", wait)
+	select {
+	case <-ctx.Done():
+		return respDone, nil, ctx.Err()
+	case <-time.After(wait):
+	}
+	return respRetry, nil, nil
 }
 
 // GetJSON fetches one JSON document and decodes it into dest.

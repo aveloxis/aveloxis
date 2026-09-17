@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -63,7 +64,7 @@ func TestScannerTracksEnabledAndErroredSources(t *testing.T) {
 	}
 	// Pin the actual gating condition.
 	if !strings.Contains(body, "erroredSources == enabledSources") {
-		t.Error("Scan must fail ONLY when every enabled source actually errored (erroredSources == enabledSources). The pre-v0.25.0 'any error' gate caused legitimate-no-data repos to be sidelined for 180 days.")
+		t.Error("Scan must keep the every-enabled-source-errored gate (erroredSources == enabledSources) — the only failure besides a GitHub non-answer (v0.29.55). The pre-v0.25.0 'any error' gate caused legitimate-no-data repos to be sidelined for 180 days.")
 	}
 }
 
@@ -158,11 +159,12 @@ func TestScannerSucceedsWhenLegitimateNoDataAcrossWorkingSources(t *testing.T) {
 // half of the contract: if NOTHING completed cleanly, the scan
 // genuinely failed (caller routes to RecordDistributionFailure).
 //
-// We use 401 Unauthorized (not 500) so the GitHub HTTPClient
-// retry loop fails fast instead of burning 10 retries × exponential
-// backoff per call. The contract decision is the same regardless of
-// which transient/fatal class the GitHub side returns — what we're
-// pinning here is "every-source-errored produces non-nil err".
+// The GitHub side must fail with ANSWERS (422, ErrRequestRejected), which
+// are returned at once and are not v0.29.55 non-answers — so the error
+// comes from the v0.25.0 gate. Any error that is not an answer
+// (platform.IsDefinitiveAnswer false — see githubErrorIsNonAnswer) would
+// instead fail the scan through the non-answer check and leave the gate
+// unpinned (review rounds 5–7: the old 401 fixture ended in a deadline).
 func TestScannerFailsOnlyWhenEveryEnabledSourceErrored(t *testing.T) {
 	depsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "deps.dev down", http.StatusInternalServerError)
@@ -174,25 +176,36 @@ func TestScannerFailsOnlyWhenEveryEnabledSourceErrored(t *testing.T) {
 	}))
 	t.Cleanup(ecoServer.Close)
 
-	// GitHub 401 → ClassAuth → ClassFatal-ish, returned immediately
-	// (no retry budget burned). Combined with deps.dev/ecosyste.ms
-	// 500s, every enabled source errors → the contract must fail.
+	// Every GitHub source answers with a 422 (ErrRequestRejected): an error
+	// that IS an answer, returned at once, so it reaches the v0.25.0
+	// every-source-errored gate rather than the v0.29.55 non-answer
+	// failure. (Through v0.29.54 this used a 401; its retries end in a
+	// deadline, which v0.29.55 counts as a non-answer, so the fixture no
+	// longer reached the gate it pins — review round 5.) Combined with
+	// deps.dev/ecosyste.ms 500s, every enabled source errors → the scan
+	// must fail.
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
 	}))
 	t.Cleanup(ghServer.Close)
 
 	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
 
-	// Short ctx so even if a path retries we don't hang the test
-	// suite. The contract decision happens at the end of Scan
-	// regardless of how the errors propagated.
+	// Short ctx so a fixture that drifts into retries fails fast instead
+	// of hanging the suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, _, _, err := scanner.Scan(ctx, 1, "x", "y", "https://github.com/x/y")
 	if err == nil {
 		t.Fatal("when EVERY source errors, scan must return non-nil error so RecordDistributionFailure runs and backoff applies")
+	}
+	// On correct code only the gate's joined error carries the GitHub
+	// answers (the non-answer failure joins non-answers). The answer/
+	// non-answer split itself is pinned by the "rejected (422)" case of
+	// TestCompositeScannerGitHubNonAnswerFailsTheScan.
+	if !errors.Is(err, platform.ErrRequestRejected) {
+		t.Fatalf("err = %v — the scan did not fail through the every-source-errored gate", err)
 	}
 }
 
@@ -360,3 +373,161 @@ func buildTestScanner(t *testing.T, depsURL, ecoURL, ghURL string, crossCheck bo
 // linter complaints in CI.
 var _ = db.ToolVersion
 var _ json.Decoder
+
+// TestCompositeScannerGitHubNonAnswerFailsTheScan (v0.29.55 review round 3;
+// operator decision (a), 2026-09-17): GitHub source errors never failed or
+// marked a scan, on the grounds that 403/404/304 from these endpoints are
+// routinely benign. That covers ANSWERS; it also swallowed failures that say
+// nothing (retries exhausted — four "github manifests failed … exhausted 10
+// retries" lines in the 2026-09-17 incident log — a cut-off body, an empty
+// key pool), so the scan was stored complete: the manifest snapshot replaced
+// by what little was seen and the repo held for the 180-day cadence. A GitHub
+// non-answer now FAILS the scan (the worker records a strike; nothing is
+// replaced; quadratic backoff; the 10-strike sideline). Marking it incomplete
+// instead was rejected: an incomplete row re-claims immediately at the head
+// of the queue with no backoff. A GitHub answer (404) still does neither.
+func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
+	depsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"versions":[]}`)
+	}))
+	t.Cleanup(depsServer.Close)
+	ecoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(ecoServer.Close)
+
+	for name, tc := range map[string]struct {
+		handle  func(w http.ResponseWriter, r *http.Request) bool // true = handled
+		wantErr bool
+	}{
+		"root listing cut off": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/contents" {
+				_, _ = io.WriteString(w, `[{"type":"fi`)
+				return true
+			}
+			return false
+		}, true},
+		"manifest content cut off": {func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/repos/x/y/contents":
+				_, _ = io.WriteString(w, `[{"type":"file","name":"package.json","path":"package.json"}]`)
+				return true
+			case "/repos/x/y/contents/package.json":
+				_, _ = io.WriteString(w, `{"encoding":"base64","content":"eyJuYW1l`)
+				return true
+			}
+			return false
+		}, true},
+		"release listing cut off": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/releases" {
+				_, _ = io.WriteString(w, `[{"assets":[{"na`)
+				return true
+			}
+			return false
+		}, true},
+		"packages listing cut off": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/users/x/packages" {
+				_, _ = io.WriteString(w, `[{"na`)
+				return true
+			}
+			return false
+		}, true},
+		// Review round 6: an error that IS an answer (a rejected request)
+		// must not fail the scan when other sources are clean — pins that
+		// githubErrorIsNonAnswer excludes answers, not only that the
+		// non-answer arms exist.
+		"release listing rejected (422)": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/releases" {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = io.WriteString(w, `{"message":"Validation Failed"}`)
+				return true
+			}
+			return false
+		}, false},
+		// Copilot review 5237013602 on PR #209: an off-host redirect refused by
+		// the client is not an answer; the root listing used to swallow it as
+		// "nothing here" and the scan was stored complete.
+		"root listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/contents" {
+				w.Header().Set("Location", "https://elsewhere.example/repos/x/y/contents")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		// Review of the PR #209 fixes: every emptyAnswer site needs its own
+		// off-host case, or any one of them can drift back to swallowing the
+		// refusal as "nothing there" unnoticed.
+		"release listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/releases" {
+				w.Header().Set("Location", "https://elsewhere.example/repos/x/y/releases")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"packages listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/users/x/packages" {
+				w.Header().Set("Location", "https://elsewhere.example/users/x/packages")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"org packages listing redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/users/x/packages":
+				w.WriteHeader(http.StatusNotFound) // the user endpoint 404s → org fallback
+				return true
+			case "/orgs/x/packages":
+				w.Header().Set("Location", "https://elsewhere.example/orgs/x/packages")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"manifest content redirected off-host": {func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/repos/x/y/contents":
+				_, _ = io.WriteString(w, `[{"type":"file","name":"package.json","path":"package.json"}]`)
+				return true
+			case "/repos/x/y/contents/package.json":
+				w.Header().Set("Location", "https://elsewhere.example/repos/x/y/contents/package.json")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return true
+			}
+			return false
+		}, true},
+		"root listing 404": {func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/repos/x/y/contents" {
+				w.WriteHeader(http.StatusNotFound)
+				return true
+			}
+			return false
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.handle(w, r) {
+					return
+				}
+				_, _ = io.WriteString(w, `[]`)
+			}))
+			t.Cleanup(ghServer.Close)
+			scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
+			_, manifests, complete, err := scanner.Scan(context.Background(), 1, "x", "y", "https://github.com/x/y")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("scan succeeded (complete=%v, manifests=%v) — a GitHub non-answer must fail the scan so nothing is replaced", complete, manifests)
+				}
+				return
+			}
+			if err != nil || !complete {
+				t.Fatalf("err=%v complete=%v — a GitHub answer (404, 422) does not fail the scan: it succeeds and is complete", err, complete)
+			}
+		})
+	}
+}

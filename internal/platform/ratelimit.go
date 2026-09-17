@@ -68,6 +68,25 @@ type APIKey struct {
 	// throttled key — the 179-rejections-in-one-second herd.
 	secondaryUntil time.Time
 	secondaryHits  int
+	// refusedUntil / graphQLRefusedUntil (2026-09-17): GitHub REFUSED this
+	// key for the bucket — 403 or 429 with X-RateLimit-Remaining: 0 and no
+	// Retry-After — until the refusal's own reset. Header updates cannot
+	// lift it; only time can. Distinct from Remaining/ResetAt because the
+	// tracked window can disagree with the refusing one: on chaoss.tv the
+	// window guard filed a refusal whose reset was EARLIER than the
+	// tracked window as a stale response, the key kept a 4,310 balance,
+	// and it was leased 4,388 times in seven minutes while 53 other keys
+	// sat unused. spendable consults these, so every collector sharing the
+	// pool routes around a refused key at once.
+	refusedUntil        time.Time
+	graphQLRefusedUntil time.Time
+	// searchRefusedUntil: GitHub's search budget (30/min per user) is
+	// refusal-only — the pool keeps no search balance, but a refused key
+	// is benched for search so a search request rotates like any other
+	// (review round 1: before this bucket a search refusal re-sent on the
+	// same key ten times in ~1 ms).
+	searchRefusedUntil time.Time
+	refusals           int // lifetime refusals, one per refused response, for the pool summary
 	// lent counts subprocesses currently borrowing this token via
 	// LendTokens (scorecard). A subprocess cannot hold a Go lease, so its
 	// use is ACCOUNTED rather than admitted: lending prefers the least-lent
@@ -87,13 +106,28 @@ const (
 	ResourceCore Resource = iota
 	// ResourceGraphQL is GitHub's separate GraphQL point budget.
 	ResourceGraphQL
+	// ResourceSearch is GitHub's search budget (30 requests/min per user).
+	// Refusal-only: see tracksBudget.
+	ResourceSearch
 )
 
 func (r Resource) String() string {
-	if r == ResourceGraphQL {
+	switch r {
+	case ResourceGraphQL:
 		return "graphql"
+	case ResourceSearch:
+		return "search"
 	}
 	return "core"
+}
+
+// tracksBudget reports whether the pool keeps a balance for r. Core and
+// graphql do; search does not (its per-minute window turns over faster
+// than a balance would help), so a key is spendable for search unless
+// GitHub has refused it, and selection among search keys falls through to
+// in-flight count and cursor order.
+func (r Resource) tracksBudget() bool {
+	return r != ResourceSearch
 }
 
 // KeyPool manages a set of API keys with round-robin rotation.
@@ -202,9 +236,9 @@ const graphQLPointsPerHour = 5000
 // funnelled 192 concurrent requests onto a handful of survivors (Bug A).
 // Remove-don't-deprecate.
 
-// graphQLDepletedProbe is the fallback graphql reset window used by
-// MarkGraphQLExhausted when no reset header was ever observed for the
-// key. Short enough to re-probe within minutes, long enough not to
+// graphQLDepletedProbe is the fallback window used when no usable reset
+// is known: MarkBudgetExhausted's zeroed balance, a refusal without a
+// future reset (markRefusedLocked), and the selection/reserve probe stamps. Short enough to re-probe within minutes, long enough not to
 // thrash a genuinely-dead budget (the real window is at most an hour and
 // the headers on the next successful checkout correct it).
 const graphQLDepletedProbe = 5 * time.Minute
@@ -301,7 +335,8 @@ const (
 // subdividing callers halve healthy batches under ordinary contention).
 //
 // Selection: among eligible keys, minimum in-flight, then maximum
-// remaining budget, then the per-resource round-robin cursor. That is
+// remaining budget, then the round-robin cursor (graphql has its own; core
+// and search share one — search keeps no balance, so its ties fall to it). That is
 // what spreads load across all keys instead of funnelling it onto the
 // first eligible key after a shared cursor (Bug B of the 2026-09-12
 // analysis).
@@ -420,6 +455,8 @@ func (kp *KeyPool) refillLocked(now time.Time, res Resource) {
 				k.GraphQLRemaining = graphQLPointsPerHour
 				k.GraphQLResetAt = time.Time{}
 			}
+		case ResourceSearch:
+			// No balance is tracked for search: nothing to refill.
 		default:
 			if !k.ResetAt.IsZero() && now.After(k.ResetAt) {
 				k.Remaining = 5000
@@ -429,18 +466,43 @@ func (kp *KeyPool) refillLocked(now time.Time, res Resource) {
 	}
 }
 
+// remaining is the tracked balance for res; 0 for search, whose balance
+// is not tracked (callers gate on tracksBudget first).
 func (k *APIKey) remaining(res Resource) int {
-	if res == ResourceGraphQL {
+	switch res {
+	case ResourceGraphQL:
 		return k.GraphQLRemaining
+	case ResourceSearch:
+		return 0
 	}
 	return k.Remaining
 }
 
+// resetAt is the tracked window reset for res; zero for search.
 func (k *APIKey) resetAt(res Resource) time.Time {
-	if res == ResourceGraphQL {
+	switch res {
+	case ResourceGraphQL:
 		return k.GraphQLResetAt
+	case ResourceSearch:
+		return time.Time{}
 	}
 	return k.ResetAt
+}
+
+func (k *APIKey) refusedUntilFor(res Resource) time.Time {
+	switch res {
+	case ResourceGraphQL:
+		return k.graphQLRefusedUntil
+	case ResourceSearch:
+		return k.searchRefusedUntil
+	}
+	return k.refusedUntil
+}
+
+// refusedAt reports whether GitHub's last refusal of k for res still
+// stands at now.
+func (k *APIKey) refusedAt(now time.Time, res Resource) bool {
+	return now.Before(k.refusedUntilFor(res))
 }
 
 // selectLocked evaluates the pool for one Acquire attempt. Caller holds
@@ -502,21 +564,27 @@ func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*
 		}
 		allInvalid = false
 		resting := k.restingAt(now)
-		if resting || !kp.spendable(k, res) {
-			// Not eligible now; remember when it might be.
-			wake := k.resetAt(res)
-			if kp.spendable(k, res) {
-				wake = time.Time{} // budget is fine; only the rest matters
-			} else if wake.IsZero() {
-				// Below buffer with no known reset (headers never carried
-				// one): stamp the probe window so the refill guard can fire
-				// (Copilot round 22 on PR #193).
-				wake = now.Add(graphQLDepletedProbe)
-				if res == ResourceGraphQL {
-					k.GraphQLResetAt = wake
-				} else {
-					k.ResetAt = wake
+		if resting || !kp.spendable(k, res, now) {
+			// Not eligible now; remember when it might be. Each cause that
+			// applies pushes the wake later: the key is eligible only once
+			// all of them have cleared.
+			var wake time.Time
+			if res.tracksBudget() && k.remaining(res) <= kp.buffer {
+				wake = k.resetAt(res)
+				if wake.IsZero() {
+					// Below buffer with no known reset (headers never carried
+					// one): stamp the probe window so the refill guard can fire
+					// (Copilot round 22 on PR #193).
+					wake = now.Add(graphQLDepletedProbe)
+					if res == ResourceGraphQL {
+						k.GraphQLResetAt = wake
+					} else {
+						k.ResetAt = wake
+					}
 				}
+			}
+			if refused := k.refusedUntilFor(res); refused.After(wake) {
+				wake = refused
 			}
 			if k.quarantineUntil.After(wake) {
 				wake = k.quarantineUntil
@@ -584,10 +652,12 @@ func (kp *KeyPool) earliestResetLocked(now time.Time, res Resource) time.Time {
 func (kp *KeyPool) earliestReserveWakeLocked(now time.Time, res Resource) time.Time {
 	wake := kp.earliestResetLocked(now, res)
 	for _, k := range kp.keys {
-		if k.Invalid || !k.restingAt(now) {
+		if k.Invalid {
 			continue
 		}
-		for _, until := range []time.Time{k.quarantineUntil, k.secondaryUntil} {
+		// A resting key rejoins the usable set when its rest ends; a
+		// refused key's budget rejoins the total when its refusal ends.
+		for _, until := range []time.Time{k.quarantineUntil, k.secondaryUntil, k.refusedUntilFor(res)} {
 			if until.After(now) && (wake.IsZero() || until.Before(wake)) {
 				wake = until
 			}
@@ -603,7 +673,7 @@ func (kp *KeyPool) earliestReserveWakeLocked(now time.Time, res Resource) time.T
 		// carry a reset (L10 pass 2, finding 1).
 		wake = now.Add(graphQLDepletedProbe)
 		for _, k := range kp.keys {
-			if !k.usableAt(now) || !k.resetAt(res).IsZero() {
+			if !res.tracksBudget() || !k.usableAt(now) || !k.resetAt(res).IsZero() {
 				continue
 			}
 			if res == ResourceGraphQL {
@@ -627,10 +697,14 @@ func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, spen
 			continue
 		}
 		usable++
-		if kp.spendable(k, res) {
+		if kp.spendable(k, res, now) {
 			spendable++
 		}
-		total += k.remaining(res)
+		// A refused key's tracked balance is not budget: GitHub has said
+		// it holds none until the refusal's reset.
+		if !k.refusedAt(now, res) {
+			total += k.remaining(res)
+		}
 	}
 	perKey := 5000
 	if res == ResourceGraphQL {
@@ -641,9 +715,13 @@ func (kp *KeyPool) reserveStateLocked(now time.Time, res Resource) (usable, spen
 }
 
 // spendable is the ONE per-key budget test (SR-17): a key can be handed
-// out for res only while its remaining balance is above the buffer.
-func (kp *KeyPool) spendable(k *APIKey, res Resource) bool {
-	return k.remaining(res) > kp.buffer
+// out for res only while its remaining balance is above the buffer AND
+// GitHub's last refusal of it for res has expired.
+func (kp *KeyPool) spendable(k *APIKey, res Resource, now time.Time) bool {
+	if res.tracksBudget() && k.remaining(res) <= kp.buffer {
+		return false
+	}
+	return !k.refusedAt(now, res)
 }
 
 // restingAt reports whether k is sitting out a 401 quarantine or a
@@ -780,10 +858,11 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	// sends no resource header) updates the core bucket; graphql updates
 	// the key's SEPARATE graphql bucket (2026-09-01: discarding these was
 	// the pytorch root cause — the pool was graphql-blind and kept handing
-	// graphql-dead keys to GraphQL work). Search responses stay untracked:
-	// applying search's 30/min "remaining" to either bucket would starve
-	// collection prematurely, and the search paths handle their own 403
-	// waits.
+	// graphql-dead keys to GraphQL work). Search responses never update a
+	// BALANCE: applying search's 30/min "remaining" to either bucket would
+	// starve collection prematurely. A search REFUSAL benches the key for
+	// search only (ResourceSearch, refusal-only — review round 1 on
+	// v0.29.55), below.
 	resource := resp.Header.Get("X-RateLimit-Resource")
 
 	// GitHub: X-RateLimit-Remaining, X-RateLimit-Reset
@@ -791,13 +870,28 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	remaining := firstHeader(resp, "X-RateLimit-Remaining", "RateLimit-Remaining")
 	reset := firstHeader(resp, "X-RateLimit-Reset", "RateLimit-Reset")
 
+	refused := isPrimaryRefusal(resp)
 	switch resource {
 	case "", "core":
 		windowedBudgetUpdate(&key.Remaining, &key.ResetAt, remaining, reset)
+		if refused {
+			kp.markRefusedLocked(key, ResourceCore, reset, time.Now(), true)
+		}
 	case "graphql":
 		windowedBudgetUpdate(&key.GraphQLRemaining, &key.GraphQLResetAt, remaining, reset)
+		if refused {
+			kp.markRefusedLocked(key, ResourceGraphQL, reset, time.Now(), true)
+		}
+	case "search":
+		// No balance is tracked (tracksBudget), but a refusal benches the
+		// key for search so the request rotates.
+		if refused {
+			kp.markRefusedLocked(key, ResourceSearch, reset, time.Now(), true)
+		}
 	default:
-		// search etc. — deliberately untracked (see above).
+		// Other resources (code_search, dependency_sbom, …) are untracked,
+		// refusals included: the pool has no bucket to route around, and
+		// the REST client waits for such a refusal's reset instead.
 	}
 
 	// Copilot review on PR #203: the SECONDARY-limit state rides the same
@@ -811,7 +905,9 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	// limits are per token across resources, so a search 403 rests the
 	// key too. This is the ONE place the rest is recorded per response;
 	// the clients' branches keep only their logging and pacing.
-	if resp.StatusCode == http.StatusTooManyRequests ||
+	// A 429 that is a primary refusal (Remaining: 0, no Retry-After) is
+	// recorded above, not here, so the causes stay distinguishable.
+	if (resp.StatusCode == http.StatusTooManyRequests && !refused) ||
 		(resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") != "") {
 		kp.markSecondaryLimitedLocked(key, parseRetryAfter(resp))
 	}
@@ -824,6 +920,59 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	// response; the clients' 401 arms only log and rotate.
 	if resp.StatusCode == http.StatusUnauthorized {
 		kp.recordAuthFailureLocked(key)
+	}
+}
+
+// isPrimaryRefusal is the ONE spelling (SR-17) of a primary rate-limit
+// refusal: 403 or 429, the remaining header exactly "0", and no
+// Retry-After. GitHub documents primary exhaustion as "a 403 or 429
+// response" with x-ratelimit-remaining 0 and says not to retry before
+// x-ratelimit-reset; a Retry-After marks the SECONDARY limit instead.
+// GitLab's RateLimit-Remaining spelling is read too (firstHeader).
+func isPrimaryRefusal(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	return resp.Header.Get("Retry-After") == "" &&
+		firstHeader(resp, "X-RateLimit-Remaining", "RateLimit-Remaining") == "0"
+}
+
+// futureReset parses a reset header and reports it when it is a future
+// instant; absent, unparseable and already-past resets are all "unknown".
+func futureReset(reset string, now time.Time) (time.Time, bool) {
+	epoch, err := strconv.ParseInt(reset, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	t := time.Unix(epoch, 0)
+	return t, t.After(now)
+}
+
+// markRefusedLocked benches key for res until the refusal's reset — the
+// reset header when it is a future instant, otherwise the probe window. It
+// never shortens a standing refusal. Deliberately NOT window-guarded: the
+// refusal is GitHub's answer for THIS key now, whatever window the pool is
+// tracking. count adds the response to the lifetime refusal count; the one
+// caller that re-marks a response UpdateFromResponse already counted (the
+// GraphQL belt) passes false, so one response is one refusal. Caller holds
+// kp.mu.
+func (kp *KeyPool) markRefusedLocked(key *APIKey, res Resource, reset string, now time.Time, count bool) {
+	until, ok := futureReset(reset, now)
+	if !ok {
+		until = now.Add(graphQLDepletedProbe)
+	}
+	target := &key.refusedUntil
+	switch res {
+	case ResourceGraphQL:
+		target = &key.graphQLRefusedUntil
+	case ResourceSearch:
+		target = &key.searchRefusedUntil
+	}
+	if until.After(*target) {
+		*target = until
+	}
+	if count {
+		key.refusals++
 	}
 }
 
@@ -884,36 +1033,48 @@ func windowedBudgetUpdate(rem *int, resetAt *time.Time, remaining, reset string)
 	}
 }
 
-// MarkGraphQLExhausted zeroes a key's graphql budget after an IN-BODY
-// RATE_LIMITED (GitHub reports graphql exhaustion as HTTP 200 with an
-// errors array, so no status-code path catches it). Belt for the header
-// update: the same response normally carries Remaining: 0 too, but the
-// mark must not depend on it. When no reset is known, a short probe
-// window re-checks within minutes.
-func (kp *KeyPool) MarkGraphQLExhausted(key *APIKey) {
+// MarkBudgetExhausted is the GraphQL client's belt for a response that says
+// the key is rate-limited but whose headers may not have benched the bucket
+// the client CHECKS OUT by: an in-body RATE_LIMITED (HTTP 200 with an errors
+// array, which no status-code path sees), or a primary refusal without
+// X-RateLimit-Resource (UpdateFromResponse files that under core). res is
+// the checkout bucket: graphql on GitHub, core on GitLab, whose GraphQL
+// shares the unified budget (Copilot round 2 on PR #193, suppressed #2).
+//
+// The refusal is the bench: it ends at the response's reset when that is a
+// future instant, otherwise after the probe window. Before review round 1 on
+// v0.29.55 the belt benched until the key's TRACKED window and zeroed the
+// balance, so a +3 m refusal on a key tracked on a +55 m window sat out 55
+// minutes (round 2 closed the same hole for a past or unparseable reset).
+// When the pool tracks no future window for the bucket (GitLab's in-body
+// shape on a fresh key), the balance is also zeroed, with the refusal's end
+// as its reset.
+//
+// One response is one refusal: a response UpdateFromResponse already
+// counted (isPrimaryRefusal) is not counted again. Replaces
+// MarkGraphQLExhausted / MarkCoreExhausted (one spelling, SR-17).
+func (kp *KeyPool) MarkBudgetExhausted(key *APIKey, res Resource, resp *http.Response) {
 	kp.mu.Lock()
 	defer kp.mu.Unlock()
-	key.GraphQLRemaining = 0
-	if key.GraphQLResetAt.IsZero() || key.GraphQLResetAt.Before(time.Now()) {
-		key.GraphQLResetAt = time.Now().Add(graphQLDepletedProbe)
+	now := time.Now()
+	count := !isPrimaryRefusal(resp)
+	// The refusal is the bench: until the response's reset when it is a
+	// future instant, otherwise (absent, past, unparseable) the probe
+	// window — markRefusedLocked decides.
+	kp.markRefusedLocked(key, res, firstHeader(resp, "X-RateLimit-Reset", "RateLimit-Reset"), now, count)
+	// The balance is zeroed only when the pool tracks no future window for
+	// the bucket, and then with the refusal's end as its reset, so the zero
+	// never outlives the refusal. Zeroing under a tracked LATER window held
+	// the key out until that window (up to an hour) whatever the refusal
+	// said: review round 2 on v0.29.55 (a reset 2 s in the past on a +55 m
+	// window benched graphql for 55 minutes).
+	rem, resetAt := &key.Remaining, &key.ResetAt
+	if res == ResourceGraphQL {
+		rem, resetAt = &key.GraphQLRemaining, &key.GraphQLResetAt
 	}
-}
-
-// MarkCoreExhausted zeroes a key's CORE budget after an in-body
-// rate-limit response on a platform whose GraphQL shares the unified
-// core bucket (GitLab — no X-RateLimit-Resource header, one budget for
-// everything, checkout via GetKey). Zeroing only the graphql bucket
-// there would be decorative: the next GetKey reads the core counter,
-// sees it healthy, and re-serves the exhausted token through the whole
-// retry budget (Copilot round 2 on PR #193, suppressed #2). When no
-// reset is known, the same short probe window MarkGraphQLExhausted
-// uses re-checks within minutes.
-func (kp *KeyPool) MarkCoreExhausted(key *APIKey) {
-	kp.mu.Lock()
-	defer kp.mu.Unlock()
-	key.Remaining = 0
-	if key.ResetAt.IsZero() || key.ResetAt.Before(time.Now()) {
-		key.ResetAt = time.Now().Add(graphQLDepletedProbe)
+	if resetAt.IsZero() || !resetAt.After(now) {
+		*rem = 0
+		*resetAt = key.refusedUntilFor(res)
 	}
 }
 
@@ -945,7 +1106,7 @@ var ErrGraphQLBudgetExhausted = &classifiedGraphQLError{
 // guard would discard every subsequent header update on the key as an
 // "older window" for up to an hour (frozen Remaining, real 403s).
 // Remove-don't-deprecate; a future external-tool depletion signal
-// should follow MarkCoreExhausted's short probe-window shape instead.
+// should follow MarkBudgetExhausted's short probe-window shape instead.
 
 // InvalidateKey marks a key as permanently invalid (bad credentials).
 // Escalates to ERROR when this was the last valid key — all collection
@@ -1132,8 +1293,10 @@ func (kp *KeyPool) AliveCount() int {
 // "Usable" is the admission predicate (usableAt): a key that is
 // invalidated, quarantined after repeated 401s, or resting on a
 // secondary limit is NOT lent — Acquire refuses it to every other caller
-// for the same reason. Primary rate-limit BUDGET is deliberately not
-// consulted: scorecard paces itself across the list per request, and a
+// for the same reason. Nor is a key with a standing primary refusal
+// (403/429 + Remaining: 0) on either bucket: that is GitHub's answer, not
+// the pool's estimate. The pool's tracked budget ESTIMATE is deliberately
+// not consulted: scorecard paces itself across the list per request, and a
 // subprocess's ~40 calls over ~25 s are negligible per key. What matters
 // is that the pool KNOWS. (Copilot review round 2 on PR #203: this
 // paragraph used to say quarantine was not consulted either — true
@@ -1149,7 +1312,10 @@ func (kp *KeyPool) LendTokens(n int) ([]string, func()) {
 	now := time.Now()
 	cands := make([]*APIKey, 0, len(kp.keys))
 	for _, k := range kp.keys {
-		if k.usableAt(now) {
+		// 2026-09-17 (SR-20): a standing refusal on either bucket is
+		// GitHub refusing the key, the same kind of "no" as a rest, so it
+		// is withheld too (a subprocess would wait it out inside its slot).
+		if k.usableAt(now) && !k.refusedAt(now, ResourceCore) && !k.refusedAt(now, ResourceGraphQL) {
 			cands = append(cands, k)
 		}
 	}
@@ -1193,6 +1359,12 @@ type KeySnapshot struct {
 	SecondaryUntil  time.Time
 	QuarantineUntil time.Time
 	Invalid         bool
+	// Primary refusals (2026-09-17): when each bucket's refusal ends,
+	// and the lifetime count (one per refused response).
+	CoreRefusedUntil    time.Time
+	GraphQLRefusedUntil time.Time
+	SearchRefusedUntil  time.Time
+	Refusals            int
 }
 
 // Snapshot returns per-key admission state plus the pool-wide in-flight
@@ -1208,6 +1380,8 @@ func (kp *KeyPool) Snapshot() ([]KeySnapshot, int) {
 			Prefix: tokenPrefix(k.Token), Core: k.Remaining, GraphQL: k.GraphQLRemaining,
 			Inflight: k.inflight, Lent: k.lent, SecondaryHits: k.secondaryHits,
 			SecondaryUntil: k.secondaryUntil, QuarantineUntil: k.quarantineUntil, Invalid: k.Invalid,
+			CoreRefusedUntil: k.refusedUntil, GraphQLRefusedUntil: k.graphQLRefusedUntil,
+			SearchRefusedUntil: k.searchRefusedUntil, Refusals: k.refusals,
 		})
 	}
 	return out, kp.inflight

@@ -823,16 +823,34 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	s.logger.Info("search resolve cycle starting", "candidates", len(candidates))
 
 	resolved := 0
+	// Searches that failed without an answer: not stamped, retried next
+	// cycle; one WARN after the loop.
+	unanswered := 0
+	var firstUnanswered error
 	for _, c := range candidates {
 		if ctx.Err() != nil {
 			return
 		}
 		login, ghUserID, err := s.ghClient.SearchUserByEmail(ctx, c.Email)
 		if err != nil {
-			// API failure — stamp the attempt so we don't immediately
-			// retry the same email next cycle, and continue.
-			_ = s.store.MarkContributorSearchAttempted(ctx, c.CntrbID)
-			s.logger.Debug("search resolve: API call failed", "email", c.Email, "error", err)
+			if !platform.IsDefinitiveAnswer(err) {
+				// Rate limit, transient or auth failure, shutdown, an
+				// empty pool: nothing was learned about this email, so
+				// stamping the cooldown would hide it (SR-5; review round 1
+				// on v0.29.55).
+				unanswered++
+				if firstUnanswered == nil {
+					firstUnanswered = err
+				}
+				s.logger.Debug("search resolve: search failed without an answer — not stamped, retried next cycle", "email", c.Email, "error", err)
+				continue
+			}
+			// The forge rejected the query for this email: stamp it so the
+			// same query is not re-sent before the cooldown.
+			if mErr := s.store.MarkContributorSearchAttempted(ctx, c.CntrbID); mErr != nil {
+				s.logger.Debug("search resolve: failed to stamp the attempt", "cntrb_id", c.CntrbID, "error", mErr)
+			}
+			s.logger.Debug("search resolve: search rejected", "email", c.Email, "error", err)
 			continue
 		}
 		if login == "" || ghUserID == 0 {
@@ -853,6 +871,10 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 		resolved++
 	}
 
+	if unanswered > 0 && ctx.Err() == nil {
+		s.logger.Warn("search resolve: searches failed without an answer — not stamped, retried next cycle",
+			"failed", unanswered, "of", len(candidates), "first_error", firstUnanswered)
+	}
 	if resolved > 0 {
 		s.logger.Info("search resolve cycle complete",
 			"resolved", resolved, "of", len(candidates))

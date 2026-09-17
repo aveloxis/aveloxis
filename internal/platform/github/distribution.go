@@ -94,7 +94,7 @@ func (c *Client) ListReleaseAssetExtensions(ctx context.Context, owner, repo str
 		// With WithoutETag we should never receive 304, but if some
 		// future refactor leaks an ETag into the cache for this path,
 		// the defensive branch keeps us out of the failure loop.
-		if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
+		if emptyAnswer(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list releases for %s/%s: %w", owner, repo, err)
@@ -194,16 +194,14 @@ func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]mo
 		var pkgs []ghPackage
 		err := c.http.GetJSON(ctx, userPath, &pkgs)
 		if err != nil {
-			class := platform.ClassifyError(err)
 			// ClassNotModified treated like ClassSkip (defense in depth).
-			if class == platform.ClassSkip || class == platform.ClassNotModified {
+			if emptyAnswer(err) {
 				// 404 on user endpoint: try org endpoint.
 				if errors.Is(err, platform.ErrNotFound) {
 					orgPath := fmt.Sprintf("/orgs/%s/packages?package_type=%s&per_page=100",
 						url.PathEscape(owner), url.QueryEscape(pt))
 					if err := c.http.GetJSON(ctx, orgPath, &pkgs); err != nil {
-						orgClass := platform.ClassifyError(err)
-						if orgClass == platform.ClassSkip || orgClass == platform.ClassNotModified {
+						if emptyAnswer(err) {
 							continue
 						}
 						return nil, fmt.Errorf("list org packages for %s (type=%s): %w", owner, pt, err)
@@ -327,7 +325,7 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 	ctx = platform.WithoutETag(ctx)
 	rootEntries, err := c.fetchContentsDir(ctx, owner, repo, "")
 	if err != nil {
-		if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
+		if emptyAnswer(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list root contents for %s/%s: %w", owner, repo, err)
@@ -364,12 +362,20 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 	for _, dir := range firstLevelDirs {
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
 		if err != nil {
-			if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
+			// An answer about this directory (platform.IsDefinitiveAnswer:
+			// 404/410, a non-rate-limit 403, a rejected request) or a 304:
+			// nothing to list, keep the rest. The SAME rule as the scanner's
+			// githubErrorIsNonAnswer — round 6 caught a 422 here failing the
+			// listing while the scanner, counting it as an answer, stored the
+			// scan complete with no manifests.
+			if emptyAnswer(err) || errors.Is(err, platform.ErrRequestRejected) {
 				continue
 			}
-			// One bad dir doesn't sink the whole list; log via the
-			// platform layer and move on.
-			continue
+			// Any other failure says nothing about the directory. Returning
+			// the partial list with a nil error let the scanner store it as
+			// the repo's complete manifest snapshot (v0.29.55 review round 3);
+			// the error fails the scan instead, so nothing is replaced.
+			return nil, fmt.Errorf("list %s contents for %s/%s: %w", dir, owner, repo, err)
 		}
 		for _, e := range entries {
 			if e.Type != "file" {
@@ -390,7 +396,7 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 // fetchContentsDir lists a single directory in the repo. Empty
 // dirPath means root.
 func (c *Client) fetchContentsDir(ctx context.Context, owner, repo, dirPath string) ([]ghContentsEntry, error) {
-	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, dirPath)
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, contentsPath(dirPath))
 	apiPath = strings.TrimRight(apiPath, "/")
 	var entries []ghContentsEntry
 	if err := c.http.GetJSON(ctx, apiPath, &entries); err != nil {
@@ -409,13 +415,13 @@ func (c *Client) fetchContentsDir(ctx context.Context, owner, repo, dirPath stri
 func (c *Client) FetchManifestContent(ctx context.Context, owner, repo, filePath string) (string, error) {
 	// v0.25.0: bypass ETag — same rationale as ListRootManifests.
 	ctx = platform.WithoutETag(ctx)
-	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path.Clean(filePath))
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, contentsPath(path.Clean(filePath)))
 	var entry struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
 	if err := c.http.GetJSON(ctx, apiPath, &entry); err != nil {
-		if class := platform.ClassifyError(err); class == platform.ClassSkip || class == platform.ClassNotModified {
+		if emptyAnswer(err) {
 			return "", nil
 		}
 		return "", fmt.Errorf("fetch manifest %s: %w", filePath, err)
@@ -428,7 +434,40 @@ func (c *Client) FetchManifestContent(ctx context.Context, owner, repo, filePath
 	clean = strings.ReplaceAll(clean, "\r", "")
 	decoded, err := base64.StdEncoding.DecodeString(clean)
 	if err != nil {
-		return "", nil // unparseable encoding — treat as no content
+		// Not "no content": the manifest would be stored with its declared
+		// name blanked (v0.29.55 review round 3).
+		return "", fmt.Errorf("decode manifest %s: %w", filePath, err)
 	}
 	return string(decoded), nil
+}
+
+// contentsPath escapes each segment of a repository path for a Contents API
+// URL. Names come from the repository tree, so a file or directory may
+// contain %, #, ? or spaces. Unescaped, "100%" failed to parse as a URL (no
+// request sent) — since v0.29.55 a non-answer that fails the distribution
+// scan, striking the repo toward the sideline every cycle; "C#" and "a?b"
+// requested "C" and "a" instead (usually a 404, so that directory's
+// manifests were silently skipped, or a scan failure when a same-named file
+// sits beside it), and "a?b c" drew a 400 (review rounds 5 and 6).
+func contentsPath(p string) string {
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
+}
+
+// emptyAnswer is the ONE rule (SR-17) the GitHub distribution readers use to
+// turn an error into "nothing to read here": an answer about the item
+// (platform.IsDefinitiveAnswer) other than a rejected request, or a 304. A
+// rejected request is an answer but not an empty one — the readers return it
+// and the scanner counts the source as errored; the first-level directory arm
+// alone also skips it (review round 6 on v0.29.55). The client's own off-host
+// refusal is NOT an answer, so it is returned and fails the scan (Copilot
+// review on PR #209; these readers swallowed it as ClassSkip before).
+func emptyAnswer(err error) bool {
+	if platform.ClassifyError(err) == platform.ClassNotModified {
+		return true
+	}
+	return platform.IsDefinitiveAnswer(err) && !errors.Is(err, platform.ErrRequestRejected)
 }

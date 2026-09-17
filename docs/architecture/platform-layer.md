@@ -58,12 +58,56 @@ Shared by both GitHub and GitLab implementations. Features:
 
 ## Key pool (`KeyPool`)
 
-Manages multiple API tokens with round-robin rotation for maximum throughput.
+Manages every API token for one platform, and hands them to every collector.
 
-- **Round-robin rotation**: Every key's rate limit is fully utilized before the pool waits.
-- **Configurable buffer**: Stops using a key when `remaining` drops to `buffer` (default 15), preventing 403s from concurrent workers that checked out a key before the count was updated.
-- **Automatic refill**: Keys are refilled to 5000 when the rate-limit window resets.
-- **Resource-aware**: Only core API responses update the key's rate-limit counter. Search and GraphQL responses (which have separate buckets) are ignored to prevent premature key rotation.
+### Key pool contract
+
+These rules are the contract; tests enforce each one.
+
+1. **One shared budget.** Rate-limit budget is a single resource shared by
+   every collector in a process: staged collection, commit resolution,
+   enrichment, search resolution, breadth, org scans, distribution, and the
+   tokens lent to scorecard subprocesses. All of them lease a platform's keys
+   from that platform's one `KeyPool` (one for GitHub, one for GitLab)
+   through `Acquire`, the only in-process path to a key; scorecard
+   subprocesses borrow through `LendTokens`, which is accounted.
+2. **A refusal benches the key for everyone.** When GitHub refuses a key
+   (HTTP 403 or 429 with `X-RateLimit-Remaining: 0` and no `Retry-After`), the
+   pool benches that key for that budget (`core`, `graphql` or `search`) until
+   the refusal's `X-RateLimit-Reset`. If the reset is missing or already past,
+   the bench lasts a five-minute probe window. No later response header can
+   lift a bench early. The pool keeps no balance for `search` (30 requests a
+   minute per user); a search refusal benches the key for search only.
+3. **The collector goes back for another key.** On a refusal, the REST and
+   GraphQL clients return to `Acquire` straight away and get a different key.
+   The rotation does not use up one of the request's retries. Rotations are
+   capped at the number of keys, so a request can pass through every key
+   before refusals start using up its retries. The exception is a GraphQL
+   caller that opts into fast-fail (`WithGraphQLFastFail`, used where batch
+   subdivision is the retry): its rotations spend its short retry budget.
+   When a REST refusal names a budget the pool did not bench for that request
+   (a resource other than `core`, `graphql` or `search`, or a budget that does
+   not match the request, such as a `search` refusal on a non-search path),
+   there is no key to rotate away from, so the client waits for that refusal's
+   reset instead of re-sending at once.
+4. **Wait only when nothing has budget.** For a foreground caller, `Acquire`
+   blocks for budget only when no key has any. It then wakes at the earliest
+   bench end, rest end or window reset. When only the in-flight ceilings are
+   full, it waits for a request slot to free. A fast-fail GraphQL caller gets
+   `ErrGraphQLBudgetExhausted` instead of waiting, and a background GraphQL
+   sweep also waits while the pool is at the foreground reserve line.
+   Keys refused for `core` or `graphql`, quarantined or resting are not lent to
+   scorecard either.
+
+Other behaviour:
+
+- **Selection**: among eligible keys, fewest in-flight requests first, then the most remaining budget.
+- **Per-key and pool-wide in-flight ceilings** for the GitHub pool (`collection.github_max_inflight_per_key`, `collection.github_max_inflight`), and a foreground reserve that background GraphQL sweeps cannot spend into (`collection.github_budget_foreground_reserve_pct`). The GitLab pool has no per-key ceiling.
+- **Configurable buffer**: stops using a key when `remaining` drops to `buffer` (default 15).
+- **Resource-aware**: `core` and `graphql` balances are tracked separately; `search` is refusal-only (rule 2). Other resources are not tracked.
+- **Secondary limits** (`Retry-After`): the key rests in the pool for the `Retry-After`, and the refused request waits it out before retrying. GitHub warns that continuing while secondary-limited can get an integration banned, and tokens owned by the same GitHub account share limits.
+- **Not shared across processes**: `aveloxis web` org scans, one-shot CLI commands and scorecard subprocesses spend the same tokens outside `serve`'s pool. `serve` sees that spend in the next response it gets on each key, and at the latest in the first refusal (rule 2).
+- **Observability**: the 5-minute `key pool summary` log line reports tracked balances plus `refused_core_now`, `refused_graphql_now`, `refused_search_now` and `refusals_lifetime` (one per refused response).
 
 ---
 

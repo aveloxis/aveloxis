@@ -7,7 +7,9 @@
 //   1. Scheduler ticker fires (default once per hour).
 //   2. runSearchResolve calls GetContributorsNeedingSearch(limit=N).
 //   3. For each row: SearchUserByEmail. On hit, LinkContributorToGitHubUser.
-//      On no-hit / error, MarkContributorSearchAttempted.
+//      On no-hit, or an error platform.IsDefinitiveAnswer accepts (a
+//      rejected query), MarkContributorSearchAttempted; any other error
+//      is left unstamped and retried next tick (v0.29.55).
 //   4. cntrb_last_search_attempted_at stamps the row, excluding it
 //      from future batches until the cooldown elapses.
 //
@@ -471,8 +473,10 @@ func pickMergeWinner(candidates []mergeCandidate, ghUserID int64) *mergeCandidat
 
 // MarkContributorSearchAttempted stamps cntrb_last_search_attempted_at
 // without applying any other changes. Called when search returns no
-// hit OR when the search call errored — both cases excluded from
-// the next batch until cooldown.
+// hit, or fails with a definitive answer (platform.IsDefinitiveAnswer) —
+// both excluded from the next batch until cooldown. Since v0.29.55 an
+// error that is not an answer (rate limit, transient, empty pool) is not
+// stamped.
 func (s *PostgresStore) MarkContributorSearchAttempted(ctx context.Context, cntrbID string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE aveloxis_data.contributors

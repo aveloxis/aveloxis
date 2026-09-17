@@ -417,15 +417,16 @@ func TestGitLabInBodyRateLimitExhaustsCoreBudget(t *testing.T) {
 }
 
 // TestMarkCoreExhaustedZeroesAndSetsProbeWindow — the unit contract of
-// the GitLab arm's marker: core Remaining goes to 0, and when no reset
-// is known a short probe window is installed so the key re-checks in
-// minutes rather than being consulted immediately.
+// the GitLab arm's marker (MarkBudgetExhausted on core, a response with no
+// rate headers): core Remaining goes to 0, and when no reset is known a
+// short probe window is installed so the key re-checks in minutes rather
+// than being consulted immediately.
 func TestMarkCoreExhaustedZeroesAndSetsProbeWindow(t *testing.T) {
 	kp := NewKeyPool([]string{"k"}, rlTestLogger())
 	key := kp.keys[0]
 	key.Remaining = 4999
 	key.ResetAt = time.Time{}
-	kp.MarkCoreExhausted(key)
+	kp.MarkBudgetExhausted(key, ResourceCore, &http.Response{StatusCode: http.StatusOK, Header: http.Header{}})
 	if key.Remaining != 0 {
 		t.Fatalf("Remaining = %d, want 0", key.Remaining)
 	}

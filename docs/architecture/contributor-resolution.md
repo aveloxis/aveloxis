@@ -95,7 +95,7 @@ If an email is observed under two different `cntrb_id`s, that is a duplicate-con
 
 ### R6: Enrichment is best-effort, cooldown-bounded
 
-A "thin" contributor has empty `cntrb_company` AND empty `cntrb_location`. The periodic enrichment ticker calls `client.EnrichContributor(login)` to fill these fields. If the platform profile is genuinely empty (the user has not set company / location), the row's `cntrb_last_enriched_at` is stamped to `NOW()` to suppress retry for the cooldown window (30 days).
+A "thin" contributor has empty `cntrb_company` AND empty `cntrb_location`. The periodic enrichment ticker calls `client.EnrichContributor(login)` to fill these fields. If the platform profile is genuinely empty (the user has not set company / location), the row's `cntrb_last_enriched_at` is stamped to `NOW()` to suppress retry for the cooldown window (30 days). A lookup that fails with an answer about the login (not found, gone, not visible, or a request the forge rejects) is stamped the same way. Since v0.29.55, a lookup that fails without such an answer (a rate limit, a transient or auth failure, a shutdown, an empty key pool, a cut-off response, or any other error) is **not** stamped: it is retried on the next tick and counted in one `contributor enrichment: lookups failed without an answer about the login` WARN per run. Search resolution and mailing-list sender resolution follow the same rule for their attempt stamps (`search resolve: searches failed without an answer` and `mailing-list: sender resolves failed without an answer` WARNs), and a search response that does not decode is such a failure, not a "no match".
 
 Two separate cooldown columns track two distinct background tasks:
 

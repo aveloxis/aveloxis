@@ -123,7 +123,10 @@ How requests are made (since v0.29.56):
 - **Dependencies that are not from the registry** — a local path or workspace
   package, a git or URL reference — are never looked up **for npm and cargo**:
   the registry package of the same name is a different thing, and the lookup
-  only ever returned 404. They appear in the dependency inventory
+  only ever returned 404. One deliberate exception: a Cargo path dependency
+  that ALSO declares a `version` is a published crate being developed locally
+  (`published-member = { path = "../member", version = "2.1.0" }`), so that
+  version is what gets published and it is looked up normally. They appear in the dependency inventory
   (`repo_dependencies`) but get no libyear row, so they do not enter the
   vulnerability scan as unscannable dependencies. One line per repository
   reports how many were skipped. Python drops such requirement lines earlier,

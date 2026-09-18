@@ -162,11 +162,26 @@ func applyTOMLDepTable(e *tomlDepEntry, table string) {
 }
 
 // splitTOMLDottedKey splits "serde.version" into ("serde", "version"). A
-// quoted key ("a.b" = …) is one name.
+// quoted key is ONE name however many dots it holds — but it can still carry
+// a dotted subkey after the closing quote.
+//
+// The closing quote is found first (v0.29.57). Treating the whole quoted key
+// as the name meant `"zope.interface".version = "6"` became a dependency
+// literally named `zope.interface".version`, and the real package's version
+// was never applied. Quoted names with dots are ordinary — zope.interface and
+// ruamel.yaml on PyPI — so this is not an exotic shape.
 func splitTOMLDottedKey(key string) (name, sub string) {
 	key = strings.TrimSpace(key)
-	if strings.HasPrefix(key, `"`) || strings.HasPrefix(key, "'") {
-		return tomlUnquote(key), ""
+	if q := key[:min(1, len(key))]; q == `"` || q == "'" {
+		end := strings.Index(key[1:], q)
+		if end < 0 {
+			// Unterminated: the remainder is the best name available, and
+			// it must not keep the quote character.
+			return strings.TrimSpace(key[1:]), ""
+		}
+		name = key[1 : 1+end]
+		rest := strings.TrimSpace(key[1+end+1:])
+		return name, strings.TrimSpace(strings.TrimPrefix(rest, "."))
 	}
 	name, sub, _ = strings.Cut(key, ".")
 	return strings.TrimSpace(name), strings.TrimSpace(sub)

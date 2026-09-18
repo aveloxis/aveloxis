@@ -153,3 +153,50 @@ func TestGraphQLExecutionTimeoutExhaustionIsTransient(t *testing.T) {
 		t.Errorf("hits = %d, want the fast-fail budget (%d)", n, graphqlFastFailRetries)
 	}
 }
+
+// TestExhaustedErrorNamesTheLatestCause — v0.29.57 (Copilot review round 1
+// on PR #210). A rate limit on the FINAL attempt rotates to a fresh key and
+// undoes the budget spend, so the replacement request reuses that same
+// attempt index. If the replacement then hits an execution timeout, both
+// markers equal budget-1 — and the rate-limit arm was checked first, so the
+// caller was told "rate limited" when the attempt that actually exhausted
+// the budget timed out. The two classes drive different behaviour:
+// subdivision callers halve on a timeout and defer on a rate limit, so the
+// wrong one leaves a stuck batch stuck.
+func TestExhaustedErrorNamesTheLatestCause(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })()
+
+	const rateLimitedBody = `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The default budget is maxRetries, so the final attempt index is
+		// maxRetries-1 and it is reached on request maxRetries. That
+		// request is rate-limited, which rotates to the second key and
+		// undoes the budget spend — so request maxRetries+1 REUSES the
+		// final index and times out. That timeout is what exhausts the
+		// budget, and it is what the caller must be told.
+		if n.Add(1) == maxRetries {
+			_, _ = io.WriteString(w, rateLimitedBody)
+			return
+		}
+		_, _ = io.WriteString(w, githubExecutionTimeoutBody)
+	}))
+	defer srv.Close()
+
+	// Two keys, so the rate limit can rotate rather than give up. Rotation
+	// is disabled under fast-fail, so this uses the default budget.
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"k1", "k2"}, logger), logger, AuthGitHub)
+	var dest map[string]json.RawMessage
+	err := c.GraphQL(context.Background(), "query {viewer{login}}", nil, &dest)
+
+	if err == nil {
+		t.Fatal("an exhausted budget must return an error")
+	}
+	if !errors.Is(err, ErrGraphQLExecutionTimeout) {
+		t.Errorf("exhausted error = %v, want the execution timeout that burned the final attempt", err)
+	}
+	if got := ClassifyError(err); got != ClassTransient {
+		t.Errorf("ClassifyError = %v, want ClassTransient so subdivision callers halve", got)
+	}
+}

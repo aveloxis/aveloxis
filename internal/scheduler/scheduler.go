@@ -70,6 +70,21 @@ type Config struct {
 	// the GitLab API keys belong to; the legacy GitLab group refresh only
 	// sends those keys to that instance's host (v0.29.11).
 	GitLab *config.PlatformConfig
+
+	// GitHub is the operator's aveloxis.json `github` block — the same
+	// rule as GitLab, for the same reason (v0.29.57). Its base_url names
+	// the host the GitHub keys belong to, which for a self-hosted
+	// deployment is GitHub Enterprise. Before this field, clients were
+	// hardcoded to api.github.com, so an Enterprise deployment sent its
+	// token to public GitHub. Empty or nil keeps the public default.
+	//
+	// SCOPE, because a partial fix that reads as complete is worse than an
+	// open one: this covers the clients the SCHEDULER builds — both org
+	// scans and the analysis client. The commit resolver, the breadth
+	// worker, the web server and the CLI org-add still hardcode the host
+	// (worklist item 34); they take a key pool rather than a base URL, so
+	// closing them is a signature change, not a one-line one.
+	GitHub *config.PlatformConfig
 }
 
 // DigestMailer is the narrow mailer surface the digest ticker needs
@@ -201,6 +216,17 @@ func New(store *db.PostgresStore, ghClient, glClient platform.Client, logger *sl
 	return NewWithKeys(store, ghClient, glClient, nil, nil, logger, cfg)
 }
 
+// githubAPIBase is the REST host the scheduler's own GitHub clients target:
+// the operator's github.base_url when set, else public GitHub. One helper so
+// the org scan and the analysis client cannot diverge (v0.29.57 — they were
+// both hardcoded, which sent Enterprise tokens to api.github.com).
+func githubAPIBase(cfg Config) string {
+	if cfg.GitHub != nil && cfg.GitHub.BaseURL != "" {
+		return cfg.GitHub.BaseURL
+	}
+	return "https://api.github.com"
+}
+
 // NewWithKeys creates a scheduler with the GitHub key pool (commit
 // resolution, org scans, breadth, scorecard loans) and the GitLab key pool
 // (the legacy GitLab group refresh — v0.29.11: it used the GitHub pool).
@@ -240,7 +266,7 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		workerID: workerID,
 		// Overridable in tests so the org scan can run against an
 		// httptest GitHub (v0.27.83 dedup behavioral suite).
-		ghAPIBase:    "https://api.github.com",
+		ghAPIBase:    githubAPIBase(cfg),
 		scorecardSem: make(chan struct{}, cfg.Collection.ScorecardMaxConcurrentValue()),
 	}
 
@@ -2161,7 +2187,11 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	if s.ghKeys == nil {
 		return 0
 	}
-	http := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
+	// s.ghAPIBase, not a literal (v0.29.57): this is the SECOND org-scan
+	// client — the legacy repo_groups refresh — and it was missed when
+	// scanOrgRepos moved onto the configured host, which is exactly the
+	// divergence one shared field exists to prevent.
+	http := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
 
 	// Bridge from legacy aveloxis_data.repo_groups to modern
 	// aveloxis_ops.user_groups: any user_group whose user_org_requests

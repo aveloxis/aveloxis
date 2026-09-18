@@ -49,10 +49,10 @@ func TestSchedulerConfigHasNoCollectionMirror(t *testing.T) {
 		}
 	}
 
-	if st.NumField() > 7 {
+	if st.NumField() > 8 {
 		t.Errorf("scheduler.Config has %d fields — it should stay a SLIM struct of "+
 			"scheduler-internal runtime inputs (workers, poll/lock/org intervals, "+
-			"force-full, Collection pointer). New operator knobs belong on "+
+			"force-full, Collection/Mail/GitLab/GitHub block pointers). New operator knobs belong on "+
 			"config.CollectionConfig only.", st.NumField())
 	}
 }

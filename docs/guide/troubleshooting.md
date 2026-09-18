@@ -822,12 +822,20 @@ level=WARN msg="collection still paused — database unavailable" unavailable_fo
 level=INFO  msg="database back — resuming collection" unavailable_for=...
 ```
 
-Since v0.29.56 both WARN lines also carry the connection pool's state
-(`pool_max_conns`, `pool_total_conns`, `pool_acquired_conns`, `pool_idle_conns`,
-`pool_empty_acquires`, `pool_acquire_wait_total`). That is what separates the
-two causes: every connection acquired with waiters piling up means the pool was
-too small for the work in flight, while idle connections mean the server stopped
-answering.
+Since v0.29.56 both WARN lines also carry the connection pool's state. Read the
+two halves differently:
+
+- **A snapshot of right now** — `pool_max_conns`, `pool_total_conns`,
+  `pool_acquired_conns`, `pool_idle_conns`. This is what separates the two
+  causes: every connection acquired means the pool was too small for the work
+  in flight, while idle connections mean the server stopped answering.
+- **Cumulative counters since the process started** — `pool_empty_acquires`
+  and `pool_acquire_wait_total`. These are pgxpool lifetime totals, NOT a count
+  of callers waiting now, so a large value may be left over from a busy period
+  hours earlier and says nothing about the current outage. Use them by
+  COMPARING successive log lines: a jump between two WARNs means callers were
+  queueing during that window; a flat value means they were not, however large
+  the number is.
 
 and the outage is recorded in `aveloxis_ops.aveloxis_status` (`status_name='database'`; `status='unavailable'` during the outage where writable, `status='ok'` with the recovery duration in `status_detail` afterward). In-flight jobs running at the instant of the restart still error and re-queue (that's expected), but no *new* work is dispatched into the dead window, which also avoids the reconnect deadlock pile-up.
 

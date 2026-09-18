@@ -146,3 +146,45 @@ func TestStallDetectorIsWiredAndObservationOnly(t *testing.T) {
 		t.Error("the database-unavailable WARN must carry the pool state")
 	}
 }
+
+// TestWatchStallsDoesNotChargeReportingToTheNextInterval — v0.29.57
+// (Copilot review round 1 on PR #210). The baseline was captured BEFORE
+// report ran, so the reporting work — reading runtime stats and /proc
+// pressure, then emitting a log — was counted as the next wake-up's
+// lateness. One genuine stall could therefore produce a second, invented
+// stall report, in the one tool whose whole job is telling a real stall
+// from a quiet log.
+func TestWatchStallsDoesNotChargeReportingToTheNextInterval(t *testing.T) {
+	const interval = time.Second
+	const threshold = 5 * time.Second
+	now := time.Date(2026, 9, 17, 16, 52, 0, 0, time.UTC)
+
+	// One genuine stall, then two perfectly on-time wake-ups.
+	delays := []time.Duration{interval + 10*time.Second, interval, interval}
+	i := 0
+	sleep := func(ctx context.Context, d time.Duration) error {
+		if i >= len(delays) {
+			return context.Canceled
+		}
+		now = now.Add(delays[i])
+		i++
+		return nil
+	}
+	var reported []time.Duration
+	watchStalls(context.Background(), interval, threshold,
+		func() time.Time { return now },
+		sleep,
+		func(late time.Duration) {
+			reported = append(reported, late)
+			// Reporting itself is slow: reading /proc and logging under
+			// the same pressure that caused the stall.
+			now = now.Add(8 * time.Second)
+		})
+
+	if len(reported) != 1 {
+		t.Fatalf("reported %v, want exactly the one genuine stall — the reporting cost must not be charged to the next interval", reported)
+	}
+	if reported[0] != 10*time.Second {
+		t.Errorf("late = %v, want 10s", reported[0])
+	}
+}

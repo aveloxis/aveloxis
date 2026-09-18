@@ -114,7 +114,14 @@ SELECT a.repo_id,
           date_part('year'::text, (b.data_collection_date)::date)
  ORDER BY date_part('year'::text, (b.data_collection_date)::date) DESC,
           date_part('month'::text, (b.data_collection_date)::date) DESC,
-          avg(b.libyear) DESC;
+          -- NULLS LAST, explicitly (v0.29.57): PostgreSQL's DESC defaults to
+          -- NULLS FIRST, so every repo whose libyear is unknown sorted to the
+          -- TOP of a "stalest first" ordering. A consumer reading this view
+          -- with a LIMIT and no ORDER BY of its own got a page of no-data
+          -- rows. Unknown rows grew from 30% to 52% of repos when v0.29.57
+          -- stopped storing "could not work it out" as 0, so the wart became
+          -- the majority case; fixed here rather than in each consumer.
+          avg(b.libyear) DESC NULLS LAST;
 
 -- ---------------------------------------------------------------------------
 -- 6. explorer_libyear_all  --  regular VIEW alias for _summary (v0.25.5)

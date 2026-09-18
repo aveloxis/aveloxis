@@ -1218,6 +1218,42 @@ Requires GitHub API keys (this healer refetches). Safe with serve
 stopped; after a fleet restart, run it once the force-full wave
 crests so it doesn't compete with collection for the key pool.
 
+## `aveloxis heal-libyear`
+
+One-shot healer for libyear values that could never be computed.
+
+A dependency's libyear is the age gap between the version in use and the
+latest release, so it needs both release dates. When either is missing the
+calculation returns 0 — which is indistinguishable from a dependency that
+really is on the latest release, and `avg()` counts a 0 while it skips a
+NULL. Measured on a 3.6M-row fleet in September 2026, 87% of every row
+reading `libyear = 0` actually meant "unknown", and the reported fleet
+average was less than half the honest figure.
+
+Since v0.29.57 the collector stores NULL for those rows as each repository
+is re-analysed. This command corrects the rows already stored that
+re-analysis can never fix: a dependency declared with **no pinned version**
+has no release date to measure from, whatever the registry says later.
+
+```bash
+aveloxis heal-libyear           # dry run: report how many rows qualify
+aveloxis heal-libyear --apply   # replace those numbers with NULL
+aveloxis refresh-views          # make explorer_libyear_summary reflect it
+```
+
+**The dry run is the default** — unlike `reconcile-repos`, where `--dry-run`
+is the opt-in flag. This rewrites hundreds of thousands of rows of collected
+data, so the mutation is the flag and the preview is free.
+
+Rows whose version IS pinned but whose release date was missing are
+deliberately left alone: v0.29.56 fixed the Go and Maven resolvers
+responsible for most of them, so re-analysis fills in real dates. NULLing
+them here would erase rows the next collection cycle is about to answer
+properly.
+
+Walks keyset windows over the primary key, so it is safe alongside a running
+`serve` and a cancelled run simply resumes on the next invocation.
+
 ## `aveloxis heal-vulnerabilities`
 
 One-shot healer that re-scans every repository with stored

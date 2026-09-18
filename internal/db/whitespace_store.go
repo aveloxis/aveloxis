@@ -126,8 +126,17 @@ func (s *PostgresStore) UpdateCommitWhitespaceBatch(ctx context.Context, repoID 
 		// for samples nobody reads.
 		if matchedChunk := matched - matchedBefore; matchedChunk < int64(len(chunk)) && len(unmatched) < sampleRoom {
 			sample, serr := s.unmatchedWhitespaceKeys(ctx, repoID, hashes, files, sampleRoom-len(unmatched))
-			if serr != nil && !errors.Is(serr, context.Canceled) {
-				// A cancelled context is a `stop serve`, not a failure; the
+			// A cancelled context is a `stop serve`. It is RETURNED, not just
+			// kept out of the log (v0.29.57): swallowing it let this method
+			// report success with matched < total, and the walker then
+			// logged the shutdown as an ordinary whitespace refusal.
+			// runWhitespacePhase suppresses a shutdown only when the error
+			// it receives wraps context.Canceled.
+			if errors.Is(serr, context.Canceled) {
+				return updated, matched, unmatched, serr
+			}
+			if serr != nil {
+				// Any other sampling failure costs only the diagnostic; the
 				// walk is redone next cycle either way.
 				s.logger.Warn("whitespace: could not list the unmatched commit rows", "repo_id", repoID, "error", serr)
 			}

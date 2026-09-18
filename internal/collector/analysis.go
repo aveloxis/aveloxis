@@ -1577,6 +1577,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 			lb.License = lic
 		}
+		markUnknownLibyear(lb)
 		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
 			// Round-8 class sweep: same flood shape as the dependency
 			// loop above.
@@ -2460,27 +2461,88 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 	}, nil
 }
 
+// markUnknownLibyear flags a row whose libyear could not be WORKED OUT, so
+// it is stored as NULL rather than 0.
+//
+// calcLibyear returns 0 when either release date is missing or unparseable,
+// which is indistinguishable from a dependency that really is on the latest
+// release (v0.29.57). Measured on chaoss.tv on 2026-09-17: 1,704,902 of the
+// 3,196,143 rows carrying a number had a missing date, so 87% of every row
+// reading "libyear = 0" meant "unknown" — and avg() counts a zero while it
+// skips a NULL, which reported the fleet at 1.335 years against an honest
+// 2.861.
+//
+// NULL is the answer that already exists for "no timeline" (the v0.27.47
+// GitHub Actions path) and every consumer already handles it. Two classes
+// arrive here: a dependency with no pinned version, which can never be
+// computed, and a pinned one whose registry would not give a date, which
+// heals when it does.
+//
+// Applied once, where rows are collected — a dozen resolvers each building
+// their own row is exactly where a rule like this drifts.
+func markUnknownLibyear(row *db.LibyearRow) {
+	if row == nil {
+		return
+	}
+	// Asked of calcLibyear's OWN parser, not of emptiness (v0.29.57): the
+	// two spellings would otherwise drift, and a date the parser cannot
+	// read — the case the doc comment claims to cover — would still store a
+	// fabricated 0 with the flag clear. No registry currently emits an
+	// unparseable date, so this is latent; SR-17 says one spelling anyway.
+	if _, okCur := parseLibyearDate(row.CurrentReleaseDate); !okCur {
+		row.NoLibyear = true
+	}
+	if _, okLat := parseLibyearDate(row.LatestReleaseDate); !okLat {
+		row.NoLibyear = true
+	}
+	if row.NoLibyear {
+		// Never carry a number alongside the NULL: it would read as a
+		// measurement if anything ever dropped the flag.
+		row.Libyear = 0
+	}
+}
+
+// libyearDateLayouts are the formats parseLibyearDate accepts.
+//
+// The list is NOT the safeguard — sharing it was tried and was not enough
+// (v0.29.57 round 2). "Can this be dated?" and "date it" agree because both
+// go through parseLibyearDate itself, which also rejects the zero time; a
+// second caller doing time.Parse against this list would re-create the
+// fabricated zero. Use the function, not the list.
+var libyearDateLayouts = []string{
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	time.RFC3339,
+}
+
+// parseLibyearDate is the ONE reader for a release date: the single place
+// that decides both "can this be dated?" and "what date is it?".
+//
+// A shared layout LIST was not enough (v0.29.57 round 2): calcLibyear's real
+// predicate is "parses AND is not the zero time", and a second spelling that
+// only checked parsing called "0001-01-01T00:00:00Z" a known date while
+// calcLibyear still returned 0 — re-creating the fabricated zero this
+// release exists to remove. Reachable, not theoretical:
+// fetchRegistryLastModified re-formats whatever http.ParseTime accepts, so a
+// mirror sending "Last-Modified: Mon, 01 Jan 0001 00:00:00 GMT" produces
+// exactly that string on the path v0.29.56 moved Maven onto.
+func parseLibyearDate(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range libyearDateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, !t.IsZero()
+		}
+	}
+	return time.Time{}, false
+}
+
 func calcLibyear(currentDate, latestDate string) float64 {
-	layouts := []string{
-		"2006-01-02T15:04:05Z",
-		"2006-01-02T15:04:05",
-		"2006-01-02 15:04:05",
-		time.RFC3339,
-	}
-	var current, latest time.Time
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, currentDate); err == nil {
-			current = t
-			break
-		}
-	}
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, latestDate); err == nil {
-			latest = t
-			break
-		}
-	}
-	if current.IsZero() || latest.IsZero() {
+	current, okCur := parseLibyearDate(currentDate)
+	latest, okLat := parseLibyearDate(latestDate)
+	if !okCur || !okLat {
 		return 0
 	}
 	days := latest.Sub(current).Hours() / 24

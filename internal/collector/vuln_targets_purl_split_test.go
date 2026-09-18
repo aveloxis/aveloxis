@@ -63,3 +63,38 @@ func TestPurlRebuildersKeepScopesAndStillHeal(t *testing.T) {
 		t.Error("the healed purl must pass the gate")
 	}
 }
+
+// TestPurlSplitVersionStripsQualifiersAndSubpath — v0.29.57 (Copilot review
+// round 2 on PR #210, suppressed tier). purlSplitVersion strips the
+// qualifiers ("?a=b") and subpath ("#sub") into `cut` to find the version
+// separator, then sliced its RETURN values out of the original string. So
+// the parts it handed back still carried them: the version came back as
+// "1.0?repository_url=x#src", and a versionless qualified purl returned the
+// qualifiers as part of the base. Both break the split contract the
+// rebuilders and the OSV gate rely on.
+//
+// Latent today: buildPurl emits no qualifiers, and purlSplitVersion's only
+// production caller (wireValidPurl) discards the version half. The sibling
+// purlReplaceVersion — which IS on the heal-vulnerabilities read path — has
+// the same defect and is NOT fixed here: it splits with purlScopeAwareBase,
+// a deliberately separate function (see the note above purlSplitVersion,
+// "They cannot be merged"). Worklist, not a silent ride-along.
+func TestPurlSplitVersionStripsQualifiersAndSubpath(t *testing.T) {
+	for _, tc := range []struct{ in, base, version string }{
+		{"pkg:npm/foo@1.0?repository_url=x#src", "pkg:npm/foo", "1.0"},
+		{"pkg:npm/foo@1.0#src", "pkg:npm/foo", "1.0"},
+		{"pkg:npm/foo@1.0?arch=amd64", "pkg:npm/foo", "1.0"},
+		// Versionless: the qualifiers must not end up in the base either.
+		{"pkg:npm/foo?repository_url=x#src", "pkg:npm/foo", ""},
+		{"pkg:npm/foo#src", "pkg:npm/foo", ""},
+		// Unqualified shapes are unchanged.
+		{"pkg:npm/foo@1.0", "pkg:npm/foo", "1.0"},
+		{"pkg:npm/foo", "pkg:npm/foo", ""},
+		{"pkg:npm/%40scope/bar@2.0?arch=x", "pkg:npm/%40scope/bar", "2.0"},
+	} {
+		base, version := purlSplitVersion(tc.in)
+		if base != tc.base || version != tc.version {
+			t.Errorf("purlSplitVersion(%q) = (%q, %q), want (%q, %q)", tc.in, base, version, tc.base, tc.version)
+		}
+	}
+}

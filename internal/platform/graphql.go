@@ -180,20 +180,24 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		budget = graphqlFastFailRetries
 	}
 
-	// lastRateLimit remembers the most recent in-body RATE_LIMITED so the
-	// budget-exhausted error names the real condition (the bare "exhausted
-	// N retries" text hid the cause for the 2026-05-13 stuck-repo cohort).
-	// rateLimitAttempt records WHICH attempt it was: the rate-limit wrap
-	// applies only when the FINAL attempt was the rate limit — a mixed
-	// exhaustion (one rate limit then nine 5xxs) must classify Transient,
-	// or subdividing/deferring callers dispatch on a stale cause (review
-	// F3).
-	var lastRateLimit error
-	rateLimitAttempt := -1
-	// lastTimeout / timeoutAttempt: the same final-attempt rule for GitHub's
-	// in-body execution timeout (v0.29.56), so an exhausted budget names it.
-	var lastTimeout error
-	timeoutAttempt := -1
+	// lastCause remembers the most recent named condition so the
+	// budget-exhausted error names the real one (the bare "exhausted N
+	// retries" text hid the cause for the 2026-05-13 stuck-repo cohort).
+	// lastCauseAttempt records WHICH attempt it was: the wrap applies only
+	// when the FINAL attempt carried it — a mixed exhaustion (one rate
+	// limit then nine 5xxs) must classify Transient, or subdividing and
+	// deferring callers dispatch on a stale cause (review F3).
+	//
+	// ONE pair, not one per condition (v0.29.57): a rate limit rotates to a
+	// fresh key and undoes the budget spend, so the replacement request
+	// REUSES that attempt index. Separate per-condition markers could both
+	// equal budget-1, and whichever arm was written first won — reporting a
+	// rate limit for an attempt that actually timed out, which makes a
+	// subdivision caller defer where it should halve. Whichever condition
+	// is recorded last is the one that exhausted the budget.
+	var lastCause error
+	lastCauseAttempt := -1
+	noteCause := func(err error, attempt int) { lastCause, lastCauseAttempt = err, attempt }
 
 	// Copilot round 24 (PR #193): an in-body rate-limit rotation swaps to a
 	// FRESH key — it is not a transport retry and must not spend the fixed
@@ -399,8 +403,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", url, "attempt", attempt+1, "error", parsed,
 					"token_prefix", tokenPrefix(key.Token))
-				lastRateLimit = parsed
-				rateLimitAttempt = attempt
+				noteCause(parsed, attempt)
 				if rotations < maxRotations {
 					// A key rotation, not a transport retry — undo this
 					// iteration's budget spend (the loop post-increment
@@ -415,8 +418,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// intermittent, so retry it like a 5xx (same backoff, same
 				// budget); an exhausted budget returns the timeout itself,
 				// which classifies ClassTransient for subdivision callers.
-				lastTimeout = parsed
-				timeoutAttempt = attempt
+				noteCause(parsed, attempt)
 				wait := jitteredBackoff(attempt)
 				c.logger.Warn("graphql execution timeout, retrying with backoff",
 					"url", url, "query", query, "wait", wait, "attempt", attempt+1, "error", parsed)
@@ -460,9 +462,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// in-body RATE_LIMITED, or a persistently-throttled
 				// exhaustion wears ErrTransient and downstream
 				// deferral/subdivision never sees ClassRateLimit.
-				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-					message: "graphql secondary rate limit (403 + Retry-After) persisted through the retry budget"}
-				rateLimitAttempt = attempt
+				noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql secondary rate limit (403 + Retry-After) persisted through the retry budget"}, attempt)
 				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 					return err
 				}
@@ -484,9 +485,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// eligible and the retry budget burned on immediate
 				// reuse. The budget THIS client's checkout reads was
 				// marked before release (markBudgetExhausted, above).
-				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-					message: "graphql rate limit exhausted (403 primary refusal, remaining 0) persisted through the retry budget"}
-				rateLimitAttempt = attempt
+				noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql rate limit exhausted (403 primary refusal, remaining 0) persisted through the retry budget"}, attempt)
 				// 2026-09-17: a refusal is a key ROTATION like the in-body
 				// arm, not a transport retry. The key is benched pool-wide,
 				// and spending the attempt let a pool with more refused keys
@@ -506,9 +506,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			c.logger.Info("graphql rate limit exhausted", "url", url, "status", resp.StatusCode,
 				"token_prefix", tokenPrefix(key.Token))
-			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}
-			rateLimitAttempt = attempt
+			noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}, attempt)
 			if rotations < maxRotations {
 				rotations++
 				attempt--
@@ -527,9 +526,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// Round 6 suppressed #3: see the 403 branch — HTTP 429 is
 			// explicit throttling and must win the exhaustion class
 			// when it lands on the final attempt.
-			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-				message: "graphql 429 rate limited persisted through the retry budget"}
-			rateLimitAttempt = attempt
+			noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+				message: "graphql 429 rate limited persisted through the retry budget"}, attempt)
 			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 				return err
 			}
@@ -569,17 +567,13 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// subdivision never fires. Production diagnostic on
 	// 2026-05-13 traced 6 of 7 stuck repos to exactly this
 	// missing classification.
-	if lastRateLimit != nil && rateLimitAttempt == budget-1 {
-		// The FINAL attempt burned on a rate-limited key: surface the
-		// rate-limit class (subdivision defers/halves on it; the ticker
-		// callers defer to their next claim) rather than the generic
-		// transient wrap.
-		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastRateLimit)
-	}
-	if lastTimeout != nil && timeoutAttempt == budget-1 {
-		// The final attempt was GitHub's execution timeout: return it (it
-		// classifies ClassTransient and names the condition).
-		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastTimeout)
+	if lastCause != nil && lastCauseAttempt == budget-1 {
+		// The FINAL attempt carried a named condition: surface it. A
+		// rate limit makes subdivision defer and the ticker callers wait
+		// for their next claim; an execution timeout classifies
+		// ClassTransient so they halve instead. Reporting the wrong one
+		// sends the caller down the wrong path.
+		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastCause)
 	}
 	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
 }

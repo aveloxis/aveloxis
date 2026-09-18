@@ -52,6 +52,22 @@ var v029DeployChecklist = []deployStep{
 	{"aveloxis refresh-views", "rebuild the materialized views the heals fed"},
 }
 
+// v0.29.57 adds the FIRST new operator step since v0.29.0's ladder: the
+// libyear healer. It is the v0.29 ladder with the heal inserted before the
+// view rebuild, because refresh-views is what makes the corrected rows
+// visible in explorer_libyear_summary.
+var v02957DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
+	{"scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
+	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
+	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
+	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},
+	{"aveloxis heal-libyear", "DRY RUN: report how many libyear rows name no pinned version, so their libyear can never be computed (on chaoss.tv, ~471K)"},
+	{"aveloxis heal-libyear --apply", "replace those fabricated 0 values with NULL — read the dry-run count first; this rewrites collected rows"},
+	{"aveloxis refresh-views", "rebuild the materialized views the heals fed, including explorer_libyear_summary"},
+}
+
 var deployChecklists = map[string][]deployStep{
 	"0.29.0": v029DeployChecklist,
 	"0.29.1": v029DeployChecklist,
@@ -377,6 +393,14 @@ var deployChecklists = map[string][]deployStep{
 	// schema change, no new operator step: the affected rows are rewritten
 	// by each repo's next analysis.
 	"0.29.56": v029DeployChecklist,
+	// v0.29.57: the PR #210 review fixes (Enterprise host routing for the
+	// scheduler's GitHub clients, partial-chunk activity accounting, the
+	// registry answer cache coalescing concurrent misses, quoted dotted TOML
+	// keys, the purl split contract, the stall detector's self-trigger) plus
+	// the libyear honesty change: a libyear that could not be WORKED OUT is
+	// stored as NULL instead of 0. NEW OPERATOR STEP — `aveloxis heal-libyear`
+	// corrects the rows already stored that re-analysis can never fix.
+	"0.29.57": v02957DeployChecklist,
 }
 
 // deployChecklistFor returns the steps for a version, if any.

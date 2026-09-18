@@ -346,6 +346,18 @@ type ttlCache[V any] struct {
 	now       func() time.Time
 	entries   map[string]ttlEntry[V]
 	lastSweep time.Time
+	// inflight coalesces concurrent misses for the same key (v0.29.57).
+	// Analysis workers start together and share dependencies, so without
+	// it the same crate is resolved once per worker — and on a host paced
+	// to one request per second each duplicate reserves another second.
+	inflight map[string]*inflightCall[V]
+}
+
+// inflightCall is one resolution other callers for the same key wait on.
+type inflightCall[V any] struct {
+	done chan struct{}
+	val  V
+	err  error
 }
 
 type ttlEntry[V any] struct {
@@ -355,7 +367,37 @@ type ttlEntry[V any] struct {
 }
 
 func newTTLCache[V any](ttl time.Duration) *ttlCache[V] {
-	return &ttlCache[V]{ttl: ttl, now: time.Now, entries: map[string]ttlEntry[V]{}}
+	return &ttlCache[V]{ttl: ttl, now: time.Now, entries: map[string]ttlEntry[V]{},
+		inflight: map[string]*inflightCall[V]{}}
+}
+
+// lease returns either a cached answer, or a call to wait on, or a call THIS
+// caller owns and must complete with finish. Exactly one of the three.
+func (c *ttlCache[V]) lease(key string) (val V, hit bool, wait, own *inflightCall[V], err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && c.now().Before(e.expires) {
+		return e.val, true, nil, nil, e.err
+	}
+	if call, ok := c.inflight[key]; ok {
+		var zero V
+		return zero, false, call, nil, nil
+	}
+	call := &inflightCall[V]{done: make(chan struct{})}
+	c.inflight[key] = call
+	var zero V
+	return zero, false, nil, call, nil
+}
+
+// finish publishes an owned call's result to the waiters and clears it.
+// Storing the answer in the cache stays the caller's decision (only
+// answers are cached), so finish never writes an entry itself.
+func (c *ttlCache[V]) finish(key string, call *inflightCall[V], val V, err error) {
+	call.val, call.err = val, err
+	c.mu.Lock()
+	delete(c.inflight, key)
+	c.mu.Unlock()
+	close(call.done)
 }
 
 func (c *ttlCache[V]) get(key string) (V, error, bool) {
@@ -416,16 +458,51 @@ func libyearCacheKey(dep libyearDep) string {
 func resolveLibyearCached(ctx context.Context, cache *ttlCache[*db.LibyearRow], dep libyearDep,
 	resolve func(context.Context, libyearDep) (*db.LibyearRow, error)) (*db.LibyearRow, error) {
 	key := libyearCacheKey(dep)
-	if cached, err, ok := cache.get(key); ok {
+	// mine returns the answer shaped for THIS dependency: the row is always
+	// copied, because a cached or coalesced answer was built for some other
+	// caller's requirement text and scope.
+	mine := func(shared *db.LibyearRow, err error) (*db.LibyearRow, error) {
 		if err != nil {
 			return nil, err
 		}
-		row := *cached
+		if shared == nil {
+			return nil, nil
+		}
+		row := *shared
 		row.Requirement = dep.Requirement
 		row.Type = dep.Type
 		return &row, nil
 	}
-	row, err := resolve(ctx, dep)
+
+	cached, hit, wait, own, cerr := cache.lease(key)
+	switch {
+	case hit:
+		return mine(cached, cerr)
+	case wait != nil:
+		// Another caller is already resolving this key. Waiting costs
+		// nothing; resolving again costs a paced host another slot.
+		select {
+		case <-wait.done:
+			return mine(wait.val, wait.err)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// DEFERRED, so a panicking resolver cannot strand the key (v0.29.57).
+	// Collection jobs run under `defer safego.Recover`: a panic is
+	// deliberately survivable and costs one job — but an in-flight entry
+	// cleared only on the success path would leave an unclosed channel
+	// behind, and every later caller for that dependency would block on it,
+	// holding a worker slot until `stop serve`. The panic still propagates;
+	// waiters are released with the zero answer and simply resolve again.
+	var (
+		row *db.LibyearRow
+		err error
+	)
+	defer func() { cache.finish(key, own, row, err) }()
+
+	row, err = resolve(ctx, dep)
 	switch {
 	case err == nil && row != nil:
 		stored := *row
@@ -433,7 +510,7 @@ func resolveLibyearCached(ctx context.Context, cache *ttlCache[*db.LibyearRow], 
 	case err != nil && isDefinitiveRegistryMiss(err):
 		cache.put(key, nil, err)
 	}
-	return row, err
+	return mine(row, err)
 }
 
 // githubAPIGetter is the key-pooled GitHub REST client analysis uses
@@ -463,11 +540,35 @@ func githubModuleLicense(ctx context.Context, gh githubAPIGetter, cache *ttlCach
 	}
 	owner, repo := parts[0], parts[1]
 	key := strings.ToLower(owner + "/" + repo)
-	if lic, _, ok := cache.get(key); ok {
-		return lic, nil
+	// Coalesced like the libyear cache (v0.29.57): this is the same
+	// ttlCache, and analysis workers starting together hit the same module
+	// repeatedly — v0.29.56 measured 86,304 Go rows across 3,863 distinct
+	// module names. Every duplicate spends a lease from the one shared
+	// key-pool budget (SR-20). Sweeping the sibling was missed when the
+	// libyear cache was fixed, which is the drift SR-17 names.
+	cached, hit, wait, own, _ := cache.lease(key)
+	switch {
+	case hit:
+		return cached, nil
+	case wait != nil:
+		select {
+		case <-wait.done:
+			return wait.val, wait.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
+	var (
+		lic    string
+		licErr error
+	)
+	// Deferred so a panic cannot strand the key and wedge every later
+	// caller for this module (the libyear cache learned this the same day).
+	defer func() { cache.finish(key, own, lic, licErr) }()
+
 	if gh == nil {
-		return "", errNoGitHubClient
+		licErr = errNoGitHubClient
+		return "", licErr
 	}
 	var info struct {
 		License struct {
@@ -480,9 +581,10 @@ func githubModuleLicense(ctx context.Context, gh githubAPIGetter, cache *ttlCach
 			cache.put(key, "", nil)
 			return "", nil
 		}
-		return "", fmt.Errorf("license for %s/%s: %w", owner, repo, err)
+		licErr = fmt.Errorf("license for %s/%s: %w", owner, repo, err)
+		return "", licErr
 	}
-	lic := info.License.SpdxID
+	lic = info.License.SpdxID
 	if lic == "NOASSERTION" {
 		lic = ""
 	}

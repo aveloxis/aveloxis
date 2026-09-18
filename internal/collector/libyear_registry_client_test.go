@@ -330,12 +330,18 @@ type fakeGitHubAPI struct {
 	paths   []string
 	answers map[string]string
 	errs    map[string]error
+	// before runs inside the call, before any answer is produced, so a
+	// concurrency test can hold callers inside the boundary.
+	before func()
 }
 
 func (f *fakeGitHubAPI) GetJSON(ctx context.Context, path string, dest any) error {
 	f.mu.Lock()
 	f.paths = append(f.paths, path)
 	f.mu.Unlock()
+	if f.before != nil {
+		f.before()
+	}
 	if err, ok := f.errs[path]; ok {
 		return err
 	}

@@ -59,6 +59,13 @@ func watchStalls(ctx context.Context, interval, threshold time.Duration,
 		t := now()
 		if late := t.Sub(last) - interval; late >= threshold {
 			report(late)
+			// The baseline is re-read AFTER reporting (v0.29.57): report
+			// reads runtime stats and /proc pressure and emits a log, under
+			// whatever pressure caused the stall. Charged to the next
+			// interval, that cost reports a stall of its own — and then ITS
+			// cost does the same, so one real stall becomes a permanent
+			// stream of invented ones.
+			t = now()
 		}
 		last = t
 	}

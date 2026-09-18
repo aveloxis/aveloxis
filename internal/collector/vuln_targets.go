@@ -253,11 +253,16 @@ func purlSplitVersion(purl string) (base, version string) {
 	if i := strings.IndexByte(cut, '?'); i >= 0 {
 		cut = cut[:i]
 	}
+	// Both halves come out of `cut`, not the original (v0.29.57): slicing
+	// the original handed the qualifiers and subpath back as part of the
+	// version ("1.0?repository_url=x#src"), and as part of the base when
+	// there was no version at all — the opposite of what stripping them
+	// was for.
 	at := strings.LastIndexByte(cut, '@')
 	if at < 0 {
-		return purl, ""
+		return cut, ""
 	}
-	return purl[:at], purl[at+1:]
+	return cut[:at], cut[at+1:]
 }
 
 // purlScopeAwareBase returns a purl without its version, treating an '@'

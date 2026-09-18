@@ -96,6 +96,7 @@ func main() {
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
+		healLibyearCmd(&cfgPath),
 		healCollectionGapsCmd(&cfgPath),
 		markGoneReposCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),
@@ -230,6 +231,11 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 		// The gitlab block: its base_url names the one instance the
 		// GitLab keys (glKeys, above) may be sent to (v0.29.11).
 		GitLab: &cfg.GitLab,
+		// The github block, for the same reason (v0.29.57): its base_url
+		// names the host ghKeys may be sent to. Without it the scheduler's
+		// own clients were hardcoded to api.github.com, so an Enterprise
+		// deployment shipped its token to public GitHub.
+		GitHub: &cfg.GitHub,
 	})
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).

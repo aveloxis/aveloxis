@@ -110,20 +110,34 @@ func (c *Client) FetchContributorActivity(ctx context.Context, logins []string) 
 		gaveUp      bool
 	)
 	skippedTotal := 0
-	flush := func(batch []string) error {
-		skipped, lastSkipErr, err := c.fetchActivityWithSubdivide(ctx, batch, out)
+	// flush returns the logins this chunk got NO answer about, alongside the
+	// error. A subdivided chunk can half-complete: the subchunks that
+	// answered own their own absences (a deleted account among them must
+	// still retire), so only the unanswered subtrees may be reported
+	// (v0.29.57).
+	flush := func(batch []string) ([]string, error) {
+		skipped, lastSkipErr, unanswered, err := c.fetchActivityWithSubdivide(ctx, batch, out)
 		if err != nil {
-			return err
+			if len(unanswered) == 0 {
+				// Defensive: an error with nothing named is reported as the
+				// whole batch. Over-reporting costs a retry next tick;
+				// under-reporting would retire a live account nobody asked
+				// about.
+				unanswered = batch
+			}
+			return unanswered, err
 		}
 		if skipped == len(batch) && skipped > 0 {
-			return fmt.Errorf("contributor activity: all %d aliases in chunk unresolvable at size 1 — systemic resource-limit condition, refusing to mark the batch dataless: %w", skipped, lastSkipErr)
+			// Every alias unresolvable alone is the systemic shape: refuse
+			// to mark the batch dataless, and treat none of it as answered.
+			return batch, fmt.Errorf("contributor activity: all %d aliases in chunk unresolvable at size 1 — systemic resource-limit condition, refusing to mark the batch dataless: %w", skipped, lastSkipErr)
 		}
 		// Counted only for a chunk that SUCCEEDED: these are accounts GitHub
 		// would not resolve individually. Counting a wholesale chunk failure
 		// here would report an outage as a crowd of permanently expensive
 		// accounts — the 2026-07-30/31 misdiagnosis in miniature.
 		skippedTotal += skipped
-		return nil
+		return nil, nil
 	}
 	// run reports a chunk's outcome. A failed chunk's logins are UNFETCHED —
 	// the caller must not read their absence from `out` as "deleted" — and
@@ -134,7 +148,7 @@ func (c *Client) FetchContributorActivity(ctx context.Context, logins []string) 
 	// requests, so attempting all 100 chunks of a tick would spend ~14,700.
 	run := func(batch []string) error {
 		chunksRun++
-		err := flush(batch)
+		noAnswerHere, err := flush(batch)
 		if err == nil {
 			failedRun = 0
 			return nil
@@ -149,7 +163,7 @@ func (c *Client) FetchContributorActivity(ctx context.Context, logins []string) 
 		}
 		chunkFailed++
 		failedRun++
-		unfetched = append(unfetched, batch...)
+		unfetched = append(unfetched, noAnswerHere...)
 		// The failures in a run are the same condition; keep the first few
 		// so the error stays readable.
 		if len(chunkErrs) < activityChunkFailureLimit {
@@ -182,7 +196,13 @@ func (c *Client) FetchContributorActivity(ctx context.Context, logins []string) 
 		}
 	}
 	if skippedTotal > 0 {
-		c.logger.Warn("contributor activity: accounts GitHub would not resolve even alone — skipped this tick",
+		// Says what was OBSERVED this tick, not what the accounts are
+		// (v0.29.57). The count includes accounts that failed alone with
+		// ErrGraphQLExecutionTimeout, which the retry arm treats as
+		// intermittent GitHub load — "would not resolve even alone" reads
+		// as a property of the account and sends operators hunting bad
+		// accounts during what is actually a GitHub incident.
+		c.logger.Warn("contributor activity: accounts unresolved at batch size 1 this tick — skipped, will retry next tick",
 			"accounts", skippedTotal, "of", len(logins))
 	}
 	if chunkFailed > 0 {
@@ -277,16 +297,19 @@ const activityChunkFailureLimit = 3
 // v0.27.79 rule: a resource-limit condition must never become an
 // empty-but-successful result) — those logins stay unstamped and are
 // retried, while the other chunks still run (v0.29.56).
-func (c *Client) fetchActivityWithSubdivide(ctx context.Context, logins []string, out map[string]model.ContributionActivity) (skipped int, lastSkipErr error, err error) {
+func (c *Client) fetchActivityWithSubdivide(ctx context.Context, logins []string, out map[string]model.ContributionActivity) (skipped int, lastSkipErr error, unanswered []string, err error) {
 	if len(logins) == 0 {
-		return 0, nil, nil
+		return 0, nil, nil, nil
 	}
 	batchErr := c.fetchActivityBatch(ctx, logins, out)
 	if batchErr == nil {
-		return 0, nil, nil
+		return 0, nil, nil, nil
 	}
 	if platform.ClassifyError(batchErr) != platform.ClassTransient {
-		return 0, nil, batchErr
+		// This subtree got no answer. Only THESE logins are unanswered —
+		// a sibling that already completed answered for its own, including
+		// the ones it legitimately omitted (v0.29.57).
+		return 0, nil, logins, batchErr
 	}
 	if len(logins) == 1 {
 		// Debug per login, not WARN: with keep-going a bad tick can reach
@@ -294,19 +317,23 @@ func (c *Client) fetchActivityWithSubdivide(ctx context.Context, logins []string
 		// v0.27.91 flood class). The count is reported by the caller.
 		c.logger.Debug("contributor activity: account unresolvable even alone (resource limits or persistent server errors) — skipping (scheduler will mark-only stamp it)",
 			"login", logins[0], "error", batchErr)
-		return 1, batchErr, nil
+		// Answered: GitHub resolved the query and said this account cannot
+		// be served. The scheduler mark-only stamps it, so it is NOT
+		// unanswered.
+		return 1, batchErr, nil, nil
 	}
 	mid := len(logins) / 2
-	leftSkipped, leftErr, err := c.fetchActivityWithSubdivide(ctx, logins[:mid], out)
+	leftSkipped, leftErr, leftUnanswered, err := c.fetchActivityWithSubdivide(ctx, logins[:mid], out)
 	if err != nil {
-		return leftSkipped, leftErr, err
+		// The right half was never attempted, so it is unanswered too.
+		return leftSkipped, leftErr, append(append([]string(nil), leftUnanswered...), logins[mid:]...), err
 	}
-	rightSkipped, rightErr, err := c.fetchActivityWithSubdivide(ctx, logins[mid:], out)
+	rightSkipped, rightErr, rightUnanswered, err := c.fetchActivityWithSubdivide(ctx, logins[mid:], out)
 	lastSkipErr = rightErr
 	if lastSkipErr == nil {
 		lastSkipErr = leftErr
 	}
-	return leftSkipped + rightSkipped, lastSkipErr, err
+	return leftSkipped + rightSkipped, lastSkipErr, append(leftUnanswered, rightUnanswered...), err
 }
 
 type activityNode struct {

@@ -1828,7 +1828,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 <ol class="arabic simple">
 <li><p>Collects repos in priority order from the queue</p></li>
 <li><p>Re-collects repos after <code class="docutils literal notranslate"><span class="pre">days_until_recollect</span></code> (default: 1 day)</p></li>
-<li><p>Refreshes materialized views every Saturday</p></li>
+<li><p>Refreshes the materialized views’ data weekly (default Saturday; <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>)</p></li>
 <li><p>Runs contributor breadth discovery every 6 hours</p></li>
 <li><p>Refreshes org membership every 4 hours</p></li>
 </ol>

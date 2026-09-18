@@ -654,20 +654,33 @@ The `migrate` command includes a data cleanup pass that detects and nullifies ga
 logs an ERROR at startup (v0.20.15 raised it from WARN):
 
 ```
-level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. ..." db_schema_version=0.29.2 binary_version=0.29.4 action="aveloxis migrate --skip-views"
+level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
 ```
+
+If the ERROR instead reads `schema version could not be read`, the process
+could not query `aveloxis_ops.schema_meta` (lost connection, timeout, or a
+role without access to it). That is not evidence the schema is behind: check
+the connection and grants first. (Before v0.29.57 a failed read was logged as
+`schema version unknown — … has not run against this database`.)
 
 **Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without running `migrate` (or a foreground `aveloxis serve`, which migrates at startup).
 
 **Solution:**
 
-Run the upgrade ladder — `stop all`, migrate, `start all`:
+Run the release's upgrade ladder. `aveloxis deploy-checklist` prints it; a
+release with no checklist needs only:
 
 ```bash
 aveloxis stop all
 aveloxis migrate --skip-views     # moves the schema stamp
 aveloxis start all
 ```
+
+Use the checklist when there is one: its migrate step can differ. v0.29.57's
+is a plain `aveloxis migrate`, because only that applies its changed view
+definition, and it carries heals a bare migrate does not run. (Before
+v0.29.57 this ERROR, and its `action` attribute, always named
+`aveloxis migrate --skip-views`.)
 
 Since v0.29.4, `aveloxis start serve` on an existing fleet REFUSES while
 the schema stamp is behind the binary (that is the evidence the release's
@@ -1425,14 +1438,17 @@ msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_g
 **Fix sequence (v0.25.32+):**
 
 ```bash
+aveloxis deploy-checklist           # first: this binary's deploy steps, if not done
+                                    # yet (its migrate creates the LOWER(repo_git)
+                                    # lookup index and WARNs + skips the unique
+                                    # index while dups remain; with no checklist,
+                                    # `stop all`, `migrate --skip-views`, `start all`)
 aveloxis stop serve                 # optional — dedup-repos skips mid-flight
                                     # pairs, but a quiet window drains all in one run
-aveloxis migrate --skip-views       # creates the LOWER(repo_git) lookup index;
-                                    # WARNs + skips the unique index while dups remain
 aveloxis dedup-repos --dry-run      # review the plan
 aveloxis dedup-repos --limit 50     # canary, then:
 aveloxis dedup-repos                # full run — repeat until "0 pairs"
-aveloxis migrate --skip-views       # now builds uq_repos_repo_git_ci (the backstop)
+aveloxis migrate --skip-views       # after the deploy steps: builds uq_repos_repo_git_ci
 aveloxis refresh-views              # matviews stop double-counting immediately
 aveloxis start all
 ```

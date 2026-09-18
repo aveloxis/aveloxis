@@ -220,9 +220,12 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		fmt.Println("re-run to retry skipped repos")
 	}
 	if preconditionUnmet > 0 {
-		logger.Error("precondition unmet — consolidations refused: run `aveloxis migrate --skip-views` on this binary first, then re-run",
+		// db.DeployStepsAdvice, not a literal migrate: on a release whose
+		// checklist migrates without --skip-views (v0.29.57), the literal
+		// stamped the binary around its view definitions (L10 round 3).
+		logger.Error("precondition unmet — consolidations refused: run "+db.DeployStepsAdvice+" on this binary first, then re-run",
 			"repos_refused", preconditionUnmet)
-		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run `aveloxis migrate --skip-views` first", preconditionUnmet)
+		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run %s first", preconditionUnmet, db.DeployStepsAdvice)
 	}
 	return nil
 }

@@ -217,8 +217,6 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	// Start scheduler.
-	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
-
 	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, glKeys, logger, scheduler.Config{
 		Workers: workers,
 		// The whole aveloxis.json collection block, consumed directly —
@@ -1147,14 +1145,16 @@ func migrateCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Run database schema migrations",
-		Long: `Runs the schema migrations and (by default) creates/refreshes
-materialized views used by 8Knot and analytics.
+		Long: `Runs the schema migrations and (by default) drops and re-creates
+the materialized views used by 8Knot and analytics.
 
 Use --skip-views to skip the materialized view block entirely. This is
 useful when you're iterating on a schema-error fix on a large database
-where the matview rebuild adds significant time per attempt — run a
-plain ` + "`aveloxis refresh-views`" + ` (or wait for the next scheduler
-tick) once the schema errors are resolved.
+where the matview rebuild adds significant time per attempt. Without it,
+every view is dropped and re-created from its definition — the only step
+that applies a changed definition. ` + "`aveloxis refresh-views`" + ` (and
+the weekly rebuild) refresh the data of views that already exist, under
+the definitions they already have.
 
 Use --no-wait to fail fast if another aveloxis migration is already in
 progress (rather than blocking on the advisory lock until the holder
@@ -1171,8 +1171,8 @@ running migrations.`,
 				return err
 			}
 			defer store.Close()
-			// The explicit migrate command always creates/refreshes views,
-			// unless --skip-views is passed.
+			// The explicit migrate command drops and re-creates every view
+			// (applying changed definitions), unless --skip-views is passed.
 			store.SetMatviewSkip(skipViews)
 			if !skipViews {
 				store.SetMatviewOnStartup(true)
@@ -1182,7 +1182,7 @@ running migrations.`,
 		},
 	}
 	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
-		"skip materialized view creation/refresh (run `aveloxis refresh-views` separately when ready)")
+		"skip the materialized view block (a later plain 'aveloxis migrate' re-creates the views; 'aveloxis refresh-views' only refreshes existing ones)")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false,
 		"fail fast if another aveloxis migration is in progress (don't block on the advisory lock)")
 	return cmd
@@ -1193,7 +1193,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long: `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).
+		Long: `Refreshes the data of all 20 materialized views used by 8Knot and other analytics tools. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
 
 --aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {

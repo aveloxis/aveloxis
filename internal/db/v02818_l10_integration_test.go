@@ -373,8 +373,10 @@ func TestEmailMessageIndexGateRefusesWithoutIndex(t *testing.T) {
 			continue
 		}
 		err = emailMessageFKIndexesReadyFor(ctx, tx, "repos")
-		if err == nil || !strings.Contains(err.Error(), "idx_email_message_signaled_repo_id") || !strings.Contains(err.Error(), "aveloxis migrate --skip-views") {
-			t.Errorf("gate with the signaled_repo_id index dropped = %v; want a refusal naming the index and the migrate", err)
+		// v0.29.57 L10 round 3: the remedy is the release's deploy steps
+		// (DeployStepsAdvice), with the standard migrate as the fallback.
+		if err == nil || !strings.Contains(err.Error(), "idx_email_message_signaled_repo_id") || !strings.Contains(err.Error(), "aveloxis migrate --skip-views") || !strings.Contains(err.Error(), "aveloxis deploy-checklist") {
+			t.Errorf("gate with the signaled_repo_id index dropped = %v; want a refusal naming the index and the deploy steps", err)
 		}
 		// Copilot round 6: a VALID index led by the column but partial on an
 		// UNRELATED predicate must not read as ready — the FK check and the

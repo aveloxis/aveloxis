@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1791,11 +1796,11 @@ Phase 3: Messages (sequential, after parallel phase)
 <p>The repo is cloned as a bare repo (or fetched if a clone already exists):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">REPO_URL</span><span class="o">=</span>https://github.com/augurlabs/augur
 <span class="nv">CLONE_PATH</span><span class="o">=</span>/data/aveloxis-repos/augurlabs-augur.git
-git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">"</span><span class="nv">$REPO_URL</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CLONE_PATH</span><span class="s2">"</span><span class="w">   </span><span class="c1"># first time</span>
+git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$REPO_URL</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># first time</span>
 <span class="c1"># subsequent runs — an explicit refspec, because `git clone --bare`</span>
 <span class="c1"># writes no fetch refspec: a bare `git fetch --all` downloads objects</span>
 <span class="c1"># but never advances refs/heads/*, leaving the clone permanently stale</span>
-git<span class="w"> </span>-C<span class="w"> </span><span class="s2">"</span><span class="nv">$CLONE_PATH</span><span class="s2">"</span><span class="w"> </span>fetch<span class="w"> </span>origin<span class="w"> </span><span class="s1">'+refs/heads/*:refs/heads/*'</span><span class="w"> </span><span class="s1">'+refs/tags/*:refs/tags/*'</span><span class="w"> </span>--prune
+git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w"> </span>fetch<span class="w"> </span>origin<span class="w"> </span><span class="s1">&#39;+refs/heads/*:refs/heads/*&#39;</span><span class="w"> </span><span class="s1">&#39;+refs/tags/*:refs/tags/*&#39;</span><span class="w"> </span>--prune
 </pre></div>
 </div>
 <p>Bare clones are permanent and stored in the <code class="docutils literal notranslate"><span class="pre">repo_clone_dir</span></code> directory.</p>
@@ -1933,7 +1938,7 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">"</span><s
 <td><p><code class="docutils literal notranslate"><span class="pre">https://pypi.org/pypi/{pkg}/json</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>Go proxy</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">https://proxy.golang.org/{mod}/&#64;v/list</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">https://proxy.golang.org/{mod}/&#64;latest</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>crates.io</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">https://crates.io/api/v1/crates/{crate}</span></code></p></td>
@@ -1966,7 +1971,7 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">"</span><s
 <p><strong>Invocation:</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">OUTPUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123.json<span class="w">   </span><span class="c1"># the JSON the worker ingests</span>
 <span class="nv">CHECKOUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123<span class="w">      </span><span class="c1"># the temporary clone</span>
-scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span><span class="s2">"</span><span class="nv">$OUTPUT</span><span class="s2">"</span><span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKOUT</span><span class="s2">"</span>
+scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OUTPUT</span><span class="s2">&quot;</span><span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CHECKOUT</span><span class="s2">&quot;</span>
 </pre></div>
 </div>
 <table class="docutils align-default">

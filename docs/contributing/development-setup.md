@@ -105,7 +105,7 @@ If you want to skip the matview build for faster iteration (you typically do dur
 go run ./cmd/aveloxis migrate --skip-views
 ```
 
-You can refresh views later with `go run ./cmd/aveloxis refresh-views` or let the scheduler's weekly rebuild handle them.
+On a fresh database this leaves the materialized views uncreated, and nothing else creates them: `refresh-views` and the weekly rebuild only refresh views that exist, and `serve` skips its startup migration while the schema stamp matches its version. Run a plain `go run ./cmd/aveloxis migrate` when you want them.
 
 ## 6. (Optional) Install scc + scorecard
 
@@ -182,7 +182,7 @@ You skipped step 5 (or your `aveloxis.json` points at the wrong database). Run `
 
 ### `column "X" does not exist`
 
-Your binary is newer than the DB. Re-run `go run ./cmd/aveloxis migrate --skip-views`. This is the v0.20.15 ERROR-level startup log that warns about exactly this state.
+Your binary is newer than the DB. Re-run `go run ./cmd/aveloxis migrate` (add `--skip-views` to skip the views, unless your branch changed `matviews.sql`). This is the v0.20.15 ERROR-level startup log that warns about exactly this state.
 
 ### `failed to connect to ... server is starting up`
 

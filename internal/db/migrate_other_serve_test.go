@@ -63,7 +63,10 @@ func TestStartupMigrateRefusalDecision(t *testing.T) {
 		// Round-5 finding 5: the operator needs the other serve's address
 		// to tell the primary from a lingering backend of a serve just
 		// stopped on this very host.
-		for _, needle := range []string{"aveloxis start scancode-worker", "aveloxis stop all", "aveloxis migrate --skip-views", ToolVersion, "10.0.0.5"} {
+		// Post-loop review finding 2 (v0.29.57): the ladder's migrate is
+		// the CHECKLIST's, so the refusal points at deploy-checklist and
+		// keeps the standard migrate only as the fallback.
+		for _, needle := range []string{"aveloxis start scancode-worker", "aveloxis stop all", "aveloxis deploy-checklist", "aveloxis migrate --skip-views", ToolVersion, "10.0.0.5"} {
 			if !strings.Contains(msg, needle) {
 				t.Errorf("%s: the refusal must tell the operator %q, got %q", c.name, needle, msg)
 			}

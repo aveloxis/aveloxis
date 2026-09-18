@@ -291,10 +291,10 @@ type CollectionConfig struct {
 	// inside one key's per-minute secondary budget.
 	ScorecardMaxConcurrent int `json:"scorecard_max_concurrent"`
 
-	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
-	// during schema migration (startup). For large databases this can take minutes.
-	// Default: false — views are created on first migrate but not refreshed on every startup.
-	MatviewRebuildOnStartup bool `json:"matview_rebuild_on_startup"`
+	// matview_rebuild_on_startup was removed in v0.29.57: serve set it after
+	// the startup migration that reads it, so it never did anything. A plain
+	// `aveloxis migrate` re-creates the views; the tripwire is
+	// TestDeadMatviewRebuildOnStartupNotReintroduced.
 
 	// PRChildMode selects between the REST per-PR child waterfall
 	// ("rest", default) and the batched GraphQL fetcher ("graphql").
@@ -1617,7 +1617,6 @@ func DefaultConfig() *Config {
 			RepoCloneDir:                     defaultCloneDir(),
 			MatviewRebuildDay:                "saturday",
 			ActivityHistoryWindowDays:        180,
-			MatviewRebuildOnStartup:          false,
 			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
 			// default for GitHub PR-child fetch and issue+PR listing —
 			// the flip the v0.19.0 sunset plan scheduled but never

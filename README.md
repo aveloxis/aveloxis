@@ -560,7 +560,7 @@ Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also
 aveloxis refresh-views
 ```
 
-Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Views are also rebuilt automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off).
+Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Their data is also refreshed automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off). A refresh keeps each view's definition; a release that changes one needs a plain `aveloxis migrate`, which re-creates the views.
 
 ### `aveloxis install-tools` — Install all optional analysis tools
 
@@ -950,7 +950,7 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 | `explorer_repo_files` | Latest SCC file listing per repo (most recent analysis date) |
 | `issue_reporter_created_at` | Legacy issue reporter view |
 
-**Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; subsequent startups skip them. Manual rebuild: `aveloxis refresh-views`. The explicit `aveloxis migrate` command always creates/refreshes views.
+**Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; subsequent startups skip them. Manual refresh: `aveloxis refresh-views` (data only; each view keeps its definition). The explicit `aveloxis migrate` command, without `--skip-views`, drops and re-creates every view from its definition — the only step that applies a changed definition.
 
 ### Database Schema
 
@@ -1230,6 +1230,7 @@ pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -W --keep-going 
 Starting Apache mailing-list collection
 
 ###### 1. Schema must be at v0.25.9+ (the mailing-list tables + platform 6):
+Run the binary's deploy steps: `aveloxis deploy-checklist` prints them. A release with none needs only:
 ```bash
 aveloxis stop all && aveloxis migrate --skip-views && aveloxis start all
 ```

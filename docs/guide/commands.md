@@ -186,7 +186,8 @@ aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
   carries. Since v0.29.4 the incident's shape (a binary AHEAD of the
   schema stamp) is refused twice: the `start serve` deploy gate refuses
   when the stamp is behind the binary (no migration of that binary has
-  completed here — the ladder's step 2, `aveloxis migrate --skip-views`),
+  completed here — the ladder's step 2: the release checklist's migrate,
+  `aveloxis migrate --skip-views` on the standard ladder),
   and serve's own startup migration refuses to run a full pass while
   another `aveloxis-serve` is connected. Since 2026-09-11 a
   **same-version** `start serve` is refused too: serve will not start a
@@ -380,7 +381,10 @@ See the [troubleshooting guide](troubleshooting.md#graphql-pr-batch-errors-on-la
 
 ## `aveloxis migrate`
 
-Creates or updates the database schema.
+Creates or updates the database schema. Without `--skip-views` it also drops
+and re-creates every materialized view from its definition, which is the only
+command that applies a changed view definition; with `--skip-views` the views
+are left as they are.
 
 ```bash
 aveloxis migrate
@@ -511,11 +515,17 @@ the candidate set.
 The merge refuses to start until the v0.28.18 migrate has built the
 `email_message` FK indexes (`idx_email_message_repo_id` /
 `idx_email_message_signaled_repo_id`) — without them every pair would
-sequential-scan that table on the repoints and again at commit. Run
-`aveloxis migrate --skip-views` on the new binary first; the refusal
-names the missing index.
+sequential-scan that table on the repoints and again at commit. Run the
+new binary's deploy steps first (`aveloxis deploy-checklist` prints them;
+`aveloxis migrate --skip-views` if it prints none); the refusal names the
+missing index. The precondition checks the indexes, not the schema stamp,
+so a fleet that built them in an earlier release passes it on a binary
+that is not yet deployed: keeping that order is up to you.
 
 ### After the run
+
+Once the binary's deploy steps are done (so the views already carry the
+release's definitions):
 
 ```bash
 aveloxis migrate --skip-views   # builds uq_repos_repo_git_ci — the permanent
@@ -624,7 +634,7 @@ aveloxis refresh-views                # the materialized views
 aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggregate tables
 ```
 
-Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Views are also rebuilt automatically every Saturday by `aveloxis serve`.
+Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Their data is also refreshed weekly by `aveloxis serve` (default Saturday; `collection.matview_rebuild_day`, which can also disable it). A refresh keeps each view's definition: a release that changes one needs a plain `aveloxis migrate`, which re-creates the views.
 
 `--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
 
@@ -1560,8 +1570,9 @@ so `aveloxis start serve` / `aveloxis start all` stops prompting for
 them. Run it AFTER completing the `deploy-checklist` steps. It cannot
 stand in for step 2: while the schema stamp is behind the binary the
 start gate refuses regardless of the acknowledgement (v0.29.4) — only a
-completed migration of that binary (the ladder's `aveloxis migrate
---skip-views`) moves the stamp.
+completed migration of that binary (the checklist's migrate step —
+`aveloxis migrate --skip-views` on the standard ladder, a plain `aveloxis
+migrate` for v0.29.57) moves the stamp.
 
 ```bash
 aveloxis ack-deploy [--note "..."]
@@ -1575,8 +1586,9 @@ v0.29.4 the gate also reads the schema stamp, on EVERY release and
 BEFORE the ledger: a stamp behind the binary proves no migration of
 that binary has completed here (the ladder's step 2), so it refuses
 without a prompt and records nothing — an acknowledgement cannot clear
-it, only a completed migration of that binary (the ladder's `aveloxis
-migrate --skip-views`) can. Fresh installs, releases without deploy
+it, only a completed migration of that binary (the checklist's migrate
+step, which the refusal names — `aveloxis migrate --skip-views` on the
+standard ladder) can. Fresh installs, releases without deploy
 steps on a current stamp, and acknowledged releases whose stamp is
 current, start silently. When another `aveloxis-serve` is already
 connected to the database the gate prints a note (never a refusal)

@@ -54,18 +54,29 @@ var v029DeployChecklist = []deployStep{
 
 // v0.29.57 adds the FIRST new operator step since v0.29.0's ladder: the
 // libyear healer. It is the v0.29 ladder with the heal inserted before the
-// view rebuild, because refresh-views is what makes the corrected rows
+// view refresh, because refresh-views is what makes the corrected rows
 // visible in explorer_libyear_summary.
+//
+// It also migrates WITHOUT --skip-views. This release changes
+// explorer_libyear_summary's DEFINITION (it now orders NULLS LAST), and only
+// a plain migrate re-creates a view from its definition: --skip-views skips
+// the views, refresh-views refreshes their data under the old definition,
+// and serve never re-creates a view at startup. The views are therefore
+// built twice — once here, once in the refresh after the heals — which is
+// the price of the new ordering shipping at all. The migrate's view block
+// only WARNs on failure and still exits 0, so the next step checks the
+// outcome (the stored definition) before any heal runs.
 var v02957DeployChecklist = []deployStep{
 	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
-	{"aveloxis migrate --skip-views", "schema + ledgered backfills (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
+	{"aveloxis migrate", "schema + ledgered backfills AND re-create the materialized views — NOT --skip-views this time: this release changes explorer_libyear_summary's definition, which only a plain migrate applies (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
+	{`psql -h <host> -p <port> -U <user> -d <dbname> -Atc "SELECT pg_get_viewdef('aveloxis_data.explorer_libyear_summary') LIKE '%NULLS LAST%'"`, "must print t — the new view definition is in place. Fill the four values from the database block of aveloxis.json (a bare psql connects with libpq defaults and can reach a different database). The migrate's view block only WARNs when it fails (`materialized view creation had errors`) and still exits 0, so check the outcome: on f, fix what that WARN names and re-run `aveloxis migrate` before the heals"},
 	{"scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
 	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
 	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
 	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},
 	{"aveloxis heal-libyear", "DRY RUN: report how many libyear rows name no pinned version, so their libyear can never be computed (on chaoss.tv, ~471K)"},
 	{"aveloxis heal-libyear --apply", "replace those fabricated 0 values with NULL — read the dry-run count first; this rewrites collected rows"},
-	{"aveloxis refresh-views", "rebuild the materialized views the heals fed, including explorer_libyear_summary"},
+	{"aveloxis refresh-views", "refresh the views' DATA after the heals, including explorer_libyear_summary (its new definition was applied by the migrate above)"},
 }
 
 var deployChecklists = map[string][]deployStep{
@@ -445,11 +456,30 @@ type deployGate interface {
 	OtherServeConnected(ctx context.Context) (db.OtherServe, error)
 }
 
+// ladderMigrateStep is the migrate command of the checklist the gate
+// enforces for version — step 2 of its ladder — so the gate's own advice
+// cannot contradict the list it points at. A release whose views changed
+// migrates WITHOUT --skip-views (v0.29.57), and a refusal that still said
+// `aveloxis migrate --skip-views` sent an operator who ran `start all`
+// first around the step that applies the new definition. A version with no
+// checklist, or a checklist with no migrate step, gets the standard
+// ladder's command.
+func ladderMigrateStep(version string) string {
+	if steps, ok := deployChecklistFor(version); ok {
+		for _, st := range steps {
+			if st.cmd == "aveloxis migrate" || strings.HasPrefix(st.cmd, "aveloxis migrate ") {
+				return st.cmd
+			}
+		}
+	}
+	return "aveloxis migrate --skip-views"
+}
+
 // deployStepsProvablyUnrun reports whether the schema stamp proves this
 // binary's deploy steps have NOT completed: the stamp moves only when a
-// migration of this binary COMPLETES (step 2 of the ladder, `aveloxis
-// migrate --skip-views` after `stop all` — or a serve's own startup
-// migration), so a stamp behind the binary means no such migration has
+// migration of this binary COMPLETES (step 2 of the ladder, the
+// checklist's migrate after `stop all` — see ladderMigrateStep — or a
+// serve's own startup migration), so a stamp behind the binary means no such migration has
 // completed here — whatever the ledger or an operator's "y" says (a
 // migrate that ran and failed closed leaves the stamp behind too; the
 // operator action is the same). An empty stamp is unknown (the prompt flow
@@ -501,7 +531,7 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 	}
 	if deployStepsProvablyUnrun(stamp, version) {
 		if skip {
-			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`aveloxis migrate --skip-views`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above).\n", stamp, version, version)
+			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`%s`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above).\n", stamp, version, version, ladderMigrateStep(version))
 			// Round-11 finding 7: this is the ONE path with EVIDENCE the
 			// steps did not run, so it is the last place to send the
 			// operator away without them. Every other bypass below prints
@@ -511,8 +541,8 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 			}
 			return true, nil
 		}
-		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`aveloxis migrate --skip-views`) has not completed against this database.\n", stamp, version, version)
-		fmt.Fprintln(out, "Run them from the primary host (`aveloxis stop all`, `aveloxis migrate --skip-views`, the heals, `aveloxis ack-deploy`), or pass --skip-deploy-check.")
+		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`%s`) has not completed against this database.\n", stamp, version, version, ladderMigrateStep(version))
+		fmt.Fprintf(out, "Run them from the primary host (`aveloxis stop all`, `%s`, the heals, `aveloxis ack-deploy`), or pass --skip-deploy-check.\n", ladderMigrateStep(version))
 		fmt.Fprintln(out, "If this host should only run scancode, use `aveloxis start scancode-worker` instead — `start serve` is the full scheduler regardless of the config's knobs.")
 		return false, nil
 	}
@@ -623,7 +653,7 @@ func deployAckContext(ctx context.Context) (context.Context, context.CancelFunc)
 // age out two releases after the one that introduced them, so the
 // no-entry state is a planned state, not a slip.
 func startAbortMessage(version string) string {
-	const stamp = "a schema stamp behind this binary, which only a completed migration of this binary moves: the ladder's `aveloxis migrate --skip-views`"
+	stamp := fmt.Sprintf("a schema stamp behind this binary, which only a completed migration of this binary moves: the ladder's `%s`", ladderMigrateStep(version))
 	if _, ok := deployChecklistFor(version); !ok {
 		return fmt.Sprintf("start aborted: see the reason printed above (%s); --skip-deploy-check bypasses", stamp)
 	}

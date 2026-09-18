@@ -440,13 +440,7 @@ func parseRequirementsTxt(content string) []string {
 		if idx := strings.Index(line, ";"); idx > 0 {
 			line = line[:idx]
 		}
-		// Strip extras: "requests[security]>=2.0" -> "requests>=2.0"
-		if idx := strings.Index(line, "["); idx > 0 {
-			rest := line[idx:]
-			if end := strings.Index(rest, "]"); end > 0 {
-				line = line[:idx] + rest[end+1:]
-			}
-		}
+		line = stripPyExtras(line)
 		// Strip version specifiers.
 		line, _ = splitPyNameSpec(line)
 		if name := strings.TrimSpace(line); name != "" {
@@ -626,16 +620,7 @@ func extractPEP621DepName(line string) string {
 	if idx := strings.Index(line, ";"); idx > 0 {
 		line = strings.TrimSpace(line[:idx])
 	}
-	// Strip extras: name[extra]>=1.0. The closing bracket must be FOUND —
-	// with none, Index returns -1 and line[0:] re-appends the whole string,
-	// so "celery[redis" became "celerycelery[redis" (v0.29.56).
-	if idx := strings.Index(line, "["); idx > 0 {
-		if end := strings.Index(line, "]"); end > idx {
-			line = line[:idx] + line[end+1:]
-		} else {
-			line = line[:idx]
-		}
-	}
+	line = stripPyExtras(line)
 	name, _ := splitPyNameSpec(line)
 	return name
 }
@@ -665,7 +650,11 @@ func extractPEP621DepsFromLine(line string) []string {
 	// Only a comma BETWEEN items separates them (v0.29.56). A comma inside
 	// the quoted item is data — a bounded range ("requests>=2.31.0,<3.0.0")
 	// or an extras list ("celery[redis,auth]>=5.3") — and splitting on it
-	// invents dependencies named "<3.0.0" and "celery[redis".
+	// cuts one dependency into fragments, so the real package is never
+	// resolved and a fragment is inventoried in its place. (Which fragments
+	// depends on how each path strips extras, so this comment does not name
+	// them; TestInlineDeclarationsSplitOnStructuralCommasOnly asserts the
+	// CORRECT output for both paths.)
 	for _, item := range splitTOMLTopLevel(inner) {
 		if name := extractPEP621DepName(item); name != "" {
 			deps = append(deps, name)
@@ -755,10 +744,7 @@ func extractPyDepName(req string) string {
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
 	}
-	// Strip extras: name[extra]
-	if idx := strings.Index(req, "["); idx > 0 {
-		req = req[:idx]
-	}
+	req = stripPyExtras(req)
 	name, _ := splitPyNameSpec(req)
 	return name
 }
@@ -837,6 +823,27 @@ func extractQuotedPyVersionDeps(line string) []libyearDep {
 // scan at one position matches "===" before "==" and ">=" before ">".
 var pyVersionOperators = []string{"===", "==", "~=", "!=", ">=", "<=", ">", "<"}
 
+// stripPyExtras removes a PEP 508 extras group ("celery[redis,auth]>=5.3"
+// -> "celery>=5.3"). An UNCLOSED bracket keeps only the prefix.
+//
+// One spelling, because there were five (v0.29.56) and they disagreed about
+// the unclosed case in three different ways: "celery[redis" answered
+// "celery" from pyproject.toml and setup.py but "celery[redis" from
+// requirements.txt — and buildPurl turns that into "pkg:pypi/celery[redis",
+// which wireValidPurl ACCEPTS, so it reaches OSV as a package that cannot
+// exist. A name can never legitimately contain '[': PEP 508 names are
+// [A-Za-z0-9._-] (SR-17).
+func stripPyExtras(req string) string {
+	idx := strings.Index(req, "[")
+	if idx <= 0 {
+		return req
+	}
+	if end := strings.Index(req, "]"); end > idx {
+		return req[:idx] + req[end+1:]
+	}
+	return req[:idx]
+}
+
 // splitPyNameSpec splits a PEP 508 requirement at its LEFTMOST version
 // operator: name is the text before it, spec the whole specifier set from
 // that operator on ("" when the requirement carries no operator, and name ""
@@ -862,13 +869,45 @@ func splitPyNameSpec(req string) (name, spec string) {
 	return strings.TrimSpace(req), ""
 }
 
-// pyFloorVersion picks the version to record for a PEP 508 specifier set:
-// an exact pin first, then a compatible release, then a lower bound. An
-// upper bound or an exclusion is reported only when the set says nothing
-// else ("pkg<=3" has no floor, and reporting its bound is what every one of
-// the preference lists did).
+// pyPermittedVersionRank ranks the PEP 440 operators that may supply the
+// version to record, best first: an exact pin, then a compatible release,
+// then an inclusive floor, then an inclusive ceiling.
+//
+// Membership is the rule, not the ranking (v0.29.56): an operator appears
+// here only if its OWN clause permits the version it names. "!=", "<" and
+// ">" are all EXCLUSIVE — each rules its version out — so none of them can
+// answer, and their absence from this map is what enforces that.
+//
+// The check is per CLAUSE, not per set. A redundant set such as "<3,<=4"
+// still yields 4, because "<=4" permits 4 on its own even though "<3" rules
+// it out. (The set itself is satisfiable — 2.0 is in it — so the recorded
+// value is wrong, not the requirement.) Catching that needs whole-set
+// version comparison, and two independent sweeps of real manifests —
+// checking every recorded version against its own specifier set — found NOT
+// ONE that its set rejects. So this is left undone deliberately rather than
+// overlooked. (No tally, on purpose: the corpora were fetched ad hoc and are
+// not in the repo, so any figure here would be one a later reader cannot
+// re-derive. This release shipped four such counts, the last of them inside
+// the sentence that replaced the third.)
+//
+// Recording an excluded version writes a release the manifest contradicts
+// into repo_dependencies and into the purl, and OSV then answers about a
+// version nobody installed (SR-6). For "!=" that invents findings; for "<"
+// it HIDES them, which is the worse direction. Measured against OSV on
+// 2026-09-17: pkg:pypi/pyyaml@6.0 reports 0 vulnerabilities, while permitted
+// releases below it carry up to 6 (5.3.1 → 2, 5.3 → 4, 5.1 → 6; 5.4 and
+// 5.4.1 are also permitted and carry 0, so the bound is not uniformly
+// safe-looking — it is just not the version in use). An upper bound is
+// often pinned because that release is the one that changed something, so
+// the excluded value tends to sit outside the vulnerable range.
+//
+// An empty version yields a versionless purl, which OSV answers with the
+// package's whole advisory history — less precise, but not a claim the
+// manifest contradicts.
+var pyPermittedVersionRank = map[string]int{"===": 4, "==": 4, "~=": 3, ">=": 2, "<=": 1}
+
+// pyFloorVersion picks the version to record for a PEP 508 specifier set.
 func pyFloorVersion(spec string) string {
-	rank := map[string]int{"===": 4, "==": 4, "~=": 3, ">=": 2, ">": 1}
 	best, bestRank := "", -1
 	for _, clause := range strings.Split(spec, ",") {
 		clause = strings.TrimSpace(clause)
@@ -876,9 +915,7 @@ func pyFloorVersion(spec string) string {
 			if !strings.HasPrefix(clause, op) {
 				continue
 			}
-			// "<", "<=" and "!=" rank 0: better than nothing, worse than
-			// anything that states a floor.
-			if r := rank[op]; r > bestRank {
+			if r, ok := pyPermittedVersionRank[op]; ok && r > bestRank {
 				best, bestRank = strings.TrimSpace(clause[len(op):]), r
 			}
 			break
@@ -920,14 +957,7 @@ func parsePyRequirement(req string) *libyearDep {
 	if isNonRegistryPyRequirement(req) {
 		return nil
 	}
-	// Strip extras.
-	cleanReq := req
-	if idx := strings.Index(cleanReq, "["); idx > 0 {
-		endBracket := strings.Index(cleanReq, "]")
-		if endBracket > idx {
-			cleanReq = cleanReq[:idx] + cleanReq[endBracket+1:]
-		}
-	}
+	cleanReq := stripPyExtras(req)
 
 	name, spec := splitPyNameSpec(cleanReq)
 	version := pyFloorVersion(spec)
@@ -1751,11 +1781,7 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 		// the local-canary catch, 2026-07-21: extras-suffixed names
 		// produced 404ing registry URLs and unmatchable purls, so
 		// those deps silently got no libyear and no OSV coverage.
-		if idx := strings.Index(name, "["); idx > 0 {
-			if end := strings.Index(name, "]"); end > idx {
-				name = strings.TrimSpace(name[:idx] + name[end+1:])
-			}
-		}
+		name = strings.TrimSpace(stripPyExtras(name))
 		if name != "" {
 			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "pypi"})
 		}
@@ -1775,7 +1801,14 @@ func isNonRegistryPyRequirement(line string) bool {
 			return true
 		}
 	}
-	return strings.Contains(line, " @ ")
+	// PEP 508's direct-reference marker takes OPTIONAL whitespace
+	// ("urlspec = '@' URI_reference", with wsp* around it), so
+	// "mypkg@https://host/x.whl" is as legal as the spaced form and matching
+	// only " @ " sent it to PyPI as a package name (v0.29.56). A bare '@' is
+	// safe to key on: neither a PEP 508 name ([A-Za-z0-9._-]) nor a version
+	// specifier can contain one, and this runs on the line AFTER its comment
+	// and environment marker are stripped.
+	return strings.Contains(line, "@")
 }
 
 // cleanVersion strips version specifier prefixes (^, ~, >=, ==, etc.)

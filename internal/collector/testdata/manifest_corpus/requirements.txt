@@ -9,3 +9,12 @@ attrs==3.1.0  # Apache-2.0
 django>=10,<11
 requests[security]==2.31.0
 flask
+# reverse-ordered specifier set — legal PEP 508, and the shape
+# apache/airflow ships; the name used to absorb everything up to ">="
+numpy<2,>=1.22
+# spaced operators (ansible requirements.txt)
+resolvelib >= 0.8.0, < 2.0.0
+# exclusion-only: names the one version NOT in use (matplotlib, pandas)
+pandas!=0.25.0
+# upper bound only (transformers)
+GitPython<3.1.19

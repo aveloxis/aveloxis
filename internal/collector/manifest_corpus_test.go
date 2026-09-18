@@ -108,7 +108,7 @@ func parseCorpusFile(t *testing.T, name string) []libyearDep {
 		deps = parseCsprojVersions(content())
 	case "Pipfile":
 		deps = parsePipfileVersions(content())
-	case "pyproject.toml":
+	case "pyproject.toml", "pyproject-inline.toml":
 		deps = parsePyprojectVersionsFromContent(content())
 	case "build.sbt":
 		deps = parseBuildSbtVersions(content())

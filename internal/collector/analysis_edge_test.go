@@ -81,13 +81,26 @@ dependencies = [
 	for _, d := range deps {
 		found[d.Name] = d.Version
 	}
+	// Assert the exact set, both directions. A missing dep reads as "" from
+	// the map, so the protobuf assertion below would otherwise pass when the
+	// dependency is gone — and a COUNT does not establish presence either:
+	// the historical "the name eats its own operator" defect (fixed in
+	// v0.29.56, shipped from 0.13.0) leaves the count at 3 while protobuf is
+	// filed under "protobuf<3.22". Naming every expected dep covers the
+	// extra-dep direction a count used to carry (v0.29.56 round 18).
+	assertDeps(t, "PEP 621 ranges", deps, []string{"scipy@1.10.0", "protobuf@", "flask@2.0.2"})
 	// scipy has a range — should take the first version (1.10.0)
 	if v := found["scipy"]; v != "1.10.0" {
 		t.Errorf("scipy version = %q, want %q", v, "1.10.0")
 	}
-	// protobuf has only upper bound — version should be "3.22"
-	if v := found["protobuf"]; v != "3.22" {
-		t.Errorf("protobuf version = %q, want %q", v, "3.22")
+	// protobuf has only an EXCLUSIVE upper bound. "<3.22" forbids 3.22, so
+	// recording it claims a version the manifest rules out: until v0.29.56
+	// this asserted "3.22", and OSV was asked about a release that could
+	// not be installed — which reports clean when every permitted release
+	// is vulnerable. No permitted version is named, so none is recorded.
+	// See TestPythonSpecifierSetOrderDoesNotEatTheName.
+	if v := found["protobuf"]; v != "" {
+		t.Errorf("protobuf version = %q, want %q (an excluded bound is not a version in use)", v, "")
 	}
 }
 

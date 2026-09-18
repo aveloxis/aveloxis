@@ -411,7 +411,44 @@
       "manager": "pub"
     }
   ],
+  "pyproject-inline.toml": [
+    {
+      "name": "celery",
+      "version": "5.3",
+      "requirement": "celery[redis,auth]\u003e=5.3",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "requests",
+      "version": "2.31.0",
+      "requirement": "requests\u003e=2.31.0,\u003c3.0.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "tomli",
+      "version": "1.1.0",
+      "requirement": "tomli\u003e=1.1.0",
+      "type": "runtime",
+      "manager": "pypi"
+    }
+  ],
   "pyproject.toml": [
+    {
+      "name": "anyio",
+      "version": "3.2.1",
+      "requirement": "anyio[trio] \u003e=3.2.1,\u003c5.0.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "apache-airflow-task-sdk",
+      "version": "1.4.0",
+      "requirement": "apache-airflow-task-sdk\u003c1.5.0,\u003e=1.4.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
     {
       "name": "httpx",
       "version": "0.27.0",
@@ -428,6 +465,13 @@
     }
   ],
   "requirements.txt": [
+    {
+      "name": "GitPython",
+      "version": "",
+      "requirement": "GitPython\u003c3.1.19",
+      "type": "runtime",
+      "manager": "pypi"
+    },
     {
       "name": "attrs",
       "version": "3.1.0",
@@ -457,6 +501,20 @@
       "manager": "pypi"
     },
     {
+      "name": "numpy",
+      "version": "1.22",
+      "requirement": "numpy\u003c2,\u003e=1.22",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "pandas",
+      "version": "",
+      "requirement": "pandas!=0.25.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
       "name": "pyyaml",
       "version": "6.0.3",
       "requirement": "pyyaml==6.0.3",
@@ -467,6 +525,13 @@
       "name": "requests",
       "version": "2.31.0",
       "requirement": "requests[security]==2.31.0",
+      "type": "runtime",
+      "manager": "pypi"
+    },
+    {
+      "name": "resolvelib",
+      "version": "0.8.0",
+      "requirement": "resolvelib \u003e= 0.8.0, \u003c 2.0.0",
       "type": "runtime",
       "manager": "pypi"
     },

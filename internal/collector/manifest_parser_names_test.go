@@ -479,8 +479,11 @@ func TestInlineDeclarationsSplitOnStructuralCommasOnly(t *testing.T) {
 	}
 
 	// Extras carry brackets and a comma inside the quoted item. Split on
-	// every comma this became two dependencies named "celery[redis" and
-	// "auth]" — a name the registry can never answer for.
+	// every comma, both paths fragment the dependency and neither resolves
+	// it; exactly which fragments each produced depended on how it stripped
+	// extras, which the round-13 and round-14 fixes have since changed
+	// again. What is asserted here is the CORRECT output — one dependency,
+	// on both paths.
 	const extras = `dependencies = ["celery[redis,auth]>=5.3"]`
 	assertDeps(t, "inline array, extras", extractPEP621VersionDeps(extras), []string{"celery@5.3"})
 	if got := extractPEP621DepsFromLine(extras); len(got) != 1 || got[0] != "celery" {
@@ -552,16 +555,58 @@ func TestPythonSpecifierSetOrderDoesNotEatTheName(t *testing.T) {
 	assertDeps(t, "airflow", parsePEP621Versions("[project]\ndependencies = [\n  \""+airflow+"\",\n]\n"),
 		[]string{"apache-airflow-task-sdk@1.4.0"})
 
-	// An exact pin outranks a lower bound; an upper bound alone is still
-	// reported (it is all the set says), and "===" is an operator too.
+	// Each rank boundary needs a MULTI-clause case: with only single-clause
+	// sets, any rank still beats the empty seed, so the precedence the doc
+	// comment promises would be unpinned (round 14).
 	for _, tc := range []struct{ req, want string }{
 		{"pkg==1.2.3", "pkg@1.2.3"},
 		{"pkg===1.2.3+local", "pkg@1.2.3+local"},
 		{"pkg~=1.4.2", "pkg@1.4.2"},
-		{"pkg>1.0", "pkg@1.0"},
-		{"pkg<=3", "pkg@3"},
 		{"pkg!=1.3,~=1.2", "pkg@1.2"},
 		{"celery[redis,auth]>=5.3", "celery@5.3"},
+		// An exact pin outranks a lower bound, in either order.
+		{"pkg==1.4,>=1.0", "pkg@1.4"},
+		{"pkg>=1.0,==1.4", "pkg@1.4"},
+		{"pkg===1.0,>=0.9", "pkg@1.0"},
+		// A compatible release outranks a lower bound, which outranks an
+		// inclusive ceiling.
+		{"pkg~=1.4,>=1.0", "pkg@1.4"},
+		{"pkg>=1.0,<=4", "pkg@1.0"},
+		// An INCLUSIVE ceiling names a version its own clause permits, so it
+		// is reported when nothing better is stated. ("<=4,<5" permits 4;
+		// "<3,<=4" would not, and pyFloorVersion does not catch that —
+		// the rule is per clause, documented at pyPermittedVersionRank.)
+		{"pkg<=3", "pkg@3"},
+		{"pkg<=4,<5", "pkg@4"},
+		// An EXCLUSIVE bound names a version the set FORBIDS, exactly as
+		// "!=" does — "<X" and ">X" both rule X out. Recording it is the
+		// same fabrication, and for "<" it fails in the more dangerous
+		// direction: measured against OSV on 2026-09-17, pkg:pypi/pyyaml@6.0
+		// reports 0 vulnerabilities while permitted releases below it carry
+		// up to 6 (5.3.1 → 2, 5.3 → 4, 5.1 → 6). Both shapes are ordinary in
+		// real manifests — transformers ships "GitPython<3.1.19",
+		// matplotlib "pandas!=0.25.0".
+		{"pyyaml<6.0", "pyyaml@"},
+		{"GitPython<3.1.19", "GitPython@"},
+		{"pkg>1.0", "pkg@"},
+		{"pkg<4,>3.1.0", "pkg@"},
+		// A space before the operator is ordinary PEP 508 style (fastapi,
+		// ray and ansible all ship it) and must not survive in the NAME: a
+		// trailing space escapes into the purl as %20, which wireValidPurl
+		// accepts and OSV can never match.
+		{"anyio[trio] >=3.2.1,<5.0.0", "anyio@3.2.1"},
+		{"mkdocstrings[python] >=1.0.3", "mkdocstrings@1.0.3"},
+		// An EXCLUDED version is not the version in use. Recording it put
+		// the one release the manifest rules out into the purl and sent it
+		// to OSV, which then answers about a version nobody installed
+		// (matplotlib, transformers and pandas all ship bare "!=" sets).
+		// With no floor to report the version stays empty, which yields a
+		// versionless purl — OSV answers that with the package's whole
+		// advisory history, which is honest about what the manifest said.
+		{"pandas!=0.25.0", "pandas@"},
+		{"grpcio != 1.56.0", "grpcio@"},
+		{"nbconvert[execute]!=6.0.0,!=6.0.1,!=7.3.0", "nbconvert@"},
+		{"pandas>=1.0,!=1.1", "pandas@1.0"},
 	} {
 		d := parsePyRequirement(tc.req)
 		got := "<nil>"
@@ -573,11 +618,40 @@ func TestPythonSpecifierSetOrderDoesNotEatTheName(t *testing.T) {
 		}
 	}
 
-	// F2: extras with no closing bracket duplicated the prefix
-	// ("celery[redis" -> "celerycelery[redis"); parsePyRequirement already
-	// guarded this, so the two name extractors disagreed on the same file.
-	if got := extractPEP621DepName("celery[redis"); strings.Contains(got, "celerycelery") {
-		t.Errorf("extractPEP621DepName(\"celery[redis\") = %q duplicates the prefix", got)
+	// A spaced operator must not leave a trailing space on the name in the
+	// parsers that return it directly, nor in the inventory.
+	if got := extractPEP621DepName("anyio[trio] >=3.2.1,<5.0.0"); got != "anyio" {
+		t.Errorf("extractPEP621DepName spaced = %q, want anyio", got)
+	}
+	if got := extractPyDepName("anyio[trio] >=3.2.1"); got != "anyio" {
+		t.Errorf("extractPyDepName spaced = %q, want anyio", got)
+	}
+	if got := parseRequirementsTxt("resolvelib >= 0.8.0, < 2.0.0\n"); len(got) != 1 || got[0] != "resolvelib" {
+		t.Errorf("parseRequirementsTxt spaced = %v, want [resolvelib]", got)
+	}
+
+	// An unclosed extras bracket is malformed TOML, but both name
+	// extractors must still agree about it — asserted by VALUE, because
+	// "not the duplicated string" left the else arm free to return
+	// anything (round 14).
+	if got := extractPEP621DepName("celery[redis"); got != "celery" {
+		t.Errorf("extractPEP621DepName(\"celery[redis\") = %q, want celery", got)
+	}
+	if d := parsePyRequirement("celery[redis"); d == nil || d.Name != "celery" {
+		t.Errorf("parsePyRequirement(\"celery[redis\") = %+v, want name celery — the two name extractors must not disagree about the same line", d)
+	}
+	// ALL five extras strips must agree, not three of them: an unclosed
+	// bracket left "celery[redis" in requirements.txt, which buildPurl turns
+	// into "pkg:pypi/celery[redis" — a purl wireValidPurl ACCEPTS, so it
+	// reaches OSV as a package that cannot exist.
+	if got := extractPyDepName("celery[redis"); got != "celery" {
+		t.Errorf("extractPyDepName(\"celery[redis\") = %q, want celery", got)
+	}
+	if got := parseRequirementsTxt("celery[redis\n"); len(got) != 1 || got[0] != "celery" {
+		t.Errorf("parseRequirementsTxt(\"celery[redis\") = %v, want [celery]", got)
+	}
+	if got := requirementsTxtVersionsFromContent(t, "celery[redis\n"); len(got) != 1 || got[0].Name != "celery" {
+		t.Errorf("parseRequirementsTxtVersions(\"celery[redis\") = %v, want name celery", depNames(got))
 	}
 
 	// F5: TOML literal strings are legal in pyproject.toml, and the name
@@ -594,4 +668,43 @@ func TestPythonSpecifierSetOrderDoesNotEatTheName(t *testing.T) {
 func requirementsTxtVersionsFromContent(t *testing.T, content string) []libyearDep {
 	t.Helper()
 	return parseRequirementsTxtVersions(writeManifest(t, "requirements.txt", content))
+}
+
+// TestDirectReferenceDetectedWithoutSpaces — v0.29.56 round 17. PEP 508's
+// direct-reference marker takes optional whitespace ("urlspec = '@'
+// URI_reference", with wsp* around it), so "mypkg[extra]@https://host/x.whl"
+// is as legal as the spaced form. The predicate matched only " @ ", so the
+// unspaced form went to PyPI as a package name — the very failure this
+// release exists to fix, one space away from the shape it fixed.
+func TestDirectReferenceDetectedWithoutSpaces(t *testing.T) {
+	// The last three carry NO "://", so they separate this rule from the
+	// nearest competing predicate — a URL-scheme test, which is what a
+	// later simplification would reach for and which every "https://"
+	// fixture alone would let pass. All three are legal PEP 508 direct
+	// references (checked against packaging.requirements.Requirement:
+	// name=mypkg, url=file:x.whl / ../local/pkg / local-dir/pkg-1.0.tar.gz).
+	for _, req := range []string{
+		"mypkg @ https://host/x.whl",
+		"mypkg@https://host/x.whl",
+		"mypkg[extra]@https://host/x.whl",
+		"velocitas-sdk@git+https://github.com/org/repo.git@v1.2",
+		"mypkg@file:x.whl",
+		"mypkg @ ../local/pkg",
+		"mypkg@local-dir/pkg-1.0.tar.gz",
+	} {
+		if !isNonRegistryPyRequirement(req) {
+			t.Errorf("isNonRegistryPyRequirement(%q) = false, want true", req)
+		}
+		if d := parsePyRequirement(req); d != nil {
+			t.Errorf("parsePyRequirement(%q) = %+v, want nil — a direct reference names no PyPI package", req, d)
+		}
+	}
+	// An '@' is only a direct-reference marker when it separates a NAME
+	// from a reference. These are ordinary registry requirements and must
+	// still be looked up.
+	for _, req := range []string{"flask==2.0.0", "requests>=2.31.0,<3.0.0", "celery[redis]>=5.3"} {
+		if isNonRegistryPyRequirement(req) {
+			t.Errorf("isNonRegistryPyRequirement(%q) = true, want false", req)
+		}
+	}
 }

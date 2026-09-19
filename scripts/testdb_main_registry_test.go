@@ -64,9 +64,7 @@ func TestDBTierPackagesUseTheirOwnDatabase(t *testing.T) {
 			continue
 		}
 		readers++
-		// internal/testdb's own TestMain passes nil hooks on purpose: its
-		// tests drive run() with the hooks directly.
-		if !callsMain && dir != filepath.Join("internal", "testdb") {
+		if !callsMain {
 			t.Errorf("%s: its tests read AVELOXIS_TEST_DB but it has no TestMain calling testdb.Main(m, prepare, verify) with both hooks — add testmain_test.go (see internal/api/testmain_test.go)", dir)
 		}
 	}

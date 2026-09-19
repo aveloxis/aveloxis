@@ -24,11 +24,12 @@ package scripts
 // v0.29.57: the check is TYPE-based. It first matched the variable names
 // `store`, `pool` and `s` (four tests escaped with `defer raw.Close()` /
 // `defer conn.Close(ctx)`; one, TestRunJobLifecycleEndToEnd, never ran its
-// cleanup), then a name-free AST heuristic that review rounds escaped four
-// times running (subtests in closures, parameters, struct fields, deferred
-// literals). The standard library's go/types with its source importer
-// type-checks every test package in seconds, so the rule now asks the
-// compiler what the receiver IS.
+// cleanup), then an AST heuristic — keyed on constructor names, later
+// also on declared types and field names — that review rounds kept
+// escaping (helper constructors, subtests in closures, parameters, deferred
+// literals, struct fields). The standard library's go/types with its
+// source importer type-checks every test package in seconds, so the rule
+// now asks the compiler what the receiver IS.
 
 import (
 	"fmt"
@@ -622,9 +623,12 @@ func (m *memorySource) Files(path string) ([]*ast.File, error) {
 }
 
 // The walk's own per-directory check drives the variant importer: a testdata
-// package whose external test uses an export_test.go symbol AND passes a's
-// type through a dependent (b) type-checks, and its one deferred pool close is
-// found (round 17: the walk's use of the override had no test).
+// package whose external test uses an export_test.go symbol, passes a's type
+// through a dependent (b), and takes it back through a package that reaches a
+// only through b (c) type-checks, and its one deferred pool close is found
+// (round 17: the walk's use of the override had no test). Keep the c lines:
+// they are what fail a direct-only rebuild and a rebuild without the shared
+// variant cache (round 18).
 func TestCheckTestDirectoryUsesVariants(t *testing.T) {
 	root := srctest.Root(t)
 	modPath := srctest.ModulePath(t)

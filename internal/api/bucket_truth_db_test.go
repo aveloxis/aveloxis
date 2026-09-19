@@ -32,7 +32,7 @@ func TestTruncBucketMatchesPostgresDateTruncInNonUTCSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	t.Cleanup(func() { _ = conn.Close(context.Background()) }) // not defer (SR-9)
 
 	// Force the trap regardless of the host's TZ: the whole session
 	// runs in America/Chicago (UTC-5/-6, DST-observing).

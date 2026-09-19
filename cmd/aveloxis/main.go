@@ -46,6 +46,15 @@ import (
 var Version = db.ToolVersion
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the whole command tree. It is separate from main so tests
+// can inspect the tree exactly as `--help` renders it
+// (TestBoolFlagUsageRendersNoValueName).
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "aveloxis",
 		Short: "Open source community health data collection",
@@ -109,10 +118,7 @@ func main() {
 		backfillRepoMetadataCmd(&cfgPath),
 		rewalkWhitespaceCmd(&cfgPath),
 	)
-
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return root
 }
 
 // --- serve: long-running scheduler + monitor ---

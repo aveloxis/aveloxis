@@ -54,7 +54,7 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	t.Cleanup(raw.Close) // not defer: it ran before the cleanup below, which then deleted nothing (SR-9)
 
 	// Serve 200 for prelim's HEAD check; git clone against this URL
 	// fails fast (not a git repo).

@@ -42,7 +42,9 @@ func TestSomething(t *testing.T) {
 
 This means `go test ./...` (no env var) skips them cleanly. CI runs both modes — see `.github/workflows/integration.yml` for the Postgres-service-container recipe.
 
-**Safety:** integration tests assume a scratch database. Some helpers (`store.RealignDueDates`, the `dm_` aggregate refresh, the `cntrb_id` migration) update every matching row. Pointing them at a production database is destructive.
+**Each package gets a database of its own.** `AVELOXIS_TEST_DB` names a *base* database. Every package with integration tests has a `testmain_test.go` whose `TestMain` calls `testdb.Main` (`internal/testdb`). For each run it creates a fresh `aveloxis_t_<pid>_<random>` database next to the base one, prepares it as an established deployment (migrated; the `Default` repo group, as id 1; a bootstrap admin signed up first, so fixture users are regular users unless a test promotes them), points `AVELOXIS_TEST_DB` at it for the package's tests, and drops it afterwards. Rows a killed or failed run leaves behind therefore never reach a later run, a test cannot pass only because an earlier run happened to leave data it relied on, and packages that `go test ./...` runs in parallel never migrate the same database at once. A run killed before it could drop its database leaves it behind; the next run's sweep drops every `aveloxis_t_*` database nobody is connected to (a live run keeps a connection open to its own). The role needs `CREATEDB`. A new package with integration tests adds the same `testmain_test.go`; `scripts/testdb_main_registry_test.go` fails the build until it does. Do not insert explicit ids into sequence-backed (`BIGSERIAL`) tables with values a fresh database's sequence will reach — the sequence does not advance, and the next row the code creates collides on the primary key (an explicit `repo_group_id = 1` did exactly that); insert without the id and use `RETURNING`, or use the store's helpers.
+
+**Safety:** point `AVELOXIS_TEST_DB` at a scratch server, never a production one. Test data goes to the per-package databases, but the tests also act on the server as a whole: they create and drop databases there (the per-package ones, and `_avcolfill_sidedb` for the column-fill diff test), create and drop login roles (the backend-visibility tests), and some helpers (`store.RealignDueDates`, the `dm_` aggregate refresh, the `cntrb_id` migration) update every matching row of the database they run in.
 
 ### Tier 3 — `data-test` harness (cross-version regression detection)
 
@@ -98,12 +100,17 @@ Every release candidate passes, in order (v0.27.43, summary/18 Phase
    migrate.go change: create an empty database, run the db+collector
    suites against it (proves from-scratch migration ordering; the
    v0.27.9 lesson).
-7. **`aveloxis data-verify`** — runs automatically at the end of the
-   integration workflow against the CI database (smoke-tests the
-   battery AND catches fixture residue from the test suite); run it
-   manually against a scratch or production database for release
-   candidates (`--ground-truth N` adds live-forge comparison, needs
-   API keys — never in CI). FAIL exits 1.
+7. **`aveloxis data-verify`** — its battery runs automatically over
+   each package's own test database after that package's tests pass
+   (`testdb.Main`'s verify hook, `prepare.Verify`), so a test that leaks
+   rows breaking an invariant the battery rates FAIL (cached queue counts
+   that disagree with the tables, duplicate Default groups, case-variant
+   duplicate repos, new cross-kind message collisions) fails its own
+   package — WARN findings such as stranded repos do not; the integration
+   workflow also runs the command end to end against a freshly migrated
+   base database, as a smoke test. Run it manually against a scratch or
+   production database for release candidates (`--ground-truth N` adds
+   live-forge comparison, needs API keys — never in CI). FAIL exits 1.
 8. **Network canaries** — network-canary.yml, weekly: live-API
    contract checks (OSV, registries, GraphQL parity fields,
    tool-binary versions).
@@ -401,7 +408,10 @@ func TestUpsertCommitProtectedFromInvalidUTF8(t *testing.T) {
     if err != nil {
         t.Fatalf("connect: %v", err)
     }
-    defer store.Close()
+    // t.Cleanup, not defer: deferred calls run BEFORE t.Cleanup callbacks,
+    // so a deferred Close would leave the fixture cleanup below running
+    // against a closed pool (scripts/test_close_ordering_test.go bans it).
+    t.Cleanup(store.Close)
 
     store.SetMatviewSkip(true)
     if err := RunMigrations(ctx, store, logger); err != nil {
@@ -429,9 +439,9 @@ func TestUpsertCommitProtectedFromInvalidUTF8(t *testing.T) {
 
 Patterns to follow:
 
-- **Negative repo IDs** for fixture rows so they can't collide with operator-imported data.
-- **`t.Cleanup`** to delete fixtures even if the test fails mid-run.
-- **Pre-cleanup** at the top of tests that share fixture row IDs across runs (the test DB persists between invocations; without pre-cleanup a previous failure leaves rows that break the next run).
+- **Negative repo IDs** (or no explicit id at all) for fixture rows: an explicit id a sequence-backed table's sequence will reach collides with the next row the code creates (see "Each package gets a database of its own").
+- **`t.Cleanup`** to delete fixtures even if the test fails mid-run, registered right after the fixture's first write.
+- **Pre-cleanup** at the top of tests that reuse fixed fixture ids: the package's database persists across its own tests and across `-count` repetitions within one run, so a test that failed earlier in the run can leave rows that break a later one (a new run starts from a fresh database).
 - **Use `store.SetMatviewSkip(true)`** unless you specifically test matview behavior. Building 20 matviews on every test run is several seconds wasted.
 
 ## What to test

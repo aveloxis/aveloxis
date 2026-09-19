@@ -292,6 +292,44 @@ func (s *PostgresStore) withRetry(ctx context.Context, fn func(ctx context.Conte
 // Repos
 // ============================================================
 
+// EnsureDefaultRepoGroup returns the id of the 'Default' repo group, creating
+// it if it does not exist. UpsertRepo files a repo with no group there; test
+// databases create it up front (internal/testdb/prepare), as a deployment
+// that has added repos has it.
+func (s *PostgresStore) EnsureDefaultRepoGroup(ctx context.Context) (int64, error) {
+	// v0.27.17: the arbiter is NAMED. The previous bare ON CONFLICT had no
+	// unique to arbitrate against, so this INSERT succeeded on EVERY call —
+	// production accumulated 93,912 'Default' groups (one per repo),
+	// shattering every repo_group_id rollup. With uq_repo_groups_rg_name in
+	// place the conflict fires and the lookup below runs.
+	var groupID int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description)
+		VALUES ('Default', 'Auto-created default repo group')
+		ON CONFLICT (rg_name) DO NOTHING
+		RETURNING repo_group_id`).Scan(&groupID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// ON CONFLICT DO NOTHING returns no rows: it exists — look it up.
+		if lerr := s.pool.QueryRow(ctx,
+			`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = 'Default'`,
+		).Scan(&groupID); lerr != nil {
+			return 0, fmt.Errorf("looking up the default repo group: %w", lerr)
+		}
+	case err != nil:
+		// v0.29.57 (worklist 38, SR-5): any other failure is returned as
+		// itself. It used to fall through to the lookup with its error
+		// discarded, so a primary-key collision (an explicit repo_group_id
+		// that left the sequence behind), a missing table or a lost
+		// connection all read "failed to resolve default repo group".
+		return 0, fmt.Errorf("creating the default repo group: %w", err)
+	}
+	if groupID == 0 {
+		return 0, fmt.Errorf("failed to resolve default repo group")
+	}
+	return groupID, nil
+}
+
 // UpsertRepoGroup creates or finds a repo group by name and type.
 // Returns the repo_group_id.
 func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, website string) (int64, error) {
@@ -419,27 +457,11 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		// Ensure a default repo group exists if no group is specified.
 		groupID := r.GroupID
 		if groupID == 0 {
-			// v0.27.17: the arbiter is NAMED. The previous bare
-			// ON CONFLICT had no unique to arbitrate against, so this
-			// INSERT succeeded on EVERY call — production accumulated
-			// 93,912 'Default' groups (one per repo), shattering every
-			// repo_group_id rollup. With uq_repo_groups_rg_name in
-			// place the conflict fires and the lookup below (dead code
-			// until now) finally runs.
-			err := s.pool.QueryRow(ctx, `
-				INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description)
-				VALUES ('Default', 'Auto-created default repo group')
-				ON CONFLICT (rg_name) DO NOTHING
-				RETURNING repo_group_id`).Scan(&groupID)
+			id, err := s.EnsureDefaultRepoGroup(ctx)
 			if err != nil {
-				// ON CONFLICT DO NOTHING returns no rows — look it up.
-				_ = s.pool.QueryRow(ctx,
-					`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = 'Default'`,
-				).Scan(&groupID)
+				return err
 			}
-			if groupID == 0 {
-				return fmt.Errorf("failed to resolve default repo group")
-			}
+			groupID = id
 		}
 
 		// Use NULL for zero timestamps — they'll be populated by FetchRepoInfo during collection.

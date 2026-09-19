@@ -134,15 +134,19 @@ func TestRunVulnDigestEndToEnd(t *testing.T) {
 	// Seed: repo + one unresolved CRITICAL finding detected "now".
 	repoID := int64(987654301)
 	pool := store.Pool()
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_groups (repo_group_id, rg_name)
-		VALUES (1, 'digest-test') ON CONFLICT (repo_group_id) DO NOTHING`); err != nil {
+	// Its own group through the store, not an explicit repo_group_id = 1:
+	// an explicit id leaves the BIGSERIAL sequence behind, and on a fresh
+	// per-package database the next group created (UpsertRepo's 'Default')
+	// then collided on the primary key — TestRunJobLifecycleEndToEnd failed
+	// under -shuffle (v0.29.57).
+	groupID, err := store.UpsertRepoGroup(ctx, "digest-test", "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO aveloxis_data.repos (repo_id, repo_group_id, platform_id, repo_git, repo_owner, repo_name)
-		VALUES ($1, 1, 1, 'https://example.com/digest/tester', 'digest', 'tester')
-		ON CONFLICT (repo_id) DO NOTHING`, repoID); err != nil {
+		VALUES ($1, $2, 1, 'https://example.com/digest/tester', 'digest', 'tester')
+		ON CONFLICT (repo_id) DO NOTHING`, repoID, groupID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

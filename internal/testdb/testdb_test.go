@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// TestMain passes nil hooks on purpose: this package's own tests call run()
+// with the hooks directly.
 func TestMain(m *testing.M) { os.Exit(Main(m, nil, nil)) }
 
 func TestWithDatabase(t *testing.T) {

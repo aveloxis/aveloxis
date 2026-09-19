@@ -115,12 +115,13 @@ SELECT a.repo_id,
  ORDER BY date_part('year'::text, (b.data_collection_date)::date) DESC,
           date_part('month'::text, (b.data_collection_date)::date) DESC,
           -- NULLS LAST, explicitly (v0.29.57): PostgreSQL's DESC defaults to
-          -- NULLS FIRST, so every repo whose libyear is unknown sorted to the
-          -- TOP of a "stalest first" ordering. A consumer reading this view
-          -- with a LIMIT and no ORDER BY of its own got a page of no-data
-          -- rows. Unknown rows grew from 30% to 52% of repos when v0.29.57
-          -- stopped storing "could not work it out" as 0, so the wart became
-          -- the majority case; fixed here rather than in each consumer.
+          -- NULLS FIRST, which put every repo whose libyear is unknown at the
+          -- top of this ordering, and unknown rows became the majority when
+          -- v0.29.57 stopped storing "could not work it out" as 0. This only
+          -- sets the order the rows are written in: a SELECT without an
+          -- ORDER BY of its own has no guaranteed order (Copilot on PR
+          -- #210), so a reader that needs stalest first adds
+          -- ORDER BY avg_libyear DESC NULLS LAST itself.
           avg(b.libyear) DESC NULLS LAST;
 
 -- ---------------------------------------------------------------------------

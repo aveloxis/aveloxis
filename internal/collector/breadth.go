@@ -223,9 +223,8 @@ type breadthFetchOutcome struct {
 //     filters by cntrb_last_breadth_at; contributors past the
 //     cooldown window are eligible regardless of whether their
 //     prior attempt yielded events.
-//   - MarkBreadthAttempted(Batch) covers EVERY contributor attempt —
-//     success, zero events, and per-user fetch errors all count as
-//     attempted. Without this, contributors with no public activity
+//   - MarkBreadthAttempted(Batch) covers success, zero events and
+//     per-user fetch errors alike — all count as attempted. Without this, contributors with no public activity
 //     stayed at the head of the queue forever (observed: 225/1.4M
 //     coverage on the live fleet).
 //   - The 200ms inter-contributor sleep is removed. HTTPClient
@@ -435,8 +434,8 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 				"login", oc.contributor.Login, "error", oc.err)
 			result.Errors++
 			// v0.20.17 invariant: a per-user fetch error still counts
-			// as attempted (only a circuit trip, an insert failure, or
-			// a shutdown mid-insert leaves a contributor unmarked). A
+			// as attempted (a circuit trip, an insert failure or a
+			// shutdown leaves a contributor unmarked). A
 			// canceled fetch never reaches here: the loop-top ctx check
 			// aborts the drain first.
 			pendingMarks = append(pendingMarks, oc.contributor.ID)
@@ -453,14 +452,26 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		}
 	}
 
-	// Contributors persisted before an abort keep their stamp — their
-	// events are already durable, exactly like the sequential shape
-	// where each pre-trip contributor was marked as it completed.
+	// Contributors persisted before a circuit trip keep their stamp — their
+	// events are already durable, exactly like the sequential shape where
+	// each pre-trip contributor was marked as it completed. On a shutdown
+	// the flush runs on the cancelled context and fails (quietly), so
+	// those contributors are fetched again next cycle; their inserts are
+	// idempotent.
 	flushMarks()
 
-	if tally.any() {
+	// A shutdown can also end the drain with no outcome left to observe
+	// it: the fetchers stop sending once the context is cancelled, so the
+	// loop ends with abortErr nil and the run would report a clean cycle.
+	if abortErr == nil {
+		abortErr = ctx.Err()
+	}
+
+	// Shutdown is not a failure: the tally is not reported on the way out.
+	if tally.any() && !errors.Is(abortErr, context.Canceled) {
 		bw.logger.Warn("breadth: contributors not collected",
 			"gone_accounts", tally.missing,
+			"forbidden", tally.forbidden,
 			"failed_without_an_answer", tally.failed,
 			"sample_login", tally.sampleLogin, "sample_error", tally.sampleErr)
 	}
@@ -656,11 +667,15 @@ type ghUserEvent struct {
 	CreatedAt string `json:"created_at"` // RFC3339
 }
 
-// breadthErrorTally aggregates one run's per-contributor errors: accounts
-// the forge answered about (deleted, gone — expected churn) apart from
-// lookups that failed without an answer, with one sample of the latter.
+// breadthErrorTally aggregates one run's per-contributor errors in three
+// kinds: accounts the forge says are gone (deleted, renamed away —
+// expected churn), accounts it refused (a non-rate-limit 403: a
+// suspended account or a narrowed token scope, worth a look), and lookups
+// that failed without an answer. It keeps one sample of the first error
+// that is not a gone account.
 type breadthErrorTally struct {
 	missing     int
+	forbidden   int
 	failed      int
 	sampleLogin string
 	sampleErr   error
@@ -679,10 +694,16 @@ func (t *breadthErrorTally) note(login string, err error) {
 		t.missing++
 		return
 	}
-	t.failed++
+	// A 403 is an answer too, but not churn (Copilot on PR #210): counted
+	// on its own, so the WARN never files it under "without an answer".
+	if errors.Is(err, platform.ErrForbidden) {
+		t.forbidden++
+	} else {
+		t.failed++
+	}
 	if t.sampleErr == nil {
 		t.sampleLogin, t.sampleErr = login, err
 	}
 }
 
-func (t *breadthErrorTally) any() bool { return t.missing > 0 || t.failed > 0 }
+func (t *breadthErrorTally) any() bool { return t.missing > 0 || t.forbidden > 0 || t.failed > 0 }

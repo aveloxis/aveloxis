@@ -282,6 +282,8 @@ These three views aggregate the `repo_deps_libyear` table (one row per (repo, de
 
 **One row per (repo, month, year).** Columns: `repo_id`, `repo_name`, `avg_libyear`, `month`, `year`.
 
+**Order**: the definition orders rows newest month first and, within a month, stalest first with unknown libyear (`NULL`) last. That is only the order rows are written in: PostgreSQL returns rows in no guaranteed order unless the query has its own `ORDER BY`, so a query that needs stalest first adds `ORDER BY avg_libyear DESC NULLS LAST`.
+
 **What the table tells you**: track dependency staleness over time per repo. A repo whose `avg_libyear` is climbing month-over-month is letting its deps drift; a repo whose `avg_libyear` is dropping is actively updating.
 
 **Health and sustainability use**:

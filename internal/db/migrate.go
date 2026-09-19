@@ -530,7 +530,9 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// Contributors: search-resolve tracking column (v0.19.2). The
 	// scheduler's runSearchResolve background task takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email, and
-	// stamps this column on every attempt (success or no-hit). Used
+	// stamps this column when the search answers (a hit or a definitive
+	// no-hit; since v0.29.55 a search that failed without an answer is
+	// left unstamped). Used
 	// by GetContributorsNeedingSearch as the cooldown filter so the
 	// same emails aren't re-searched every cycle, wasting the
 	// 30/min/token search-API quota.
@@ -539,8 +541,9 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// Contributors: breadth tracking column (v0.20.17). The
 	// scheduler's runBreadth ticker takes contributors past the
 	// configured cooldown, calls /users/{login}/events, and stamps
-	// this column on every attempt — even when the response is
-	// empty. Pre-v0.20.17 the worker used
+	// this column after an attempt — even when the response is empty
+	// (a circuit trip, an insert failure or a shutdown leaves it
+	// unstamped). Pre-v0.20.17 the worker used
 	// MAX(contributor_repo.data_collection_date) NULLS FIRST as
 	// the "processed" signal, which left contributors with zero
 	// public events permanently at the front of the queue. With

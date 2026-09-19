@@ -40,12 +40,13 @@ func TestExplorerNewContributorsGuardsMalformedAuthorDate(t *testing.T) {
 }
 
 // TestLibyearSummaryOrdersUnknownsLast — v0.29.57. PostgreSQL's DESC
-// defaults to NULLS FIRST, so explorer_libyear_summary sorted every repo
-// with an unknown libyear to the TOP of a "stalest first" ordering. A
-// consumer reading the view with a LIMIT and no ORDER BY of its own got a
-// page of no-data rows. Unknown repos went from 30% to 52% when v0.29.57
-// stopped storing "could not work it out" as 0, so this had to be fixed at
-// the view rather than relying on every consumer to re-sort.
+// defaults to NULLS FIRST, so explorer_libyear_summary's definition put
+// every repo with an unknown libyear at the top of its "stalest first"
+// ordering, and unknown repos became the majority when v0.29.57 stopped
+// storing "could not work it out" as 0. The definition's ORDER BY sets
+// the order rows are written in; it does not order a reader's SELECT
+// (Copilot on PR #210), which needs its own ORDER BY — the view's docs
+// say so.
 func TestLibyearSummaryOrdersUnknownsLast(t *testing.T) {
 	raw, err := os.ReadFile("matviews.sql")
 	if err != nil {

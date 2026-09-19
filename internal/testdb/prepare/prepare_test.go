@@ -64,3 +64,27 @@ func TestVerifyFailsOnAFAILFinding(t *testing.T) {
 		t.Fatalf("Verify must fail on the cached-count FAIL, got %v", err)
 	}
 }
+
+// Copilot on PR #210: the preparation built every materialized view in
+// every package's database. No DB-tier test reads one, and the testing
+// convention is to skip them unless a test is about views;
+// TestRunMigrationsOnFreshDB checks that each builds on an empty database.
+func TestDeploymentLeavesTheViewsOut(t *testing.T) {
+	dsn := os.Getenv(testdb.EnvVar)
+	if dsn == "" {
+		t.Skip(testdb.EnvVar + " not set")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	var views int
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data'`).Scan(&views); err != nil {
+		t.Fatal(err)
+	}
+	if views != 0 {
+		t.Errorf("the prepared database has %d materialized views; the preparation should skip them", views)
+	}
+}

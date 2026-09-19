@@ -91,8 +91,11 @@ If you swallow an error with `_, _ = pg.Exec(...)`, you'll regret it in producti
 ### Idioms
 
 ```go
-// Good: contextual wrap + slog at the boundary
+// Good: contextual wrap + slog at the boundary (shutdown is not a failure)
 if err := store.UpsertCommit(ctx, c); err != nil {
+    if errors.Is(err, context.Canceled) {
+        return err
+    }
     s.logger.Warn("failed to upsert commit",
         "hash", c.Hash, "file", c.Filename, "error", err)
     return fmt.Errorf("upserting commit %s: %w", c.Hash, err)

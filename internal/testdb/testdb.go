@@ -40,6 +40,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -82,8 +83,23 @@ const vanishedSQLState = "3D000"
 // would be created, prepared and — the helper usually exiting early — leaked,
 // and its setup's stderr would land in output the parent test inspects.
 func Main(m *testing.M, prepare, verify func(ctx context.Context, dsn string) error) int {
-	return run(m.Run, os.Getenv(EnvVar), prepare, verify)
+	return start(m.Run, os.Getenv(EnvVar), Prefix, prepare, verify)
 }
+
+// start is Main without the testing.M: it sweeps the databases under prefix
+// whose owners are gone, then runs. Main passes Prefix, so a test process
+// sweeps Prefix once, before creating its own database; Create's retry bound
+// counts on that (see Create).
+func start(runTests func() int, base, prefix string, prepare, verify func(ctx context.Context, dsn string) error) int {
+	if base != "" && !ownedByAncestor(base) {
+		sweepBase(context.Background(), base, prefix)
+	}
+	return run(runTests, base, prepare, verify)
+}
+
+// sweepCalls counts this process's sweeps, for the test that pins where
+// they happen (TestSweepsOnlyWhereMainStarts).
+var sweepCalls atomic.Int64
 
 // originalBase is the base DSN run created this process's database from, for
 // testdb's own tests, which need a base that is not already a per-process
@@ -142,9 +158,29 @@ type Database struct {
 	keeper *pgx.Conn
 }
 
-// Create makes a new per-process database from baseDSN, after sweeping the
-// ones whose owners are gone. The returned DSN is baseDSN with only the
-// database name changed.
+// sweepBase drops the databases under prefix whose owners are gone. A
+// failure leaves them behind and does not stop the run.
+func sweepBase(ctx context.Context, baseDSN, prefix string) {
+	cfg, err := pgx.ParseConfig(baseDSN)
+	if err != nil {
+		// The error can quote the DSN, password included; Create reports it.
+		fmt.Fprintf(os.Stderr, "testdb: sweeping old test databases: %s does not parse\n", EnvVar)
+		return
+	}
+	noIdleTimeout(cfg)
+	admin, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: sweeping old test databases: connecting to the %s base database: %v\n", EnvVar, err)
+		return
+	}
+	defer func() { _ = admin.Close(ctx) }()
+	if dropped, err := sweep(ctx, admin, prefix); err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: sweeping old test databases: %v (dropped %d)\n", err, len(dropped))
+	}
+}
+
+// Create makes a new per-process database from baseDSN. The returned DSN is
+// baseDSN with only the database name changed.
 func Create(ctx context.Context, baseDSN string) (*Database, error) {
 	cfg, err := pgx.ParseConfig(baseDSN)
 	if err != nil {
@@ -156,15 +192,11 @@ func Create(ctx context.Context, baseDSN string) (*Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to the %s base database: %w", EnvVar, err)
 	}
-	if dropped, err := sweep(ctx, admin, Prefix); err != nil {
-		// A failed sweep leaves old databases behind; it does not stop this run.
-		fmt.Fprintf(os.Stderr, "testdb: sweeping old test databases: %v (dropped %d)\n", err, len(dropped))
-	}
 	// Between CREATE DATABASE and the keeper's connection the new database is
 	// idle, and a sweep that another test process runs at that moment can
 	// drop it; the keeper's connect then fails with 3D000 and we start again
 	// under a new name. Each such retry needs a DIFFERENT process's sweep
-	// (a process sweeps once per Create attempt, before creating), and
+	// (Main sweeps Prefix once per test process, before creating), and
 	// `go test` runs at most GOMAXPROCS packages at a time (its -p default),
 	// so that many attempts cover every concurrent peer.
 	attempts := runtime.GOMAXPROCS(0) + 1
@@ -254,6 +286,7 @@ func (d *Database) Drop(ctx context.Context) error {
 // several seconds before refusing a database in use; the DROP (never FORCE)
 // stays the final guard for a connection that arrives in between.
 func sweep(ctx context.Context, admin *pgx.Conn, prefix string) (dropped []string, err error) {
+	sweepCalls.Add(1)
 	rows, err := admin.Query(ctx, `
 		SELECT d.datname
 		  FROM pg_database d

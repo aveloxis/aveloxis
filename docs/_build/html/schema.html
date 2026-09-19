@@ -2356,7 +2356,7 @@
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_last_breadth_at</span></code></p></td>
 <td><p>TIMESTAMPTZ</p></td>
 <td><p>breadth worker (v0.20.17)</p></td>
-<td><p>Cooldown stamp: last <code class="docutils literal notranslate"><span class="pre">/users/{login}/events</span></code> breadth attempt — stamped unconditionally, even on empty/error, so the claim queue drains.</p></td>
+<td><p>Cooldown stamp: last <code class="docutils literal notranslate"><span class="pre">/users/{login}/events</span></code> breadth attempt — stamped once the contributor’s events are stored, or after a fetch error for that user, so the claim queue drains; a circuit trip, an insert failure or a shutdown leaves it unstamped for the next cycle.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gh_state</span></code></p></td>
 <td><p>TEXT</p></td>

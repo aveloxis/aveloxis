@@ -363,6 +363,7 @@ name = "app"
 dependencies = [
   "flask==2.0.0",
   "velocitas-sdk @ git+https://github.com/eclipse-velocitas/vehicle-model-python.git@v0.3.0",
+  "velocitas-compact@git+https://github.com/eclipse-velocitas/vehicle-model-python.git@v0.3.0",
   "local-thing @ file:///opt/local-thing",
   "https://files.example.org/pkg-1.0.tar.gz",
 ]
@@ -373,6 +374,7 @@ dependencies = [
       install_requires=[
           'requests>=2.0',
           'velocitas-sdk @ git+https://github.com/x/y.git@v1',
+          'velocitas-compact@git+https://github.com/x/y.git@v1',
           './vendor/local-pkg',
       ])
 `

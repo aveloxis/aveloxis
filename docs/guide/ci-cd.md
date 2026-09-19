@@ -74,7 +74,7 @@ Runs three blocking tiers in sequence: `go vet`, `staticcheck`, and [golangci-li
 
 **Trigger:** Every push to main, every PR to main.
 
-Builds the Sphinx/MyST site exactly as Read the Docs does (Python 3.12, `docs/requirements.txt`) with `sphinx-build -W --keep-going`, so an unknown fence language, a code block that does not lex in its declared language, or a dead cross-reference fails the job — `--keep-going` walks the whole tree so one run lists every offender. `.readthedocs.yaml` enforces the same rule at publish time via `fail_on_warning`. Run the identical command locally before pushing (see "Build docs" in the README).
+Builds the Sphinx/MyST site exactly as Read the Docs does (Python 3.12, `docs/requirements.txt`) with `sphinx-build -W --keep-going`, so an unknown fence language, a code block that does not lex in its declared language, or a dead cross-reference fails the job — `--keep-going` walks the whole tree so one run lists every offender. `.readthedocs.yaml` enforces the same rule at publish time via `fail_on_warning`. `docs/requirements.txt` pins Sphinx, its theme and Markdown parser, Pygments and snowballstemmer to exact versions, so CI, Read the Docs and a local build use the same versions of them, and a CI step checks that the snowballstemmer pin matches the search stemmer the installed Sphinx ships. Before pushing, run the "Build docs" recipe in the README: it runs the same gate and rebuilds the tracked `docs/_build`.
 
 ### CodeQL (`codeql.yml`)
 

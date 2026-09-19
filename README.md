@@ -1215,15 +1215,21 @@ The suite currently stands at **~2,960 test functions across ~670 test files** (
 - **Lint gates** — `staticcheck`, `golangci-lint` (the CI version), `gofmt`, and CodeQL all block merges.
 
 # Build docs
+
+`docs/requirements.txt` pins the docs toolchain to the versions the tracked `docs/_build` was built with, so install from it, preferably in a virtualenv, with Python 3.12 or later (what CI and Read the Docs use; the pinned Sphinx needs it). The recipe deletes the search index and rebuilds every page (`-E`), so the index is rebuilt from nothing.
+
 ```bash
 cd docs
 pip install -r requirements.txt
-sphinx-build -W --keep-going -b html . _build/html   # same warnings-as-errors gate as CI / Read the Docs
+rm -f _build/html/searchindex.js
+sphinx-build -E -W --keep-going -b html . _build/html   # same warnings-as-errors gate as CI / Read the Docs
 open _build/html/index.html
+```
 
 Or if you prefer a one-liner from the repo root:
 
-pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -W --keep-going -b html docs docs/_build/html && open docs/_build/html/index.html
+```bash
+pip install -r docs/requirements.txt && rm -f docs/_build/html/searchindex.js && sphinx-build -E -W --keep-going -b html docs docs/_build/html && open docs/_build/html/index.html
 ```
 
 # Turning on Apache Mailing List Collection

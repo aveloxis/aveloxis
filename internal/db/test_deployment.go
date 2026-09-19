@@ -14,8 +14,11 @@ import (
 // repo group, as id 1, which fixtures reference; and a bootstrap admin who
 // signed up first, so every fixture user is a regular user unless the fixture
 // promotes it. Test support only: testdb/prepare and internal/db's TestMain
-// both call it, so the preparation exists once.
+// both call it, so the preparation exists once. It skips the materialized
+// views (Copilot on PR #210): no DB-tier test reads one, and
+// TestRunMigrationsOnFreshDB checks that each builds on an empty database.
 func (s *PostgresStore) PrepareTestDeployment(ctx context.Context, bootstrapAdminLogin string) error {
+	s.SetMatviewSkip(true)
 	if err := s.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating: %w", err)
 	}

@@ -215,7 +215,7 @@ Platform-agnostic contributor identity. Each unique person across GitHub and Git
 | `cntrb_created_at` | TIMESTAMPTZ | GitHub REST: `/users/{login}`, GitLab API v4 | When the account was created on the forge. |
 | `cntrb_last_search_attempted_at` | TIMESTAMPTZ | search-resolve ticker (v0.19.2) | Cooldown stamp: when email→user search was last attempted (success or miss). |
 | `cntrb_last_enriched_at` | TIMESTAMPTZ | enrichment ticker (v0.18.29) | Cooldown stamp: last `/users/{login}` profile enrichment. |
-| `cntrb_last_breadth_at` | TIMESTAMPTZ | breadth worker (v0.20.17) | Cooldown stamp: last `/users/{login}/events` breadth attempt — stamped unconditionally, even on empty/error, so the claim queue drains. |
+| `cntrb_last_breadth_at` | TIMESTAMPTZ | breadth worker (v0.20.17) | Cooldown stamp: last `/users/{login}/events` breadth attempt — stamped once the contributor's events are stored, or after a fetch error for that user, so the claim queue drains; a circuit trip, an insert failure or a shutdown leaves it unstamped for the next cycle. |
 | `gh_state` | TEXT | placeholder backfill (v0.20.12) | `'unresolved'` = a login observed in commit data that never resolved via the API; empty = normal. NOT a claim the account was deleted. |
 | `gh_activity_class` | TEXT | activity classifier (v0.27.57) | `public-active` / `private-active` / `dormant` / `no-observable-activity`; empty = never checked OR unresolvable at any batch size (v0.27.81). |
 | `gh_public_contribs_year` / `gh_restricted_contribs_year` | INTEGER | activity classifier | Calendar-year public / private-disclosed contribution counts from contributionsCollection. |

@@ -814,19 +814,6 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	}
 }
 
-// runSearchResolve runs the v0.19.2 search-resolve background task.
-// Takes a batch of contributors with email but no gh_user_id and
-// calls /search/users?q=email for each — on hit, backfills the
-// platform identity onto the existing row WITHOUT changing
-// cntrb_id or cntrb_login. On miss / error, stamps
-// cntrb_last_search_attempted_at so the row exits the candidate
-// pool until the cooldown elapses.
-//
-// Batch size is bounded by SearchResolveBatchSize so a single tick
-// can't burn through more than a fraction of the search-API quota.
-// At default 100 candidates per hour, the task uses ~1.7 search
-// requests per minute — comfortable headroom against the 30/min
-// per-token budget.
 // singleFlight launches task under safego unless a prior run of the
 // SAME task is still in flight (v0.27.40, summary/18 Phase 3). The
 // scheduler's ticker arms previously spawned a fresh goroutine every
@@ -846,6 +833,20 @@ func (s *Scheduler) singleFlight(active *atomic.Bool, name string, task func()) 
 	})
 }
 
+// runSearchResolve runs the v0.19.2 search-resolve background task.
+// Takes a batch of contributors with email but no gh_user_id and
+// calls /search/users?q=email for each — on hit, backfills the
+// platform identity onto the existing row WITHOUT changing
+// cntrb_id or cntrb_login. A search that answers (a hit or a
+// definitive no-hit) stamps cntrb_last_search_attempted_at so the
+// row exits the candidate pool until the cooldown elapses; one that
+// failed without an answer is left unstamped and retried (v0.29.55).
+//
+// Batch size is bounded by SearchResolveBatchSize so a single tick
+// can't burn through more than a fraction of the search-API quota.
+// At default 100 candidates per hour, the task uses ~1.7 search
+// requests per minute — comfortable headroom against the 30/min
+// per-token budget.
 func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	if s.ghClient == nil {
 		return

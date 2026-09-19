@@ -42,10 +42,11 @@ var v029DeployChecklist = []deployStep{
 	// a live serve (matches docs/getting-started/upgrading.md).
 	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
 	{"aveloxis migrate --skip-views", "schema + ledgered backfills (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
-	// Copilot round 21: the script REQUIRES a database positional
-	// argument (DB="${1:?}") — the bare form exits immediately. Show
-	// the usable dry-run-first invocation with the PG* env it reads.
-	{"scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
+	// The script reads its connection and database from aveloxis.json
+	// (Copilot round 21 on PR #193 needed a database argument, when the
+	// script still required one; on PR #210 the `<database>` placeholder
+	// was a shell redirection in a pasted line).
+	{"scripts/heal_mirror_links.sh --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run. It reads the database from aveloxis.json (-c for another config file; a database name as an argument overrides the config's). Deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note"},
 	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
 	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
 	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},
@@ -69,8 +70,8 @@ var v029DeployChecklist = []deployStep{
 var v02957DeployChecklist = []deployStep{
 	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
 	{"aveloxis migrate", "schema + ledgered backfills AND re-create the materialized views — NOT --skip-views this time: this release changes explorer_libyear_summary's definition, which only a plain migrate applies (node_id indexes build CONCURRENTLY — the long pole on a large fleet)"},
-	{`psql -h <host> -p <port> -U <user> -d <dbname> -Atc "SELECT pg_get_viewdef('aveloxis_data.explorer_libyear_summary') LIKE '%NULLS LAST%'"`, "must print t — the new view definition is in place. Fill the four values from the database block of aveloxis.json (a bare psql connects with libpq defaults and can reach a different database). The migrate's view block only WARNs when it fails (`materialized view creation had errors`) and still exits 0, so check the outcome: on f, fix what that WARN names and re-run `aveloxis migrate` before the heals"},
-	{"scripts/heal_mirror_links.sh <database> --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run (deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note)"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT pg_get_viewdef('aveloxis_data.explorer_libyear_summary') LIKE '%NULLS LAST%'"`, "must print t — the new view definition is in place. Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first; the command stops if one is unset (a bare psql connects with libpq defaults and can reach a different database). The migrate's view block only WARNs when it fails (`materialized view creation had errors`) and still exits 0, so check the outcome: on f, fix what that WARN names and re-run `aveloxis migrate` before the heals"},
+	{"scripts/heal_mirror_links.sh --dry-run", "link the dark github_mirror MESSAGE rows to their PR/issue: read the dry-run's resolvable count, then rerun the SAME line WITHOUT --dry-run. It reads the database from aveloxis.json (-c for another config file; a database name as an argument overrides the config's). Deployment-specific — build the node_id indexes via migrate first; skip on very large fleets per the script's own note"},
 	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
 	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
 	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},

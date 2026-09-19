@@ -138,8 +138,10 @@ func TestStartCmdGatesOnDeploySteps(t *testing.T) {
 // PR #193): the gated checklist IS the ordered deploy procedure, so it
 // must (a) run `aveloxis stop all` before any schema change — never
 // migrate under a live serve — and (b) print a USABLE mirror-link heal
-// command: the script exits immediately at DB="${1:?}" without a
-// database positional argument, so the bare form cannot be run.
+// command, dry run first. The script reads its connection and database
+// from aveloxis.json since then, so the command needs no database
+// argument (Copilot on PR #210: the `<database>` placeholder it carried
+// was a shell redirection).
 func TestDeployChecklistStartsWithStopAndHealIsUsable(t *testing.T) {
 	steps, ok := deployChecklistFor("0.29.0")
 	if !ok || len(steps) == 0 {
@@ -161,8 +163,8 @@ func TestDeployChecklistStartsWithStopAndHealIsUsable(t *testing.T) {
 			continue
 		}
 		sawHeal = true
-		if !strings.Contains(line, "<database>") || !strings.Contains(line, "--dry-run") {
-			t.Errorf("mirror-link heal command must carry a database argument AND --dry-run (the bare form exits at DB=\"${1:?}\"); got: %s", strings.TrimSpace(line))
+		if !strings.Contains(line, "--dry-run") {
+			t.Errorf("mirror-link heal command must be the dry run first; got: %s", strings.TrimSpace(line))
 		}
 	}
 	if !sawHeal {
@@ -543,15 +545,18 @@ func TestV02957ViewCheckQuotesARealLogLine(t *testing.T) {
 	if !quoted {
 		t.Fatalf("the view-definition check must tell the operator which WARN means the re-create failed (%q)", warn)
 	}
-	// L10 pass finding 1: a bare `psql -d <database>` connects with libpq
-	// defaults (local socket, port 5432), not aveloxis.json's database block
-	// — on a fleet whose database is elsewhere the check fails to connect or
-	// answers for a different database. It must name every connection field.
+	// L10 pass finding 1: a bare `psql` connects with libpq defaults
+	// (local socket, port 5432), not aveloxis.json's database block — on a
+	// fleet whose database is elsewhere the check fails to connect or
+	// answers for a different database. It must name every connection
+	// field, each from a variable the operator sets that stops the command
+	// when unset (Copilot on PR #210: `<host>`-style placeholders are shell
+	// redirections, so the pasted line failed).
 	for _, s := range steps {
 		if !strings.Contains(s.cmd, "pg_get_viewdef") {
 			continue
 		}
-		for _, field := range []string{"-h <host>", "-p <port>", "-U <user>", "-d <dbname>"} {
+		for _, field := range []string{`-h "${PGHOST:?}"`, `-p "${PGPORT:?}"`, `-U "${PGUSER:?}"`, `-d "${PGDATABASE:?}"`} {
 			if !strings.Contains(s.cmd, field) {
 				t.Errorf("the view check must connect with aveloxis.json's database block; %q is missing from %q", field, s.cmd)
 			}
@@ -755,4 +760,23 @@ func constStringExpr(e ast.Expr) (string, bool) {
 		return constStringExpr(x.X)
 	}
 	return "", false
+}
+
+// TestDeployChecklistCommandsHaveNoPlaceholders (Copilot on PR #210): an
+// operator pastes these commands, and an unquoted `<host>` or `<database>`
+// is a shell redirection, so the line fails before the command runs. The
+// docs' shell fences are held to the same rule (srctest.AnglePlaceholder).
+func TestDeployChecklistCommandsHaveNoPlaceholders(t *testing.T) {
+	checked := 0
+	for version, steps := range deployChecklists {
+		for _, s := range steps {
+			checked++
+			if m := srctest.AnglePlaceholder.FindString(s.cmd); m != "" {
+				t.Errorf("%s checklist: %q carries the placeholder %s — the operator pastes this line: use a quoted variable, or drop an argument the command reads from aveloxis.json", version, s.cmd, m)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no checklist step examined")
+	}
 }

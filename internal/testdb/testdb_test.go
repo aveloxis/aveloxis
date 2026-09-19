@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestMain passes nil hooks on purpose: this package's own tests call run()
@@ -342,5 +345,108 @@ func TestConnectionsSurviveIdleSessionTimeout(t *testing.T) {
 	}
 	if err := d.Drop(ctx); err != nil {
 		t.Errorf("Drop after an idle period with idle_session_timeout=%v: %v", timeout, err)
+	}
+}
+
+// Create's retry bound counts one sweep of Prefix per test process: a sweep
+// can drop another process's database only in its CREATE-to-keeper window,
+// and each retry needs a different process's sweep. So Create (which tests
+// call for an empty database) and run (which this package's tests call)
+// never sweep, and start sweeps its prefix once, before the tests run. The
+// process-local counter makes this a runtime check; start is given a
+// private prefix here, so this test never sweeps other runs' databases.
+func TestSweepsOnlyWhereMainStarts(t *testing.T) {
+	base := baseDSN(t)
+	own := os.Getenv(EnvVar)
+	t.Setenv(EnvVar, own)
+	ctx := context.Background()
+
+	before := sweepCalls.Load()
+	d, err := Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Drop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := sweepCalls.Load() - before; n != 0 {
+		t.Errorf("Create swept %d times; it must not sweep", n)
+	}
+
+	before = sweepCalls.Load()
+	if code := run(func() int { return 0 }, base, nil, nil); code != 0 {
+		t.Fatalf("run = %d", code)
+	}
+	if n := sweepCalls.Load() - before; n != 0 {
+		t.Errorf("run swept %d times; only start sweeps", n)
+	}
+
+	admin := connect(t, base)
+	ns := "avstarttest_" + randomHex(t) + "_"
+	orphan := ns + "orphan"
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+pgx.Identifier{orphan}.Sanitize()); err != nil {
+		t.Fatalf("creating %s: %v", orphan, err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+pgx.Identifier{orphan}.Sanitize()+` WITH (FORCE)`)
+	})
+	before = sweepCalls.Load()
+	code := start(func() int {
+		if n := sweepCalls.Load() - before; n != 1 {
+			t.Errorf("start swept %d times before the tests ran, want 1", n)
+		}
+		if databaseExists(t, orphan) {
+			t.Errorf("the tests ran before start swept %s", orphan)
+		}
+		return 0
+	}, base, ns, nil, nil)
+	if code != 0 {
+		t.Fatalf("start = %d", code)
+	}
+	if n := sweepCalls.Load() - before; n != 1 {
+		t.Errorf("start swept %d times in all, want 1", n)
+	}
+
+	// With no base the tests just run and nothing sweeps — even when the
+	// PG* variables reach a server, which an empty DSN would connect to.
+	cfg, err := pgx.ParseConfig(base)
+	if err != nil {
+		t.Fatal("the base DSN does not parse")
+	}
+	t.Setenv("PGHOST", cfg.Host)
+	t.Setenv("PGPORT", strconv.Itoa(int(cfg.Port)))
+	t.Setenv("PGUSER", cfg.User)
+	t.Setenv("PGPASSWORD", cfg.Password)
+	t.Setenv("PGDATABASE", cfg.Database)
+	before = sweepCalls.Load()
+	ran := false
+	if code := start(func() int { ran = true; return 0 }, "", ns, nil, nil); code != 0 || !ran {
+		t.Fatalf("start with no base = %d, tests ran = %v", code, ran)
+	}
+	if n := sweepCalls.Load() - before; n != 0 {
+		t.Errorf("start swept %d times with no base", n)
+	}
+
+	// This process's own database stands for an ancestor's (a re-executed
+	// test binary inherits one): reachable, so a start that ignored the
+	// ancestor rule would sweep, and count.
+	before = sweepCalls.Load()
+	if code := start(func() int { return 0 }, own, ns, nil, nil); code != 0 {
+		t.Fatalf("start with an ancestor's database = %d", code)
+	}
+	if n := sweepCalls.Load() - before; n != 0 {
+		t.Errorf("start swept %d times for an ancestor's database", n)
+	}
+}
+
+// Main is start with the process's testing.M, base and Prefix. It is one
+// line, pinned verbatim: a Main that called run directly would never sweep,
+// and no runtime test can drive Main without being the package's TestMain.
+func TestMainIsStartWithPrefix(t *testing.T) {
+	fn := strings.TrimSpace(srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/testdb/testdb.go"), "func Main(")))
+	_, body, _ := strings.Cut(fn, "{\n") // after the signature
+	body = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(body), "}"))
+	if want := "return start(m.Run, os.Getenv(EnvVar), Prefix, prepare, verify)"; body != want {
+		t.Errorf("Main's body is %q, want %q", body, want)
 	}
 }

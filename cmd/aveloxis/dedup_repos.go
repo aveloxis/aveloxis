@@ -22,11 +22,11 @@
 //
 // Operator workflow:
 //
-//	aveloxis migrate --skip-views       # first: the v0.28.18 email_message indexes
+//	(the steps aveloxis deploy-checklist prints) # first: this binary's deploy, whose migrate builds the v0.28.18 email_message indexes
 //	aveloxis dedup-repos --dry-run      # show the plan
 //	aveloxis dedup-repos --limit 50     # canary batch
 //	aveloxis dedup-repos                # full run (re-run until 0 pairs)
-//	aveloxis migrate --skip-views       # then: builds uq_repos_repo_git_ci
+//	aveloxis migrate --skip-views       # then: builds uq_repos_repo_git_ci (the views are current after the deploy)
 //	aveloxis refresh-views              # analytics stop double-counting
 //
 // See CLAUDE.md v0.25.32 for the full rationale.
@@ -85,12 +85,14 @@ set.
 Requires the v0.28.18 migrate to have built the email_message FK
 indexes (idx_email_message_repo_id / _signaled_repo_id): the merge
 refuses to start without them rather than sequential-scan the table
-per pair — run 'aveloxis migrate --skip-views' on this binary first.
+per pair. Run this binary's deploy steps first: 'aveloxis
+deploy-checklist' prints them ('aveloxis migrate --skip-views' if it
+prints none).
 
-After the fleet reports 0 pairs, run 'aveloxis migrate --skip-views' to
-build the uq_repos_repo_git_ci unique index (the permanent DB-level
-backstop), then 'aveloxis refresh-views' so matviews stop
-double-counting.
+Once those deploy steps ('aveloxis deploy-checklist') are done and the
+fleet reports 0 pairs, run 'aveloxis migrate --skip-views' to build the
+uq_repos_repo_git_ci unique index (the permanent DB-level backstop),
+then 'aveloxis refresh-views' so matviews stop double-counting.
 
 Use --dry-run first to see the plan.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -133,7 +135,7 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 
 	if count == 0 {
 		logger.Info("no case-variant duplicate repos — nothing to merge. " +
-			"Run `aveloxis migrate --skip-views` to build the uq_repos_repo_git_ci backstop if it doesn't exist yet.")
+			"After the steps `aveloxis deploy-checklist` prints, `aveloxis migrate --skip-views` builds the uq_repos_repo_git_ci backstop if it doesn't exist yet.")
 		return nil
 	}
 
@@ -178,7 +180,7 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 			if errors.Is(err, db.ErrEmailMessageIndexesNotReady) {
 				// The v0.28.18 precondition: nothing in this batch was
 				// touched — the store refuses before any write.
-				logger.Error("precondition unmet — stopping: run `aveloxis migrate --skip-views` on this binary first",
+				logger.Error("precondition unmet — stopping: run "+db.DeployStepsAdvice+" on this binary first",
 					"total_merged", merged, "error", err)
 				return err
 			}
@@ -225,8 +227,15 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 			"remaining_groups", remaining, "skipped_collecting_races", skipped)
 	}
 	if merged > 0 {
-		logger.Info("next steps: `aveloxis migrate --skip-views` builds the unique-index backstop; " +
-			"`aveloxis refresh-views` rebuilds matviews so analytics stop double-counting")
+		// The backstop migrate is --skip-views, but only AFTER the release's
+		// deploy steps, here and in the no-duplicates line above. Nothing
+		// else guarantees the order: that line returns before the index
+		// precondition runs, and the precondition checks index validity,
+		// never the schema stamp, so every v0.28.18+ fleet passes it on an
+		// undeployed binary (L10 round 4). Pinned by
+		// TestDedupReposSendsTheDeployStepsFirst.
+		logger.Info("next steps: after the steps `aveloxis deploy-checklist` prints, `aveloxis migrate --skip-views` builds the unique-index backstop; " +
+			"`aveloxis refresh-views` refreshes the matviews so analytics stop double-counting")
 	}
 	return nil
 }

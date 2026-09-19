@@ -266,10 +266,11 @@ store.RefreshRepoAggregates(ctx, repoID)
 
 If you add a new materialized view:
 
-1. Declare it in `schema.sql` (CREATE MATERIALIZED VIEW ... WITH NO DATA so fresh installs land without blocking on a populated build).
-2. Add its name to the list in `CreateMaterializedViewsIfNotExist`.
-3. Add it to `RefreshAllRepoAggregates`.
-4. Test that `aveloxis refresh-views` rebuilds it (integration test).
+1. Declare it in `internal/db/matviews.sql` as a `DROP MATERIALIZED VIEW IF EXISTS … CASCADE;` followed by its `CREATE MATERIALIZED VIEW`. The file runs as one statement batch, so a view that fails to build rolls back every other view's DROP/CREATE with it.
+2. Add its name to `matviewNames` in `internal/db/matviews.go`, so `aveloxis refresh-views` and the weekly rebuild refresh it. A unique index on the view lets the refresh run `CONCURRENTLY`.
+3. If it does not need to be materialized (it reads base tables only and is cheap to compute), make it a plain view in `internal/db/views.sql` instead: that file runs on every migrate, including `--skip-views`.
+
+**Deploying a new or changed view.** Only a plain `aveloxis migrate` (without `--skip-views`) creates a view that is missing from a populated fleet or applies a changed definition. `migrate --skip-views`, `refresh-views`, the weekly rebuild and `serve`'s startup never do: startup creates views only when the sentinel view `api_get_all_repo_prs` is missing, and a refresh keeps the definition a view already has. So a release that edits `matviews.sql` needs a deploy checklist whose migrate step is a plain `aveloxis migrate`, followed by a check of the stored definition (`pg_get_viewdef`), because the migrate's view block only logs a WARN when it fails. v0.29.57's checklist is the worked example, pinned by `TestV02957ChecklistAppliesTheNewViewDefinition`.
 
 Operators rebuild matviews on the configured day (`collection.matview_rebuild_day`, default Saturday). Pre-existing matviews are NOT refreshed on every startup — that was a 2024 design decision to avoid multi-hour startup delays on fleet-scale databases.
 
@@ -293,7 +294,7 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
 6. Write the release-note entry (in the PR description) documenting:
    - What was added and why.
    - What the migration does on existing deployments.
-   - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`).
+   - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`, or a plain `aveloxis migrate` when the release changed `matviews.sql` — see "Deploying a new or changed view" above — plus any heals, in the release's `deployChecklists` entry).
    - Any operational concern (long-running CONCURRENTLY index builds, fail-closed startup behavior, etc.).
 7. **Register a write policy** for any new column whose write discipline
    matters (fill-empty-only, insert-only, monotonic, ...) in

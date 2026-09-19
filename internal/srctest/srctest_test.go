@@ -512,3 +512,9 @@ const (
 		}
 	})
 }
+
+func TestModulePath(t *testing.T) {
+	if got := ModulePath(t); got != "github.com/aveloxis/aveloxis" {
+		t.Errorf("ModulePath = %q, want the module declared in go.mod", got)
+	}
+}

@@ -63,6 +63,20 @@ func Root(t testing.TB) string {
 	return root
 }
 
+// ModulePath returns the module path declared in the repository's go.mod —
+// for checks that must name a package by its real import path (a package
+// type-checked under "." names its own types "..T").
+func ModulePath(t testing.TB) string {
+	t.Helper()
+	for _, line := range strings.Split(Read(t, "go.mod"), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "module" {
+			return f[1]
+		}
+	}
+	t.Fatal("srctest.ModulePath: go.mod has no module line")
+	return ""
+}
+
 // Read returns the contents of the file at a REPO-ROOT-RELATIVE path,
 // fataling on error. It exists to kill the "../../docs/..." fragility
 // for cross-package reads; package-local files may keep using plain

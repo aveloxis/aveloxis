@@ -105,7 +105,7 @@ If you want to skip the matview build for faster iteration (you typically do dur
 go run ./cmd/aveloxis migrate --skip-views
 ```
 
-You can refresh views later with `go run ./cmd/aveloxis refresh-views` or let the scheduler's weekly rebuild handle them.
+On a fresh database this leaves the materialized views uncreated, and nothing else creates them: `refresh-views` and the weekly rebuild only refresh views that exist, and `serve` skips its startup migration while the schema stamp matches its version. Run a plain `go run ./cmd/aveloxis migrate` when you want them.
 
 ## 6. (Optional) Install scc + scorecard
 
@@ -152,17 +152,17 @@ That backgrounds three processes (`serve`, `web`, `api`). Logs land in `~/.avelo
 Integration tests live alongside unit tests under `internal/db/` (and a few other packages). They're gated on `AVELOXIS_TEST_DB`:
 
 ```bash
-# Point at a SCRATCH database — NOT your production aveloxis_dev.
-# Integration tests truncate tables and write fixture rows.
+# Point at a database on a SCRATCH server — never a production one.
+# The tests create, fill and drop databases of their own next to it.
 createdb aveloxis_scratch_test
 
 AVELOXIS_TEST_DB="postgres://aveloxis:yourpass@localhost:5432/aveloxis_scratch_test?sslmode=prefer" \
     go test ./internal/db/ -v -timeout 120s
 ```
 
-The tests run migrations against the scratch DB first, then exercise specific code paths. Tests skip cleanly if `AVELOXIS_TEST_DB` is unset, so `go test ./...` stays fast for contributors without a database.
+Each package's tests run in a database of their own, created from the one you name (`aveloxis_t_<pid>_<random>`), prepared before any test, checked with the data-verify battery after them, and dropped, so the role needs `CREATEDB` (`ALTER ROLE aveloxis CREATEDB`). See [testing.md](testing.md) ("Each package gets a database of its own"). Tests skip cleanly if `AVELOXIS_TEST_DB` is unset, so `go test ./...` stays fast for contributors without a database.
 
-**Safety:** integration tests assume a scratch database. Some helpers (e.g. v0.16.6's `RealignDueDates`) update every matching row in the queue. Pointing them at a production database would damage operator data. Use a separate scratch DB or accept the consequences.
+**Safety:** point `AVELOXIS_TEST_DB` at a scratch server, never a production one. Test data goes to the per-package databases, but the tests also act on the server as a whole: they create and drop databases there (the per-package ones, and `_avcolfill_sidedb` for the column-fill diff test), create and drop login roles (the backend-visibility tests), and some helpers (e.g. v0.16.6's `RealignDueDates`) update every matching row of the database they run in.
 
 See [`testing.md`](testing.md) for the testing philosophy and patterns.
 
@@ -182,7 +182,7 @@ You skipped step 5 (or your `aveloxis.json` points at the wrong database). Run `
 
 ### `column "X" does not exist`
 
-Your binary is newer than the DB. Re-run `go run ./cmd/aveloxis migrate --skip-views`. This is the v0.20.15 ERROR-level startup log that warns about exactly this state.
+Your binary is newer than the DB. Re-run `go run ./cmd/aveloxis migrate` (add `--skip-views` to skip the views, unless your branch changed `matviews.sql`). This is the v0.20.15 ERROR-level startup log that warns about exactly this state.
 
 ### `failed to connect to ... server is starting up`
 

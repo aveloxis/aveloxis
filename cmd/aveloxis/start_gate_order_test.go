@@ -120,7 +120,9 @@ func TestStartAbortMessageBranchesOnChecklist(t *testing.T) {
 		t.Skipf("this binary's version (%s) has no checklist entry; the with-checklist arm is unreachable here", withChecklist)
 	}
 	msg = startAbortMessage(withChecklist)
-	for _, needle := range []string{"deploy-checklist", "ack-deploy", "migrate --skip-views", "--skip-deploy-check"} {
+	// The stamp remedy is the migrate step of THIS version's checklist
+	// (post-loop review finding 2: 0.29.57's is a plain migrate).
+	for _, needle := range []string{"deploy-checklist", "ack-deploy", "`" + ladderMigrateStep(withChecklist) + "`", "--skip-deploy-check"} {
 		if !strings.Contains(msg, needle) {
 			t.Errorf("a version WITH a checklist must still name %q — either reason can have refused:\n%s", needle, msg)
 		}

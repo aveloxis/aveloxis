@@ -106,27 +106,24 @@ func TestGoModParsesSingleLineRequire(t *testing.T) {
 
 // TestRequirementsTxtHandlesLessThan verifies parseRequirementsTxt handles
 // flask<2.0 (just < without =).
+//
+// This asserted the literal `"<"` inside the function's first 1000 bytes
+// until v0.29.56 put every Python operator scan on one shared splitter
+// (splitPyNameSpec, SR-17). The operator is still handled — better, since
+// the splitter takes the LEFTMOST operator rather than a preference list —
+// but the spelling moved, and a pin on the spelling failed a refactor that
+// made the behaviour strictly more correct. The behaviour is the contract.
 func TestRequirementsTxtHandlesLessThan(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	// Find the parseRequirementsTxt function.
-	idx := strings.Index(code, "func parseRequirementsTxt")
-	if idx < 0 {
-		t.Fatal("cannot find parseRequirementsTxt")
-	}
-	fnBody := code[idx:]
-	if len(fnBody) > 1000 {
-		fnBody = fnBody[:1000]
-	}
-
-	// Must handle bare "<" as a separator (not just "<=", ">=", "!=", "~=", ">").
-	if !strings.Contains(fnBody, `"<"`) {
-		t.Error("parseRequirementsTxt must handle '<' as a version separator — " +
-			"flask<2.0 currently becomes dep name 'flask<2.0' which is invalid")
+	for _, line := range []string{
+		"flask<2.0", "flask<=2.0", "flask>2.0", "flask>=2.0",
+		"flask!=2.0", "flask~=2.0", "flask==2.0", "flask===2.0",
+		// Either order of a specifier set names the same package.
+		"flask>=1.1,<2.0", "flask<2.0,>=1.1",
+	} {
+		got := parseRequirementsTxt(line + "\n")
+		if len(got) != 1 || got[0] != "flask" {
+			t.Errorf("parseRequirementsTxt(%q) = %v, want [flask]", line, got)
+		}
 	}
 }
 

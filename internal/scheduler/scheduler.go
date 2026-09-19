@@ -70,6 +70,21 @@ type Config struct {
 	// the GitLab API keys belong to; the legacy GitLab group refresh only
 	// sends those keys to that instance's host (v0.29.11).
 	GitLab *config.PlatformConfig
+
+	// GitHub is the operator's aveloxis.json `github` block — the same
+	// rule as GitLab, for the same reason (v0.29.57). Its base_url names
+	// the host the GitHub keys belong to, which for a self-hosted
+	// deployment is GitHub Enterprise. Before this field, clients were
+	// hardcoded to api.github.com, so an Enterprise deployment sent its
+	// token to public GitHub. Empty or nil keeps the public default.
+	//
+	// SCOPE, because a partial fix that reads as complete is worse than an
+	// open one: this covers the clients the SCHEDULER builds — both org
+	// scans and the analysis client. The commit resolver, the breadth
+	// worker, the web server and the CLI org-add still hardcode the host
+	// (worklist item 34); they take a key pool rather than a base URL, so
+	// closing them is a signature change, not a one-line one.
+	GitHub *config.PlatformConfig
 }
 
 // DigestMailer is the narrow mailer surface the digest ticker needs
@@ -108,6 +123,12 @@ type Scheduler struct {
 	// ceilings cannot see it; this is its ceiling. Sized once in
 	// NewWithKeys from the effective config value.
 	scorecardSem chan struct{}
+
+	// analysisGitHubAPI (v0.29.56) is the one key-pooled GitHub REST client
+	// every analysis shares for the libyear lookups GitHub hosts (Go module
+	// licenses, SwiftPM releases). Built once: a client per repo would open
+	// a transport per job. nil without GitHub keys.
+	analysisGitHubAPI *platform.HTTPClient
 
 	// matviewPending is set by the weekly matview ticker and cleared by the
 	// rebuild goroutine. The poll loop starts the rebuild once active worker
@@ -195,6 +216,17 @@ func New(store *db.PostgresStore, ghClient, glClient platform.Client, logger *sl
 	return NewWithKeys(store, ghClient, glClient, nil, nil, logger, cfg)
 }
 
+// githubAPIBase is the REST host the scheduler's own GitHub clients target:
+// the operator's github.base_url when set, else public GitHub. One helper so
+// the org scan and the analysis client cannot diverge (v0.29.57 — they were
+// both hardcoded, which sent Enterprise tokens to api.github.com).
+func githubAPIBase(cfg Config) string {
+	if cfg.GitHub != nil && cfg.GitHub.BaseURL != "" {
+		return cfg.GitHub.BaseURL
+	}
+	return "https://api.github.com"
+}
+
 // NewWithKeys creates a scheduler with the GitHub key pool (commit
 // resolution, org scans, breadth, scorecard loans) and the GitLab key pool
 // (the legacy GitLab group refresh — v0.29.11: it used the GitHub pool).
@@ -234,8 +266,12 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		workerID: workerID,
 		// Overridable in tests so the org scan can run against an
 		// httptest GitHub (v0.27.83 dedup behavioral suite).
-		ghAPIBase:    "https://api.github.com",
+		ghAPIBase:    githubAPIBase(cfg),
 		scorecardSem: make(chan struct{}, cfg.Collection.ScorecardMaxConcurrentValue()),
+	}
+
+	if ghKeys != nil {
+		s.analysisGitHubAPI = platform.NewHTTPClient(s.ghAPIBase, ghKeys, logger, platform.AuthGitHub)
 	}
 
 	// Install a permanent-redirect hook on both platform clients so that a
@@ -598,6 +634,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// was reachable at startup (migrate succeeded), so start healthy.
 	s.dbHealthy.Store(true)
 	safego.Go(s.logger, "db-health-monitor", func() { s.runDBHealthMonitor(ctx) })
+
+	// Stall detector (v0.29.56): a heartbeat that reports how late it was
+	// woken, so a process-wide stall is distinguishable from workers
+	// waiting on the database. Observation only.
+	safego.Go(s.logger, "stall-detector", func() { s.runStallDetector(ctx) })
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -1627,6 +1668,16 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	facadeResult = result
 
+	// A repository with no clone at all (DMCA takedown, disabled by
+	// GitHub, deleted) cannot be analysed or scored: analysis fails on the
+	// missing clone and scorecard spends a remote run to be told the same
+	// (v0.29.56). The facade WARN above already says why.
+	if err != nil && !collector.HasBareClone(s.cfg.Collection.RepoCloneDir, repoID) {
+		s.logger.Info("skipping analysis and scorecard — the repository has no clone",
+			"repo_id", repoID)
+		return facadeResult, nil
+	}
+
 	// GitLab commit_count backfill: GitLab's API commonly reports 0 commits
 	// (nil statistics object when the token lacks Reporter+ access, or stale
 	// stats cache for freshly-mirrored projects). Now that facade has
@@ -1657,6 +1708,11 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitiveValue()
 	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
 	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
+	if s.analysisGitHubAPI != nil {
+		// Guarded: a nil *HTTPClient in the interface field would read as
+		// a client and panic on the first lookup.
+		ac.GitHubAPI = s.analysisGitHubAPI
+	}
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if errors.Is(aErr, context.Canceled) {
 		return facadeResult, nil
@@ -2131,7 +2187,11 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	if s.ghKeys == nil {
 		return 0
 	}
-	http := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
+	// s.ghAPIBase, not a literal (v0.29.57): this is the SECOND org-scan
+	// client — the legacy repo_groups refresh — and it was missed when
+	// scanOrgRepos moved onto the configured host, which is exactly the
+	// divergence one shared field exists to prevent.
+	http := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
 
 	// Bridge from legacy aveloxis_data.repo_groups to modern
 	// aveloxis_ops.user_groups: any user_group whose user_org_requests

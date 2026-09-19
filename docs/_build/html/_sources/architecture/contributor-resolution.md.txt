@@ -606,6 +606,21 @@ GitHub itself: `no-observable-activity` never claims "inactive",
 because truly-inactive is indistinguishable from
 active-only-in-private-with-disclosure-off (privacy by design).
 
+**How a tick handles failure (v0.29.56).** The sweep claims 2,500
+never-checked-or-oldest-checked contributors every 15 minutes and fetches them
+in 25-login GraphQL queries. A query GitHub cannot finish is retried and then
+subdivided; an account that fails alone is left out of the result, and the
+scheduler stamps it checked without a class so it leaves the queue head. When a
+chunk fails outright, the contributors already fetched are written and the
+absentees of the chunks that COMPLETED are still retired; only the failed
+chunk's logins are left alone, because a login the sweep got no answer about is
+unknown, not deleted. Those stay at the head and are retried on the next tick.
+
+This matters because the claim order is deterministic. Before v0.29.56 a failed
+chunk discarded the whole tick's work, so the same 2,500 contributors were
+re-claimed and failed again every 15 minutes — production classified nobody
+between 2026-09-14 and 2026-09-17, with 1.2 million contributors never checked.
+
 ## GitLab vs GitHub: column-by-column parity matrix (v0.20.3)
 
 Aveloxis collects contributor data from both GitHub and GitLab and stores them in the same `aveloxis_data.contributors` table. Some columns map cleanly between platforms; others are intentionally GitHub-only or GitLab-only. This matrix is the contract for what to expect when querying contributor data on a mixed-platform fleet.

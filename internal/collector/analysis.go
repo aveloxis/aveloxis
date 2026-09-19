@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -28,12 +29,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // AnalysisCollector runs file-content analysis on repos.
@@ -68,6 +73,12 @@ type AnalysisCollector struct {
 	// collection.github_actions_deps) inventories workflow `uses:`
 	// references as build-scope deps. Default FALSE.
 	GitHubActionsDeps bool
+
+	// GitHubAPI (v0.29.56) is the key-pooled GitHub REST client for the
+	// libyear lookups GitHub hosts (Go module licenses, SwiftPM releases).
+	// nil when no GitHub keys are loaded: those lookups then fail and are
+	// counted in the libyear WARNs, never sent anonymously.
+	GitHubAPI githubAPIGetter
 }
 
 // NewAnalysisCollector creates an analysis collector.
@@ -128,8 +139,8 @@ type AnalysisResult struct {
 func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*AnalysisResult, error) {
 	result := &AnalysisResult{}
 
-	barePath := filepath.Join(ac.bareDir, fmt.Sprintf("repo_%d", repoID))
-	if _, err := os.Stat(filepath.Join(barePath, "HEAD")); err != nil {
+	barePath := BareClonePath(ac.bareDir, repoID)
+	if !HasBareClone(ac.bareDir, repoID) {
 		return result, fmt.Errorf("no bare clone at %s", barePath)
 	}
 
@@ -429,20 +440,9 @@ func parseRequirementsTxt(content string) []string {
 		if idx := strings.Index(line, ";"); idx > 0 {
 			line = line[:idx]
 		}
-		// Strip extras: "requests[security]>=2.0" -> "requests>=2.0"
-		if idx := strings.Index(line, "["); idx > 0 {
-			rest := line[idx:]
-			if end := strings.Index(rest, "]"); end > 0 {
-				line = line[:idx] + rest[end+1:]
-			}
-		}
-		// Strip version specifiers. Include "<" for bare less-than constraints.
-		for _, sep := range []string{"===", "==", ">=", "<=", "!=", "~=", ">", "<"} {
-			if idx := strings.Index(line, sep); idx > 0 {
-				line = line[:idx]
-				break
-			}
-		}
+		line = stripPyExtras(line)
+		// Strip version specifiers.
+		line, _ = splitPyNameSpec(line)
 		if name := strings.TrimSpace(line); name != "" {
 			deps = append(deps, name)
 		}
@@ -473,24 +473,14 @@ func parseGoMod(content string) []string {
 	return deps
 }
 
+// parseTOMLDeps lists the dependency names declared in one TOML section
+// (Cargo [dependencies], poetry's [tool.poetry.dependencies]) through the
+// shared table scanner (manifest_toml.go), whatever their source.
 func parseTOMLDeps(content, section string) []string {
 	var deps []string
-	inSection := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == section {
-			inSection = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			inSection = false
-			continue
-		}
-		if inSection && strings.Contains(trimmed, "=") {
-			name := strings.TrimSpace(strings.SplitN(trimmed, "=", 2)[0])
-			if name != "" && name != "python" {
-				deps = append(deps, name)
-			}
+	for _, e := range scanTOMLDepTables(content, map[string]bool{section: true}) {
+		if e.Name != "python" {
+			deps = append(deps, e.Name)
 		}
 	}
 	return deps
@@ -617,7 +607,11 @@ func parsePEP621Deps(content string) []string {
 // Output: `flask` or `tomli`
 func extractPEP621DepName(line string) string {
 	line = strings.TrimSpace(line)
-	line = strings.Trim(line, "\",")
+	// TOML literal strings are legal in pyproject.toml, so an item may be
+	// single-quoted. Trimming only '"' kept the apostrophe in the name
+	// ('tomli) while the libyear path stripped it — the two disagreed about
+	// the same file (v0.29.56).
+	line = strings.Trim(line, "\"',")
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") {
 		return ""
@@ -626,17 +620,9 @@ func extractPEP621DepName(line string) string {
 	if idx := strings.Index(line, ";"); idx > 0 {
 		line = strings.TrimSpace(line[:idx])
 	}
-	// Strip extras: name[extra]>=1.0
-	if idx := strings.Index(line, "["); idx > 0 {
-		line = line[:idx] + line[strings.Index(line, "]")+1:]
-	}
-	// Extract name before version specifiers.
-	for _, sep := range []string{">=", "<=", "!=", "~=", "==", ">", "<"} {
-		if idx := strings.Index(line, sep); idx > 0 {
-			return strings.TrimSpace(line[:idx])
-		}
-	}
-	return strings.TrimSpace(line)
+	line = stripPyExtras(line)
+	name, _ := splitPyNameSpec(line)
+	return name
 }
 
 // extractPEP621DepsFromLine extracts dep names from an inline deps array.
@@ -661,7 +647,15 @@ func extractPEP621DepsFromLine(line string) []string {
 		return nil
 	}
 	inner := line[start:end]
-	for _, item := range strings.Split(inner, ",") {
+	// Only a comma BETWEEN items separates them (v0.29.56). A comma inside
+	// the quoted item is data — a bounded range ("requests>=2.31.0,<3.0.0")
+	// or an extras list ("celery[redis,auth]>=5.3") — and splitting on it
+	// cuts one dependency into fragments, so the real package is never
+	// resolved and a fragment is inventoried in its place. (Which fragments
+	// depends on how each path strips extras, so this comment does not name
+	// them; TestInlineDeclarationsSplitOnStructuralCommasOnly asserts the
+	// CORRECT output for both paths.)
+	for _, item := range splitTOMLTopLevel(inner) {
 		if name := extractPEP621DepName(item); name != "" {
 			deps = append(deps, name)
 		}
@@ -750,17 +744,9 @@ func extractPyDepName(req string) string {
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
 	}
-	// Strip extras: name[extra]
-	if idx := strings.Index(req, "["); idx > 0 {
-		req = req[:idx]
-	}
-	// Strip version specifiers.
-	for _, sep := range []string{">=", "<=", "!=", "~=", "==", ">", "<"} {
-		if idx := strings.Index(req, sep); idx > 0 {
-			return strings.TrimSpace(req[:idx])
-		}
-	}
-	return strings.TrimSpace(req)
+	req = stripPyExtras(req)
+	name, _ := splitPyNameSpec(req)
+	return name
 }
 
 // parseSetupPyVersions extracts deps with versions from setup.py install_requires.
@@ -798,28 +784,144 @@ func parseSetupPyVersions(content string) []libyearDep {
 	return deps
 }
 
-// extractQuotedPyVersionDeps extracts deps with versions from quoted Python strings.
+// extractQuotedPyVersionDeps extracts deps with versions from the quoted
+// Python strings of a requirement list. A string that is a function-call
+// argument or a keyword value is not a list element: v0.29.56 found
+// "read_without_comments('dev-requirements')" in pixie-io/cpplint's
+// extras_require sent to PyPI as a package, so a string whose preceding
+// token is '(' , '=' or an identifier is skipped. Strings are scanned in
+// order, so a quote of one kind inside the other kind is not a delimiter.
 func extractQuotedPyVersionDeps(line string) []libyearDep {
 	var deps []libyearDep
-	for _, quote := range []byte{'\'', '"'} {
-		rest := line
-		for {
-			start := strings.IndexByte(rest, quote)
-			if start < 0 {
-				break
+	for i := 0; i < len(line); i++ {
+		quote := line[i]
+		if quote != '\'' && quote != '"' {
+			continue
+		}
+		end := strings.IndexByte(line[i+1:], quote)
+		if end < 0 {
+			break
+		}
+		depStr := line[i+1 : i+1+end]
+		prev := strings.TrimRight(line[:i], " \t")
+		i += end + 1
+		if prev != "" {
+			switch c := prev[len(prev)-1]; {
+			case c == '(' || c == '=' || c == '_' || c == '.' ||
+				('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9'):
+				continue
 			}
-			end := strings.IndexByte(rest[start+1:], quote)
-			if end < 0 {
-				break
-			}
-			depStr := rest[start+1 : start+1+end]
-			rest = rest[start+1+end+1:]
-			if d := parsePyRequirement(depStr); d != nil {
-				deps = append(deps, *d)
-			}
+		}
+		if d := parsePyRequirement(depStr); d != nil {
+			deps = append(deps, *d)
 		}
 	}
 	return deps
+}
+
+// pyVersionOperators are PEP 440's comparison operators, longest first so a
+// scan at one position matches "===" before "==" and ">=" before ">".
+var pyVersionOperators = []string{"===", "==", "~=", "!=", ">=", "<=", ">", "<"}
+
+// stripPyExtras removes a PEP 508 extras group ("celery[redis,auth]>=5.3"
+// -> "celery>=5.3"). An UNCLOSED bracket keeps only the prefix.
+//
+// One spelling, because there were five (v0.29.56) and they disagreed about
+// the unclosed case in three different ways: "celery[redis" answered
+// "celery" from pyproject.toml and setup.py but "celery[redis" from
+// requirements.txt — and buildPurl turns that into "pkg:pypi/celery[redis",
+// which wireValidPurl ACCEPTS, so it reaches OSV as a package that cannot
+// exist. A name can never legitimately contain '[': PEP 508 names are
+// [A-Za-z0-9._-] (SR-17).
+func stripPyExtras(req string) string {
+	idx := strings.Index(req, "[")
+	if idx <= 0 {
+		return req
+	}
+	if end := strings.Index(req, "]"); end > idx {
+		return req[:idx] + req[end+1:]
+	}
+	return req[:idx]
+}
+
+// splitPyNameSpec splits a PEP 508 requirement at its LEFTMOST version
+// operator: name is the text before it, spec the whole specifier set from
+// that operator on ("" when the requirement carries no operator, and name ""
+// when it opens with one and so names nothing).
+//
+// Position, not preference (v0.29.56). A specifier set is legal in either
+// order, and five parsers each scanned their own preference list — in four
+// different orders, one of them missing five operators — so the first
+// operator in the LIST rather than in the STRING ended the name.
+// "numpy<2,>=1.22", which is what apache/airflow ships, matched ">=" first
+// and yielded the package name "numpy<2,": no registry can answer for it, so
+// the dependency got no libyear row, no purl and no OSV coverage. The
+// preference lists were reaching for the VERSION, which is a separate
+// question — see pyFloorVersion (SR-17).
+func splitPyNameSpec(req string) (name, spec string) {
+	for i := 0; i < len(req); i++ {
+		for _, op := range pyVersionOperators {
+			if strings.HasPrefix(req[i:], op) {
+				return strings.TrimSpace(req[:i]), strings.TrimSpace(req[i:])
+			}
+		}
+	}
+	return strings.TrimSpace(req), ""
+}
+
+// pyPermittedVersionRank ranks the PEP 440 operators that may supply the
+// version to record, best first: an exact pin, then a compatible release,
+// then an inclusive floor, then an inclusive ceiling.
+//
+// Membership is the rule, not the ranking (v0.29.56): an operator appears
+// here only if its OWN clause permits the version it names. "!=", "<" and
+// ">" are all EXCLUSIVE — each rules its version out — so none of them can
+// answer, and their absence from this map is what enforces that.
+//
+// The check is per CLAUSE, not per set. A redundant set such as "<3,<=4"
+// still yields 4, because "<=4" permits 4 on its own even though "<3" rules
+// it out. (The set itself is satisfiable — 2.0 is in it — so the recorded
+// value is wrong, not the requirement.) Catching that needs whole-set
+// version comparison, and two independent sweeps of real manifests —
+// checking every recorded version against its own specifier set — found NOT
+// ONE that its set rejects. So this is left undone deliberately rather than
+// overlooked. (No tally, on purpose: the corpora were fetched ad hoc and are
+// not in the repo, so any figure here would be one a later reader cannot
+// re-derive. This release shipped four such counts, the last of them inside
+// the sentence that replaced the third.)
+//
+// Recording an excluded version writes a release the manifest contradicts
+// into repo_dependencies and into the purl, and OSV then answers about a
+// version nobody installed (SR-6). For "!=" that invents findings; for "<"
+// it HIDES them, which is the worse direction. Measured against OSV on
+// 2026-09-17: pkg:pypi/pyyaml@6.0 reports 0 vulnerabilities, while permitted
+// releases below it carry up to 6 (5.3.1 → 2, 5.3 → 4, 5.1 → 6; 5.4 and
+// 5.4.1 are also permitted and carry 0, so the bound is not uniformly
+// safe-looking — it is just not the version in use). An upper bound is
+// often pinned because that release is the one that changed something, so
+// the excluded value tends to sit outside the vulnerable range.
+//
+// An empty version yields a versionless purl, which OSV answers with the
+// package's whole advisory history — less precise, but not a claim the
+// manifest contradicts.
+var pyPermittedVersionRank = map[string]int{"===": 4, "==": 4, "~=": 3, ">=": 2, "<=": 1}
+
+// pyFloorVersion picks the version to record for a PEP 508 specifier set.
+func pyFloorVersion(spec string) string {
+	best, bestRank := "", -1
+	for _, clause := range strings.Split(spec, ",") {
+		clause = strings.TrimSpace(clause)
+		for _, op := range pyVersionOperators {
+			if !strings.HasPrefix(clause, op) {
+				continue
+			}
+			if r, ok := pyPermittedVersionRank[op]; ok && r > bestRank {
+				best, bestRank = strings.TrimSpace(clause[len(op):]), r
+			}
+			break
+		}
+	}
+	return best
 }
 
 // parsePyRequirement parses a single Python requirement string into a libyearDep.
@@ -828,37 +930,66 @@ func parsePyRequirement(req string) *libyearDep {
 	if req == "" {
 		return nil
 	}
+	// Strip an inline comment FIRST, and the array punctuation a list item
+	// carries. The non-registry predicate below matches " @ ", URLs and
+	// paths, all of which appear in comments: leaving one attached deletes a
+	// legitimate pinned dependency, which then has no libyear row and drops
+	// out of the OSV scan entirely. requirements*.txt learned this in
+	// v0.29.56; these entry points inherited the predicate afterwards and
+	// must strip the same way. (The trailing `",` also left versions like
+	// `2.31.0"` behind on the PEP 621 path.)
+	req = strings.Trim(strings.TrimSpace(req), "\"',")
+	if idx := strings.Index(req, " #"); idx > 0 {
+		req = strings.TrimSpace(req[:idx])
+	}
+	req = strings.Trim(strings.TrimSpace(req), "\"',")
 	// Strip environment markers.
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
 	}
-	// Strip extras.
-	cleanReq := req
-	if idx := strings.Index(cleanReq, "["); idx > 0 {
-		endBracket := strings.Index(cleanReq, "]")
-		if endBracket > idx {
-			cleanReq = cleanReq[:idx] + cleanReq[endBracket+1:]
-		}
+	// A VCS or URL reference, a local path, or a PEP 508 direct reference
+	// names no PyPI package (v0.29.56). requirements*.txt learned this from
+	// the eclipse-velocitas shape; every other Python entry point —
+	// pyproject.toml, setup.py, setup.cfg, and the dev/build variants —
+	// builds its deps HERE, so the check belongs here too, or the same
+	// "velocitas-sdk @ git+https://…" goes to PyPI as a package name from
+	// one file format away.
+	if isNonRegistryPyRequirement(req) {
+		return nil
 	}
+	cleanReq := stripPyExtras(req)
 
-	name := cleanReq
-	version := ""
-	for _, sep := range []string{"==", ">=", "<=", "~=", "!=", ">", "<"} {
-		if idx := strings.Index(cleanReq, sep); idx > 0 {
-			name = strings.TrimSpace(cleanReq[:idx])
-			version = strings.TrimSpace(cleanReq[idx+len(sep):])
-			// Strip trailing version bounds: ">=1.10.0,<1.13.0" -> "1.10.0"
-			if commaIdx := strings.Index(version, ","); commaIdx > 0 {
-				version = version[:commaIdx]
-			}
-			break
-		}
-	}
-	name = strings.TrimSpace(name)
+	name, spec := splitPyNameSpec(cleanReq)
+	version := pyFloorVersion(spec)
 	if name == "" {
 		return nil
 	}
 	return &libyearDep{Name: name, Version: version, Requirement: req, Type: "runtime", Manager: "pypi"}
+}
+
+// pythonTableIsNonRegistry reports a Poetry/Pipfile inline dependency table
+// that names a source other than PyPI — a local path, a git repository or a
+// URL. Such a dependency is not the PyPI package of the same name (SR-6),
+// and looking it up only ever returned 404.
+func pythonTableIsNonRegistry(table string) bool {
+	for _, kv := range splitTOMLTopLevel(strings.Trim(strings.TrimSpace(table), "{}")) {
+		switch k, _, _ := strings.Cut(kv, "="); strings.TrimSpace(k) {
+		case "path", "git", "url", "file":
+			return true
+		}
+	}
+	return false
+}
+
+// pythonTableVersion reads the version key out of such a table ("" when it
+// has none — the unpinned pathway).
+func pythonTableVersion(table string) string {
+	for _, kv := range splitTOMLTopLevel(strings.Trim(strings.TrimSpace(table), "{}")) {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.TrimSpace(k) == "version" {
+			return strings.Trim(strings.TrimSpace(v), "\"' ")
+		}
+	}
+	return ""
 }
 
 // parsePipfileDeps extracts dependency names from Pipfile [packages] section.
@@ -922,19 +1053,16 @@ func parsePipfileVersions(content string) []libyearDep {
 		if versionRaw != "*" {
 			// Handle table-style: {version = "==2.0.0", extras = [...]}
 			if strings.HasPrefix(versionRaw, "{") {
-				for _, kv := range strings.Split(versionRaw, ",") {
-					kv = strings.TrimSpace(kv)
-					kv = strings.TrimPrefix(kv, "{")
-					kv = strings.TrimSuffix(kv, "}")
-					kv = strings.TrimSpace(kv)
-					if strings.HasPrefix(kv, "version") {
-						kvParts := strings.SplitN(kv, "=", 2)
-						if len(kvParts) == 2 {
-							version = cleanVersion(strings.Trim(strings.TrimSpace(kvParts[1]), "\"' "))
-						}
-						break
-					}
+				// path/git/url: not a PyPI package (v0.29.56).
+				if pythonTableIsNonRegistry(versionRaw) {
+					continue
 				}
+				// The shared reader, not a second spelling of it (SR-17,
+				// v0.29.56): the hand-rolled loop here split inside quoted
+				// values and then stopped at the first fragment that merely
+				// STARTED with "version", reporting no version at all. The
+				// Poetry arm already reads its tables this way.
+				version = cleanVersion(pythonTableVersion(versionRaw))
 			} else {
 				version = cleanVersion(versionRaw)
 			}
@@ -1032,7 +1160,8 @@ func extractPEP621VersionDeps(line string) []libyearDep {
 		return nil
 	}
 	inner := line[start:end]
-	for _, item := range strings.Split(inner, ",") {
+	// Structural commas only — see extractPEP621DepsFromLine (v0.29.56).
+	for _, item := range splitTOMLTopLevel(inner) {
 		item = strings.Trim(strings.TrimSpace(item), "\"'")
 		if item != "" {
 			if d := parsePyRequirement(item); d != nil {
@@ -1060,10 +1189,24 @@ func parsePoetryVersions(content string) []libyearDep {
 		if inSection && strings.Contains(trimmed, "=") {
 			parts := strings.SplitN(trimmed, "=", 2)
 			name := strings.TrimSpace(parts[0])
-			version := cleanVersion(strings.Trim(strings.TrimSpace(parts[1]), "\"'^~>="))
-			if name != "" && name != "python" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
+			raw := strings.TrimSpace(parts[1])
+			if name == "" || name == "python" {
+				continue
 			}
+			// A path/git/url dependency names no PyPI package (v0.29.56 —
+			// the same rule parsePyRequirement applies to the other Python
+			// formats); an inline table otherwise carries its version under
+			// the version key, not as the whole table body.
+			version := ""
+			if strings.HasPrefix(raw, "{") {
+				if pythonTableIsNonRegistry(raw) {
+					continue
+				}
+				version = cleanVersion(pythonTableVersion(raw))
+			} else {
+				version = cleanVersion(strings.Trim(raw, "\"'^~>="))
+			}
+			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
 		}
 	}
 	return deps
@@ -1135,6 +1278,9 @@ func extractXMLAttr(line, attr string) string {
 
 func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
 	ac.logger.Info("scanning libyear", "repo_id", repoID)
+	// The registry layer's own conditions (a deep pacing queue) report
+	// through this collection's logger, not slog's default.
+	ctx = withRegistryLogger(ctx, ac.logger)
 
 	// Rotate previous libyear data to history before inserting fresh data.
 	// This ensures the main table always has the latest snapshot with current
@@ -1324,43 +1470,68 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	// Ungated — relabel only, adds no rows.
 	allDeps = classifyGoModTestOnlyDeps(workDir, allDeps)
 
-	// Resolve each dependency against its package registry.
+	// Resolve each dependency against its package registry. Answers are
+	// shared across the process for registryCacheTTL (resolveLibyearCached).
 	resolveFailures := map[string]int{}
 	resolveSample := map[string]error{}
+	licenseFailures := 0
+	nonRegistry := 0
+	var licenseSample error
+	swiftPM := func(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+		return resolveSwiftPMLibyear(ctx, ac.GitHubAPI, dep)
+	}
 	for _, dep := range allDeps {
-		var lb *db.LibyearRow
-		var err error
-
+		var resolve func(context.Context, libyearDep) (*db.LibyearRow, error)
 		switch dep.Manager {
 		case "npm":
-			lb, err = resolveNPMLibyear(ctx, dep)
+			resolve = resolveNPMLibyear
 		case "pypi":
-			lb, err = resolvePyPILibyear(ctx, dep)
+			resolve = resolvePyPILibyear
 		case "go":
-			lb, err = resolveGoLibyear(ctx, dep)
+			resolve = resolveGoLibyear
 		case "cargo":
-			lb, err = resolveCargoLibyear(ctx, dep)
+			resolve = resolveCargoLibyear
 		case "rubygems":
-			lb, err = resolveRubyGemsLibyear(ctx, dep)
+			resolve = resolveRubyGemsLibyear
 		case "maven":
-			lb, err = resolveMavenLibyear(ctx, dep)
+			resolve = resolveMavenLibyear
 		case "packagist":
-			lb, err = resolvePackagistLibyear(ctx, dep)
+			resolve = resolvePackagistLibyear
 		case "hex":
-			lb, err = resolveHexLibyear(ctx, dep)
+			resolve = resolveHexLibyear
 		case "nuget":
-			lb, err = resolveNuGetLibyear(ctx, dep)
+			resolve = resolveNuGetLibyear
 		case "pub":
-			lb, err = resolvePubDevLibyear(ctx, dep)
+			resolve = resolvePubDevLibyear
 		case "hackage":
-			lb, err = resolveHackageLibyear(ctx, dep)
+			resolve = resolveHackageLibyear
 		case "swiftpm":
-			lb, err = resolveSwiftPMLibyear(ctx, dep)
+			resolve = swiftPM
 		case "githubactions":
 			// v0.27.47: Actions have no registry timeline — store the
 			// inventory row directly with libyear NULL (NoLibyear).
 			// The upstream-dependencies snapshot filters libyear IS
 			// NOT NULL, so actions never inflate the headline.
+		default:
+			continue
+		}
+		if dep.NonRegistry {
+			// Sourced from a local path, a workspace, git or a URL: the
+			// registry knows nothing about it (looking it up only drew
+			// 404s), and it is NOT the registry package of the same name,
+			// so it gets no row and no purl here — the dependency scan
+			// still inventories it in repo_dependencies. Storing a
+			// purl-less row instead would enter it into the vulnerability
+			// scan's universe as an unscannable dependency, which blocks
+			// the scan-complete stamp (v0.28.5).
+			nonRegistry++
+			ac.logger.Debug("libyear: dependency is not from a registry — not looked up",
+				"dep", dep.Name, "manager", dep.Manager, "requirement", dep.Requirement)
+			continue
+		}
+		var lb *db.LibyearRow
+		var err error
+		if resolve == nil {
 			lb = &db.LibyearRow{
 				Name: dep.Name, Requirement: dep.Requirement,
 				Type: dep.Type, PackageManager: dep.Manager,
@@ -1368,8 +1539,11 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				Purl:           buildPurl("githubactions", dep.Name, dep.Version),
 				NoLibyear:      true,
 			}
-		default:
-			continue
+		} else {
+			lb, err = resolveLibyearCached(ctx, libyearRowCache, dep, resolve)
+		}
+		if errors.Is(err, context.Canceled) {
+			return err
 		}
 
 		if err != nil || lb == nil {
@@ -1388,6 +1562,22 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 			continue
 		}
+		if dep.Manager == "go" {
+			// The Go proxy has no license; the GitHub repository hosting
+			// the module does (through the key pool, cached per repo).
+			lic, lerr := githubModuleLicense(ctx, ac.GitHubAPI, githubLicenseCache, dep.Name)
+			if errors.Is(lerr, context.Canceled) {
+				return lerr
+			}
+			if lerr != nil {
+				licenseFailures++
+				if licenseSample == nil {
+					licenseSample = lerr
+				}
+			}
+			lb.License = lic
+		}
+		markUnknownLibyear(lb)
 		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
 			// Round-8 class sweep: same flood shape as the dependency
 			// loop above.
@@ -1400,6 +1590,19 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		result.LibyearDeps++
 	}
 
+	if nonRegistry > 0 {
+		// npm and cargo only: Python drops a VCS/URL/path requirement while
+		// parsing (isNonRegistryPyRequirement, applied in
+		// parseRequirementsTxtVersions and parsePyRequirement), because such
+		// a line carries no package name to inventory, so it never reaches
+		// this counter.
+		ac.logger.Info("libyear: npm/cargo dependencies not from a registry were not looked up",
+			"repo_id", repoID, "deps", nonRegistry)
+	}
+	if licenseFailures > 0 {
+		ac.logger.Warn("libyear license lookups failed without an answer — rows stored without a license, retried on the next analysis",
+			"repo_id", repoID, "manager", "go", "failed_deps", licenseFailures, "sample_error", licenseSample)
+	}
 	for manager, n := range resolveFailures {
 		ac.logger.Warn("libyear resolution failures for ecosystem",
 			"repo_id", repoID, "manager", manager, "failed_deps", n,
@@ -1415,56 +1618,48 @@ type libyearDep struct {
 	Requirement string
 	Type        string // "runtime", "dev"
 	Manager     string // "npm", "pypi"
+	// NonRegistry (v0.29.56) marks a dependency the manifest sources from
+	// somewhere other than its ecosystem's registry: a local path or
+	// workspace package, a git or URL reference. The registry knows nothing
+	// about it — looking it up only drew 404s — and it is NOT the registry
+	// package of the same name (SR-6), so scanLibyear skips it: no lookup
+	// and no repo_deps_libyear row, counted in one INFO line per repo. The
+	// dependency scan still inventories it in repo_dependencies.
+	//
+	// Storing a purl-less row instead was tried and reverted: a blank purl
+	// counts as an UNSCANNABLE dependency in the vulnerability scan, which
+	// would stop a repo whose deps are all local from being stamped
+	// scan-complete (the v0.28.5 contract).
+	NonRegistry bool
 }
 
-// fetchRegistryJSON is THE single curl choke point for package-registry
-// lookups (v0.27.5) — every libyear/license resolver in this file
-// routes through it so the --max-time cap can never be forgotten at a
-// new call site (a source-contract test pins that no bare "curl" exec
-// exists in this file outside this helper).
-//
-// Semantics match the pre-v0.27.5 per-site pattern exactly: `curl -sf
-// <url>` with stdout captured, non-2xx → error (-f), plus the new
-// wall-clock cap. extraArgs are appended before the URL for the rare
-// endpoint needing extra flags (e.g. Hackage's `-H "Accept:
-// application/json"`). Despite the name, the returned bytes are
-// whatever the endpoint served — Hackage's upload-time endpoints
-// return plain text and use this helper too.
-// registryHTTPClient bounds every registry lookup at 30s — the same
-// budget the curl-era --max-time carried (v0.27.5's #2 hang class).
+// registryHTTPClient bounds every registry request at 30s — the same
+// budget the curl-era --max-time carried (v0.27.5's #2 hang class). The
+// same figure is the whole-lookup budget for rate-limit waits
+// (registryRetryBudget). Per-host PACING waits are separate and are not
+// bounded by it (paceRegistryHost).
 var registryHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // fetchRegistryJSON fetches a registry URL over net/http (v0.27.30 —
 // converted from curl so every resolver's base URL is injectable for
-// behavioral tests and live canaries; 7 registries previously had
-// ZERO test coverage because their URLs were unreachable by httptest).
-// headers are optional "Key: Value" pairs (Hackage needs Accept).
+// behavioral tests and live canaries). headers are optional "Key: Value"
+// pairs (Hackage needs Accept). Despite the name, the returned bytes are
+// whatever the endpoint served — Hackage's upload-time endpoints return
+// plain text and use this helper too.
 //
-// crates.io REJECTS anonymous default User-Agents with HTTP 403
-// (their crawler policy wants an identifying UA with a contact URL) —
-// which silently zeroed EVERY cargo libyear row since inception.
-// Other registries tolerate any UA; identifying ourselves is polite
-// everywhere. v0.27.19.
+// Every registry request goes through doRegistryRequest
+// (libyear_registry_client.go): the identifying User-Agent (crates.io
+// 403s anonymous defaults, v0.27.19), per-host pacing for registries
+// with a published rate limit, and bounded Retry-After handling
+// (v0.29.56). A non-2xx answer is a *registryStatusError; 404/410 are
+// definitive misses (isDefinitiveRegistryMiss), everything else is a
+// failure without an answer.
 func fetchRegistryJSON(ctx context.Context, url string, headers ...string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "aveloxis/"+db.ToolVersion+" (+https://github.com/aveloxis/aveloxis)")
-	for _, h := range headers {
-		if k, v, ok := strings.Cut(h, ": "); ok {
-			req.Header.Set(k, v)
-		}
-	}
-	resp, err := registryHTTPClient.Do(req)
+	resp, err := doRegistryRequest(ctx, http.MethodGet, url, headers...)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		// Mirror curl -f: non-2xx is an error, body discarded.
-		return nil, fmt.Errorf("registry %s: HTTP %d", url, resp.StatusCode)
-	}
 	return io.ReadAll(resp.Body)
 }
 
@@ -1483,23 +1678,60 @@ func parsePackageJSONVersions(path string) ([]libyearDep, error) {
 		return nil, err
 	}
 	var deps []libyearDep
-	for name, version := range pkg.Dependencies {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "runtime", Manager: "npm"})
+	add := func(m map[string]string, scope string) {
+		for name, requirement := range m {
+			if d, ok := npmManifestDep(name, requirement, scope); ok {
+				deps = append(deps, d)
+			}
+		}
 	}
-	for name, version := range pkg.DevDependencies {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "dev", Manager: "npm"})
-	}
+	add(pkg.Dependencies, "runtime")
+	add(pkg.DevDependencies, "dev")
 	// v0.27.44 (summary/19 P1): peer/optional carry their OWN scopes —
 	// they were conflated with runtime. Peer deps are expectations the
 	// CONSUMER satisfies (not vendored by this package); optional deps
 	// may be absent at runtime.
-	for name, version := range pkg.PeerDependencies {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: model.ScopePeer, Manager: "npm"})
-	}
-	for name, version := range pkg.OptionalDependencies {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: model.ScopeOptional, Manager: "npm"})
-	}
+	add(pkg.PeerDependencies, model.ScopePeer)
+	add(pkg.OptionalDependencies, model.ScopeOptional)
 	return deps, nil
+}
+
+// npmManifestDep turns one package.json dependency into a registry lookup.
+// v0.29.56: an alias ("typescript-3.5": "npm:typescript@~3.5.3") resolves
+// the package it names, and a dependency that is not on the registry at
+// all — a local package (file:, link:, portal:, workspace:) or a git, URL
+// or GitHub-shorthand reference — is skipped: its key was sent to the npm
+// registry as a name ("@ZettaScaleLabs/zenoh-ts": "file:…" in
+// eclipse-zenoh/zenoh-demos → 404). catalog: stays: it names a registry
+// version pinned elsewhere (the unpinned pathway).
+func npmManifestDep(name, requirement, scope string) (libyearDep, bool) {
+	req := strings.TrimSpace(requirement)
+	lower := strings.ToLower(req)
+	resolvedName, version := name, req
+	if strings.HasPrefix(lower, "npm:") {
+		alias := req[len("npm:"):]
+		if n, v, ok := splitNPMSpec(alias); ok {
+			resolvedName, version = n, v
+		} else {
+			resolvedName, version = alias, ""
+		}
+	}
+	nonRegistry := false
+	for _, prefix := range []string{"file:", "link:", "portal:", "workspace:", "git+", "git:", "git://", "github:", "gitlab:", "bitbucket:", "http://", "https://"} {
+		if strings.HasPrefix(lower, prefix) {
+			nonRegistry = true
+		}
+	}
+	// GitHub shorthand "owner/repo" or "owner/repo#ref": a '/' outside a
+	// version range, with no leading scope '@'.
+	if strings.Contains(req, "/") && !strings.HasPrefix(lower, "npm:") && !strings.HasPrefix(req, "@") {
+		nonRegistry = true
+	}
+	if resolvedName == "" {
+		return libyearDep{}, false
+	}
+	return libyearDep{Name: resolvedName, Version: cleanVersion(version), Requirement: requirement,
+		Type: scope, Manager: "npm", NonRegistry: nonRegistry}, true
 }
 
 func parseRequirementsTxtVersions(path string) []libyearDep {
@@ -1537,31 +1769,47 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 		if line == "" {
 			continue
 		}
-		name := line
-		version := ""
-		for _, sep := range []string{"==", ">=", "~="} {
-			if idx := strings.Index(line, sep); idx > 0 {
-				name = strings.TrimSpace(line[:idx])
-				// cleanVersion handles compound ranges ("10,<11" → "10")
-				// that previously leaked whole into the version.
-				version = cleanVersion(strings.TrimSpace(line[idx+len(sep):]))
-				break
-			}
+		// AFTER the comment/marker strip: a comment can contain " @ " (the
+		// direct-reference marker) — "numpy==1.26.0  # updated @ 2026-01-01"
+		// was dropped whole, taking numpy out of libyear AND out of the OSV
+		// scan.
+		if isNonRegistryPyRequirement(line) {
+			continue
 		}
+		name, spec := splitPyNameSpec(line)
+		version := cleanVersion(pyFloorVersion(spec))
 		// Strip PEP 508 extras from the name (anyio[trio] → anyio) —
 		// the local-canary catch, 2026-07-21: extras-suffixed names
 		// produced 404ing registry URLs and unmatchable purls, so
 		// those deps silently got no libyear and no OSV coverage.
-		if idx := strings.Index(name, "["); idx > 0 {
-			if end := strings.Index(name, "]"); end > idx {
-				name = strings.TrimSpace(name[:idx] + name[end+1:])
-			}
-		}
+		name = strings.TrimSpace(stripPyExtras(name))
 		if name != "" {
 			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "pypi"})
 		}
 	}
 	return deps
+}
+
+// isNonRegistryPyRequirement reports a requirement line that does not name
+// a PyPI package: a VCS or URL reference (git+https://…, https://…/x.tar.gz,
+// file:…), a local path (./pkg, ../pkg, /opt/pkg) or a PEP 508 direct
+// reference ("name @ url"). v0.29.56: these were sent to PyPI as names
+// ("pypi/git+https://github.com/eclipse-velocitas/vehicle-model-python.git@v0.3.0/json").
+func isNonRegistryPyRequirement(line string) bool {
+	lower := strings.ToLower(line)
+	for _, prefix := range []string{"git+", "hg+", "svn+", "bzr+", "http://", "https://", "file:", "./", "../", "/", "~/"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	// PEP 508's direct-reference marker takes OPTIONAL whitespace
+	// ("urlspec = '@' URI_reference", with wsp* around it), so
+	// "mypkg@https://host/x.whl" is as legal as the spaced form and matching
+	// only " @ " sent it to PyPI as a package name (v0.29.56). A bare '@' is
+	// safe to key on: neither a PEP 508 name ([A-Za-z0-9._-]) nor a version
+	// specifier can contain one, and this runs on the line AFTER its comment
+	// and environment marker are stripped.
+	return strings.Contains(line, "@")
 }
 
 // cleanVersion strips version specifier prefixes (^, ~, >=, ==, etc.)
@@ -1664,13 +1912,12 @@ var (
 	goProxyBase           = "https://proxy.golang.org"
 	cratesRegistryBase    = "https://crates.io"
 	rubygemsRegistryBase  = "https://rubygems.org"
-	mavenSearchBase       = "https://search.maven.org"
+	mavenRepositoryBase   = "https://repo1.maven.org/maven2"
 	packagistRegistryBase = "https://repo.packagist.org"
 	hexRegistryBase       = "https://hex.pm"
 	nugetRegistryBase     = "https://api.nuget.org"
 	pubDevRegistryBase    = "https://pub.dev"
 	hackageRegistryBase   = "https://hackage.haskell.org"
-	githubAPIBase         = "https://api.github.com"
 )
 
 // resolveNPMLibyear checks the npm registry for the latest version.
@@ -1849,65 +2096,38 @@ func parseGoModVersions(path string) []libyearDep {
 	return deps
 }
 
-// parseCargoVersions extracts deps from Cargo.toml.
+// parseCargoVersions extracts crates.io deps from Cargo.toml through the
+// shared table scanner (manifest_toml.go).
+//
+// v0.27.44 (summary/19 P1): [dev-dependencies] = tests/examples/benches,
+// [build-dependencies] = build scripts. v0.27.71: a table carries a
+// version only under an explicit version key; a workspace-inherited dep
+// has none (the unpinned pathway). v0.29.56: git- and
+// alternative-registry-sourced deps are not crates.io packages, and a
+// path dep counts only with the version it is published as, so none of
+// them is looked up on crates.io.
 func parseCargoVersions(path string) []libyearDep {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	content := string(data)
+	scopes := map[string]string{
+		"[dependencies]":       "runtime",
+		"[dev-dependencies]":   model.ScopeDev,
+		"[build-dependencies]": model.ScopeBuild,
+	}
+	sections := map[string]bool{}
+	for s := range scopes {
+		sections[s] = true
+	}
 	var deps []libyearDep
-	inDeps := false
-	// v0.27.44 (summary/19 P1): the parser already read all three
-	// sections but conflated them as runtime. Cargo semantics:
-	// [dev-dependencies] = tests/examples/benches, [build-dependencies]
-	// = build scripts.
-	sectionScope := "runtime"
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "[dependencies]" || trimmed == "[dev-dependencies]" || trimmed == "[build-dependencies]" {
-			inDeps = true
-			switch trimmed {
-			case "[dev-dependencies]":
-				sectionScope = model.ScopeDev
-			case "[build-dependencies]":
-				sectionScope = model.ScopeBuild
-			default:
-				sectionScope = "runtime"
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			inDeps = false
-			continue
-		}
-		if inDeps && strings.Contains(trimmed, "=") {
-			parts := strings.SplitN(trimmed, "=", 2)
-			name := strings.TrimSpace(parts[0])
-			raw := strings.TrimSpace(parts[1])
-			version := ""
-			if strings.HasPrefix(raw, "{") {
-				// v0.27.71: inline tables carry a version ONLY under an
-				// explicit version key. workspace-inherited
-				// ({ workspace = true }), path ({ path = ".." }), and
-				// git ({ git = "…" }) deps have none — the pre-fix code
-				// captured the whole table body as the "version"
-				// (13,471 production rows of "workspace = true").
-				for _, kv := range strings.Split(strings.Trim(raw, "{}"), ",") {
-					kv = strings.TrimSpace(kv)
-					if strings.HasPrefix(kv, "version") {
-						version = strings.Trim(strings.TrimPrefix(kv, "version"), " =\"")
-						break
-					}
-				}
-			} else {
-				version = strings.Trim(raw, "\"' ")
-			}
-			version = cleanVersion(version)
-			if name != "" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: sectionScope, Manager: "cargo"})
-			}
-		}
+	for _, e := range scanTOMLDepTables(string(data), sections) {
+		// A git or alternative-registry dep is not the crates.io crate of
+		// that name; a path dep is only when it declares the version it
+		// publishes as.
+		nonRegistry := e.Git || e.Registry || (e.Path && e.Version == "")
+		deps = append(deps, libyearDep{Name: e.Name, Version: cleanVersion(e.Version), Requirement: e.Raw,
+			Type: scopes[e.Section], Manager: "cargo", NonRegistry: nonRegistry})
 	}
 	return deps
 }
@@ -1937,6 +2157,10 @@ func parseGemfileVersions(path string) []libyearDep {
 		if !strings.HasPrefix(line, "gem ") {
 			continue
 		}
+		// v0.29.56: a trailing comment was read into the name or version
+		// ("gem 'logger'   # stdlib in Ruby <= 3.x" → name
+		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io).
+		line = strings.TrimSpace(stripRubyComment(line))
 		// gem 'name', '~> 1.0'
 		parts := strings.Split(line, ",")
 		name := ""
@@ -1969,6 +2193,28 @@ func parseGemfileVersions(path string) []libyearDep {
 	return deps
 }
 
+// stripRubyComment removes a '#' comment that is outside a quoted string
+// (a '#' inside quotes, including "#{…}" interpolation, is kept).
+func stripRubyComment(line string) string {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '#':
+			return line[:i]
+		}
+	}
+	return line
+}
+
 // gemGroupScope classifies a Bundler `group :x[, :y] do` line: any
 // mention of :test → test; any other named group (development, ci,
 // lint, ...) → dev. A group line is by definition non-default.
@@ -1999,11 +2245,41 @@ func gemInlineGroupScope(line string) string {
 	return ""
 }
 
+// goProxyEscape applies the module proxy protocol's case encoding to a
+// module path or version: every uppercase letter becomes '!' followed by
+// its lowercase form (github.com/Masterminds → github.com/!masterminds).
+// The protocol exists so a proxy can serve from a case-insensitive file
+// system; proxy.golang.org answers 404 for the unencoded spelling. Same
+// rule as golang.org/x/mod/module.EscapePath, which is not a dependency
+// here. '!' and non-ASCII are not legal in module paths or versions and
+// would make the encoding ambiguous, so they are refused.
+func goProxyEscape(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '!' || c >= utf8.RuneSelf:
+			return "", fmt.Errorf("go module path or version %q cannot be case-encoded for the module proxy", s)
+		case 'A' <= c && c <= 'Z':
+			b.WriteByte('!')
+			b.WriteByte(c + ('a' - 'A'))
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), nil
+}
+
 // resolveGoLibyear checks the Go proxy for module version dates.
 func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	// Go proxy API: https://proxy.golang.org/{module}/@v/{version}.info
+	// Go proxy API: https://proxy.golang.org/{module}/@v/{version}.info,
+	// with the module path and version case-encoded (goProxyEscape).
+	module, err := goProxyEscape(dep.Name)
+	if err != nil {
+		return nil, err
+	}
 	latestBody, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(goProxyBase+"/%s/@latest", dep.Name))
+		fmt.Sprintf(goProxyBase+"/%s/@latest", module))
 	if err != nil {
 		return nil, err
 	}
@@ -2017,25 +2293,43 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 
 	currentDate := ""
 	if dep.Version != "" {
-		if curBody, err := fetchRegistryJSON(ctx,
-			fmt.Sprintf(goProxyBase+"/%s/@v/v%s.info", dep.Name, dep.Version)); err == nil {
+		// go.mod versions keep their "v" (parseGoModVersions); add one only
+		// when it is missing. Prefixing unconditionally requested
+		// @v/vv1.2.3.info, which never exists.
+		version := dep.Version
+		if !strings.HasPrefix(version, "v") {
+			version = "v" + version
+		}
+		version, verr := goProxyEscape(version)
+		if verr != nil {
+			return nil, verr
+		}
+		// A failure that says nothing (timeout, 5xx, rate limit) FAILS the
+		// dependency; only a definitive "no such version" costs the date.
+		// Swallowing it stored libyear 0 — which reads as "perfectly
+		// fresh" — and since v0.29.56 the answer is cached for a day, so
+		// one blip would have fabricated that 0 for every repo in the
+		// process. Same rule as resolveMavenLibyear's .pom dates.
+		curBody, cerr := fetchRegistryJSON(ctx,
+			fmt.Sprintf(goProxyBase+"/%s/@v/%s.info", module, version))
+		if cerr != nil && !isDefinitiveRegistryMiss(cerr) {
+			return nil, cerr
+		}
+		if cerr == nil {
 			var curInfo struct {
 				Time string `json:"Time"`
 			}
-			// Best-effort: an unparseable proxy response leaves
-			// currentDate empty and the resolver-level failure
-			// counters (v0.27.19) account for the miss.
-			if uerr := json.Unmarshal(curBody, &curInfo); uerr == nil {
-				currentDate = curInfo.Time
+			if uerr := json.Unmarshal(curBody, &curInfo); uerr != nil {
+				return nil, fmt.Errorf("go proxy %s@%s .info: %w", dep.Name, version, uerr)
 			}
+			currentDate = curInfo.Time
 		}
 	}
 
-	// Go proxy doesn't return license data. Fall back to the GitHub API
-	// license endpoint for modules hosted on github.com. This covers the
-	// vast majority of Go modules (~15K deps were missing licenses before this).
-	license := fetchGoModuleLicense(ctx, dep.Name)
-
+	// The Go proxy carries no license. scanLibyear adds it from the GitHub
+	// repository hosting the module (githubModuleLicense, through the key
+	// pool) after this answer is cached, so the license lookup is shared
+	// per owner/repo instead of repeated per version.
 	return &db.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
@@ -2046,7 +2340,6 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestInfo.Time,
 		Libyear:            calcLibyear(currentDate, latestInfo.Time),
-		License:            license,
 		Purl:               buildPurl("golang", dep.Name, dep.Version),
 	}, nil
 }
@@ -2168,27 +2461,88 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 	}, nil
 }
 
+// markUnknownLibyear flags a row whose libyear could not be WORKED OUT, so
+// it is stored as NULL rather than 0.
+//
+// calcLibyear returns 0 when either release date is missing or unparseable,
+// which is indistinguishable from a dependency that really is on the latest
+// release (v0.29.57). Measured on chaoss.tv on 2026-09-17: 1,704,902 of the
+// 3,196,143 rows carrying a number had a missing date, so 87% of every row
+// reading "libyear = 0" meant "unknown" — and avg() counts a zero while it
+// skips a NULL, which reported the fleet at 1.335 years against an honest
+// 2.861.
+//
+// NULL is the answer that already exists for "no timeline" (the v0.27.47
+// GitHub Actions path) and every consumer already handles it. Two classes
+// arrive here: a dependency with no pinned version, which can never be
+// computed, and a pinned one whose registry would not give a date, which
+// heals when it does.
+//
+// Applied once, where rows are collected — a dozen resolvers each building
+// their own row is exactly where a rule like this drifts.
+func markUnknownLibyear(row *db.LibyearRow) {
+	if row == nil {
+		return
+	}
+	// Asked of calcLibyear's OWN parser, not of emptiness (v0.29.57): the
+	// two spellings would otherwise drift, and a date the parser cannot
+	// read — the case the doc comment claims to cover — would still store a
+	// fabricated 0 with the flag clear. No registry currently emits an
+	// unparseable date, so this is latent; SR-17 says one spelling anyway.
+	if _, okCur := parseLibyearDate(row.CurrentReleaseDate); !okCur {
+		row.NoLibyear = true
+	}
+	if _, okLat := parseLibyearDate(row.LatestReleaseDate); !okLat {
+		row.NoLibyear = true
+	}
+	if row.NoLibyear {
+		// Never carry a number alongside the NULL: it would read as a
+		// measurement if anything ever dropped the flag.
+		row.Libyear = 0
+	}
+}
+
+// libyearDateLayouts are the formats parseLibyearDate accepts.
+//
+// The list is NOT the safeguard — sharing it was tried and was not enough
+// (v0.29.57 round 2). "Can this be dated?" and "date it" agree because both
+// go through parseLibyearDate itself, which also rejects the zero time; a
+// second caller doing time.Parse against this list would re-create the
+// fabricated zero. Use the function, not the list.
+var libyearDateLayouts = []string{
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	time.RFC3339,
+}
+
+// parseLibyearDate is the ONE reader for a release date: the single place
+// that decides both "can this be dated?" and "what date is it?".
+//
+// A shared layout LIST was not enough (v0.29.57 round 2): calcLibyear's real
+// predicate is "parses AND is not the zero time", and a second spelling that
+// only checked parsing called "0001-01-01T00:00:00Z" a known date while
+// calcLibyear still returned 0 — re-creating the fabricated zero this
+// release exists to remove. Reachable, not theoretical:
+// fetchRegistryLastModified re-formats whatever http.ParseTime accepts, so a
+// mirror sending "Last-Modified: Mon, 01 Jan 0001 00:00:00 GMT" produces
+// exactly that string on the path v0.29.56 moved Maven onto.
+func parseLibyearDate(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range libyearDateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, !t.IsZero()
+		}
+	}
+	return time.Time{}, false
+}
+
 func calcLibyear(currentDate, latestDate string) float64 {
-	layouts := []string{
-		"2006-01-02T15:04:05Z",
-		"2006-01-02T15:04:05",
-		"2006-01-02 15:04:05",
-		time.RFC3339,
-	}
-	var current, latest time.Time
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, currentDate); err == nil {
-			current = t
-			break
-		}
-	}
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, latestDate); err == nil {
-			latest = t
-			break
-		}
-	}
-	if current.IsZero() || latest.IsZero() {
+	current, okCur := parseLibyearDate(currentDate)
+	latest, okLat := parseLibyearDate(latestDate)
+	if !okCur || !okLat {
 		return 0
 	}
 	days := latest.Sub(current).Hours() / 24
@@ -2293,41 +2647,6 @@ func parsePyPIClassifierLicense(classifiers []string) string {
 		}
 	}
 	return ""
-}
-
-// fetchGoModuleLicense tries to fetch the license for a Go module from the
-// GitHub API. Most Go modules are hosted on GitHub, so we can use the
-// /repos/{owner}/{repo}/license endpoint which returns the SPDX ID directly.
-// Returns empty string if the module isn't on GitHub or the API call fails.
-func fetchGoModuleLicense(ctx context.Context, modulePath string) string {
-	// Extract GitHub owner/repo from module path.
-	// e.g., "github.com/go-openapi/swag" → "go-openapi/swag"
-	if !strings.HasPrefix(modulePath, "github.com/") {
-		return ""
-	}
-	parts := strings.SplitN(strings.TrimPrefix(modulePath, "github.com/"), "/", 3)
-	if len(parts) < 2 {
-		return ""
-	}
-	owner, repo := parts[0], parts[1]
-
-	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(githubAPIBase+"/repos/%s/%s/license", owner, repo))
-	if err != nil {
-		return ""
-	}
-	var info struct {
-		License struct {
-			SpdxID string `json:"spdx_id"`
-		} `json:"license"`
-	}
-	if err := json.Unmarshal(body, &info); err != nil {
-		return ""
-	}
-	if info.License.SpdxID == "" || info.License.SpdxID == "NOASSERTION" {
-		return ""
-	}
-	return info.License.SpdxID
 }
 
 // ============================================================
@@ -3153,6 +3472,7 @@ func parseMixExsDeps(content string) []string {
 // Handles both multi-line and single-line XML formats.
 func parsePomXMLVersions(content string) []libyearDep {
 	var deps []libyearDep
+	props := pomProperties(content)
 	// Process dependency blocks — works even when everything is on one line
 	// by scanning for <dependency>...</dependency> substrings.
 	rest := content
@@ -3168,9 +3488,17 @@ func parsePomXMLVersions(content string) []libyearDep {
 		block := rest[start : start+end+len("</dependency>")]
 		rest = rest[start+end+len("</dependency>"):]
 
-		groupID := extractXMLValue(block, "groupId")
-		artifactID := extractXMLValue(block, "artifactId")
-		version := extractXMLValue(block, "version")
+		// v0.29.56: ${…} references resolve from the pom's <properties> and
+		// project coordinates (knative/func "${quarkus.platform.group-id}",
+		// dogtagpki/pki "${project.groupId}"). A coordinate that stays
+		// unresolved is not sent to Maven Central; an unresolved version
+		// is left for normalizeParsedVersion's unpinned pathway.
+		groupID := resolvePomProperties(extractXMLValue(block, "groupId"), props)
+		artifactID := resolvePomProperties(extractXMLValue(block, "artifactId"), props)
+		version := resolvePomProperties(extractXMLValue(block, "version"), props)
+		if strings.Contains(groupID, "${") || strings.Contains(artifactID, "${") {
+			continue
+		}
 		// v0.27.44 (summary/19 P1): Maven's own scope element.
 		// test → test; provided = compile-time-only, supplied by the
 		// runtime container → build. compile/runtime/absent → runtime.
@@ -3187,6 +3515,96 @@ func parsePomXMLVersions(content string) []libyearDep {
 		}
 	}
 	return deps
+}
+
+// pomPropertyRe matches one <name>value</name> element; the closing name
+// is compared in code (RE2 has no backreferences).
+var pomPropertyRe = regexp.MustCompile(`<([A-Za-z0-9_.\-]+)>([^<]*)</([A-Za-z0-9_.\-]+)>`)
+
+// pomProperties collects a pom's own property values: every
+// <properties> element, plus project.groupId/artifactId/version (the
+// project's own coordinates, falling back to <parent>'s groupId and
+// version, as Maven inherits them) and their parent.* forms.
+func pomProperties(content string) map[string]string {
+	props := map[string]string{}
+	rest := content
+	for {
+		start := strings.Index(rest, "<properties>")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(rest[start:], "</properties>")
+		if end < 0 {
+			break
+		}
+		for _, m := range pomPropertyRe.FindAllStringSubmatch(rest[start:start+end], -1) {
+			if m[1] == m[3] {
+				if _, seen := props[m[1]]; !seen {
+					props[m[1]] = strings.TrimSpace(m[2])
+				}
+			}
+		}
+		rest = rest[start+end:]
+	}
+	parent := ""
+	top := content
+	if ps := strings.Index(content, "<parent>"); ps >= 0 {
+		if pe := strings.Index(content[ps:], "</parent>"); pe >= 0 {
+			parent = content[ps : ps+pe]
+			top = content[:ps] + content[ps+pe:]
+		}
+	}
+	// The project's own coordinates are the ones outside every nested block.
+	for _, block := range []string{"dependencyManagement", "dependencies", "build", "profiles", "reporting", "properties", "modules"} {
+		for {
+			bs := strings.Index(top, "<"+block+">")
+			if bs < 0 {
+				break
+			}
+			be := strings.Index(top[bs:], "</"+block+">")
+			if be < 0 {
+				break
+			}
+			top = top[:bs] + top[bs+be+len("</"+block+">"):]
+		}
+	}
+	for _, key := range []string{"groupId", "artifactId", "version"} {
+		if v := extractXMLValue(parent, key); v != "" {
+			props["parent."+key] = v
+			props["project.parent."+key] = v
+		}
+		v := extractXMLValue(top, key)
+		if v == "" && key != "artifactId" {
+			v = extractXMLValue(parent, key)
+		}
+		if v != "" {
+			props["project."+key] = v
+			props["pom."+key] = v
+		}
+	}
+	return props
+}
+
+// resolvePomProperties substitutes ${name} references from props. A value
+// may reference another property, so substitution repeats — at most once
+// per property, which bounds a reference cycle.
+func resolvePomProperties(v string, props map[string]string) string {
+	for range len(props) + 1 {
+		start := strings.Index(v, "${")
+		if start < 0 {
+			return v
+		}
+		end := strings.Index(v[start:], "}")
+		if end < 0 {
+			return v
+		}
+		val, ok := props[v[start+2:start+end]]
+		if !ok {
+			return v
+		}
+		v = v[:start] + val + v[start+end+1:]
+	}
+	return v
 }
 
 func extractXMLValue(line, tag string) string {
@@ -3342,46 +3760,86 @@ func parseBuildSbtVersions(content string) []libyearDep {
 // Additional libyear resolvers (added in v0.5.4)
 // ============================================================
 
-// resolveMavenLibyear checks Maven Central for artifact versions.
+// resolveMavenLibyear resolves a Maven artifact from Maven Central's
+// repository (repo1), not the search API.
+//
+// v0.29.56: search.maven.org timed out or answered 403 for 86 WARN lines
+// (5,163 dependencies) in two hours of the 2026-09-17 chaoss.tv log and
+// stretched one repo's libyear phase to 40 minutes. Its answers also
+// carried no release date for the version in use, so every Maven libyear
+// was 0 (0 of 51,510 rows written in the prior 7 days). The repository
+// serves maven-metadata.xml (the latest release and the version list)
+// and a Last-Modified header on each version's .pom, which is the
+// version's publication time — both from its CDN.
 func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	// Maven Central search API: search by groupId:artifactId.
-	parts := strings.SplitN(dep.Name, ":", 2)
-	if len(parts) != 2 {
+	groupID, artifactID, ok := strings.Cut(dep.Name, ":")
+	if !ok || groupID == "" || artifactID == "" {
 		return nil, fmt.Errorf("invalid maven coordinate: %s", dep.Name)
 	}
-	groupID, artifactID := parts[0], parts[1]
-	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(mavenSearchBase+"/solrsearch/select?q=g:%%22%s%%22+AND+a:%%22%s%%22&rows=1&wt=json", groupID, artifactID))
+	if strings.Contains(dep.Name, "${") {
+		// An unresolved property reference is not a coordinate; sending it
+		// only draws a 400/404 (parsePomXMLVersions resolves what it can).
+		return nil, fmt.Errorf("maven coordinate %s has an unresolved property reference", dep.Name)
+	}
+	artifactBase := mavenRepositoryBase + "/" + strings.ReplaceAll(groupID, ".", "/") + "/" + url.PathEscape(artifactID)
+	body, err := fetchRegistryJSON(ctx, artifactBase+"/maven-metadata.xml")
 	if err != nil {
 		return nil, err
 	}
-	var info struct {
-		Response struct {
-			Docs []struct {
-				LatestVersion string `json:"latestVersion"`
-				Timestamp     int64  `json:"timestamp"`
-			} `json:"docs"`
-		} `json:"response"`
+	var meta struct {
+		Versioning struct {
+			Latest   string   `xml:"latest"`
+			Release  string   `xml:"release"`
+			Versions []string `xml:"versions>version"`
+		} `xml:"versioning"`
 	}
-	if err := json.Unmarshal(body, &info); err != nil {
+	if err := xml.Unmarshal(body, &meta); err != nil {
+		return nil, fmt.Errorf("maven metadata for %s: %w", dep.Name, err)
+	}
+	latestVersion := meta.Versioning.Release
+	if latestVersion == "" {
+		latestVersion = meta.Versioning.Latest
+	}
+	if latestVersion == "" && len(meta.Versioning.Versions) > 0 {
+		latestVersion = meta.Versioning.Versions[len(meta.Versioning.Versions)-1]
+	}
+	if latestVersion == "" {
+		return nil, fmt.Errorf("maven metadata for %s lists no versions: %w", dep.Name, errRegistryNotFound)
+	}
+	pomDate := func(version string) (string, error) {
+		return fetchRegistryLastModified(ctx,
+			artifactBase+"/"+url.PathEscape(version)+"/"+url.PathEscape(artifactID)+"-"+url.PathEscape(version)+".pom")
+	}
+	// A version listed in the metadata whose .pom is absent (retracted file,
+	// classifier-only artifact) costs that DATE, not the dependency: the
+	// artifact exists, so failing here would store nothing and cache a
+	// definitive miss for something Maven Central has.
+	latestDate, err := pomDate(latestVersion)
+	if err != nil && !isDefinitiveRegistryMiss(err) {
 		return nil, err
 	}
-	if len(info.Response.Docs) == 0 {
-		return nil, fmt.Errorf("not found on Maven Central: %s", dep.Name)
+	currentDate := ""
+	if dep.Version != "" && slices.Contains(meta.Versioning.Versions, dep.Version) {
+		currentDate, err = pomDate(dep.Version)
+		if err != nil && !isDefinitiveRegistryMiss(err) {
+			return nil, err
+		}
+		if err != nil {
+			currentDate = ""
+		}
 	}
-	latestVersion := info.Response.Docs[0].LatestVersion
-	latestDate := time.UnixMilli(info.Response.Docs[0].Timestamp).Format(time.RFC3339)
 
 	return &db.LibyearRow{
-		Name:              dep.Name,
-		Requirement:       dep.Requirement,
-		Type:              dep.Type,
-		PackageManager:    "maven",
-		CurrentVersion:    dep.Version,
-		LatestVersion:     latestVersion,
-		LatestReleaseDate: latestDate,
-		Libyear:           0, // No current release date from Maven search API.
-		Purl:              buildPurl("maven", groupID+"/"+artifactID, dep.Version),
+		Name:               dep.Name,
+		Requirement:        dep.Requirement,
+		Type:               dep.Type,
+		PackageManager:     "maven",
+		CurrentVersion:     dep.Version,
+		LatestVersion:      latestVersion,
+		CurrentReleaseDate: currentDate,
+		LatestReleaseDate:  latestDate,
+		Libyear:            calcLibyear(currentDate, latestDate),
+		Purl:               buildPurl("maven", groupID+"/"+artifactID, dep.Version),
 	}, nil
 }
 
@@ -3788,10 +4246,13 @@ func extractSwiftVersion(line string) string {
 	return ""
 }
 
-// resolveSwiftPMLibyear resolves a SwiftPM dependency by checking GitHub tags.
-// SwiftPM packages are just git repos (usually GitHub), not a central registry.
-// We use the GitHub API to find the latest release/tag.
-func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+// resolveSwiftPMLibyear resolves a SwiftPM dependency from its GitHub
+// repository's releases. SwiftPM packages are git repositories, not a
+// registry. Requests go through the key-pooled GitHub client (v0.29.56;
+// they were anonymous, 60 an hour per IP, and failed with 403/429 in the
+// 2026-09-17 log). The version in use is looked up as a release tag, with
+// and without a leading "v", so libyear is computed instead of 0.
+func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearDep) (*db.LibyearRow, error) {
 	// The requirement field contains the git URL. Extract owner/repo.
 	repoURL := dep.Requirement
 	repoURL = strings.TrimSuffix(repoURL, ".git")
@@ -3800,33 +4261,50 @@ func resolveSwiftPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		// Non-GitHub SwiftPM packages can't be resolved without a registry.
 		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s", repoURL)
 	}
-	owner, repo := parts[1], parts[2]
-
-	// Get latest release from GitHub API.
-	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(githubAPIBase+"/repos/%s/%s/releases/latest", owner, repo))
-	if err != nil {
-		return nil, err
+	if gh == nil {
+		return nil, errNoGitHubClient
 	}
-	var release struct {
+	owner, repo := parts[1], parts[2]
+	releases := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases"
+
+	type release struct {
 		TagName     string `json:"tag_name"`
 		PublishedAt string `json:"published_at"`
 	}
-	if err := json.Unmarshal(body, &release); err != nil {
+	var latest release
+	if err := gh.GetJSON(ctx, releases+"/latest", &latest); err != nil {
 		return nil, err
 	}
-	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	currentDate := ""
+	if dep.Version != "" {
+		tags := []string{dep.Version}
+		if !strings.HasPrefix(dep.Version, "v") {
+			tags = append(tags, "v"+dep.Version)
+		}
+		for _, tag := range tags {
+			var cur release
+			err := gh.GetJSON(ctx, releases+"/tags/"+url.PathEscape(tag), &cur)
+			if err == nil {
+				currentDate = cur.PublishedAt
+				break
+			}
+			if !platform.IsDefinitiveAnswer(err) {
+				return nil, err
+			}
+		}
+	}
 
 	return &db.LibyearRow{
-		Name:              dep.Name,
-		Requirement:       dep.Requirement,
-		Type:              dep.Type,
-		PackageManager:    "swiftpm",
-		CurrentVersion:    dep.Version,
-		LatestVersion:     latestVersion,
-		LatestReleaseDate: release.PublishedAt,
-		Libyear:           0, // No current release date without per-tag API call.
-		Purl:              buildPurl("swift", owner+"/"+repo, dep.Version),
+		Name:               dep.Name,
+		Requirement:        dep.Requirement,
+		Type:               dep.Type,
+		PackageManager:     "swiftpm",
+		CurrentVersion:     dep.Version,
+		LatestVersion:      strings.TrimPrefix(latest.TagName, "v"),
+		CurrentReleaseDate: currentDate,
+		LatestReleaseDate:  latest.PublishedAt,
+		Libyear:            calcLibyear(currentDate, latest.PublishedAt),
+		Purl:               buildPurl("swift", owner+"/"+repo, dep.Version),
 	}, nil
 }
 
@@ -3925,17 +4403,28 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 
 	// Hackage doesn't return dates in this endpoint. Get upload time from
 	// package info (plain-text responses, same curl choke point).
-	latestDate := ""
-	if uploadBody, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(hackageRegistryBase+"/package/%s-%s/upload-time", dep.Name, latestVersion)); err == nil {
-		latestDate = strings.TrimSpace(string(uploadBody))
+	// As in the Go and Maven resolvers: a definitive miss costs the DATE, a
+	// failure that says nothing fails the dependency — a swallowed error
+	// here stores libyear 0 ("perfectly fresh"), now cached for a day.
+	uploadTime := func(version string) (string, error) {
+		body, err := fetchRegistryJSON(ctx,
+			fmt.Sprintf(hackageRegistryBase+"/package/%s-%s/upload-time", dep.Name, version))
+		if err != nil {
+			if isDefinitiveRegistryMiss(err) {
+				return "", nil
+			}
+			return "", err
+		}
+		return strings.TrimSpace(string(body)), nil
 	}
-
+	latestDate, err := uploadTime(latestVersion)
+	if err != nil {
+		return nil, err
+	}
 	currentDate := ""
 	if dep.Version != "" {
-		if uploadBody, err := fetchRegistryJSON(ctx,
-			fmt.Sprintf(hackageRegistryBase+"/package/%s-%s/upload-time", dep.Name, dep.Version)); err == nil {
-			currentDate = strings.TrimSpace(string(uploadBody))
+		if currentDate, err = uploadTime(dep.Version); err != nil {
+			return nil, err
 		}
 	}
 

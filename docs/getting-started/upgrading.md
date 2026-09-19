@@ -47,12 +47,24 @@ LIMIT 1;
 AVELOXIS_SRC=/path/to/aveloxis   # the git checkout of this repository
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis
 aveloxis version                # confirm the new binary
+aveloxis deploy-checklist       # this release's exact steps: follow them where they differ from these
 aveloxis stop all               # serve, web, api (also cleans stale pidfiles)
-aveloxis migrate --skip-views   # schema + ledgered backfills; matviews later
+aveloxis migrate --skip-views   # schema + ledgered backfills; skips the materialized views
 # ... operator-run heals from the table below, in order ...
-aveloxis refresh-views          # rebuild the materialized views (add --aggregates for the dm_ tables; slow)
+aveloxis refresh-views          # refresh the materialized views' data (add --aggregates for the dm_ tables; slow)
 aveloxis start all
 ```
+
+`refresh-views` refreshes each view's **data**; it does not change a view's
+**definition**. A release that changes a view definition needs one plain
+`aveloxis migrate` (without `--skip-views`), which drops and re-creates the
+views from the new definitions; `serve` never does it at startup. v0.29.57 is
+such a release (`explorer_libyear_summary` now orders unknown repositories
+last): its deploy checklist, printed by `aveloxis deploy-checklist`, uses a
+plain `aveloxis migrate` in place of the `--skip-views` step above, then
+checks that the new definition is in place. That check matters because the
+migrate only logs a WARN (`materialized view creation had errors`) when the
+views fail to re-create, and still exits 0 with the old definitions in place.
 
 Run `aveloxis migrate` explicitly rather than letting `aveloxis serve`
 migrate at startup: `web` and `api` never migrate and log an ERROR on a
@@ -157,6 +169,7 @@ re-running is always safe. Rows marked *fleet-scale* take hours on a
 | 16 | `aveloxis strip-quoted-history --limit 50000`, then full | v0.29.0 | `msg_text_clean` on historical mailing-list bodies (82.5% of list mail embeds the thread it replies to; new mail is stripped at ingest) | only if you collect mailing lists; ~30–45 min per 12.6M bodies, marker-resumable |
 | 17 | `aveloxis register-jira-projects`, then `aveloxis backfill-jira-identities` | v0.29.0 | Jira reporter + assignee identity and authoritative issue state, from the Jira Server API (comment-author identity is NOT in this one-shot — the ongoing Jira worker banks it as it collects each project's comment blocks). **Time-sensitive**: the stable username this matches on does not exist in Jira Cloud's API — run it before the ASF instance migrates | only if you hold Jira-projected issues (Apache mailing lists); ~2–3 polite hours for the full ASF corpus |
 | 18 | `aveloxis backfill-mailing-list-projection` | v0.29.0 | re-projects mailing-list messages a wrong-system drain pool processed without Layer-2 projection (the cross-system drain fix: 90%+ of Apache list mail was drained by the lore processor and never projected onto issues). The migrate itself restamps `ml_system` and resets the affected rows to pending; this command runs the keyed + thread passes over them | only if you collect mailing lists AND upgraded through an affected version; one clean run converges — rerun only after a mid-run error |
+| 19 | `aveloxis heal-libyear`, then `--apply` | v0.29.57 | libyear values stored as `0` for dependencies that name no pinned version, whose libyear can never be computed; they become `NULL`, which averages and medians skip (before v0.29.57 an unknown libyear was stored as `0` and read as "up to date") | any fleet upgrading to v0.29.57; the dry run is the default and reports the count; walks the table in primary-key windows, safe beside `serve`. **Run `aveloxis refresh-views` (row 9) again afterwards**, or `explorer_libyear_summary` keeps the old values until the next weekly rebuild. The same release changed that view's definition, so a fleet crossing v0.29.57 also needs one plain `aveloxis migrate` (see above) if the checklist it followed used `--skip-views` |
 
 Skipped as instance-specific: the `load-foundation-*` importers (only if
 you track a foundation's whole catalog) and `register-mailing-list`

@@ -255,7 +255,7 @@ For each versioned dependency, queries its package registry to compare the curre
 |---|---|
 | npm | `https://registry.npmjs.org/{pkg}` |
 | PyPI | `https://pypi.org/pypi/{pkg}/json` |
-| Go proxy | `https://proxy.golang.org/{mod}/@v/list` |
+| Go proxy | `https://proxy.golang.org/{mod}/@latest` |
 | crates.io | `https://crates.io/api/v1/crates/{crate}` |
 | RubyGems | `https://rubygems.org/api/v1/versions/{gem}.json` |
 

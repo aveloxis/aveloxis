@@ -197,7 +197,7 @@ Once `aveloxis serve` is running, it continuously:
 
 1. Collects repos in priority order from the queue
 2. Re-collects repos after `days_until_recollect` (default: 1 day)
-3. Refreshes materialized views every Saturday
+3. Refreshes the materialized views' data weekly (default Saturday; `collection.matview_rebuild_day`)
 4. Runs contributor breadth discovery every 6 hours
 5. Refreshes org membership every 4 hours
 

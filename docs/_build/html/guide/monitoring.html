@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Monitoring &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Monitoring &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1783,12 +1788,12 @@ connections. The dashboard now issues three queries total per refresh
 <p>Response:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">[</span>
 <span class="w">  </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"repo_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"repo_git"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://github.com/chaoss/augur"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"collecting"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"priority"</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"due_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-04-05T12:00:00Z"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"last_collected_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-04-04T12:00:00Z"</span>
+<span class="w">    </span><span class="nt">&quot;repo_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repo_git&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://github.com/chaoss/augur&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;collecting&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;priority&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;due_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-05T12:00:00Z&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;last_collected_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-04T12:00:00Z&quot;</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="w">  </span><span class="c1">// ...more rows</span>
 <span class="p">]</span>
@@ -1803,9 +1808,9 @@ connections. The dashboard now issues three queries total per refresh
 </div>
 <p>Response:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"queued"</span><span class="p">:</span><span class="w"> </span><span class="mi">150</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"collecting"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"total"</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span>
+<span class="w">  </span><span class="nt">&quot;queued&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">150</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;collecting&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1875,13 +1880,13 @@ logs go to the journal:</p>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">locked_at</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span><span class="w"> </span><span class="n">q</span>
 <span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'collecting'</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;collecting&#39;</span><span class="p">;</span>
 
 <span class="c1">-- Repos with errors</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">collection_queue</span><span class="w"> </span><span class="n">q</span>
 <span class="k">JOIN</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">repo_id</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s1">''</span><span class="p">;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">q</span><span class="mf">.</span><span class="n">last_error</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s1">&#39;&#39;</span><span class="p">;</span>
 
 <span class="c1">-- Staging table size (should be near 0 when not collecting)</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">staged_rows</span>

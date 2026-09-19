@@ -49,7 +49,7 @@ func CreateMaterializedViewsIfNotExist(ctx context.Context, pg *PostgresStore, l
 		return fmt.Errorf("probing for existing matviews: %w", err)
 	}
 	if exists {
-		logger.Info("materialized views already exist, skipping creation on startup (use 'aveloxis refresh-views' or wait for scheduled rebuild)")
+		logger.Info("materialized views already exist, skipping creation on startup (their data refreshes with 'aveloxis refresh-views' or the weekly rebuild; a changed definition needs a plain 'aveloxis migrate')")
 		return nil
 	}
 	return CreateMaterializedViews(ctx, pg, logger)

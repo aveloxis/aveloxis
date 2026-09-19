@@ -54,6 +54,30 @@ func TestLiveMavenForCommonsLang(t *testing.T) {
 		t.Fatalf("live Maven Central resolve failed: %v", err)
 	}
 	if row.LatestVersion == "" {
-		t.Errorf("live Maven solrsearch shape drift: latest empty")
+		t.Errorf("live Maven Central metadata drift: latest empty")
+	}
+	// v0.29.56: the repository carries a publication time per version
+	// (Last-Modified on the .pom), which the search API never gave — every
+	// Maven libyear was 0 before this.
+	if row.CurrentReleaseDate == "" || row.LatestReleaseDate == "" {
+		t.Errorf("live Maven Central release dates missing: current=%q latest=%q", row.CurrentReleaseDate, row.LatestReleaseDate)
+	}
+	if row.Libyear <= 0 {
+		t.Errorf("live Maven libyear = %v, want > 0 for commons-lang3 3.12.0", row.Libyear)
+	}
+}
+
+// TestLiveGoProxyForUppercaseModulePath is the canary for the module
+// proxy's case encoding: an unescaped uppercase path 404s, which is how
+// every Go module with a capital letter lost its libyear row (v0.29.56).
+func TestLiveGoProxyForUppercaseModulePath(t *testing.T) {
+	skipUnlessNetwork(t)
+	row, err := resolveGoLibyear(context.Background(),
+		libyearDep{Name: "github.com/Masterminds/semver/v3", Version: "v3.2.0", Manager: "go"})
+	if err != nil {
+		t.Fatalf("live Go proxy resolve of an uppercase module path failed: %v", err)
+	}
+	if row.LatestVersion == "" || row.CurrentReleaseDate == "" || row.Libyear <= 0 {
+		t.Errorf("live Go proxy row = %+v, want a latest version, the pinned version's date and libyear > 0", row)
 	}
 }

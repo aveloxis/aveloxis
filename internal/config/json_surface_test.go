@@ -23,7 +23,6 @@ var frozenCollectionKeys = []string{
 	"repo_clone_dir",
 	"force_full",
 	"matview_rebuild_day",
-	"matview_rebuild_on_startup",
 	"matview_rebuild_skip_dm_aggregates",
 	"activity_history_window_days",
 	"activity_history_interval_minutes",

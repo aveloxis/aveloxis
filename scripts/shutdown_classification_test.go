@@ -60,10 +60,12 @@ import (
 // count would make the completed burn-down fail forever (v0.27.122
 // hit exactly that in the srctest ratchet).
 //
-// Deliberately NOT go/types: full cross-package resolution would pull
-// golang.org/x/tools in for a test-only analyzer. The two rules above
-// buy the precision that mattered without it; if the residual ever
-// needs interface-method resolution, that is the trigger to revisit.
+// Deliberately NOT go/types: the two rules above buy the precision that
+// mattered without it. Type information does not need golang.org/x/tools
+// (this comment once said it did): the standard library's go/types with
+// importer.ForCompiler(fset, "source", nil) type-checks the test packages —
+// see test_close_ordering_test.go's sharedTypeChecker. If the residual ever
+// needs interface-method resolution, that is the way in.
 func TestShutdownClassificationRatchet(t *testing.T) {
 	violations := scanShutdownClassification(t)
 

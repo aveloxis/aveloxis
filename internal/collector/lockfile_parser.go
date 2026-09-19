@@ -275,12 +275,9 @@ func parseYarnLockV1(data []byte) (parsedLockfileData, error) {
 			header := strings.TrimSuffix(strings.TrimSpace(line), ":")
 			firstKey := strings.TrimSpace(strings.Split(header, ",")[0])
 			firstKey = strings.Trim(firstKey, `"`)
-			// name@range — the name may itself start with @scope/.
-			if at := strings.LastIndex(firstKey, "@"); at > 0 {
-				currentName = firstKey[:at]
-			} else {
-				currentName = ""
-			}
+			// name@range — the name may itself start with @scope/, and the
+			// range may be a URL or file: reference (splitNPMSpec).
+			currentName, _, _ = splitNPMSpec(firstKey)
 			currentVersion = ""
 			inDeps = false
 			continue
@@ -334,9 +331,7 @@ func parseYarnBerry(data []byte) (parsedLockfileData, error) {
 				inDeps, flushable = false, false
 				continue
 			}
-			if at := strings.LastIndex(firstKey, "@"); at > 0 {
-				currentName = firstKey[:at]
-			}
+			currentName, _, _ = splitNPMSpec(firstKey)
 			inDeps = false
 			flushable = currentName != "" && !isWorkspace
 			continue
@@ -468,25 +463,96 @@ func parsePnpmLock(data []byte) (parsedLockfileData, error) {
 	return out, nil
 }
 
-// splitPnpmPackageKey handles the three historical pnpm key shapes:
-// v9 "name@1.2.3", v6 "/name@1.2.3(peer)", v5 "/name/1.2.3". Peer
-// suffixes in parentheses are stripped.
+// splitPnpmPackageKey handles the historical pnpm key shapes: v9
+// "name@1.2.3", v6 "/name@1.2.3(peer)", v5 "/name/1.2.3" with an optional
+// "_peer@x" suffix, and v5 keys prefixed with the registry host
+// ("registry.npmjs.org/@jest/transform/26.0.1"). A key whose version is
+// not a registry version (git commit, tarball file, file:/link: path)
+// returns ("", "") and is skipped.
+//
+// v0.29.56: the name was cut at the LAST '@', so a registry-host key
+// became name "registry.npmjs.org/" with version "jest/transform/26.0.1"
+// (361 production rows) and a v5 peer suffix left "react-dom/18.2.0_react"
+// as the name. Such a row's purl has no name, and one of them fails the
+// repository's whole OSV batch.
 func splitPnpmPackageKey(key string) (name, version string) {
 	if idx := strings.IndexByte(key, '('); idx >= 0 {
 		key = key[:idx]
 	}
-	key = strings.TrimPrefix(key, "/")
-	// "name@version" (the name may start with @scope/): split at the
-	// LAST @ past position 0.
-	if at := strings.LastIndex(key, "@"); at > 0 {
-		return key[:at], key[at+1:]
+	segs := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	last := segs[len(segs)-1]
+	var nameSegs []string
+	if at := strings.IndexByte(last, '@'); at > 0 && !pnpmV5PeerSuffixed(last) {
+		// v6/v9: the last segment is "name@version".
+		nameSegs = append(segs[:len(segs)-1:len(segs)-1], last[:at])
+		version = last[at+1:]
+	} else if len(segs) >= 2 {
+		// v5: the last segment is the version, maybe "_peer" suffixed.
+		nameSegs = segs[:len(segs)-1]
+		version = last
+		if u := strings.IndexByte(version, '_'); u > 0 {
+			version = version[:u]
+		}
 	}
-	// v5 "/name/1.2.3" (scoped: "/@scope/name/1.2.3") — version is the
-	// last path segment.
-	if slash := strings.LastIndex(key, "/"); slash > 0 {
-		return key[:slash], key[slash+1:]
+	name = npmNameFromPathSegments(nameSegs)
+	if name == "" || !npmRegistryVersionRe.MatchString(version) {
+		return "", ""
 	}
-	return "", ""
+	return name, version
+}
+
+// pnpmV5PeerSuffixed reports a v5 version segment with a peer suffix
+// ("18.2.0_react@18.2.0"): a version, then '_' before any '@'.
+func pnpmV5PeerSuffixed(seg string) bool {
+	u := strings.IndexByte(seg, '_')
+	at := strings.IndexByte(seg, '@')
+	return u > 0 && at > u && npmRegistryVersionRe.MatchString(seg[:u])
+}
+
+// npmNameFromPathSegments takes the path segments that precede a version
+// and returns the package name: "@scope/name" when the last two segments
+// are a scope and a name, otherwise the last segment (an unscoped name
+// never contains '/', so anything before it is a registry host). A
+// segment with ':' is a reference (file:, link:), not a name.
+func npmNameFromPathSegments(segs []string) string {
+	n := len(segs)
+	if n == 0 || segs[n-1] == "" || strings.HasPrefix(segs[n-1], "@") || strings.Contains(segs[n-1], ":") {
+		return ""
+	}
+	if n >= 2 && len(segs[n-2]) > 1 && strings.HasPrefix(segs[n-2], "@") {
+		return segs[n-2] + "/" + segs[n-1]
+	}
+	return segs[n-1]
+}
+
+// npmRegistryVersionRe matches the start of a registry version
+// (major.minor…). Git commits, tarball file names and path references do
+// not match.
+var npmRegistryVersionRe = regexp.MustCompile(`^\d+\.\d+`)
+
+// npmTarballVersionRe reads the version from a registry tarball URL
+// (".../-/utils-2.4.2.tgz").
+var npmTarballVersionRe = regexp.MustCompile(`/-/[^/]+?-(\d+\.\d+[^/]*)\.tgz$`)
+
+// splitNPMSpec splits an npm package reference "name@ref" (a yarn
+// selector, a bun tuple head). A package name's only '@' is a scope's, at
+// position 0, so the name ends at the first '@' after it; the ref may
+// itself contain '@' (tarball URLs, yarn patch: references). ok is false
+// when there is no ref.
+//
+// v0.29.56: the parsers cut at the LAST '@', storing names such as
+// "@pkgr/utils@https://registry.npmjs.org/" and
+// "@npmcli/config@patch:@npmcli/config@npm%3A10.7.1#~/.yarn/patches/".
+func splitNPMSpec(spec string) (name, ref string, ok bool) {
+	if len(spec) < 2 {
+		return "", "", false
+	}
+	at := strings.IndexByte(spec[1:], '@')
+	if at < 0 {
+		return "", "", false
+	}
+	at++
+	return spec[:at], spec[at+1:], true
 }
 
 // parseBunLock handles Bun ≥1.2's TEXT lockfile (bun.lock) — JSONC:
@@ -530,11 +596,19 @@ func parseBunLock(data []byte) (parsedLockfileData, error) {
 		if err := json.Unmarshal(tuple[0], &spec); err != nil {
 			continue
 		}
-		at := strings.LastIndex(spec, "@")
-		if at <= 0 {
+		name, version, ok := splitNPMSpec(spec)
+		if !ok {
 			continue
 		}
-		name, version := spec[:at], spec[at+1:]
+		// A package fetched by tarball URL carries its version in the file
+		// name; any other non-registry reference (file:, link:, git) has no
+		// registry version and is skipped.
+		if m := npmTarballVersionRe.FindStringSubmatch(version); m != nil {
+			version = m[1]
+		}
+		if !npmRegistryVersionRe.MatchString(version) {
+			continue
+		}
 		out.Entries = append(out.Entries, LockfileEntry{
 			Name:    name,
 			Version: version,

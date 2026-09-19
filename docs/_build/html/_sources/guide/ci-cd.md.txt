@@ -14,7 +14,7 @@ Runs `go test -race ./...` with race detection enabled. Uploads coverage artifac
 
 **Trigger:** Every push to any branch, every PR to main. Runs in parallel with the unit-tier `test.yml` job.
 
-Provisions a `postgres:16` service container, sets `AVELOXIS_TEST_DB=postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable`, runs the migration-integration tests, then re-runs the entire test suite with the env var still set so any `AVELOXIS_TEST_DB`-gated tests added later (e.g. additional `*_integration_test.go` files) get exercised automatically.
+Provisions a `postgres:16` service container, sets `AVELOXIS_TEST_DB=postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable`, runs the migration-integration tests, then re-runs the entire test suite with the env var still set so any `AVELOXIS_TEST_DB`-gated tests added later (e.g. additional `*_integration_test.go` files) get exercised automatically. Each package creates, migrates and drops its own `aveloxis_t_*` database from that base (the service's user is a superuser, so it has `CREATEDB`); see [the contributor testing guide](../contributing/testing.md). The full-suite step runs with `-shuffle=on`, so a test that passes only because an earlier test left rows behind can fail (on the orders that put it first — so it shows as an intermittent red); the log prints `-test.shuffle N`, and `go test -shuffle=N` reproduces the order.
 
 **Why split from `test.yml`:** separation of green-badge semantics. A green **Tests** status means unit-tier passed; a green **Integration** status means migrations + cross-table backfills actually ran against a real Postgres. If only one is green, the failure mode is obvious from the workflow badge.
 
@@ -55,7 +55,7 @@ AVELOXIS_TEST_DB="host=localhost port=5432 user=aveloxis password=... dbname=ave
 psql -h localhost -U aveloxis -d postgres -c "DROP DATABASE aveloxis_test;"
 ```
 
-**Never** run the integration suite against the production `aveloxis` database. `TestRunMigrationsOnFreshDB` is destructive (it owns the schema), and `RealignDueDates`-style integration tests are unscoped — they update every matching row in the queue and would silently realign the entire fleet.
+**Never** run the integration suite against a production server. Each package runs in its own database created from the one you name, but the suite creates and drops databases and login roles on that server, and `RealignDueDates`-style integration tests are unscoped within the database they run in.
 
 Conventions for adding integration tests:
 

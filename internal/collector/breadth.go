@@ -347,6 +347,7 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 	// eligible for the attempted stamp. See ORDERING CONTRACT in the
 	// package doc: IDs enter this buffer only after their
 	// InsertContributorRepoBatch call succeeded.
+	var tally breadthErrorTally
 	var pendingMarks []string
 	flushMarks := func() {
 		if len(pendingMarks) == 0 {
@@ -425,7 +426,12 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		}
 
 		if oc.err != nil {
-			bw.logger.Warn("breadth: failed to process contributor",
+			// One line per batch, not per contributor: 184 identical
+			// "not found: /users/X/events" WARNs in two hours of the
+			// 2026-09-17 log were deleted accounts, which is an answer
+			// (v0.29.56, the v0.27.91 flood class).
+			tally.note(oc.contributor.Login, oc.err)
+			bw.logger.Debug("breadth: failed to process contributor",
 				"login", oc.contributor.Login, "error", oc.err)
 			result.Errors++
 			// v0.20.17 invariant: a per-user fetch error still counts
@@ -451,6 +457,13 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 	// events are already durable, exactly like the sequential shape
 	// where each pre-trip contributor was marked as it completed.
 	flushMarks()
+
+	if tally.any() {
+		bw.logger.Warn("breadth: contributors not collected",
+			"gone_accounts", tally.missing,
+			"failed_without_an_answer", tally.failed,
+			"sample_login", tally.sampleLogin, "sample_error", tally.sampleErr)
+	}
 
 	if abortErr != nil {
 		return result, abortErr
@@ -642,3 +655,34 @@ type ghUserEvent struct {
 	} `json:"repo"`
 	CreatedAt string `json:"created_at"` // RFC3339
 }
+
+// breadthErrorTally aggregates one run's per-contributor errors: accounts
+// the forge answered about (deleted, gone — expected churn) apart from
+// lookups that failed without an answer, with one sample of the latter.
+type breadthErrorTally struct {
+	missing     int
+	failed      int
+	sampleLogin string
+	sampleErr   error
+}
+
+func (t *breadthErrorTally) note(login string, err error) {
+	if err == nil {
+		return
+	}
+	// Only "the account is not there" counts as gone. v0.29.56 first used
+	// platform.IsDefinitiveAnswer, which also covers ErrForbidden — a 403
+	// on /users/X/events (suspended account, narrowed token scope) is
+	// exactly the case worth waking up for, and reporting it as routine
+	// account churn would hide a systemic permission problem.
+	if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrGone) {
+		t.missing++
+		return
+	}
+	t.failed++
+	if t.sampleErr == nil {
+		t.sampleLogin, t.sampleErr = login, err
+	}
+}
+
+func (t *breadthErrorTally) any() bool { return t.missing > 0 || t.failed > 0 }

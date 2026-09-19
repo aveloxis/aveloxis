@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CI/CD Pipelines &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>CI/CD Pipelines &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1658,7 +1663,7 @@
 <section id="integration-integration-yml-integration-tier-v0-21-1">
 <h3>Integration (<code class="docutils literal notranslate"><span class="pre">integration.yml</span></code>) — integration tier (v0.21.1)<a class="headerlink" href="#integration-integration-yml-integration-tier-v0-21-1" title="Link to this heading"></a></h3>
 <p><strong>Trigger:</strong> Every push to any branch, every PR to main. Runs in parallel with the unit-tier <code class="docutils literal notranslate"><span class="pre">test.yml</span></code> job.</p>
-<p>Provisions a <code class="docutils literal notranslate"><span class="pre">postgres:16</span></code> service container, sets <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB=postgres://aveloxis_test:aveloxis_test&#64;localhost:5432/aveloxis_test?sslmode=disable</span></code>, runs the migration-integration tests, then re-runs the entire test suite with the env var still set so any <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code>-gated tests added later (e.g. additional <code class="docutils literal notranslate"><span class="pre">*_integration_test.go</span></code> files) get exercised automatically.</p>
+<p>Provisions a <code class="docutils literal notranslate"><span class="pre">postgres:16</span></code> service container, sets <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB=postgres://aveloxis_test:aveloxis_test&#64;localhost:5432/aveloxis_test?sslmode=disable</span></code>, runs the migration-integration tests, then re-runs the entire test suite with the env var still set so any <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code>-gated tests added later (e.g. additional <code class="docutils literal notranslate"><span class="pre">*_integration_test.go</span></code> files) get exercised automatically. Each package creates, migrates and drops its own <code class="docutils literal notranslate"><span class="pre">aveloxis_t_*</span></code> database from that base (the service’s user is a superuser, so it has <code class="docutils literal notranslate"><span class="pre">CREATEDB</span></code>); see <a class="reference internal" href="../contributing/testing.html"><span class="std std-doc">the contributor testing guide</span></a>. The full-suite step runs with <code class="docutils literal notranslate"><span class="pre">-shuffle=on</span></code>, so a test that passes only because an earlier test left rows behind can fail (on the orders that put it first — so it shows as an intermittent red); the log prints <code class="docutils literal notranslate"><span class="pre">-test.shuffle</span> <span class="pre">N</span></code>, and <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">-shuffle=N</span></code> reproduces the order.</p>
 <p><strong>Why split from <code class="docutils literal notranslate"><span class="pre">test.yml</span></code>:</strong> separation of green-badge semantics. A green <strong>Tests</strong> status means unit-tier passed; a green <strong>Integration</strong> status means migrations + cross-table backfills actually ran against a real Postgres. If only one is green, the failure mode is obvious from the workflow badge.</p>
 <p><strong>Why this matters operationally:</strong> the v0.21.0 ship contained a backfill SQL referencing <code class="docutils literal notranslate"><span class="pre">aveloxis_scan.scancode_scans.created_at</span></code> — a column that doesn’t exist (the table uses <code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code>). The source-contract test pinned <code class="docutils literal notranslate"><span class="pre">MAX(created_at)</span></code> and silently passed because both sides of the contract agreed on the wrong answer. Production migrate failed with SQLSTATE 42703. <code class="docutils literal notranslate"><span class="pre">TestRunMigrationsOnFreshDB</span></code> (added in v0.21.1) catches this class of bug end-to-end by actually running RunMigrations against a Postgres service container and observing whether each statement parses + executes cleanly.</p>
 </section>
@@ -1670,11 +1675,11 @@ docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </
 <span class="w">  </span>-e<span class="w"> </span><span class="nv">POSTGRES_PASSWORD</span><span class="o">=</span><span class="nb">test</span><span class="w"> </span>-e<span class="w"> </span><span class="nv">POSTGRES_DB</span><span class="o">=</span>aveloxis_test<span class="w"> </span>postgres:16
 
 <span class="c1"># Run the integration tests against it.</span>
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span><span class="s2">"TestRunMigrations"</span><span class="w"> </span>-v
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span><span class="s2">&quot;TestRunMigrations&quot;</span><span class="w"> </span>-v
 
 <span class="c1"># Run any other AVELOXIS_TEST_DB-gated tests in the codebase.</span>
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable"</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...<span class="w"> </span>-v
 
 <span class="c1"># Tear down when done.</span>
@@ -1683,17 +1688,17 @@ docker<span class="w"> </span>stop<span class="w"> </span>aveloxis-test-pg
 </div>
 <p>Or, if you have an existing Postgres you want to use:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create a scratch DB on your existing Postgres instance.</span>
-psql<span class="w"> </span>-h<span class="w"> </span>localhost<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>postgres<span class="w"> </span>-c<span class="w"> </span><span class="s2">"CREATE DATABASE aveloxis_test;"</span>
+psql<span class="w"> </span>-h<span class="w"> </span>localhost<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>postgres<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;CREATE DATABASE aveloxis_test;&quot;</span>
 
 <span class="c1"># Run with the test DB.</span>
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"host=localhost port=5432 user=aveloxis password=... dbname=aveloxis_test sslmode=prefer"</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;host=localhost port=5432 user=aveloxis password=... dbname=aveloxis_test sslmode=prefer&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...<span class="w"> </span>-v
 
 <span class="c1"># Drop when done.</span>
-psql<span class="w"> </span>-h<span class="w"> </span>localhost<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>postgres<span class="w"> </span>-c<span class="w"> </span><span class="s2">"DROP DATABASE aveloxis_test;"</span>
+psql<span class="w"> </span>-h<span class="w"> </span>localhost<span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>postgres<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;DROP DATABASE aveloxis_test;&quot;</span>
 </pre></div>
 </div>
-<p><strong>Never</strong> run the integration suite against the production <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> database. <code class="docutils literal notranslate"><span class="pre">TestRunMigrationsOnFreshDB</span></code> is destructive (it owns the schema), and <code class="docutils literal notranslate"><span class="pre">RealignDueDates</span></code>-style integration tests are unscoped — they update every matching row in the queue and would silently realign the entire fleet.</p>
+<p><strong>Never</strong> run the integration suite against a production server. Each package runs in its own database created from the one you name, but the suite creates and drops databases and login roles on that server, and <code class="docutils literal notranslate"><span class="pre">RealignDueDates</span></code>-style integration tests are unscoped within the database they run in.</p>
 <p>Conventions for adding integration tests:</p>
 <ul class="simple">
 <li><p>Name the test <code class="docutils literal notranslate"><span class="pre">TestX_YIntegration</span></code> or put it in a file ending in <code class="docutils literal notranslate"><span class="pre">_integration_test.go</span></code>.</p></li>
@@ -1816,7 +1821,7 @@ of wall-clock; cheap insurance.</p>
 </section>
 <section id="running-the-gate">
 <h3>Running the gate<a class="headerlink" href="#running-the-gate" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># From the contributor's working branch, with the schema change</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># From the contributor&#39;s working branch, with the schema change</span>
 <span class="c1"># checked out locally:</span>
 aveloxis<span class="w"> </span>data-test<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--released-tag<span class="w"> </span><span class="m">0</span>.22.6<span class="w"> </span><span class="se">\</span>
@@ -1855,7 +1860,7 @@ regression and re-run.</p></li>
 <p>For projects that want automated gating, the harness can drive a CI
 job:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Schema-change verification</span>
-<span class="w">  </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">contains(github.event.pull_request.labels.*.name, 'schema-change')</span>
+<span class="w">  </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">contains(github.event.pull_request.labels.*.name, &#39;schema-change&#39;)</span>
 <span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
 <span class="w">    </span><span class="no">aveloxis data-test \</span>
 <span class="w">      </span><span class="no">--released-tag $LAST_RELEASED \</span>

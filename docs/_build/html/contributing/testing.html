@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1665,22 +1670,23 @@ SPDX-License-Identifier: MIT
 <section id="tier-2-integration-tests">
 <h3>Tier 2 — Integration tests<a class="headerlink" href="#tier-2-integration-tests" title="Link to this heading"></a></h3>
 <p>Run against a real PostgreSQL via the <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> env var. Live in <code class="docutils literal notranslate"><span class="pre">*_integration_test.go</span></code> files.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://aveloxis:pw@localhost:5432/aveloxis_scratch?sslmode=prefer"</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://aveloxis:pw@localhost:5432/aveloxis_scratch?sslmode=prefer&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v
 </pre></div>
 </div>
 <p>Every integration test starts with:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestSomething</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB"</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">""</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB not set — skipping integration test"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB not set — skipping integration test&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="c1">// ... rest of test</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 <p>This means <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./...</span></code> (no env var) skips them cleanly. CI runs both modes — see <code class="docutils literal notranslate"><span class="pre">.github/workflows/integration.yml</span></code> for the Postgres-service-container recipe.</p>
-<p><strong>Safety:</strong> integration tests assume a scratch database. Some helpers (<code class="docutils literal notranslate"><span class="pre">store.RealignDueDates</span></code>, the <code class="docutils literal notranslate"><span class="pre">dm_</span></code> aggregate refresh, the <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> migration) update every matching row. Pointing them at a production database is destructive.</p>
+<p><strong>Each package gets a database of its own.</strong> <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> names a <em>base</em> database. Every package with integration tests has a <code class="docutils literal notranslate"><span class="pre">TestMain</span></code> (by convention in <code class="docutils literal notranslate"><span class="pre">testmain_test.go</span></code>) that calls <code class="docutils literal notranslate"><span class="pre">testdb.Main</span></code> (<code class="docutils literal notranslate"><span class="pre">internal/testdb</span></code>). For each run it creates a fresh <code class="docutils literal notranslate"><span class="pre">aveloxis_t_&lt;pid&gt;_&lt;random&gt;</span></code> database next to the base one, prepares it as an established deployment (migrated; the <code class="docutils literal notranslate"><span class="pre">Default</span></code> repo group, as id 1; a bootstrap admin signed up first, so fixture users are regular users unless a test promotes them), points <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> at it for the package’s tests, and drops it afterwards. Rows a killed or failed run leaves behind therefore never reach a later run, a test cannot pass only because an earlier run happened to leave data it relied on, and packages that <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./...</span></code> runs in parallel never migrate the same database at once. A run killed before it could drop its database leaves it behind; the next run’s sweep drops every <code class="docutils literal notranslate"><span class="pre">aveloxis_t_*</span></code> database nobody is connected to (a live run keeps a connection open to its own). The role needs <code class="docutils literal notranslate"><span class="pre">CREATEDB</span></code>. A new package with integration tests adds the same <code class="docutils literal notranslate"><span class="pre">testmain_test.go</span></code>; <code class="docutils literal notranslate"><span class="pre">scripts/testdb_main_registry_test.go</span></code> fails the build until it does. Do not insert explicit ids into sequence-backed (<code class="docutils literal notranslate"><span class="pre">BIGSERIAL</span></code>) tables with values a fresh database’s sequence will reach — the sequence does not advance, and the next row the code creates collides on the primary key (an explicit <code class="docutils literal notranslate"><span class="pre">repo_group_id</span> <span class="pre">=</span> <span class="pre">1</span></code> did exactly that); insert without the id and use <code class="docutils literal notranslate"><span class="pre">RETURNING</span></code>, or use the store’s helpers.</p>
+<p><strong>Safety:</strong> point <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> at a scratch server, never a production one. Test data goes to the per-package databases, but the tests also act on the server as a whole: they create and drop databases there (the per-package ones, and <code class="docutils literal notranslate"><span class="pre">_avcolfill_sidedb</span></code> for the column-fill diff test), create and drop login roles (the backend-visibility tests), and some helpers (<code class="docutils literal notranslate"><span class="pre">store.RealignDueDates</span></code>, the <code class="docutils literal notranslate"><span class="pre">dm_</span></code> aggregate refresh, the <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> migration) update every matching row of the database they run in.</p>
 </section>
 <section id="tier-3-data-test-harness-cross-version-regression-detection">
 <h3>Tier 3 — <code class="docutils literal notranslate"><span class="pre">data-test</span></code> harness (cross-version regression detection)<a class="headerlink" href="#tier-3-data-test-harness-cross-version-regression-detection" title="Link to this heading"></a></h3>
@@ -1734,12 +1740,17 @@ scan failure and is invisible to errcheck because the value IS used.</p>
 migrate.go change: create an empty database, run the db+collector
 suites against it (proves from-scratch migration ordering; the
 v0.27.9 lesson).</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></strong> — runs automatically at the end of the
-integration workflow against the CI database (smoke-tests the
-battery AND catches fixture residue from the test suite); run it
-manually against a scratch or production database for release
-candidates (<code class="docutils literal notranslate"><span class="pre">--ground-truth</span> <span class="pre">N</span></code> adds live-forge comparison, needs
-API keys — never in CI). FAIL exits 1.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></strong> — its battery runs automatically over
+each package’s own test database after that package’s tests pass
+(<code class="docutils literal notranslate"><span class="pre">testdb.Main</span></code>’s verify hook, <code class="docutils literal notranslate"><span class="pre">prepare.Verify</span></code>), so a test that leaks
+rows breaking an invariant the battery rates FAIL (cached queue counts
+that disagree with the tables, duplicate Default groups, case-variant
+duplicate repos, new cross-kind message collisions) fails its own
+package — WARN findings such as stranded repos do not; the integration
+workflow also runs the command end to end against a freshly migrated
+base database, as a smoke test. Run it manually against a scratch or
+production database for release candidates (<code class="docutils literal notranslate"><span class="pre">--ground-truth</span> <span class="pre">N</span></code> adds
+live-forge comparison, needs API keys — never in CI). FAIL exits 1.</p></li>
 <li><p><strong>Network canaries</strong> — network-canary.yml, weekly: live-API
 contract checks (OSV, registries, GraphQL parity fields,
 tool-binary versions).</p></li>
@@ -1751,7 +1762,7 @@ drives the real clone→analysis→scan machinery, needs NO GitHub
 API keys, and reports the baseline-vs-knobs-on delta per
 ecosystem (optional <code class="docutils literal notranslate"><span class="pre">AVELOXIS_CANARY_TRANSITIVE=1</span></code> third phase):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>createdb<span class="w"> </span>aveloxis_canary19
-<span class="nv">AVELOXIS_CANARY_DB</span><span class="o">=</span><span class="s2">"postgres://…/aveloxis_canary19?sslmode=prefer"</span><span class="w">      </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/collector/<span class="w"> </span>-run<span class="w"> </span>TestLocalDevBuildDepsCanary<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>180m
+<span class="nv">AVELOXIS_CANARY_DB</span><span class="o">=</span><span class="s2">&quot;postgres://…/aveloxis_canary19?sslmode=prefer&quot;</span><span class="w">      </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/collector/<span class="w"> </span>-run<span class="w"> </span>TestLocalDevBuildDepsCanary<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>180m
 </pre></div>
 </div>
 <p>Its first run (2026-07-21) caught three real integration bugs
@@ -1780,16 +1791,16 @@ is an error, matching Read the Docs’ <code class="docutils literal notranslate
 <h2>The source-contract pattern<a class="headerlink" href="#the-source-contract-pattern" title="Link to this heading"></a></h2>
 <p>A test that reads the implementation file and asserts certain text/structure exists. Looks like this:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestRunMigrationsAddsOnUpdateCascadeToAllCntrbIDFKs</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">src</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">"migrate.go"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">src</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">ReadFile</span><span class="p">(</span><span class="s">&quot;migrate.go&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="nx">code</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">string</span><span class="p">(</span><span class="nx">src</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">code</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">string</span><span class="p">(</span><span class="nx">src</span><span class="p">)</span>
 
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">"ON UPDATE CASCADE"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"RunMigrations must add ON UPDATE CASCADE to every "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">            </span><span class="s">"cntrb_id child FK. Without this, the v0.22.2 cntrb_id "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">            </span><span class="s">"data migration can't propagate UPDATEs to child rows."</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;ON UPDATE CASCADE&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;RunMigrations must add ON UPDATE CASCADE to every &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">            </span><span class="s">&quot;cntrb_id child FK. Without this, the v0.22.2 cntrb_id &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">            </span><span class="s">&quot;data migration can&#39;t propagate UPDATEs to child rows.&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1989,26 +2000,26 @@ that decision.</p>
 <p>Tests that exercise actual code through its public API:</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="kd">func</span><span class="w"> </span><span class="nx">TestSalvageHelperBehavioral</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">tempDir</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">t</span><span class="p">.</span><span class="nx">TempDir</span><span class="p">()</span>
-<span class="w">    </span><span class="nx">outputPath</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">filepath</span><span class="p">.</span><span class="nx">Join</span><span class="p">(</span><span class="nx">tempDir</span><span class="p">,</span><span class="w"> </span><span class="s">"scan.json"</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">jsonContent</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
-<span class="w">        </span><span class="s">"headers"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{{</span>
-<span class="w">            </span><span class="s">"tool_version"</span><span class="p">:</span><span class="w"> </span><span class="s">"32.5.0"</span><span class="p">,</span>
-<span class="w">            </span><span class="s">"errors"</span><span class="p">:</span><span class="w">       </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">"Path: foo/bar.pdf"</span><span class="p">},</span>
-<span class="w">            </span><span class="s">"extra_data"</span><span class="p">:</span><span class="w">   </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">"files_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">38</span><span class="p">},</span>
+<span class="w">    </span><span class="nx">outputPath</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">filepath</span><span class="p">.</span><span class="nx">Join</span><span class="p">(</span><span class="nx">tempDir</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;scan.json&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">jsonContent</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;headers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{{</span>
+<span class="w">            </span><span class="s">&quot;tool_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;32.5.0&quot;</span><span class="p">,</span>
+<span class="w">            </span><span class="s">&quot;errors&quot;</span><span class="p">:</span><span class="w">       </span><span class="p">[]</span><span class="kt">string</span><span class="p">{</span><span class="s">&quot;Path: foo/bar.pdf&quot;</span><span class="p">},</span>
+<span class="w">            </span><span class="s">&quot;extra_data&quot;</span><span class="p">:</span><span class="w">   </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">&quot;files_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">38</span><span class="p">},</span>
 <span class="w">        </span><span class="p">}},</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">json</span><span class="p">.</span><span class="nx">Marshal</span><span class="p">(</span><span class="nx">jsonContent</span><span class="p">)</span>
-<span class="w">    </span><span class="nx">os</span><span class="p">.</span><span class="nx">WriteFile</span><span class="p">(</span><span class="nx">outputPath</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="mo">0o644</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">os</span><span class="p">.</span><span class="nx">WriteFile</span><span class="p">(</span><span class="nx">outputPath</span><span class="p">,</span><span class="w"> </span><span class="nx">b</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="nx">o644</span><span class="p">)</span>
 
 <span class="w">    </span><span class="nx">filesCount</span><span class="p">,</span><span class="w"> </span><span class="nx">headerErrors</span><span class="p">,</span><span class="w"> </span><span class="nx">ok</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">salvageScancodeOutput</span><span class="p">(</span><span class="nx">outputPath</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">ok</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="s">"expected salvage to succeed for valid JSON"</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">ok</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="s">&quot;expected salvage to succeed for valid JSON&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">filesCount</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">38</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected filesCount=38, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nx">filesCount</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected filesCount=38, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">filesCount</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">headerErrors</span><span class="p">)</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">"expected 1 header error, got %d"</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">headerErrors</span><span class="p">))</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Errorf</span><span class="p">(</span><span class="s">&quot;expected 1 header error, got %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">headerErrors</span><span class="p">))</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -2020,36 +2031,39 @@ that decision.</p>
 <div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">//go:build integration  // optional, if you want a build tag</span>
 
 <span class="kd">func</span><span class="w"> </span><span class="nx">TestUpsertCommitProtectedFromInvalidUTF8</span><span class="p">(</span><span class="nx">t</span><span class="w"> </span><span class="o">*</span><span class="nx">testing</span><span class="p">.</span><span class="nx">T</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB"</span><span class="p">)</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">""</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">"AVELOXIS_TEST_DB not set — skipping integration test"</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">dsn</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">os</span><span class="p">.</span><span class="nx">Getenv</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">dsn</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Skip</span><span class="p">(</span><span class="s">&quot;AVELOXIS_TEST_DB not set — skipping integration test&quot;</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="nx">ctx</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">()</span>
 <span class="w">    </span><span class="nx">logger</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">NewTextHandler</span><span class="p">(</span><span class="nx">io</span><span class="p">.</span><span class="nx">Discard</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">))</span>
 <span class="w">    </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">NewPostgresStore</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">dsn</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"connect: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;connect: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="k">defer</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Close</span><span class="p">()</span>
+<span class="w">    </span><span class="c1">// t.Cleanup, not defer: deferred calls run BEFORE t.Cleanup callbacks,</span>
+<span class="w">    </span><span class="c1">// so a deferred Close would leave the fixture cleanup below running</span>
+<span class="w">    </span><span class="c1">// against a closed pool (scripts/test_close_ordering_test.go bans it).</span>
+<span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Cleanup</span><span class="p">(</span><span class="nx">store</span><span class="p">.</span><span class="nx">Close</span><span class="p">)</span>
 
 <span class="w">    </span><span class="nx">store</span><span class="p">.</span><span class="nx">SetMatviewSkip</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">RunMigrations</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">logger</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"migrate: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;migrate: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="c1">// Seed any prerequisite rows (e.g. a parent repo for FK satisfaction).</span>
-<span class="w">    </span><span class="nx">repoID</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">int64</span><span class="p">(</span><span class="o">-</span><span class="mi">191919</span><span class="p">)</span>
+<span class="w">    </span><span class="nx">repoID</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nb">int64</span><span class="p">(</span><span class="o">-</span><span class="mi">191919</span><span class="p">)</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="s">`</span>
 <span class="s">        INSERT INTO aveloxis_data.repos (repo_id, platform_id, repo_git, repo_owner, repo_name, repo_archived)</span>
-<span class="s">        VALUES ($1, 1, 'https://example.invalid/x', 'x', 'x', FALSE)</span>
+<span class="s">        VALUES ($1, 1, &#39;https://example.invalid/x&#39;, &#39;x&#39;, &#39;x&#39;, FALSE)</span>
 <span class="s">        ON CONFLICT (repo_id) DO NOTHING`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">"seed: %v"</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
+<span class="w">        </span><span class="nx">t</span><span class="p">.</span><span class="nx">Fatalf</span><span class="p">(</span><span class="s">&quot;seed: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Cleanup</span><span class="p">(</span><span class="kd">func</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
 <span class="w">            </span><span class="s">`DELETE FROM aveloxis_data.commits WHERE repo_id = $1`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">)</span>
-<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
+<span class="w">        </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">pool</span><span class="p">.</span><span class="nx">Exec</span><span class="p">(</span><span class="nx">context</span><span class="p">.</span><span class="nx">Background</span><span class="p">(),</span>
 <span class="w">            </span><span class="s">`DELETE FROM aveloxis_data.repos WHERE repo_id = $1`</span><span class="p">,</span><span class="w"> </span><span class="nx">repoID</span><span class="p">)</span>
 <span class="w">    </span><span class="p">})</span>
 
@@ -2059,9 +2073,9 @@ that decision.</p>
 </div>
 <p>Patterns to follow:</p>
 <ul class="simple">
-<li><p><strong>Negative repo IDs</strong> for fixture rows so they can’t collide with operator-imported data.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">t.Cleanup</span></code></strong> to delete fixtures even if the test fails mid-run.</p></li>
-<li><p><strong>Pre-cleanup</strong> at the top of tests that share fixture row IDs across runs (the test DB persists between invocations; without pre-cleanup a previous failure leaves rows that break the next run).</p></li>
+<li><p><strong>Negative repo IDs</strong> (or no explicit id at all) for fixture rows: an explicit id a sequence-backed table’s sequence will reach collides with the next row the code creates (see “Each package gets a database of its own”).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">t.Cleanup</span></code></strong> to delete fixtures even if the test fails mid-run, registered right after the fixture’s first write.</p></li>
+<li><p><strong>Pre-cleanup</strong> at the top of tests that reuse fixed fixture ids: the package’s database persists across its own tests and across <code class="docutils literal notranslate"><span class="pre">-count</span></code> repetitions within one run, so a test that failed earlier in the run can leave rows that break a later one (a new run starts from a fresh database).</p></li>
 <li><p><strong>Use <code class="docutils literal notranslate"><span class="pre">store.SetMatviewSkip(true)</span></code></strong> unless you specifically test matview behavior. Building 20 matviews on every test run is several seconds wasted.</p></li>
 </ul>
 </section>
@@ -2098,7 +2112,7 @@ that decision.</p>
 <p>Test names should describe what’s pinned, not just what’s tested:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>TestRunOneAttemptsSalvageOnSubprocessFailure  // good — describes the contract
 TestRunOne                                    // bad — too vague
-TestSalvageWorks                              // bad — what does "works" mean
+TestSalvageWorks                              // bad — what does &quot;works&quot; mean
 </pre></div>
 </div>
 <p>The maintainers use long test names. They show up in <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">-v</span></code> output and serve as documentation.</p>
@@ -2115,7 +2129,7 @@ go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./
 go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/collector/<span class="w"> </span>-run<span class="w"> </span>TestSalvageHelperBehavioral<span class="w"> </span>-v
 
 <span class="c1"># Pattern match</span>
-go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span><span class="s2">"TestUTF8Tracer.*"</span><span class="w"> </span>-v
+go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span><span class="s2">&quot;TestUTF8Tracer.*&quot;</span><span class="w"> </span>-v
 
 <span class="c1"># Race detector (run periodically; slows tests ~2x)</span>
 go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...<span class="w"> </span>-race
@@ -2124,7 +2138,7 @@ go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./
 go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...<span class="w"> </span>-count<span class="o">=</span><span class="m">1</span>
 
 <span class="c1"># Integration tier</span>
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://..."</span><span class="w"> </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>120s
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://...&quot;</span><span class="w"> </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>120s
 </pre></div>
 </div>
 </section>
@@ -2136,11 +2150,11 @@ go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./
 <li><p>Explain WHY this matters (the load-bearing invariant being violated).</p></li>
 <li><p>Point at the relevant release note or production incident if applicable.</p></li>
 </ol>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">"ON UPDATE CASCADE"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">"RunMigrations must add ON UPDATE CASCADE to every "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">        </span><span class="s">"cntrb_id child FK. Without this, the v0.22.2 cntrb_id "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">        </span><span class="s">"data migration can't propagate UPDATEs to child rows. "</span><span class="w"> </span><span class="o">+</span>
-<span class="w">        </span><span class="s">"See the v0.22.1 release notes."</span><span class="p">)</span>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">!</span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">code</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;ON UPDATE CASCADE&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">t</span><span class="p">.</span><span class="nx">Error</span><span class="p">(</span><span class="s">&quot;RunMigrations must add ON UPDATE CASCADE to every &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">        </span><span class="s">&quot;cntrb_id child FK. Without this, the v0.22.2 cntrb_id &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">        </span><span class="s">&quot;data migration can&#39;t propagate UPDATEs to child rows. &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">        </span><span class="s">&quot;See the v0.22.1 release notes.&quot;</span><span class="p">)</span>
 <span class="p">}</span>
 </pre></div>
 </div>

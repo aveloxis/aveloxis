@@ -1,0 +1,5 @@
+# The SINGLE-LINE array form: a comma inside a quoted item is data, not a
+# separator (bounded ranges and extras lists both carry one), and TOML
+# literal strings are legal here too.
+[project]
+dependencies = ["requests>=2.31.0,<3.0.0", "celery[redis,auth]>=5.3", 'tomli>=1.1.0']

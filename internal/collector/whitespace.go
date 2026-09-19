@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -281,19 +282,22 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	stdout := swept.Stdout
 
 	var (
-		updated int64
-		matched int64
-		total   int64
-		pending []db.CommitWhitespaceStat
+		updated   int64
+		matched   int64
+		total     int64
+		unmatched []string
+		pending   []db.CommitWhitespaceStat
 	)
 	flush := func() error {
 		if len(pending) == 0 {
 			return nil
 		}
-		n, m, ferr := f.store.UpdateCommitWhitespaceBatch(ctx, repoID, pending)
+		n, m, um, ferr := f.store.UpdateCommitWhitespaceBatch(ctx, repoID, pending,
+			db.WhitespaceUnmatchedSample-len(unmatched))
 		pending = pending[:0]
 		updated += n
 		matched += m
+		unmatched = appendUnmatchedSample(unmatched, um)
 		return ferr
 	}
 	parseErr := parseWhitespaceLog(stdout, func(c whitespaceCommit) error {
@@ -338,8 +342,9 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	if matched < total {
 		return updated, head, fmt.Errorf(
 			"%d of %d whitespace stats matched no stored commit row — refusing to stamp the marker; "+
-				"the repo's next facade numstat pass re-inserts the missing rows, rerun after it",
-			total-matched, total)
+				"the repo's next facade numstat pass re-inserts the missing rows, rerun after it "+
+				"(unmatched: %s)",
+			total-matched, total, formatUnmatchedWhitespace(unmatched))
 	}
 	if err := f.store.SetWhitespaceHead(ctx, repoID, head); err != nil {
 		return updated, head, fmt.Errorf("stamp whitespace head: %w", err)
@@ -420,4 +425,29 @@ func (f *FacadeCollector) RewalkWhitespace(ctx context.Context, repoID int64, gi
 	}
 	updated, _, err := f.runWhitespaceWalk(ctx, repoID, clonePath, "")
 	return updated, err
+}
+
+// appendUnmatchedSample grows the walk's sample of unmatched keys up to
+// db.WhitespaceUnmatchedSample. The store is asked for only what is left of
+// that room, so this is the belt: it keeps the cap true if a future caller
+// forgets to pass its remaining room. Without a walk-level cap at all, a
+// large repo whose stats all miss collected a batch's worth per flush —
+// hundreds of keys in one error string and one log line.
+func appendUnmatchedSample(have, more []string) []string {
+	room := db.WhitespaceUnmatchedSample - len(have)
+	if room <= 0 {
+		return have
+	}
+	return append(have, more[:min(room, len(more))]...)
+}
+
+// formatUnmatchedWhitespace renders the sample of unmatched keys for the
+// refusal message. Without it the message carried only counts, and a
+// missing commit row could not be told from a filename the numstat and
+// patch walks spell differently (v0.29.56).
+func formatUnmatchedWhitespace(keys []string) string {
+	if len(keys) == 0 {
+		return "none reported"
+	}
+	return strings.Join(keys, ", ") + " (first " + strconv.Itoa(len(keys)) + ")"
 }

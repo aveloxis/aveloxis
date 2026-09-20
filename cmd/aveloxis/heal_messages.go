@@ -77,7 +77,7 @@ func runHealMessages(cfgPath string, limit int, dryRun, useAugurKeys bool) error
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+	ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 
 	res, err := collector.HealMessages(ctx, store, ghClient, logger, limit, dryRun)
 	if err != nil {

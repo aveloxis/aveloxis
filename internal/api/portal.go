@@ -331,10 +331,11 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			// The caller's URL, not the server: an org on another host is
 			// a different org (round 2 of the 5260961848 fixes).
 			http.Error(w, err.Error()+" ("+platform.GitHubWebHost(s.ghAPIBase)+")", http.StatusBadRequest)
-		case errors.Is(err, db.ErrURLTooLong), db.IsRejectedValue(err):
-			// A URL too long, or one the database refused; retrying cannot
-			// help (rounds 25 and 27).
-			http.Error(w, "a URL in the request is invalid or too long", http.StatusBadRequest)
+		case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo), db.IsRejectedValue(err):
+			// A URL too long, one carrying credentials (review 5261384568;
+			// the message must not echo it), or one the database refused;
+			// retrying cannot help (rounds 25 and 27).
+			http.Error(w, "a URL in the request is invalid, carries credentials or is too long", http.StatusBadRequest)
 		case errors.Is(err, db.ErrAddItemsFailed):
 			// The message holds counts only, no database text.
 			s.logger.Warn("group add: some repositories could not be added", "group_id", groupID, "user_id", info.UserID, "error", err)

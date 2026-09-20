@@ -413,7 +413,9 @@ func TestUpsertCommitProtectedFromInvalidUTF8(t *testing.T) {
     // against a closed pool (scripts/test_close_ordering_test.go bans it).
     t.Cleanup(store.Close)
 
-    store.SetMatviewSkip(true)
+    // No SetMatviewMode call: a store's zero-value MatviewMode is
+    // MatviewsOff, so this migrate builds no views. A test OF the views
+    // calls store.SetMatviewMode(MatviewsRebuild) first.
     if err := RunMigrations(ctx, store, logger); err != nil {
         t.Fatalf("migrate: %v", err)
     }
@@ -442,7 +444,7 @@ Patterns to follow:
 - **Negative repo IDs** (or no explicit id at all) for fixture rows: an explicit id a sequence-backed table's sequence will reach collides with the next row the code creates (see "Each package gets a database of its own").
 - **`t.Cleanup`** to delete fixtures even if the test fails mid-run, registered right after the fixture's first write.
 - **Pre-cleanup** at the top of tests that reuse fixed fixture ids: the package's database persists across its own tests and across `-count` repetitions within one run, so a test that failed earlier in the run can leave rows that break a later one (a new run starts from a fresh database).
-- **Materialized views**: the package's database is prepared without them. A test of view behavior builds the views it reads; a test that migrates again should call `store.SetMatviewSkip(true)` unless views are what it tests (a migrate without it builds them all). `TestRunMigrationsOnFreshDB` checks that every view builds on an empty database.
+- **Materialized views**: the package's database is prepared without them, and a store's zero-value `MatviewMode` is `MatviewsOff`, so a test that migrates again builds none unless it asks (v0.29.57 — the views are optional; `serve` and `migrate` set the mode from `collection.materialized_views`). A test of view behavior calls `store.SetMatviewMode(MatviewsRebuild)` (`db.MatviewsRebuild` from another package; `MatviewsIfMissing` to test serve's startup behaviour) before `RunMigrations`. `TestRunMigrationsOnFreshDB` checks that every view builds on an empty database.
 
 ## What to test
 

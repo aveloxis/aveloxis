@@ -44,7 +44,10 @@ func TestGitHubWebHost(t *testing.T) {
 		// github.com org).
 		{"https://api.github.com:443", "github.com"},
 		{"https://API.github.com", "github.com"},
-		{"http://api.github.com", "github.com"},
+		// Not public (plaintext), so the web host is the base's own host —
+		// which no github.com org URL matches: a misconfigured scheme cannot
+		// route keys anywhere.
+		{"http://api.github.com", "api.github.com"},
 		// A base that is not a URL matches no host at all: nothing may be
 		// enumerated under a guess.
 		{"://bad", ""},
@@ -122,7 +125,12 @@ func TestIsPublicGitHubBase(t *testing.T) {
 		{"https://api.github.com/", true},
 		{"https://api.github.com:443", true},
 		{"https://API.github.com", true},
-		{"http://api.github.com", true},
+		// A plaintext base is NOT public GitHub for anything that lends a
+		// credential: the scorecard probe puts the token in an Authorization
+		// header before any redirect could upgrade the scheme (Copilot review
+		// 5261384568). Host-only matching read it as public.
+		{"http://api.github.com", false},
+		{"HTTPS://api.github.com", true},
 		{"https://api.github.com:80", true},
 		{"https://www.api.github.com", true},
 		// A non-default port is a different host, as IsGitHubHost pins for

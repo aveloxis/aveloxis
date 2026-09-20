@@ -2175,7 +2175,7 @@ are left as they are.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 147 tables and 20 materialized views across three PostgreSQL schemas:</p>
+<p>Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default):</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (101 tables + 20 materialized views) – all collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (42 tables) – operational state</p></li>

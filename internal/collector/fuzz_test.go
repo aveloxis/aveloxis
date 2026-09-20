@@ -115,9 +115,14 @@ func FuzzPurlHelpers(f *testing.F) {
 // panic.
 //
 // The list is NOT every parser the analysis walk dispatches, and saying so
-// was an over-claim (v0.29.57): the XML, gradle, mix, pubspec, setup.cfg and
-// package.yaml readers are still absent. A parser this release touches is
-// added here, which is the rule that keeps the gap from growing.
+// was an over-claim (v0.29.57). Absent — each stem checked against the
+// target's body by TestFuzzManifestParsersNoteIsCurrent, since the first
+// version of this note went stale within the release: the BuildGradle,
+// MixExs, Pubspec, PackageYaml, ComposerJSON, SetupCfgDeps and
+// SetupCfgVersions readers (the SetupCfgExtras reader IS here), and the
+// lockfile readers (every *Lock* parser and PackageResolved). A parser this
+// release touches is added here, which is the rule that keeps the gap from
+// growing.
 func FuzzManifestParsers(f *testing.F) {
 	// Seed with the committed manifest corpus (the v0.27.72 golden net) —
 	// every fixture carries both legit declarations and production

@@ -375,6 +375,14 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 }
 
 func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, error) {
+	// The store owns repo_git (SR-18): a URL carrying credentials is refused
+	// here, whatever path it arrived by, before any statement runs (v0.29.57,
+	// Copilot review 5261384568 — run-scorecard forwarded a stored URL to a
+	// subprocess verbatim). The entry points refuse it too, with a message
+	// for the user; this is the guarantee behind them.
+	if err := platform.RefuseURLUserinfo(r.GitURL); err != nil {
+		return 0, fmt.Errorf("repo %s/%s: %w", r.Owner, r.Name, err) // never the URL: it carries the secret
+	}
 	// Normalize the repo slug at the write boundary so a ".git" suffix never
 	// reaches the DB. API URLs built from repo_name (/repos/{owner}/{name}/...)
 	// 404 when the slug has a ".git" suffix.

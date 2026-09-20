@@ -1783,8 +1783,7 @@ func scorecardSkipReason(err error) string {
 // The retained temp clone is cleaned up after scorecard finishes,
 // regardless of outcome.
 func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *model.Repo, analysisClonePath string) {
-	repoURL := fmt.Sprintf("https://%s/%s/%s",
-		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+	repoURL := scorecardRepoURL(repo)
 
 	// Clean up the retained temp clone once scorecard is done — on
 	// every exit, the shutdown one included.
@@ -2004,6 +2003,20 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	}
 
 	return out
+}
+
+// scorecardRepoURL is the URL the scorecard phase hands the subprocess: the
+// row's OWN repo_git, as the facade phase has cloned from since v0.25.38 and
+// `aveloxis run-scorecard` passes since v0.29.57 — on a deployment whose
+// GitHub is not github.com, a URL synthesised from the platform id names the
+// wrong repository, and in local mode rewrites the retained clone's origin
+// to the wrong host (Copilot review 5261384568). The synthesis remains ONLY
+// for a row that has no URL, as in runFacadeAndAnalysis.
+func scorecardRepoURL(repo *model.Repo) string {
+	if repo.GitURL != "" {
+		return repo.GitURL
+	}
+	return fmt.Sprintf("https://%s/%s/%s", platformHostForModel(repo.Platform), repo.Owner, repo.Name)
 }
 
 func platformHostForModel(p model.Platform) string {

@@ -390,7 +390,7 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when `collection.materialized_views` is enabled (the default):
 
 - **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state

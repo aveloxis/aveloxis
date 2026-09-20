@@ -141,9 +141,16 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		return out, ErrGroupRejected
 	}
 	// Checked before anything is written, so a refused add changes nothing.
+	// A URL carrying credentials is refused here too (v0.29.57, Copilot
+	// review 5261384568): the portal API reaches this writer without the web
+	// validator, and a pending item is stored and shown to the admin before
+	// UpsertRepo would refuse it at approval.
 	for _, raw := range repoURLs {
 		if len(strings.TrimSpace(raw)) > MaxAddURLBytes {
 			return out, ErrURLTooLong
+		}
+		if err := platform.RefuseURLUserinfo(raw); err != nil {
+			return out, err
 		}
 	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)

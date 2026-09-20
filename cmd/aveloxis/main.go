@@ -225,7 +225,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+	ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	// Start scheduler.
@@ -468,7 +468,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+	ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	for _, repoURL := range repoURLs {

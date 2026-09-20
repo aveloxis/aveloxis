@@ -41,15 +41,23 @@ func GitHubWebHost(apiBase string) string {
 }
 
 // IsPublicGitHubBase reports whether apiBase names public GitHub's REST host
-// in any spelling whose host canonicalises to it (case, a default port, a
-// www. prefix; canonicalWebHost) — the ONE answer to "is this deployment
-// on public GitHub" (SR-17), for the web-host derivation above and for
-// scorecard's token loan (round 6: a byte-exact compare against
-// PublicGitHubAPIBase read `https://api.github.com:443` and a capitalised
-// host as Enterprise, and every github.com org was refused). An empty base
-// is public (GitHubAPIBaseOrPublic).
+// over https, in any spelling whose host canonicalises to it (case, a
+// default port, a www. prefix; canonicalWebHost) — the ONE answer to "is
+// this deployment on public GitHub" (SR-17), for the web-host derivation
+// above and for scorecard's token loan (round 6: a byte-exact compare
+// against PublicGitHubAPIBase read `https://api.github.com:443` and a
+// capitalised host as Enterprise, and every github.com org was refused). An
+// empty base is public (GitHubAPIBaseOrPublic). A PLAINTEXT base is not:
+// the answer decides whether a credential travels, and the scorecard probe
+// puts it in an Authorization header before any redirect could upgrade the
+// scheme (Copilot review 5261384568) — so http://api.github.com is treated
+// as a foreign host, which lends nothing and matches no github.com org.
 func IsPublicGitHubBase(apiBase string) bool {
-	return canonicalWebHost(strings.ToLower(apiBaseHost(apiBase))) == "api.github.com"
+	u, err := url.Parse(GitHubAPIBaseOrPublic(apiBase))
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	return canonicalWebHost(strings.ToLower(u.Host)) == "api.github.com"
 }
 
 // apiBaseHost is the host of a GitHub API base as configured, verbatim

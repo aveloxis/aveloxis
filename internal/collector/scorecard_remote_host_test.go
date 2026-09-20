@@ -28,7 +28,9 @@ func TestRemoteScorecardOnlyOnPublicGitHub(t *testing.T) {
 		{"https://api.github.com", true},
 		{"https://api.github.com/", true},
 		{"https://api.github.com:443", true},
-		{"http://api.github.com", true},
+		// Plaintext to the public host: the instrument token would travel in
+		// an Authorization header over http. Not lent (review 5261384568).
+		{"http://api.github.com", false},
 		{"https://ghe.example.invalid/api/v3", false},
 		{"https://github.example.com/api/v3", false},
 	} {

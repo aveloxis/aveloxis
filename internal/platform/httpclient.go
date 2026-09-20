@@ -190,11 +190,27 @@ var restTransportRetrySleep = func(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// defaultForgeBase is where an empty GitHub base becomes public GitHub for
+// a client (GitHubAPIBaseOrPublic, the one spelling). GitLab has no
+// deployment-wide default at this layer: its clients are built per instance
+// with the instance's own base.
+func defaultForgeBase(baseURL string, authStyle AuthStyle) string {
+	if authStyle == AuthGitHub {
+		return GitHubAPIBaseOrPublic(baseURL)
+	}
+	return baseURL
+}
+
 // NewHTTPClient creates a platform-aware HTTP client with the given auth style.
 // AuthGitHub sends "Authorization: token <key>"; AuthGitLab sends "PRIVATE-TOKEN: <key>".
 // Uses a transport tuned for high-throughput API collection: keepalives enabled,
 // generous idle connection pool, and HTTP/2 support (Go's default).
 func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle AuthStyle) *HTTPClient {
+	// The GitHub default is applied HERE, in the one constructor every
+	// GitHub client passes through, and not at the callers: seven commands
+	// passed the raw config field, empty when unset, and issued hostless
+	// requests (v0.29.57, Copilot review 5261384568). A caller-side sweep
+	// stopped one site short in seven consecutive reviews.
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20, // GitHub/GitLab APIs are few hosts with many requests
@@ -227,7 +243,7 @@ func NewHTTPClient(baseURL string, keys *KeyPool, logger *slog.Logger, authStyle
 		},
 		keys:      keys,
 		logger:    logger,
-		baseURL:   strings.TrimSuffix(baseURL, "/"),
+		baseURL:   strings.TrimSuffix(defaultForgeBase(baseURL, authStyle), "/"),
 		authStyle: authStyle,
 		etagCache: make(map[string]string),
 		etagIndex: make(map[string]map[string]struct{}),

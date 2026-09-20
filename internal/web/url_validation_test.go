@@ -4,6 +4,7 @@
 package web
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,29 @@ func TestValidateRepoURL_MissingScheme(t *testing.T) {
 	// Should auto-fix by prepending https://
 	if !result.Valid {
 		t.Errorf("URL without scheme should be auto-fixed and valid")
+	}
+}
+
+// v0.29.57, Copilot review 5261384568: the GUI accepted and stored a repo
+// URL carrying credentials, which run-scorecard then forwarded to a
+// subprocess. Refused here for every platform branch — GitHub, GitLab and
+// generic git — and for the schemeless spelling the validator auto-fixes.
+func TestValidateRepoURL_RefusesUserinfo(t *testing.T) {
+	for _, u := range []string{
+		"https://user:token@github.com/owner/repo",
+		"https://token@gitlab.com/group/project",
+		"https://user@git.example.invalid/owner/repo",
+		"user:token@github.com/owner/repo",
+	} {
+		result := ValidateRepoURL(u)
+		if result.Valid {
+			t.Errorf("ValidateRepoURL(%q) accepted a URL with userinfo", u)
+		}
+		if !strings.Contains(result.Error, "credentials") {
+			t.Errorf("ValidateRepoURL(%q).Error = %q, want it to say the URL carries credentials", u, result.Error)
+		}
+	}
+	if r := ValidateRepoURL("https://github.com/owner/repo@v1"); !r.Valid {
+		t.Errorf("an @ in the path is not userinfo: %q", r.Error)
 	}
 }

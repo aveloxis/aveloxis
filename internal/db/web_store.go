@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // GetUserEmail returns the email column for the given user_id.
@@ -522,6 +524,11 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 	}
 	if len(orgURL) > MaxAddURLBytes {
 		return out, ErrURLTooLong
+	}
+	// An org URL is stored, shown and enumerated; credentials in it are
+	// refused like a repo URL's (v0.29.57, review 5261384568).
+	if err := platform.RefuseURLUserinfo(orgURL); err != nil {
+		return out, err
 	}
 	// The host gate, before the admin/non-admin split so neither path can
 	// register or pend an org the deployment cannot enumerate; the same

@@ -203,7 +203,9 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 				// github.com, and handing that URL to scorecard alongside a
 				// pool token is how the token reaches the wrong host
 				// (v0.29.57, Copilot review 5260880711). The per-cycle phase
-				// has always passed the stored URL.
+				// does the same through scheduler.scorecardRepoURL (review
+				// 5261384568 — it had synthesised github.com until then).
+				// RunScorecard refuses a URL carrying credentials.
 				repoURL := r.GitURL
 				// Same shared invoke/persist path as the per-cycle
 				// phase. No analysis clone exists here → remote only:

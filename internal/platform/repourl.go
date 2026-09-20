@@ -74,6 +74,9 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return RepoURL{}, fmt.Errorf("%w: scheme must be http or https, got %q", ErrInvalidRepoURL, u.Scheme)
 	}
+	if uerr := RefuseURLUserinfo(rawURL); uerr != nil {
+		return RepoURL{}, fmt.Errorf("%w: %w", ErrInvalidRepoURL, uerr)
+	}
 
 	host := strings.ToLower(u.Host)
 	path := strings.Trim(u.Path, "/")

@@ -197,6 +197,15 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 
 	// Phase 4: Facade — git clone + log for commit data.
 	// Runs AFTER API phases so contributor emails can be resolved.
+	//
+	// The URL is synthesised from the platform id because CollectRepo is
+	// handed owner/name, not the stored repo_git (`aveloxis collect` is the
+	// one caller). On a deployment whose GitHub is not github.com this names
+	// the wrong host — the same class the scheduler's facade (v0.25.38) and
+	// scorecard (v0.29.57, scorecardRepoURL) phases fixed by using the row's
+	// own URL. Left as is in v0.29.57 and recorded: threading the URL in is
+	// part of routing every repository to its forge instance (worklist 44),
+	// not a one-site patch.
 	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
 		platformHost(c.client.Platform()), owner, repo)
 	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{

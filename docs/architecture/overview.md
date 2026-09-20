@@ -91,7 +91,7 @@ All collected open source community health data:
 | Analysis/ML | 8 | `message_analysis`, `message_analysis_summary`, `message_sentiment`, `message_sentiment_summary`, `discourse_insights`, `lstm_anomaly_models`, `lstm_anomaly_results`, `pull_request_analysis` |
 | CHAOSS | 4 | `chaoss_metric_status`, `chaoss_user`, `repo_group_insights`, `commit_comment_ref` |
 
-Plus 20 materialized views for 8Knot compatibility.
+Plus 20 materialized views for 8Knot compatibility when `collection.materialized_views` is enabled (the default).
 
 ### `aveloxis_scan` (4 tables)
 

@@ -94,7 +94,14 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 		baseURL = "http://localhost" + cfg.Addr
 	}
 
-	// GitHub OAuth config.
+	// GitHub OAuth config. Login identity is PUBLIC GitHub by design — the
+	// endpoints below and the /user fetches stay on github.com whatever
+	// github.base_url says. Copilot review 5261384568 asked for them to
+	// follow the base; declined (v0.29.57): under the forge-instances design
+	// (public GitHub plus 1..n Enterprise hosts on one deployment) the base
+	// is one instance among several and a deployment always serves
+	// github.com, so login is not per instance. Enterprise SSO is a separate
+	// decision, recorded, not built.
 	if cfg.GitHubClientID != "" {
 		s.ghOAuth = &oauth2.Config{
 			ClientID:     cfg.GitHubClientID,

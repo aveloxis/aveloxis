@@ -1739,7 +1739,7 @@ createdb<span class="w"> </span>aveloxis_dev
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Expect a short stream of <code class="docutils literal notranslate"><span class="pre">migration</span> <span class="pre">step</span> <span class="pre">ok</span></code> log lines. The full schema (147 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation.</p>
+<p>Expect a short stream of <code class="docutils literal notranslate"><span class="pre">migration</span> <span class="pre">step</span> <span class="pre">ok</span></code> log lines. The full schema (147 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation; the second pass runs only with <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> enabled (the default), and the per-package test databases skip it.</p>
 <p>If you want to skip the matview build for faster iteration (you typically do during development):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views
 </pre></div>

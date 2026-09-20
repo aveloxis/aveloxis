@@ -544,13 +544,13 @@ Combine with `aveloxis prioritize <url>` if you want the re-collection to start 
 aveloxis migrate
 ```
 
-Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when `collection.materialized_views` is enabled (the default):
 - **`aveloxis_data`** (101 tables + 20 materialized views) — all collected data plus analytics views
 - **`aveloxis_ops`** (42 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
 - **`aveloxis_scan`** (4 tables) — scancode per-file license/copyright results and history
 - **`aveloxis_augur_data`** (6 views) — Augur compatibility layer for 8Knot. Contains views that alias Aveloxis column names to Augur conventions (e.g., `star_count` → `stars_count`, `pr_number` → `pr_src_number`). Only tables with column name differences have views here; identical tables resolve via search_path fallback to `aveloxis_data`.
 
-Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates 20 materialized views for 8Knot/analytics compatibility and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
+Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates the 20 materialized views for 8Knot/analytics compatibility (when `collection.materialized_views` is enabled, the default) and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
 
 **8Knot integration:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. The two-schema search path resolves Augur-named columns from `aveloxis_augur_data` first, then falls through to `aveloxis_data` for tables with identical schemas. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` as before — the compatibility schema is not needed.
 
@@ -925,7 +925,7 @@ When the prelim phase detects a repo that returns 404 or 410 (deleted, made priv
 
 ### Materialized Views (8Knot Compatibility)
 
-Aveloxis creates 20 materialized views compatible with [8Knot](https://github.com/oss-aspen/8Knot) and other Augur analytics tools:
+When `collection.materialized_views` is enabled (the default), Aveloxis creates 20 materialized views compatible with [8Knot](https://github.com/oss-aspen/8Knot) and other Augur analytics tools:
 
 | View | Purpose |
 |---|---|

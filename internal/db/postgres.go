@@ -27,11 +27,10 @@ import (
 type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
-	matviewOnStartup bool // whether the migration drops and re-creates every materialized view (plain `aveloxis migrate`)
-	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
-	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
-	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
-	allowSecondServe bool // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
+	matviewMode      MatviewMode // what RunMigrations does with the views; zero value builds none
+	migrateNoWait    bool        // whether to fail fast on advisory-lock contention (--no-wait on migrate)
+	migrateFastPath  bool        // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
+	allowSecondServe bool        // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
 
 	// backendPIDs are the server-side PIDs of THIS process's pool
 	// connections (v0.28.18), maintained by the pool's AfterConnect /
@@ -193,20 +192,36 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
-// SetMatviewOnStartup controls whether the migration drops and re-creates
-// every materialized view from matviews.sql — the only path that applies a
-// changed definition. Only `aveloxis migrate` without --skip-views sets it.
-func (s *PostgresStore) SetMatviewOnStartup(enabled bool) {
-	s.matviewOnStartup = enabled
-}
+// MatviewMode says what RunMigrations does with the materialized views.
+//
+// Materialized views are an OPTIONAL part of a deployment (v0.29.57,
+// operator decision): they are derived data, several deployments never query
+// them, and building twenty of them costs real time on every database that
+// does not. So the ZERO VALUE is MatviewsOff — a store nobody configured
+// builds none. `aveloxis serve` and `aveloxis migrate` set the mode from
+// collection.materialized_views, which defaults to true, so an existing
+// deployment is unchanged; everything else (the one-shot commands, and every
+// test) gets a database without views unless it asks.
+type MatviewMode int
 
-// SetMatviewSkip controls whether the matview block in RunMigrations is
-// skipped entirely. Used by `aveloxis migrate --skip-views` so an
-// operator iterating on schema-error fixes doesn't pay the matview
-// rebuild cost on every retry. Wins over SetMatviewOnStartup when both
-// are set — skip is the stronger signal.
-func (s *PostgresStore) SetMatviewSkip(skip bool) {
-	s.matviewSkip = skip
+const (
+	// MatviewsOff neither creates nor refreshes any view.
+	MatviewsOff MatviewMode = iota
+	// MatviewsIfMissing creates the views that do not exist yet and leaves
+	// existing ones alone — serve's startup behaviour, so a first run on a
+	// fresh database gets them without a re-create on every restart.
+	MatviewsIfMissing
+	// MatviewsRebuild drops and re-creates every view from its definition.
+	// This is the ONLY path that applies a CHANGED definition, which is why
+	// a release that edits matviews.sql tells the operator to run a plain
+	// `aveloxis migrate`.
+	MatviewsRebuild
+)
+
+// SetMatviewMode chooses what the migration does with the views. Callers
+// that want them must say so: see MatviewMode for why the default is off.
+func (s *PostgresStore) SetMatviewMode(m MatviewMode) {
+	s.matviewMode = m
 }
 
 // SetMigrateNoWait controls how RunMigrations handles advisory-lock
@@ -238,7 +253,7 @@ func (s *PostgresStore) SetMigrateFastPath(enabled bool) {
 
 // SetAllowSecondServe permits this serve to start even though another
 // aveloxis-serve is already connected to the same database (the
-// SetMatviewSkip / SetMigrateFastPath pattern).
+// SetMatviewMode / SetMigrateFastPath pattern).
 //
 // Default false, i.e. REFUSE — closing the residual v0.29.4 deliberately
 // left open. That residual cost a real incident: from 2026-08-30 to

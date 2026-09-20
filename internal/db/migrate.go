@@ -306,11 +306,12 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// table + column the views reference exists.
 	execMigrationStep(ctx, pg, logger, &errs, "base-table views", viewsSQL)
 
-	// Create/update materialized views for 8Knot and analytics. Only the
-	// explicit `aveloxis migrate` (without --skip-views) sets matviewOnStartup
-	// and re-creates every view from matviews.sql — the one path that applies
-	// a changed definition. serve's startup migration takes the default
-	// branch (create only if missing); `aveloxis refresh-views` and the weekly
+	// Create/update materialized views for 8Knot and analytics — when this
+	// deployment HAS them. They are optional (v0.29.57): the mode's zero
+	// value builds none, `aveloxis serve` asks for MatviewsIfMissing and
+	// `aveloxis migrate` for MatviewsRebuild, both from
+	// collection.materialized_views. MatviewsRebuild is the one path that
+	// applies a CHANGED definition; `aveloxis refresh-views` and the weekly
 	// rebuild refresh DATA under the definition a view already has.
 	//
 	// The view block is warn-only — these are derived data, and failing
@@ -321,23 +322,22 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// changes a definition checks the outcome in its deploy checklist
 	// (v0.29.57's pg_get_viewdef step).
 	//
-	// matviewSkip (set by `aveloxis migrate --skip-views`) bypasses both
-	// branches so an operator iterating on schema-error fixes doesn't
-	// pay the rebuild cost on every retry. A later plain `aveloxis
-	// migrate` re-creates the views; `aveloxis refresh-views` and the
-	// weekly rebuild only refresh views that already exist.
-	switch {
-	case pg.matviewSkip:
-		logger.Info("matview block skipped (--skip-views); a plain `aveloxis migrate` re-creates the views, `aveloxis refresh-views` refreshes the data of existing ones")
-	case pg.matviewOnStartup:
+	// `aveloxis migrate --skip-views` forces MatviewsOff so an operator
+	// iterating on schema-error fixes doesn't pay the rebuild cost on every
+	// retry; a later plain `aveloxis migrate` re-creates them.
+	switch pg.matviewMode {
+	case MatviewsRebuild:
 		if err := CreateMaterializedViews(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
-	default:
-		// Still create views if they don't exist (first run), but don't refresh existing ones.
+	case MatviewsIfMissing:
+		// Create views that don't exist (first run), but don't refresh
+		// existing ones.
 		if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
+	default:
+		logger.Info("materialized views not built by this migration (collection.materialized_views is off, or --skip-views was passed); `aveloxis migrate` with them enabled creates them, `aveloxis refresh-views` refreshes the data of existing ones")
 	}
 
 	if len(errs) > 0 {

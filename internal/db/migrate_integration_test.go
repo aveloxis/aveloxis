@@ -98,6 +98,10 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 	// errors.Join of every collected failure, so the test failure
 	// surfaces the full list — operators don't have to fix
 	// failures one at a time.
+	// This test checks that every view builds on an EMPTY database, so it
+	// asks for them: since v0.29.57 materialized views are optional and a
+	// store nobody configured builds none.
+	store.SetMatviewMode(MatviewsRebuild)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations on fresh DB failed — this is exactly the v0.21.0 bug shape (wrong column / table / schema name) that source-contract tests can't catch. Error:\n%v", err)
 	}

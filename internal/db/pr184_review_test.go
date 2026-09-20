@@ -1310,7 +1310,6 @@ func TestDrainHeartbeatDefeatsStaleLockRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	// TWO parked repos (round 29): repoID is "currently draining",
@@ -1505,7 +1504,6 @@ func TestForgeIDRenameHealNeverCrossesHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const forgeID = "944150777"

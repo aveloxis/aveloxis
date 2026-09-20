@@ -82,7 +82,7 @@ func TestCommitResolverIntegration_Strategy4ViaSharedResolver(t *testing.T) {
 	// Resolver with Strategy 3 forced to miss (httptest 404) and Strategy 4
 	// served by a fake that resolves ONLY via global commit-search.
 	keys := platform.NewKeyPool([]string{"x"}, lg)
-	r := NewCommitResolver(store, keys, lg)
+	r := NewCommitResolver(store, keys, "", lg)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

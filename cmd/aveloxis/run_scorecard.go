@@ -228,6 +228,7 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 						Timeout:         cfg.Collection.ScorecardTimeout(),
 						GithubToken:     token,
 						InstrumentToken: instrumentToken,
+						APIBaseURL:      cfg.GitHub.BaseURL,
 					}, logger)
 				}()
 				if scErr != nil {

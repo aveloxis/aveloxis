@@ -45,7 +45,6 @@ func TestWhitespaceBatchSurfacesCancellationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const repoGit = "https://example.invalid/_avws/whitespace-cancel"

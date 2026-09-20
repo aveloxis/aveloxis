@@ -85,14 +85,14 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			case model.PlatformGitLab:
 				client = s.glClient
 			default:
-				// Generic-git repos have no API; skip them. They'll
-				// be excluded from the next candidate query
-				// automatically once we stamp something on the row,
-				// but for now the simplest thing is to leave them
-				// in the candidate set and let the SELECT filter
-				// out generic-git via repo_archived = FALSE
-				// (generic-git repos aren't archived but they also
-				// have no useful description source).
+				// Generic-git repos have no API to ask. The candidate
+				// query excludes them (platform_id IN (1, 2), v0.29.57),
+				// so this arm should be unreachable — it stays as a
+				// backstop for a platform added to the query and not to
+				// the switch. Reaching it once per restart forever is
+				// what the filter fixed: nothing here stamps the row, so
+				// without the filter the same rows came back every time
+				// and were counted as failures.
 				totalFailed++
 				continue
 			}

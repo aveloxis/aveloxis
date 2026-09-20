@@ -40,9 +40,17 @@ func TestMigrateCmdHasSkipViewsFlag(t *testing.T) {
 			`when the operator is fixing schema errors and wants the next ` +
 			`migrate run to surface only DDL-level issues.`)
 	}
-	if !strings.Contains(body, "SetMatviewSkip") {
-		t.Error("migrateCmd must call store.SetMatviewSkip(skipViews) so the " +
-			"flag actually reaches RunMigrations. Otherwise the flag is " +
+	if !strings.Contains(body, "store.SetMatviewMode(mode)") {
+		t.Error("migrateCmd must call store.SetMatviewMode so the flag " +
+			"actually reaches RunMigrations. Otherwise the flag is " +
 			"declared but ignored.")
+	}
+	// Both ways of saying "no views" must reach the same mode: the flag,
+	// and a deployment that does not have materialized views at all
+	// (v0.29.57 — the flag used to be the only one).
+	for _, needle := range []string{"skipViews || !cfg.Collection.MaterializedViewsValue()", "db.MatviewsOff", "db.MatviewsRebuild"} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("migrateCmd must contain %q: --skip-views and materialized_views:false both mean no views, and a plain migrate is the only path that applies a CHANGED definition", needle)
+		}
 	}
 }

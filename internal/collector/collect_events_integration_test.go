@@ -50,7 +50,6 @@ func TestCollectStoresEventsEndToEnd(t *testing.T) {
 	// t.Cleanup, not defer: function defers run BEFORE t.Cleanup
 	// callbacks, and the seed-row cleanup below needs the pool alive.
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const owner, repo = "aveloxis-it", "collect-events"
@@ -116,7 +115,7 @@ func TestCollectStoresEventsEndToEnd(t *testing.T) {
 	// REST modes keep the mock surface small; the number→serial
 	// resolution under test is mode-independent (it lives in the
 	// Processor).
-	coll := NewWithOptions(client, store, logger, nil, t.TempDir()).
+	coll := NewWithOptions(client, store, logger, nil, "", t.TempDir()).
 		WithCollectionModes("rest", "rest", "single", defaultShardSize, "rest")
 
 	result, err := coll.collectAndProcess(ctx, repoID, owner, repo, time.Time{})

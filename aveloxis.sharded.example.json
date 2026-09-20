@@ -30,6 +30,7 @@
     "workers": 180,
     "force_full": false,
     "repo_clone_dir": "PATH FOR BARE CLONES",
+    "materialized_views": true,
     "matview_rebuild_day": "sunday",
     "pr_child_mode": "graphql",
     "listing_mode": "graphql",

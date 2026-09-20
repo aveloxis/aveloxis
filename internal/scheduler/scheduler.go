@@ -80,10 +80,14 @@ type Config struct {
 	//
 	// SCOPE, because a partial fix that reads as complete is worse than an
 	// open one: this covers the clients the SCHEDULER builds — both org
-	// scans and the analysis client. The commit resolver, the breadth
-	// worker, the web server and the CLI org-add still hardcode the host
-	// (worklist item 34); they take a key pool rather than a base URL, so
-	// closing them is a signature change, not a one-line one.
+	// scans and the analysis client — and, since v0.29.57, the two it hands
+	// its keys to (the breadth worker and the commit resolver, whose
+	// constructors now take the host) plus the scorecard API-spend probe.
+	// TestSchedulerGitHubKeysNeverTravelWithoutTheHost enforces that.
+	//
+	// STILL OPEN (worklist item 34): the web server, the CLI org-add, and
+	// the scorecard SUBPROCESS, which resolves its own host from the repo
+	// URL and its environment rather than from anything passed to it.
 	GitHub *config.PlatformConfig
 }
 
@@ -483,7 +487,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.osvCache = collector.NewOSVCache()
 	}
 	if s.ghKeys != nil && s.breadthWorker == nil {
-		s.breadthWorker = collector.NewBreadthWorker(s.store, s.ghKeys, s.logger).
+		s.breadthWorker = collector.NewBreadthWorker(s.store, s.ghKeys, s.ghAPIBase, s.logger).
 			WithFetchConcurrency(s.cfg.Collection.BreadthFetchConcurrencyOrDefault())
 	}
 
@@ -1845,6 +1849,7 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		Timeout:         s.cfg.Collection.ScorecardTimeout(),
 		GithubToken:     token,
 		InstrumentToken: instrumentToken,
+		APIBaseURL:      s.ghAPIBase,
 	}, s.logger)
 	if errors.Is(scErr, context.Canceled) {
 		return // shutdown, not a failure
@@ -1890,7 +1895,7 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 		return
 	}
 
-	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.logger)
+	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.ghAPIBase, s.logger)
 	resolveResult, resolveErr := resolver.ResolveCommits(ctx, repoID, repo.Owner, repo.Name)
 	if errors.Is(resolveErr, context.Canceled) {
 		return // shutdown, not a failure

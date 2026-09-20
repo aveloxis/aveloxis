@@ -125,10 +125,21 @@ type BreadthWorker struct {
 	circuitOpenUntil time.Time
 }
 
-// NewBreadthWorker creates a breadth worker using the GitHub API.
-func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *BreadthWorker {
+// NewBreadthWorker creates a breadth worker using the GitHub API at baseURL,
+// or public GitHub when baseURL is empty.
+//
+// The base is a PARAMETER rather than a constant because these are the
+// scheduler's keys: on a GitHub Enterprise deployment a hardcoded
+// api.github.com hands the Enterprise token to a third party (v0.29.57,
+// Copilot review 5260539069 — the half the scheduler-side fix missed,
+// because the guard that enumerates GitHub clients reads the scheduler
+// package and this client is built here).
+func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, baseURL string, logger *slog.Logger) *BreadthWorker {
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
 	return NewBreadthWorkerWithHTTP(store,
-		platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub), logger)
+		platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitHub), logger)
 }
 
 // NewBreadthWorkerWithHTTP builds a breadth worker around an arbitrary

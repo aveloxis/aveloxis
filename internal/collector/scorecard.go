@@ -154,6 +154,13 @@ type ScorecardOptions struct {
 	// completion log). Conventionally the FIRST pool token. Local mode
 	// never probes — it makes no instrumented calls.
 	InstrumentToken string
+	// APIBaseURL is the GitHub REST host this deployment's keys belong to
+	// (github.base_url). The API-spend probe below is an IN-PROCESS request
+	// carrying a pool token, so it follows this rather than public GitHub.
+	// Empty means public GitHub. The scorecard SUBPROCESS still resolves its
+	// own host — that half is worklist item 34.
+	APIBaseURL string
+
 	// RateLimitURL overrides the probe endpoint (test seam);
 	// "" = https://api.github.com/rate_limit.
 	RateLimitURL string
@@ -187,8 +194,21 @@ var ErrScorecardNoToken = errors.New("scorecard not run: no usable GitHub token 
 // (rateLimitDelta has the details). One spelling for every log site.
 const ScorecardAPICallsBasis = "instrument_token_sample"
 
-// scorecardRateLimitURL is the default endpoint for the API-spend probe.
+// scorecardRateLimitURL is the endpoint for the API-spend probe on public
+// GitHub.
 const scorecardRateLimitURL = "https://api.github.com/rate_limit"
+
+// scorecardRateLimitURLFor is that endpoint on the deployment's own host.
+// The probe carries a pool token, so it must not go to a host the
+// configuration did not name (v0.29.57). ONE derivation, because both option
+// sites need it: the scheduler's per-repo attempt and `aveloxis
+// run-scorecard`.
+func scorecardRateLimitURLFor(baseURL string) string {
+	if baseURL == "" {
+		return scorecardRateLimitURL
+	}
+	return strings.TrimRight(baseURL, "/") + "/rate_limit"
+}
 
 // ScorecardTokens builds scorecard's comma-separated GITHUB_TOKEN value
 // from the key pool (v0.27.5). count 0 = every usable token (not
@@ -292,7 +312,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// Remote-primary (GitHub): --repo first, instrumented.
 	rlURL := opts.RateLimitURL
 	if rlURL == "" {
-		rlURL = scorecardRateLimitURL
+		rlURL = scorecardRateLimitURLFor(opts.APIBaseURL)
 	}
 	before := fetchRateLimitSnapshot(ctx, rlURL, opts.InstrumentToken, logger)
 	raw, remoteErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, "", timeout, opts.GithubToken, logger)

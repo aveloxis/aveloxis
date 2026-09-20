@@ -22,6 +22,7 @@ var frozenCollectionKeys = []string{
 	"workers",
 	"repo_clone_dir",
 	"force_full",
+	"materialized_views",
 	"matview_rebuild_day",
 	"matview_rebuild_skip_dm_aggregates",
 	"activity_history_window_days",

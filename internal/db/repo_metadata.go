@@ -142,6 +142,12 @@ func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterR
 		SELECT repo_id, repo_owner, repo_name, platform_id
 		FROM aveloxis_data.repos
 		WHERE repo_id > $1
+		  -- Only the API-backed platforms, as GetReposForMetadataRefresh
+		  -- below has always done: generic git (3) has nothing to ask, so
+		  -- the scheduler skips such a row WITHOUT stamping either field
+		  -- and it stays a candidate — re-read and re-counted as a failure
+		  -- on every restart (v0.29.57).
+		  AND platform_id IN (1, 2)
 		  AND COALESCE(repo_description, '') = ''
 		  AND COALESCE(primary_language, '') = ''
 		  AND COALESCE(repo_archived, FALSE) = FALSE

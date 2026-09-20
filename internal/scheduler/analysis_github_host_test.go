@@ -378,3 +378,83 @@ func TestSchedulerGitHubClientsAllUseTheConfiguredHost(t *testing.T) {
 		t.Errorf("examined %d key-pooled GitHub clients; the package builds three (the analysis client, the user_groups org scan and the legacy repo_groups refresh) — a dropped site would weaken this guard silently", examined)
 	}
 }
+
+// TestSchedulerGitHubKeysNeverTravelWithoutTheHost closes the gap that let
+// the breadth worker keep a hardcoded api.github.com through the whole of
+// the v0.29.57 Enterprise fix (Copilot review 5260539069): the guard above
+// reads NewHTTPClient calls in THIS package, and the breadth client is
+// constructed in internal/collector from keys handed over from here.
+//
+// The rule that catches that class: wherever the scheduler passes s.ghKeys
+// to anything, it must pass s.ghAPIBase too. A constructor given the keys
+// without the host has no way to reach the configured deployment, so the
+// hardcoded default is the only thing it can use.
+func TestSchedulerGitHubKeysNeverTravelWithoutTheHost(t *testing.T) {
+	const dir = "internal/scheduler"
+	files := srctest.PackageFiles(t, dir, 5)
+
+	handOffs := 0
+	for name, src := range files {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			passesKeys, passesBase := false, false
+			for _, arg := range call.Args {
+				switch a := arg.(type) {
+				case *ast.SelectorExpr:
+					if id, ok := a.X.(*ast.Ident); ok && id.Name == "s" {
+						switch a.Sel.Name {
+						case "ghKeys":
+							passesKeys = true
+						case "ghAPIBase":
+							passesBase = true
+						}
+					}
+				}
+			}
+			if !passesKeys {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "NewHTTPClient":
+					// The guard above's business: it takes the base as its
+					// first argument and is checked there.
+					return true
+				case "ScorecardTokens":
+					// EXEMPT, with the reason here rather than silently: this
+					// lends raw tokens to the `scorecard` SUBPROCESS, which
+					// takes no base — it resolves the host from the repo URL
+					// and its own environment, so passing s.ghAPIBase would
+					// not route it. That half is worklist item 34 (GH_HOST).
+					//
+					// The IN-PROCESS half is NOT exempt and is not here: the
+					// API-spend probe carries a pool token to
+					// <base>/rate_limit, and both ScorecardOptions sites set
+					// APIBaseURL (v0.29.57 — this exemption used to cover
+					// that too, wrongly). The exemption is by NAME so a new
+					// constructor cannot inherit it.
+					return true
+				}
+			}
+			handOffs++
+			if !passesBase {
+				pos := fset.Position(call.Pos())
+				t.Errorf("%s:%d: this call hands s.ghKeys to another constructor without s.ghAPIBase — on a GitHub Enterprise deployment it can only fall back to public GitHub, which sends the Enterprise token to a third party", name, pos.Line)
+			}
+			return true
+		})
+	}
+	// Guard the denominator: if the walk stops finding hand-offs, the rule
+	// is examining nothing and would pass on any code at all.
+	if handOffs < 1 {
+		t.Fatal("found no call handing s.ghKeys to another package — either the scheduler stopped doing that, or this walk no longer recognises it")
+	}
+}

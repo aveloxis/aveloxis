@@ -93,7 +93,27 @@ var matviewNames = []string{
 // Falls back to non-concurrent refresh if the view has never been populated.
 func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	start := time.Now()
-	logger.Info("refreshing materialized views", "count", len(matviewNames))
+
+	// Materialized views are optional (v0.29.57), so ask the DATABASE
+	// whether this one has them — not the config, which can disagree with
+	// reality in both directions: a deployment that turned them off still
+	// HAS the views it built before (turning the knob off does not drop
+	// them), and one that turned them on has none until a migrate runs.
+	// Refreshing what is not there logged twenty WARNs and a "20 of 20
+	// views stale" ERROR on every rebuild day, about a feature the operator
+	// had switched off. This check owns the question for BOTH callers —
+	// the weekly rebuild and `aveloxis refresh-views`.
+	var present int
+	if err := pg.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data'`).Scan(&present); err != nil {
+		return fmt.Errorf("checking for materialized views: %w", err)
+	}
+	if present == 0 {
+		logger.Info("no materialized views in this database — nothing to refresh (collection.materialized_views is off, or no migrate has built them yet)")
+		return nil
+	}
+
+	logger.Info("refreshing materialized views", "count", len(matviewNames), "present", present)
 
 	// Pass 26 (v0.28.18): the sibling of the dm_ aggregate fix — a failed
 	// REFRESH was a WARN and the function returned nil, so

@@ -216,6 +216,18 @@ type CollectionConfig struct {
 	// Set to false after the full pass completes.
 	ForceFullCollection bool `json:"force_full"`
 
+	// MaterializedViews says whether this deployment HAS the materialized
+	// views at all. They are derived data for 8Knot and the analytics
+	// queries; a deployment that never reads them pays twenty view builds
+	// on `aveloxis migrate` for nothing, and the refresh schedule below
+	// then has nothing to refresh.
+	//
+	// Default: TRUE — an existing deployment is unchanged. Setting it
+	// false stops `serve` and `migrate` creating them; it does NOT drop
+	// views that already exist (dropping collected objects is an operator
+	// decision, not a config one). v0.29.57.
+	MaterializedViews *bool `json:"materialized_views,omitempty"`
+
 	// MatviewRebuildDay is the day of the week to rebuild materialized views.
 	// Valid values: "monday" through "sunday", or "disabled" to never auto-rebuild.
 	// Default: "saturday". Views are rebuilt once per week on this day.
@@ -1408,6 +1420,16 @@ func (c *Config) SlogLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// MaterializedViewsValue returns whether this deployment has materialized
+// views, defaulting to TRUE when the field is absent. This accessor is the
+// SINGLE default layer (SR-10) — consumers must never read the raw pointer.
+func (c *CollectionConfig) MaterializedViewsValue() bool {
+	if c.MaterializedViews == nil {
+		return true
+	}
+	return *c.MaterializedViews
 }
 
 // MatviewRebuildWeekday returns the time.Weekday for the configured matview

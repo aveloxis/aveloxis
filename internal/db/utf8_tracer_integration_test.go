@@ -41,7 +41,6 @@ func openTestStore(t *testing.T) *PostgresStore {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		store.Close()
 		t.Fatalf("migrate: %v", err)

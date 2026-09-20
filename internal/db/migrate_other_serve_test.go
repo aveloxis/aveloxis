@@ -106,7 +106,6 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 	if v := store.GetSchemaVersion(ctx); v != ToolVersion {
 		t.Fatalf("precondition: stamp %q != ToolVersion %q", v, ToolVersion)
@@ -292,7 +291,6 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 			return
 		}
 		defer heal.Close()
-		heal.SetMatviewSkip(true)
 		_ = RunMigrations(cctx, heal, quiet)
 	})
 	indexExists := func() bool {
@@ -977,7 +975,7 @@ func TestOtherServeProbeAcquiresRatherThanBegins(t *testing.T) {
 func TestAllowSecondServeIsWiredAndNarrow(t *testing.T) {
 	pg := srctest.Read(t, "internal/db/postgres.go")
 	if !strings.Contains(pg, "func (s *PostgresStore) SetAllowSecondServe(") {
-		t.Error("PostgresStore must expose SetAllowSecondServe (the SetMatviewSkip / SetMigrateFastPath pattern)")
+		t.Error("PostgresStore must expose SetAllowSecondServe (the SetMatviewMode / SetMigrateFastPath pattern)")
 	}
 
 	main := srctest.Read(t, "cmd/aveloxis/main.go")

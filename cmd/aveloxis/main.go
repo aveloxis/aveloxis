@@ -211,6 +211,12 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	// remains the full-run self-heal path and never fast-paths.
 	store.SetMigrateFastPath(true)
 	store.SetAllowSecondServe(allowSecondServe)
+	// serve creates any view this deployment is missing and leaves existing
+	// ones alone; a changed definition is `aveloxis migrate`'s job. A
+	// deployment with materialized_views off gets none (v0.29.57).
+	if cfg.Collection.MaterializedViewsValue() {
+		store.SetMatviewMode(db.MatviewsIfMissing)
+	}
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}
@@ -500,7 +506,9 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			}
 		}
 
-		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).
+		// The same host the client above was built from: commit resolution
+		// builds its own clients from these keys (v0.29.57).
+		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.GitHub.BaseURL, cfg.Collection.RepoCloneDir).
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
@@ -1177,12 +1185,15 @@ running migrations.`,
 				return err
 			}
 			defer store.Close()
-			// The explicit migrate command drops and re-creates every view
-			// (applying changed definitions), unless --skip-views is passed.
-			store.SetMatviewSkip(skipViews)
-			if !skipViews {
-				store.SetMatviewOnStartup(true)
+			// The explicit migrate command drops and re-creates every view,
+			// which is the only path that applies a CHANGED definition —
+			// unless --skip-views is passed, or this deployment does not
+			// have materialized views at all (v0.29.57).
+			mode := db.MatviewsRebuild
+			if skipViews || !cfg.Collection.MaterializedViewsValue() {
+				mode = db.MatviewsOff
 			}
+			store.SetMatviewMode(mode)
 			store.SetMigrateNoWait(noWait)
 			return store.Migrate(ctx)
 		},
@@ -1199,7 +1210,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long: `Refreshes the data of all 20 materialized views used by 8Knot and other analytics tools. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
+		Long: `Refreshes the data of the 20 materialized views used by 8Knot and other analytics tools — when this database has them. Materialized views are optional (collection.materialized_views, default true); on a database without them this command says so and does nothing. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
 
 --aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1212,6 +1223,11 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
+			// RefreshMaterializedViews itself reports a database that has no
+			// views, and it asks the database rather than the config — an
+			// operator who turned the knob off still HAS the views built
+			// before, and refusing to refresh those would be a silent no-op
+			// over real staleness (v0.29.57).
 			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
 			if !aggregates {
 				return viewErr // cobra prints it once; no second copy

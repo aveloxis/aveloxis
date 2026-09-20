@@ -42,7 +42,6 @@ func TestMigrateCntrbIDsBatchEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
-	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
@@ -263,7 +262,6 @@ func TestPrecheckCntrbIDCascadeReturnsEmptyOnHealthySchema(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
-	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}

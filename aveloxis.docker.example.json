@@ -20,6 +20,7 @@
     "days_until_recollect": 1,
     "workers": 12,
     "repo_clone_dir": "/data",
+    "materialized_views": true,
     "matview_rebuild_day": "saturday",
     "scancode_workers": 2,
     "scancode_start_interval_s": 90,

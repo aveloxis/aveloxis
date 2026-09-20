@@ -569,18 +569,18 @@ func TestV02957ViewCheckQuotesARealLogLine(t *testing.T) {
 	// branch logs the same text, so a match anywhere in RunMigrations
 	// survived renaming the one that matters (mutation proof, this round).
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func RunMigrations("))
-	start := strings.Index(body, "case pg.matviewOnStartup:")
+	start := strings.Index(body, "case MatviewsRebuild:")
 	if start < 0 {
-		t.Fatal("RunMigrations has no `case pg.matviewOnStartup:` branch — the plain-migrate view block moved; re-scope this pin")
+		t.Fatal("RunMigrations has no `case MatviewsRebuild:` branch — the plain-migrate view block moved; re-scope this pin")
 	}
 	branch := body[start:]
-	if end := strings.Index(branch, "default:"); end >= 0 {
+	if end := strings.Index(branch, "case MatviewsIfMissing:"); end >= 0 {
 		branch = branch[:end]
 	} else {
-		t.Fatal("cannot find the end of the matviewOnStartup branch (`default:`)")
+		t.Fatal("cannot find the end of the MatviewsRebuild branch (`case MatviewsIfMissing:`)")
 	}
 	if !strings.Contains(branch, "CreateMaterializedViews(") {
-		t.Fatal("the matviewOnStartup branch no longer calls CreateMaterializedViews — re-scope this pin")
+		t.Fatal("the MatviewsRebuild branch no longer calls CreateMaterializedViews — re-scope this pin")
 	}
 	if !strings.Contains(branch, `logger.Warn("`+warn+`"`) {
 		t.Errorf("a plain migrate's failed view re-create no longer logs %q — update the 0.29.57 checklist's view check to the line it logs now", warn)

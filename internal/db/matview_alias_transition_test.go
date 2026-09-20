@@ -56,6 +56,10 @@ func TestPlainMigrateRecreatesViewsWhateverKindTheAliasesAre(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(store.Close)
+			// This test is ABOUT the views, so it asks for them: since
+			// v0.29.57 they are optional and a store nobody configured
+			// builds none.
+			store.SetMatviewMode(MatviewsRebuild)
 			if err := RunMigrations(ctx, store, logger); err != nil {
 				t.Fatalf("first migrate: %v", err)
 			}
@@ -90,7 +94,7 @@ func TestPlainMigrateRecreatesViewsWhateverKindTheAliasesAre(t *testing.T) {
 			}
 
 			// The deploy step: a plain `aveloxis migrate` on this database.
-			store.SetMatviewOnStartup(true)
+			store.SetMatviewMode(MatviewsRebuild)
 			if err := RunMigrations(ctx, store, logger); err != nil {
 				t.Fatalf("plain migrate: %v", err)
 			}

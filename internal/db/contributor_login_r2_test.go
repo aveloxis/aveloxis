@@ -53,7 +53,6 @@ func TestUpsertContributorFullPreservesCntrbLoginOnRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const (
@@ -169,7 +168,6 @@ func TestUpsertContributorFullStillFillsLoginOnFirstSight(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const login = "_avr2_freshuser"

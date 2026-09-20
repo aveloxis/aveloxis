@@ -38,7 +38,6 @@ func TestHealUnknownLibyearIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	// A repo of our own, cleaned up regardless of outcome.
@@ -183,7 +182,6 @@ func TestHealUnknownLibyearInterruptKeepsFinishedWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const repoGit = "https://example.invalid/_avheal/libyear-interrupt"

@@ -31,6 +31,11 @@ type Collector struct {
 	platID int16
 	facade *FacadeCollector
 	ghKeys *platform.KeyPool // for commit resolution (GitHub only)
+	// ghAPIBase is the GitHub REST host those keys belong to. Empty means
+	// public GitHub. Set by WithGitHubAPIBase; a deployment that configures
+	// github.base_url must pass it, or the keys go to the wrong host
+	// (v0.29.57).
+	ghAPIBase string
 
 	// Staged-pipeline mode knobs, threaded from CollectionConfig by
 	// runCollect via WithCollectionModes — the same source of truth
@@ -51,21 +56,27 @@ func New(client platform.Client, store *db.PostgresStore, logger *slog.Logger) *
 	if home == "" {
 		defaultDir = os.TempDir() + "/aveloxis-repos"
 	}
-	return NewWithOptions(client, store, logger, nil, defaultDir)
+	return NewWithOptions(client, store, logger, nil, "", defaultDir)
 }
 
-// NewWithKeys creates a collector with GitHub keys for commit resolution.
-func NewWithKeys(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool) *Collector {
+// NewWithKeys creates a collector with GitHub keys for commit resolution,
+// against the GitHub REST host those keys belong to (empty = public GitHub).
+//
+// ghAPIBase is a PARAMETER rather than an optional setter because commit
+// resolution builds clients of its own from these keys: a caller that holds
+// the pool must not be able to forget the host it goes with, which is how an
+// Enterprise token reaches a third party (v0.29.57).
+func NewWithKeys(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool, ghAPIBase string) *Collector {
 	home, _ := os.UserHomeDir()
 	defaultDir := home + "/aveloxis-repos"
 	if home == "" {
 		defaultDir = os.TempDir() + "/aveloxis-repos"
 	}
-	return NewWithOptions(client, store, logger, ghKeys, defaultDir)
+	return NewWithOptions(client, store, logger, ghKeys, ghAPIBase, defaultDir)
 }
 
 // NewWithOptions creates a collector with all options specified.
-func NewWithOptions(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool, repoCloneDir string) *Collector {
+func NewWithOptions(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool, ghAPIBase, repoCloneDir string) *Collector {
 	platID := int16(client.Platform())
 	return &Collector{
 		client:         client,
@@ -74,6 +85,7 @@ func NewWithOptions(client platform.Client, store *db.PostgresStore, logger *slo
 		platID:         platID,
 		facade:         NewFacadeCollector(store, logger, repoCloneDir),
 		ghKeys:         ghKeys,
+		ghAPIBase:      ghAPIBase,
 		prChildMode:    "rest",
 		listingMode:    "rest",
 		threadingMode:  "single",
@@ -212,7 +224,7 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 
 	// Phase 5: Commit author resolution (GitHub only).
 	if c.client.Platform() == model.PlatformGitHub && c.ghKeys != nil {
-		commitResolver := NewCommitResolver(c.store, c.ghKeys, c.logger)
+		commitResolver := NewCommitResolver(c.store, c.ghKeys, c.ghAPIBase, c.logger)
 		resolveResult, resolveErr := commitResolver.ResolveCommits(ctx, repoID, owner, repo)
 		if resolveErr != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("commit resolution: %w", resolveErr))

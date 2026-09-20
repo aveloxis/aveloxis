@@ -92,6 +92,7 @@ a half against its own reference table below:
     "workers": 12,
     "repo_clone_dir": "/data/aveloxis-repos",
     "force_full": false,
+    "materialized_views": true,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_skip_dm_aggregates": false,
     "activity_history_window_days": 180,
@@ -239,6 +240,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `collection.materialized_views` | boolean | `true` | Whether this deployment HAS the 20 materialized views. They are derived data for 8Knot and the analytics queries; a deployment that never reads them can set this to `false` and skip building them on every `aveloxis migrate`. Setting it `false` does not DROP views that already exist — that is an operator action, not a config one — so a deployment that turns it off keeps refreshing the views it already built, by the weekly schedule and by `aveloxis refresh-views` alike. Both ask the database what it has: on a database with no views they say so and do nothing. |
 | `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 20 materialized views. Values: `"sunday"`–`"saturday"`, or `"disabled"` / `"none"` / `"off"` to never auto-rebuild. Independent of `aveloxis refresh-views` which always refreshes on demand. A refresh keeps each view's definition; a changed definition is applied only by a plain `aveloxis migrate` (see [Upgrading](upgrading.md)). |
 | `collection.activity_history_window_days` | integer | `180` | Span of each GitHub `contributionsCollection` window the daily contributor-history backfill queries (v0.27.58). Clamped to 365 (GitHub's hard 1-year window limit); non-positive falls back to 180. This is the STARTING span — when a window hits the 100-repositories-per-type cap or a contribution page cap, the worker halves the window recursively and logs the cap hit at INFO so loss rate is trackable. |
 | `collection.activity_history_interval_minutes` | integer | `1` | v0.28.3: the history sweep's tick interval. Ticks arriving while a cycle is still running are dropped (single-flight), so a shorter interval never overlaps cycles. |

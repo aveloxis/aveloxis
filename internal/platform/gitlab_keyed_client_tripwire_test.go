@@ -89,7 +89,16 @@ func checkKeyedClients(fset *token.FileSet, f *ast.File) (examined int, findings
 				continue
 			}
 			body = d.Body
-			isConstructor = clientPkg && d.Recv == nil && d.Name.Name == "New"
+			// A constructor may take its host as a `baseURL` parameter:
+			// the forge clients always could, and since v0.29.57 the
+			// collector's breadth worker and commit resolver do too, because
+			// a hardcoded api.github.com there sent an Enterprise token to a
+			// third party. The parameter is only as trustworthy as the CALL
+			// SITES, which TestConstructorBaseArgumentsAreAllowed below
+			// checks with this same allowlist — widening one without the
+			// other would hand the rule away.
+			isConstructor = d.Recv == nil &&
+				(clientPkg && d.Name.Name == "New" || baseTakingKeyedConstructors[d.Name.Name] > 0)
 			for _, field := range d.Type.Params.List {
 				for _, n := range field.Names {
 					params[n.Name] = true
@@ -273,6 +282,131 @@ func exprName(e ast.Expr) string {
 		return x.Name
 	}
 	return ""
+}
+
+// baseTakingKeyedConstructors are the constructors OUTSIDE the forge client
+// packages that take a deployment's host and build a KEYED client from it,
+// mapped to the 1-based position of their `baseURL` parameter. They exist
+// because hardcoding api.github.com in them sent an Enterprise token to a
+// third party (v0.29.57).
+//
+// The list is explicit rather than derived, because no syntactic test tells a
+// keyed forge client from a mailing-list archive host: NewPonyMail also takes
+// a base, and its host legitimately comes from stored data. Adding a
+// constructor here is how it joins the rule; the check below fails if a name
+// no longer exists, so the list cannot rot quietly.
+var baseTakingKeyedConstructors = map[string]int{
+	"NewBreadthWorker":  3,
+	"NewCommitResolver": 3,
+}
+
+// constructorBaseParam returns the registered constructors declared in this
+// file, with the 0-based argument position of their baseURL parameter, and
+// fails loudly if a registered name's parameter has moved.
+func constructorBaseParam(t *testing.T, f *ast.File) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, decl := range f.Decls {
+		d, ok := decl.(*ast.FuncDecl)
+		if !ok || d.Recv != nil {
+			continue
+		}
+		want, registered := baseTakingKeyedConstructors[d.Name.Name]
+		if !registered {
+			continue
+		}
+		idx := 0
+		found := -1
+		for _, field := range d.Type.Params.List {
+			for _, n := range field.Names {
+				if n.Name == "baseURL" {
+					found = idx
+				}
+				idx++
+			}
+		}
+		if found != want-1 {
+			t.Errorf("%s takes its baseURL at position %d, but the registry says %d — a keyed client's host moved and the call-site check would read the wrong argument", d.Name.Name, found+1, want)
+			continue
+		}
+		out[d.Name.Name] = found
+	}
+	return out
+}
+
+// TestConstructorBaseArgumentsAreAllowed is the other half of letting a
+// constructor take a `baseURL` parameter: wherever one is CALLED, the host it
+// is handed must itself be an allowed expression — a literal, the github
+// config block's BaseURL, or s.ghAPIBase.
+//
+// What it stops is a host taken from DATA travelling in through the new
+// parameter (the v0.29.11 incident, one package further out). It does NOT
+// stop re-hardcoding, because a literal is allowed here exactly as it is at a
+// direct NewHTTPClient call; that is the scheduler-side guard's job for the
+// scheduler, and a required constructor parameter's job everywhere else
+// (v0.29.57).
+func TestConstructorBaseArgumentsAreAllowed(t *testing.T) {
+	root := srctest.Root(t)
+	// Pass 1: which constructors take a base, and where.
+	takers := map[string]int{}
+	files := map[string]*ast.File{}
+	fsets := map[string]*token.FileSet{}
+	for _, dir := range []string{"cmd", "internal"} {
+		if err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			fset := token.NewFileSet()
+			f, perr := parser.ParseFile(fset, path, nil, 0)
+			if perr != nil {
+				return perr
+			}
+			files[path], fsets[path] = f, fset
+			for name, idx := range constructorBaseParam(t, f) {
+				takers[name] = idx
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(takers) != len(baseTakingKeyedConstructors) {
+		t.Fatalf("found %d of the %d registered base-taking constructors: %v — a registered name that no longer exists leaves its call sites unchecked", len(takers), len(baseTakingKeyedConstructors), takers)
+	}
+
+	// Pass 2: every call to one of them.
+	checked := 0
+	for path, f := range files {
+		rel, _ := filepath.Rel(root, path)
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name := ""
+			switch fn := call.Fun.(type) {
+			case *ast.Ident:
+				name = fn.Name
+			case *ast.SelectorExpr:
+				name = fn.Sel.Name
+			}
+			idx, ok := takers[name]
+			if !ok || idx >= len(call.Args) {
+				return true
+			}
+			checked++
+			// forge is "github" here: every current taker is a GitHub
+			// client. A GitLab one would need its own arm.
+			if !allowedBase(call.Args[idx], "github", false, nil, nil, nil) {
+				pos := fsets[path].Position(call.Pos())
+				t.Errorf("%s:%d: %s is handed a host that is not a literal, cfg.GitHub.BaseURL or s.ghAPIBase — a constructor's baseURL parameter is only as safe as what callers put in it", rel, pos.Line, name)
+			}
+			return true
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no call to a base-taking constructor was examined — the rule is guarding nothing")
+	}
 }
 
 // TestKeyedClientBaseURLAllowlist — v0.29.11 tripwire over cmd/ and

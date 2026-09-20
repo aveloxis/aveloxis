@@ -135,9 +135,7 @@ type BreadthWorker struct {
 // because the guard that enumerates GitHub clients reads the scheduler
 // package and this client is built here).
 func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, baseURL string, logger *slog.Logger) *BreadthWorker {
-	if baseURL == "" {
-		baseURL = "https://api.github.com"
-	}
+	baseURL = platform.GitHubAPIBaseOrPublic(baseURL)
 	return NewBreadthWorkerWithHTTP(store,
 		platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitHub), logger)
 }

@@ -68,7 +68,7 @@ func TestOrgRegistrationInARejectedGroupAutoApprovesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := store.AddOrgToGroup(ctx, uid, fresh, orgURL)
+	out, err := store.AddOrgToGroup(ctx, uid, fresh, orgURL, "")
 	if err != nil || out.RequestID == 0 {
 		t.Fatalf("AddOrgToGroup from a fresh group = %+v, %v; want a request", out, err)
 	}

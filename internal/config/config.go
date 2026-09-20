@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 func defaultCloneDir() string {
@@ -1428,10 +1430,10 @@ func (c *Config) SlogLevel() slog.Level {
 // ones that guessed sent Enterprise tokens to api.github.com (v0.29.57).
 // Safe on a nil receiver: a config with no github block means public GitHub.
 func (p *PlatformConfig) GitHubAPIBase() string {
-	if p != nil && p.BaseURL != "" {
-		return p.BaseURL
+	if p != nil {
+		return platform.GitHubAPIBaseOrPublic(p.BaseURL)
 	}
-	return "https://api.github.com"
+	return platform.PublicGitHubAPIBase
 }
 
 // MaterializedViewsValue returns whether this deployment has materialized
@@ -1620,7 +1622,7 @@ func DefaultConfig() *Config {
 			SSLMode: "prefer",
 		},
 		GitHub: PlatformConfig{
-			BaseURL: "https://api.github.com",
+			BaseURL: platform.PublicGitHubAPIBase,
 		},
 		GitLab: PlatformConfig{
 			BaseURL: "https://gitlab.com/api/v4",

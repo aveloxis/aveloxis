@@ -565,8 +565,13 @@ and only repos that still exist are imported.`,
 }
 
 // isOrgURL checks if a URL points to a GitHub org or GitLab group (not a specific repo).
-// Returns (isOrg, host, orgName, platform).
-func isOrgURL(rawURL string) (bool, string, string, model.Platform) {
+// Returns (isOrg, host, orgName, platform). ghAPIBase is the deployment's
+// GitHub API base (github.base_url): an org is a GitHub org only when it lives
+// on that base's web host (platform.IsGitHubHost), because those are the only
+// orgs the deployment's keys can enumerate (v0.29.57, Copilot review
+// 5260961848 named the web scan's literal "github.com"; this is its CLI
+// sibling).
+func isOrgURL(rawURL, ghAPIBase string) (bool, string, string, model.Platform) {
 	rawURL = strings.TrimSpace(rawURL)
 	rawURL = strings.TrimSuffix(rawURL, "/")
 	u, err := url.Parse(rawURL)
@@ -577,8 +582,9 @@ func isOrgURL(rawURL string) (bool, string, string, model.Platform) {
 	path := strings.Trim(u.Path, "/")
 	parts := strings.Split(path, "/")
 
-	// GitHub org: https://github.com/chaoss (exactly 1 path segment)
-	if (host == "github.com") && len(parts) == 1 && parts[0] != "" {
+	// GitHub org: https://github.com/chaoss (exactly 1 path segment) on the
+	// deployment's GitHub host.
+	if platform.IsGitHubHost(host, ghAPIBase) && len(parts) == 1 && parts[0] != "" {
 		return true, host, parts[0], model.PlatformGitHub
 	}
 	// GitLab group: could be 1+ segments, but we only treat it as a group
@@ -610,7 +616,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 
 	for _, repoURL := range repoURLs {
 		// Check if this is an org/group URL instead of a repo URL.
-		if isOrg, host, orgName, plat := isOrgURL(repoURL); isOrg {
+		if isOrg, host, orgName, plat := isOrgURL(repoURL, cfg.GitHub.GitHubAPIBase()); isOrg {
 			logger.Info("expanding organization", "org", orgName, "platform", plat)
 
 			// Create a repo_group for this org so the refresh job can re-scan it later.
@@ -2136,6 +2142,7 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		// the auto-approve limit for the portal repo-add endpoint.
 		Mailer:              mailer.New(mailerConfigFrom(cfg), logger),
 		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
+		GitHubAPIBase:       cfg.GitHub.GitHubAPIBase(),
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailer"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Server is the Aveloxis REST API server.
@@ -49,6 +50,7 @@ type Server struct {
 	// endpoint. Both zero-valued when unconfigured.
 	mailer              *mailer.Mailer
 	autoApproveAddLimit int
+	ghAPIBase           string // github.base_url, normalised; travels with every org registration
 
 	// v0.27.82: narrow seam for the shared-link auto-add in
 	// authorizeRepo (set to the store at construction; nil in bare
@@ -82,6 +84,7 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
 		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit,
+		ghAPIBase:    platform.GitHubAPIBaseOrPublic(opts.GitHubAPIBase),
 		sharedWithMe: store}
 	s.homeLoader = store.GetHomeRepos
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)

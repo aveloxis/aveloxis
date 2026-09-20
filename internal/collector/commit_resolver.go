@@ -60,9 +60,7 @@ type CommitResolver struct {
 // party. BOTH clients here are built on it — the REST client and the search
 // client — because either one carries the key.
 func NewCommitResolver(store *db.PostgresStore, keys *platform.KeyPool, baseURL string, logger *slog.Logger) *CommitResolver {
-	if baseURL == "" {
-		baseURL = "https://api.github.com"
-	}
+	baseURL = platform.GitHubAPIBaseOrPublic(baseURL)
 	return &CommitResolver{
 		store:        store,
 		http:         platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitHub),

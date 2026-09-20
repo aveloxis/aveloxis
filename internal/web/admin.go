@@ -22,6 +22,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailer"
+	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
@@ -67,7 +68,7 @@ func (s *Server) notifyAddRequestSubmitted(requestID int64) {
 // re-approve that completes a missing registration is changed=true, so it
 // scans and notifies like a first approval.
 func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID int, approve bool) error {
-	req, changed, err := s.store.DecideAddRequest(ctx, requestID, adminID, approve)
+	req, changed, err := s.store.DecideAddRequest(ctx, requestID, adminID, approve, s.ghAPIBase)
 	if err != nil {
 		return err
 	}
@@ -121,7 +122,16 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid request id", http.StatusBadRequest)
 		return
 	}
-	if err := s.decideAddRequest(r.Context(), requestID, sess.UserID, true); err != nil {
+	err = s.decideAddRequest(r.Context(), requestID, sess.UserID, true)
+	if errors.Is(err, db.ErrOrgOffGitHubHost) {
+		// A pending org that is not on this deployment's GitHub host cannot
+		// be approved — nothing would ever enumerate it (v0.29.57 round 3;
+		// the portal reports the same store refusal the same way).
+		s.logger.Warn("add-request approval refused — org is not on this deployment's GitHub host", "request_id", requestID, "error", err)
+		http.Error(w, "Cannot approve: "+err.Error()+" ("+platform.GitHubWebHost(s.ghAPIBase)+"); reject the request instead", http.StatusConflict)
+		return
+	}
+	if err != nil {
 		s.logger.Warn("failed to approve add-request", "request_id", requestID, "error", err)
 		http.Error(w, "Failed to approve request: "+err.Error(), http.StatusInternalServerError)
 		return

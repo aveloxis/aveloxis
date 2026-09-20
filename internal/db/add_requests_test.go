@@ -257,7 +257,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 	}
 
 	// --- approval creates + enqueues + links, resumably ---
-	req, changed, err := store.DecideAddRequest(ctx, out.RequestID, adminID, true)
+	req, changed, err := store.DecideAddRequest(ctx, out.RequestID, adminID, true, "")
 	if err != nil || !changed {
 		t.Fatalf("approve: changed=%v err=%v", changed, err)
 	}
@@ -286,7 +286,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 		t.Errorf("re-processing must be a no-op, processed=%d err=%v", processed, err)
 	}
 	// Double decision is a no-op.
-	if _, changed, _ := store.DecideAddRequest(ctx, out.RequestID, adminID, true); changed {
+	if _, changed, _ := store.DecideAddRequest(ctx, out.RequestID, adminID, true, ""); changed {
 		t.Error("double approval must report changed=false")
 	}
 
@@ -296,7 +296,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, changed, err := store.DecideAddRequest(ctx, out.RequestID, adminID, false); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, out.RequestID, adminID, false, ""); err != nil || !changed {
 		t.Fatalf("reject: changed=%v err=%v", changed, err)
 	}
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_git = $1`, rejURL).Scan(&n)
@@ -320,7 +320,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 
 	// --- org registration pends for non-admins; approval registers ---
 	orgURL := fmt.Sprintf("https://github.com/_avaddreqorg%d", suffix)
-	orgOut, err := store.AddOrgToGroup(ctx, userID, groupID, orgURL)
+	orgOut, err := store.AddOrgToGroup(ctx, userID, groupID, orgURL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 	if n != 0 {
 		t.Fatal("unapproved org must NOT reach user_org_requests — that table means 'approved to scan'")
 	}
-	if _, changed, err := store.DecideAddRequest(ctx, orgOut.RequestID, adminID, true); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, orgOut.RequestID, adminID, true, ""); err != nil || !changed {
 		t.Fatalf("org approve: changed=%v err=%v", changed, err)
 	}
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.user_org_requests WHERE org_url = $1`, orgURL).Scan(&n)

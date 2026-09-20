@@ -31,7 +31,7 @@ func (r RepoURL) APIURL() string {
 	switch r.Platform {
 	case model.PlatformGitHub:
 		if r.Host == "github.com" {
-			return "https://api.github.com"
+			return PublicGitHubAPIBase
 		}
 		// GitHub Enterprise
 		return fmt.Sprintf("https://%s/api/v3", r.Host)

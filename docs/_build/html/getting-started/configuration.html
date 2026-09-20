@@ -1736,6 +1736,7 @@ a half against its own reference table below:</p>
 <span class="w">    </span><span class="nt">&quot;workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;force_full&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;materialized_views&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;matview_rebuild_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;saturday&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;matview_rebuild_skip_dm_aggregates&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;activity_history_window_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
@@ -1901,7 +1902,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">github.base_url</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;https://api.github.com&quot;</span></code></p></td>
-<td><p>GitHub API base URL. Change this for GitHub Enterprise Server installations.</p></td>
+<td><p>GitHub API base URL. Change this for GitHub Enterprise Server installations. It also names the one host the <code class="docutils literal notranslate"><span class="pre">github.api_keys</span></code> are sent to (v0.29.57), and so the web host a GitHub organization URL must be on: an organization on any other host is refused when added (web, API, CLI loaders, admin approval) and never enumerated, and the periodic refresh skips such a pre-existing row with a WARN. When the base is not public GitHub, the OpenSSF Scorecard subprocess — which resolves its own host — is not lent a token in any mode: remote mode is skipped and a retained clone gets a local run.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1985,42 +1986,47 @@ a half against its own reference table below:</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code></p></td>
+<td><p>boolean</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Whether this deployment HAS the 20 materialized views. They are derived data for 8Knot and the analytics queries; a deployment that never reads them can set this to <code class="docutils literal notranslate"><span class="pre">false</span></code> and skip building them on every <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>. Setting it <code class="docutils literal notranslate"><span class="pre">false</span></code> does not DROP views that already exist — that is an operator action, not a config one — so a deployment that turns it off keeps refreshing the views it already built, by the weekly schedule and by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code> alike. Both ask the database what it has: on a database with no views they say so and do nothing.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;saturday&quot;</span></code></p></td>
 <td><p>Day of the week the scheduler refreshes the 20 materialized views. Values: <code class="docutils literal notranslate"><span class="pre">&quot;sunday&quot;</span></code>–<code class="docutils literal notranslate"><span class="pre">&quot;saturday&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;none&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;off&quot;</span></code> to never auto-rebuild. Independent of <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code> which always refreshes on demand. A refresh keeps each view’s definition; a changed definition is applied only by a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (see <a class="reference internal" href="upgrading.html"><span class="std std-doc">Upgrading</span></a>).</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_window_days</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_window_days</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">180</span></code></p></td>
 <td><p>Span of each GitHub <code class="docutils literal notranslate"><span class="pre">contributionsCollection</span></code> window the daily contributor-history backfill queries (v0.27.58). Clamped to 365 (GitHub’s hard 1-year window limit); non-positive falls back to 180. This is the STARTING span — when a window hits the 100-repositories-per-type cap or a contribution page cap, the worker halves the window recursively and logs the cap hit at INFO so loss rate is trackable.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_interval_minutes</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_interval_minutes</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
 <td><p>v0.28.3: the history sweep’s tick interval. Ticks arriving while a cycle is still running are dropped (single-flight), so a shorter interval never overlaps cycles.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_batch</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_batch</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">150</span></code></p></td>
 <td><p>v0.28.3: contributors claimed per sweep cycle.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_concurrency</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_concurrency</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8</span></code></p></td>
 <td><p>v0.28.3: contributors fetched concurrently within a cycle (the worker pool). The pre-v0.28.3 sweep was fully serial — ~1,170 contributors/day against a multi-million pool.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_window_concurrency</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_window_concurrency</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
 <td><p>v0.28.3: history windows fetched concurrently per contributor (a 10-year account is ~20 windows; the serial chain was the dominant per-contributor cost).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_cooldown_days</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.activity_history_cooldown_days</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">90</span></code></p></td>
 <td><p>v0.28.3: the re-audit cooldown — how long a backfilled contributor stays out of the claim pool (jittered like the breadth cooldown).</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_skip_dm_aggregates</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_skip_dm_aggregates</span></code></p></td>
 <td><p>boolean</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>When <code class="docutils literal notranslate"><span class="pre">true</span></code>, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the <code class="docutils literal notranslate"><span class="pre">dm_</span></code> aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, <code class="docutils literal notranslate"><span class="pre">dm_repo_*</span></code> / <code class="docutils literal notranslate"><span class="pre">dm_repo_group_*</span></code> tables update only when an operator runs <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--aggregates</span></code> (v0.28.18; plain <code class="docutils literal notranslate"><span class="pre">refresh-views</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> refresh the materialized views only). To disable the weekly rebuild entirely (matviews AND aggregates), set <code class="docutils literal notranslate"><span class="pre">matview_rebuild_day</span></code> to <code class="docutils literal notranslate"><span class="pre">&quot;disabled&quot;</span></code>.</p></td>

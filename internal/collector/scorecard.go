@@ -162,7 +162,8 @@ type ScorecardOptions struct {
 	APIBaseURL string
 
 	// RateLimitURL overrides the probe endpoint (test seam);
-	// "" = https://api.github.com/rate_limit.
+	// "" = scorecardRateLimitURLFor(APIBaseURL), the configured base's
+	// /rate_limit.
 	RateLimitURL string
 }
 
@@ -194,12 +195,9 @@ var ErrScorecardNoToken = errors.New("scorecard not run: no usable GitHub token 
 // (rateLimitDelta has the details). One spelling for every log site.
 const ScorecardAPICallsBasis = "instrument_token_sample"
 
-// scorecardRateLimitURL is the endpoint for the API-spend probe on public
-// GitHub.
-const scorecardRateLimitURL = "https://api.github.com/rate_limit"
-
-// remoteScorecardSupported reports whether a remote-primary scorecard run may
-// borrow a pool token for this deployment's host.
+// remoteScorecardSupported reports whether the pool token may be lent to the
+// scorecard subprocess at all on this deployment — remote mode, and the
+// local arms too (lentToken in RunScorecard).
 //
 // The subprocess resolves its own host from the repo URL and its environment;
 // nothing we pass routes it. So on a deployment whose github.base_url is not
@@ -211,11 +209,7 @@ const scorecardRateLimitURL = "https://api.github.com/rate_limit"
 // Teaching the subprocess about an Enterprise host is worklist item 34; it
 // needs that tool's env contract, which is not ours to assume.
 func remoteScorecardSupported(baseURL string) bool {
-	switch strings.TrimRight(baseURL, "/") {
-	case "", "https://api.github.com":
-		return true
-	}
-	return false
+	return platform.IsPublicGitHubBase(baseURL)
 }
 
 // scorecardRateLimitURLFor is that endpoint on the deployment's own host.
@@ -224,10 +218,7 @@ func remoteScorecardSupported(baseURL string) bool {
 // sites need it: the scheduler's per-repo attempt and `aveloxis
 // run-scorecard`.
 func scorecardRateLimitURLFor(baseURL string) string {
-	if baseURL == "" {
-		return scorecardRateLimitURL
-	}
-	return strings.TrimRight(baseURL, "/") + "/rate_limit"
+	return strings.TrimRight(platform.GitHubAPIBaseOrPublic(baseURL), "/") + "/rate_limit"
 }
 
 // ScorecardTokens builds scorecard's comma-separated GITHUB_TOKEN value
@@ -259,7 +250,12 @@ func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, r
 // stores results in repo_deps_scorecard. Requires the `scorecard` binary
 // on PATH (silently skipped otherwise).
 //
-// Mode selection (v0.27.5; empty-token arm v0.29.10):
+// Mode selection (v0.27.5; empty-token arm v0.29.10; host arm v0.29.57):
+//   - RemotePrimary on a github.base_url that is not public GitHub: remote
+//     is never attempted and no token is lent in ANY mode (the subprocess
+//     resolves its own host — remoteScorecardSupported); a retained clone
+//     gets a local run without a token, no clone → nil, nil. The WARN
+//     fires either way.
 //   - RemotePrimary (GitHub) with a lent token: remote attempt first; on
 //     error or per-attempt timeout, fall back to local mode when a clone
 //     path exists — 11 checks beat none. No clone → the remote error
@@ -291,11 +287,24 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// internal/api/logsafe.go, internal/web truncateForLog). v0.27.10.
 	safeRepoURL := scrubLogValue(opts.RepoURL)
 
+	// The loan travels ONLY to a host it belongs to. invokeScorecard
+	// exports it as GITHUB_TOKEN on every invocation, and local mode
+	// rewrites the clone's origin so the subprocess can reach the forge for
+	// its API-dependent checks — so on a deployment whose github.base_url
+	// is not public GitHub, an Enterprise token would reach a process that
+	// picks its own host through the LOCAL arms too, not just remote mode
+	// (v0.29.57, Copilot review 5260961848). Decided once, here, for every
+	// arm below; the pure-local checks need no token.
+	lentToken := opts.GithubToken
+	if !remoteScorecardSupported(opts.APIBaseURL) {
+		lentToken = ""
+	}
+
 	// runLocal is the one local-mode attempt shape (invoke on the clone,
 	// persist, no API instrumentation) shared by local-only platforms and
 	// the empty-loan arm below (SR-17).
 	runLocal := func() (*ScorecardResult, error) {
-		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
+		raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, lentToken, logger)
 		if localErr != nil {
 			return nil, localErr
 		}
@@ -305,7 +314,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	if opts.RemotePrimary && !remoteScorecardSupported(opts.APIBaseURL) {
 		// See remoteScorecardSupported: the subprocess would choose its own
 		// host for a token that belongs to this deployment's.
-		logger.Warn("scorecard remote mode skipped — github.base_url is not public GitHub and the scorecard subprocess resolves its own host, so the API token is not lent (worklist 34)",
+		logger.Warn("scorecard remote mode skipped — github.base_url is not public GitHub and the scorecard subprocess resolves its own host, so the API token is not lent to it in any mode; a retained clone gets a local run without it (worklist 34)",
 			"repo_id", repoID, "url", safeRepoURL, "api_base", opts.APIBaseURL)
 		if opts.LocalPath == "" {
 			return nil, nil
@@ -329,7 +338,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// `scorecard --repo` without one sleeps out the rate limit for the
 	// whole per-attempt timeout (ErrScorecardNoToken). Decided HERE, the
 	// layer that owns mode selection, so neither caller can reach it.
-	if opts.GithubToken == "" {
+	if lentToken == "" {
 		if opts.LocalPath == "" {
 			logger.Warn("scorecard not run — no usable GitHub token lent (none configured, or every key quarantined, cooling down or refused) and no clone for local mode; retried next cycle",
 				"repo_id", repoID, "url", safeRepoURL)
@@ -346,7 +355,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		rlURL = scorecardRateLimitURLFor(opts.APIBaseURL)
 	}
 	before := fetchRateLimitSnapshot(ctx, rlURL, opts.InstrumentToken, logger)
-	raw, remoteErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, "", timeout, opts.GithubToken, logger)
+	raw, remoteErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, "", timeout, lentToken, logger)
 	apiCalls := int64(0)
 	if opts.InstrumentToken != "" {
 		after := fetchRateLimitSnapshot(ctx, rlURL, opts.InstrumentToken, logger)
@@ -368,7 +377,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// Local backstop: 11 checks beat none. Fresh per-attempt timeout.
 	logger.Warn("scorecard remote attempt failed — falling back to local mode",
 		"repo_id", repoID, "url", safeRepoURL, "error", remoteErr)
-	raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, opts.GithubToken, logger)
+	raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, lentToken, logger)
 	if localErr != nil {
 		return nil, fmt.Errorf("scorecard remote attempt failed (%v); local fallback also failed: %w", remoteErr, localErr)
 	}

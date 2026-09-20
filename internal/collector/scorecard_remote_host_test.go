@@ -27,6 +27,8 @@ func TestRemoteScorecardOnlyOnPublicGitHub(t *testing.T) {
 		{"", true},
 		{"https://api.github.com", true},
 		{"https://api.github.com/", true},
+		{"https://api.github.com:443", true},
+		{"http://api.github.com", true},
 		{"https://ghe.example.invalid/api/v3", false},
 		{"https://github.example.com/api/v3", false},
 	} {

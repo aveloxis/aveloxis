@@ -43,8 +43,9 @@ type Server struct {
 	ghOAuth *oauth2.Config
 	glOAuth *oauth2.Config
 	ghKeys  *platform.KeyPool // for immediate org scanning
-	// ghAPIBase is the GitHub REST host those keys belong to (empty =
-	// public GitHub). A REQUIRED parameter of New, next to the pool, so a
+	// ghAPIBase is the GitHub REST host those keys belong to, normalised by
+	// New through platform.GitHubAPIBaseOrPublic so it is never empty. A
+	// REQUIRED parameter of New, next to the pool, so a
 	// caller cannot hand over the keys and forget the host they go with —
 	// which is how the org scan below sent an Enterprise token to public
 	// GitHub (v0.29.57, the last site of worklist item 34's client half).
@@ -83,7 +84,7 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 		store:     store,
 		cfg:       cfg,
 		ghKeys:    ghKeys,
-		ghAPIBase: ghAPIBase,
+		ghAPIBase: platform.GitHubAPIBaseOrPublic(ghAPIBase),
 		logger:    logger,
 		sessions:  make(map[string]*Session),
 	}
@@ -1267,6 +1268,8 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"Query":      query,
 		"PageWindow": pageWindow,
 		"AddError":   r.URL.Query().Get("add_error"),
+		"OrgError":   r.URL.Query().Get("org_error"),
+		"GitHubHost": platform.GitHubWebHost(s.ghAPIBase),
 	})
 }
 
@@ -1345,8 +1348,16 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 	orgURL := strings.TrimSpace(r.FormValue("org_url"))
 
 	if orgURL != "" && groupID > 0 {
-		out, err := s.store.AddOrgToGroup(r.Context(), sess.UserID, groupID, orgURL)
+		// The host travels with the registration: the store refuses a
+		// GitHub org that is not on this deployment's GitHub host
+		// (db.ErrOrgOffGitHubHost) in every writer, and the page says so.
+		out, err := s.store.AddOrgToGroup(r.Context(), sess.UserID, groupID, orgURL, s.ghAPIBase)
 		switch {
+		case errors.Is(err, db.ErrOrgOffGitHubHost):
+			s.logger.Warn("org not added — its host is not this deployment's GitHub host",
+				"group_id", groupID, "org_url", truncateForLog([]byte(orgURL), 200), "github_host", platform.GitHubWebHost(s.ghAPIBase))
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=host", groupID), http.StatusFound)
+			return
 		case err != nil:
 			s.logger.Warn("failed to add org to group", "error", err)
 		case out.Registered:
@@ -1381,7 +1392,12 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	if err != nil {
 		return
 	}
-	isGitHub := host == "github.com"
+	// The deployment's GitHub host, not the literal "github.com": on an
+	// Enterprise deployment the org lives on that host, and an org on
+	// public GitHub is not one this deployment's keys can enumerate
+	// (v0.29.57, Copilot review 5260961848 — the routed client below was
+	// unreachable for the only orgs it could serve).
+	isGitHub := platform.IsGitHubHost(host, s.ghAPIBase)
 
 	if !isGitHub || s.ghKeys == nil {
 		return

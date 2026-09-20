@@ -133,7 +133,7 @@ func runLoadNumfocusOrgs(cfgPath string, opts numfocusLoadOpts) error {
 				tally.planned++
 				continue
 			}
-			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, orgURL); err != nil {
+			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, orgURL, cfg.GitHub.GitHubAPIBase()); err != nil {
 				logger.Warn("failed to add numfocus org",
 					"section", section, "name", p.Name, "org_url", orgURL, "error", err)
 				tally.failed++

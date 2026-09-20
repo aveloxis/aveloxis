@@ -212,7 +212,7 @@ Every field is optional except `database` credentials and at least one API key s
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `github.api_keys` | string[] | `[]` | GitHub personal access tokens for API access. Multiple tokens enable round-robin rotation. |
-| `github.base_url` | string | `"https://api.github.com"` | GitHub API base URL. Change this for GitHub Enterprise Server installations. |
+| `github.base_url` | string | `"https://api.github.com"` | GitHub API base URL. Change this for GitHub Enterprise Server installations. It also names the one host the `github.api_keys` are sent to (v0.29.57), and so the web host a GitHub organization URL must be on: an organization on any other host is refused when added (web, API, CLI loaders, admin approval) and never enumerated, and the periodic refresh skips such a pre-existing row with a WARN. When the base is not public GitHub, the OpenSSF Scorecard subprocess — which resolves its own host — is not lent a token in any mode: remote mode is skipped and a retained clone gets a local run. |
 
 ### GitLab
 

@@ -950,7 +950,7 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 | `explorer_repo_files` | Latest SCC file listing per repo (most recent analysis date) |
 | `issue_reporter_created_at` | Legacy issue reporter view |
 
-**Optional:** `collection.materialized_views` (default `true`) says whether this deployment has the views at all. With it `false`, neither `aveloxis serve` nor `aveloxis migrate` builds them, and the commands below have nothing to refresh; existing views are not dropped. Everything that follows assumes they are enabled.
+**Optional:** `collection.materialized_views` (default `true`) says whether this deployment has the views at all. With it `false`, neither `aveloxis serve` nor `aveloxis migrate` creates or rebuilds them. Views that already exist are kept, and `aveloxis refresh-views` and the weekly rebuild still refresh whatever exists — they ask the database catalog which views are present, not this setting — so the option prevents creation and rebuild by migration, not refreshes of views already there. Everything that follows assumes they are enabled.
 
 **Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; subsequent startups skip them. Manual refresh: `aveloxis refresh-views` (data only; each view keeps its definition). The explicit `aveloxis migrate` command, without `--skip-views`, drops and re-creates every view from its definition — the only step that applies a changed definition.
 

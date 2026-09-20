@@ -147,7 +147,7 @@ func TestAdminAddRequestReapproveResumesProcessing(t *testing.T) {
 	if err != nil || out.RequestID == 0 {
 		t.Fatalf("AddReposToGroup = %+v, %v; want a pending request", out, err)
 	}
-	if _, changed, err := store.DecideAddRequest(ctx, out.RequestID, uid, true); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, out.RequestID, uid, true, ""); err != nil || !changed {
 		t.Fatalf("first approval: changed=%v err=%v", changed, err)
 	}
 	unprocessed := func() int {
@@ -197,7 +197,7 @@ func TestAdminAddRequestReapproveResumesProcessing(t *testing.T) {
 	if err != nil || rejected.RequestID == 0 {
 		t.Fatalf("AddReposToGroup = %+v, %v", rejected, err)
 	}
-	if _, changed, err := store.DecideAddRequest(ctx, rejected.RequestID, uid, false); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, rejected.RequestID, uid, false, ""); err != nil || !changed {
 		t.Fatalf("reject: changed=%v err=%v", changed, err)
 	}
 	rr := httptest.NewRequest(http.MethodPost, "/admin/add-requests/"+strconv.FormatInt(rejected.RequestID, 10)+"/approve", nil)
@@ -256,7 +256,7 @@ func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := store.AddOrgToGroup(ctx, uid, gid, orgURL)
+	out, err := store.AddOrgToGroup(ctx, uid, gid, orgURL, "")
 	if err != nil || out.RequestID == 0 {
 		t.Fatalf("AddOrgToGroup = %+v, %v; want a pending request", out, err)
 	}

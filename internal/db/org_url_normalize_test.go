@@ -84,7 +84,7 @@ func TestAddOrgToGroupCanonicalizesSchemeEndToEnd(t *testing.T) {
 		t.Fatalf("seed group: %v", err)
 	}
 
-	out, err := store.AddOrgToGroup(ctx, userID, groupID, "github.com/avtest-schemeless-org")
+	out, err := store.AddOrgToGroup(ctx, userID, groupID, "github.com/avtest-schemeless-org", "")
 	if err != nil {
 		t.Fatalf("AddOrgToGroup: %v", err)
 	}

@@ -2195,6 +2195,14 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	if s.ghKeys == nil {
 		return 0
 	}
+	// Host gate — see refreshUserOrgs: the group's website names the org,
+	// and a github.com org on an Enterprise deployment (or the reverse) is
+	// not the same-named org on the configured host.
+	if !platform.OrgOnGitHubHost(g.Website, s.ghAPIBase) {
+		s.logger.Warn("org refresh skipped — the repo group's website is not on this deployment's GitHub host; the org name would be enumerated on the wrong host",
+			"org", g.Name, "website", g.Website, "github_host", platform.GitHubWebHost(s.ghAPIBase))
+		return 0
+	}
 	// s.ghAPIBase, not a literal (v0.29.57): this is the SECOND org-scan
 	// client — the legacy repo_groups refresh — and it was missed when
 	// scanOrgRepos moved onto the configured host, which is exactly the
@@ -2586,7 +2594,7 @@ func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 	if !s.dbHealthy.Load() {
 		return
 	}
-	pending, err := s.store.HasNeverScannedOrgs(ctx)
+	pending, err := s.store.HasNeverScannedOrgs(ctx, s.ghAPIBase)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
@@ -2670,6 +2678,22 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		if status, serr := s.store.GetGroupStatus(ctx, groupID); serr == nil && status == "rejected" {
 			s.logger.Warn("org scan skipped — owning group is rejected",
 				"group_id", groupID, "org", org.OrgName)
+			continue
+		}
+
+		// Host gate (v0.29.57, rounds 1–2 on the 5260961848 fixes): the
+		// registered URL names the org; the NAME alone does not. An org
+		// registered on a host other than the deployment's GitHub host is
+		// never enumerated here — the same name on the deployment's host
+		// is a different org. The store refuses such a registration in
+		// every writer (db.ErrOrgOffGitHubHost); this is the belt for rows
+		// that predate it. The row stays unstamped (SR-3), so this log
+		// repeats each 4-hour pass until the operator removes the row —
+		// and the never-scanned probe does not count it
+		// (db.OrgScanEligible), so it does not re-fire the demand scan.
+		if org.Platform == "github" && !platform.OrgOnGitHubHost(org.OrgURL, s.ghAPIBase) {
+			s.logger.Warn("org scan skipped — the registered URL is not on this deployment's GitHub host; the org name would be enumerated on the wrong host",
+				"group_id", groupID, "org", org.OrgName, "org_url", org.OrgURL, "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			continue
 		}
 

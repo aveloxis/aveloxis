@@ -335,7 +335,7 @@ func (s *PostgresStore) ListPendingAddRequests(ctx context.Context) ([]AddReques
 // registration happens HERE (INSERT into user_org_requests): presence
 // in that table means "approved to scan", which is what keeps the
 // scheduler's org tickers gate-free by construction.
-func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, adminID int, approve bool) (AddRequest, bool, error) {
+func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, adminID int, approve bool, ghAPIBase string) (AddRequest, bool, error) {
 	var req AddRequest
 	err := s.pool.QueryRow(ctx, `
 		SELECT ar.request_id, ar.user_id, u.login_name, COALESCE(u.email, ''),
@@ -379,7 +379,7 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		// completes the approval, so it reports changed=true and the caller
 		// notifies the requester then.
 		if approve && req.Status == "approved" && req.Kind == "org" {
-			inserted, err := registerApprovedOrg(ctx, tx, req)
+			inserted, err := registerApprovedOrg(ctx, tx, req, ghAPIBase)
 			if err != nil {
 				return req, false, err
 			}
@@ -391,7 +391,7 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		return req, false, nil
 	}
 	if approve && req.Kind == "org" {
-		if _, err := registerApprovedOrg(ctx, tx, req); err != nil {
+		if _, err := registerApprovedOrg(ctx, tx, req, ghAPIBase); err != nil {
 			return req, false, err
 		}
 	}
@@ -400,6 +400,44 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 	}
 	req.Status = newStatus
 	return req, true, nil
+}
+
+// ErrOrgOffGitHubHost refuses a GitHub org URL whose host is not this
+// deployment's GitHub host (github.base_url's web host). Every consumer
+// enumerates the org NAME on the configured base, so a same-named org on
+// another host is a different org; the store refuses the registration in
+// every writer — the web and portal adds, the CLI loaders and an admin's
+// approval — rather than leaving a row the refreshes must skip forever
+// (v0.29.57, round 2 on the Copilot 5260961848 fixes).
+var ErrOrgOffGitHubHost = errors.New("organization is not on this deployment's GitHub host")
+
+// orgRegistrable is the registration gate: a "github"-labelled org must be
+// on the deployment's GitHub host. GitLab groups are not gated here (their
+// keys are routed by host elsewhere, and no refresh enumerates them yet). A
+// URL that does not PARSE is not "off the host" — it is left to the checks
+// that name that defect (the database's value rejection, ErrURLTooLong), so
+// a caller's error text stays true (the NUL-byte case in
+// TestGroupAddRepoErrorStatus).
+func orgRegistrable(platformName, orgURL, ghAPIBase string) error {
+	host, _, err := platform.ParseOrgURL(orgURL)
+	if err != nil {
+		return nil
+	}
+	if platformName == "github" && !platform.IsGitHubHost(host, ghAPIBase) {
+		return ErrOrgOffGitHubHost
+	}
+	return nil
+}
+
+// OrgScanEligible reports whether a registered org row is one the periodic
+// refresh will ENUMERATE: a "github" row on the deployment's GitHub host.
+// The never-scanned probe counts only these. A github row the host gate
+// skips is never stamped and would otherwise re-fire the demand scan on
+// every poll tick (round 2; the rejected-group exclusion has the same
+// reason); a GitLab group is stamped by the full pass but nothing
+// enumerates it, so a demand scan for one would only stamp it (round 3).
+func OrgScanEligible(platformName, orgURL, ghAPIBase string) bool {
+	return platformName == "github" && platform.OrgOnGitHubHost(orgURL, ghAPIBase)
 }
 
 // registerApprovedOrg records an approved org request in user_org_requests,
@@ -414,8 +452,11 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 // TestAddOrgToGroupAutoApproveIsAtomic inject failures into both writes. The
 // admin add and the half-state re-approve pass a transaction that holds only
 // the registration.
-func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest) (bool, error) {
+func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBase string) (bool, error) {
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
+	if err := orgRegistrable(platformName, req.OrgURL, ghAPIBase); err != nil {
+		return false, err
+	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_org_requests
 			(user_id, group_id, org_url, org_name, platform)

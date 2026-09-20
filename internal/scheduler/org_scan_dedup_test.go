@@ -137,6 +137,9 @@ func newOrgScanFixture(t *testing.T) (*orgScanFixture, context.Context) {
 	return fx, ctx
 }
 
+// webHost is the deployment's GitHub web host as the fixture configured it.
+func (fx *orgScanFixture) webHost() string { return platform.GitHubWebHost(fx.s.ghAPIBase) }
+
 func (fx *orgScanFixture) hitCount(path string) int {
 	fx.mu.Lock()
 	defer fx.mu.Unlock()
@@ -168,12 +171,21 @@ func (fx *orgScanFixture) seedUserAndGroup(t *testing.T, ctx context.Context, lo
 	return userID, groupID
 }
 
+// registerOrg registers orgName on the deployment's own GitHub host — the
+// fake server's, since the fixture points ghAPIBase at it. An org registered
+// on any other host is not enumerated (v0.29.57 round 1; see
+// org_scan_github_host_test.go), so the URL must agree with the base.
 func (fx *orgScanFixture) registerOrg(t *testing.T, ctx context.Context, userID int, groupID int64, orgName string) {
+	t.Helper()
+	fx.registerOrgURL(t, ctx, userID, groupID, "https://"+platform.GitHubWebHost(fx.s.ghAPIBase)+"/"+orgName, orgName)
+}
+
+func (fx *orgScanFixture) registerOrgURL(t *testing.T, ctx context.Context, userID int, groupID int64, orgURL, orgName string) {
 	t.Helper()
 	if _, err := fx.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_org_requests (user_id, group_id, org_url, org_name, platform)
 		VALUES ($1, $2, $3, $4, 'github') ON CONFLICT (group_id, org_url) DO NOTHING`,
-		userID, groupID, "https://github.com/"+orgName, orgName); err != nil {
+		userID, groupID, orgURL, orgName); err != nil {
 		t.Fatal(err)
 	}
 }

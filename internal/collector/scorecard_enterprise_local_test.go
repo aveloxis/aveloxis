@@ -81,13 +81,13 @@ func TestRunScorecardLendsTheTokenThroughOneName(t *testing.T) {
 	if n := strings.Count(body, "lentToken := opts.GithubToken"); n != 1 {
 		t.Fatalf("RunScorecard must derive lentToken from opts.GithubToken exactly once, found %d", n)
 	}
-	// ...and nothing else is ASSIGNED from it after the host gate — a plain
-	// `lentToken = opts.GithubToken` inside an arm would re-lend the token
-	// past the gate while every call still names lentToken (round 9). A
-	// read for a log line (`len(opts.GithubToken)`) is not an assignment
-	// and passes.
-	if n := strings.Count(body, "= opts.GithubToken"); n != 1 {
-		t.Fatalf("lentToken is the only value assigned from opts.GithubToken, found %d assignments", n)
+	// ...and that derivation is the ONLY reference to opts.GithubToken in
+	// the body: a re-lend past the host gate in any spelling
+	// (`lentToken = opts.GithubToken`, `lentToken = strings.TrimSpace(opts.GithubToken)`,
+	// a gofmt line break after `=`) needs a second reference, and every
+	// call still naming lentToken would hide it (rounds 9–10).
+	if n := strings.Count(body, "opts.GithubToken"); n != 1 {
+		t.Fatalf("opts.GithubToken is referenced only by the lentToken derivation, found %d references", n)
 	}
 	if !strings.Contains(body, "if lentToken == \"\"") {
 		t.Error("the empty-loan check must read lentToken, the value the arms lend")
@@ -117,5 +117,32 @@ func TestRunScorecardLendsTheTokenThroughOneName(t *testing.T) {
 	}
 	if calls < 3 {
 		t.Fatalf("expected the three invocation arms (local, remote, fallback), found %d", calls)
+	}
+}
+
+// The no-clone half of the non-public arm: nothing runs, nothing is lent,
+// and the result is nil, nil (the repo is simply not scored; the arm WARNs).
+func TestScorecardNonPublicHostWithoutCloneRunsNothing(t *testing.T) {
+	argsLog, envLog := installFakeScorecard(t, `exit 3`)
+	store := &fakeScorecardStore{}
+	res, err := RunScorecard(context.Background(), store, 42, ScorecardOptions{
+		RepoURL:       "https://github.com/augurlabs/augur",
+		LocalPath:     "",
+		RemotePrimary: true,
+		Timeout:       time.Minute,
+		GithubToken:   "ghe-secret",
+		APIBaseURL:    "https://ghe.example.invalid/api/v3",
+	}, quietLogger())
+	if res != nil || err != nil {
+		t.Fatalf("RunScorecard = %+v, %v; want nil, nil — no clone and remote refused means not scored, not failed", res, err)
+	}
+	if args := readLines(t, argsLog); len(args) != 0 {
+		t.Errorf("scorecard was invoked %q; the non-public arm without a clone must run nothing", args)
+	}
+	if env := readLines(t, envLog); len(env) != 0 {
+		t.Errorf("a token reached the subprocess environment: %q", env)
+	}
+	if calls := store.snapshot(); len(calls) != 0 {
+		t.Errorf("persist calls = %v, want none", calls)
 	}
 }

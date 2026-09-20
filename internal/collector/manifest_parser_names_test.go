@@ -35,6 +35,8 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func writeManifest(t *testing.T, name, content string) string {
@@ -53,6 +55,19 @@ func depNames(deps []libyearDep) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// assertNames is assertDeps for the readers that return names only: an
+// EXACT set, so an extra fabricated name fails as loudly as a missing one.
+func assertNames(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	g := append([]string(nil), got...)
+	w := append([]string(nil), want...)
+	sort.Strings(g)
+	sort.Strings(w)
+	if strings.Join(g, ",") != strings.Join(w, ",") {
+		t.Errorf("%s:\n got  %v\n want %v", label, g, w)
+	}
 }
 
 func assertDeps(t *testing.T, label string, got []libyearDep, want []string) {
@@ -709,4 +724,557 @@ func TestDirectReferenceDetectedWithoutSpaces(t *testing.T) {
 			t.Errorf("isNonRegistryPyRequirement(%q) = true, want false", req)
 		}
 	}
+}
+
+// Every reader of the `name = constraint` grammar resolves a quoted key to
+// the same package name (v0.29.57, Copilot on PR #210): a name kept with its
+// quotes matches nothing on PyPI, and two readers of one file disagreeing is
+// the shape manifest_toml.go exists to prevent.
+func TestQuotedTOMLDependencyKeysNameTheSamePackage(t *testing.T) {
+	poetry := "[tool.poetry.dependencies]\npython = \"^3.11\"\n\"zope.interface\" = \"^6.0\"\nruamel.yaml = \"^0.18\"\n"
+	assertDeps(t, "poetry versions", parsePoetryVersions(poetry), []string{"zope.interface@6.0", "ruamel.yaml@0.18"})
+
+	pipfile := "[packages]\n\"zope.interface\" = \"==6.0\"\nruamel.yaml = \"==0.18\"\n"
+	assertDeps(t, "pipfile versions", parsePipfileVersions(pipfile), []string{"zope.interface@6.0", "ruamel.yaml@0.18"})
+
+	names, err := parsePipfileDeps(pipfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "parsePipfileDeps", names, []string{"zope.interface", "ruamel.yaml"})
+}
+
+// A bracket inside a quoted item is part of the VALUE — `"celery[redis]>=5.0"`
+// names one package with an extra — and a bracket in a comment is not syntax
+// at all. Both readers of `[project].dependencies` decided where the array
+// began and ended with quote-blind `strings.Contains`, so:
+//
+//   - an extra on the OPENING line ended the array immediately and every
+//     later dependency was dropped from the inventory, from libyear and from
+//     the OSV scan; and
+//   - the last item sharing a line with the closer (`"celery>=5.0"]`) left
+//     the array open, so `requires-python`, `name` and `version` were
+//     collected as dependencies and the item's own version kept the `"]`.
+//
+// Measured on the fixtures below before the fix (v0.29.57). The dev/build
+// reader was given the quote-aware rule first; these are its runtime
+// siblings, and they read the same file.
+func TestProjectDependencyArrayBoundsIgnoreQuotedBrackets(t *testing.T) {
+	t.Run("an extra on the opening line does not end the array", func(t *testing.T) {
+		content := "[project]\ndependencies = [\"celery[redis]>=5.0\",\n  \"flask==2.0\",\n  \"requests>=2.31\",\n]\n"
+		assertDeps(t, "pep621 versions", parsePEP621Versions(content),
+			[]string{"celery@5.0", "flask@2.0", "requests@2.31"})
+		names, err := parsePyprojectDeps(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNames(t, "pep621 inventory", names, []string{"celery", "flask", "requests"})
+	})
+
+	t.Run("the closer may share a line with the last item", func(t *testing.T) {
+		content := "[project]\ndependencies = [\n  \"flask==2.0\",\n  \"celery>=5.0\"]\nrequires-python = \">=3.9\"\nname = \"demo\"\nversion = \"1.2.3\"\n"
+		assertDeps(t, "pep621 versions", parsePEP621Versions(content),
+			[]string{"flask@2.0", "celery@5.0"})
+		names, err := parsePyprojectDeps(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNames(t, "pep621 inventory", names, []string{"flask", "celery"})
+	})
+
+	t.Run("a commented-out item is not a dependency", func(t *testing.T) {
+		content := "[project]\ndependencies = [\n  # \"coverage>=7\" dropped for now\n  \"flask==2.0\",  # the web bit\n]\n"
+		assertDeps(t, "pep621 versions", parsePEP621Versions(content), []string{"flask@2.0"})
+		names, err := parsePyprojectDeps(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNames(t, "pep621 inventory", names, []string{"flask"})
+	})
+}
+
+// The same comment rule at the other three readers of the `name = constraint`
+// grammar. Production evidence (chaoss.tv extract, 2026-09-17): 234 rows of
+// repo_deps_libyear carry a version ending in a stray quote, one of them the
+// entire trailing comment — the version reaches the purl and the OSV lookup,
+// and a commented-out line was inventoried as a package literally named
+// "# requests".
+func TestTrailingAndWholeLineCommentsAreNotDependencies(t *testing.T) {
+	poetry := "[tool.poetry.dependencies]\nblack = \"^24.0\"  # pinned\n# requests = \"^2.0\"\n"
+	assertDeps(t, "poetry versions", parsePoetryVersions(poetry), []string{"black@24.0"})
+
+	pipfile := "[packages]\nrequests = \"==2.0\"  # http\n# flask = \"==1.0\"\n"
+	assertDeps(t, "pipfile versions", parsePipfileVersions(pipfile), []string{"requests@2.0"})
+
+	names, err := parsePipfileDeps(pipfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "pipfile inventory", names, []string{"requests"})
+}
+
+// setup.py declares its requirements as a Python list, and the list obeys the
+// same two rules as a TOML array: a bracket inside a quoted requirement is
+// part of the value, and a `#` comment is not code. Both setup.py readers
+// decided the list had ended at the first `]` they saw anywhere on a line, so
+// an extra in the FIRST requirement truncated the list — every later
+// dependency missing from the inventory, from libyear and from the OSV scan —
+// and neither stripped comments, so a requirement someone had commented out
+// was collected, looked up and scanned (v0.29.57).
+func TestSetupPyRequirementListBoundsAndComments(t *testing.T) {
+	multi := `setup(
+    name="demo",
+    install_requires=[
+        "celery[redis]>=5.0",
+        "flask==2.0",
+        "requests>=2.31",
+    ],
+)
+`
+	names, err := parseSetupPyDeps(multi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "setup.py inventory", names, []string{"celery", "flask", "requests"})
+	assertDeps(t, "setup.py versions", parseSetupPyVersions(multi),
+		[]string{"celery@5.0", "flask@2.0", "requests@2.31"})
+
+	commented := `setup(install_requires=[
+        # 'old-pkg>=1',
+        'flask==2.0',
+    ],
+    tests_require=[
+        # 'old-test-pkg>=2',
+        'pytest>=7',
+    ],
+)
+`
+	names2, err := parseSetupPyDeps(commented)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "setup.py inventory", names2, []string{"flask"})
+	assertDeps(t, "setup.py versions", parseSetupPyVersions(commented), []string{"flask@2.0"})
+	for _, d := range parseSetupPyDevBuildVersions(commented) {
+		if d.Name == "old-test-pkg" {
+			t.Error("a commented-out requirement in tests_require was collected as a test dependency")
+		}
+	}
+}
+
+// A Poetry inline table may span lines. Its continuation lines are the
+// table's KEYS — `version`, `extras`, `git` — and reading them as
+// declarations of their own invented packages literally named after the key:
+// 56 libyear rows and 21 dependency rows on the production database carried
+// one. They reach the purl and the OSV lookup like any other name.
+func TestMultilineInlineTableDoesNotNameItsKeys(t *testing.T) {
+	check := func(t *testing.T, label string, got []libyearDep, after string) {
+		t.Helper()
+		found := false
+		for _, d := range got {
+			switch d.Name {
+			case "version", "extras", "git", "path", "optional", "markers":
+				t.Errorf("%s: the inline table's %q key was collected as a package (at version %q)", label, d.Name, d.Version)
+			case after:
+				found = true
+			}
+		}
+		// The dependency AFTER the table must still be found: a table that
+		// never closes would swallow the rest of the section.
+		if !found {
+			t.Errorf("%s: %s, declared after the multi-line table, was not collected — the table never closed", label, after)
+		}
+	}
+
+	poetry := "[tool.poetry.dependencies]\nblack = {\n    version = \"^24.0\",\n    extras = [\"d\"]\n}\nflask = \"^2.0\"\n"
+	check(t, "parsePoetryVersions", parsePoetryVersions(poetry), "flask")
+
+	group := "[tool.poetry.group.dev.dependencies]\nblack = {\n    version = \"^24.0\",\n    extras = [\"d\"]\n}\nruff = \"^0.4\"\n"
+	check(t, "parsePyprojectDevBuildVersions", parsePyprojectDevBuildVersions(group), "ruff")
+
+	pipfile := "[packages]\nblack = {\n    version = \"==24.0\"\n}\nflask = \"==2.0\"\n"
+	check(t, "parsePipfileVersions", parsePipfileVersions(pipfile), "flask")
+
+	names, err := parsePipfileDeps(pipfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "parsePipfileDeps", names, []string{"black", "flask"})
+}
+
+// A line that CONTINUES a multi-line inline table can begin with `[` — an
+// array value wrapped onto its own line — and the Pipfile readers checked for
+// a section header before they checked whether a table was open, so that line
+// was taken as a new section: the table never closed, and every remaining
+// declaration in the FILE was skipped. Worse than what it replaced, because
+// the old code recovered at the next section header. Every reader that tracks
+// an open table checks that first now (v0.29.57): the four line readers here
+// and in analysis_devbuild.go, plus scanTOMLDepTables, which carries the same
+// state for the NAME inventory and the Cargo tables. The [dev-packages]
+// reader has no such check to order — it delegates rather than splitting.
+func TestPipfileInlineTableDoesNotSwallowTheRestOfTheFile(t *testing.T) {
+	content := `[packages]
+black = {version = "==24.0", extras =
+    ["d"]}
+flask = "*"
+
+[dev-packages]
+pytest = "*"
+
+[packages]
+requests = "*"
+`
+	names, err := parsePipfileDeps(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "pipfile inventory", names, []string{"black", "flask", "requests"})
+
+	var got []string
+	for _, d := range parsePipfileVersions(content) {
+		got = append(got, d.Name)
+	}
+	assertNames(t, "pipfile versions", got, []string{"black", "flask", "requests"})
+}
+
+// The Gemfile name inventory split the RAW line on `'` and only fell back to
+// `"` when the line held no apostrophe at all — so an apostrophe in a trailing
+// comment became the split point, and a double-quoted gem (what Rails' own
+// generated Gemfile writes) came back as the comment's text while the real gem
+// was lost. Its sibling version reader already stripped the comment, so the
+// two readers of one Gemfile disagreed.
+func TestGemfileNamesIgnoreApostrophesInComments(t *testing.T) {
+	for _, tc := range []struct{ content, want string }{
+		{"gem \"rails\", \"~> 7.0\" # don't upgrade yet\n", "rails"},
+		{"gem \"rails\" # we shouldn't upgrade\n", "rails"},
+		{"gem 'rails' # don't upgrade\n", "rails"},
+		{"gem \"rails\"\n", "rails"},
+		// A double-quoted NAME with a single-quoted CONSTRAINT: the split
+		// preferred `'`, so the constraint became the package. 387 rows of
+		// the production database are a Ruby "package" named `~> 7.0` or so.
+		{"gem \"rails\", '~> 7.0'\n", "rails"},
+		{"gem 'rails', \"~> 7.0\"\n", "rails"},
+	} {
+		assertNames(t, "gemfile "+tc.content, parseGemfile(tc.content), []string{tc.want})
+	}
+	// A commented-out gem is not a dependency at all.
+	assertNames(t, "commented-out gem", parseGemfile("# gem \"old\"\ngem \"rails\"\n"), []string{"rails"})
+}
+
+// Scala and Swift comment with `//`, and neither reader stripped it, so a
+// declaration someone had commented out was collected — with a valid-looking
+// version, so it survived normalisation and reached the purl, the registry
+// lookup and the OSV scan. A `//` inside a string (every Swift package URL)
+// is not a comment.
+func TestSlashCommentsAreNotDeclarations(t *testing.T) {
+	sbt := "libraryDependencies += \"org.typelevel\" %% \"cats-core\" % \"2.10\"\n// libraryDependencies += \"old\" %% \"pkg\" % \"1.0\"\n"
+	assertNames(t, "build.sbt inventory", parseBuildSbt(sbt), []string{"org.typelevel:cats-core"})
+	assertDeps(t, "build.sbt versions", parseBuildSbtVersions(sbt), []string{"org.typelevel:cats-core@2.10"})
+
+	sw := ".package(url: \"https://github.com/apple/swift-nio.git\", from: \"2.0.0\"),\n// .package(url: \"https://github.com/old/pkg.git\", from: \"1.0.0\"),\n"
+	assertNames(t, "Package.swift inventory", parsePackageSwiftDeps(sw), []string{"swift-nio"})
+	assertDeps(t, "Package.swift versions", parsePackageSwiftVersions(sw), []string{"swift-nio@2.0.0"})
+}
+
+// setup.py's extras dict is `{'test': [...], 'dev': [...]}`. The reader cut
+// through the FIRST colon only, so on a single-line dict every later KEY was
+// handed to the requirement extractor and became a package of its own.
+func TestSetupPyExtrasKeysAreNotPackages(t *testing.T) {
+	got := parseSetupPyDevBuildVersions("setup(extras_require={'test': ['pytest>=7'], 'dev': ['ruff>=0.4']})\n")
+	for _, d := range got {
+		if d.Name == "dev" || d.Name == "test" {
+			t.Errorf("the extras key %q was collected as a package", d.Name)
+		}
+	}
+	assertDeps(t, "setup.py extras", got, []string{"pytest@7", "ruff@0.4"})
+}
+
+// Poetry's MULTIPLE CONSTRAINTS form is a dependency whose value is an ARRAY
+// of tables (`foo = [{version = "<=1.9", …}, {version = "^2.0", …}]`). The
+// line readers take the opening bracket as the value and emit `foo` at
+// version `[` — a fragment, not a version. That is not fixed in the readers
+// on purpose: the central version-hygiene choke point (v0.27.71,
+// normalizeParsedVersion, applied to EVERY parser's output in scanLibyear
+// before resolution, storage and purl construction) is the layer that owns
+// version validity, and a fourth spelling of the rule in the readers would be
+// the duplication SR-17 exists to prevent. This pins that the gate really
+// does reject what these readers can emit — production carries zero rows with
+// such a version, which is the same claim measured from the other end.
+func TestVersionGateRejectsTheFragmentsTheReadersCanEmit(t *testing.T) {
+	for _, frag := range []string{"[", "[{version", "{version = \"*\"", "{"} {
+		if got := normalizeParsedVersion("pypi", frag); got != "" {
+			t.Errorf("normalizeParsedVersion(pypi, %q) = %q, want \"\" — a value the manifest readers can emit from a multi-line or multi-constraint declaration is not a version, and storing it would put it in the purl OSV is asked about", frag, got)
+		}
+	}
+	// A real version still passes, or the gate would be rejecting everything.
+	if got := normalizeParsedVersion("pypi", "24.0"); got != "24.0" {
+		t.Errorf("normalizeParsedVersion(pypi, \"24.0\") = %q, want it unchanged", got)
+	}
+}
+
+// [dev-packages] is read by isolating the section and handing it to the
+// [packages] reader, and that isolation was a SECOND section splitter with
+// the ordering this release fixed everywhere else: a continuation line
+// beginning with `[` ended the section, so the rest of [dev-packages] was
+// dropped before the delegate's own table tracking could see it.
+func TestPipfileDevPackagesSurviveAWrappedTable(t *testing.T) {
+	content := `[packages]
+flask = "*"
+
+[dev-packages]
+black = {version = "==24.0", extras =
+    ["d"]}
+pytest = "*"
+mypy = "*"
+`
+	var got []string
+	for _, d := range parsePipfileDevPackages(content) {
+		if d.Type != model.ScopeDev {
+			t.Errorf("%s came back as %q, want dev", d.Name, d.Type)
+		}
+		got = append(got, d.Name)
+	}
+	assertNames(t, "pipfile dev-packages", got, []string{"black", "pytest", "mypy"})
+	// The runtime section must not leak into the dev list.
+	for _, n := range got {
+		if n == "flask" {
+			t.Error("flask is declared in [packages] and must not be reported as a dev dependency")
+		}
+	}
+}
+
+// An inline table that never closes is malformed TOML, and tracking its depth
+// means the tracker would otherwise consume the rest of the FILE — losing
+// declarations the pre-v0.29.57 code still collected. A section header is the
+// boundary no inline table can cross, so it ends the table; a quoted array
+// item that merely looks like one (`["d"]`) does not.
+func TestUnclosedInlineTableEndsAtTheNextSection(t *testing.T) {
+	malformed := `[packages]
+black = {version = "==24.0"
+
+[dev-packages]
+pytest = "*"
+
+[packages]
+requests = "*"
+`
+	names, err := parsePipfileDeps(malformed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "pipfile inventory after an unclosed table", names, []string{"black", "requests"})
+
+	// The section AFTER the unclosed table has to be one this reader
+	// collects, or the assertion holds with or without the escape and
+	// proves only that the depth tracking exists.
+	poetry := "[tool.poetry.dependencies]\nblack = {version = \"^24.0\"\n\n[tool.poetry.group.dev.dependencies]\nruff = \"^0.4\"\n\n[tool.poetry.dependencies]\nflask = \"^2.0\"\n"
+	var got []string
+	for _, d := range parsePoetryVersions(poetry) {
+		got = append(got, d.Name)
+	}
+	assertNames(t, "poetry after an unclosed table", got, []string{"black", "flask"})
+
+	// The guard cases: a wrapped ARRAY VALUE is not a section header, so the
+	// table it belongs to must stay open (this is the previous round's
+	// regression in the other direction). Two shapes, because they fail
+	// tomlSectionHeader for DIFFERENT reasons and only one of them exercises
+	// the charset guard: `["d"]}` is rejected by the terminator test, while
+	// `["d"]` on a line of its own reaches the charset loop and is rejected
+	// because a table name cannot contain a quote.
+	for _, wrapped := range []string{
+		"[packages]\nblack = {version = \"==24.0\", extras =\n    [\"d\"]}\nflask = \"*\"\n",
+		"[packages]\nblack = {version = \"==24.0\", extras =\n    [\"d\"]\n}\nflask = \"*\"\n",
+	} {
+		names2, err := parsePipfileDeps(wrapped)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNames(t, "pipfile inventory with a wrapped array value", names2, []string{"black", "flask"})
+	}
+}
+
+// TOML allows a comment after a TABLE HEADER, and every reader compared the
+// header byte-for-byte, so `[tool.poetry.dependencies]  # runtime deps` did
+// not match and the whole section was skipped. The name inventory and the
+// libyear reader disagreed about the same file (the inventory reads Poetry
+// through scanTOMLDepTables, which strips the comment), and for the other
+// sections both sides dropped everything (v0.29.57).
+func TestSectionHeadersMayCarryAComment(t *testing.T) {
+	poetry := "[tool.poetry.dependencies]  # runtime deps\nblack = \"^24.0\"\n"
+	var got []string
+	for _, d := range parsePoetryVersions(poetry) {
+		got = append(got, d.Name)
+	}
+	assertNames(t, "poetry versions", got, []string{"black"})
+
+	pep621 := "[project]  # the project\ndependencies = [\"flask==2.0\"]\n"
+	assertDeps(t, "pep621 versions", parsePEP621Versions(pep621), []string{"flask@2.0"})
+	names, err := parsePyprojectDeps(pep621)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "pep621 inventory", names, []string{"flask"})
+
+	pipfile := "[packages]   # runtime\nflask = \"==2.0\"\n"
+	names2, err := parsePipfileDeps(pipfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "pipfile inventory", names2, []string{"flask"})
+
+	groups := "[dependency-groups]  # PEP 735\ntest = [\"pytest>=7\"]\n"
+	var got2 []string
+	for _, d := range parsePyprojectDevBuildVersions(groups) {
+		got2 = append(got2, d.Name)
+	}
+	assertNames(t, "dependency groups", got2, []string{"pytest"})
+}
+
+// scanTOMLDepTables tracks inline-table depth too — it is the reader the
+// dependency NAME inventory uses for Poetry and for every Cargo table — so it
+// needs the same escape as the four line readers: a table that never closes
+// ends at the next section header instead of swallowing the file.
+func TestScannerRecoversFromAnUnclosedTable(t *testing.T) {
+	cargo := "[dependencies]\nbroken = {version = \"1.0\"\n\n[dev-dependencies]\ntokio = \"1\"\n"
+	assertNames(t, "cargo dev-dependencies after an unclosed table",
+		parseTOMLDeps(cargo, "[dev-dependencies]"), []string{"tokio"})
+
+	poetry := "[tool.poetry.dependencies]\nbroken = {version = \"^1.0\"\n\n[tool.poetry.group.dev.dependencies]\nruff = \"^0.4\"\n"
+	names, err := parsePyprojectDeps(poetry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// broken is declared, ruff is in a different section this reader does not
+	// collect; what matters is that the walk did not run off the end.
+	assertNames(t, "poetry inventory after an unclosed table", names, []string{"broken"})
+}
+
+// The quote scanners in this package must agree about what a string is, or
+// one of them sees a bracket the others do not. A backslash escapes the next
+// byte inside a double-quoted TOML string, so `"a \" { b"` contains no
+// structure at all — but the bracket counters did not honour escapes, so a
+// balanced line counted an unclosed brace and the depth tracking then
+// swallowed the rest of the file. (Of the scanners that existed before this
+// release, only the Ruby comment stripper got it right; unifying them adopted
+// its rule.)
+func TestQuoteScannersAgreeAboutEscapes(t *testing.T) {
+	// Each scanner needs a fixture carrying the byte IT looks for, or the
+	// assertion passes under any rule: a line with no `[` tells you nothing
+	// about listBrackets, and a line with no `#` nothing about the stripper.
+	line := `foo = { version = "1.0", note = "a \" { b" }`
+	if got := bracketDelta(line); got != 0 {
+		t.Errorf("bracketDelta(%s) = %d, want 0 — the brace is inside an escaped-quote string", line, got)
+	}
+	const withBracket = `x = "a \" [ b"`
+	if opens, closes := listBrackets(withBracket); opens || closes {
+		t.Errorf("listBrackets(%s) = (%v, %v), want (false, false) — the bracket is inside the string", withBracket, opens, closes)
+	}
+	const withHash = `note = "a \" # b"`
+	if got := stripHashComment(withHash); got != withHash {
+		t.Errorf("stripHashComment(%s) = %q, want it unchanged — the # is inside the string", withHash, got)
+	}
+	cargo := "[dependencies]\n" + line + "\nserde = \"1.0\"\n"
+	assertNames(t, "cargo after an escaped-quote line",
+		parseTOMLDeps(cargo, "[dependencies]"), []string{"foo", "serde"})
+}
+
+// XML manifests comment with `<!-- … -->`, which spans lines, and the eight
+// readers of pom.xml, *.csproj, packages.config and Directory.Packages.props
+// read straight through it — so a dependency commented out during debugging
+// was inventoried, resolved against its registry and scanned for
+// vulnerabilities, at a version the repository does not use. This is the same
+// rule the `#` and `//` grammars got in v0.29.57 ("a declaration someone
+// commented out is not one"), applied to the grammar where the comment is a
+// BLOCK: the strip runs over the whole document, before any reader sees a
+// line, because the opening and closing markers need not share one.
+func TestXMLCommentsAreNotDeclarations(t *testing.T) {
+	pom := `<project><dependencies>
+<dependency>
+<groupId>g</groupId>
+<artifactId>live</artifactId>
+<version>1.0</version>
+</dependency>
+<!--
+<dependency>
+<groupId>g</groupId>
+<artifactId>dead</artifactId>
+<version>9.9</version>
+</dependency>
+-->
+</dependencies></project>
+`
+	assertNames(t, "pom.xml inventory", parsePomXML(pom), []string{"live"})
+	assertDeps(t, "pom.xml versions", parsePomXMLVersions(pom), []string{"g:live@1.0"})
+
+	csproj := "<Project>\n<PackageReference Include=\"Live\" Version=\"1.0\" />\n<!-- <PackageReference Include=\"Dead\" Version=\"9.9\" /> -->\n</Project>\n"
+	names, err := parseCsprojDeps(csproj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "csproj inventory", names, []string{"Live"})
+	assertDeps(t, "csproj versions", parseCsprojVersions(csproj), []string{"Live@1.0"})
+
+	cfg := "<packages>\n<package id=\"Live\" version=\"1.0\" />\n<!--\n<package id=\"Dead\" version=\"9.9\" />\n-->\n</packages>\n"
+	assertNames(t, "packages.config inventory", parseNuGetPackagesConfig(cfg), []string{"Live"})
+	assertDeps(t, "packages.config versions", parseNuGetPackagesConfigVersions(cfg), []string{"Live@1.0"})
+
+	props := "<Project>\n<PackageVersion Include=\"Live\" Version=\"1.0\" />\n<!-- <PackageVersion Include=\"Dead\" Version=\"9.9\" /> -->\n</Project>\n"
+	names2, err := parseDirectoryPackagesProps(props)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNames(t, "Directory.Packages.props inventory", names2, []string{"Live"})
+	assertDeps(t, "Directory.Packages.props versions", parseDirectoryPackagesPropsVersions(props), []string{"Live@1.0"})
+}
+
+// extractXMLValue took the index of the opening tag and of the closing tag
+// and sliced between them without checking their ORDER, so a document whose
+// closing tag precedes its opening one — `</groupId><groupId>` — panicked on
+// a slice with bounds out of range. A panic in a manifest parser kills the
+// analysis phase for the whole repository, which is why FuzzManifestParsers
+// exists; this one survived because `parsePomXMLVersions` was never in it.
+// Adding the reader found it within seconds, and the fuzzer wrote its
+// reproducer to testdata/fuzz/FuzzManifestParsers/817d3f397ff2bafe — a NEW
+// corpus entry, not an old one that had been sitting there (v0.29.57).
+func TestXMLValueSurvivesTagsInTheWrongOrder(t *testing.T) {
+	for _, content := range []string{
+		"</groupId><groupId>",
+		"</version><version>1.0",
+		"<project><properties></a><a></properties></project>",
+	} {
+		// The contract is the fuzz contract: never panic. A wrong answer is
+		// a different matter; there is no right answer for malformed XML.
+		_ = parsePomXMLVersions(content)
+		_ = parsePomXML(content)
+	}
+	if got := extractXMLValue("</groupId><groupId>", "groupId"); got != "" {
+		t.Errorf("extractXMLValue on a closing-before-opening document = %q, want \"\"", got)
+	}
+	if got := extractXMLValue("<version>1.0</version>", "version"); got != "1.0" {
+		t.Errorf("extractXMLValue = %q, want 1.0 — the ordinary case must still work", got)
+	}
+}
+
+// strings.ToLower can CHANGE A STRING'S LENGTH — an invalid UTF-8 byte
+// becomes a 3-byte replacement rune, and the Kelvin sign becomes one byte —
+// so an index found in the lowered copy is not an index into the original.
+// packages.config is matched case-insensitively (older .NET projects write
+// Id= and Version=) and then sliced the ORIGINAL at that index, which
+// panicked on `<package \xb1version="` and took the whole analysis phase of
+// that repository with it (v0.29.57, found by the fuzz target within seconds
+// of the reader being registered in it).
+func TestCaseInsensitiveAttributesSurviveInvalidUTF8(t *testing.T) {
+	for _, content := range []string{
+		"<package \xb1version=\"",
+		"<package \xb1Id=\"x\" Version=\"1.0\" />",
+		"<package Kid=\"x\" version=\"1.0\" />",
+	} {
+		// The contract is the fuzz contract: never panic on a document a
+		// repository can carry.
+		_ = parseNuGetPackagesConfigVersions(content)
+		_ = parseNuGetPackagesConfig(content)
+	}
+	// The case-insensitivity it exists for must still work.
+	ok := "<packages>\n<package Id=\"Live\" Version=\"1.0\" />\n</packages>\n"
+	assertDeps(t, "packages.config mixed case", parseNuGetPackagesConfigVersions(ok), []string{"Live@1.0"})
 }

@@ -486,26 +486,45 @@ func parseTOMLDeps(content, section string) []string {
 	return deps
 }
 
+// gemDeclaredName is the gem a `gem` line declares, or "" if the line
+// declares none. ONE spelling for both readers of a Gemfile (SR-17,
+// v0.29.57): the inventory used to split the raw line on `\'` and fall back
+// to `"` only when the line held no apostrophe at all, which meant
+//
+//   - an apostrophe in a trailing comment became the delimiter, so
+//     `gem "rails" # don't upgrade` was inventoried as a gem named
+//     `t upgrade` and rails was lost; and
+//   - a double-quoted name with a single-quoted CONSTRAINT
+//     (`gem "rails", '~> 7.0'`) inventoried the constraint — 387 rows of
+//     `aveloxis_large` are a Ruby "package" called `~> 7.0` or similar.
+//
+// The name is the first comma-separated argument, unquoted, which is how
+// parseGemfileVersions has always read it.
+func gemDeclaredName(line string) string {
+	line = strings.TrimSpace(stripHashComment(line))
+	if !strings.HasPrefix(line, "gem ") {
+		return ""
+	}
+	first := strings.SplitN(line, ",", 2)[0]
+	return strings.Trim(strings.TrimSpace(strings.TrimPrefix(first, "gem ")), "\"' ")
+}
+
 func parseGemfile(content string) []string {
 	var deps []string
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "gem ") {
-			parts := strings.SplitN(line, "'", 3)
-			if len(parts) >= 2 {
-				deps = append(deps, parts[1])
-			} else {
-				parts = strings.SplitN(line, "\"", 3)
-				if len(parts) >= 2 {
-					deps = append(deps, parts[1])
-				}
-			}
+		if name := gemDeclaredName(line); name != "" {
+			deps = append(deps, name)
 		}
 	}
 	return deps
 }
 
 func parsePomXML(content string) []string {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []string
 	// Simple extraction of <artifactId> within <dependency> blocks.
 	inDep := false
@@ -557,11 +576,11 @@ func parsePEP621Deps(content string) []string {
 		trimmed := strings.TrimSpace(line)
 
 		// Track [project] section.
-		if trimmed == "[project]" {
+		if tomlHeaderIs(trimmed, "project") {
 			inProject = true
 			continue
 		}
-		if strings.HasPrefix(trimmed, "[") && trimmed != "[project]" {
+		if strings.HasPrefix(trimmed, "[") && !tomlHeaderIs(trimmed, "project") {
 			inProject = false
 			inDepsArray = false
 			continue
@@ -571,31 +590,32 @@ func parsePEP621Deps(content string) []string {
 			continue
 		}
 
-		// Detect dependencies = [ start.
+		// Detect dependencies = [ start. Whether a bracket opens or closes
+		// the array is decided OUTSIDE strings and comments (v0.29.57): the
+		// `]` of an extra — `dependencies = ["celery[redis]>=5.0",` — used
+		// to end the array on its opening line, dropping every dependency
+		// after it from the inventory, from libyear and from the OSV scan.
 		if strings.HasPrefix(trimmed, "dependencies") && strings.Contains(trimmed, "=") {
-			if strings.Contains(trimmed, "[") {
-				inDepsArray = true
-				// Handle inline: dependencies = ["flask==2.0"]
-				if strings.Contains(trimmed, "]") {
-					// Single-line array.
-					deps = append(deps, extractPEP621DepsFromLine(trimmed)...)
-					inDepsArray = false
-				}
+			code := stripHashComment(trimmed)
+			opens, closes := listBrackets(code)
+			if opens {
+				// Items may share the opening line whether or not the array
+				// closes on it.
+				deps = append(deps, extractPEP621DepsFromLine(code)...)
+				inDepsArray = !closes
 			}
 			continue
 		}
 
 		if inDepsArray {
-			// Check if this line closes the array. The array closer is an unquoted ]
-			// at line end, not a ] inside a dep name like "sqlalchemy[asyncio]>=2.0".
-			stripped := strings.TrimRight(trimmed, " ,")
-			if stripped == "]" || strings.HasSuffix(stripped, "]") && !strings.Contains(stripped, "\"") && !strings.Contains(stripped, "'") {
-				// Pure array closer (possibly with trailing comma).
+			// The closer may carry the last item (`"celery>=5.0"]`), so the
+			// line is read before the array ends; a line that is only a
+			// closer yields nothing.
+			code := stripHashComment(trimmed)
+			_, closes := listBrackets(code)
+			deps = append(deps, extractPEP621DepsFromLine(code)...)
+			if closes {
 				inDepsArray = false
-				continue
-			}
-			if name := extractPEP621DepName(trimmed); name != "" {
-				deps = append(deps, name)
 			}
 		}
 	}
@@ -628,25 +648,10 @@ func extractPEP621DepName(line string) string {
 // extractPEP621DepsFromLine extracts dep names from an inline deps array.
 func extractPEP621DepsFromLine(line string) []string {
 	var deps []string
-	// Find content between [ and ].
-	start := strings.Index(line, "[")
-	end := strings.LastIndex(line, "]")
-	if start < 0 {
-		start = 0
-	} else {
-		start++
-	}
-	if end < 0 {
-		end = len(line)
-	}
-	if start > end {
-		// Malformed line where ']' precedes '[' (e.g. "dependencies]=[")
-		// — found by FuzzManifestParsers (v0.27.99): line[start:end]
-		// panicked with slice bounds out of range, killing the whole
-		// analysis phase of any repo carrying the line.
-		return nil
-	}
-	inner := line[start:end]
+	// Bounds come from the shared scanner: a bracket inside a quoted item
+	// is part of the value, not the array (v0.29.57).
+	inner := listInner(line)
+
 	// Only a comma BETWEEN items separates them (v0.29.56). A comma inside
 	// the quoted item is data — a bounded range ("requests>=2.31.0,<3.0.0")
 	// or an extras list ("celery[redis,auth]>=5.3") — and splitting on it
@@ -675,32 +680,31 @@ func extractSetupPyInstallRequires(content string) []string {
 	inRequires := false
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		// A requirement someone commented out is not a dependency, and the
+		// `]` of an extra is not the end of the list — `"celery[redis]>=5.0"`
+		// used to close it and drop every requirement after it (v0.29.57).
+		// Same two rules as the pyproject readers, same two helpers.
+		code := stripHashComment(strings.TrimSpace(line))
 
 		// Detect install_requires=[ or install_requires = [
-		if !inRequires && strings.Contains(trimmed, "install_requires") && strings.Contains(trimmed, "[") {
+		if !inRequires && strings.Contains(code, "install_requires") && strings.Contains(code, "[") {
 			inRequires = true
-			// Check for deps on the same line as install_requires=[
-			if idx := strings.Index(trimmed, "["); idx >= 0 {
-				rest := trimmed[idx:]
-				if strings.Contains(rest, "]") {
-					// Single-line: install_requires=['flask', 'requests']
-					deps = append(deps, extractQuotedPyDeps(rest)...)
+			if idx := strings.Index(code, "["); idx >= 0 {
+				rest := code[idx:]
+				deps = append(deps, extractQuotedPyDeps(rest)...)
+				if _, closes := listBrackets(rest); closes {
 					inRequires = false
-				} else {
-					deps = append(deps, extractQuotedPyDeps(rest)...)
 				}
 			}
 			continue
 		}
 
 		if inRequires {
-			if strings.Contains(trimmed, "]") {
-				deps = append(deps, extractQuotedPyDeps(trimmed)...)
+			// The closing bracket may carry the last requirement.
+			deps = append(deps, extractQuotedPyDeps(code)...)
+			if _, closes := listBrackets(code); closes {
 				inRequires = false
-				continue
 			}
-			deps = append(deps, extractQuotedPyDeps(trimmed)...)
 		}
 	}
 	return deps
@@ -756,29 +760,27 @@ func parseSetupPyVersions(content string) []libyearDep {
 	inRequires := false
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		// See extractSetupPyInstallRequires: the two readers of this list
+		// must agree line for line, so they apply the same two rules.
+		code := stripHashComment(strings.TrimSpace(line))
 
-		if !inRequires && strings.Contains(trimmed, "install_requires") && strings.Contains(trimmed, "[") {
+		if !inRequires && strings.Contains(code, "install_requires") && strings.Contains(code, "[") {
 			inRequires = true
-			if idx := strings.Index(trimmed, "["); idx >= 0 {
-				rest := trimmed[idx:]
-				if strings.Contains(rest, "]") {
-					deps = append(deps, extractQuotedPyVersionDeps(rest)...)
+			if idx := strings.Index(code, "["); idx >= 0 {
+				rest := code[idx:]
+				deps = append(deps, extractQuotedPyVersionDeps(rest)...)
+				if _, closes := listBrackets(rest); closes {
 					inRequires = false
-				} else {
-					deps = append(deps, extractQuotedPyVersionDeps(rest)...)
 				}
 			}
 			continue
 		}
 
 		if inRequires {
-			if strings.Contains(trimmed, "]") {
-				deps = append(deps, extractQuotedPyVersionDeps(trimmed)...)
+			deps = append(deps, extractQuotedPyVersionDeps(code)...)
+			if _, closes := listBrackets(code); closes {
 				inRequires = false
-				continue
 			}
-			deps = append(deps, extractQuotedPyVersionDeps(trimmed)...)
 		}
 	}
 	return deps
@@ -996,10 +998,32 @@ func pythonTableVersion(table string) string {
 func parsePipfileDeps(content string) ([]string, error) {
 	var deps []string
 	inPackages := false
+	tableDepth := 0
 
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "[packages]" {
+		// The open-table check comes FIRST, before the section headers: a
+		// continuation line can BEGIN with `[` (an array value wrapped onto
+		// its own line), and reading that as a section header left the table
+		// open for the rest of the file (v0.29.57). Every reader that tracks
+		// this state orders it the same way; parsePipfileDevPackages has no
+		// splitter of its own to order, because it delegates here.
+		if tableDepth > 0 {
+			// A table that never closed must not swallow the rest of the
+			// file: a section header ends it, since no inline table can
+			// span one (v0.29.57 — before the depth tracking, such a file
+			// recovered here, and it still does).
+			if tomlSectionHeader(trimmed) {
+				tableDepth = 0
+			} else {
+				tableDepth += bracketDelta(stripHashComment(trimmed))
+				if tableDepth < 0 {
+					tableDepth = 0
+				}
+				continue
+			}
+		}
+		if tomlHeaderIs(trimmed, "packages") {
 			inPackages = true
 			continue
 		}
@@ -1007,10 +1031,16 @@ func parsePipfileDeps(content string) ([]string, error) {
 			inPackages = false
 			continue
 		}
-		if inPackages && strings.Contains(trimmed, "=") {
-			name := strings.TrimSpace(strings.SplitN(trimmed, "=", 2)[0])
-			if name != "" {
+		// A trailing comment is not part of the declaration, and a
+		// commented-out line is not one at all: `# flask = "==1.0"` was
+		// inventoried as a package named "# flask" (v0.29.57).
+		if code := stripHashComment(trimmed); inPackages && strings.Contains(code, "=") {
+			name, sub := tomlDepKeyName(strings.SplitN(code, "=", 2)[0])
+			if name != "" && tomlDepKeyVersionable(sub) {
 				deps = append(deps, name)
+			}
+			if d := bracketDelta(code); d > 0 {
+				tableDepth = d
 			}
 		}
 	}
@@ -1021,10 +1051,33 @@ func parsePipfileDeps(content string) ([]string, error) {
 func parsePipfileVersions(content string) []libyearDep {
 	var deps []libyearDep
 	inPackages := false
+	tableDepth := 0
 
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "[packages]" {
+		// An inline table may span lines, and its continuation lines are the
+		// TABLE's keys, not declarations — see parsePoetryVersions. This runs
+		// before the section headers AND before the "no = means not a
+		// declaration" guard below: a continuation line can BEGIN with `[`
+		// (an array value wrapped onto its own line), which read as a section
+		// header left the table open for the rest of the file, and the line
+		// that CLOSES the table is usually a bare `}`.
+		if tableDepth > 0 {
+			// A table that never closed must not swallow the rest of the
+			// file: a section header ends it, since no inline table can
+			// span one (v0.29.57 — before the depth tracking, such a file
+			// recovered here, and it still does).
+			if tomlSectionHeader(trimmed) {
+				tableDepth = 0
+			} else {
+				tableDepth += bracketDelta(stripHashComment(trimmed))
+				if tableDepth < 0 {
+					tableDepth = 0
+				}
+				continue
+			}
+		}
+		if tomlHeaderIs(trimmed, "packages") {
 			inPackages = true
 			continue
 		}
@@ -1032,21 +1085,26 @@ func parsePipfileVersions(content string) []libyearDep {
 			inPackages = false
 			continue
 		}
-		if !inPackages || !strings.Contains(trimmed, "=") {
+		// Pipfile uses "name = value" where value is quoted.
+		// Use the first unquoted = as delimiter, on the line without its
+		// comment: `requests = "==2.0"  # http` stored the version `2.0"`,
+		// which reached the purl and the OSV lookup (v0.29.57).
+		code := stripHashComment(trimmed)
+		if !inPackages || !strings.Contains(code, "=") {
 			continue
 		}
-
-		// Pipfile uses "name = value" where value is quoted.
-		// Use the first unquoted = as delimiter.
-		eqIdx := strings.Index(trimmed, "=")
+		if d := bracketDelta(code); d > 0 {
+			tableDepth = d
+		}
+		eqIdx := strings.Index(code, "=")
 		if eqIdx < 0 {
 			continue
 		}
-		name := strings.TrimSpace(trimmed[:eqIdx])
-		if name == "" {
+		name, sub := tomlDepKeyName(code[:eqIdx])
+		if name == "" || !tomlDepKeyVersionable(sub) {
 			continue
 		}
-		versionRaw := strings.TrimSpace(trimmed[eqIdx+1:])
+		versionRaw := strings.TrimSpace(code[eqIdx+1:])
 		// Pipfile values: "==2.0.2", "~=2.28", "*", {version = "==2.0.0", ...}
 		version := ""
 		versionRaw = strings.Trim(versionRaw, "\"' ")
@@ -1096,11 +1154,11 @@ func parsePEP621Versions(content string) []libyearDep {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		if trimmed == "[project]" {
+		if tomlHeaderIs(trimmed, "project") {
 			inProject = true
 			continue
 		}
-		if strings.HasPrefix(trimmed, "[") && trimmed != "[project]" {
+		if strings.HasPrefix(trimmed, "[") && !tomlHeaderIs(trimmed, "project") {
 			inProject = false
 			inDepsArray = false
 			continue
@@ -1109,30 +1167,25 @@ func parsePEP621Versions(content string) []libyearDep {
 			continue
 		}
 
+		// The array's bounds are read outside strings and comments — see
+		// parsePEP621Deps, which reads the same array for the name
+		// inventory and must agree with this reader line for line.
 		if strings.HasPrefix(trimmed, "dependencies") && strings.Contains(trimmed, "=") {
-			if strings.Contains(trimmed, "[") {
-				inDepsArray = true
-				if strings.Contains(trimmed, "]") {
-					deps = append(deps, extractPEP621VersionDeps(trimmed)...)
-					inDepsArray = false
-				}
+			code := stripHashComment(trimmed)
+			opens, closes := listBrackets(code)
+			if opens {
+				deps = append(deps, extractPEP621VersionDeps(code)...)
+				inDepsArray = !closes
 			}
 			continue
 		}
 
 		if inDepsArray {
-			// Check for unquoted array closer (not ] inside extras like [asyncio]).
-			stripped := strings.TrimRight(trimmed, " ,")
-			if stripped == "]" || strings.HasSuffix(stripped, "]") && !strings.Contains(stripped, "\"") && !strings.Contains(stripped, "'") {
+			code := stripHashComment(trimmed)
+			_, closes := listBrackets(code)
+			deps = append(deps, extractPEP621VersionDeps(code)...)
+			if closes {
 				inDepsArray = false
-				continue
-			}
-			depStr := strings.Trim(trimmed, "\",")
-			depStr = strings.TrimSpace(depStr)
-			if depStr != "" && !strings.HasPrefix(depStr, "#") {
-				if d := parsePyRequirement(depStr); d != nil {
-					deps = append(deps, *d)
-				}
 			}
 		}
 	}
@@ -1142,24 +1195,10 @@ func parsePEP621Versions(content string) []libyearDep {
 // extractPEP621VersionDeps extracts deps with versions from inline PEP 621 arrays.
 func extractPEP621VersionDeps(line string) []libyearDep {
 	var deps []libyearDep
-	start := strings.Index(line, "[")
-	end := strings.LastIndex(line, "]")
-	if start < 0 {
-		start = 0
-	} else {
-		start++
-	}
-	if end < 0 {
-		end = len(line)
-	}
-	if start > end {
-		// Malformed line where ']' precedes '[' (e.g. "dependencies]=[")
-		// — found by FuzzManifestParsers (v0.27.99): line[start:end]
-		// panicked with slice bounds out of range, killing the whole
-		// analysis phase of any repo carrying the line.
-		return nil
-	}
-	inner := line[start:end]
+	// Bounds come from the shared scanner: a bracket inside a quoted item
+	// is part of the value, not the array (v0.29.57).
+	inner := listInner(line)
+
 	// Structural commas only — see extractPEP621DepsFromLine (v0.29.56).
 	for _, item := range splitTOMLTopLevel(inner) {
 		item = strings.Trim(strings.TrimSpace(item), "\"'")
@@ -1176,9 +1215,31 @@ func extractPEP621VersionDeps(line string) []libyearDep {
 func parsePoetryVersions(content string) []libyearDep {
 	var deps []libyearDep
 	inSection := false
+	tableDepth := 0
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "[tool.poetry.dependencies]" {
+		// An inline table may span lines, and its continuation lines are the
+		// TABLE's keys — `version`, `extras`, `git`. Read as declarations of
+		// their own they invent packages named after the key: 56 libyear rows
+		// and 21 dependency rows on the production database carried one, each
+		// with a purl and an OSV lookup (v0.29.57). The version inside such a
+		// table is not recovered here — worklist 43 — but nothing is invented.
+		if tableDepth > 0 {
+			// A table that never closed must not swallow the rest of the
+			// file: a section header ends it, since no inline table can
+			// span one (v0.29.57 — before the depth tracking, such a file
+			// recovered here, and it still does).
+			if tomlSectionHeader(trimmed) {
+				tableDepth = 0
+			} else {
+				tableDepth += bracketDelta(stripHashComment(trimmed))
+				if tableDepth < 0 {
+					tableDepth = 0
+				}
+				continue
+			}
+		}
+		if tomlHeaderIs(trimmed, "tool.poetry.dependencies") {
 			inSection = true
 			continue
 		}
@@ -1186,11 +1247,20 @@ func parsePoetryVersions(content string) []libyearDep {
 			inSection = false
 			continue
 		}
-		if inSection && strings.Contains(trimmed, "=") {
-			parts := strings.SplitN(trimmed, "=", 2)
-			name := strings.TrimSpace(parts[0])
+		// Comment-stripped before the split, like the dev/build reader of
+		// the same grammar: a trailing comment otherwise became part of the
+		// version (`"^24.0"  # pinned` → `24.0"`), which is what 234 rows of
+		// the 2026-09-17 production extract carry.
+		code := stripHashComment(trimmed)
+		if parts := strings.SplitN(code, "=", 2); inSection && len(parts) == 2 {
+			// Opened before the continues below: a declaration this reader
+			// skips still has to close.
+			if d := bracketDelta(code); d > 0 {
+				tableDepth = d
+			}
+			name, sub := tomlDepKeyName(parts[0])
 			raw := strings.TrimSpace(parts[1])
-			if name == "" || name == "python" {
+			if name == "" || name == "python" || !tomlDepKeyVersionable(sub) {
 				continue
 			}
 			// A path/git/url dependency names no PyPI package (v0.29.56 —
@@ -1215,6 +1285,11 @@ func parsePoetryVersions(content string) []libyearDep {
 // parseDirectoryPackagesProps extracts dependency names from .NET Directory.Packages.props.
 // Format: <PackageVersion Include="Name" Version="1.0.0" />
 func parseDirectoryPackagesProps(content string) ([]string, error) {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -1231,6 +1306,11 @@ func parseDirectoryPackagesProps(content string) ([]string, error) {
 
 // parseDirectoryPackagesPropsVersions extracts deps with versions from Directory.Packages.props.
 func parseDirectoryPackagesPropsVersions(content string) []libyearDep {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []libyearDep
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -2165,13 +2245,13 @@ func parseGemfileVersions(path string) []libyearDep {
 		// v0.29.56: a trailing comment was read into the name or version
 		// ("gem 'logger'   # stdlib in Ruby <= 3.x" → name
 		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io).
-		line = strings.TrimSpace(stripRubyComment(line))
+		line = strings.TrimSpace(stripHashComment(line))
 		// gem 'name', '~> 1.0'
 		parts := strings.Split(line, ",")
 		name := ""
 		version := ""
 		if len(parts) >= 1 {
-			name = strings.Trim(strings.TrimPrefix(strings.TrimSpace(parts[0]), "gem "), "\"' ")
+			name = gemDeclaredName(line)
 		}
 		if len(parts) >= 2 {
 			// v0.27.71: only a QUOTED second argument is a version
@@ -2196,28 +2276,6 @@ func parseGemfileVersions(path string) []libyearDep {
 		}
 	}
 	return deps
-}
-
-// stripRubyComment removes a '#' comment that is outside a quoted string
-// (a '#' inside quotes, including "#{…}" interpolation, is kept).
-func stripRubyComment(line string) string {
-	var quote byte
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		switch {
-		case quote != 0:
-			if c == '\\' {
-				i++
-			} else if c == quote {
-				quote = 0
-			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == '#':
-			return line[:i]
-		}
-	}
-	return line
 }
 
 // gemGroupScope classifies a Bundler `group :x[, :y] do` line: any
@@ -3317,6 +3375,11 @@ func parseSetupCfgVersions(content string) []libyearDep {
 // parseCsprojDeps extracts dependency names from .csproj PackageReference elements.
 // Format: <PackageReference Include="Name" Version="1.0.0" />
 func parseCsprojDeps(content string) ([]string, error) {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -3333,6 +3396,11 @@ func parseCsprojDeps(content string) ([]string, error) {
 
 // parseCsprojVersions extracts deps with versions from .csproj files.
 func parseCsprojVersions(content string) []libyearDep {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []libyearDep
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -3387,7 +3455,11 @@ func parseComposerJSON(data []byte) ([]string, error) {
 func parseBuildSbt(content string) []string {
 	var deps []string
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
+		// A declaration someone commented out is not one. Scala comments
+		// with `//`, and the version it carries looks valid, so such a row
+		// survived normalisation and reached the purl, the registry lookup
+		// and the OSV scan (v0.29.57).
+		line = strings.TrimSpace(stripSlashComment(line))
 		if !strings.Contains(line, "libraryDependencies") || !strings.Contains(line, "%") {
 			continue
 		}
@@ -3404,6 +3476,11 @@ func parseBuildSbt(content string) []string {
 
 // parseNuGetPackagesConfig extracts package names from NuGet packages.config (XML).
 func parseNuGetPackagesConfig(content string) []string {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -3476,6 +3553,11 @@ func parseMixExsDeps(content string) []string {
 // parsePomXMLVersions extracts groupId:artifactId with version from pom.xml.
 // Handles both multi-line and single-line XML formats.
 func parsePomXMLVersions(content string) []libyearDep {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []libyearDep
 	props := pomProperties(content)
 	// Process dependency blocks — works even when everything is on one line
@@ -3615,7 +3697,13 @@ func resolvePomProperties(v string, props map[string]string) string {
 func extractXMLValue(line, tag string) string {
 	start := strings.Index(line, "<"+tag+">")
 	end := strings.Index(line, "</"+tag+">")
-	if start < 0 || end < 0 {
+	// The tags may appear in the WRONG ORDER — `</groupId><groupId>` is a
+	// document a repository can carry — and slicing between them without
+	// checking would panic, killing the analysis phase for that whole
+	// repository. Same class as the v0.27.99 `]` before `[` fuzz find; this
+	// one surfaced the moment parsePomXMLVersions joined the fuzz target
+	// (v0.29.57).
+	if start < 0 || end < start+len(tag)+2 {
 		return ""
 	}
 	return strings.TrimSpace(line[start+len(tag)+2 : end])
@@ -3692,6 +3780,11 @@ func parseMixExsVersions(content string) []libyearDep {
 
 // parseNuGetPackagesConfigVersions extracts packages with versions from packages.config.
 func parseNuGetPackagesConfigVersions(content string) []libyearDep {
+	// A declaration someone commented out is not one, and an XML comment
+	// spans lines, so the whole document is stripped before it is walked
+	// (v0.29.57 — the version inside such a block is valid-looking, so it
+	// survived normalisation and reached the purl and the OSV scan).
+	content = stripXMLComments(content)
 	var deps []libyearDep
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -3701,8 +3794,11 @@ func parseNuGetPackagesConfigVersions(content string) []libyearDep {
 		name := ""
 		version := ""
 		// Case-insensitive attribute matching: NuGet packages.config in older
-		// .NET projects frequently uses Id="..." and Version="..." (capital letters).
-		lower := strings.ToLower(line)
+		// .NET projects frequently uses Id="..." and Version="..." (capital
+		// letters). asciiLower, not strings.ToLower: the index is used to
+		// slice the ORIGINAL line, and only a length-preserving fold keeps
+		// the two in step.
+		lower := asciiLower(line)
 		if idx := strings.Index(lower, `id="`); idx >= 0 {
 			rest := line[idx+4:]
 			if end := strings.Index(rest, `"`); end >= 0 {
@@ -3732,7 +3828,11 @@ func parseNuGetPackagesConfigVersions(content string) []libyearDep {
 func parseBuildSbtVersions(content string) []libyearDep {
 	var deps []libyearDep
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
+		// A declaration someone commented out is not one. Scala comments
+		// with `//`, and the version it carries looks valid, so such a row
+		// survived normalisation and reached the purl, the registry lookup
+		// and the OSV scan (v0.29.57).
+		line = strings.TrimSpace(stripSlashComment(line))
 		if !strings.Contains(line, "libraryDependencies") || !strings.Contains(line, "%") {
 			continue
 		}
@@ -4150,7 +4250,10 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 func parsePackageSwiftDeps(content string) []string {
 	var deps []string
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
+		// See parseBuildSbt: a commented-out `.package(url:)` is not a
+		// dependency. The stripper is quote-aware because every package URL
+		// contains `//` inside its quotes.
+		line = strings.TrimSpace(stripSlashComment(line))
 		if !strings.Contains(line, ".package(url:") {
 			continue
 		}
@@ -4166,7 +4269,10 @@ func parsePackageSwiftDeps(content string) []string {
 func parsePackageSwiftVersions(content string) []libyearDep {
 	var deps []libyearDep
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
+		// See parseBuildSbt: a commented-out `.package(url:)` is not a
+		// dependency. The stripper is quote-aware because every package URL
+		// contains `//` inside its quotes.
+		line = strings.TrimSpace(stripSlashComment(line))
 		if !strings.Contains(line, ".package(url:") {
 			continue
 		}

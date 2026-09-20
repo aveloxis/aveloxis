@@ -132,7 +132,27 @@ SELECT a.repo_id,
 -- the alias survives for any 8Knot or downstream tooling that
 -- references it by name, but the storage + rebuild cost is zero.
 -- ---------------------------------------------------------------------------
-DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_libyear_all CASCADE;
+-- Drop the alias as the matview or view it currently is (v0.29.57, Copilot on
+-- PR #210): a typed DROP fails on the wrong relation kind even with IF
+-- EXISTS (`"explorer_libyear_all" is not a materialized view`, 42809), and
+-- this file runs as ONE statement, so one mismatch rolls back every
+-- DROP/CREATE in it and every view keeps its previous definition —
+-- silently, because the migrate's view block only WARNs. These two aliases have been both
+-- kinds across releases (explorer_libyear_all: matview until v0.25.5;
+-- augur_new_contributors: matview until v0.25.5, dropped there, restored as
+-- a view in v0.25.6).
+DO $$
+DECLARE kind "char";
+BEGIN
+  SELECT c.relkind INTO kind
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'aveloxis_data' AND c.relname = 'explorer_libyear_all';
+  IF kind = 'm' THEN
+    EXECUTE 'DROP MATERIALIZED VIEW aveloxis_data.explorer_libyear_all CASCADE';
+  ELSIF kind = 'v' THEN
+    EXECUTE 'DROP VIEW aveloxis_data.explorer_libyear_all CASCADE';
+  END IF;
+END $$;
 
 CREATE OR REPLACE VIEW aveloxis_data.explorer_libyear_all AS
 SELECT * FROM aveloxis_data.explorer_libyear_summary;
@@ -544,8 +564,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_new_contributors
 -- explorer_contributor_actions. Same shape as the explorer_libyear_all
 -- alias for augur_libyear_all.
 -- ---------------------------------------------------------------------------
-DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.augur_new_contributors CASCADE;
-DROP VIEW IF EXISTS aveloxis_data.augur_new_contributors CASCADE;
+-- Drop the alias as the matview or view it is (see explorer_libyear_all above).
+DO $$
+DECLARE kind "char";
+BEGIN
+  SELECT c.relkind INTO kind
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'aveloxis_data' AND c.relname = 'augur_new_contributors';
+  IF kind = 'm' THEN
+    EXECUTE 'DROP MATERIALIZED VIEW aveloxis_data.augur_new_contributors CASCADE';
+  ELSIF kind = 'v' THEN
+    EXECUTE 'DROP VIEW aveloxis_data.augur_new_contributors CASCADE';
+  END IF;
+END $$;
 
 CREATE OR REPLACE VIEW aveloxis_data.augur_new_contributors AS
 SELECT * FROM aveloxis_data.explorer_contributor_actions;

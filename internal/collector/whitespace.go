@@ -449,5 +449,13 @@ func formatUnmatchedWhitespace(keys []string) string {
 	if len(keys) == 0 {
 		return "none reported"
 	}
-	return strings.Join(keys, ", ") + " (first " + strconv.Itoa(len(keys)) + ")"
+	// The keys are repository-controlled filenames and this message is
+	// printed by the rewalk CLI, so they are scrubbed like any other logged
+	// value: a filename carrying CR/LF or an escape sequence could otherwise
+	// forge lines in that output (Copilot on PR #210).
+	safe := make([]string, len(keys))
+	for i, k := range keys {
+		safe[i] = scrubLogValue(k)
+	}
+	return strings.Join(safe, ", ") + " (first " + strconv.Itoa(len(safe)) + ")"
 }

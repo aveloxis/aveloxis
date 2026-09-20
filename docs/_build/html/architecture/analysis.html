@@ -1704,7 +1704,7 @@
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code></p></td>
 <td><p>Python (pip)</p></td>
-<td><p>Line parser, handles <code class="docutils literal notranslate"><span class="pre">==</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, comments, <code class="docutils literal notranslate"><span class="pre">-r</span></code> includes</p></td>
+<td><p>Line parser (byte-exact filename), handles <code class="docutils literal notranslate"><span class="pre">==</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code> and comments; pip’s option lines (<code class="docutils literal notranslate"><span class="pre">-e</span></code>, <code class="docutils literal notranslate"><span class="pre">-r</span></code>) are skipped, so an <code class="docutils literal notranslate"><span class="pre">-r</span></code> include is never followed</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">go.mod</span></code></p></td>
 <td><p>Go</p></td>
@@ -1858,11 +1858,32 @@ that ALSO declares a <code class="docutils literal notranslate"><span class="pre
 version is what gets published and it is looked up normally. They appear in the dependency inventory
 (<code class="docutils literal notranslate"><span class="pre">repo_dependencies</span></code>) but get no libyear row, so they do not enter the
 vulnerability scan as unscannable dependencies. One line per repository
-reports how many were skipped. Python drops such requirement lines earlier,
-while parsing — in every entry point (<code class="docutils literal notranslate"><span class="pre">requirements*.txt</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code>
-including its Poetry tables, <code class="docutils literal notranslate"><span class="pre">setup.py</span></code>, <code class="docutils literal notranslate"><span class="pre">setup.cfg</span></code>, <code class="docutils literal notranslate"><span class="pre">Pipfile</span></code> and the
-dev/build variants) — because a URL, a local path, a git source or a PEP 508
-direct reference carries no package name to inventory.
+reports how many were skipped. Python splits the two: the
+libyear and vulnerability parsers drop such requirement lines while parsing
+— in every entry point (<code class="docutils literal notranslate"><span class="pre">requirements*.txt</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> including its
+Poetry tables, <code class="docutils literal notranslate"><span class="pre">setup.py</span></code>, <code class="docutils literal notranslate"><span class="pre">setup.cfg</span></code>, <code class="docutils literal notranslate"><span class="pre">Pipfile</span></code> and the dev/build
+variants) — so those dependencies get no libyear row and are never looked
+up in a registry. The inventory parser drops them only where
+<code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> holds them as one of pip’s option lines (<code class="docutils literal notranslate"><span class="pre">-e</span></code>, <code class="docutils literal notranslate"><span class="pre">-r</span></code>), so
+an editable install has no inventory row. In the line-shaped entry points
+it reads (<code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> exactly, PEP 621 <code class="docutils literal notranslate"><span class="pre">dependencies</span></code>, <code class="docutils literal notranslate"><span class="pre">setup.py</span></code>
+and <code class="docutils literal notranslate"><span class="pre">setup.cfg</span></code>’s <code class="docutils literal notranslate"><span class="pre">install_requires</span></code>) it cannot split the rest, so
+<code class="docutils literal notranslate"><span class="pre">repo_dependencies</span></code> holds the requirement line itself as the dependency
+name: <code class="docutils literal notranslate"><span class="pre">./local-pkg</span></code>, <code class="docutils literal notranslate"><span class="pre">https://example.com/pkg-1.0.tar.gz</span></code>,
+<code class="docutils literal notranslate"><span class="pre">requests</span> <span class="pre">&#64;</span> <span class="pre">git+https://…</span></code>. The requirements VARIANTS are read only by the
+libyear and vulnerability path, and only with <code class="docutils literal notranslate"><span class="pre">collection.dev_build_deps</span></code>
+on, so they produce no inventory row at all. That arm takes <code class="docutils literal notranslate"><span class="pre">.txt</span></code> files
+alone: a requirements variant by name (<code class="docutils literal notranslate"><span class="pre">requirements-dev.txt</span></code>,
+<code class="docutils literal notranslate"><span class="pre">test_requirements.txt</span></code>, matched case-insensitively) or any other <code class="docutils literal notranslate"><span class="pre">.txt</span></code>
+directly inside a directory named <code class="docutils literal notranslate"><span class="pre">requirements</span></code> (that directory name
+byte-exact),
+and never <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> itself in any casing. Both walks match
+<code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> byte for byte, so <code class="docutils literal notranslate"><span class="pre">requirements/requirements.txt</span></code> is the
+ordinary manifest, gate or no gate, and a differently cased
+<code class="docutils literal notranslate"><span class="pre">Requirements.txt</span></code> matches no arm at all — nothing collects it. The Poetry and Pipfile tables key on the
+dependency’s name, so those rows keep the clean name. A named PEP 508 direct reference does carry a
+package name (<code class="docutils literal notranslate"><span class="pre">requests</span></code>), so that stored name is a wart rather than a
+design.
 The other ecosystems (RubyGems, Packagist, Maven, …) do not yet make this
 distinction: a <code class="docutils literal notranslate"><span class="pre">path:</span></code>- or <code class="docutils literal notranslate"><span class="pre">git:</span></code>-sourced gem is still looked up by name.</p></li>
 </ul>

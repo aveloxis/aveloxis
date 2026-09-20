@@ -28,7 +28,7 @@ func healLibyearCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "heal-libyear",
 		Short: "Replace uncomputable libyear numbers with NULL (dry run unless --apply)",
-		Long: `Rows whose dependency names no pinned version have no release date to
+		Long: `Rows for dependencies with no pinned version have no release date to
 measure age from, so their libyear can never be computed — yet a 0 was
 stored, which reads as "perfectly up to date" and is counted by avg().
 

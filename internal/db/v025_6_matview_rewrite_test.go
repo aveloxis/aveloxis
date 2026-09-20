@@ -98,15 +98,10 @@ func TestAugurNewContributorsIsViewAlias(t *testing.T) {
 		t.Error("augur_new_contributors must NOT be declared as MATERIALIZED VIEW post-v0.25.6 — restored as a regular VIEW alias.")
 	}
 
-	// Pin the DROP statements that fire before the CREATE VIEW so existing
-	// deployments transition cleanly regardless of prior state (matview
-	// from pre-v0.25.5 OR nothing from v0.25.5).
-	if !strings.Contains(src, "DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.augur_new_contributors") {
-		t.Error("matviews.sql must DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.augur_new_contributors before the CREATE VIEW so a pre-v0.25.5 install with the old matview transitions cleanly.")
-	}
-	if !strings.Contains(src, "DROP VIEW IF EXISTS aveloxis_data.augur_new_contributors") {
-		t.Error("matviews.sql must DROP VIEW IF EXISTS aveloxis_data.augur_new_contributors before the CREATE OR REPLACE so the CASCADE clause clears any downstream views that depend on the alias.")
-	}
+	// The DROP that fires before the CREATE VIEW, so existing deployments
+	// transition cleanly whatever they hold (a pre-v0.25.5 matview, the
+	// v0.25.6 view, or nothing).
+	assertAliasDroppedByRelkind(t, src, "augur_new_contributors")
 }
 
 // TestCommitResolverEnsureAliasBackfillsCanonical pins the v0.25.6

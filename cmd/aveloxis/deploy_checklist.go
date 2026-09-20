@@ -75,7 +75,7 @@ var v02957DeployChecklist = []deployStep{
 	{"aveloxis resolve-email-identities", "attribute mailing-list senders to contributors (the keyset backfill; ~minutes)"},
 	{"aveloxis strip-quoted-history --limit 50000", "canary the quote-strip, then rerun WITHOUT --limit to completion"},
 	{"aveloxis backfill-mailing-list-projection", "project historical mail onto issues (state + reporter from notifications)"},
-	{"aveloxis heal-libyear", "DRY RUN: report how many libyear rows name no pinned version, so their libyear can never be computed (on chaoss.tv, ~471K)"},
+	{"aveloxis heal-libyear", "DRY RUN: report how many libyear rows are for dependencies with no pinned version, so their libyear can never be computed (on chaoss.tv, ~471K)"},
 	{"aveloxis heal-libyear --apply", "replace those fabricated 0 values with NULL — read the dry-run count first; this rewrites collected rows"},
 	{"aveloxis refresh-views", "refresh the views' DATA after the heals, including explorer_libyear_summary (its new definition was applied by the migrate above)"},
 }

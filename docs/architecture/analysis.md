@@ -43,7 +43,7 @@ The dependency scanner walks the full checkout looking for manifest files across
 | Manifest File | Ecosystem | Parser |
 |---|---|---|
 | `package.json` | npm (JavaScript/TypeScript) | JSON parser extracts `dependencies` + `devDependencies` |
-| `requirements.txt` | Python (pip) | Line parser, handles `==`, `>=`, comments, `-r` includes |
+| `requirements.txt` | Python (pip) | Line parser (byte-exact filename), handles `==`, `>=` and comments; pip's option lines (`-e`, `-r`) are skipped, so an `-r` include is never followed |
 | `go.mod` | Go | Parses `require` block |
 | `Cargo.toml` | Rust (Cargo) | TOML parser extracts `[dependencies]` + `[dev-dependencies]` |
 | `Gemfile` | Ruby (Bundler) | Parses `gem` declarations |
@@ -129,11 +129,32 @@ How requests are made (since v0.29.56):
   version is what gets published and it is looked up normally. They appear in the dependency inventory
   (`repo_dependencies`) but get no libyear row, so they do not enter the
   vulnerability scan as unscannable dependencies. One line per repository
-  reports how many were skipped. Python drops such requirement lines earlier,
-  while parsing — in every entry point (`requirements*.txt`, `pyproject.toml`
-  including its Poetry tables, `setup.py`, `setup.cfg`, `Pipfile` and the
-  dev/build variants) — because a URL, a local path, a git source or a PEP 508
-  direct reference carries no package name to inventory.
+  reports how many were skipped. Python splits the two: the
+  libyear and vulnerability parsers drop such requirement lines while parsing
+  — in every entry point (`requirements*.txt`, `pyproject.toml` including its
+  Poetry tables, `setup.py`, `setup.cfg`, `Pipfile` and the dev/build
+  variants) — so those dependencies get no libyear row and are never looked
+  up in a registry. The inventory parser drops them only where
+  `requirements.txt` holds them as one of pip's option lines (`-e`, `-r`), so
+  an editable install has no inventory row. In the line-shaped entry points
+  it reads (`requirements.txt` exactly, PEP 621 `dependencies`, `setup.py`
+  and `setup.cfg`'s `install_requires`) it cannot split the rest, so
+  `repo_dependencies` holds the requirement line itself as the dependency
+  name: `./local-pkg`, `https://example.com/pkg-1.0.tar.gz`,
+  `requests @ git+https://…`. The requirements VARIANTS are read only by the
+  libyear and vulnerability path, and only with `collection.dev_build_deps`
+  on, so they produce no inventory row at all. That arm takes `.txt` files
+  alone: a requirements variant by name (`requirements-dev.txt`,
+  `test_requirements.txt`, matched case-insensitively) or any other `.txt`
+  directly inside a directory named `requirements` (that directory name
+  byte-exact),
+  and never `requirements.txt` itself in any casing. Both walks match
+  `requirements.txt` byte for byte, so `requirements/requirements.txt` is the
+  ordinary manifest, gate or no gate, and a differently cased
+  `Requirements.txt` matches no arm at all — nothing collects it. The Poetry and Pipfile tables key on the
+  dependency's name, so those rows keep the clean name. A named PEP 508 direct reference does carry a
+  package name (`requests`), so that stored name is a wart rather than a
+  design.
   The other ecosystems (RubyGems, Packagist, Maven, …) do not yet make this
   distinction: a `path:`- or `git:`-sourced gem is still looked up by name.
 

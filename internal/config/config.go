@@ -622,7 +622,8 @@ type CollectionConfig struct {
 	// DevBuildDeps (v0.27.45, summary/19 P2): expand Python dependency
 	// collection to the dev/test/build/optional manifest families —
 	// requirements-variant files (requirements-dev.txt,
-	// test_requirements.txt, requirements/*.txt), pyproject
+	// test_requirements.txt, or another .txt directly inside a
+	// requirements/ directory — never requirements.txt itself), pyproject
 	// [build-system].requires / [project.optional-dependencies] /
 	// PEP 735 [dependency-groups] / poetry groups, Pipfile
 	// [dev-packages], setup.py tests_require + extras_require, and

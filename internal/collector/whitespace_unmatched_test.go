@@ -76,3 +76,24 @@ func TestFormatUnmatchedWhitespace(t *testing.T) {
 		t.Errorf("%q must state the sample size once", got)
 	}
 }
+
+// Copilot on PR #210: the sampled keys are repository-controlled filenames
+// and go straight into the refusal the rewalk CLI prints, so a filename
+// carrying CR/LF or an escape sequence could forge lines in that output.
+// They are scrubbed like every other logged value (scrubLogValue).
+func TestFormatUnmatchedWhitespaceScrubsFilenames(t *testing.T) {
+	got := formatUnmatchedWhitespace([]string{
+		"ok.go",
+		"evil.go\nWARN: fake line",
+		"carriage\rreturn.go",
+		"esc\x1b[31mape.go",
+	})
+	for _, bad := range []string{"\n", "\r", "\x1b"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("the sample kept %q from a repository-controlled filename: %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "ok.go") {
+		t.Errorf("the sample must still name the files: %q", got)
+	}
+}

@@ -4,7 +4,8 @@
 // Dev/build dependency expansion (v0.27.45, summary/19 P2 — the
 // numpy fix). Python's dev/test/build tooling lives in manifest
 // families the walk never visited: requirements-variant files
-// (requirements-dev.txt, test_requirements.txt, requirements/*.txt),
+// (requirements-dev.txt, test_requirements.txt, or another .txt directly
+// inside a requirements/ directory — never requirements.txt itself),
 // pyproject [build-system].requires / [project.optional-dependencies]
 // / PEP 735 [dependency-groups] / poetry groups, Pipfile
 // [dev-packages], setup.py tests_require/extras_require, setup.cfg

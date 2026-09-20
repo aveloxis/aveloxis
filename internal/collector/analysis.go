@@ -1427,8 +1427,9 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 		default:
 			// v0.27.45 (summary/19 P2): requirements-variant files
-			// (requirements-dev.txt, test_requirements.txt,
-			// requirements/*.txt) with filename-token scope.
+			// (requirements-dev.txt, test_requirements.txt, or another
+			// .txt directly inside a requirements/ directory — never
+			// requirements.txt itself) with filename-token scope.
 			if ac.DevBuildDeps {
 				if scope, ok := requirementsFileScope(base, path); ok {
 					allDeps = append(allDeps, parseRequirementsTxtVersionsScoped(path, scope)...)
@@ -1594,8 +1595,12 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		// npm and cargo only: Python drops a VCS/URL/path requirement while
 		// parsing (isNonRegistryPyRequirement, applied in
 		// parseRequirementsTxtVersions and parsePyRequirement), because such
-		// a line carries no package name to inventory, so it never reaches
-		// this counter.
+		// a line names no PyPI package to look up, so it never reaches this
+		// counter. Its INVENTORY row survives when the entry point is one
+		// the inventory walk parses (requirements.txt lines other than
+		// pip's option lines, PEP 621 dependencies, install_requires), with
+		// the requirement line itself as the dependency name
+		// (docs/architecture/analysis.md).
 		ac.logger.Info("libyear: npm/cargo dependencies not from a registry were not looked up",
 			"repo_id", repoID, "deps", nonRegistry)
 	}

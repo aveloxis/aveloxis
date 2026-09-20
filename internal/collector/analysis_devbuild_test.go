@@ -41,6 +41,17 @@ func TestRequirementsFileScope(t *testing.T) {
 		{"readme.txt", "/r/readme.txt", "", false},
 		{"notes.txt", "/r/docs/notes.txt", "", false},
 		{"requirements.in", "/r/requirements.in", "", false}, // only .txt
+		{"constraints.in", "/r/requirements/constraints.in", "", false},
+		// The properties docs/architecture/analysis.md states (v0.29.57
+		// review round 8): variant NAMES match in any casing, the
+		// requirements DIRECTORY is byte-exact, requirements.txt is excluded
+		// in every casing, and only the immediate parent counts.
+		{"Requirements-Dev.txt", "/r/Requirements-Dev.txt", model.ScopeDev, true},
+		{"REQUIREMENTS-DEV.TXT", "/r/REQUIREMENTS-DEV.TXT", model.ScopeDev, true},
+		{"base.txt", "/r/Requirements/base.txt", "", false},
+		{"Requirements.txt", "/r/Requirements.txt", "", false},
+		{"REQUIREMENTS.TXT", "/r/requirements/REQUIREMENTS.TXT", "", false},
+		{"base.txt", "/r/requirements/prod/base.txt", "", false},
 	}
 	for _, c := range cases {
 		scope, ok := requirementsFileScope(c.base, c.path)
@@ -365,5 +376,31 @@ func TestRequirementsExtrasStripped(t *testing.T) {
 	}
 	if deps[1].Name != "httpx" {
 		t.Errorf("multi-extras must strip: got %q, want httpx", deps[1].Name)
+	}
+}
+
+// A differently cased Requirements.txt reaches no arm of the inventory:
+// its map and its parser switch match the basename byte-exact, and
+// requirementsFileScope (the libyear walk's variant arm) excludes the name
+// in every casing. docs/architecture/analysis.md states this. NOT pinned
+// here: the libyear walk's own `switch base`, which needs a store to drive
+// — a case-folding fix applied there alone passes this test, so closing the
+// worklist's case gap means updating the page by hand too.
+func TestCasedRequirementsFileIsCollectedByNothing(t *testing.T) {
+	for _, name := range []string{"Requirements.txt", "REQUIREMENTS.TXT"} {
+		if lang, ok := manifestFiles[name]; ok {
+			t.Errorf("manifestFiles[%q] = %q — the inventory walk now claims it; update the docs and this test", name, lang)
+		}
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("flask==2.0.0\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deps, err := parseDependencyFile(path, "Python")
+		if err != nil || len(deps) != 0 {
+			t.Errorf("parseDependencyFile(%q) = (%v, %v), want no dependencies — its switch is byte-exact", name, deps, err)
+		}
+		if scope, ok := requirementsFileScope(name, "/r/"+name); ok {
+			t.Errorf("requirementsFileScope(%q) = (%q, true) — the variant arm now claims it", name, scope)
+		}
 	}
 }

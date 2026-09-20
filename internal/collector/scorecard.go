@@ -198,6 +198,26 @@ const ScorecardAPICallsBasis = "instrument_token_sample"
 // GitHub.
 const scorecardRateLimitURL = "https://api.github.com/rate_limit"
 
+// remoteScorecardSupported reports whether a remote-primary scorecard run may
+// borrow a pool token for this deployment's host.
+//
+// The subprocess resolves its own host from the repo URL and its environment;
+// nothing we pass routes it. So on a deployment whose github.base_url is not
+// public GitHub, lending it a key would hand an Enterprise token to whatever
+// host it decides to call (v0.29.57, Copilot review 5260880711). Remote mode
+// is refused there instead, and a repo with an analysis clone still gets a
+// local run — the same treatment GitLab and generic-git repos already have.
+//
+// Teaching the subprocess about an Enterprise host is worklist item 34; it
+// needs that tool's env contract, which is not ours to assume.
+func remoteScorecardSupported(baseURL string) bool {
+	switch strings.TrimRight(baseURL, "/") {
+	case "", "https://api.github.com":
+		return true
+	}
+	return false
+}
+
 // scorecardRateLimitURLFor is that endpoint on the deployment's own host.
 // The probe carries a pool token, so it must not go to a host the
 // configuration did not name (v0.29.57). ONE derivation, because both option
@@ -280,6 +300,17 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 			return nil, localErr
 		}
 		return finishScorecard(ctx, store, repoID, raw, "local", 0, time.Since(start), logger)
+	}
+
+	if opts.RemotePrimary && !remoteScorecardSupported(opts.APIBaseURL) {
+		// See remoteScorecardSupported: the subprocess would choose its own
+		// host for a token that belongs to this deployment's.
+		logger.Warn("scorecard remote mode skipped — github.base_url is not public GitHub and the scorecard subprocess resolves its own host, so the API token is not lent (worklist 34)",
+			"repo_id", repoID, "url", safeRepoURL, "api_base", opts.APIBaseURL)
+		if opts.LocalPath == "" {
+			return nil, nil
+		}
+		return runLocal()
 	}
 
 	if !opts.RemotePrimary {

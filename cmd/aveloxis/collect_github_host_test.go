@@ -21,9 +21,15 @@ import (
 func TestCollectPassesTheConfiguredGitHubHost(t *testing.T) {
 	src := srctest.Read(t, "cmd/aveloxis/main.go")
 	body := srctest.StripGoComments(src)
-	const call = "collector.NewWithOptions(client, store, logger, ghKeys, cfg.GitHub.BaseURL, cfg.Collection.RepoCloneDir)"
+	const call = "collector.NewWithOptions(client, store, logger, ghKeys, cfg.GitHub.GitHubAPIBase(), cfg.Collection.RepoCloneDir)"
 	if !strings.Contains(body, call) {
 		t.Errorf("the collect command must build its collector as %q — the keys and the host they belong to travel together, or an Enterprise token reaches public GitHub", call)
+	}
+	// add-repo on an ORGANISATION builds its own client from the same pool
+	// (Copilot review 5260880711): the CLI half of the leak the scheduler's
+	// clients had.
+	if !strings.Contains(body, "platform.NewHTTPClient(cfg.GitHub.GitHubAPIBase(), ghKeys, logger, platform.AuthGitHub)") {
+		t.Error("the org-expansion client must take cfg.GitHub.GitHubAPIBase() — adding an organisation on a self-hosted deployment otherwise sends the Enterprise token to public GitHub")
 	}
 	// A literal here would compile and would be wrong: the whole point is
 	// that this deployment's configuration decides.

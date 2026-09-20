@@ -560,7 +560,7 @@ Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also
 aveloxis refresh-views
 ```
 
-Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Their data is also refreshed automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off). A refresh keeps each view's definition; a release that changes one needs a plain `aveloxis migrate`, which re-creates the views.
+Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Their data is also refreshed automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off). A refresh keeps each view's definition; a release that changes one needs a plain `aveloxis migrate`, which re-creates the views. On a deployment with `collection.materialized_views` set to `false` there are no views to refresh, and this command says so.
 
 ### `aveloxis install-tools` — Install all optional analysis tools
 
@@ -949,6 +949,8 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 | `explorer_cntrb_per_file` | Contributors and reviewers aggregated per file path |
 | `explorer_repo_files` | Latest SCC file listing per repo (most recent analysis date) |
 | `issue_reporter_created_at` | Legacy issue reporter view |
+
+**Optional:** `collection.materialized_views` (default `true`) says whether this deployment has the views at all. With it `false`, neither `aveloxis serve` nor `aveloxis migrate` builds them, and the commands below have nothing to refresh; existing views are not dropped. Everything that follows assumes they are enabled.
 
 **Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; subsequent startups skip them. Manual refresh: `aveloxis refresh-views` (data only; each view keeps its definition). The explicit `aveloxis migrate` command, without `--skip-views`, drops and re-creates every view from its definition — the only step that applies a changed definition.
 

@@ -265,6 +265,15 @@ func allowedBase(e ast.Expr, forge string, isConstructor bool, params, fromHelpe
 			block, ok := x.X.(*ast.SelectorExpr)
 			return ok && ((forge == "github" && block.Sel.Name == "GitHub") || (forge == "gitlab" && block.Sel.Name == "GitLab"))
 		}
+	case *ast.CallExpr:
+		// cfg.GitHub.GitHubAPIBase() — the one accessor for "which GitHub
+		// host do this deployment's keys belong to" (v0.29.57). Safer than
+		// the raw BaseURL field below, which is empty when unset; this
+		// defaults to public GitHub. Accepted by NAME, so an arbitrary call
+		// still is not.
+		if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "GitHubAPIBase" {
+			return forge == "github"
+		}
 	case *ast.Ident:
 		if x.Name == "baseURL" && isConstructor && params[x.Name] {
 			return true

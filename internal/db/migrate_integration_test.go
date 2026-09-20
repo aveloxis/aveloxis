@@ -196,6 +196,12 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
+	// matviews.sql is part of what must be safe to run twice, so this
+	// test asks for the views: since v0.29.57 they are optional and a
+	// store nobody configured builds none, which would have left the
+	// view batch out of the idempotency contract entirely (Copilot
+	// review 5260880711).
+	store.SetMatviewMode(MatviewsRebuild)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("first RunMigrations: %v", err)
 	}

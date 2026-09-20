@@ -1422,6 +1422,18 @@ func (c *Config) SlogLevel() slog.Level {
 	}
 }
 
+// GitHubAPIBase is the REST host this deployment's GitHub keys belong to:
+// the operator's github.base_url when set, else public GitHub. One spelling,
+// because every caller that holds the key pool needs the same answer and the
+// ones that guessed sent Enterprise tokens to api.github.com (v0.29.57).
+// Safe on a nil receiver: a config with no github block means public GitHub.
+func (p *PlatformConfig) GitHubAPIBase() string {
+	if p != nil && p.BaseURL != "" {
+		return p.BaseURL
+	}
+	return "https://api.github.com"
+}
+
 // MaterializedViewsValue returns whether this deployment has materialized
 // views, defaulting to TRUE when the field is absent. This accessor is the
 // SINGLE default layer (SR-10) — consumers must never read the raw pointer.

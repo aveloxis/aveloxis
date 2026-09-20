@@ -68,7 +68,7 @@ func TestAdminGroupApprovalMailsTheRequesterOnce(t *testing.T) {
 			sent <- strings.Join(to, ",")
 			return nil
 		})
-	s := New(store, config.WebConfig{}, nil, logger).WithMailer(m)
+	s := New(store, config.WebConfig{}, nil, "", logger).WithMailer(m)
 	s.sessions["admin"] = &Session{UserID: uid, LoginName: login, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
 	approve := func() *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/admin/groups/"+strconv.FormatInt(gid, 10)+"/approve", nil)
@@ -168,7 +168,7 @@ func TestAdminAddRequestReapproveResumesProcessing(t *testing.T) {
 			return nil
 		})
 	logs := &lockedBuffer{}
-	s := New(store, config.WebConfig{}, nil, slog.New(slog.NewTextHandler(logs, nil))).WithMailer(m)
+	s := New(store, config.WebConfig{}, nil, "", slog.New(slog.NewTextHandler(logs, nil))).WithMailer(m)
 	s.sessions["admin"] = &Session{UserID: uid, LoginName: login, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
 	r := httptest.NewRequest(http.MethodPost, "/admin/add-requests/"+strconv.FormatInt(out.RequestID, 10)+"/approve", nil)
 	r.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: "admin"})
@@ -272,7 +272,7 @@ func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 		})
 	logs := &lockedBuffer{}
 	// A key pool (empty) so scanOrgRepos gets as far as its group gate.
-	s := New(store, config.WebConfig{}, platform.NewKeyPool(nil, discard), slog.New(slog.NewTextHandler(logs, nil))).WithMailer(m)
+	s := New(store, config.WebConfig{}, platform.NewKeyPool(nil, discard), "", slog.New(slog.NewTextHandler(logs, nil))).WithMailer(m)
 	s.sessions["admin"] = &Session{UserID: uid, LoginName: login, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
 	approve := func() {
 		t.Helper()

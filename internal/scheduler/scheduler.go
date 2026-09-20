@@ -85,9 +85,14 @@ type Config struct {
 	// constructors now take the host) plus the scorecard API-spend probe.
 	// TestSchedulerGitHubKeysNeverTravelWithoutTheHost enforces that.
 	//
-	// STILL OPEN (worklist item 34): the web server, the CLI org-add, and
-	// the scorecard SUBPROCESS, which resolves its own host from the repo
-	// URL and its environment rather than from anything passed to it.
+	// Every client built from this deployment's GitHub keys now takes the
+	// configured host: the scheduler's own, the breadth worker, the commit
+	// resolver, the scorecard API-spend probe, the CLI collect and org-add
+	// paths, and the web server's org scan. What remains of worklist item
+	// 34 is the scorecard SUBPROCESS, which resolves its own host from the
+	// repo URL and its environment — it is not routed, so remote mode is
+	// REFUSED when the configured host is not public GitHub and the token
+	// is not lent at all (collector.remoteScorecardSupported).
 	GitHub *config.PlatformConfig
 }
 
@@ -225,10 +230,7 @@ func New(store *db.PostgresStore, ghClient, glClient platform.Client, logger *sl
 // the org scan and the analysis client cannot diverge (v0.29.57 — they were
 // both hardcoded, which sent Enterprise tokens to api.github.com).
 func githubAPIBase(cfg Config) string {
-	if cfg.GitHub != nil && cfg.GitHub.BaseURL != "" {
-		return cfg.GitHub.BaseURL
-	}
-	return "https://api.github.com"
+	return cfg.GitHub.GitHubAPIBase()
 }
 
 // NewWithKeys creates a scheduler with the GitHub key pool (commit

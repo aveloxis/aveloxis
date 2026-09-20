@@ -32,9 +32,9 @@ type Collector struct {
 	facade *FacadeCollector
 	ghKeys *platform.KeyPool // for commit resolution (GitHub only)
 	// ghAPIBase is the GitHub REST host those keys belong to. Empty means
-	// public GitHub. Set by WithGitHubAPIBase; a deployment that configures
-	// github.base_url must pass it, or the keys go to the wrong host
-	// (v0.29.57).
+	// public GitHub. It is a REQUIRED parameter of NewWithKeys and
+	// NewWithOptions — not an optional setter — so a caller holding the key
+	// pool cannot omit the host it goes with (v0.29.57).
 	ghAPIBase string
 
 	// Staged-pipeline mode knobs, threaded from CollectionConfig by

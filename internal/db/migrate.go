@@ -138,6 +138,21 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			}
 			logger.Info("schema stamp matches binary — skipping migrations (F13 fast path); run `aveloxis migrate` for a full pass",
 				"schema_version", v)
+			// The fast path skips the migration WALK. Whether this
+			// deployment HAS its materialized views is a different
+			// question, and the stamp cannot answer it: an operator who
+			// turns collection.materialized_views back on keeps the stamp
+			// they already had, so without this the setting would take
+			// effect only on a manual `aveloxis migrate` — while the
+			// config documents serve as creating the missing ones
+			// (v0.29.57, Copilot review 5260880711). One catalog query
+			// when they are all present; never a rebuild, which is what
+			// `aveloxis migrate` is for and why it never fast-paths.
+			if pg.matviewMode != MatviewsOff {
+				if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
+					logger.Warn("materialized view creation had errors", "error", err)
+				}
+			}
 			return nil
 		}
 		// A serve whose binary missed the stamp is about to run the FULL

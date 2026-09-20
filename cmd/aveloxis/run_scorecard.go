@@ -198,7 +198,13 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 		go func() {
 			defer wg.Done()
 			for r := range jobs {
-				repoURL := fmt.Sprintf("https://github.com/%s/%s", r.Owner, r.Name)
+				// The repo's OWN url, not a synthesized github.com one: on a
+				// self-hosted deployment the repository is not on
+				// github.com, and handing that URL to scorecard alongside a
+				// pool token is how the token reaches the wrong host
+				// (v0.29.57, Copilot review 5260880711). The per-cycle phase
+				// has always passed the stored URL.
+				repoURL := r.GitURL
 				// Same shared invoke/persist path as the per-cycle
 				// phase. No analysis clone exists here → remote only:
 				// LocalPath stays empty, so a failed remote attempt
@@ -228,7 +234,7 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 						Timeout:         cfg.Collection.ScorecardTimeout(),
 						GithubToken:     token,
 						InstrumentToken: instrumentToken,
-						APIBaseURL:      cfg.GitHub.BaseURL,
+						APIBaseURL:      cfg.GitHub.GitHubAPIBase(),
 					}, logger)
 				}()
 				if scErr != nil {

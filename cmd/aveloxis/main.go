@@ -508,7 +508,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 
 		// The same host the client above was built from: commit resolution
 		// builds its own clients from these keys (v0.29.57).
-		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.GitHub.BaseURL, cfg.Collection.RepoCloneDir).
+		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.GitHub.GitHubAPIBase(), cfg.Collection.RepoCloneDir).
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
@@ -626,7 +626,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			var repos []orgRepo
 			switch plat {
 			case model.PlatformGitHub:
-				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)
+				// The configured host, not a literal: these are the
+				// deployment's keys, and add-repo on an org is the CLI half
+				// of the same leak the scheduler's clients had (v0.29.57).
+				ghHTTP := platform.NewHTTPClient(cfg.GitHub.GitHubAPIBase(), ghKeys, logger, platform.AuthGitHub)
 				repos, err = listGitHubOrgRepos(ctx, ghHTTP, orgName)
 			case model.PlatformGitLab:
 				// v0.29.11: GitLab keys only ever go to the configured
@@ -2115,7 +2118,7 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config {
 // newWebServer builds `aveloxis web`'s server with its mailer attached.
 // TestProcessMailWiring checks the mailer it carries.
 func newWebServer(store *db.PostgresStore, cfg *config.Config, ghKeys *platform.KeyPool, logger *slog.Logger) *web.Server {
-	return web.New(store, cfg.Web, ghKeys, logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
+	return web.New(store, cfg.Web, ghKeys, cfg.GitHub.GitHubAPIBase(), logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
 }
 
 // apiOptions maps aveloxis.json onto `aveloxis api`'s server options.

@@ -61,7 +61,7 @@ func TestDashboardEmailGateThroughTheHandler(t *testing.T) {
 	}
 	get := func(t *testing.T, st *db.PostgresStore, m *mailer.Mailer, devMode bool, host string) *httptest.ResponseRecorder {
 		t.Helper()
-		s := New(st, config.WebConfig{DevMode: devMode}, nil, logger)
+		s := New(st, config.WebConfig{DevMode: devMode}, nil, "", logger)
 		if m != nil {
 			s.WithMailer(m)
 		}
@@ -163,7 +163,7 @@ func TestDashboardEmailGateThroughTheHandler(t *testing.T) {
 	})
 
 	t.Run("an anonymous request is sent to login", func(t *testing.T) {
-		s := New(store, config.WebConfig{}, nil, logger)
+		s := New(store, config.WebConfig{}, nil, "", logger)
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
 		if w.Code != http.StatusFound || w.Header().Get("Location") != "/login" {
@@ -233,7 +233,7 @@ func TestAccountEmailFlowThroughTheHandler(t *testing.T) {
 				}
 				return sendErr
 			})
-		s := New(store, config.WebConfig{DevMode: devMode}, nil, logger).WithMailer(m)
+		s := New(store, config.WebConfig{DevMode: devMode}, nil, "", logger).WithMailer(m)
 		s.sessions["a"] = &Session{UserID: uidA, LoginName: logins[0], ExpiresAt: time.Now().Add(time.Hour)}
 		s.sessions["b"] = &Session{UserID: uidB, LoginName: logins[1], ExpiresAt: time.Now().Add(time.Hour)}
 		return s

@@ -37,12 +37,18 @@ import (
 
 // Server is the web GUI server.
 type Server struct {
-	store     *db.PostgresStore
-	cfg       config.WebConfig
-	logger    *slog.Logger
-	ghOAuth   *oauth2.Config
-	glOAuth   *oauth2.Config
-	ghKeys    *platform.KeyPool // for immediate org scanning
+	store   *db.PostgresStore
+	cfg     config.WebConfig
+	logger  *slog.Logger
+	ghOAuth *oauth2.Config
+	glOAuth *oauth2.Config
+	ghKeys  *platform.KeyPool // for immediate org scanning
+	// ghAPIBase is the GitHub REST host those keys belong to (empty =
+	// public GitHub). A REQUIRED parameter of New, next to the pool, so a
+	// caller cannot hand over the keys and forget the host they go with —
+	// which is how the org scan below sent an Enterprise token to public
+	// GitHub (v0.29.57, the last site of worklist item 34's client half).
+	ghAPIBase string
 	sessionMu sync.RWMutex
 	sessions  map[string]*Session // session token -> session
 	tmpl      *template.Template
@@ -72,13 +78,14 @@ type Session struct {
 
 // New creates a web server. ghKeys is optional — if provided, org repos are
 // scanned immediately when added via the GUI.
-func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool, logger *slog.Logger) *Server {
+func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool, ghAPIBase string, logger *slog.Logger) *Server {
 	s := &Server{
-		store:    store,
-		cfg:      cfg,
-		ghKeys:   ghKeys,
-		logger:   logger,
-		sessions: make(map[string]*Session),
+		store:     store,
+		cfg:       cfg,
+		ghKeys:    ghKeys,
+		ghAPIBase: ghAPIBase,
+		logger:    logger,
+		sessions:  make(map[string]*Session),
 	}
 
 	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
@@ -1385,7 +1392,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 		return
 	}
 
-	httpClient := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
+	httpClient := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
 	s.logger.Info("scanning repos for user group", "name", name, "group_id", groupID)
 
 	added := 0

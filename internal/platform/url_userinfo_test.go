@@ -5,6 +5,7 @@ package platform
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,26 @@ func TestParseRepoURLRefusesUserinfo(t *testing.T) {
 	}
 	if _, err := ParseRepoURL("https://github.com/owner/name@v1"); err != nil {
 		t.Errorf("an @ in the path is not userinfo: %v", err)
+	}
+}
+
+func TestRedactURLUserinfo(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"https://github.com/owner/name", "https://github.com/owner/name"},
+		{"", ""},
+		{"not a url", "not a url"},
+		{"https://github.com/owner/name@v1", "https://github.com/owner/name@v1"},
+		{"https://user:s3cret@github.com/owner/name", "https://***@github.com/owner/name"},
+		{"https://s3cret@github.com/owner/name", "https://***@github.com/owner/name"},
+		{"  https://user:s3cret@ghe.example.invalid/o/n  ", "https://***@ghe.example.invalid/o/n"},
+		// unparseable: redacted textually, the way the refusal read it
+		{"https://user:s3cret@github.com/owner/%zz", "https://***@github.com/owner/%zz"},
+	} {
+		if got := RedactURLUserinfo(tc.in); got != tc.want {
+			t.Errorf("RedactURLUserinfo(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if strings.Contains(RedactURLUserinfo(tc.in), "s3cret") {
+			t.Errorf("RedactURLUserinfo(%q) kept the credential", tc.in)
+		}
 	}
 }

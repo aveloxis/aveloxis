@@ -271,7 +271,8 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// carrying credentials is refused before the install check, so the
 	// contract does not depend on what is on PATH (v0.29.57, Copilot review
 	// 5261384568). The store refuses such a URL on write; this arm is for
-	// rows that predate that refusal.
+	// rows that predate that refusal, and FacadeCollector.CollectRepo has
+	// the same arm for the same rows.
 	if err := platform.RefuseURLUserinfo(opts.RepoURL); err != nil {
 		logger.Error("scorecard not run: repo URL carries credentials", "repo_id", repoID, "error", err)
 		return nil, fmt.Errorf("scorecard repo %d: %w", repoID, err)

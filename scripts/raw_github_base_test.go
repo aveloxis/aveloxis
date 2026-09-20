@@ -73,7 +73,9 @@ func rawGitHubBaseReads(t testing.TB, name, src string) []int {
 	}
 	writes := map[ast.Expr]bool{}
 	ast.Inspect(f, func(n ast.Node) bool {
-		if as, ok := n.(*ast.AssignStmt); ok {
+		// Only a plain assignment or definition is a pure write: a compound
+		// one (+=) READS the field first (fix-review round 1).
+		if as, ok := n.(*ast.AssignStmt); ok && (as.Tok == token.ASSIGN || as.Tok == token.DEFINE) {
 			for _, l := range as.Lhs {
 				writes[l] = true
 			}
@@ -109,6 +111,8 @@ func TestRawGitHubBaseReadsFixtures(t *testing.T) {
 		{"deeper receiver", `_ = s.cfg.GitHub.BaseURL`, 1},
 		{"two reads", `_ = cfg.GitHub.BaseURL; _ = cfg.GitHub.BaseURL`, 2},
 		{"assignment is a write", `cfg.GitHub.BaseURL = "https://x"`, 0},
+		{"tuple assignment is a write", `_, cfg.GitHub.BaseURL = g()`, 0},
+		{"compound assignment reads", `cfg.GitHub.BaseURL += "/x"`, 1},
 		{"the accessor", `_ = cfg.GitHub.GitHubAPIBase()`, 0},
 		{"GitLab's raw field is another rule's", `_ = cfg.GitLab.BaseURL`, 0},
 		{"composite literal", `_ = C{GitHub: P{BaseURL: "x"}}`, 0},

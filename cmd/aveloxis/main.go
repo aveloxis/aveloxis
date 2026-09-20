@@ -474,7 +474,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	for _, repoURL := range repoURLs {
 		client, owner, repo, err := collector.ClientForRepo(repoURL, ghClient, glClient)
 		if err != nil {
-			logger.Error("skipping repo", "url", repoURL, "error", err)
+			logger.Error("skipping repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 
@@ -485,7 +485,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			Owner:    owner,
 		})
 		if err != nil {
-			logger.Error("failed to upsert repo", "url", repoURL, "error", err)
+			logger.Error("failed to upsert repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 
@@ -689,7 +689,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 		// Regular repo URL.
 		parsed, err := platform.ParseRepoURL(repoURL)
 		if err != nil {
-			logger.Error("invalid URL", "url", repoURL, "error", err)
+			logger.Error("invalid URL", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 		addOneRepo(ctx, store, logger, repoURL, parsed.Owner, parsed.Repo, parsed.Platform, priority)
@@ -710,7 +710,7 @@ func addOneRepoWithGroup(ctx context.Context, store *db.PostgresStore, logger *s
 		PlatformID: r.ForgeID,
 	})
 	if err != nil {
-		logger.Error("failed to register repo", "url", r.URL, "error", err)
+		logger.Error("failed to register repo", "url", platform.RedactURLUserinfo(r.URL), "error", err)
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
@@ -728,7 +728,7 @@ func addOneRepo(ctx context.Context, store *db.PostgresStore, logger *slog.Logge
 		Owner:    owner,
 	})
 	if err != nil {
-		logger.Error("failed to register repo", "url", repoURL, "error", err)
+		logger.Error("failed to register repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
@@ -889,7 +889,7 @@ func runImportFromAugur(cfgPath string, priority int) error {
 			Owner:    parsed.Owner,
 		})
 		if err != nil {
-			logger.Error("failed to register repo", "url", ar.RepoGit, "error", err)
+			logger.Error("failed to register repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
 			failed++
 			continue
 		}
@@ -1141,7 +1141,7 @@ func runRecollect(cfgPath string, targets []string) error {
 			Owner:    parsed.Owner,
 		})
 		if err != nil {
-			logger.Error("failed to resolve repo_id — skipping", "url", target, "error", err)
+			logger.Error("failed to resolve repo_id — skipping", "url", platform.RedactURLUserinfo(target), "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}

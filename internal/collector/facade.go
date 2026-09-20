@@ -28,6 +28,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // FacadeCollector handles git clone/fetch + log parsing for commit data.
@@ -73,6 +75,19 @@ type FacadeResult struct {
 // CollectRepo clones (or fetches) the repo and parses git log for commit data.
 func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL string) (*FacadeResult, error) {
 	result := &FacadeResult{}
+
+	// The URL goes to `git clone` on its command line and into the clone
+	// log line, every cycle. A URL carrying credentials is refused before
+	// either, like RunScorecard refuses it — the two subprocess boundaries
+	// agree on what a legacy row (one stored before the store refused such
+	// URLs) gets: an ERROR naming the repo, nothing run (v0.29.57 fix-review
+	// round 1). validateGitURL cannot do this: it accepts userinfo for the
+	// SCP/ssh shapes.
+	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
+		f.logger.Error("facade not run: repo URL carries credentials — remove the credential from repo_git",
+			"repo_id", repoID, "url", platform.RedactURLUserinfo(gitURL), "error", err)
+		return result, fmt.Errorf("repo %d: %w", repoID, err)
+	}
 
 	// Determine local clone path.
 	clonePath := f.clonePath(repoID)

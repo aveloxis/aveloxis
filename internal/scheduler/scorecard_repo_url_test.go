@@ -54,4 +54,10 @@ func TestRunScorecardPhaseHandsScorecardTheStoredURL(t *testing.T) {
 	if strings.Contains(body, "platformHostForModel(") || strings.Contains(body, `"https://%s/%s/%s"`) {
 		t.Error("runScorecardPhase must not synthesise a repo URL of its own — that is scorecardRepoURL's one job")
 	}
+	// A reassignment between the helper and the option would pass the two
+	// checks above (fix-review round 1 mutation): the helper's result must be
+	// the ONLY value repoURL ever holds.
+	if strings.Contains(body, "repoURL =") {
+		t.Error("runScorecardPhase reassigns repoURL after scorecardRepoURL — the option would carry a different URL than the helper chose")
+	}
 }

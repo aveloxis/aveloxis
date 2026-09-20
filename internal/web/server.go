@@ -1305,7 +1305,9 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 			// Validate the URL before adding.
 			v := ValidateRepoURL(repoURL)
 			if !v.Valid {
-				invalid = append(invalid, fmt.Sprintf("%s: %s", repoURL, v.Error))
+				// Logged below; a refused credential must not be written to
+				// the log by the line that refuses it (fix-review round 1).
+				invalid = append(invalid, fmt.Sprintf("%s: %s", platform.RedactURLUserinfo(repoURL), v.Error))
 				continue
 			}
 			urls = append(urls, v.URL)
@@ -1364,6 +1366,14 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("org not added — its host is not this deployment's GitHub host",
 				"group_id", groupID, "org_url", truncateForLog([]byte(orgURL), 200), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=host", groupID), http.StatusFound)
+			return
+		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong):
+			// The user's input, fixable by the user: say so on the page, as
+			// the repo path and the portal do (fix-review round 1: the store's
+			// refusal fell through to a plain redirect, so a credentialed org
+			// URL was silently not added). The URL itself is not logged.
+			s.logger.Warn("org not added — invalid URL", "group_id", groupID, "error", err)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=invalid", groupID), http.StatusFound)
 			return
 		case err != nil:
 			s.logger.Warn("failed to add org to group", "error", err)

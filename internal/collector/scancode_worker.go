@@ -53,6 +53,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/hostid"
 	"github.com/aveloxis/aveloxis/internal/safego"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // scancodeStderrTailBytes is the cap on how much subprocess output
@@ -614,6 +616,19 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// clone-dir removal, which needs no pool (pass 39).
 	bookkeepingDone := sync.OnceFunc(w.bookkeeping.Done)
 	defer bookkeepingDone()
+	// The clone below puts job.RepoGit on git's command line and, on
+	// failure, git's own output (which names the URL) in the WARN. A stored
+	// URL carrying credentials is refused first, as the facade and scorecard
+	// boundaries refuse it (v0.29.57 fix-review round 2: this was the third
+	// subprocess boundary, and the one without the arm). A strike, so the
+	// row is not reclaimed every tick; no URL is changed (SR-7).
+	if err := platform.RefuseURLUserinfo(job.RepoGit); err != nil {
+		w.logger.Error("scancode runOne: repo URL carries credentials — not cloned; correct repo_git",
+			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
+			"url", platform.RedactURLUserinfo(job.RepoGit), "error", err)
+		w.recordFailureBestEffort(ctx, job.RepoID)
+		return
+	}
 	// v0.27.6 generated-content skip policy — decided from the
 	// claimed row's repos.languages breakdown BEFORE any clone I/O.
 	// pytorch/docs (~6 GB, 100% HTML) burned a 24h worker slot 27×;

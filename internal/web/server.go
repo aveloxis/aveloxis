@@ -1294,9 +1294,9 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 		raw = r.FormValue("repo_url") // backward compat with old single-URL form
 	}
 
+	var invalid []string
 	if raw != "" && groupID > 0 {
 		var urls []string
-		var invalid []string
 		for _, line := range strings.Split(raw, "\n") {
 			repoURL := strings.TrimSpace(line)
 			if repoURL == "" {
@@ -1326,8 +1326,13 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				// (Copilot review of PR #207); a rejected group gets its own
 				// notice, since trying again cannot work (round-24 review).
 				flag := "1"
-				if errors.Is(err, db.ErrGroupRejected) {
+				switch {
+				case errors.Is(err, db.ErrGroupRejected):
 					flag = "rejected"
+				case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo):
+					// The user's input: "try again" cannot work, and the
+					// store refused the WHOLE paste (round 2).
+					flag = "invalid"
 				}
 				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, flag), http.StatusFound)
 				return
@@ -1336,15 +1341,30 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
 			if out.Pending > 0 {
 				s.notifyAddRequestSubmitted(out.RequestID)
-				http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d%s", groupID, out.Pending, invalidFlag(invalid)), http.StatusFound)
 				return
 			}
 		}
 		if len(invalid) > 0 {
+			// The page says so too (round 2: the lines the validator refused
+			// were only logged, so a refused paste looked like a success).
 			s.logger.Warn("some URLs were invalid", "errors", invalid)
 		}
 	}
-	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
+	loc := fmt.Sprintf("/groups/%d", groupID)
+	if len(invalid) > 0 {
+		loc += "?add_error=invalid"
+	}
+	http.Redirect(w, r, loc, http.StatusFound)
+}
+
+// invalidFlag is the add_error query fragment for a paste with refused
+// lines, empty when every line was accepted.
+func invalidFlag(invalid []string) string {
+	if len(invalid) == 0 {
+		return ""
+	}
+	return "&add_error=invalid"
 }
 
 func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
@@ -1369,9 +1389,10 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 			return
 		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong):
 			// The user's input, fixable by the user: say so on the page, as
-			// the repo path and the portal do (fix-review round 1: the store's
-			// refusal fell through to a plain redirect, so a credentialed org
-			// URL was silently not added). The URL itself is not logged.
+			// the repo path (add_error=invalid) and the portal (400) do
+			// (fix-review round 1: the store's refusal fell through to a plain
+			// redirect, so a credentialed org URL was silently not added). The
+			// URL itself is not logged.
 			s.logger.Warn("org not added — invalid URL", "group_id", groupID, "error", err)
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=invalid", groupID), http.StatusFound)
 			return

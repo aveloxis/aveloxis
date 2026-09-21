@@ -39,6 +39,15 @@ func TestRefuseURLUserinfo(t *testing.T) {
 		// the check: the authority is read textually (fail closed)
 		{"https://user:pass@github.com/owner/%zz", true},
 		{"https://github.com/owner/%zz", false},
+		// scheme-relative (url.Parse sets User for these) and the shapes
+		// that panicked the redaction in round 2
+		{"//user:pw@host/x", true},
+		{"//u@h/x://y", true},
+		{"//host/x://y", false},
+		// schemeless: no authority, not refused (SCP git@host:path is a
+		// valid clone URL the facade accepts)
+		{"git@github.com:org/repo.git", false},
+		{"user:token@github.com/o/n", false},
 	} {
 		err := RefuseURLUserinfo(tc.url)
 		if tc.refuse && !errors.Is(err, ErrURLUserinfo) {
@@ -77,12 +86,81 @@ func TestRedactURLUserinfo(t *testing.T) {
 		{"  https://user:s3cret@ghe.example.invalid/o/n  ", "https://***@ghe.example.invalid/o/n"},
 		// unparseable: redacted textually, the way the refusal read it
 		{"https://user:s3cret@github.com/owner/%zz", "https://***@github.com/owner/%zz"},
+		// fix-review round 2: scheme-relative was returned VERBATIM, and a
+		// later "://" in the path panicked
+		{"//user:s3cret@host/x", "//***@host/x"},
+		{"//user:s3cret@host/x?a=b://c", "//***@host/x?a=b://c"},
+		{"//s3cret@h/x://y", "//***@h/x://y"},
+		// the schemeless paste the web validator refuses after prepending
+		// https:// — the handler logs the ORIGINAL line, so redaction is
+		// broader than refusal (round 2)
+		{"user:s3cret@github.com/o/n", "***@github.com/o/n"},
+		{"s3cret@github.com/o/n", "***@github.com/o/n"},
+		{"git@github.com:org/repo.git", "***@github.com:org/repo.git"},
+		{"https://u@s3cret@host/p", "https://***@host/p"},
 	} {
 		if got := RedactURLUserinfo(tc.in); got != tc.want {
 			t.Errorf("RedactURLUserinfo(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 		if strings.Contains(RedactURLUserinfo(tc.in), "s3cret") {
 			t.Errorf("RedactURLUserinfo(%q) kept the credential", tc.in)
+		}
+	}
+}
+
+// Refusal and redaction share userinfoBounds; this pins the consequence for
+// every input: never a panic, and when the refusal fires the redaction
+// replaces EXACTLY the span the refusal found (round 2: as two spellings, the
+// redaction returned a scheme-relative URL verbatim and panicked on 569 of
+// 300k random inputs). A constructed secret in authority position never
+// survives redaction, and is always refused when the authority has a scheme.
+func TestRedactNeverPanicsAndAgreesWithRefusal(t *testing.T) {
+	const alphabet = "abc:/@?#%.-1 \t"
+	seed := uint64(0x9E3779B97F4A7C15)
+	next := func() uint64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return seed
+	}
+	pieces := []string{"https://", "http://", "//", "", "user:", "s3cret", "@", "host", "/x", "://y", "?a=b", "#f", ":443", "%zz"}
+	for n := 0; n < 200000; n++ {
+		var b strings.Builder
+		for k := int(next()%8) + 1; k > 0; k-- {
+			if next()%3 == 0 {
+				b.WriteByte(alphabet[next()%uint64(len(alphabet))])
+			} else {
+				b.WriteString(pieces[next()%uint64(len(pieces))])
+			}
+		}
+		in := b.String()
+		out := RedactURLUserinfo(in) // must not panic
+		if RefuseURLUserinfo(in) == nil {
+			continue
+		}
+		trimmed := strings.TrimSpace(in)
+		start, end, ok := userinfoBounds(trimmed, false)
+		if !ok {
+			t.Fatalf("refused %q but userinfoBounds found nothing", in)
+		}
+		if want := trimmed[:start] + "***" + trimmed[end:]; out != want {
+			t.Fatalf("RedactURLUserinfo(%q) = %q, want %q (the refusal's span)", in, out, want)
+		}
+	}
+	// The semantic half: a secret placed as userinfo never survives.
+	const secret = "s3cr3tT0k3n"
+	for _, prefix := range []string{"https://", "http://", "//", "", "HTTPS://", "  https://"} {
+		for _, user := range []string{"user:", "", "u@"} {
+			for _, suffix := range []string{"/o/n", "", ":443/o/n", "/x://y", "?q=" + secret + "@z", "#" + secret} {
+				in := prefix + user + secret + "@host" + suffix
+				out := RedactURLUserinfo(in)
+				if strings.HasPrefix(out, strings.TrimSpace(prefix)+"***@host") == false || strings.Contains(strings.TrimSuffix(out, suffix), secret) {
+					t.Errorf("RedactURLUserinfo(%q) = %q kept the secret", in, out)
+				}
+				if prefix != "" && RefuseURLUserinfo(in) == nil {
+					t.Errorf("RefuseURLUserinfo(%q) = nil; a credential in a schemed authority must be refused", in)
+				}
+			}
 		}
 	}
 }

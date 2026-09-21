@@ -52,7 +52,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		// defect. Only the log is suppressed — surrounding behaviour is
 		// unchanged and the work is retried on the next cycle.
 		if !errors.Is(err, context.Canceled) {
-			logger.Warn("prelim: failed to check URL", "url", repo.GitURL, "error", err)
+			logger.Warn("prelim: failed to check URL", "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
 		}
 		// Network error — don't skip, let collection try and fail naturally.
 		return result, nil
@@ -64,7 +64,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		result.Skip = true
 		result.SkipReason = fmt.Sprintf("repo returned %d — sidelined permanently", statusCode)
 		logger.Warn("prelim: repo no longer exists, sidelining permanently",
-			"url", repo.GitURL, "status", statusCode, "repo_id", repo.ID)
+			"url", platform.RedactURLUserinfo(repo.GitURL), "status", statusCode, "repo_id", repo.ID)
 
 		// Mark as archived AND gone in one statement. v0.27.39:
 		// dequeuing WITHOUT the archive succeeding mints a stranded

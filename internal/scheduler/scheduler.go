@@ -1195,6 +1195,19 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	stopWatchdog := watchdog.Start(ctx)
 	defer stopWatchdog()
 
+	// A stored URL carrying credentials is refused HERE, where the row is
+	// loaded, before prelim's HEAD request would send them as basic auth
+	// and before any phase logs the URL (v0.29.57 fix-review round 2: the
+	// facade and scorecard arms sat downstream of seven log sites and one
+	// request that saw the credential first). A failure stamp, nothing
+	// collected, no URL changed (SR-7); the ERROR names the row to correct.
+	if uerr := platform.RefuseURLUserinfo(repo.GitURL); uerr != nil {
+		s.logger.Error("job not run: repo URL carries credentials — correct repo_git",
+			"repo_id", job.RepoID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", uerr)
+		s.failJob(ctx, job.RepoID, uerr.Error())
+		return
+	}
+
 	// Prelim phase: check for redirects and duplicates.
 	prelim, err := collector.RunPrelim(ctx, s.store, repo, s.logger)
 	if errors.Is(err, context.Canceled) {
@@ -2476,13 +2489,19 @@ func (s *Scheduler) checkForRenames(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Same refusal as runJob's, for the same reason (round 2).
+		if uerr := platform.RefuseURLUserinfo(repo.GitURL); uerr != nil {
+			s.logger.Error("rename check: repo URL carries credentials — skipped; correct repo_git",
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", uerr)
+			continue
+		}
 		prelim, err := collector.RunPrelim(ctx, s.store, &repo, s.logger)
 		if err != nil {
 			continue
 		}
 		if prelim != nil && (prelim.Skip || prelim.Redirected) {
 			s.logger.Info("rename check result",
-				"repo_id", repo.ID, "url", repo.GitURL,
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL),
 				"skip", prelim.Skip, "redirected", prelim.Redirected,
 				"reason", prelim.SkipReason, "new_url", prelim.NewURL)
 		}

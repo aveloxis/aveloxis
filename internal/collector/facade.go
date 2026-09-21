@@ -78,11 +78,13 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 
 	// The URL goes to `git clone` on its command line and into the clone
 	// log line, every cycle. A URL carrying credentials is refused before
-	// either, like RunScorecard refuses it — the two subprocess boundaries
-	// agree on what a legacy row (one stored before the store refused such
-	// URLs) gets: an ERROR naming the repo, nothing run (v0.29.57 fix-review
-	// round 1). validateGitURL cannot do this: it accepts userinfo for the
-	// SCP/ssh shapes.
+	// either, like RunScorecard and the scancode worker refuse it — every
+	// subprocess boundary agrees on what a legacy row (one stored before the
+	// store refused such URLs) gets: an ERROR naming the repo, nothing run
+	// (v0.29.57 fix-review rounds 1–2). The scheduler refuses the row at the
+	// job's entry too (runJob), so under serve this arm is a backstop for
+	// callers that reach the facade another way. validateGitURL cannot do
+	// this: it accepts userinfo for the SCP/ssh shapes.
 	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
 		f.logger.Error("facade not run: repo URL carries credentials — remove the credential from repo_git",
 			"repo_id", repoID, "url", platform.RedactURLUserinfo(gitURL), "error", err)

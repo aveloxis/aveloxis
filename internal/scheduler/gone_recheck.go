@@ -41,6 +41,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // goneRecheckTick is how often the scheduler looks for due rows. The
@@ -124,6 +126,15 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// A gone row whose URL carries credentials is not probed (the HEAD
+		// would send them as basic auth) — stamped checked so it waits out
+		// the cadence like an unreachable one, never every tick (round 2).
+		if uerr := platform.RefuseURLUserinfo(c.GitURL); uerr != nil {
+			s.logger.Error("gone recheck: repo URL carries credentials — not probed; correct repo_git",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", uerr)
+			stampChecked(c)
+			continue
+		}
 		_, status, perr := goneProbe(ctx, c.GitURL)
 		if perr != nil {
 			if errors.Is(perr, context.Canceled) {
@@ -135,7 +146,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			// tick.
 			unreachable++
 			s.logger.Warn("gone recheck: probe failed — repo stays gone, retried next cadence",
-				"repo_id", c.RepoID, "url", c.GitURL, "error", perr)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
 			stampChecked(c)
 			continue
 		}
@@ -147,19 +158,19 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 				}
 				failed++
 				s.logger.Warn("gone recheck: failed to resurrect repo — nothing committed, next tick retries",
-					"repo_id", c.RepoID, "url", c.GitURL, "error", err)
+					"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", err)
 				continue
 			}
 			resurrected++
 			s.logger.Info("gone recheck: repository is reachable again — cleared gone state and re-enqueued",
-				"repo_id", c.RepoID, "url", c.GitURL)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
 		case status == http.StatusNotFound || status == http.StatusGone:
 			stillGone++
 			stampChecked(c)
 		default:
 			indeterminate++
 			s.logger.Warn("gone recheck: indeterminate probe status — repo stays gone, retried next cadence",
-				"repo_id", c.RepoID, "url", c.GitURL, "status", status)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
 			stampChecked(c)
 		}
 	}

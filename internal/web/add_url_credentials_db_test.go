@@ -98,8 +98,35 @@ func TestAddURLWithCredentialsIsRefusedAndNotLogged(t *testing.T) {
 	bad := "https://user:" + secret + "@git.example.invalid/" + marker + "/creds"
 	logs.Reset()
 	w := post("/groups/add-repo", url.Values{"repo_urls": {bad + "\n" + clean1}})
-	if w.Code != http.StatusFound || w.Header().Get("Location") != fmt.Sprintf("/groups/%d", gid) {
-		t.Fatalf("add-repo = %d %q; want a plain redirect (the clean URL was added)", w.Code, w.Header().Get("Location"))
+	// Round 2: the refused line is reported on the page, not only logged.
+	if want := fmt.Sprintf("/groups/%d?add_error=invalid", gid); w.Code != http.StatusFound || w.Header().Get("Location") != want {
+		t.Fatalf("add-repo = %d %q; want 302 to %s (the clean URL was added, the refused line reported)", w.Code, w.Header().Get("Location"), want)
+	}
+	const repoNotice = "Some of those lines were not valid repository URLs"
+	if page := get(w.Header().Get("Location")); page.Code != http.StatusOK || !strings.Contains(page.Body.String(), repoNotice) {
+		t.Errorf("GET %s = %d; want 200 and the page to say %q", w.Header().Get("Location"), page.Code, repoNotice)
+	}
+	// An over-long URL is the store's refusal of the whole paste; it is the
+	// user's input too, not a "try again".
+	if w := post("/groups/add-repo", url.Values{"repo_urls": {"https://git.example.invalid/" + marker + "/" + strings.Repeat("y", db.MaxAddURLBytes)}}); w.Code != http.StatusFound || !strings.HasSuffix(w.Header().Get("Location"), "?add_error=invalid") {
+		t.Errorf("over-long add-repo = %d %q; want 302 to ?add_error=invalid", w.Code, w.Header().Get("Location"))
+	}
+	// A clean paste still redirects plainly.
+	if w := post("/groups/add-repo", url.Values{"repo_urls": {"https://git.example.invalid/" + marker + "/clean2"}}); w.Code != http.StatusFound || w.Header().Get("Location") != fmt.Sprintf("/groups/%d", gid) {
+		t.Errorf("clean add-repo = %d %q; want a plain redirect", w.Code, w.Header().Get("Location"))
+	}
+	// The schemeless paste the validator refuses after prepending https://:
+	// the log must show the redacted ORIGINAL line, not the token (round 2).
+	logs.Reset()
+	if w := post("/groups/add-repo", url.Values{"repo_urls": {"tok-" + secret + "@github.com/" + marker + "-owner/schemeless"}}); w.Code != http.StatusFound || !strings.HasSuffix(w.Header().Get("Location"), "?add_error=invalid") {
+		t.Errorf("schemeless credentialed add-repo = %d %q; want 302 to ?add_error=invalid", w.Code, w.Header().Get("Location"))
+	}
+	if strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), "***@github.com/") {
+		t.Errorf("the schemeless paste's log line must be redacted: %s", logs.String())
+	}
+	logs.Reset()
+	if w := post("/groups/add-repo", url.Values{"repo_urls": {bad + "\n" + clean1}}); !strings.HasSuffix(w.Header().Get("Location"), "?add_error=invalid") {
+		t.Errorf("re-posting the mixed paste = %d %q; want ?add_error=invalid", w.Code, w.Header().Get("Location"))
 	}
 	if id, err := store.FindRepoByURL(ctx, clean1); err != nil || id == 0 {
 		t.Errorf("the clean URL beside the refused one was not added (id %d, %v)", id, err)

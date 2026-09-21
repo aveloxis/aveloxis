@@ -120,6 +120,16 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 		// use (SR-17: one probe, all consumers agree on what "gone"
 		// means).
 		_, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)
+		if errors.Is(perr, platform.ErrRedirectTargetUserinfo) {
+			// The stored URL is clean; the FORGE's redirect target carries
+			// credentials (round 7). Not the operator's row to correct —
+			// skipped like an indeterminate probe, check stamped.
+			logger.Warn("redirect target carries credentials — not followed; the stored URL is clean, skipping",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
+			skipped++
+			stampChecked(c)
+			continue
+		}
 		if errors.Is(perr, platform.ErrURLUserinfo) {
 			// The probe refuses a URL carrying credentials (v0.29.57). Not a
 			// retryable skip: a rerun cannot succeed until repo_git is

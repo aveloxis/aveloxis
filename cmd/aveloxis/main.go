@@ -697,6 +697,14 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 
 		// Regular repo URL.
 		parsed, err := platform.ParseRepoURL(repoURL)
+		if errors.Is(err, platform.ErrURLUserinfo) {
+			// Same refusal as the organisation arm above, same exit (round 7:
+			// a refused repo URL exited 0 while a refused org URL did not).
+			logger.Error("repository not added: its URL carries credentials — remove them and rerun",
+				"url", platform.RedactURLUserinfo(repoURL), "error", err)
+			refusedURLs++
+			continue
+		}
 		if err != nil {
 			logger.Error("invalid URL", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue

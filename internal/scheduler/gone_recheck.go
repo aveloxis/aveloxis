@@ -137,6 +137,17 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			continue
 		}
 		_, status, perr := goneProbe(ctx, c.GitURL)
+		if errors.Is(perr, platform.ErrRedirectTargetUserinfo) {
+			// The stored URL is clean; the forge's redirect target carries
+			// credentials and was not followed (round 8). Not a transport
+			// failure, but the same verdict: gone stays, stamped, retried
+			// next cadence — counted with the unreachable.
+			unreachable++
+			s.logger.Warn("gone recheck: redirect target carries credentials — not followed; repo stays gone, retried next cadence",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
+			stampChecked(c)
+			continue
+		}
 		if perr != nil {
 			if errors.Is(perr, context.Canceled) {
 				return

@@ -103,6 +103,14 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			break
 		}
 		finalURL, status, rerr := collector.ResolveRedirectTarget(ctx, sr.GitURL)
+		if errors.Is(rerr, platform.ErrRedirectTargetUserinfo) {
+			// The forge's redirect target, not the stored URL (round 7):
+			// skipped, not refused.
+			logger.Warn("reconcile: redirect target carries credentials — not followed; the stored URL is clean, skipping",
+				"repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
+			skipped++
+			continue
+		}
 		if errors.Is(rerr, platform.ErrURLUserinfo) {
 			// Not a retryable skip: the probe refuses a URL carrying
 			// credentials until repo_git is corrected (v0.29.57).

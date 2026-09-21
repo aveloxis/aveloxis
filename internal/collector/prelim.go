@@ -47,11 +47,18 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	result := &PrelimResult{OldURL: repo.GitURL}
 
 	finalURL, statusCode, err := resolveRedirects(ctx, repo.GitURL)
-	if errors.Is(err, platform.ErrURLUserinfo) {
-		// A redirect to a URL carrying credentials (round 6): not followed,
-		// nothing written, the row keeps its URL; collection proceeds
-		// against the stored URL and fails naturally if the forge insists.
+	if errors.Is(err, platform.ErrRedirectTargetUserinfo) {
+		// The forge's redirect target carries credentials (round 6): not
+		// followed, nothing written, the row keeps its (clean) URL;
+		// collection proceeds against the stored URL and fails naturally if
+		// the forge insists.
 		logger.Error("prelim: redirect target carries credentials — not followed, repo URL unchanged",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
+		return result, nil
+	}
+	if errors.Is(err, platform.ErrURLUserinfo) {
+		// The STORED URL carries them (a caller that bypassed runJob's gate).
+		logger.Error("prelim: repo URL carries credentials — not probed; correct repo_git",
 			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
 		return result, nil
 	}
@@ -237,67 +244,107 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 	if err := platform.RefuseURLUserinfo(repoURL); err != nil {
 		return "", 0, err
 	}
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			// A Location carrying userinfo is not followed: net/http would
-			// send it as basic auth, and the final URL would then be
-			// WRITTEN to repo_git by the rename path (v0.29.57 fix-review
-			// round 6 — the one write that bypassed the store's refusal).
-			if err := platform.RefuseURLUserinfo(req.URL.String()); err != nil {
-				return fmt.Errorf("redirect target: %w", err)
-			}
-			return nil // follow redirects
-		},
+	// The redirect chain is walked HERE, on the transport, not by
+	// http.Client: a Location that carries credentials must be refused
+	// before any request to it (net/http would send them as basic auth, and
+	// the final URL would then be written to repo_git by the rename path),
+	// and http.Client's "failed to parse Location header" error quotes the
+	// raw Location — raised BEFORE CheckRedirect is consulted, so no
+	// redirect policy can prevent it (fix-review round 7; the hop-limit
+	// error names the LAST REQUEST, not the refused Location — round 8
+	// checked by running the old code). Walking the chain here makes both
+	// fixed strings. Each Location is refused, then parsed, then refused
+	// again once resolved; no error returned from here names a redirect
+	// target.
+	const maxHops = 10
+	current := repoURL
+	for hop := 0; ; hop++ {
+		resp, err := headWithRetry(ctx, current)
+		if err != nil {
+			return "", 0, err
+		}
+		resp.Body.Close()
+		if !isRedirectStatus(resp.StatusCode) {
+			return current, resp.StatusCode, nil
+		}
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return current, resp.StatusCode, nil // a 3xx without Location: as net/http reports it
+		}
+		if hop >= maxHops {
+			return "", 0, errors.New("too many redirects")
+		}
+		if platform.RefuseURLUserinfo(loc) != nil {
+			return "", 0, platform.ErrRedirectTargetUserinfo
+		}
+		next, err := resp.Request.URL.Parse(loc)
+		if err != nil {
+			return "", 0, errors.New("redirect target: unparseable Location header")
+		}
+		if platform.RefuseURLUserinfo(next.String()) != nil {
+			return "", 0, platform.ErrRedirectTargetUserinfo
+		}
+		current = next.String()
 	}
+}
 
-	// Retry transient DNS/network errors with exponential backoff (1s, 3s, 9s).
-	// During system crashes or network blips, DNS resolution fails briefly and
-	// all prelim checks that fire during that window would permanently skip repos.
+// isRedirectStatus reports the statuses net/http follows for a HEAD.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
+// probeTransport is the redirect probe's transport: one round trip per
+// hop, no redirect handling (that is resolveRedirects' job). The 15 s
+// budget in headWithRetry is per HOP, where the http.Client's covered the
+// whole chain; ResponseHeaderTimeout covers write-to-headers only.
+var probeTransport http.RoundTripper = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	ResponseHeaderTimeout: 15 * time.Second,
+	IdleConnTimeout:       90 * time.Second,
+}
+
+// headWithRetry issues one HEAD to url on the transport (a redirect
+// response is returned as is, never followed or parsed here), retrying
+// transient DNS/network errors with exponential backoff (1s, 3s, 9s): during
+// system crashes or network blips DNS resolution fails briefly, and every
+// prelim check in that window would otherwise permanently skip its repo.
+// url has passed RefuseURLUserinfo, so an error's quoted URL carries no
+// credential.
+func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
 	var lastErr error
 	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
 	for attempt, delay := range delays {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, repoURL, nil)
+		hopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		req, err := http.NewRequestWithContext(hopCtx, http.MethodHead, url, nil)
 		if err != nil {
-			return "", 0, err
+			cancel()
+			return nil, err
 		}
 		req.Header.Set("User-Agent", "Aveloxis/1.0")
-
-		resp, err := client.Do(req)
-		if errors.Is(err, platform.ErrURLUserinfo) {
-			// net/http wraps a CheckRedirect refusal in a *url.Error whose
-			// text quotes the target URL — credential included. Return the
-			// sentinel alone; the target is not worth naming.
-			return "", 0, fmt.Errorf("redirect target: %w", platform.ErrURLUserinfo)
-		}
+		resp, err := probeTransport.RoundTrip(req)
+		cancel() // a HEAD's body is empty; the response is complete
 		if err != nil {
 			lastErr = err
 			// Only retry on DNS/network errors, not on context cancellation.
 			if ctx.Err() != nil {
-				return "", 0, err
+				return nil, err
 			}
 			if isTransientNetError(err) && attempt < len(delays)-1 {
 				continue // retry
 			}
-			return "", 0, err
+			return nil, err
 		}
-		resp.Body.Close()
-		final := resp.Request.URL.String()
-		// Belt for the check above: whatever URL the chain ended on is
-		// refused if it carries credentials, so no caller can store it.
-		if err := platform.RefuseURLUserinfo(final); err != nil {
-			return "", 0, fmt.Errorf("redirect target: %w", err)
-		}
-		return final, resp.StatusCode, nil
+		return resp, nil
 	}
-	return "", 0, lastErr
+	return nil, lastErr
 }
 
 // isTransientNetError returns true for DNS resolution failures and connection

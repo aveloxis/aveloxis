@@ -80,6 +80,37 @@ func TestAddRepoReportsARefusedOrgURL(t *testing.T) {
 	if cont < 0 || !strings.Contains(tail[:cont], "refusedURLs++") || !strings.Contains(tail[:cont], "logger.Error(") {
 		t.Error("the refusal arm must log at ERROR, count refusedURLs++ and continue")
 	}
+	// The arm's OWN continue must precede the generic arm (round-7 mutant:
+	// dropping it let the org expand anyway while the pin found a later
+	// continue).
+	if g := strings.Index(body[upsert:], "if err != nil {"); g >= 0 && cont >= 0 && arm+cont > upsert+g {
+		t.Error("the org refusal arm's continue is missing — the organisation would be expanded after the ERROR said it was not added")
+	}
+	// The repository arm refuses the same way (round 7: it exited 0), with
+	// the same two guards as the org arm (round 8: it had neither — a dead
+	// arm and a dropped continue both passed). Anchored on the parse site,
+	// not on the last ErrURLUserinfo in the function.
+	parse := strings.Index(body, "platform.ParseRepoURL(repoURL)")
+	if parse < 0 {
+		t.Fatal("runAddRepo must parse the repository URL with platform.ParseRepoURL")
+	}
+	after := body[parse:]
+	repoArm := strings.Index(after, "errors.Is(err, platform.ErrURLUserinfo)")
+	generic := strings.Index(after, "if err != nil {")
+	if repoArm < 0 {
+		t.Fatal("runAddRepo must refuse a credentialed repository URL after ParseRepoURL, counting refusedURLs++")
+	}
+	if generic >= 0 && generic < repoArm {
+		t.Error("the generic ParseRepoURL error arm precedes the repository refusal arm, which is therefore dead")
+	}
+	rt := after[repoArm:]
+	rcont := strings.Index(rt, "continue")
+	if rcont < 0 || !strings.Contains(rt[:rcont], "refusedURLs++") {
+		t.Error("the repository refusal arm must count refusedURLs++ and continue")
+	}
+	if generic >= 0 && rcont >= 0 && repoArm+rcont > generic {
+		t.Error("the repository refusal arm's continue is missing — the URL is reported twice")
+	}
 	if !strings.Contains(body, "if refusedURLs > 0 {\n\t\treturn fmt.Errorf(") {
 		t.Error("a run with refused URLs must exit nonzero")
 	}

@@ -352,7 +352,8 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 	// organisation reached this writer with a credentialed URL that the web
 	// path's AddOrgToGroup refuses (round 6). Same rule, this writer.
 	if err := platform.RefuseURLUserinfo(website); err != nil {
-		return 0, fmt.Errorf("repo group %q: %w", name, err)
+		// Not the name: register-mailing-list names the group after the URL.
+		return 0, fmt.Errorf("repo group: %w", err)
 	}
 	var id int64
 	// Try to find existing group by name and type.

@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -27,9 +28,19 @@ func TestEveryURLWriterRefusesUserinfo(t *testing.T) {
 			_, err := s.UpsertRepoGroup(ctx, "owner", "github_org", "https://user:s3cret@github.com/owner")
 			return err
 		},
+		"UpsertFoundationMembership repo_url": func() error {
+			return s.UpsertFoundationMembership(ctx, "cncf", "graduated", "p", "https://example.invalid", bad)
+		},
+		"UpsertFoundationMembership homepage_url": func() error {
+			return s.UpsertFoundationMembership(ctx, "cncf", "graduated", "p", bad, "https://github.com/owner/name")
+		},
 	} {
-		if err := call(); !errors.Is(err, platform.ErrURLUserinfo) {
+		err := call()
+		if !errors.Is(err, platform.ErrURLUserinfo) {
 			t.Errorf("%s = %v, want platform.ErrURLUserinfo before any statement", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%s: the refusal's own text carries the credential: %v", name, err)
 		}
 	}
 }

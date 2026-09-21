@@ -20,9 +20,9 @@ func TestPrelimRetriesOnDNSErrors(t *testing.T) {
 	}
 	code := string(src)
 
-	idx := strings.Index(code, "func resolveRedirects")
+	idx := strings.Index(code, "func headWithRetry")
 	if idx < 0 {
-		t.Fatal("cannot find resolveRedirects function")
+		t.Fatal("cannot find headWithRetry function")
 	}
 	fnBody := code[idx:]
 	if len(fnBody) > 2000 {
@@ -31,7 +31,13 @@ func TestPrelimRetriesOnDNSErrors(t *testing.T) {
 
 	// Must have a retry loop for transient network errors.
 	if !strings.Contains(fnBody, "retry") && !strings.Contains(fnBody, "attempt") {
-		t.Error("resolveRedirects must retry on transient DNS errors (no such host) " +
+		t.Error("headWithRetry must retry on transient DNS errors (no such host) " +
 			"with exponential backoff — 3 retries at 1s, 3s, 9s before giving up")
+	}
+	// v0.29.57: the probe walks the redirect chain itself and must issue
+	// every hop through headWithRetry.
+	rr := strings.Index(code, "func resolveRedirects")
+	if rr < 0 || !strings.Contains(code[rr:], "headWithRetry(ctx, current)") {
+		t.Error("resolveRedirects must issue each hop through headWithRetry")
 	}
 }

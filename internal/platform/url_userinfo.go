@@ -5,6 +5,7 @@ package platform
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -14,11 +15,20 @@ import (
 // (git, scorecard) on their command line, so credentials in it leak by
 // every one of those paths. Refused at the URL parser, the web validator,
 // every store writer of a URL column (UpsertRepo, UpdateRepoURLs,
-// UpdateRepoURL, UpsertRepoGroup, the add paths), the redirect probe (input
-// and target), the scheduler's job entry and every subprocess or
+// UpdateRepoURL, UpsertRepoGroup, UpsertFoundationMembership, the add
+// paths), the redirect probe (input and target), the scheduler's job entry
+// and every subprocess or
 // third-party boundary (v0.29.57, Copilot review 5261384568: `aveloxis
 // run-scorecard` forwarded a stored URL to `scorecard --repo` verbatim).
 var ErrURLUserinfo = errors.New("URL carries credentials (userinfo before the host)")
+
+// ErrRedirectTargetUserinfo is the redirect probe's answer when the STORED
+// URL is clean but the forge's Location carries credentials: the redirect
+// is not followed and nothing is written. It wraps ErrURLUserinfo, so every
+// arm that refuses the class still fires, and a caller that wants to tell
+// the operator the truth — "correct repo_git" would be wrong here — tests
+// for it first (v0.29.57 fix-review round 7).
+var ErrRedirectTargetUserinfo = fmt.Errorf("the redirect target carries credentials — not followed: %w", ErrURLUserinfo)
 
 // RefuseURLUserinfo is the ONE check (SR-17) behind ErrURLUserinfo: nil for
 // a URL without userinfo, ErrURLUserinfo otherwise. It reads the authority

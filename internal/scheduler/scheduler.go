@@ -286,9 +286,13 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	// repo-rename detection at job start, and mutating repo identity
 	// mid-job risks splitting collected rows between old and new names.
 	// The log gives operators a signal; automated action is deferred.
-	renameHook := func(from, to string) {
+	// Both values are host-checked by the client before any request (a
+	// Location carrying userinfo is refused), so the redaction is the
+	// identity here — named and wrapped so the URL-log pin sees the site
+	// (round 3 on the 5268977585 fixes).
+	renameHook := func(fromURL, toURL string) {
 		s.logger.Warn("permanent redirect observed during collection — possible repo rename",
-			"from", from, "to", to,
+			"from", platform.RedactURLUserinfo(fromURL), "to", platform.RedactURLUserinfo(toURL),
 			"note", "prelim handles repo renames at job start; this may indicate a rename that occurred mid-collection")
 	}
 	if ghClient != nil {

@@ -115,7 +115,7 @@ func TestEveryURLLogAttributeIsRedacted(t *testing.T) {
 			rel, _ := filepath.Rel(root, path)
 			for _, f := range unredactedURLLogAttrs(t, rel, string(src)) {
 				sites++
-				t.Errorf("%s:%d: log attribute %q is not wrapped in platform.RedactURLUserinfo — a stored URL can carry credentials", rel, f.line, f.key)
+				t.Errorf("%s:%d: log attribute %q is not wrapped in platform.RedactURLUserinfo — a stored URL can carry credentials (if the value is not a URL despite its name, rename it)", rel, f.line, f.key)
 			}
 			return nil
 		})

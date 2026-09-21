@@ -33,7 +33,7 @@ func TestGuideCollectorTemplateClassifiesShutdown(t *testing.T) {
 	// Nested closes are indented; the column-0 "}" is the function's (a
 	// truncated function would not parse below either). Pinned explicitly
 	// (Copilot review 5267408933).
-	if seg := doc[start : start+end+2]; strings.Count(seg, "{") != strings.Count(seg, "}") {
+	if seg := srctest.StripGoComments(doc[start : start+end+2]); strings.Count(seg, "{") != strings.Count(seg, "}") {
 		t.Fatalf("the extracted collectThings is not brace-balanced (%d open, %d close)", strings.Count(seg, "{"), strings.Count(seg, "}"))
 	}
 	src := "package collector\n" + doc[start:start+end+2]

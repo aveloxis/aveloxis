@@ -2225,7 +2225,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	// and a github.com org on an Enterprise deployment (or the reverse) is
 	// not the same-named org on the configured host.
 	if !platform.OrgOnGitHubHost(g.Website, s.ghAPIBase) {
-		s.logger.Warn("org refresh skipped — the repo group's website is not on this deployment's GitHub host; the org name would be enumerated on the wrong host",
+		s.logger.Warn("org refresh skipped — the repo group's website is not on this deployment's GitHub host (the org name would be enumerated on the wrong host), or carries credentials; not enumerated",
 			"org", g.Name, "website", platform.RedactURLUserinfo(g.Website), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 		return 0
 	}
@@ -2724,7 +2724,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		// and the never-scanned probe does not count it
 		// (db.OrgScanEligible), so it does not re-fire the demand scan.
 		if org.Platform == "github" && !platform.OrgOnGitHubHost(org.OrgURL, s.ghAPIBase) {
-			s.logger.Warn("org scan skipped — the registered URL is not on this deployment's GitHub host; the org name would be enumerated on the wrong host",
+			s.logger.Warn("org scan skipped — the registered URL is not on this deployment's GitHub host (the org name would be enumerated on the wrong host), or carries credentials; not enumerated",
 				"group_id", groupID, "org", org.OrgName, "org_url", platform.RedactURLUserinfo(org.OrgURL), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			continue
 		}

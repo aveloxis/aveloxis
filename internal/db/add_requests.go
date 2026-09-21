@@ -418,6 +418,19 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 // (v0.29.57, round 2 on the Copilot 5260961848 fixes).
 var ErrOrgOffGitHubHost = errors.New("organization is not on this deployment's GitHub host")
 
+// OrgApprovalRefusalAdvice is the 409 body both admin surfaces (web page,
+// portal) send when an org approval is refused — ONE spelling (SR-17). The
+// host parenthetical belongs to the host refusal only. A credentialed
+// request can be rejected while pending; one already approved (the
+// half-state re-approve) cannot be rejected, and nothing enumerates it, so
+// the advice says exactly that — there is no delete path to point at.
+func OrgApprovalRefusalAdvice(err error, ghAPIBase string) string {
+	if errors.Is(err, platform.ErrURLUserinfo) {
+		return "the organization URL carries credentials; reject the request — one that is already approved cannot be registered and nothing enumerates it"
+	}
+	return err.Error() + " (" + platform.GitHubWebHost(ghAPIBase) + "); reject the request instead"
+}
+
 // orgRegistrable is the registration gate: a "github"-labelled org must be
 // on the deployment's GitHub host. GitLab groups are not gated here (their
 // keys are routed by host elsewhere, and no refresh enumerates them yet). A
@@ -461,9 +474,9 @@ func OrgScanEligible(platformName, orgURL, ghAPIBase string) bool {
 // the registration.
 func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBase string) (bool, error) {
 	// A pending request written before the store refused credentialed URLs
-	// reaches this writer without AddOrgToGroup; refused here, before the
-	// transaction writes (Copilot review 5267193512). The admin is told to
-	// reject the request.
+	// reaches this writer without AddOrgToGroup; refused here, so the
+	// approval's transaction never commits (Copilot review 5267193512). The
+	// admin is told to reject the request.
 	if err := platform.RefuseURLUserinfo(req.OrgURL); err != nil {
 		return false, fmt.Errorf("register approved org: %w", err)
 	}

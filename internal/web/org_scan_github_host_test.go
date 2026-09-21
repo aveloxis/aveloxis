@@ -297,3 +297,77 @@ func TestHandleApproveAddRequestReportsAForeignHostOrgAsConflict(t *testing.T) {
 		t.Errorf("request status after the refused approval = %q, want pending", status)
 	}
 }
+
+// TestHandleApproveAddRequestRefusesALegacyCredentialedOrg
+// (AVELOXIS_TEST_DB) — Copilot reviews 5267193512/5267408933 and their round
+// 2: a pending org request written before the store refused credentialed
+// URLs is refused at approval with a 409 that names neither the credential
+// nor this deployment's host, and the request stays pending for the reject.
+func TestHandleApproveAddRequestRefusesALegacyCredentialedOrg(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := db.NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	member, admin := "_avweb_approve_cred_member"+suffix, "_avweb_approve_cred_admin"+suffix
+	clean := func() {
+		p := store.Pool()
+		for _, login := range []string{member, admin} {
+			_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+			_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+			_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+			_, _ = p.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+		}
+	}
+	clean()
+	t.Cleanup(clean)
+	muid, err := store.UpsertOAuthUser(ctx, db.OAuthUserInfo{Login: member, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auid, err := store.UpsertOAuthUser(ctx, db.OAuthUserInfo{Login: admin, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.users SET admin = TRUE WHERE user_id = $1`, auid); err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, muid, "approve credential probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Planted by INSERT: every writer refuses such a URL now.
+	var reqID int64
+	if err := store.Pool().QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.collection_add_requests (user_id, group_id, kind, org_url, status, item_count)
+		VALUES ($1, $2, 'org', $3, 'pending', 0) RETURNING request_id`, muid, gid, "https://user:s3cret@github.com/_avweb-cred"+suffix).Scan(&reqID); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, config.WebConfig{}, nil, "https://ghe.example.invalid/api/v3", logger)
+	s.sessions["admin"] = &Session{UserID: auid, LoginName: admin, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
+	r := httptest.NewRequest(http.MethodPost, "/admin/add-requests/"+strconv.FormatInt(reqID, 10)+"/approve", nil)
+	r.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: "admin"})
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	body := w.Body.String()
+	if w.Code != http.StatusConflict || !strings.Contains(body, "carries credentials") {
+		t.Fatalf("approving a legacy credentialed org = %d %q, want 409 saying the URL carries credentials", w.Code, strings.TrimSpace(body))
+	}
+	if strings.Contains(body, "s3cret") || strings.Contains(body, "ghe.example.invalid") {
+		t.Errorf("the 409 body must name neither the credential nor the host: %q", strings.TrimSpace(body))
+	}
+	var status string
+	if err := store.Pool().QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, reqID).Scan(&status); err != nil || status != "pending" {
+		t.Errorf("request status after the refused approval = %q, %v; want pending", status, err)
+	}
+}

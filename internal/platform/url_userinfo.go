@@ -53,11 +53,12 @@ func RefuseURLUserinfo(raw string) error {
 // RedactURLUserinfo is the ONE spelling (SR-17) of a URL that may carry a
 // credential in a log line: userinfo, if any, becomes "***"; a string
 // without it is returned unchanged. It is BROADER than the refusal on
-// purpose: a schemeless `token@github.com/o/n` (what a web paste looks like
-// before the validator prepends https://) is redacted too, because a false
-// positive in a log line costs nothing and the miss put a token in the
-// server log (fix-review round 2). Textual on purpose: url.URL.String()
-// percent-escapes the marker and re-spells the rest.
+// purpose: every schemeless leading segment with an "@" is redacted, the
+// SCP shapes the refusal accepts included (`git@host:path` logs as
+// `***@host:path`), because a false positive in a log line costs nothing
+// and a miss put a token in the server log (fix-review round 2). Textual on
+// purpose: url.URL.String() percent-escapes the marker and re-spells the
+// rest.
 func RedactURLUserinfo(raw string) string {
 	raw = strings.TrimSpace(raw)
 	start, end, ok := userinfoBounds(raw, true)
@@ -71,8 +72,9 @@ func RedactURLUserinfo(raw string) string {
 // WITHOUT the "@" that ends it, so raw[:start] + "***" + raw[end:] is the
 // redaction. The authority starts after a LEADING scheme's "://" (a "://"
 // later in the string is path or query, not a scheme), or after a leading
-// "//" (scheme-relative), or — when schemeless is set — at the start of the
-// string; it ends at the first "/", "?" or "#"; the userinfo ends at the
+// "//" (scheme-relative), or at the start of the string when schemeless
+// is set (redaction) or the string is a credential-shaped paste
+// (credentialShapedPaste; refusal); it ends at the first "/", "?" or "#"; the userinfo ends at the
 // LAST "@" inside it (u@x@host is userinfo "u@x"). ok is false when there
 // is no authority or no "@" in it.
 func userinfoBounds(raw string, schemeless bool) (start, end int, ok bool) {
@@ -120,8 +122,12 @@ func leadingScheme(raw string) int {
 // segment (up to the first "/", "?" or "#") carries an "@" in the web-paste
 // shape — `user:token@host…` or `token@host/…` — as opposed to the SCP
 // clone shape `[user@]host:path`, which has no ":" before its "@" and a ":"
-// after it. Refusal (userinfoBounds with schemeless=false) uses it so a raw
-// paste that reaches a store writer without the web validator is refused
+// after it whose remainder is a path, not a port: `token@host:8443/o/n` is
+// a paste with a port, and a self-hosted GitLab on 8443 is common (fix-review
+// round 1 on the 5267x fixes). The stated collateral: an SCP address whose
+// owner is all digits (`git@host:1234/repo`) is refused; its ssh:// spelling
+// already is. Refusal (userinfoBounds with schemeless=false) uses it so a
+// raw paste that reaches a store writer without the web validator is refused
 // while `git@github.com:org/repo.git` is not.
 func credentialShapedPaste(raw string) bool {
 	seg := raw
@@ -132,6 +138,37 @@ func credentialShapedPaste(raw string) bool {
 	if at < 0 {
 		return false
 	}
-	scp := !strings.Contains(seg[:at], ":") && strings.Contains(seg[at+1:], ":")
-	return !scp
+	if strings.Contains(seg[:at], ":") {
+		return true // user:password before the "@"
+	}
+	host := seg[at+1:]
+	// An IPv6 literal carries colons of its own: the SCP/port colon is the
+	// one after its closing bracket (round 2 on the 5267x fixes; a literal
+	// without a closing bracket is not a host — fail closed).
+	rest := host
+	if strings.HasPrefix(host, "[") {
+		close := strings.Index(host, "]")
+		if close < 0 {
+			return true
+		}
+		rest = host[close+1:]
+	}
+	colon := strings.Index(rest, ":")
+	if colon < 0 {
+		return true // token@host with no SCP path
+	}
+	return allDigits(rest[colon+1:]) // a port, not an SCP path
+}
+
+// allDigits reports whether s is non-empty and decimal digits only.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

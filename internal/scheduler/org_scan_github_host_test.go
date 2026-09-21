@@ -85,3 +85,50 @@ func TestRefreshGitHubOrgSkipsAnOrgOffTheConfiguredGitHubHost(t *testing.T) {
 		t.Error("legacy repo_group on the deployment's own host was never enumerated")
 	}
 }
+
+// TestRefreshUserOrgsSkipsAnOrgWhoseURLCarriesCredentials (AVELOXIS_TEST_DB)
+// — round 3 on the Copilot 5267x fixes: a user_org_requests row registered
+// before the store refused credentialed URLs was still enumerated by name
+// every pass (ParseOrgURL read the host past the userinfo). The parser
+// refuses now, so the host gate skips it: not enumerated, nothing linked,
+// unstamped (SR-3). (Its log line is redacted by the URL-keyed log pin,
+// scripts/url_log_redaction_test.go, not asserted here.)
+func TestRefreshUserOrgsSkipsAnOrgWhoseURLCarriesCredentials(t *testing.T) {
+	fx, ctx := newOrgScanFixture(t)
+	suffix := time.Now().UnixNano()
+	home := fmt.Sprintf("_avhome%d", suffix)
+	cred := fmt.Sprintf("_avcred%d", suffix)
+	fx.orgRepos[home] = []string{"alpha"}
+	fx.orgRepos[cred] = []string{"beta"}
+	fx.cleanupOrgRepos(t, ctx, home)
+	fx.cleanupOrgRepos(t, ctx, cred)
+
+	u, g := fx.seedUserAndGroup(t, ctx, fmt.Sprintf("_avcredu%d", suffix), "C", "approved")
+	fx.registerOrg(t, ctx, u, g, home)
+	// Planted by INSERT: every writer refuses such a URL now.
+	fx.registerOrgURL(t, ctx, u, g, "https://user:s3cret@"+fx.webHost()+"/"+cred, cred)
+
+	fx.s.refreshUserOrgs(ctx, false)
+
+	if n := fx.hitCount("/orgs/" + cred + "/repos"); n != 0 {
+		t.Errorf("an org whose registered URL carries credentials was enumerated %d times", n)
+	}
+	if n := fx.hitCount("/orgs/" + home + "/repos"); n == 0 {
+		t.Error("the clean org was never enumerated")
+	}
+	if n := fx.linkCount(t, ctx, g, cred); n != 0 {
+		t.Errorf("repos linked from the credentialed org = %d, want 0", n)
+	}
+	var stamped bool
+	if err := fx.pool.QueryRow(ctx, `SELECT last_scanned IS NOT NULL FROM aveloxis_ops.user_org_requests WHERE group_id = $1 AND org_name = $2`, g, cred).Scan(&stamped); err != nil {
+		t.Fatal(err)
+	}
+	if stamped {
+		t.Error("the skipped row was stamped as scanned (SR-3)")
+	}
+	// Nor does it count as a never-scanned org that would re-fire the
+	// demand scan every poll tick.
+	if never, err := fx.s.store.HasNeverScannedOrgs(ctx, fx.s.ghAPIBase); err != nil || never {
+		t.Errorf("HasNeverScannedOrgs = %v, %v; a credentialed row must not count", never, err)
+	}
+}

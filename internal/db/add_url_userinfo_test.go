@@ -130,8 +130,9 @@ func TestAddRefusesURLsWithUserinfo(t *testing.T) {
 // TestApprovingALegacyCredentialedOrgRequestIsRefused (AVELOXIS_TEST_DB) —
 // Copilot reviews 5267193512/5267408933: a pending org request written
 // before the store refused credentialed URLs bypasses AddOrgToGroup at
-// approval; registerApprovedOrg refuses it before the transaction writes,
-// the request stays pending (the admin rejects it), nothing is registered.
+// approval; registerApprovedOrg refuses it and the approval's transaction
+// never commits: the request stays pending (the admin rejects it), nothing
+// is registered.
 func TestApprovingALegacyCredentialedOrgRequestIsRefused(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {

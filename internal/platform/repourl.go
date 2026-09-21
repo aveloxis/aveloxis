@@ -180,6 +180,16 @@ func ParseOrgURL(rawURL string) (host, orgName string, err error) {
 	if !strings.Contains(rawURL, "://") {
 		rawURL = "https://" + rawURL
 	}
+	// Refused before url.Parse (whose error quotes the input): this is the
+	// ONE parser behind OrgOnGitHubHost, so both periodic org refreshes and
+	// the eligibility predicate refuse a registered URL carrying credentials
+	// — a row written before the refusal existed was still enumerated by
+	// name every pass (round 3 on the 5267x fixes). The store refuses such a
+	// URL earlier, through RefuseURLUserinfo itself, ahead of orgRegistrable,
+	// whose parse-failure arm deliberately passes.
+	if uerr := RefuseURLUserinfo(rawURL); uerr != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrInvalidRepoURL, uerr)
+	}
 	u, perr := url.Parse(rawURL)
 	if perr != nil {
 		return "", "", fmt.Errorf("%w: %v", ErrInvalidRepoURL, perr)

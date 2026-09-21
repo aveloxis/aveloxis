@@ -130,7 +130,7 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 		// A legacy org URL carrying credentials is refused the same way
 		// (review 5267193512): the message names no URL.
 		s.logger.Warn("add-request approval refused — the org cannot be registered", "request_id", requestID, "error", err)
-		http.Error(w, "Cannot approve: "+err.Error()+" ("+platform.GitHubWebHost(s.ghAPIBase)+"); reject the request instead", http.StatusConflict)
+		http.Error(w, "Cannot approve: "+db.OrgApprovalRefusalAdvice(err, s.ghAPIBase), http.StatusConflict)
 		return
 	}
 	if err != nil {

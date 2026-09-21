@@ -53,6 +53,18 @@ func TestRefuseURLUserinfo(t *testing.T) {
 		{"token@github.com/o/n", true},
 		{"user:pw@host:path", true},
 		{"a@b.c", true},
+		// a port after the host is a paste, not an SCP path (round 1 on the
+		// 5267x fixes); the stated collateral is an all-digit SCP owner
+		{"token@gitlab.example.com:8443/g/p", true},
+		{"s3cret@github.com:443/o/n", true},
+		{"token@host:8443", true},
+		{"git@github.com:1234/repo", true},
+		{"git@github.com:12ab/repo", false},
+		// IPv6 literals: the SCP/port colon is the one after "]" (round 2)
+		{"git@[::1]:o/n", false},
+		{"token@[::1]:8443/o/n", true},
+		{"git@[::1]:2222/o/n", true},
+		{"token@[::1/o/n", true},
 	} {
 		err := RefuseURLUserinfo(tc.url)
 		if tc.refuse && !errors.Is(err, ErrURLUserinfo) {
@@ -77,6 +89,21 @@ func TestParseRepoURLRefusesUserinfo(t *testing.T) {
 	}
 	if _, err := ParseRepoURL("https://github.com/owner/name@v1"); err != nil {
 		t.Errorf("an @ in the path is not userinfo: %v", err)
+	}
+	// The org parser is the one function behind OrgOnGitHubHost; a
+	// registered org URL carrying credentials is therefore ineligible for
+	// every periodic refresh and the demand probe (round 3 on the 5267x
+	// fixes), schemed or schemeless, and the error names no credential.
+	for _, u := range []string{"https://user:s3cret@github.com/org", "user:s3cret@github.com/org", "s3cret@github.com/org"} {
+		if _, _, err := ParseOrgURL(u); !errors.Is(err, ErrURLUserinfo) || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("ParseOrgURL(%q) = %v; want ErrURLUserinfo without the credential", u, err)
+		}
+		if OrgOnGitHubHost(u, "") {
+			t.Errorf("OrgOnGitHubHost(%q) = true; a credentialed org URL must match no host", u)
+		}
+	}
+	if _, name, err := ParseOrgURL("github.com/chaoss"); err != nil || name != "chaoss" {
+		t.Errorf("a schemeless clean org URL must still parse: %q, %v", name, err)
 	}
 	// The refusal precedes url.Parse, whose error quotes the input
 	// (review 5267193512): a malformed escape in the password must not
@@ -103,9 +130,9 @@ func TestRedactURLUserinfo(t *testing.T) {
 		{"//user:s3cret@host/x", "//***@host/x"},
 		{"//user:s3cret@host/x?a=b://c", "//***@host/x?a=b://c"},
 		{"//s3cret@h/x://y", "//***@h/x://y"},
-		// the schemeless paste the web validator refuses after prepending
-		// https:// — the handler logs the ORIGINAL line, so redaction is
-		// broader than refusal (round 2)
+		// schemeless: the credential-shaped pastes (refused too, since the
+		// 5267x fixes) and the SCP shape the refusal accepts — redaction is
+		// broader than refusal on purpose (round 2)
 		{"user:s3cret@github.com/o/n", "***@github.com/o/n"},
 		{"s3cret@github.com/o/n", "***@github.com/o/n"},
 		{"git@github.com:org/repo.git", "***@github.com:org/repo.git"},

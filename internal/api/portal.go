@@ -487,7 +487,7 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		// be approved: nothing would ever enumerate it (round 2).
 		// Or a legacy org URL carrying credentials (review 5267193512).
 		s.logger.Warn("admin add-request approval refused — the org cannot be registered", "request_id", requestID, "error", err)
-		http.Error(w, err.Error()+" ("+platform.GitHubWebHost(s.ghAPIBase)+"); reject the request instead", http.StatusConflict)
+		http.Error(w, db.OrgApprovalRefusalAdvice(err, s.ghAPIBase), http.StatusConflict)
 		return
 	}
 	if err != nil {

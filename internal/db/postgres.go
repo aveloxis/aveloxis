@@ -207,9 +207,13 @@ type MatviewMode int
 const (
 	// MatviewsOff neither creates nor refreshes any view.
 	MatviewsOff MatviewMode = iota
-	// MatviewsIfMissing creates the views that do not exist yet and leaves
-	// existing ones alone — serve's startup behaviour, so a first run on a
-	// fresh database gets them without a re-create on every restart.
+	// MatviewsIfMissing builds an EMPTY managed set, leaves a COMPLETE one
+	// alone, and reports a PARTIAL one at ERROR without rebuilding it —
+	// serve's startup behaviour: a first run gets the views, a restart never
+	// re-creates them (matviews.sql is one batch; a rebuild is hours on a
+	// fleet-scale database), and a relation missing for any reason is named
+	// at every start with the plain migrate that builds it
+	// (CreateMaterializedViewsIfNotExist).
 	MatviewsIfMissing
 	// MatviewsRebuild drops and re-creates every view from its definition.
 	// This is the ONLY path that applies a CHANGED definition, which is why

@@ -146,7 +146,10 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			// effect only on a manual `aveloxis migrate` — while the
 			// config documents serve as creating the missing ones
 			// (v0.29.57, Copilot review 5260880711). One catalog query
-			// when they are all present; never a rebuild, which is what
+			// when the managed set is complete; an empty set is built; a
+			// partial set is reported, never rebuilt here (the
+			// MatviewsIfMissing contract). Applying a changed definition,
+			// or building a missing view into an existing set, is what
 			// `aveloxis migrate` is for and why it never fast-paths.
 			if pg.matviewMode != MatviewsOff {
 				if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
@@ -314,8 +317,9 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// EVERY migrate, unconditionally — including --skip-views. They
 	// cost nothing (no storage, no refresh, CREATE OR REPLACE), and
 	// this is the ONLY path that reaches a populated fleet: the matview
-	// block below is sentinel-gated or skipped, so a view stranded in
-	// matviews.sql never materializes on an existing installation
+	// block below skips a complete set and only REPORTS a partial one, so
+	// a view stranded in matviews.sql never materializes on an existing
+	// installation
 	// (mailing_list_pr_equivalents was missing on production from
 	// v0.25.7 until this fix). Runs after all stages so every base
 	// table + column the views reference exists.
@@ -346,8 +350,9 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
 	case MatviewsIfMissing:
-		// Create views that don't exist (first run), but don't refresh
-		// existing ones.
+		// The three-arm contract is the constant's doc (postgres.go) and
+		// CreateMaterializedViewsIfNotExist's: build none→all, skip
+		// complete, report partial.
 		if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
 		}

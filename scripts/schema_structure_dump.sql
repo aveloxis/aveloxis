@@ -79,8 +79,9 @@ ORDER BY 1;
 -- (Round-25 doc correction: since v0.27.115, PLAIN views run from
 -- views.sql on EVERY migrate — including --skip-views — so ordinary
 -- views self-heal. Only NEWLY-ADDED MATERIALIZED views remain subject
--- to the sentinel/skip behavior: CreateMaterializedViewsIfNotExist
--- probes one sentinel and skips the whole file, and refresh-views /
+-- to the startup skip: CreateMaterializedViewsIfNotExist skips the whole
+-- file when the managed set is complete and only REPORTS a partial set
+-- (an ERROR naming the missing relations, every start), and refresh-views /
 -- the weekly rebuild only REFRESH known names — a new matview needs a
 -- full `aveloxis migrate` or hand creation.)
 SELECT 'VIEW|' || schemaname || '.' || viewname FROM pg_views

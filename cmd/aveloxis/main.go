@@ -211,9 +211,11 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	// remains the full-run self-heal path and never fast-paths.
 	store.SetMigrateFastPath(true)
 	store.SetAllowSecondServe(allowSecondServe)
-	// serve creates any view this deployment is missing and leaves existing
-	// ones alone; a changed definition is `aveloxis migrate`'s job. A
-	// deployment with materialized_views off gets none (v0.29.57).
+	// serve builds the views when none exist, leaves a complete set alone,
+	// and reports a partial set at ERROR without rebuilding it
+	// (MatviewsIfMissing); a changed definition, or a view added to an
+	// existing set, is a plain `aveloxis migrate`'s job. A deployment with
+	// materialized_views off gets none (v0.29.57).
 	if cfg.Collection.MaterializedViewsValue() {
 		store.SetMatviewMode(db.MatviewsIfMissing)
 	}

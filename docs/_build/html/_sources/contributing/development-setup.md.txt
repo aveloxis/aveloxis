@@ -105,7 +105,7 @@ If you want to skip the matview build for faster iteration (you typically do dur
 go run ./cmd/aveloxis migrate --skip-views
 ```
 
-On a fresh database this leaves the materialized views uncreated. `refresh-views` and the weekly rebuild only refresh views that exist, so they keep the database view-less; `serve`, though, builds them at startup when `collection.materialized_views` is on (the default) and the sentinel view `api_get_all_repo_prs` is absent — even on its fast path, where the schema stamp already matches its version. Run a plain `go run ./cmd/aveloxis migrate` to create them yourself, or leave the option off if you want no views at all.
+On a fresh database this leaves the materialized views uncreated. `refresh-views` and the weekly rebuild only refresh views that exist, so they keep the database view-less; `serve`, though, builds them at startup when `collection.materialized_views` is on (the default) and none of the managed set exists — even on its fast path, where the schema stamp already matches its version. A partial set is reported, not rebuilt.
 
 ## 6. (Optional) Install scc + scorecard
 

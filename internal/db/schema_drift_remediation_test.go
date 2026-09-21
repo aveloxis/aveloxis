@@ -16,7 +16,7 @@ import (
 
 // Finding 1 (operator: "I accept your recommendation for the real fix
 // class"): on a populated fleet NO path created a newly-added plain
-// view — CreateMaterializedViewsIfNotExist probes one sentinel matview
+// view — CreateMaterializedViewsIfNotExist probed one sentinel matview (the whole managed set since v0.29.57)
 // and skips the whole file; refresh-views + the weekly rebuild only
 // REFRESH known names; the deploy recipe is `migrate --skip-views`.
 // mailing_list_pr_equivalents was unreachable on production since
@@ -42,7 +42,7 @@ func TestBaseTableViewsRunOnEveryMigrate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(mv), "mailing_list_pr_equivalents") {
-		t.Error("mailing_list_pr_equivalents must NOT remain in matviews.sql — that file is unreachable on populated fleets")
+		t.Error("mailing_list_pr_equivalents must NOT remain in matviews.sql — that file runs on a populated fleet only through a plain migrate (startup skips a complete set and only reports a partial one)")
 	}
 	// Class guard: the only plain views allowed in matviews.sql are the
 	// two MATVIEW ALIASES (they depend on matviews and share their
@@ -50,10 +50,13 @@ func TestBaseTableViewsRunOnEveryMigrate(t *testing.T) {
 	// structurally unreachable on every existing installation — put it
 	// in views.sql instead.
 	viewRe := regexp.MustCompile(`CREATE OR REPLACE VIEW aveloxis_data\.([a-z_]+)`)
-	allowed := map[string]bool{"augur_new_contributors": true, "explorer_libyear_all": true}
+	allowed := map[string]bool{}
+	for _, a := range MatviewAliasNames { // the one list (SR-17)
+		allowed[a] = true
+	}
 	for _, m := range viewRe.FindAllStringSubmatch(string(mv), -1) {
 		if !allowed[m[1]] {
-			t.Errorf("plain view %q added to matviews.sql — that file never runs on populated fleets; base-table views belong in views.sql", m[1])
+			t.Errorf("plain view %q added to matviews.sql — that file runs on a populated fleet only through a plain migrate; base-table views belong in views.sql", m[1])
 		}
 	}
 }

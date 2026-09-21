@@ -119,7 +119,7 @@ func TestPlainMigrateRecreatesViewsWhateverKindTheAliasesAre(t *testing.T) {
 				t.Error("explorer_libyear_summary kept its old definition — v0.29.57's deploy step would print f")
 			}
 			// The aliases are plain views again, whatever they were.
-			for _, alias := range []string{"explorer_libyear_all", "augur_new_contributors"} {
+			for _, alias := range MatviewAliasNames { // the one list (SR-17)
 				var kind string
 				if err := store.pool.QueryRow(ctx, `SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'aveloxis_data' AND c.relname = $1`, alias).Scan(&kind); err != nil {
 					t.Fatal(fmt.Errorf("%s: %w", alias, err))

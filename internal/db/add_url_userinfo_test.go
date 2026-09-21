@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -123,5 +124,77 @@ func TestAddRefusesURLsWithUserinfo(t *testing.T) {
 	// add changes nothing.
 	if id, err := store.FindRepoByURL(ctx, okURL); err != nil || id != 0 {
 		t.Errorf("the clean URL of a refused batch was stored (id %d, %v)", id, err)
+	}
+}
+
+// TestApprovingALegacyCredentialedOrgRequestIsRefused (AVELOXIS_TEST_DB) —
+// Copilot reviews 5267193512/5267408933: a pending org request written
+// before the store refused credentialed URLs bypasses AddOrgToGroup at
+// approval; registerApprovedOrg refuses it before the transaction writes,
+// the request stays pending (the admin rejects it), nothing is registered.
+func TestApprovingALegacyCredentialedOrgRequestIsRefused(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	const userLogin, adminLogin = "_avlegacy_org_user_probe", "_avlegacy_org_admin_probe"
+	const orgURL = "https://user:s3cret@github.com/_avlegacy-org-probe"
+	clean := func() {
+		for _, login := range []string{userLogin, adminLogin} {
+			_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_org_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+			_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_add_requests WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+			_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+			_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+		}
+	}
+	clean()
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: userLogin, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminID, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: adminLogin, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAdmin(ctx, adminID, true); err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "legacy org probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The legacy row: planted directly, since every writer refuses it now.
+	var reqID int64
+	if err := store.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.collection_add_requests (user_id, group_id, kind, org_url, status, item_count)
+		VALUES ($1, $2, 'org', $3, 'pending', 0) RETURNING request_id`, uid, gid, orgURL).Scan(&reqID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.DecideAddRequest(ctx, reqID, adminID, true, "")
+	if !errors.Is(err, platform.ErrURLUserinfo) {
+		t.Fatalf("approving a legacy credentialed org request = %v; want platform.ErrURLUserinfo", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("the refusal's text carries the credential: %v", err)
+	}
+	var registered int
+	var status string
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, gid).Scan(&registered); err != nil || registered != 0 {
+		t.Errorf("the refused org was registered (%d rows, %v)", registered, err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, reqID).Scan(&status); err != nil || status != "pending" {
+		t.Errorf("the refused request's status = %q, %v; want pending (the admin rejects it)", status, err)
+	}
+	// Rejecting it works.
+	if _, _, err := store.DecideAddRequest(ctx, reqID, adminID, false, ""); err != nil {
+		t.Errorf("rejecting the legacy request: %v", err)
 	}
 }

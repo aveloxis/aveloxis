@@ -123,11 +123,13 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	err = s.decideAddRequest(r.Context(), requestID, sess.UserID, true)
-	if errors.Is(err, db.ErrOrgOffGitHubHost) {
+	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) {
 		// A pending org that is not on this deployment's GitHub host cannot
 		// be approved — nothing would ever enumerate it (v0.29.57 round 3;
 		// the portal reports the same store refusal the same way).
-		s.logger.Warn("add-request approval refused — org is not on this deployment's GitHub host", "request_id", requestID, "error", err)
+		// A legacy org URL carrying credentials is refused the same way
+		// (review 5267193512): the message names no URL.
+		s.logger.Warn("add-request approval refused — the org cannot be registered", "request_id", requestID, "error", err)
 		http.Error(w, "Cannot approve: "+err.Error()+" ("+platform.GitHubWebHost(s.ghAPIBase)+"); reject the request instead", http.StatusConflict)
 		return
 	}

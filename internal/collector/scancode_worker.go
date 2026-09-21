@@ -623,6 +623,14 @@ func (w *ScancodeWorker) runOne(ctx context.Context, job db.ScancodeJob) {
 	// subprocess boundary, and the one without the arm). A strike, so the
 	// row is not reclaimed every tick; no URL is changed (SR-7).
 	if err := platform.RefuseURLUserinfo(job.RepoGit); err != nil {
+		if ctx.Err() != nil {
+			// A job handed over as shutdown began: a clean release, not a
+			// strike (the dispatcher's contract; Copilot review 5267193512).
+			w.logger.Info("scancode runOne: shutdown before the URL check — lock cleared, no strike recorded",
+				"repo_id", job.RepoID)
+			w.clearLockBestEffort(ctx, job.RepoID)
+			return
+		}
 		w.logger.Error("scancode runOne: repo URL carries credentials — not cloned; correct repo_git",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
 			"url", platform.RedactURLUserinfo(job.RepoGit), "error", err)

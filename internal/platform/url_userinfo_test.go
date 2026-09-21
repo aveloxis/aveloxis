@@ -44,10 +44,15 @@ func TestRefuseURLUserinfo(t *testing.T) {
 		{"//user:pw@host/x", true},
 		{"//u@h/x://y", true},
 		{"//host/x://y", false},
-		// schemeless: no authority, not refused (SCP git@host:path is a
-		// valid clone URL the facade accepts)
+		// schemeless: SCP clone shapes are not refused (the facade accepts
+		// them); the web-paste shapes are (Copilot review 5267408933 — the
+		// portal API and UpsertRepo see a paste raw)
 		{"git@github.com:org/repo.git", false},
-		{"user:token@github.com/o/n", false},
+		{"user@host:owner/repo", false},
+		{"user:token@github.com/o/n", true},
+		{"token@github.com/o/n", true},
+		{"user:pw@host:path", true},
+		{"a@b.c", true},
 	} {
 		err := RefuseURLUserinfo(tc.url)
 		if tc.refuse && !errors.Is(err, ErrURLUserinfo) {
@@ -72,6 +77,13 @@ func TestParseRepoURLRefusesUserinfo(t *testing.T) {
 	}
 	if _, err := ParseRepoURL("https://github.com/owner/name@v1"); err != nil {
 		t.Errorf("an @ in the path is not userinfo: %v", err)
+	}
+	// The refusal precedes url.Parse, whose error quotes the input
+	// (review 5267193512): a malformed escape in the password must not
+	// reach the error text.
+	_, err := ParseRepoURL("https://user:s3cret%zz@github.com/owner/name")
+	if !errors.Is(err, ErrURLUserinfo) || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("ParseRepoURL(malformed credentialed URL) = %v; want ErrURLUserinfo without the credential", err)
 	}
 }
 

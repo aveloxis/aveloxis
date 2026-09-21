@@ -6,6 +6,7 @@ package collector
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"testing"
@@ -43,5 +44,24 @@ func TestScancodeRunOneRefusesARepoURLWithUserinfo(t *testing.T) {
 	}
 	if !bytes.Contains(logs.Bytes(), []byte("level=ERROR")) || !bytes.Contains(logs.Bytes(), []byte("repo_id=777")) {
 		t.Errorf("the refusal must be logged at ERROR naming the repo: %s", logs.String())
+	}
+}
+
+// Copilot review 5267193512: a job handed to a runner as shutdown began
+// reached the refusal with a cancelled context, and the strike it recorded
+// counted a `stop serve` toward the sideline. Shutdown before the check is a
+// clean release: lock cleared, no strike.
+func TestScancodeRunOneShutdownBeforeURLCheckIsACleanRelease(t *testing.T) {
+	fake := &fakeScancodeStore{}
+	w := NewScancodeWorker(fake, slog.New(slog.NewTextHandler(io.Discard, nil)), ScancodeWorkerOptions{CloneDir: t.TempDir()})
+	w.bookkeeping.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w.runOne(ctx, db.ScancodeJob{RepoID: 778, RepoOwner: "o", RepoName: "n", RepoGit: "https://user:s3cret@github.com/o/n"})
+	if len(fake.failures) != 0 {
+		t.Errorf("a shutdown recorded a strike: %v", fake.failures)
+	}
+	if len(fake.cleared) != 1 || fake.cleared[0] != 778 {
+		t.Errorf("the lock was not cleared on shutdown: cleared=%v", fake.cleared)
 	}
 }

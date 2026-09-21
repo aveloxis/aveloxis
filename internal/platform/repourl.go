@@ -66,6 +66,11 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 	rawURL = strings.TrimSuffix(rawURL, "/")
 	rawURL = strings.TrimSuffix(rawURL, ".git")
 
+	// Before url.Parse: its error quotes the input, credential included, and
+	// callers log that error (Copilot review 5267193512).
+	if uerr := RefuseURLUserinfo(rawURL); uerr != nil {
+		return RepoURL{}, fmt.Errorf("%w: %w", ErrInvalidRepoURL, uerr)
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return RepoURL{}, fmt.Errorf("%w: %v", ErrInvalidRepoURL, err)
@@ -73,9 +78,6 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return RepoURL{}, fmt.Errorf("%w: scheme must be http or https, got %q", ErrInvalidRepoURL, u.Scheme)
-	}
-	if uerr := RefuseURLUserinfo(rawURL); uerr != nil {
-		return RepoURL{}, fmt.Errorf("%w: %w", ErrInvalidRepoURL, uerr)
 	}
 
 	host := strings.ToLower(u.Host)

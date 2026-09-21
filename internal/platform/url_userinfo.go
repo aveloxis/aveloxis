@@ -37,8 +37,12 @@ var ErrRedirectTargetUserinfo = fmt.Errorf("the redirect target carries credenti
 // RedactURLUserinfo below cannot disagree with it — fix-review round 2 found
 // the two as separate spellings: the redaction returned a scheme-relative
 // //user:pw@host/x verbatim and panicked on //u@h/x://y. An "@" in the path,
-// query or fragment is not userinfo; a schemeless string (SCP-style
-// git@host:path) has no authority and is not refused.
+// query or fragment is not userinfo. A schemeless string is refused when
+// it is credential-shaped (`user:token@host/…`, `token@host/…` — what a web
+// paste looks like before a scheme is added; the portal API and UpsertRepo
+// see it raw, Copilot review 5267408933) and accepted when it is SCP-shaped
+// (`git@host:path`, `user@host:path` — no ":" before the "@", a ":" after
+// it), which is a clone URL git accepts and the facade allows.
 func RefuseURLUserinfo(raw string) error {
 	if _, _, ok := userinfoBounds(strings.TrimSpace(raw), false); ok {
 		return ErrURLUserinfo
@@ -77,7 +81,7 @@ func userinfoBounds(raw string, schemeless bool) (start, end int, ok bool) {
 		start = 2
 	case scheme > 0:
 		start = scheme + 3
-	case schemeless:
+	case schemeless, credentialShapedPaste(raw):
 		start = 0
 	default:
 		return 0, 0, false
@@ -110,4 +114,24 @@ func leadingScheme(raw string) int {
 		return 0
 	}
 	return 0
+}
+
+// credentialShapedPaste reports whether a schemeless string's leading
+// segment (up to the first "/", "?" or "#") carries an "@" in the web-paste
+// shape — `user:token@host…` or `token@host/…` — as opposed to the SCP
+// clone shape `[user@]host:path`, which has no ":" before its "@" and a ":"
+// after it. Refusal (userinfoBounds with schemeless=false) uses it so a raw
+// paste that reaches a store writer without the web validator is refused
+// while `git@github.com:org/repo.git` is not.
+func credentialShapedPaste(raw string) bool {
+	seg := raw
+	if j := strings.IndexAny(seg, "/?#"); j >= 0 {
+		seg = seg[:j]
+	}
+	at := strings.LastIndex(seg, "@")
+	if at < 0 {
+		return false
+	}
+	scp := !strings.Contains(seg[:at], ":") && strings.Contains(seg[at+1:], ":")
+	return !scp
 }

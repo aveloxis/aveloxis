@@ -23,6 +23,10 @@ func TestUpsertRepoRefusesAURLWithUserinfo(t *testing.T) {
 		"https://user:token@github.com/owner/name",
 		"https://token@gitlab.com/group/project",
 		"https://user@git.example.invalid/owner/name.git",
+		// schemeless web pastes reach UpsertRepo raw through the portal API
+		// (review 5267408933); SCP is accepted (below)
+		"user:token@github.com/owner/name",
+		"token@github.com/owner/name",
 	} {
 		_, err := s.UpsertRepo(context.Background(), &model.Repo{
 			Platform: model.PlatformGitHub, GitURL: u, Owner: "owner", Name: "name",
@@ -31,4 +35,14 @@ func TestUpsertRepoRefusesAURLWithUserinfo(t *testing.T) {
 			t.Errorf("UpsertRepo(%q) = %v, want platform.ErrURLUserinfo", u, err)
 		}
 	}
+	// An SCP clone URL is not credentials: it reaches the pool (nil here),
+	// which is the proof it passed the refusal.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("UpsertRepo(SCP URL) never reached the pool — it was refused as credentials")
+			}
+		}()
+		_, _ = s.UpsertRepo(context.Background(), &model.Repo{Platform: model.PlatformGenericGit, GitURL: "git@github.com:owner/name.git", Owner: "owner", Name: "name"})
+	}()
 }

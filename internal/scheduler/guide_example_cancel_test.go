@@ -28,6 +28,11 @@ func TestGuideTickerExampleClassifiesCancellation(t *testing.T) {
 	if end < 0 {
 		t.Fatal("the guide's runMyThing example does not end")
 	}
+	// Nested closes are indented; the column-0 "}" is the function's. Pinned
+	// (Copilot review 5267408933 claimed a nested close truncated it).
+	if seg := doc[start : start+end+2]; strings.Count(seg, "{") != strings.Count(seg, "}") {
+		t.Fatalf("the extracted runMyThing is not brace-balanced (%d open, %d close) — the example was truncated at a nested close", strings.Count(seg, "{"), strings.Count(seg, "}"))
+	}
 	body := srctest.StripGoComments(doc[start : start+end+2])
 	violations, exempt := cancelViolations(body)
 	for _, v := range violations {

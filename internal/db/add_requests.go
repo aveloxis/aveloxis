@@ -460,6 +460,13 @@ func OrgScanEligible(platformName, orgURL, ghAPIBase string) bool {
 // admin add and the half-state re-approve pass a transaction that holds only
 // the registration.
 func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBase string) (bool, error) {
+	// A pending request written before the store refused credentialed URLs
+	// reaches this writer without AddOrgToGroup; refused here, before the
+	// transaction writes (Copilot review 5267193512). The admin is told to
+	// reject the request.
+	if err := platform.RefuseURLUserinfo(req.OrgURL); err != nil {
+		return false, fmt.Errorf("register approved org: %w", err)
+	}
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
 	if err := orgRegistrable(platformName, req.OrgURL, ghAPIBase); err != nil {
 		return false, err

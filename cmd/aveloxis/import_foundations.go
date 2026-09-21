@@ -116,7 +116,7 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 	// Fetch both sources up front so we can report totals in one place.
 	var projects []importers.Project
 	if !opts.apacheOnly {
-		logger.Info("fetching CNCF landscape", "url", opts.cncfURL)
+		logger.Info("fetching CNCF landscape", "url", platform.RedactURLUserinfo(opts.cncfURL))
 		cncfProjects, ferr := cncf.Fetch(ctx, opts.cncfURL)
 		if ferr != nil {
 			return fmt.Errorf("fetching CNCF landscape: %w", ferr)
@@ -125,7 +125,7 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 		projects = append(projects, cncfProjects...)
 	}
 	if !opts.cncfOnly {
-		logger.Info("fetching Apache projects", "projects_url", opts.apacheProjURL, "podlings_url", opts.apachePodURL)
+		logger.Info("fetching Apache projects", "projects_url", platform.RedactURLUserinfo(opts.apacheProjURL), "podlings_url", platform.RedactURLUserinfo(opts.apachePodURL))
 		apacheProjects, ferr := apache.Fetch(ctx, opts.apacheProjURL, opts.apachePodURL)
 		if ferr != nil {
 			return fmt.Errorf("fetching Apache projects: %w", ferr)
@@ -184,14 +184,14 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 			// either naming variant — skipping beats upserting a
 			// phantom row that prelim later 404s and dequeues.
 			logger.Warn("no existing repo for podling under either naming variant — skipped",
-				"project", p.Name, "guessed_url", rurl)
+				"project", p.Name, "guessed_url", platform.RedactURLUserinfo(rurl))
 			t.skipped++
 		}
 		for _, rurl := range p.RepoURLs {
 			t.repos++
 			parsed, perr := platform.ParseRepoURL(rurl)
 			if perr != nil {
-				logger.Warn("skipping unparseable repo URL", "url", rurl, "project", p.Name, "error", perr)
+				logger.Warn("skipping unparseable repo URL", "url", platform.RedactURLUserinfo(rurl), "project", p.Name, "error", perr)
 				t.skipped++
 				continue
 			}

@@ -13,8 +13,10 @@ import (
 // URL is stored, logged, shown in the GUI and handed to subprocesses
 // (git, scorecard) on their command line, so credentials in it leak by
 // every one of those paths. Refused at the URL parser, the web validator,
-// the store's write boundary, the scheduler's job entry and every
-// subprocess boundary (v0.29.57, Copilot review 5261384568: `aveloxis
+// every store writer of a URL column (UpsertRepo, UpdateRepoURLs,
+// UpdateRepoURL, UpsertRepoGroup, the add paths), the redirect probe (input
+// and target), the scheduler's job entry and every subprocess or
+// third-party boundary (v0.29.57, Copilot review 5261384568: `aveloxis
 // run-scorecard` forwarded a stored URL to `scorecard --repo` verbatim).
 var ErrURLUserinfo = errors.New("URL carries credentials (userinfo before the host)")
 

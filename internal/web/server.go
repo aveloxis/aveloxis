@@ -160,7 +160,7 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 		s.apiProxy = rp
 	} else {
 		logger.Warn("invalid api_internal_url; /api proxy disabled",
-			"api_internal_url", apiURL, "error", err)
+			"api_internal_url", platform.RedactURLUserinfo(apiURL), "error", err)
 	}
 
 	// Parse embedded templates.
@@ -1384,7 +1384,7 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrOrgOffGitHubHost):
 			s.logger.Warn("org not added — its host is not this deployment's GitHub host",
-				"group_id", groupID, "org_url", truncateForLog([]byte(orgURL), 200), "github_host", platform.GitHubWebHost(s.ghAPIBase))
+				"group_id", groupID, "org_url", platform.RedactURLUserinfo(truncateForLog([]byte(orgURL), 200)), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=host", groupID), http.StatusFound)
 			return
 		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong):
@@ -1506,7 +1506,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				// refresh retries it next scan.
 				repoID, err := s.store.FindRepoByURL(ctx, item.HTMLURL)
 				if err != nil {
-					s.logger.Warn("org scan: repo lookup failed", "url", item.HTMLURL, "error", err)
+					s.logger.Warn("org scan: repo lookup failed", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
 					continue
 				}
 				if repoID > 0 {
@@ -1532,14 +1532,14 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 						PlatformID: model.ForgeIDString(item.ID), // v0.27.102 — enables the rename-heal inside UpsertRepo
 					})
 					if err != nil {
-						s.logger.Warn("org scan: upserting new repo failed", "url", item.HTMLURL, "error", err)
+						s.logger.Warn("org scan: upserting new repo failed", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
 						continue
 					}
 					// A silently failed enqueue strands a catalog row with no
 					// queue row — a suspected origin of the reconciliation
 					// gap found in the 2026-07-21 audit (summary/18 Phase 2).
 					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", item.HTMLURL, "error", err)
+						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
 					}
 					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 						s.logger.Warn("org scan: linking new repo failed", "repo_id", repoID, "error", err)

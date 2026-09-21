@@ -143,7 +143,7 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 	// the per-repo discovery.
 	var projects []importers.Project
 	if !opts.ApacheOnly {
-		logger.Info("fetching CNCF landscape", "url", opts.CncfURL)
+		logger.Info("fetching CNCF landscape", "url", platform.RedactURLUserinfo(opts.CncfURL))
 		cncfProjects, ferr := cncf.Fetch(ctx, opts.CncfURL)
 		if ferr != nil {
 			return fmt.Errorf("fetching CNCF landscape: %w", ferr)
@@ -151,7 +151,7 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 		projects = append(projects, cncfProjects...)
 	}
 	if !opts.CncfOnly {
-		logger.Info("fetching Apache projects", "projects_url", opts.ApacheProjURL, "podlings_url", opts.ApachePodURL)
+		logger.Info("fetching Apache projects", "projects_url", platform.RedactURLUserinfo(opts.ApacheProjURL), "podlings_url", platform.RedactURLUserinfo(opts.ApachePodURL))
 		apacheProjects, ferr := apache.Fetch(ctx, opts.ApacheProjURL, opts.ApachePodURL)
 		if ferr != nil {
 			return fmt.Errorf("fetching Apache projects: %w", ferr)

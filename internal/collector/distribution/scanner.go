@@ -104,6 +104,15 @@ func NewCompositeScanner(
 // Future work could add a GitLab path here without changing the
 // outer Worker contract.
 func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, repoGit string) ([]model.PackageDistribution, []model.DistributionManifest, bool, error) {
+	// A stored URL carrying credentials is refused before any lookup (the
+	// ecosyste.ms client would send it to a third party; round 3). The error
+	// makes the worker record a failure, so the row is not reclaimed every
+	// tick; no URL is changed (SR-7).
+	if err := platform.RefuseURLUserinfo(repoGit); err != nil {
+		s.Logger.Error("distribution scanner: repo URL carries credentials — not scanned; correct repo_git",
+			"repo_id", repoID, "repo_git", platform.RedactURLUserinfo(repoGit), "error", err)
+		return nil, nil, false, err
+	}
 	// Platform gate: deps.dev expects github.com URLs; ecosyste.ms
 	// can lookup gitlab.com too but the GitHub Contents API doesn't
 	// work for GitLab. Easiest to opt in only for github.com hosts.
@@ -112,7 +121,7 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	// stamp it complete=true so the cadence gate applies normally.
 	if !strings.Contains(strings.ToLower(repoGit), "github.com") {
 		s.Logger.Debug("distribution scanner: non-GitHub repo, skipping",
-			"repo_id", repoID, "repo_git", repoGit)
+			"repo_id", repoID, "repo_git", platform.RedactURLUserinfo(repoGit))
 		return nil, nil, true, nil
 	}
 
@@ -236,7 +245,7 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	if bothExternalAttempted && depsDevErr != nil && ecosystemsErr != nil {
 		s.Logger.Error("distribution: BOTH external registries failed (per-source detail follows)",
 			"repo_id", repoID, "owner", owner, "repo", repo,
-			"repo_git", repoGit,
+			"repo_git", platform.RedactURLUserinfo(repoGit),
 			"deps_dev_class", platform.ClassifyError(depsDevErr).String(),
 			"deps_dev_error", depsDevErr.Error(),
 			"ecosystems_class", platform.ClassifyError(ecosystemsErr).String(),

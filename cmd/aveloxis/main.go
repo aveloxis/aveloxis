@@ -365,7 +365,7 @@ func warnAPIPortMismatch(cfg *config.Config, logger *slog.Logger) {
 		return
 	}
 	logger.Warn("web.api_internal_url points at a loopback port the API is not listening on — /api/* will 502 and every chart in the GUI will be empty",
-		"api_internal_url", cfg.Web.APIInternalURL,
+		"api_internal_url", platform.RedactURLUserinfo(cfg.Web.APIInternalURL),
 		"api_addr", cfg.API.AddrOrDefault(),
 		"fix", "set web.api_internal_url to http://127.0.0.1:"+apiPort)
 }
@@ -500,7 +500,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		var since time.Time
 		if !full {
 			if lc, lcErr := store.GetRepoLastCollected(ctx, repoID); lcErr != nil {
-				logger.Warn("last_collected lookup failed — collecting FULL", "url", repoURL, "error", lcErr)
+				logger.Warn("last_collected lookup failed — collecting FULL", "url", platform.RedactURLUserinfo(repoURL), "error", lcErr)
 			} else if lc != nil {
 				since = *lc
 			}
@@ -513,11 +513,11 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
 		if err != nil {
-			logger.Error("collection failed", "url", repoURL, "error", err)
+			logger.Error("collection failed", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 
-		logger.Info("done", "url", repoURL,
+		logger.Info("done", "url", platform.RedactURLUserinfo(repoURL),
 			"issues", result.Issues, "prs", result.PullRequests,
 			"messages", result.Messages, "events", result.Events,
 			"releases", result.Releases, "contributors", result.Contributors,
@@ -614,6 +614,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
 
+	refusedURLs := 0
 	for _, repoURL := range repoURLs {
 		// Check if this is an org/group URL instead of a repo URL.
 		if isOrg, host, orgName, plat := isOrgURL(repoURL, cfg.GitHub.GitHubAPIBase()); isOrg {
@@ -625,6 +626,14 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				rgType = "gitlab_group"
 			}
 			groupID, err := store.UpsertRepoGroup(ctx, orgName, rgType, repoURL)
+			if errors.Is(err, platform.ErrURLUserinfo) {
+				// The store refuses a URL carrying credentials (round 6);
+				// nothing of this org is expanded, and the run exits nonzero.
+				logger.Error("organization not added: its URL carries credentials — remove them and rerun",
+					"org", orgName, "url", platform.RedactURLUserinfo(repoURL), "error", err)
+				refusedURLs++
+				continue
+			}
 			if err != nil {
 				logger.Warn("failed to create repo group for org", "org", orgName, "error", err)
 			}
@@ -665,7 +674,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			// runs once per scan.
 			userGroupIDs, ugErr := store.GetUserGroupIDsForOrgURL(ctx, repoURL)
 			if ugErr != nil {
-				logger.Warn("failed to look up user_groups for org", "org_url", repoURL, "error", ugErr)
+				logger.Warn("failed to look up user_groups for org", "org_url", platform.RedactURLUserinfo(repoURL), "error", ugErr)
 			}
 			for _, r := range repos {
 				addOneRepoWithGroup(ctx, store, logger, r, plat, priority, groupID)
@@ -694,6 +703,9 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 		}
 		addOneRepo(ctx, store, logger, repoURL, parsed.Owner, parsed.Repo, parsed.Platform, priority)
 	}
+	if refusedURLs > 0 {
+		return fmt.Errorf("%d URL(s) carry credentials and were not added — remove them and rerun", refusedURLs)
+	}
 	return nil
 }
 
@@ -714,10 +726,10 @@ func addOneRepoWithGroup(ctx context.Context, store *db.PostgresStore, logger *s
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-		logger.Error("failed to enqueue repo", "url", r.URL, "error", err)
+		logger.Error("failed to enqueue repo", "url", platform.RedactURLUserinfo(r.URL), "error", err)
 		return
 	}
-	logger.Info("repo added to queue", "url", r.URL, "repo_id", repoID, "priority", priority)
+	logger.Info("repo added to queue", "url", platform.RedactURLUserinfo(r.URL), "repo_id", repoID, "priority", priority)
 }
 
 func addOneRepo(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoURL, owner, name string, plat model.Platform, priority int) {
@@ -732,10 +744,10 @@ func addOneRepo(ctx context.Context, store *db.PostgresStore, logger *slog.Logge
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-		logger.Error("failed to enqueue repo", "url", repoURL, "error", err)
+		logger.Error("failed to enqueue repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 		return
 	}
-	logger.Info("repo added to queue", "url", repoURL, "repo_id", repoID, "priority", priority)
+	logger.Info("repo added to queue", "url", platform.RedactURLUserinfo(repoURL), "repo_id", repoID, "priority", priority)
 }
 
 type orgRepo struct {
@@ -863,7 +875,7 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		// Parse the URL to determine platform and owner/repo.
 		parsed, err := platform.ParseRepoURL(ar.RepoGit)
 		if err != nil {
-			logger.Warn("skipping unparseable URL", "url", ar.RepoGit, "augur_repo_id", ar.RepoID, "error", err)
+			logger.Warn("skipping unparseable URL", "url", platform.RedactURLUserinfo(ar.RepoGit), "augur_repo_id", ar.RepoID, "error", err)
 			skipped++
 			continue
 		}
@@ -871,12 +883,12 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		// Verify the repo still exists on the forge with an HTTP HEAD.
 		exists, err := verifyRepoExists(ctx, httpClient, ar.RepoGit)
 		if err != nil {
-			logger.Warn("error verifying repo", "url", ar.RepoGit, "error", err)
+			logger.Warn("error verifying repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
 			failed++
 			continue
 		}
 		if !exists {
-			logger.Warn("repo no longer exists on forge, skipping", "url", ar.RepoGit)
+			logger.Warn("repo no longer exists on forge, skipping", "url", platform.RedactURLUserinfo(ar.RepoGit))
 			skipped++
 			continue
 		}
@@ -895,13 +907,13 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		}
 
 		if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-			logger.Error("failed to enqueue repo", "url", ar.RepoGit, "error", err)
+			logger.Error("failed to enqueue repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
 			failed++
 			continue
 		}
 
 		imported++
-		logger.Info("imported repo", "url", ar.RepoGit, "repo_id", repoID)
+		logger.Info("imported repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "repo_id", repoID)
 	}
 
 	logger.Info("import complete",
@@ -1063,7 +1075,7 @@ func runPrioritize(cfgPath, target string) error {
 		if err := store.PrioritizeRepo(ctx, repoID); err != nil {
 			return err
 		}
-		logger.Info("repo pushed to top of queue", "url", target, "repo_id", repoID)
+		logger.Info("repo pushed to top of queue", "url", platform.RedactURLUserinfo(target), "repo_id", repoID)
 		return nil
 	}
 
@@ -1126,7 +1138,7 @@ func runRecollect(cfgPath string, targets []string) error {
 	for _, target := range targets {
 		parsed, parseErr := platform.ParseRepoURL(target)
 		if parseErr != nil {
-			logger.Error("could not parse repo URL — skipping", "url", target, "error", parseErr)
+			logger.Error("could not parse repo URL — skipping", "url", platform.RedactURLUserinfo(target), "error", parseErr)
 			if firstErr == nil {
 				firstErr = parseErr
 			}
@@ -1148,14 +1160,14 @@ func runRecollect(cfgPath string, targets []string) error {
 			continue
 		}
 		if err := store.SetForceFullCollect(ctx, repoID, true); err != nil {
-			logger.Error("failed to set force_full_collect — skipping", "url", target, "repo_id", repoID, "error", err)
+			logger.Error("failed to set force_full_collect — skipping", "url", platform.RedactURLUserinfo(target), "repo_id", repoID, "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
 		logger.Info("force_full_collect set — repo will be fully re-collected on next scheduler cycle",
-			"url", target, "repo_id", repoID)
+			"url", platform.RedactURLUserinfo(target), "repo_id", repoID)
 	}
 	return firstErr
 }

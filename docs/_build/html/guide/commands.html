@@ -2827,7 +2827,10 @@ share <code class="docutils literal notranslate"><span class="pre">dedup-repos</
 the <code class="docutils literal notranslate"><span class="pre">email_message</span></code> FK indexes, or each such repo is skipped with a
 warning naming the migrate to run first (the other classifications —
 dead, re-enqueue — proceed) and the run exits nonzero at the end so a
-script cannot read a refused run as success.</p>
+script cannot read a refused run as success. The same nonzero exit
+applies when a stranded repository’s stored URL carries credentials
+(v0.29.57): the row is not probed, is logged as an error and counted as
+<code class="docutils literal notranslate"><span class="pre">refused</span></code>; correct <code class="docutils literal notranslate"><span class="pre">repo_git</span></code> and re-run.</p>
 </section>
 <section id="aveloxis-generate-showcase">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code><a class="headerlink" href="#aveloxis-generate-showcase" title="Link to this heading"></a></h2>
@@ -3095,6 +3098,11 @@ automatically on the next run of this command.</p></li>
 <li><p><strong>Anything else</strong> (transport errors, rate limits, 5xx,
 unresolvable redirects) → the repo is skipped and a re-run
 retries it.</p></li>
+<li><p><strong>A stored URL carrying credentials</strong> (<code class="docutils literal notranslate"><span class="pre">https://user:token&#64;…</span></code>, a row
+written before v0.29.57 refused such URLs) → not probed, logged as an
+error naming the repository, counted as <code class="docutils literal notranslate"><span class="pre">refused</span></code>, and the command
+exits nonzero: a re-run cannot help until <code class="docutils literal notranslate"><span class="pre">repo_git</span></code> is corrected.
+Scripts wrapping the command will see an exit they never saw before.</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>mark-gone-repos<span class="w"> </span>--dry-run<span class="w">    </span><span class="c1"># list what each probe would do</span>
 aveloxis<span class="w"> </span>mark-gone-repos<span class="w">              </span><span class="c1"># stamp / clear / re-enqueue</span>

@@ -29,6 +29,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -37,6 +38,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 func markGoneReposCmd(cfgPath *string) *cobra.Command {
@@ -90,7 +93,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	}
 	logger.Info("mark-gone-repos starting", "candidates", len(cands), "dry_run", dryRun)
 
-	var stamped, cleared, alreadyGone, alive, skipped, stampFailed int
+	var stamped, cleared, alreadyGone, alive, skipped, stampFailed, refused int
 	// v0.29.7: a manual run is a verification too. On every gone-stamped
 	// row it probes — definitive-gone OR not definitive — stamp the
 	// check so the scheduler's recheck ticker (the same rule, see
@@ -117,12 +120,22 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 		// use (SR-17: one probe, all consumers agree on what "gone"
 		// means).
 		_, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)
+		if errors.Is(perr, platform.ErrURLUserinfo) {
+			// The probe refuses a URL carrying credentials (v0.29.57). Not a
+			// retryable skip: a rerun cannot succeed until repo_git is
+			// corrected, so it has its own counter and fails the run.
+			logger.Error("repo URL carries credentials — not probed; correct repo_git",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
+			refused++
+			stampChecked(c)
+			continue
+		}
 		if perr != nil {
 			// SR-16: a transport failure is not "no" — the gone state is
 			// untouched; a rerun retries. The check is still stamped on
 			// a gone row (the ticker's rule).
 			logger.Warn("probe failed — skipping (rerun retries)",
-				"repo_id", c.RepoID, "url", c.GitURL, "error", perr)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
 			skipped++
 			stampChecked(c)
 			continue
@@ -135,7 +148,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				continue
 			}
 			if dryRun {
-				logger.Info("would stamp gone", "repo_id", c.RepoID, "url", c.GitURL, "status", status)
+				logger.Info("would stamp gone", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
 				stamped++
 				continue
 			}
@@ -152,7 +165,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			}
 			// Resurrection: the forge serves the repo again.
 			if dryRun {
-				logger.Info("would clear gone + re-enqueue", "repo_id", c.RepoID, "url", c.GitURL)
+				logger.Info("would clear gone + re-enqueue", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
 				cleared++
 				continue
 			}
@@ -175,7 +188,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 		default:
 			// 3xx that didn't resolve, 403/429/5xx — indeterminate.
 			logger.Warn("indeterminate probe status — skipping (rerun retries)",
-				"repo_id", c.RepoID, "url", c.GitURL, "status", status)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
 			skipped++
 			stampChecked(c)
 		}
@@ -184,9 +197,12 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	logger.Info("mark-gone-repos complete",
 		"candidates", len(cands), "stamped_gone", stamped, "already_gone", alreadyGone,
 		"resurrected", cleared, "alive_unstamped", alive, "skipped", skipped,
-		"check_stamp_failed", stampFailed, "dry_run", dryRun)
+		"refused", refused, "check_stamp_failed", stampFailed, "dry_run", dryRun)
 	if skipped > 0 || stampFailed > 0 {
 		logger.Info("some candidates were skipped on indeterminate probes or could not be stamped — re-run to retry them")
+	}
+	if refused > 0 {
+		return fmt.Errorf("%d candidate(s) have a repo_git carrying credentials — correct them, then rerun", refused)
 	}
 	return nil
 }

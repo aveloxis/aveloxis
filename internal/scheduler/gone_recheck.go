@@ -115,7 +115,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		"recheck_every", s.cfg.Collection.GoneRepoRecheckInterval())
 	started := time.Now()
 
-	var resurrected, stillGone, indeterminate, unreachable, failed int
+	var resurrected, stillGone, indeterminate, unreachable, failed, refused int
 	stampChecked := func(c db.GoneProbeCandidate) {
 		if err := s.store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil && !errors.Is(err, context.Canceled) {
 			failed++
@@ -132,6 +132,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		if uerr := platform.RefuseURLUserinfo(c.GitURL); uerr != nil {
 			s.logger.Error("gone recheck: repo URL carries credentials — not probed; correct repo_git",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", uerr)
+			refused++
 			stampChecked(c)
 			continue
 		}
@@ -178,7 +179,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 	elapsed := time.Since(started)
 	s.logger.Info("gone recheck cycle complete",
 		"candidates", len(cands), "resurrected", resurrected, "still_gone", stillGone,
-		"indeterminate", indeterminate, "unreachable", unreachable, "failed", failed,
+		"indeterminate", indeterminate, "unreachable", unreachable, "refused", refused, "failed", failed,
 		"elapsed", elapsed.Round(time.Second))
 	if overran, perHour := goneRecheckOverrun(len(cands), elapsed); overran {
 		// Observation-only (SR-7): nothing is cancelled or resized.

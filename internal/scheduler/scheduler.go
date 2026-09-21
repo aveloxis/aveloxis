@@ -2226,7 +2226,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	// not the same-named org on the configured host.
 	if !platform.OrgOnGitHubHost(g.Website, s.ghAPIBase) {
 		s.logger.Warn("org refresh skipped — the repo group's website is not on this deployment's GitHub host; the org name would be enumerated on the wrong host",
-			"org", g.Name, "website", g.Website, "github_host", platform.GitHubWebHost(s.ghAPIBase))
+			"org", g.Name, "website", platform.RedactURLUserinfo(g.Website), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 		return 0
 	}
 	// s.ghAPIBase, not a literal (v0.29.57): this is the SECOND org-scan
@@ -2245,7 +2245,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 		return 0 // shutdown, not a failure
 	}
 	if ugErr != nil {
-		s.logger.Warn("failed to look up user_groups for org", "org_url", g.Website, "error", ugErr)
+		s.logger.Warn("failed to look up user_groups for org", "org_url", platform.RedactURLUserinfo(g.Website), "error", ugErr)
 	}
 
 	newCount := 0
@@ -2288,7 +2288,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				return newCount // shutdown, not a failure
 			}
 			if findErr != nil {
-				s.logger.Warn("failed to check for existing repo", "url", item.HTMLURL, "error", findErr)
+				s.logger.Warn("failed to check for existing repo", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", findErr)
 			}
 			if existing > 0 {
 				repoID = existing
@@ -2351,7 +2351,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	// touches the network or the store.
 	if s.glKeys == nil || s.glKeys.IsEmpty() {
 		s.logger.Warn("GitLab group refresh skipped — no GitLab API keys configured",
-			"group", g.Name, "org_url", g.Website)
+			"group", g.Name, "org_url", platform.RedactURLUserinfo(g.Website))
 		return 0
 	}
 	// No default host: a website with no scheme, or one that does not
@@ -2360,7 +2360,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	u, perr := url.Parse(g.Website)
 	if perr != nil || u.Host == "" {
 		s.logger.Warn("GitLab group refresh skipped — the group's website URL has no usable host",
-			"group", g.Name, "org_url", g.Website, "error", perr)
+			"group", g.Name, "org_url", platform.RedactURLUserinfo(g.Website), "error", perr)
 		return 0
 	}
 	glHost := u.Host
@@ -2371,7 +2371,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	apiBase, ok := platform.GitLabAPIBaseForHost(configuredBase, glHost)
 	if !ok {
 		s.logger.Warn("GitLab group refresh skipped — the group is not on the configured GitLab instance, and GitLab API keys are only sent to that instance's host",
-			"group", g.Name, "group_host", glHost, "gitlab_base_url", configuredBase)
+			"group", g.Name, "group_host", glHost, "gitlab_base_url", platform.RedactURLUserinfo(configuredBase))
 		return 0
 	}
 	http := platform.NewHTTPClient(apiBase, s.glKeys, s.logger, platform.AuthGitLab)
@@ -2382,7 +2382,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 		return 0 // shutdown, not a failure
 	}
 	if ugErr != nil {
-		s.logger.Warn("failed to look up user_groups for group", "org_url", g.Website, "error", ugErr)
+		s.logger.Warn("failed to look up user_groups for group", "org_url", platform.RedactURLUserinfo(g.Website), "error", ugErr)
 	}
 
 	newCount := 0
@@ -2422,7 +2422,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				return newCount // shutdown, not a failure
 			}
 			if findErr != nil {
-				s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
+				s.logger.Warn("failed to check for existing repo", "url", platform.RedactURLUserinfo(item.WebURL), "error", findErr)
 			}
 			if existing > 0 {
 				repoID = existing
@@ -2503,7 +2503,7 @@ func (s *Scheduler) checkForRenames(ctx context.Context) {
 			s.logger.Info("rename check result",
 				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL),
 				"skip", prelim.Skip, "redirected", prelim.Redirected,
-				"reason", prelim.SkipReason, "new_url", prelim.NewURL)
+				"reason", prelim.SkipReason, "new_url", platform.RedactURLUserinfo(prelim.NewURL))
 		}
 	}
 }
@@ -2725,7 +2725,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		// (db.OrgScanEligible), so it does not re-fire the demand scan.
 		if org.Platform == "github" && !platform.OrgOnGitHubHost(org.OrgURL, s.ghAPIBase) {
 			s.logger.Warn("org scan skipped — the registered URL is not on this deployment's GitHub host; the org name would be enumerated on the wrong host",
-				"group_id", groupID, "org", org.OrgName, "org_url", org.OrgURL, "github_host", platform.GitHubWebHost(s.ghAPIBase))
+				"group_id", groupID, "org", org.OrgName, "org_url", platform.RedactURLUserinfo(org.OrgURL), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			continue
 		}
 
@@ -2824,7 +2824,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				return // shutdown, not a failure
 			}
 			if findErr != nil {
-				s.logger.Warn("failed to find repo by URL", "url", repo.URL, "error", findErr)
+				s.logger.Warn("failed to find repo by URL", "url", platform.RedactURLUserinfo(repo.URL), "error", findErr)
 			}
 			if repoID == 0 {
 				var err error

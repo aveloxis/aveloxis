@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"unicode"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // normalizeAppPassword removes the display-format spaces Google
@@ -156,7 +158,7 @@ func ValidateAndLog(cfg Config, logger *slog.Logger) error {
 			} else {
 				// operator_email too: a lost one silences the add-request
 				// notices and the digest, and nothing else would say so.
-				logger.Info("mailer configured", "user", cfg.GmailUser, "from_name", cfg.FromName, "site_url", cfg.SiteURL, "operator_email", cfg.OperatorEmail)
+				logger.Info("mailer configured", "user", cfg.GmailUser, "from_name", cfg.FromName, "site_url", platform.RedactURLUserinfo(cfg.SiteURL), "operator_email", cfg.OperatorEmail)
 			}
 		}
 		return nil

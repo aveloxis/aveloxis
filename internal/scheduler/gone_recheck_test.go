@@ -18,6 +18,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // v0.29.7 — the gone-repo recheck ticker. Wiring pin: the run loop
@@ -118,6 +120,15 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	still := mk("still")     // 404 → stays gone, checked
 	flaky := mk("flaky")     // 503 → stays gone, checked (bounded: retried next cadence, not next tick)
 	unreach := mk("unreach") // transport error → stays gone, checked (same bound — review round 1 MEDIUM)
+	// A legacy row whose stored URL carries credentials (the store refuses
+	// such a URL on write, so it is planted by UPDATE): never probed — the
+	// HEAD would send the credential as basic auth — stays gone, stamped
+	// checked so it waits out the cadence (v0.29.57 fix-review round 3).
+	creds := mk("creds")
+	creds.url = "https://user:s3cret@github.com/" + slug + "/creds"
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_data.repos SET repo_git = $2 WHERE repo_id = $1`, creds.id, creds.url); err != nil {
+		t.Fatal(err)
+	}
 
 	// Isolation on the shared scratch DB (review round 1): the claim set
 	// is global, so any OTHER gone row with a NULL/aged stamp would be
@@ -137,6 +148,7 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		flaky.url:   {http.StatusServiceUnavailable, nil},
 		unreach.url: {0, errors.New("dial tcp: i/o timeout")},
 	}
+	// Not in verdicts on purpose: a probe of creds.url is the failure.
 	prev := goneProbe
 	ours := func(url string) bool { return strings.Contains(url, "/"+slug+"/") }
 	goneProbe = func(_ context.Context, url string) (string, int, error) {
@@ -152,7 +164,7 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		}
 		v, ok := verdicts[url]
 		if !ok {
-			t.Errorf("probe called for an unexpected URL %q", url)
+			t.Errorf("probe called for an unexpected URL %q — a credentialed row must never be probed", platform.RedactURLUserinfo(url))
 			return "", 0, errors.New("unexpected")
 		}
 		return url, v.status, v.err
@@ -187,6 +199,9 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	}
 	if gone, checked, queued := state(unreach.id); !gone || !checked || queued {
 		t.Errorf("a transport error must stay gone AND stamp the check (an unreachable cohort must not head every tick): gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	if gone, checked, queued := state(creds.id); !gone || !checked || queued {
+		t.Errorf("a credentialed row must stay gone, unprobed, AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)
 	}
 	// A second run within the cadence probes NONE of our rows: every
 	// non-definitive answer was bounded to the cadence, and the

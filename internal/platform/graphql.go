@@ -261,11 +261,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// v0.27.28: cancellation bails quietly before the
 			// "retrying" WARN — same contract as httpclient.Get.
 			if ctx.Err() != nil {
-				c.logger.Debug("graphql request aborted by context cancellation", "url", url)
+				c.logger.Debug("graphql request aborted by context cancellation", "url", RedactURLUserinfo(url))
 				return ctx.Err()
 			}
 			c.logger.Warn("graphql request failed, retrying",
-				"url", url, "query", query, "attempt", attempt+1, "error", err)
+				"url", RedactURLUserinfo(url), "query", query, "attempt", attempt+1, "error", err)
 			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
 				return err
 			}
@@ -376,7 +376,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 					// the happy-path-after-abort recovery.
 					wait := time.Duration(readRetries) * time.Second
 					c.logger.Warn("graphql body read error, retrying",
-						"url", url, "error", readErr, "query", query,
+						"url", RedactURLUserinfo(url), "error", readErr, "query", query,
 						"read_retry", readRetries, "wait", wait)
 					// The read-retry sub-budget's sleep always precedes a
 					// real retry (the guard above), so it routes through
@@ -401,7 +401,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// or fast-fails for callers with their own recovery
 				// machinery.
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
-					"url", url, "attempt", attempt+1, "error", parsed,
+					"url", RedactURLUserinfo(url), "attempt", attempt+1, "error", parsed,
 					"token_prefix", tokenPrefix(key.Token))
 				noteCause(parsed, attempt)
 				if rotations < maxRotations {
@@ -421,7 +421,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				noteCause(parsed, attempt)
 				wait := jitteredBackoff(attempt)
 				c.logger.Warn("graphql execution timeout, retrying with backoff",
-					"url", url, "query", query, "wait", wait, "attempt", attempt+1, "error", parsed)
+					"url", RedactURLUserinfo(url), "query", query, "wait", wait, "attempt", attempt+1, "error", parsed)
 				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 					return err
 				}
@@ -437,7 +437,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			// The strike was recorded by UpdateFromResponse under the
 			// lease (Copilot review round 2 on PR #203).
-			c.logger.Warn("graphql 401 — auth failure recorded (quarantined only after repeated 401s)", "url", url)
+			c.logger.Warn("graphql 401 — auth failure recorded (quarantined only after repeated 401s)", "url", RedactURLUserinfo(url))
 			continue
 
 		case resp.StatusCode == http.StatusForbidden:
@@ -447,7 +447,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// key; anything else is a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
-				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait,
+				c.logger.Info("graphql secondary rate limit", "url", RedactURLUserinfo(url), "query", query, "wait", wait,
 					"token_prefix", tokenPrefix(key.Token))
 				// 2026-09-12 (Bug C of the chaoss.tv analysis): rest THIS
 				// key in the pool for the Retry-After. Pre-fix only this
@@ -474,7 +474,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// ErrForbidden for a key the pool just benched (Copilot review
 			// on PR #209).
 			if isPrimaryRefusal(resp) {
-				c.logger.Info("graphql rate limit exhausted", "url", url,
+				c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url),
 					"token_prefix", tokenPrefix(key.Token))
 				// Copilot round 7 on PR #193: a 403 carrying
 				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
@@ -504,7 +504,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// no Retry-After): the same rotation as the 403 arm above. The
 			// key's checkout budget was marked before release.
 			_ = resp.Body.Close()
-			c.logger.Info("graphql rate limit exhausted", "url", url, "status", resp.StatusCode,
+			c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"token_prefix", tokenPrefix(key.Token))
 			noteCause(&classifiedGraphQLError{class: ClassRateLimit,
 				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}, attempt)
@@ -517,7 +517,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		case resp.StatusCode == http.StatusTooManyRequests:
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
-			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait,
+			c.logger.Info("graphql 429 rate limited", "url", RedactURLUserinfo(url), "wait", wait,
 				"token_prefix", tokenPrefix(key.Token))
 			// 429 is the same per-key throttle as 403 + Retry-After
 			// (GitHub documents both shapes for secondary limits): the
@@ -540,7 +540,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			c.keys.NoteServerError()
 			wait := jitteredBackoff(attempt)
 			c.logger.Warn("graphql server error, retrying with backoff",
-				"url", url, "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
+				"url", RedactURLUserinfo(url), "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
 			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 				return err
 			}
@@ -550,7 +550,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			c.logger.Warn("graphql unexpected status",
-				"url", url, "status", resp.StatusCode,
+				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"body_snippet", truncateBody(string(respBody), 200),
 				"attempt", attempt+1)
 			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {

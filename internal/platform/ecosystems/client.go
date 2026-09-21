@@ -268,6 +268,11 @@ type registryRef struct {
 // elapses, the breaker reopens and the next call probes the
 // upstream.
 func (c *Client) LookupPackages(ctx context.Context, repositoryURL string) ([]model.PackageDistribution, error) {
+	// The URL goes to a THIRD PARTY as a query parameter; credentials in it
+	// are refused at this boundary (v0.29.57 fix-review round 3).
+	if err := platform.RefuseURLUserinfo(repositoryURL); err != nil {
+		return nil, err
+	}
 	// Circuit-breaker probe: when open, short-circuit with a typed
 	// sentinel error (ErrCircuitOpen) that classifies as ClassSkip.
 	// The scanner uses this to mark the scan as incomplete
@@ -277,7 +282,7 @@ func (c *Client) LookupPackages(ctx context.Context, repositoryURL string) ([]mo
 	// single WARN log; per-call DEBUG keeps the steady-state quiet.
 	if c.circuitOpen() {
 		c.logger.Debug("ecosyste.ms LookupPackages: circuit open, skipping",
-			"repository_url", repositoryURL)
+			"repository_url", platform.RedactURLUserinfo(repositoryURL))
 		return nil, ErrCircuitOpen
 	}
 

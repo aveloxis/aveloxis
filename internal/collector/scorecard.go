@@ -325,7 +325,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		// See remoteScorecardSupported: the subprocess would choose its own
 		// host for a token that belongs to this deployment's.
 		logger.Warn("scorecard remote mode skipped — github.base_url is not public GitHub and the scorecard subprocess resolves its own host, so the API token is not lent to it in any mode; a retained clone gets a local run without it (worklist 34)",
-			"repo_id", repoID, "url", safeRepoURL, "api_base", opts.APIBaseURL)
+			"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL), "api_base", opts.APIBaseURL)
 		if opts.LocalPath == "" {
 			return nil, nil
 		}
@@ -336,7 +336,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		// Local-only platforms (GitLab, generic git).
 		if opts.LocalPath == "" {
 			logger.Info("scorecard skipped — local-only platform with no analysis clone",
-				"repo_id", repoID, "url", safeRepoURL)
+				"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL))
 			return nil, nil
 		}
 		return runLocal()
@@ -351,11 +351,11 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	if lentToken == "" {
 		if opts.LocalPath == "" {
 			logger.Warn("scorecard not run — no usable GitHub token lent (none configured, or every key quarantined, cooling down or refused) and no clone for local mode; retried next cycle",
-				"repo_id", repoID, "url", safeRepoURL)
+				"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL))
 			return nil, ErrScorecardNoToken
 		}
 		logger.Warn("scorecard: no usable GitHub token lent (none configured, or every key quarantined, cooling down or refused) — running local mode on the retained clone instead of remote",
-			"repo_id", repoID, "url", safeRepoURL)
+			"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL))
 		return runLocal()
 	}
 
@@ -386,7 +386,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	}
 	// Local backstop: 11 checks beat none. Fresh per-attempt timeout.
 	logger.Warn("scorecard remote attempt failed — falling back to local mode",
-		"repo_id", repoID, "url", safeRepoURL, "error", remoteErr)
+		"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL), "error", remoteErr)
 	raw, localErr := invokeScorecard(ctx, scorecardPath, repoID, opts.RepoURL, opts.LocalPath, timeout, lentToken, logger)
 	if localErr != nil {
 		return nil, fmt.Errorf("scorecard remote attempt failed (%v); local fallback also failed: %w", remoteErr, localErr)
@@ -492,7 +492,7 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 			"--format", "json",
 		)
 	} else {
-		logger.Info("running OpenSSF Scorecard (remote mode)", "repo_id", repoID, "url", repoURL)
+		logger.Info("running OpenSSF Scorecard (remote mode)", "repo_id", repoID, "url", platform.RedactURLUserinfo(repoURL))
 		cmd = exec.CommandContext(attemptCtx, scorecardPath,
 			"--repo", repoURL,
 			"--format", "json",

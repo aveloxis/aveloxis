@@ -12,6 +12,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/importers/numfocus"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // loadNumfocusOrgsCmd registers `aveloxis load-numfocus-orgs`.
@@ -135,7 +137,7 @@ func runLoadNumfocusOrgs(cfgPath string, opts numfocusLoadOpts) error {
 			}
 			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, orgURL, cfg.GitHub.GitHubAPIBase()); err != nil {
 				logger.Warn("failed to add numfocus org",
-					"section", section, "name", p.Name, "org_url", orgURL, "error", err)
+					"section", section, "name", p.Name, "org_url", platform.RedactURLUserinfo(orgURL), "error", err)
 				tally.failed++
 				continue
 			}

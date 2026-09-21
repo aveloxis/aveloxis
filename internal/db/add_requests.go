@@ -575,12 +575,14 @@ func (s *PostgresStore) processAddRequest(ctx context.Context, requestID int64, 
 			return processed, failed, err
 		}
 		if err != nil && !everyFailureFinal && !addItemFailurePermanent(err) {
-			// Leave this item and the rest unprocessed for a later pass.
-			return processed, failed, fmt.Errorf("add-request item %q: %w", it.url, err)
+			// Leave this item and the rest unprocessed for a later pass. The
+			// URL is redacted: an item that predates the store's refusal can
+			// carry a credential, and this message reaches the server log.
+			return processed, failed, fmt.Errorf("add-request item %q: %w", platform.RedactURLUserinfo(it.url), err)
 		}
 		if err != nil {
 			s.logger.Warn("add-request item failed — marking processed-with-error",
-				"request_id", requestID, "url", it.url, "error", err)
+				"request_id", requestID, "url", platform.RedactURLUserinfo(it.url), "error", err)
 			repoID = -1
 		}
 		if _, err := s.pool.Exec(ctx, `
@@ -605,6 +607,12 @@ func (s *PostgresStore) processAddRequest(ctx context.Context, requestID int64, 
 // concurrent delete or dedup can cause (a foreign key, 23503; a unique index,
 // 23505; an exclusion, 23P01).
 func addItemFailurePermanent(err error) bool {
+	// A URL the store refuses for its own content (credentials, over-long)
+	// can never succeed on retry: a legacy pending item carrying one would
+	// otherwise block its request's approval forever (round 3).
+	if errors.Is(err, platform.ErrURLUserinfo) || errors.Is(err, ErrURLTooLong) {
+		return true
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return false

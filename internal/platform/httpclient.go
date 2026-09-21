@@ -449,7 +449,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// leased or a byte is sent.
 		if herr := onClientHostString(c.baseURL, url); herr != nil {
 			c.logger.Error("off-host request refused — the URL leaves this client's API host or scheme, so no API key is sent",
-				"url", url, "error", herr)
+				"url", RedactURLUserinfo(url), "error", herr)
 			return nil, herr
 		}
 		// 2026-09-12: Acquire is a LEASE against the key's and the pool's
@@ -504,11 +504,11 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			// 2026-07-21 shutdown). Debug, not Warn: "we were told to
 			// stop" is not an error.
 			if ctx.Err() != nil {
-				c.logger.Debug("HTTP request aborted by context cancellation", "url", url)
+				c.logger.Debug("HTTP request aborted by context cancellation", "url", RedactURLUserinfo(url))
 				return nil, ctx.Err()
 			}
 			c.logger.Warn("HTTP request failed, retrying",
-				"url", url, "attempt", attempt+1, "error", err)
+				"url", RedactURLUserinfo(url), "attempt", attempt+1, "error", err)
 			// Context-aware sleep: a cancelled job wakes immediately
 			// instead of sitting here for 20+s across the retry chain.
 			if err := restTransportRetrySleep(ctx, time.Duration(attempt+1)*2*time.Second); err != nil {
@@ -630,7 +630,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		c.logger.Warn("resource is gone (410)",
-			"url", url, "body_snippet", truncateBody(string(body), 200))
+			"url", RedactURLUserinfo(url), "body_snippet", truncateBody(string(body), 200))
 		return respDone, nil, fmt.Errorf("%w: %s", ErrGone, url)
 	case resp.StatusCode == http.StatusMovedPermanently ||
 		resp.StatusCode == http.StatusFound ||
@@ -652,13 +652,13 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// The body often contains {"message":"Moved Permanently","url":""}.
 			// Nothing useful to retry — surface as ErrGone so callers skip.
 			c.logger.Warn("redirect with empty Location header — treating as gone",
-				"url", url, "status", resp.StatusCode,
+				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"body_snippet", truncateBody(string(body), 200))
 			return respDone, nil, fmt.Errorf("%w: %s (redirect with empty Location)", ErrGone, url)
 		}
 		if *hopsp >= maxRedirectHops {
 			c.logger.Warn("redirect hop cap exceeded — treating as gone",
-				"url", url, "status", resp.StatusCode,
+				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"location", location, "hops", *hopsp)
 			return respDone, nil, fmt.Errorf("%w: %s (redirect loop or chain longer than %d)",
 				ErrGone, url, maxRedirectHops)
@@ -675,10 +675,10 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if rerr != nil {
 			if errors.Is(rerr, ErrOffHostRefused) {
 				c.logger.Error("redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there",
-					"url", url, "status", resp.StatusCode, "location", location, "error", rerr)
+					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", location, "error", rerr)
 			} else {
 				c.logger.Warn("redirect with an unparseable Location — treating as gone",
-					"url", url, "status", resp.StatusCode, "location", location, "error", rerr)
+					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", location, "error", rerr)
 			}
 			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, url)
 		}
@@ -721,7 +721,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		c.logger.Warn("bad request (not retrying)",
-			"url", url, "status", 400, "body_snippet", truncateBody(string(body), 200))
+			"url", RedactURLUserinfo(url), "status", 400, "body_snippet", truncateBody(string(body), 200))
 		return respDone, nil, fmt.Errorf("bad request: %s: %w", url, ErrRequestRejected)
 	case resp.StatusCode == http.StatusUnprocessableEntity:
 		// 422 = validation failed. Not retryable for the same
@@ -738,11 +738,11 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		bodyStr := string(body)
 		if strings.Contains(bodyStr, "Only the first 1000") {
 			c.logger.Info("pagination limit reached (GitHub serves at most 1000 results)",
-				"url", url, "body_snippet", truncateBody(bodyStr, 200))
+				"url", RedactURLUserinfo(url), "body_snippet", truncateBody(bodyStr, 200))
 			return respDone, nil, fmt.Errorf("%w: %s", ErrPaginationLimitExceeded, url)
 		}
 		c.logger.Warn("unprocessable entity (not retrying)",
-			"url", url, "status", 422, "body_snippet", truncateBody(bodyStr, 200))
+			"url", RedactURLUserinfo(url), "status", 422, "body_snippet", truncateBody(bodyStr, 200))
 		return respDone, nil, fmt.Errorf("unprocessable entity: %s: %w", url, ErrRequestRejected)
 	case resp.StatusCode == http.StatusForbidden:
 		// 403 can mean rate limit, secondary rate limit, or resource not
@@ -755,7 +755,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if resp.Header.Get("Retry-After") != "" {
 			resp.Body.Close()
 			wait := parseRetryAfter(resp)
-			c.logger.Info("secondary rate limit", "url", url, "wait", wait,
+			c.logger.Info("secondary rate limit", "url", RedactURLUserinfo(url), "wait", wait,
 				"token_prefix", tokenPrefix(key.Token))
 			// 2026-09-12 (Bug C): THIS key is resting in the pool for the
 			// Retry-After so other callers are routed to healthy keys —
@@ -788,7 +788,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// Log at ERROR so on-call sees the regression, then back off
 			// like a regular rate limit so we don't hot-loop on the bug.
 			c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
-				"url", url,
+				"url", RedactURLUserinfo(url),
 				"token_prefix", tokenPrefix(key.Token),
 				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
@@ -813,7 +813,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// here (summary/changelog/v0.29.md, v0.29.9 "next-release log
 			// review").
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
-				"url", url,
+				"url", RedactURLUserinfo(url),
 				"token_prefix", tokenPrefix(key.Token),
 				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
@@ -834,7 +834,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return c.primaryRefusal(ctx, resp, url, key, attempt, res)
 		}
 		wait := parseRetryAfter(resp)
-		c.logger.Info("rate limited", "url", url, "wait", wait,
+		c.logger.Info("rate limited", "url", RedactURLUserinfo(url), "wait", wait,
 			"token_prefix", tokenPrefix(key.Token))
 		// 429 is the same per-key throttle as 403 + Retry-After: the key
 		// is already resting (UpdateFromResponse, under the lease — PR
@@ -866,7 +866,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		jitter := time.Duration(rand.IntN(int(backoff/2) + 1))
 		wait := backoff + jitter
 		c.logger.Warn("server error, retrying with backoff",
-			"url", url, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
+			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
 		select {
 		case <-ctx.Done():
 			return respDone, nil, ctx.Err()
@@ -877,7 +877,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		c.logger.Warn("unexpected status",
-			"url", url, "status", resp.StatusCode, "body_snippet", truncateBody(string(body), 200), "attempt", attempt+1)
+			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "body_snippet", truncateBody(string(body), 200), "attempt", attempt+1)
 		select {
 		case <-ctx.Done():
 			return respDone, nil, ctx.Err()
@@ -905,7 +905,7 @@ func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, ur
 	reset := firstHeader(resp, "X-RateLimit-Reset", "RateLimit-Reset")
 	if resource == res.String() && res != ResourceGraphQL {
 		c.logger.Info("rate limit exhausted",
-			"url", url, "status", resp.StatusCode, "resource", resource, "reset", reset,
+			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "resource", resource, "reset", reset,
 			"token_prefix", tokenPrefix(key.Token), "attempt", attempt+1,
 			"rotating_to_another_key", true)
 		return respRotate, nil, nil
@@ -915,7 +915,7 @@ func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, ur
 		wait = time.Until(t)
 	}
 	c.logger.Info("rate limit exhausted",
-		"url", url, "status", resp.StatusCode, "resource", resource, "reset", reset,
+		"url", RedactURLUserinfo(url), "status", resp.StatusCode, "resource", resource, "reset", reset,
 		"token_prefix", tokenPrefix(key.Token), "attempt", attempt+1,
 		"rotating_to_another_key", false, "wait", wait)
 	select {

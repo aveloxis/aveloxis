@@ -78,13 +78,12 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 
 	// The URL goes to `git clone` on its command line and into the clone
 	// log line, every cycle. A URL carrying credentials is refused before
-	// either, like RunScorecard and the scancode worker refuse it — every
-	// subprocess boundary agrees on what a legacy row (one stored before the
-	// store refused such URLs) gets: an ERROR naming the repo, nothing run
-	// (v0.29.57 fix-review rounds 1–2). The scheduler refuses the row at the
-	// job's entry too (runJob), so under serve this arm is a backstop for
-	// callers that reach the facade another way. validateGitURL cannot do
-	// this: it accepts userinfo for the SCP/ssh shapes.
+	// either. The shared machinery refuses it (ensureClone, resolveRedirects,
+	// the scancode clone, RunScorecard, the ecosyste.ms lookup), the
+	// scheduler refuses the row at the job's entry (runJob), and this arm is
+	// the one that logs an ERROR naming the repo (v0.29.57 fix-review rounds
+	// 1–3). validateGitURL cannot do this: it accepts userinfo for the
+	// SCP/ssh shapes.
 	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
 		f.logger.Error("facade not run: repo URL carries credentials — remove the credential from repo_git",
 			"repo_id", repoID, "url", platform.RedactURLUserinfo(gitURL), "error", err)
@@ -142,6 +141,13 @@ func (f *FacadeCollector) clonePath(repoID int64) string {
 
 // ensureClone either fetches updates for an existing bare clone or creates a new one.
 func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) error {
+	// Refused in the one function both clone paths share (CollectRepo and
+	// RewalkWhitespace), so the URL reaches neither the clone log line nor
+	// git's command line (round 3: `aveloxis rewalk-whitespace` bypassed
+	// CollectRepo's arm, which stays for its ERROR naming the repo).
+	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
+		return err
+	}
 	// Bare repos don't have a .git subdirectory — check for HEAD file instead.
 	if _, err := os.Stat(filepath.Join(path, "HEAD")); err == nil {
 		// Existing bare clone found — verify it's the right repo.
@@ -153,8 +159,8 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) {
 			f.logger.Warn("stale clone detected: origin URL mismatch, re-cloning",
 				"path", path,
-				"existing_url", existingURL,
-				"expected_url", gitURL)
+				"existing_url", platform.RedactURLUserinfo(existingURL),
+				"expected_url", platform.RedactURLUserinfo(gitURL))
 			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
@@ -278,7 +284,7 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	if err := validateGitURL(gitURL); err != nil {
 		return fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
-	f.logger.Info("cloning repository", "url", gitURL, "path", path)
+	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

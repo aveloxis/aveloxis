@@ -348,6 +348,12 @@ func (s *PostgresStore) EnsureDefaultRepoGroup(ctx context.Context) (int64, erro
 // UpsertRepoGroup creates or finds a repo group by name and type.
 // Returns the repo_group_id.
 func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, website string) (int64, error) {
+	// rg_website and rg_description store the URL; the CLI `add-repo` on an
+	// organisation reached this writer with a credentialed URL that the web
+	// path's AddOrgToGroup refuses (round 6). Same rule, this writer.
+	if err := platform.RefuseURLUserinfo(website); err != nil {
+		return 0, fmt.Errorf("repo group %q: %w", name, err)
+	}
 	var id int64
 	// Try to find existing group by name and type.
 	err := s.pool.QueryRow(ctx,
@@ -457,7 +463,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				uerr := s.UpdateRepoURLs(ctx, existing, oldURL, r.GitURL)
 				if uerr == nil {
 					s.logger.Info("rename detected at add time — healed existing repo URL instead of creating a duplicate",
-						"repo_id", existing, "old_url", oldURL, "new_url", r.GitURL, "platform_repo_id", r.PlatformID)
+						"repo_id", existing, "old_url", platform.RedactURLUserinfo(oldURL), "new_url", platform.RedactURLUserinfo(r.GitURL), "platform_repo_id", r.PlatformID)
 					return existing, nil
 				}
 				// ONLY a genuine uniqueness race (another writer landed
@@ -769,6 +775,12 @@ func (s *PostgresStore) ArchiveRepo(ctx context.Context, repoID int64) error {
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
 func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL, newURL string) error {
+	// The store owns repo_git (SR-18): the rename path is a WRITER of it
+	// too, and a redirect target carrying credentials reached it (v0.29.57
+	// fix-review round 6). Refused before anything else, like UpsertRepo.
+	if err := platform.RefuseURLUserinfo(newURL); err != nil {
+		return fmt.Errorf("repo %d rename: %w", repoID, err)
+	}
 	// v0.27.113 (Copilot round 9): normalize the stored URL exactly like
 	// UpdateRepoURL does — prelim passes the RAW redirect target, so a
 	// redirect to ".../name.git" (or a trailing slash) would otherwise
@@ -866,6 +878,9 @@ func extractRepoPath(u string) string {
 // UpdateRepoURL changes the git URL, owner, and name of a repo (e.g., after a redirect).
 // Extracts the new owner/name from the URL so the dashboard and API show correct values.
 func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL string) error {
+	if err := platform.RefuseURLUserinfo(newURL); err != nil { // as UpdateRepoURLs (round 6)
+		return fmt.Errorf("repo %d rename: %w", repoID, err)
+	}
 	// Parse owner/name from the new URL via the shared parser (v0.25.32
 	// consolidation; unparseable URLs keep empty owner/name — the URL
 	// column still updates, matching the historical permissiveness).

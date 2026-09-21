@@ -45,6 +45,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 func dedupReposCmd(cfgPath *string) *cobra.Command {
@@ -147,8 +149,8 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 		logger.Info("=== sample plan (first 20 pairs) ===")
 		for _, p := range sample {
 			logger.Info("  duplicate pair",
-				"winner_id", p.WinnerID, "winner_git", p.WinnerGit,
-				"loser_id", p.LoserID, "loser_git", p.LoserGit,
+				"winner_id", p.WinnerID, "winner_git", platform.RedactURLUserinfo(p.WinnerGit),
+				"loser_id", p.LoserID, "loser_git", platform.RedactURLUserinfo(p.LoserGit),
 				"group_size", p.GroupSize,
 				"winner_last_collected", fmtNullableTime(p.WinnerLastCollected),
 				"loser_last_collected", fmtNullableTime(p.LoserLastCollected),

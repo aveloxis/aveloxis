@@ -47,6 +47,14 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	result := &PrelimResult{OldURL: repo.GitURL}
 
 	finalURL, statusCode, err := resolveRedirects(ctx, repo.GitURL)
+	if errors.Is(err, platform.ErrURLUserinfo) {
+		// A redirect to a URL carrying credentials (round 6): not followed,
+		// nothing written, the row keeps its URL; collection proceeds
+		// against the stored URL and fails naturally if the forge insists.
+		logger.Error("prelim: redirect target carries credentials — not followed, repo URL unchanged",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
+		return result, nil
+	}
 	if err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is
@@ -130,7 +138,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	result.Redirected = true
 	result.NewURL = finalURL
 	logger.Info("prelim: repo redirected",
-		"old", repo.GitURL, "new", finalURL, "repo_id", repo.ID)
+		"old_url", platform.RedactURLUserinfo(repo.GitURL), "new_url", platform.RedactURLUserinfo(finalURL), "repo_id", repo.ID)
 
 	// Check if we already have a repo entry for the new URL.
 	existingID, err := store.FindRepoByURL(ctx, finalURL)
@@ -145,8 +153,8 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			"redirected to %s which is already collected as repo_id %d",
 			finalURL, existingID)
 		logger.Warn("prelim: duplicate repo detected — already collecting under new URL",
-			"old_repo_id", repo.ID, "old_url", repo.GitURL,
-			"new_repo_id", existingID, "new_url", finalURL)
+			"old_repo_id", repo.ID, "old_url", platform.RedactURLUserinfo(repo.GitURL),
+			"new_repo_id", existingID, "new_url", platform.RedactURLUserinfo(finalURL))
 
 		// v0.27.22 self-heal: an add-by-old-name should silently land
 		// the user on the collected repo they meant. For a
@@ -168,7 +176,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			}
 		case healed:
 			logger.Info("prelim: rename-duplicate healed — user links repointed to the collected repo",
-				"old_repo_id", repo.ID, "new_repo_id", existingID, "new_url", finalURL)
+				"old_repo_id", repo.ID, "new_repo_id", existingID, "new_url", platform.RedactURLUserinfo(finalURL))
 			return result, nil // duplicate row is gone; nothing to dequeue
 		default:
 			logger.Warn("prelim: duplicate retained — it has collected data; consolidation is a manual decision",
@@ -193,7 +201,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		return result, fmt.Errorf("updating repo URLs: %w", err)
 	}
 	logger.Info("prelim: updated repo URL to canonical",
-		"repo_id", repo.ID, "old", repo.GitURL, "new", finalURL)
+		"repo_id", repo.ID, "old_url", platform.RedactURLUserinfo(repo.GitURL), "new_url", platform.RedactURLUserinfo(finalURL))
 
 	// Update the repo struct so collection uses the new URL.
 	repo.GitURL = finalURL
@@ -222,11 +230,25 @@ func ResolveRedirectTarget(ctx context.Context, repoURL string) (string, int, er
 }
 
 func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) {
+	// The HEAD below would send userinfo as basic auth. Refused HERE, in the
+	// one probe every caller shares (SR-18) — the scheduler's gates sat at
+	// its callers, and two CLIs (`mark-gone-repos`, `reconcile-repos`) reached
+	// it ungated (v0.29.57 fix-review round 3).
+	if err := platform.RefuseURLUserinfo(repoURL); err != nil {
+		return "", 0, err
+	}
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
+			}
+			// A Location carrying userinfo is not followed: net/http would
+			// send it as basic auth, and the final URL would then be
+			// WRITTEN to repo_git by the rename path (v0.29.57 fix-review
+			// round 6 — the one write that bypassed the store's refusal).
+			if err := platform.RefuseURLUserinfo(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect target: %w", err)
 			}
 			return nil // follow redirects
 		},
@@ -249,6 +271,12 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 		req.Header.Set("User-Agent", "Aveloxis/1.0")
 
 		resp, err := client.Do(req)
+		if errors.Is(err, platform.ErrURLUserinfo) {
+			// net/http wraps a CheckRedirect refusal in a *url.Error whose
+			// text quotes the target URL — credential included. Return the
+			// sentinel alone; the target is not worth naming.
+			return "", 0, fmt.Errorf("redirect target: %w", platform.ErrURLUserinfo)
+		}
 		if err != nil {
 			lastErr = err
 			// Only retry on DNS/network errors, not on context cancellation.
@@ -261,7 +289,13 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 			return "", 0, err
 		}
 		resp.Body.Close()
-		return resp.Request.URL.String(), resp.StatusCode, nil
+		final := resp.Request.URL.String()
+		// Belt for the check above: whatever URL the chain ended on is
+		// refused if it carries credentials, so no caller can store it.
+		if err := platform.RefuseURLUserinfo(final); err != nil {
+			return "", 0, fmt.Errorf("redirect target: %w", err)
+		}
+		return final, resp.StatusCode, nil
 	}
 	return "", 0, lastErr
 }

@@ -1023,7 +1023,10 @@ share `dedup-repos`' precondition: the v0.28.18 migrate must have built
 the `email_message` FK indexes, or each such repo is skipped with a
 warning naming the migrate to run first (the other classifications —
 dead, re-enqueue — proceed) and the run exits nonzero at the end so a
-script cannot read a refused run as success.
+script cannot read a refused run as success. The same nonzero exit
+applies when a stranded repository's stored URL carries credentials
+(v0.29.57): the row is not probed, is logged as an error and counted as
+`refused`; correct `repo_git` and re-run.
 
 ## `aveloxis generate-showcase`
 
@@ -1314,6 +1317,11 @@ The probe is bidirectional and only DEFINITIVE answers decide:
 - **Anything else** (transport errors, rate limits, 5xx,
   unresolvable redirects) → the repo is skipped and a re-run
   retries it.
+- **A stored URL carrying credentials** (`https://user:token@…`, a row
+  written before v0.29.57 refused such URLs) → not probed, logged as an
+  error naming the repository, counted as `refused`, and the command
+  exits nonzero: a re-run cannot help until `repo_git` is corrected.
+  Scripts wrapping the command will see an exit they never saw before.
 
 ```bash
 aveloxis mark-gone-repos --dry-run    # list what each probe would do

@@ -248,15 +248,17 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 	// http.Client: a Location that carries credentials must be refused
 	// before any request to it (net/http would send them as basic auth, and
 	// the final URL would then be written to repo_git by the rename path),
-	// and http.Client's "failed to parse Location header" error quotes the
-	// raw Location — raised BEFORE CheckRedirect is consulted, so no
-	// redirect policy can prevent it (fix-review round 7; the hop-limit
-	// error names the LAST REQUEST, not the refused Location — round 8
-	// checked by running the old code). Walking the chain here makes both
+	// and http.Client's own error texts quote the raw Location: "failed to
+	// parse Location header %q" is raised BEFORE CheckRedirect is consulted
+	// (client.go: the parse precedes the policy call), and ANY CheckRedirect
+	// error — the hop limit included — is returned with url.Error.URL set to
+	// the raw Location (client.go, "ue.(*url.Error).URL = loc"), so the old
+	// hop-limit arm leaked when the credentialed Location arrived exactly at
+	// the limit (fix-review rounds 7–9; round 8 said otherwise from a fixture
+	// that never reached the boundary). Walking the chain here makes both
 	// fixed strings. Each Location is refused, then parsed, then refused
 	// again once resolved; no error returned from here names a redirect
 	// target.
-	const maxHops = 10
 	current := repoURL
 	for hop := 0; ; hop++ {
 		resp, err := headWithRetry(ctx, current)
@@ -272,7 +274,7 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 			return current, resp.StatusCode, nil // a 3xx without Location: as net/http reports it
 		}
 		if hop >= maxHops {
-			return "", 0, errors.New("too many redirects")
+			return "", 0, errTooManyRedirects
 		}
 		if platform.RefuseURLUserinfo(loc) != nil {
 			return "", 0, platform.ErrRedirectTargetUserinfo
@@ -287,6 +289,17 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 		current = next.String()
 	}
 }
+
+// maxHops is how many redirects the probe follows before giving up with
+// errTooManyRedirects — one more than net/http's client (10 requests,
+// refuses the 11th); the test that serves a credentialed Location exactly
+// at the limit reads this constant, so the boundary pin moves with it
+// (fix-review round 10).
+const maxHops = 10
+
+// errTooManyRedirects is the hop-limit error: a fixed string, never the
+// Location that would have been next.
+var errTooManyRedirects = errors.New("too many redirects")
 
 // isRedirectStatus reports the statuses net/http follows for a HEAD.
 func isRedirectStatus(code int) bool {

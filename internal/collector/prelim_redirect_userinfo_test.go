@@ -70,14 +70,18 @@ func TestRedirectToAUserinfoURLIsNotFollowedOrStored(t *testing.T) {
 	}
 }
 
-// Round 7: net/http's "failed to parse Location header" error quoted the raw
-// Location — a malformed one carrying userinfo leaked through the generic
-// WARN arms. The probe walks the chain itself now, so no error it returns
-// names a redirect target; a plain chain (with a relative hop) still
-// resolves, and a credentialed target is reported by its own sentinel. The
-// hop-10 case is a PARITY guard, not a leak pin: the old code's hop-limit
-// error named the last request, never the Location (round 8 checked by
-// running it), and the hand-walked chain must keep that property.
+// Rounds 7–9: net/http's error texts quoted the raw Location — "failed to
+// parse Location header %q" for a malformed one, and url.Error.URL = loc for
+// ANY CheckRedirect error, so the old hop-limit arm leaked when the
+// credentialed Location arrived exactly at the limit (client.go:
+// "ue.(*url.Error).URL = loc"). The probe walks the chain itself now, so no
+// error it returns names a redirect target; a plain chain (with a relative
+// hop) still resolves, and a credentialed target is reported by its own
+// sentinel. The hop-limit case serves the credentialed Location exactly at
+// maxHops (read from the package, so the boundary pin moves with it) and
+// asserts the hop-limit sentinel — a drift that landed on the userinfo
+// sentinel, or never reached the credential, would otherwise stay green
+// (round 10).
 func TestRedirectProbeErrorsNeverNameACredentialedTarget(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +93,7 @@ func TestRedirectProbeErrorsNeverNameACredentialedTarget(t *testing.T) {
 		case strings.HasPrefix(r.URL.Path, "/hop/"):
 			n := 0
 			_, _ = fmt.Sscanf(r.URL.Path, "/hop/%d", &n)
-			if n >= 10 {
+			if n >= maxHops {
 				http.Redirect(w, r, strings.Replace(self, "http://", "http://user:s3cret@", 1)+"/hop/end", http.StatusFound)
 				return
 			}
@@ -115,6 +119,9 @@ func TestRedirectProbeErrorsNeverNameACredentialedTarget(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "s3cret") {
 			t.Errorf("%s: the error text names the credentialed target: %v", path, err)
+		}
+		if path == "/hop/0" && !errors.Is(err, errTooManyRedirects) {
+			t.Errorf("%s: want the hop-limit sentinel at the boundary, got %v — the credential is no longer served exactly at maxHops", path, err)
 		}
 	}
 	// A chain that ends on a credentialed target within the hop limit is the

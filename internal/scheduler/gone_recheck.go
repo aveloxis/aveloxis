@@ -137,6 +137,9 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			continue
 		}
 		_, status, perr := goneProbe(ctx, c.GitURL)
+		if errors.Is(perr, context.Canceled) {
+			return // shutdown mid-probe: classified before any failure arm (the ticker ratchet)
+		}
 		if errors.Is(perr, platform.ErrRedirectTargetUserinfo) {
 			// The stored URL is clean; the forge's redirect target carries
 			// credentials and was not followed (round 8). Not a transport
@@ -149,9 +152,6 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			continue
 		}
 		if perr != nil {
-			if errors.Is(perr, context.Canceled) {
-				return
-			}
 			// SR-16: a transport failure is not "no" — the gone state
 			// is untouched. The CHECK is stamped (see the header): the
 			// row is retried next cadence, never allowed to head every

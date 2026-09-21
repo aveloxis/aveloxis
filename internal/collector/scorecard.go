@@ -56,6 +56,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // ScorecardResult holds the parsed output from the scorecard tool.
@@ -126,6 +128,20 @@ func scorecardReplaceAllowed(mode string) func(storedMode string, found bool) bo
 	return func(storedMode string, found bool) bool {
 		return mode == "remote" || !(found && storedMode == "remote")
 	}
+}
+
+// ScorecardRepoURL is the ONE rule (SR-17) for the URL scorecard is handed:
+// the row's own repo_git — on a deployment whose GitHub is not github.com a
+// synthesised URL names the wrong repository — and the synthesised
+// host/owner/name ONLY for a row that has none. Both consumers use it: the
+// scheduler's per-cycle phase and `aveloxis run-scorecard`, which had lost
+// the fallback and sent `--repo ""` for such a row (Copilot review
+// 5268977585).
+func ScorecardRepoURL(gitURL string, plat model.Platform, owner, name string) string {
+	if gitURL != "" {
+		return gitURL
+	}
+	return fmt.Sprintf("https://%s/%s/%s", PlatformHost(plat), owner, name)
 }
 
 // ScorecardOptions bundles the inputs for RunScorecard.
@@ -325,7 +341,7 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		// See remoteScorecardSupported: the subprocess would choose its own
 		// host for a token that belongs to this deployment's.
 		logger.Warn("scorecard remote mode skipped — github.base_url is not public GitHub and the scorecard subprocess resolves its own host, so the API token is not lent to it in any mode; a retained clone gets a local run without it (worklist 34)",
-			"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL), "api_base", opts.APIBaseURL)
+			"repo_id", repoID, "url", platform.RedactURLUserinfo(safeRepoURL), "api_base", platform.RedactURLUserinfo(opts.APIBaseURL))
 		if opts.LocalPath == "" {
 			return nil, nil
 		}

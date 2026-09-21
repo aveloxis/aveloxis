@@ -205,7 +205,7 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 
 			// Record foundation membership.
 			if err := store.UpsertFoundationMembership(ctx, p.Foundation, p.Status, p.Name, p.Homepage, rurl); err != nil {
-				logger.Warn("foundation_membership write failed", "project", p.Name, "repo", rurl, "error", err)
+				logger.Warn("foundation_membership write failed", "project", p.Name, "repo", platform.RedactURLUserinfo(rurl), "error", err)
 			}
 
 			// Attach to dashboard group if requested.
@@ -216,7 +216,7 @@ func runImportFoundations(cfgPath string, opts runOpts) error {
 						continue
 					}
 					if _, err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil {
-						logger.Warn("failed to add repo to dashboard group", "repo", rurl, "error", err)
+						logger.Warn("failed to add repo to dashboard group", "repo", platform.RedactURLUserinfo(rurl), "error", err)
 					}
 				}
 			}

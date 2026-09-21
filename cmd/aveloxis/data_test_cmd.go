@@ -20,6 +20,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // dataTestCmd is the v0.22.8 operator-driven shadow-database
@@ -449,7 +451,7 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 // dtRunAddRepo invokes `<binary> add-repo <url> -c <cfg>` to queue
 // the test repo.
 func dtRunAddRepo(ctx context.Context, logger *slog.Logger, side, binary, cfgPath, repoURL string) error {
-	logger.Info("running add-repo", "repo", repoURL)
+	logger.Info("running add-repo", "repo_url", platform.RedactURLUserinfo(repoURL))
 	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "add-repo", repoURL)
 	cmd.Stdout, cmd.Stderr = sideTaggedOutputs(side)
 	return cmd.Run()
@@ -480,7 +482,7 @@ func dtRunAddRepo(ctx context.Context, logger *slog.Logger, side, binary, cfgPat
 // signal quality is worth it; the whole point of the harness is to
 // surface FK / data-loss regressions.
 func dtRunCollect(ctx context.Context, logger *slog.Logger, side, binary, cfgPath, repoURL string) error {
-	logger.Info("running collect --full (this is the long phase)", "repo", repoURL)
+	logger.Info("running collect --full (this is the long phase)", "repo_url", platform.RedactURLUserinfo(repoURL))
 	cmd := exec.CommandContext(ctx, binary, "-c", cfgPath, "collect", repoURL, "--full")
 	cmd.Stdout, cmd.Stderr = sideTaggedOutputs(side)
 	return cmd.Run()

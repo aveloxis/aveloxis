@@ -27,7 +27,38 @@ func isURLLogKey(key string) bool {
 	if key == "purl" {
 		return false
 	}
-	return strings.HasSuffix(key, "url") || strings.HasSuffix(key, "_git") || key == "website"
+	return strings.HasSuffix(key, "url") || strings.HasSuffix(key, "_git") || key == "website" || key == "location"
+}
+
+// isURLNamedValue says whether a log value's own name says it is a URL —
+// an identifier, selector or call whose final name ends in "url" or "git"
+// in any case (URL, Url, rurl, repoGit, RepoGit), "purl" excepted as in the
+// key rule — so a URL logged under a key the key rule does not see (`"org",
+// orgURL`; `"repo", rurl`) is caught by its value (rounds 1–2 on the
+// 5268977585 fixes). Redaction is the identity for a clean URL, so the
+// second predicate costs nothing where it is right and finds the site where
+// it is not. A value that is not a string (a *url.URL) would be flagged
+// too; wrap its String().
+func isURLNamedValue(e ast.Expr) bool {
+	var name string
+	switch x := e.(type) {
+	case *ast.Ident:
+		name = x.Name
+	case *ast.SelectorExpr:
+		name = x.Sel.Name
+	case *ast.CallExpr:
+		switch fn := x.Fun.(type) {
+		case *ast.Ident:
+			name = fn.Name
+		case *ast.SelectorExpr:
+			name = fn.Sel.Name
+		}
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, "purl") {
+		return false
+	}
+	return strings.HasSuffix(lower, "url") || strings.HasSuffix(lower, "git")
 }
 
 // firstKeyArg is the index of the first slog key in a call to method: the
@@ -61,7 +92,8 @@ var logMethods = map[string]bool{
 // knew of (the web WARN, then seven scheduler sites, then five CLI sites and
 // the ParseRepoURL-rejection lines). The rule is mechanical so it cannot be
 // swept one site short again: in non-test code, the value of any log
-// attribute keyed by a URL key is platform.RedactURLUserinfo(...) or a string
+// attribute keyed by a URL key, or whose value is named as a URL under any
+// key (isURLNamedValue), is platform.RedactURLUserinfo(...) or a string
 // literal. Redaction is the identity for a URL without userinfo, so the rule
 // costs nothing at a site that never sees a stored value.
 func TestEveryURLLogAttributeIsRedacted(t *testing.T) {
@@ -99,8 +131,9 @@ type urlLogAttr struct {
 	key  string
 }
 
-// unredactedURLLogAttrs returns every URL-keyed attribute in a log call whose
-// value is neither a RedactURLUserinfo(...) call nor a string literal.
+// unredactedURLLogAttrs returns every attribute in a log call that is
+// URL-keyed or URL-named and whose value is neither a RedactURLUserinfo(...)
+// call nor a string literal.
 func unredactedURLLogAttrs(t testing.TB, name, src string) []urlLogAttr {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
@@ -119,7 +152,10 @@ func unredactedURLLogAttrs(t testing.TB, name, src string) []urlLogAttr {
 		}
 		for i := firstKeyArg(sel.Sel.Name); i+1 < len(call.Args); i++ {
 			lit, ok := call.Args[i].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING || !isURLLogKey(strings.Trim(lit.Value, "`\"")) {
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			if !isURLLogKey(strings.Trim(lit.Value, "`\"")) && !isURLNamedValue(call.Args[i+1]) {
 				continue
 			}
 			if redactedValue(call.Args[i+1]) {
@@ -174,6 +210,20 @@ func TestUnredactedURLLogAttrsFixtures(t *testing.T) {
 		{"Log message before attrs", `l.Log(ctx, lvl, "correct repo_git", slog.String("repo_id", u))`, 0},
 		{"Context form", `l.WarnContext(ctx, "x", "url", u)`, 1},
 		{"purl is not a URL", `l.Warn("x", "purl", u)`, 0},
+		// round 1 on 5268977585: the VALUE's name is a URL under any key
+		{"URL-named value under another key", `l.Warn("x", "org", orgURL)`, 1},
+		{"URL-named selector under another key", `l.Info("x", "repo", r.GitURL)`, 1},
+		{"URL-named call under another key", `l.Info("x", "target", repo.HTMLURL())`, 1},
+		{"URL-named value redacted", `l.Warn("x", "org", platform.RedactURLUserinfo(orgURL))`, 0},
+		{"name-valued attr under a plain key", `l.Info("x", "org", orgName)`, 0},
+		// round 2: one fixture per branch of the value-name rule
+		{"bare url value", `l.Info("x", "endpoint", url)`, 1},
+		{"lower-case suffix (the importers' rurl)", `l.Warn("x", "repo", rurl)`, 1},
+		{"Url suffix", `l.Info("x", "repo", homeUrl)`, 1},
+		{"Git suffix", `l.Info("x", "repo", repoGit)`, 1},
+		{"URL-named ident call", `l.Info("x", "repo", scorecardRepoURL(repo))`, 1},
+		{"purl-named value", `l.Warn("x", "dep", badPurl)`, 0},
+		{"location key", `l.Error("x", "location", location)`, 1},
 		{"not a log call", `q.Set("repository_url", u)`, 0},
 		{"a scrub that is not the redactor", `l.Warn("x", "url", scrubLogValue(u))`, 1},
 	} {

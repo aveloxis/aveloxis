@@ -207,7 +207,7 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	// part of routing every repository to its forge instance (worklist 44),
 	// not a one-site patch.
 	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
-		platformHost(c.client.Platform()), owner, repo)
+		PlatformHost(c.client.Platform()), owner, repo)
 	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:       repoID,
 		FacadeStatus: string(StatusCollecting),
@@ -285,7 +285,11 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	return result, nil
 }
 
-func platformHost(p model.Platform) string {
+// PlatformHost is the ONE host table for a URL synthesised from a platform
+// id (github.com, gitlab.com, "unknown" for generic git): the scheduler's
+// facade fallback and ScorecardRepoURL both read it (SR-17; the scheduler
+// carried a byte-identical copy until round 2 on the 5268977585 fixes).
+func PlatformHost(p model.Platform) string {
 	switch p {
 	case model.PlatformGitHub:
 		return "github.com"

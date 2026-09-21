@@ -38,6 +38,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/pidfile"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func runScorecardCmd(cfgPath *string) *cobra.Command {
@@ -202,11 +204,12 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 				// self-hosted deployment the repository is not on
 				// github.com, and handing that URL to scorecard alongside a
 				// pool token is how the token reaches the wrong host
-				// (v0.29.57, Copilot review 5260880711). The per-cycle phase
-				// does the same through scheduler.scorecardRepoURL (review
-				// 5261384568 — it had synthesised github.com until then).
-				// RunScorecard refuses a URL carrying credentials.
-				repoURL := r.GitURL
+				// (v0.29.57, Copilot review 5260880711). ONE rule with the
+				// per-cycle phase, collector.ScorecardRepoURL: the stored URL,
+				// and the synthesised fallback only for a row with none (review
+				// 5268977585 — this command had sent `--repo ""` for such a
+				// row). RunScorecard refuses a URL carrying credentials.
+				repoURL := collector.ScorecardRepoURL(r.GitURL, model.Platform(r.Platform), r.Owner, r.Name)
 				// Same shared invoke/persist path as the per-cycle
 				// phase. No analysis clone exists here → remote only:
 				// LocalPath stays empty, so a failed remote attempt

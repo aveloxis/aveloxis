@@ -1442,7 +1442,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	}
 
 	if status, err := s.store.GetGroupStatus(ctx, groupID); err == nil && status == "rejected" {
-		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org", orgURL)
+		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org_url", platform.RedactURLUserinfo(orgURL))
 		return
 	}
 

@@ -153,7 +153,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// REST request (onClientHost) — refused before the loop leases a key.
 	if herr := onClientHostString(c.baseURL, url); herr != nil {
 		c.logger.Error("off-host GraphQL request refused — the endpoint leaves this client's API host or scheme, so no API key is sent",
-			"endpoint", url, "error", herr)
+			"endpoint", RedactURLUserinfo(url), "error", herr)
 		return herr
 	}
 

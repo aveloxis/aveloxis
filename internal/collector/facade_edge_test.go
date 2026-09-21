@@ -208,7 +208,7 @@ func TestParseTimestamp_Empty(t *testing.T) {
 
 func TestPlatformHost_GenericGit(t *testing.T) {
 	// PlatformGenericGit (3) — should return "unknown" or similar.
-	host := platformHost(model.PlatformGenericGit)
+	host := PlatformHost(model.PlatformGenericGit)
 	// Actual behavior depends on implementation; document it.
 	_ = host
 }

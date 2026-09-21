@@ -1659,7 +1659,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	var facadeResult *collector.FacadeResult
 	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	// Clone from the repo's OWN stored URL (v0.25.38). The pre-v0.25.38
-	// reconstruction via platformHostForModel produced
+	// reconstruction via the platform host table produced
 	// https://unknown/owner/name.git for every GENERIC-GIT repo —
 	// breaking facade for the exact platform whose only collection IS
 	// facade — and forced github.com/gitlab.com hosts onto
@@ -1668,7 +1668,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	gitURL := repo.GitURL
 	if gitURL == "" {
 		gitURL = fmt.Sprintf("https://%s/%s/%s.git",
-			platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+			collector.PlatformHost(repo.Platform), repo.Owner, repo.Name)
 	}
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if errors.Is(err, context.Canceled) {
@@ -2026,21 +2026,7 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 // to the wrong host (Copilot review 5261384568). The synthesis remains ONLY
 // for a row that has no URL, as in runFacadeAndAnalysis.
 func scorecardRepoURL(repo *model.Repo) string {
-	if repo.GitURL != "" {
-		return repo.GitURL
-	}
-	return fmt.Sprintf("https://%s/%s/%s", platformHostForModel(repo.Platform), repo.Owner, repo.Name)
-}
-
-func platformHostForModel(p model.Platform) string {
-	switch p {
-	case model.PlatformGitHub:
-		return "github.com"
-	case model.PlatformGitLab:
-		return "gitlab.com"
-	default:
-		return "unknown"
-	}
+	return collector.ScorecardRepoURL(repo.GitURL, repo.Platform, repo.Owner, repo.Name)
 }
 
 // generateSBOMs produces CycloneDX and SPDX SBOMs after collection completes.
@@ -2317,13 +2303,13 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
 					continue
 				}
-				s.logger.Info("new repo discovered", "org", g.Name, "repo", item.HTMLURL)
+				s.logger.Info("new repo discovered", "org", g.Name, "repo", platform.RedactURLUserinfo(item.HTMLURL))
 				newCount++
 				// §5c repo-side resolution: a mailing-list message may have
 				// signaled this repo before it was in the catalog. Backfill
 				// any waiting email_message.signaled_repo_id now.
 				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.HTMLURL); rerr == nil && n > 0 {
-					s.logger.Info("resolved signaled_repo for new repo", "repo", item.HTMLURL, "messages", n)
+					s.logger.Info("resolved signaled_repo for new repo", "repo", platform.RedactURLUserinfo(item.HTMLURL), "messages", n)
 				}
 			}
 			for _, gid := range userGroupIDs {
@@ -2451,10 +2437,10 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
 					continue
 				}
-				s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
+				s.logger.Info("new repo discovered", "group", g.Name, "repo", platform.RedactURLUserinfo(item.WebURL))
 				newCount++
 				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.WebURL); rerr == nil && n > 0 {
-					s.logger.Info("resolved signaled_repo for new repo", "repo", item.WebURL, "messages", n)
+					s.logger.Info("resolved signaled_repo for new repo", "repo", platform.RedactURLUserinfo(item.WebURL), "messages", n)
 				}
 			}
 			for _, gid := range userGroupIDs {

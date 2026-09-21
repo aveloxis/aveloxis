@@ -224,7 +224,11 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 		}
 		for _, org := range sortedKeys(orgsByFoundation[f]) {
 			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, org, cfg.GitHub.GitHubAPIBase()); err != nil {
-				logger.Warn("failed to track org", "foundation", f, "org", org, "error", err)
+				// org_url: under the redaction pin's key rule. The value is
+				// rebuilt from a parsed owner (orgURLForRepo) and cannot carry
+				// userinfo, so the wrap is the identity here (review 5268977585
+				// assumed otherwise; the round-1 review checked).
+				logger.Warn("failed to track org", "foundation", f, "org_url", platform.RedactURLUserinfo(org), "error", err)
 				failed++
 				continue
 			}

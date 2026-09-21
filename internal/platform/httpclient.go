@@ -659,7 +659,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if *hopsp >= maxRedirectHops {
 			c.logger.Warn("redirect hop cap exceeded — treating as gone",
 				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
-				"location", location, "hops", *hopsp)
+				"location", RedactURLUserinfo(location), "hops", *hopsp)
 			return respDone, nil, fmt.Errorf("%w: %s (redirect loop or chain longer than %d)",
 				ErrGone, url, maxRedirectHops)
 		}
@@ -675,15 +675,15 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if rerr != nil {
 			if errors.Is(rerr, ErrOffHostRefused) {
 				c.logger.Error("redirect refused — the Location leaves this client's API host or scheme, so neither the request nor its API key is sent there",
-					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", location, "error", rerr)
+					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", RedactURLUserinfo(location), "error", rerr)
 			} else {
 				c.logger.Warn("redirect with an unparseable Location — treating as gone",
-					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", location, "error", rerr)
+					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", RedactURLUserinfo(location), "error", rerr)
 			}
 			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, url)
 		}
 		c.logger.Info("following redirect",
-			"from", url, "to", newURL,
+			"from", RedactURLUserinfo(url), "to", RedactURLUserinfo(newURL),
 			"status", resp.StatusCode, "hop", *hopsp)
 
 		// Notify the permanent-redirect hook on 301/308 only. 302/307

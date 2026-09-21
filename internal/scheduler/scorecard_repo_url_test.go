@@ -21,19 +21,23 @@ import (
 // same reason; the scorecard phase now shares its rule: the row's own URL,
 // and the synthesised one ONLY for a row that has none.
 func TestScorecardRepoURLPrefersTheStoredURL(t *testing.T) {
+	// The rule itself is collector.ScorecardRepoURL (one spelling since
+	// Copilot review 5268977585, when run-scorecard was found to have lost
+	// the fallback); this pins the delegation and one row of each arm.
 	for _, tc := range []struct {
 		repo *model.Repo
 		want string
 	}{
 		{&model.Repo{Platform: model.PlatformGitHub, Owner: "o", Name: "n", GitURL: "https://ghe.example.invalid/o/n"}, "https://ghe.example.invalid/o/n"},
-		{&model.Repo{Platform: model.PlatformGitLab, Owner: "g/sub", Name: "p", GitURL: "https://gitlab.example.invalid/g/sub/p"}, "https://gitlab.example.invalid/g/sub/p"},
-		// no stored URL: the pre-v0.29.57 synthesis, unchanged
-		{&model.Repo{Platform: model.PlatformGitHub, Owner: "o", Name: "n"}, "https://github.com/o/n"},
 		{&model.Repo{Platform: model.PlatformGitLab, Owner: "g", Name: "p"}, "https://gitlab.com/g/p"},
 	} {
 		if got := scorecardRepoURL(tc.repo); got != tc.want {
 			t.Errorf("scorecardRepoURL(%+v) = %q, want %q", tc.repo, got, tc.want)
 		}
+	}
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"), "func scorecardRepoURL("))
+	if !strings.Contains(body, "collector.ScorecardRepoURL(repo.GitURL, repo.Platform, repo.Owner, repo.Name)") || strings.Contains(body, "https://") {
+		t.Error("scorecardRepoURL must delegate to collector.ScorecardRepoURL and synthesise nothing itself")
 	}
 }
 
@@ -51,7 +55,7 @@ func TestRunScorecardPhaseHandsScorecardTheStoredURL(t *testing.T) {
 	if !strings.Contains(body, "RepoURL:         repoURL,") && !strings.Contains(body, "RepoURL: repoURL,") {
 		t.Error("ScorecardOptions.RepoURL in runScorecardPhase must be the repoURL scorecardRepoURL returned")
 	}
-	if strings.Contains(body, "platformHostForModel(") || strings.Contains(body, `"https://%s/%s/%s"`) {
+	if strings.Contains(body, "PlatformHost(") || strings.Contains(body, `"https://%s/%s/%s"`) {
 		t.Error("runScorecardPhase must not synthesise a repo URL of its own — that is scorecardRepoURL's one job")
 	}
 	// A reassignment between the helper and the option would pass the two

@@ -78,11 +78,15 @@ func TestRedirectToAUserinfoURLIsNotFollowedOrStored(t *testing.T) {
 // error it returns names a redirect target; a plain chain (with a relative
 // hop) still resolves, and a credentialed target is reported by its own
 // sentinel. The hop-limit case serves the credentialed Location exactly at
-// maxHops (read from the package, so the boundary pin moves with it) and
-// asserts the hop-limit sentinel — a drift that landed on the userinfo
-// sentinel, or never reached the credential, would otherwise stay green
-// (round 10).
+// maxHops (read from the package, so the boundary pin moves with it). Two
+// assertions keep it honest (rounds 10–11): the fixture must record that it
+// SERVED the credential (a fixture that never reaches it is vacuous, and
+// the sentinel alone cannot tell), and the error must be the hop-limit
+// sentinel (the boundary Location hits the hop-limit arm before the
+// userinfo arm; the check order is what the pin enforces).
 func TestRedirectProbeErrorsNeverNameACredentialedTarget(t *testing.T) {
+	var mu sync.Mutex
+	servedCredential := false
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
@@ -94,6 +98,9 @@ func TestRedirectProbeErrorsNeverNameACredentialedTarget(t *testing.T) {
 			n := 0
 			_, _ = fmt.Sscanf(r.URL.Path, "/hop/%d", &n)
 			if n >= maxHops {
+				mu.Lock()
+				servedCredential = true
+				mu.Unlock()
 				http.Redirect(w, r, strings.Replace(self, "http://", "http://user:s3cret@", 1)+"/hop/end", http.StatusFound)
 				return
 			}
@@ -120,8 +127,16 @@ func TestRedirectProbeErrorsNeverNameACredentialedTarget(t *testing.T) {
 		if strings.Contains(err.Error(), "s3cret") {
 			t.Errorf("%s: the error text names the credentialed target: %v", path, err)
 		}
-		if path == "/hop/0" && !errors.Is(err, errTooManyRedirects) {
-			t.Errorf("%s: want the hop-limit sentinel at the boundary, got %v — the credential is no longer served exactly at maxHops", path, err)
+		if path == "/hop/0" {
+			mu.Lock()
+			served := servedCredential
+			mu.Unlock()
+			if !served {
+				t.Errorf("%s: the fixture never served the credentialed Location — the boundary pin is vacuous", path)
+			}
+			if !errors.Is(err, errTooManyRedirects) {
+				t.Errorf("%s: got %v — the boundary Location must hit the hop-limit arm before the userinfo arm", path, err)
+			}
 		}
 	}
 	// A chain that ends on a credentialed target within the hop limit is the

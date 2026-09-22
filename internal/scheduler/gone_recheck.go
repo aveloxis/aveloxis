@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // gone_recheck.go — v0.29.7: the periodic re-verification of the gone
-// cohort. prelim's 404/410 sideline stamps repo_gone_at and DELETES the
+// cohort. prelim's 404/410/451 sideline stamps repo_gone_at and DELETES the
 // queue row, and the scheduler only ever visits queued repositories —
 // so until this ticker existed, a repository that was made private and
 // later public again stayed "gone" until an operator ran
@@ -14,7 +14,7 @@
 //
 //   - DEFINITIVE 2xx  → ResurrectRepo (clear the stamp + re-enqueue,
 //     one transaction).
-//   - DEFINITIVE 404/410 → still gone; stamp the check.
+//   - DEFINITIVE 404/410/451 → still gone; stamp the check.
 //   - anything else — an indeterminate HTTP status (403/429/5xx,
 //     unresolved 3xx) OR a transport error after the probe's own four
 //     attempts — → still gone; stamp the check anyway. The row was

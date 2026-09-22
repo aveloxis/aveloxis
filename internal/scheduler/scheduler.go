@@ -618,7 +618,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	affiliationsTicker := time.NewTicker(s.cfg.Collection.AffiliationIntervalDuration())
 	defer affiliationsTicker.Stop()
 
-	// v0.29.7: gone-repo recheck. A 404/410 dequeues a repo, so this
+	// v0.29.7: gone-repo recheck. A 404/410/451 dequeues a repo, so this
 	// ticker is the only automatic path by which a re-publicized
 	// repository returns to collection (cadence + batch derived in
 	// gone_recheck.go). Disabled → nil channel, never selected.

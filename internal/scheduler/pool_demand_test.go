@@ -15,13 +15,16 @@ import (
 )
 
 // TestEveryGoroutineLabelIsClassifiedForPoolDemand guards the denominator
-// of the demand registry: every goroutine label in this package's
-// non-test sources (safego.Go, goTracked, safego.Recover) must be listed
-// in backgroundDBLoops or perWorkerLoops, so a new loop cannot start
-// acquiring from the pool without being counted (v0.29.58).
+// of the demand registry: every goroutine label in the non-test sources
+// of every package that receives the store (safego.Go, goTracked,
+// singleFlight, safego.Recover) must be in exactly one of the registry's
+// lists — backgroundDBLoops, scancodeDBLoops, mailingListDBLoops,
+// jiraDBLoops, perWorkerLoops or nonDBGoroutines — so a new loop cannot
+// start acquiring from the pool without being counted, or being declared
+// connection-free (v0.29.58).
 func TestEveryGoroutineLabelIsClassifiedForPoolDemand(t *testing.T) {
 	classified := map[string]bool{}
-	for _, list := range [][]string{backgroundDBLoops, scancodeDBLoops, perWorkerLoops, nonDBGoroutines} {
+	for _, list := range [][]string{backgroundDBLoops, scancodeDBLoops, mailingListDBLoops, jiraDBLoops, perWorkerLoops, nonDBGoroutines} {
 		for _, n := range list {
 			if classified[n] {
 				t.Errorf("label %q is classified twice", n)
@@ -56,7 +59,7 @@ func TestEveryGoroutineLabelIsClassifiedForPoolDemand(t *testing.T) {
 				label := m[1]
 				seen[label] = true
 				if !classified[label] {
-					t.Errorf("%s: goroutine label %q is not classified in backgroundDBLoops, scancodeDBLoops, perWorkerLoops or nonDBGoroutines — PoolDemand would not count it (or say why it holds no connection)", f, label)
+					t.Errorf("%s: goroutine label %q is not classified in any registry list (backgroundDBLoops, scancodeDBLoops, mailingListDBLoops, jiraDBLoops, perWorkerLoops, nonDBGoroutines) — PoolDemand would not count it (or say why it holds no connection)", f, label)
 				}
 			}
 		}
@@ -67,7 +70,7 @@ func TestEveryGoroutineLabelIsClassifiedForPoolDemand(t *testing.T) {
 	// Names without a goroutine label of their own: the run loop is Run
 	// itself; the monitor allowance is the :5555 handlers.
 	unlabeled := map[string]bool{"run-loop": true, "monitor-dashboard": true}
-	for _, list := range [][]string{backgroundDBLoops, scancodeDBLoops, perWorkerLoops, nonDBGoroutines} {
+	for _, list := range [][]string{backgroundDBLoops, scancodeDBLoops, mailingListDBLoops, jiraDBLoops, perWorkerLoops, nonDBGoroutines} {
 		for _, n := range list {
 			if !seen[n] && !unlabeled[n] {
 				t.Errorf("the registry lists %q but no goroutine in the swept sources carries that label", n)
@@ -105,9 +108,9 @@ func TestPoolDemandIsTheSumOfEveryConsumer(t *testing.T) {
 	cfg.Collection.BreadthFetchConcurrency = 5
 
 	demand, attrs := PoolDemand(cfg, 120, 2)
-	want := 120*perSlotConnections + (10 + 1) + 8*2 + 3*2 + 0 + 0 + 4 + 5 + len(backgroundDBLoops)
+	want := 120*perSlotConnections + (10 + 1) + (8*2 + len(mailingListDBLoops)) + 3*2 + 0 + 0 + 4 + 5 + len(backgroundDBLoops)
 	if demand != want {
-		t.Fatalf("PoolDemand = %d, want %d (slots %d×%d + dist 10+dispatcher + ml 8×2 + drain 3×2 + history 4 + breadth 5 + bg %d)", demand, want, 120, perSlotConnections, len(backgroundDBLoops))
+		t.Fatalf("PoolDemand = %d, want %d (slots %d×%d + dist 10+dispatcher + ml 8×2+%d loops + drain 3×2 + history 4 + breadth 5 + bg %d)", demand, want, 120, perSlotConnections, len(mailingListDBLoops), len(backgroundDBLoops))
 	}
 	if perSlotConnections != 5 {
 		t.Fatalf("perSlotConnections = %d, want 5: three staged phases + heartbeat + long-jobs watchdog", perSlotConnections)
@@ -127,8 +130,8 @@ func TestPoolDemandIsTheSumOfEveryConsumer(t *testing.T) {
 	off.Collection.ActivityHistoryConcurrency = 1
 	off.Collection.BreadthFetchConcurrency = 1
 	d2, _ := PoolDemand(off, 1, 5)
-	if d2 != perSlotConnections+6+1+1+len(backgroundDBLoops) {
-		t.Fatalf("disabled subsystems must contribute 0: got %d", d2)
+	if d2 != perSlotConnections+(6+len(jiraDBLoops))+1+1+len(backgroundDBLoops) {
+		t.Fatalf("disabled subsystems (distribution, mailing list, scancode) must contribute 0, and an enabled one carries its singletons: got %d", d2)
 	}
 
 	// scancode follows the spawn site's transform: 0 disables; a negative
@@ -145,5 +148,16 @@ func TestPoolDemandIsTheSumOfEveryConsumer(t *testing.T) {
 	}
 	if dPos-d2 <= 0 && pos.Collection.ScancodeWorkers > 0 {
 		t.Fatal("scancode runners and their dispatcher/monitor loops must add to the demand")
+	}
+
+	// review round 7: with the mailing list enabled but no system loaded,
+	// the wiring spawns nothing (not even the two sender loops).
+	noSys := &config.Config{}
+	noSys.Collection.MailingListEnabled = true
+	noSys.Collection.MailingListWorkers = 8
+	dNoSys, _ := PoolDemand(noSys, 0, 0)
+	base, _ := PoolDemand(&config.Config{}, 0, 0)
+	if dNoSys != base {
+		t.Fatalf("mailing list enabled with zero systems must add nothing: got %d vs %d", dNoSys, base)
 	}
 }

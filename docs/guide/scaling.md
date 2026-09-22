@@ -146,12 +146,12 @@ The demand is the sum of:
 |---|---|---|
 | Collection slots | `workers × 5` | each slot runs the staged collector's three concurrent phases (issues, PRs, messages), its heartbeat, and its long-jobs watchdog |
 | Distribution workers | `distribution_tracking_workers + 1` | the runners and their dispatcher, when `distribution_tracking_enabled` |
-| Mailing-list workers | `(mailing_list_workers + mailing_list_processor_workers) × systems` | one worker set and one drain set per configured mailing-list system |
-| Jira workers | `jira_workers` | when `jira_enabled` |
+| Mailing-list workers | `(mailing_list_workers + mailing_list_processor_workers) × systems` (+ 2 when at least one system is loaded) | one worker set and one drain set per mailing-list system in the catalog, plus the sender-resolve and sender-backfill loops once any system spawned; 0 unless `mailing_list_enabled` |
+| Jira workers | `jira_workers + 1` | the workers and their drain loop, when `jira_enabled` |
 | ScanCode workers | `scancode_workers + 4` | the runners plus the dispatcher, orphan monitor, lock check and startup sweep; 0 when `scancode_workers` is 0 (a separate `scancode-worker` host) |
 | Activity-history workers | `activity_history_concurrency` | |
 | Breadth fetchers | `breadth_fetch_concurrency` | each renames contributors through the store |
-| Background loops | one each | the health probe, stall detector, org refresh, backfills, digests, the run loop itself, the leftover-drain heartbeat, a one-request allowance for the monitor, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans) — the registry in `internal/scheduler/pool_demand.go`, tripwired against every goroutine label in the scheduler, collector, distribution and db packages |
+| Background loops | one each | among them the health probe, stall detector, org refresh, the leftover-staging drain and its heartbeat, the metadata backfill, staging cleanup, the digest, the matview rebuild, the run loop itself, a one-request allowance for the monitor, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans); the mailing-list, Jira and ScanCode singletons are charged in their own rows, only when enabled — the registry in `internal/scheduler/pool_demand.go`, tripwired against every goroutine label in the scheduler, collector, distribution and db packages |
 
 Serve asks the server for `max_connections`, `superuser_reserved_connections`
 and (PostgreSQL 16+) `reserved_connections` before opening the pool and caps

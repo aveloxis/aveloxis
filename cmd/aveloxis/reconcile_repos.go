@@ -8,7 +8,7 @@
 // skip+dequeue; a smaller share are lost-enqueue leftovers.
 //
 // Per stranded repo, classified by LIVE redirect check:
-//   - dead upstream (404/410)      → archive (matches prelim's sidelining)
+//   - dead upstream (404/410/451)      → archive (matches prelim's sidelining)
 //   - redirects to a TRACKED repo  → dataless: HealRenamedDuplicate
 //     (repoint links, delete the dup row); data-bearing: consolidate
 //     via the dedup-repos per-pair machinery (repoints + leaves-first

@@ -81,7 +81,7 @@ This reads every repository URL from `augur_data.repo` and adds it to the Avelox
 
 - **200 OK** -- repo is added to the queue
 - **301/302 redirect** -- the canonical URL is used instead
-- **404/410** -- repo is skipped (dead, private, or DMCA'd)
+- **any 4xx/5xx** -- repo is skipped (the import's existence probe accepts only a 2xx/3xx; once queued, prelim applies the 404/410/451 gone rule)
 
 This verification ensures you do not import stale or dead repos that would waste API calls.
 

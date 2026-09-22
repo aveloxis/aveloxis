@@ -999,7 +999,7 @@ duplicate skip+dequeue (which dequeues without archiving), plus a
 smaller lost-enqueue share. Each stranded repo is classified by a LIVE
 redirect check:
 
-- dead upstream (404/410) → archived (the outcome prelim applies)
+- dead upstream (404/410/451) → archived (the outcome prelim applies)
 - redirects to a **tracked** repo → dataless duplicates heal onto the
   winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
   through the dedup-repos per-pair machinery (repoints + leaves-first
@@ -1308,7 +1308,7 @@ real data.
 
 The probe is bidirectional and only DEFINITIVE answers decide:
 
-- **404/410** → stamp `repos.repo_gone_at`. The repo page then shows
+- **404/410/451** → stamp `repos.repo_gone_at`. The repo page then shows
   "This repository is no longer publicly available or traceable on
   GitHub" over the data we hold.
 - **200 on a previously-stamped repo** → clear the stamp and
@@ -1336,7 +1336,7 @@ stamped automatically by prelim at collection time; this command
 exists for the historical cohort and for resurrection checks.
 
 **Since v0.29.7 `aveloxis serve` re-checks gone repositories on its
-own.** A 404/410 removes the repository's queue row, and the scheduler
+own.** A 404/410/451 removes the repository's queue row, and the scheduler
 only ever visits queued repositories, so prelim never probes it again;
 before v0.29.7 a repository made private and later public again stayed
 "gone" until this command ran. The scheduler's recheck ticker now

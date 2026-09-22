@@ -285,7 +285,7 @@ type CollectionConfig struct {
 	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
 	// v0.29.7: the gone-repo recheck cadence. A repository whose URL
-	// returned a definitive 404/410 is dequeued, so no collection cycle
+	// returned a definitive 404/410/451 is dequeued, so no collection cycle
 	// ever probes it again; organizations do flip repositories private
 	// and back. The scheduler re-probes each gone-stamped repo once
 	// every GoneRepoRecheckDays (default 28 — operator-chosen, a

@@ -385,7 +385,7 @@ The settings most operators tune (defaults shown for reference):
 |---|---|---|
 | `database.*` | localhost:5432 | PostgreSQL connection. |
 | `github.api_keys` / `gitlab.api_keys` | `[]` | Round-robin rotated. Production should prefer the `worker_oauth` table via `aveloxis add-key`. |
-| `collection.workers` | `12` | Concurrent collection goroutines. pgx pool sizes to `max(workers + 15, 20)`. |
+| `collection.workers` | `12` | Concurrent collection goroutines. `serve` sizes its connection pool from the scheduler's demand (five connections per worker slot plus every background consumer), capped by the server's budget, or set outright by `database.pool_max_conns` — see `docs/guide/scaling.md`. |
 | `collection.days_until_recollect` | `1` | After collection, `due_at = last_collected + days_until_recollect`. |
 | `collection.repo_clone_dir` | `$HOME/aveloxis-repos` | Bare clones. Plan TB-scale for large fleets. |
 | `collection.pr_child_mode` | `"graphql"` | GraphQL is the default GitHub path (~5× faster, v0.26.0+); set `"rest"` as the escape hatch. |
@@ -761,7 +761,7 @@ Designed for 400K+ repos. Eliminates database contention on the contributors tab
 **Prelim phase:** Before any data collection, each repo's URL is checked with an HTTP HEAD request. If the URL redirects (repo was renamed or transferred):
 - If the new URL already exists in our database: the old repo is marked as a duplicate and dequeued. This prevents collecting the same repo twice.
 - If the new URL is new: the old repo's URL is updated to the canonical URL, and all stored URLs in issues, PRs, reviews, releases are bulk-updated via `REPLACE()` to reflect the new org/repo path.
-- If the URL returns 404/410: the repo is skipped as dead.
+- If the URL returns 404/410/451: the repo is skipped as gone (deleted, private, or legally blocked).
 
 **Phase 1 — Collect (fast, no contention):** Raw API responses are written to a JSONB staging table (`aveloxis_ops.staging`). No FK lookups, no contributor resolution. Multiple workers can blast data concurrently with zero contention on any relational table. Issues and PRs are staged as **envelope types** that bundle the parent entity with all its children (labels, assignees, reviewers, reviews, commits, files, head/base metadata) in a single JSONB row. Data is collected in this order:
 
@@ -907,7 +907,7 @@ All text fields (issue titles/bodies, PR titles/bodies, message text, release de
 
 ### Dead Repo Sidelining
 
-When the prelim phase detects a repo that returns 404 or 410 (deleted, made private, or DMCA'd):
+When the prelim phase detects a repo that returns 404 or 410 (deleted or made private) or 451 (blocked for legal reasons — a DMCA takedown):
 
 - **Data is preserved** — all previously collected issues, PRs, commits, messages, etc. remain in the database
 - **Collection stops permanently** — the repo is marked `repo_archived = TRUE`, stamped with the distinct `repo_gone_at` marker (v0.28.1 — "no longer reachable" is a different fact from "forge says archived"), and removed from the queue

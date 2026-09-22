@@ -47,7 +47,7 @@ type RepoStats struct {
 	// (honest zeros). Absent when the repo has no queue row too.
 	LastCollected *time.Time `json:"last_collected,omitempty"`
 	// GoneAt (v0.28.1 A6) — repos.repo_gone_at: the repo no longer
-	// resolves on its forge (prelim's probe got a definitive 404/410;
+	// resolves on its forge (prelim's probe got a definitive 404/410/451;
 	// privatized or deleted upstream). The GUI must suppress the
 	// queued banner and render the no-longer-available notice, with
 	// gone taking precedence over the archived chip.

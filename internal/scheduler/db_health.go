@@ -19,7 +19,8 @@ const (
 	// stays down, so a long outage logs once a minute instead of per-probe.
 	dbHealthReminderInterval = 60 * time.Second
 	// dbHealthFailureThreshold is how many CONSECUTIVE failed probes must occur
-	// before the monitor declares the database unavailable and pauses
+	// before the monitor declares the probe down (database unavailable, or
+	// connection pool exhausted — classifyProbeFailure) and pauses
 	// collection. Debounce, added after the 2026-06-11 diagnostic: on a
 	// CPU-saturated host the TLS + SCRAM-SHA-256 handshake for a NEW connection
 	// can briefly exceed the 5s connect deadline (the probe's Ping cold-opens a

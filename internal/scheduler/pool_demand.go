@@ -35,23 +35,21 @@ const (
 // safego.Go / goTracked / singleFlight / safego.Recover labels in every
 // package that receives the store (scheduler, collector, collector/
 // distribution, db); the registry test fails when a label appears in
-// those sources that is classified neither here, nor in perWorkerLoops,
-// nor in nonDBGoroutines.
+// those sources that is classified in none of the lists (this one,
+// scancodeDBLoops, mailingListDBLoops, jiraDBLoops, perWorkerLoops,
+// nonDBGoroutines).
 var backgroundDBLoops = []string{
-	"run-loop",                     // Run's own poll/claim loop (fillWorkerSlots, lock recovery, the key-pool summary, the matview check)
-	"leftover-staging-drain",       // processLeftoverStagingBackground
-	"drain-heartbeat",              // db.StartDrainHeartbeat: the drain's lease heartbeat, alive for its whole run (review round 5)
-	"org-refresh",                  // refreshOrgs (startup + ticker; single-flight since review round 5)
-	"repo-metadata-backfill",       // runRepoMetadataBackfill
-	"db-health-monitor",            // runDBHealthMonitor (Ping goes through the pool)
-	"stall-detector",               // runStallDetector
-	"staging-cleanup",              // runStagingCleanup (single-flight since review round 5)
-	"vuln-digest",                  // runVulnDigest (single-flight since review round 5)
-	"matview-rebuild",              // rebuildMatviews
-	"mailing-list-sender-resolve",  // goTracked: sender → contributor resolution
-	"mailing-list-sender-backfill", // goTracked: the hourly keyset backfill
-	"jira-drain",                   // goTracked: jira staging drain
-	"monitor-dashboard",            // the :5555 monitor's handlers read through the same store (one request at a time is the allowance)
+	"run-loop",               // Run's own poll/claim loop (fillWorkerSlots, lock recovery, the key-pool summary, the matview check)
+	"leftover-staging-drain", // processLeftoverStagingBackground
+	"drain-heartbeat",        // db.StartDrainHeartbeat: the drain's lease heartbeat, alive for its whole run (review round 5)
+	"org-refresh",            // refreshOrgs (startup + ticker; single-flight since review round 5)
+	"repo-metadata-backfill", // runRepoMetadataBackfill
+	"db-health-monitor",      // runDBHealthMonitor (Ping goes through the pool)
+	"stall-detector",         // runStallDetector
+	"staging-cleanup",        // runStagingCleanup (single-flight since review round 5)
+	"vuln-digest",            // runVulnDigest (single-flight since review round 5)
+	"matview-rebuild",        // rebuildMatviews
+	"monitor-dashboard",      // the :5555 monitor's handlers read through the same store (one request at a time is the allowance)
 	// The singleFlight periodic tasks (review round 4): each runs on its
 	// OWN goroutine off a run-loop tick, so any number of them can hold a
 	// connection at once, alongside the loop itself.
@@ -68,13 +66,28 @@ var backgroundDBLoops = []string{
 
 // scancodeDBLoops are the scancode subsystem's singletons, counted only
 // when this process runs scancode workers (review round 5): the
-// dispatcher claims through the store alongside the runners; the orphan
-// monitor, the lock check and the startup sweep read it.
+// dispatcher claims through the store alongside the runners; the lock
+// check is a ticker that clears stale locks; the orphan monitor is
+// charged once as the typical case (recovery spawns one per live orphan
+// subprocess — a crash-recovery transient); the startup sweep is a
+// one-shot charged because it overlaps the runners' own startup.
 var scancodeDBLoops = []string{
 	"scancode-dispatcher",
 	"scancode-orphan-monitor",
 	"scancode-lock-check",
 	"scancode-startup-sweep",
+}
+
+// mailingListDBLoops and jiraDBLoops are those subsystems' singletons,
+// counted only when the subsystem is enabled (review round 6: a disabled
+// subsystem contributes nothing, the same rule as scancodeDBLoops).
+var mailingListDBLoops = []string{
+	"mailing-list-sender-resolve",  // goTracked: sender → contributor resolution
+	"mailing-list-sender-backfill", // goTracked: the hourly keyset backfill
+}
+
+var jiraDBLoops = []string{
+	"jira-drain", // goTracked: jira staging drain
 }
 
 // perWorkerLoops are the goroutine classes whose count comes from
@@ -114,8 +127,11 @@ var nonDBGoroutines = []string{
 // PoolDemand returns the peak number of pooled connections the scheduler
 // can ask for at once, and the breakdown as log attributes (SR-10: the
 // EFFECTIVE value with its derivation). workers is the slot count serve
-// runs with; mailingListSystems is how many mailing-list systems are
-// configured (each spawns its own worker set).
+// runs with; mailingListSystems is the size of the mailing-list catalog
+// (mailinglist.LoadSystems). The wiring spawns a worker set per catalog
+// system whose backend it supports, so the catalog size is a proxy for
+// the spawned count; it holds because every catalog backend is supported,
+// which TestEveryCatalogSystemHasABackend pins (review round 8).
 func PoolDemand(cfg *config.Config, workers, mailingListSystems int) (int, []any) {
 	c := cfg.Collection
 	slots := workers * perSlotConnections
@@ -126,13 +142,19 @@ func PoolDemand(cfg *config.Config, workers, mailingListSystems int) (int, []any
 	ml, mlDrain := 0, 0
 	if c.MailingListEnabled {
 		ml = c.MailingListWorkersOrDefault() * mailingListSystems
+		if mailingListSystems > 0 {
+			// The sender loops start only after at least one system's
+			// worker set was spawned (mailinglist_wiring.go's `spawned == 0`
+			// early return) — review round 7.
+			ml += len(mailingListDBLoops)
+		}
 		// The drain loops are spawned PER SYSTEM too (mailinglist_wiring.go
 		// clamps the count to at least one) — review round 4.
 		mlDrain = max(1, c.MailingListProcessorWorkersOrDefault()) * mailingListSystems
 	}
 	jira := 0
 	if c.JiraEnabled {
-		jira = c.JiraWorkersOrDefault()
+		jira = c.JiraWorkersOrDefault() + len(jiraDBLoops)
 	}
 	// The spawn site's own transform (scheduler.go): 0 disables scancode
 	// on this process; anything else goes through ScancodeWorkersOrDefault
@@ -150,9 +172,9 @@ func PoolDemand(cfg *config.Config, workers, mailingListSystems int) (int, []any
 		"demand_collection_slots", slots,
 		"demand_per_slot", perSlotConnections,
 		"demand_distribution", dist,
-		"demand_mailing_list_workers", ml,
+		"demand_mailing_list", ml,
 		"demand_mailing_list_drain", mlDrain,
-		"demand_jira_workers", jira,
+		"demand_jira", jira,
 		"demand_scancode", scancode,
 		"demand_activity_history_workers", history,
 		"demand_breadth_fetchers", breadth,

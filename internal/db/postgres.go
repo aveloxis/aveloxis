@@ -73,9 +73,11 @@ func (s *PostgresStore) ownBackendPIDs() []int32 {
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
-// Optional maxConns parameter scales the connection pool (default 20).
-// For scheduler use, pass workers+15 so collection workers don't starve
-// each other for database connections.
+// Optional maxConns parameter scales the connection pool (default
+// DefaultPoolMaxConns). serve passes the size decideServePool derives —
+// scheduler.PoolDemand capped by the server budget, or
+// database.pool_max_conns (v0.29.58); every other command takes the
+// default.
 func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logger, maxConns ...int32) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(connString)
 	if err != nil {

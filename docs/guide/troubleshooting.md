@@ -1270,7 +1270,7 @@ The scheduler also sets this flag automatically when a collection ends with an e
 
 ### How sidelining works
 
-When the prelim phase detects a 404/410 response:
+When the prelim phase detects a 404/410/451 response:
 
 - The repo is marked `repo_archived = TRUE`
 - It is removed from the collection queue

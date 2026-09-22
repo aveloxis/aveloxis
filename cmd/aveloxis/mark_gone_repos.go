@@ -12,7 +12,7 @@
 // "gone upstream" from "operator removed from tracking" — and is
 // BIDIRECTIONAL + idempotent:
 //
-//   - DEFINITIVE 404/410 → MarkRepoGone (repo_archived + repo_gone_at
+//   - DEFINITIVE 404/410/451 → MarkRepoGone (repo_archived + repo_gone_at
 //     in one statement).
 //   - DEFINITIVE 200 on an already-gone-stamped repo → ClearRepoGone
 //     + EnqueueRepo, so collection resumes if the org re-publicizes.
@@ -51,10 +51,10 @@ func markGoneReposCmd(cfgPath *string) *cobra.Command {
 		Use:   "mark-gone-repos",
 		Short: "Probe queueless repos against the forge and stamp/clear the gone state",
 		Long: `Finds repos with no collection_queue row (prelim dequeues repos whose
-URL returns a definitive 404/410 — privatized or deleted upstream) and
+URL returns a definitive 404/410/451 — privatized, deleted or legally blocked upstream) and
 probes each URL against the forge:
 
-  404/410  -> stamp repos.repo_gone_at (the GUI then shows the
+  404/410/451  -> stamp repos.repo_gone_at (the GUI then shows the
               "no longer publicly available" notice over the data we hold)
   200 on a gone-stamped repo -> clear the stamp and re-enqueue
               (collection resumes — the org came back)

@@ -187,7 +187,9 @@ var podlingProbeBase = "https://github.com"
 //
 // Round-25 (SR-5, this resolver's own edition): only DEFINITIVE
 // responses decide. 200 → canonical; 301/302 → exists under another
-// name, try the twin; 404/410 → definitively absent, try the twin.
+// name, try the twin; 404/410/451 → definitively not available (the
+// shared platform.IsRepoGoneStatus rule; 451 is a legal block, the
+// repository exists but cannot be read), try the twin.
 // EVERYTHING ELSE — transport failures, 403/429 rate limits, 5xx
 // outages — is an ERROR: a transient forge problem must abort the
 // import (which re-runs cleanly), never silently classify a valid
@@ -228,7 +230,7 @@ func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, sl
 				return "", false, fmt.Errorf("probing %s: %w", candidate, terr)
 			}
 			return target, true, nil
-		case platform.IsRepoGoneStatus(resp.StatusCode): // 404, 410, 451 — the shared rule (v0.29.58)
+		case platform.IsRepoGoneStatus(resp.StatusCode): // 404, 410, 451 — not available here; the twin is next (v0.29.58)
 			// Definitively absent — the twin is next.
 		default:
 			return "", false, fmt.Errorf("probing %s: status %d (not a definitive answer — aborting rather than misclassifying the podling)", candidate, resp.StatusCode)

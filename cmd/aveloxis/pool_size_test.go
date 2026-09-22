@@ -19,9 +19,10 @@ import (
 )
 
 // TestServePoolSizeDerivation pins the decision table (v0.29.58): the
-// override wins and is honored as written, the server budget caps demand,
-// no budget leaves demand alone, and a derived size never goes below the
-// non-serve default.
+// override wins and is honored as written (with a warning above the
+// budget), the server budget caps demand even below the default floor, no
+// budget leaves demand alone, and a derived size rises to the non-serve
+// default unless the server's budget is what kept it low.
 func TestServePoolSizeDerivation(t *testing.T) {
 	cases := []struct {
 		name                                  string
@@ -41,6 +42,19 @@ func TestServePoolSizeDerivation(t *testing.T) {
 		{"budget below the floor still caps", 0, 500, 50, 3, 50 - 3 - siblingProcessPools*db.DefaultPoolMaxConns, "server budget"},
 		{"budget exactly zero caps at one", 0, 500, 43, 3, 1, "server budget"},
 		{"reserve larger than max caps at one", 0, 500, 40, 45, 1, "server budget"},
+	}
+	// review round 5: an override above the budget is honored but WARNED
+	// about — the server refuses the excess at runtime with no other sign.
+	over := servePoolSize(280, 300, 300, 3)
+	if over.Size != 280 || len(over.Warnings) != 2 || !strings.Contains(over.Warnings[0], "exceeds the server budget") {
+		t.Fatalf("override 280 over budget 257: size=%d warnings=%q, want the budget warning (and the below-demand one)", over.Size, over.Warnings)
+	}
+	within := servePoolSize(200, 300, 300, 3)
+	if len(within.Warnings) != 1 || !strings.Contains(within.Warnings[0], "below the scheduler's demand") {
+		t.Fatalf("override 200 within budget 257 but below demand 300: warnings=%q", within.Warnings)
+	}
+	if quiet := servePoolSize(0, 100, 300, 3); len(quiet.Warnings) != 0 {
+		t.Fatalf("demand within budget must not warn: %q", quiet.Warnings)
 	}
 	for _, c := range cases {
 		ps := servePoolSize(c.override, c.demand, c.serverMax, c.reserved)

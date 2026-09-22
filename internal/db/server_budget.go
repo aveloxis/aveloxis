@@ -49,13 +49,22 @@ func ServerConnectionBudget(ctx context.Context, connString string) (maxConns, r
 	// the one error that means "there is no such reserve".
 	roleReserve, err := show("reserved_connections")
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "42704" {
+		if isUnknownParameter(err) {
 			return maxConns, reserved, nil
 		}
 		return 0, 0, err
 	}
 	return maxConns, reserved + roleReserve, nil
+}
+
+// isUnknownParameter reports whether err is PostgreSQL's answer to SHOW
+// of a parameter this server version does not have: SQLSTATE 42704
+// (undefined_object, "unrecognized configuration parameter"). Only that
+// code means "there is no such reserve"; every other failure is an error
+// the caller must not read as an answer (SR-5).
+func isUnknownParameter(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42704"
 }
 
 // DefaultPoolMaxConns is the pool ceiling every non-serve command opens

@@ -166,7 +166,13 @@ type Scheduler struct {
 	searchActive        atomic.Bool
 	goneRecheckActive   atomic.Bool
 	affiliationsActive  atomic.Bool
-	breadthActive       atomic.Bool
+	// v0.29.58 review round 5: the three ticker arms that spawned bare
+	// (and could stack a second run over a long first one — a second
+	// pooled connection each) join the single-flight set.
+	orgRefreshActive     atomic.Bool
+	stagingCleanupActive atomic.Bool
+	vulnDigestActive     atomic.Bool
+	breadthActive        atomic.Bool
 	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
 	// v0.27.83: the poll-tick demand scan (maybeScanNewOrgs) runs
 	// under its OWN flag below — sharing this one meant an org
@@ -459,7 +465,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	orgRefreshTicker := time.NewTicker(s.cfg.OrgRefreshInterval)
 	defer orgRefreshTicker.Stop()
 	// Run org refresh once on startup too.
-	safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
+	s.singleFlight(&s.orgRefreshActive, "org-refresh", func() { s.refreshOrgs(ctx) })
 
 	// Contributor breadth: discovers cross-repo activity for
 	// every contributor with a gh_login. v0.20.17: cadence and
@@ -712,7 +718,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.recoverStale(ctx)
 
 		case <-orgRefreshTicker.C:
-			safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
+			s.singleFlight(&s.orgRefreshActive, "org-refresh", func() { s.refreshOrgs(ctx) })
 			// Full pass (all orgs) — this is what discovers new repos in
 			// long-tracked orgs. Guarded by its own flag so full passes
 			// never overlap EACH OTHER; the poll-tick demand scan runs
@@ -747,13 +753,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 
 		case <-stagingCleanupTicker.C:
-			safego.Go(s.logger, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
+			s.singleFlight(&s.stagingCleanupActive, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
 
 		case <-enrichTicker.C:
 			s.singleFlight(&s.enrichmentActive, "contributor-enrichment", func() { s.runEnrichment(ctx) })
 
 		case <-vulnDigestC:
-			safego.Go(s.logger, "vuln-digest", func() { s.runVulnDigest(ctx) })
+			s.singleFlight(&s.vulnDigestActive, "vuln-digest", func() { s.runVulnDigest(ctx) })
 
 		case <-searchResolveTicker.C:
 			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })

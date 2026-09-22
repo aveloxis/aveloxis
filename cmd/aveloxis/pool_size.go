@@ -28,15 +28,19 @@ type poolSizing struct {
 	Override   int // database.pool_max_conns, 0 when unset
 	Source     string
 	Attributes []any
+	// Warnings are the operator-facing consequences of the decision,
+	// computed here so they are testable and logged by decideServePool.
+	Warnings []string
 }
 
 // servePoolSize picks the pool ceiling. An explicit database.pool_max_conns
 // wins. Otherwise the scheduler's demand (scheduler.PoolDemand) is capped
 // by the server's budget: max_connections minus the superuser reserve
 // minus the sibling web/api pools. With no budget (the probe failed) the
-// demand stands alone. A derived size never drops below the non-serve
-// default (the floor the old workers+15 rule had); an explicit override is
-// honored as written.
+// demand stands alone. A derived size rises to the non-serve default (the
+// floor the old workers+15 rule had) unless the server's own budget is
+// what kept it low; an explicit override is honored as written, with a
+// warning when it exceeds the budget.
 func servePoolSize(override, demand, serverMax, reserved int) poolSizing {
 	ps := poolSizing{Demand: demand, Override: override}
 	budget := 0
@@ -73,6 +77,15 @@ func servePoolSize(override, demand, serverMax, reserved int) poolSizing {
 		ps.Source += ", raised to the default floor"
 	}
 	ps.Size = int32(size)
+	if serverMax > 0 && override > 0 && override > budget {
+		ps.Warnings = append(ps.Warnings, "database.pool_max_conns exceeds the server budget — connections above the budget will be refused by the server at runtime (raise max_connections or lower pool_max_conns)")
+	}
+	if serverMax > 0 && override == 0 && budget < db.DefaultPoolMaxConns {
+		ps.Warnings = append(ps.Warnings, "the server cannot fund even the default pool — raise max_connections")
+	}
+	if size < demand {
+		ps.Warnings = append(ps.Warnings, "connection pool is below the scheduler's demand — workers will wait for connections at peak; the health probe then reports the pool exhausted, not the database down (raise max_connections and database.pool_max_conns, or lower --workers; on a disk-bound server the throttle may be the right choice)")
+	}
 	ps.Attributes = []any{
 		"pool_size", ps.Size, "pool_source", ps.Source,
 		"pool_demand", demand, "pool_override", override,
@@ -104,14 +117,8 @@ func decideServePool(ctx context.Context, cfg *config.Config, workers int, logge
 	}
 	ps := servePoolSize(cfg.Database.PoolMaxConns, demand, serverMax, reserved)
 	logger.Info("database connection pool sized", append(append([]any{}, ps.Attributes...), demandAttrs...)...)
-	if serverMax > 0 && ps.Override == 0 && ps.Budget < db.DefaultPoolMaxConns {
-		logger.Warn("the server cannot fund even the default pool — raise max_connections",
-			"server_max_connections", serverMax, "server_reserved", reserved, "server_budget", ps.Budget, "pool_size", ps.Size)
-	}
-	if int(ps.Size) < demand {
-		logger.Warn("connection pool is below the scheduler's demand — workers will wait for connections at peak; the health probe then reports the pool exhausted, not the database down",
-			"pool_size", ps.Size, "pool_demand", demand, "pool_source", ps.Source,
-			"remedy", "raise max_connections (and database.pool_max_conns) or lower --workers; on a disk-bound server the throttle may be the right choice")
+	for _, w := range ps.Warnings {
+		logger.Warn(w, ps.Attributes...)
 	}
 	return ps
 }

@@ -30,26 +30,28 @@ const (
 	perSlotConnections = stagedFanOut + slotHeartbeat + slotWatchdog
 )
 
-// backgroundDBLoops are the scheduler's SINGLETON goroutines that acquire
-// from the pool: one connection each at their busiest. The names are the
-// safego.Go / goTracked / safego.Recover labels in this package; the
-// registry test fails when a label appears in the sources that is
-// classified neither here nor in perWorkerLoops.
+// backgroundDBLoops are the SINGLETON goroutines that acquire from
+// serve's pool: one connection each at their busiest. The names are the
+// safego.Go / goTracked / singleFlight / safego.Recover labels in every
+// package that receives the store (scheduler, collector, collector/
+// distribution, db); the registry test fails when a label appears in
+// those sources that is classified neither here, nor in perWorkerLoops,
+// nor in nonDBGoroutines.
 var backgroundDBLoops = []string{
 	"run-loop",                     // Run's own poll/claim loop (fillWorkerSlots, lock recovery, the key-pool summary, the matview check)
 	"leftover-staging-drain",       // processLeftoverStagingBackground
-	"org-refresh",                  // refreshOrgs (startup + ticker)
+	"drain-heartbeat",              // db.StartDrainHeartbeat: the drain's lease heartbeat, alive for its whole run (review round 5)
+	"org-refresh",                  // refreshOrgs (startup + ticker; single-flight since review round 5)
 	"repo-metadata-backfill",       // runRepoMetadataBackfill
 	"db-health-monitor",            // runDBHealthMonitor (Ping goes through the pool)
 	"stall-detector",               // runStallDetector
-	"staging-cleanup",              // runStagingCleanup
-	"vuln-digest",                  // runVulnDigest
+	"staging-cleanup",              // runStagingCleanup (single-flight since review round 5)
+	"vuln-digest",                  // runVulnDigest (single-flight since review round 5)
 	"matview-rebuild",              // rebuildMatviews
 	"mailing-list-sender-resolve",  // goTracked: sender → contributor resolution
 	"mailing-list-sender-backfill", // goTracked: the hourly keyset backfill
 	"jira-drain",                   // goTracked: jira staging drain
-	"scancode-bookkeeping-wait",    // waits on the scancode worker; no statement of its own but holds no less than the label says
-	"background-pools-wait",        // shutdown join of the background pools
+	"monitor-dashboard",            // the :5555 monitor's handlers read through the same store (one request at a time is the allowance)
 	// The singleFlight periodic tasks (review round 4): each runs on its
 	// OWN goroutine off a run-loop tick, so any number of them can hold a
 	// connection at once, alongside the loop itself.
@@ -64,18 +66,49 @@ var backgroundDBLoops = []string{
 	"affiliations-population",
 }
 
+// scancodeDBLoops are the scancode subsystem's singletons, counted only
+// when this process runs scancode workers (review round 5): the
+// dispatcher claims through the store alongside the runners; the orphan
+// monitor, the lock check and the startup sweep read it.
+var scancodeDBLoops = []string{
+	"scancode-dispatcher",
+	"scancode-orphan-monitor",
+	"scancode-lock-check",
+	"scancode-startup-sweep",
+}
+
 // perWorkerLoops are the goroutine classes whose count comes from
 // configuration; PoolDemand multiplies each by its configured width.
 var perWorkerLoops = []string{
-	"collection-job",     // one per worker slot, perSlotConnections each
-	"job-heartbeat",      // counted inside perSlotConnections
-	"long-jobs-watchdog", // counted inside perSlotConnections
-	"distribution-worker",
-	"mailing-list-worker",
-	"mailing-list-drain",
-	"jira-worker",
-	"scancode-worker",
+	"collection-job",          // one per worker slot, perSlotConnections each
+	"job-heartbeat",           // counted inside perSlotConnections
+	"long-jobs-watchdog",      // counted inside perSlotConnections
+	"collect-issues",          // counted inside perSlotConnections (stagedFanOut)
+	"collect-prs",             // counted inside perSlotConnections (stagedFanOut)
+	"collect-messages",        // counted inside perSlotConnections (stagedFanOut)
+	"pr-shard",                // fetches concurrently, writes under the PR phase's mutex: inside collect-prs
+	"distribution-worker",     // DistributionTrackingWorkersOrDefault
+	"distribution-runner",     // the same workers, as the distribution package labels them
+	"distribution-dispatcher", // +1 alongside the runners (review round 5)
+	"mailing-list-worker",     // MailingListWorkersOrDefault × systems
+	"mailing-list-drain",      // processor workers × systems
+	"jira-worker",             // JiraWorkersOrDefault
+	"scancode-worker",         // the scheduler's label for the scancode runner set
+	"scancode-runner",         // ScancodeWorkersOrDefault when scancode runs here
 	"activity-history-worker", // ActivityHistoryConcurrencyValue at once, under its semaphore
+	"breadth-fetcher",         // BreadthFetchConcurrencyOrDefault; each renames through the store (review round 5)
+}
+
+// nonDBGoroutines carry a label but hold no pooled connection: they wait
+// on a channel or a WaitGroup, feed an in-memory channel, or talk only to
+// an external HTTP service. Classified so the registry test sees every
+// label; never counted (review round 5).
+var nonDBGoroutines = []string{
+	"scancode-bookkeeping-wait",
+	"background-pools-wait",
+	"breadth-fetchers-wait",
+	"breadth-feeder",
+	"osv-detail-fetch",
 }
 
 // PoolDemand returns the peak number of pooled connections the scheduler
@@ -88,7 +121,7 @@ func PoolDemand(cfg *config.Config, workers, mailingListSystems int) (int, []any
 	slots := workers * perSlotConnections
 	dist := 0
 	if c.DistributionTrackingEnabled {
-		dist = c.DistributionTrackingWorkersOrDefault()
+		dist = c.DistributionTrackingWorkersOrDefault() + 1 // runners + the dispatcher
 	}
 	ml, mlDrain := 0, 0
 	if c.MailingListEnabled {
@@ -101,23 +134,28 @@ func PoolDemand(cfg *config.Config, workers, mailingListSystems int) (int, []any
 	if c.JiraEnabled {
 		jira = c.JiraWorkersOrDefault()
 	}
-	scancode := c.ScancodeWorkers
-	if scancode < 0 {
-		scancode = 0
+	// The spawn site's own transform (scheduler.go): 0 disables scancode
+	// on this process; anything else goes through ScancodeWorkersOrDefault
+	// (review round 5 — a negative used to count 0 here and run 2 there).
+	scancode := 0
+	if c.ScancodeWorkers != 0 {
+		scancode = c.ScancodeWorkersOrDefault() + len(scancodeDBLoops)
 	}
 	history := c.ActivityHistoryConcurrencyValue()
+	breadth := c.BreadthFetchConcurrencyOrDefault()
 	bg := len(backgroundDBLoops)
-	demand := slots + dist + ml + mlDrain + jira + scancode + history + bg
+	demand := slots + dist + ml + mlDrain + jira + scancode + history + breadth + bg
 	return demand, []any{
 		"pool_demand", demand,
 		"demand_collection_slots", slots,
 		"demand_per_slot", perSlotConnections,
-		"demand_distribution_workers", dist,
+		"demand_distribution", dist,
 		"demand_mailing_list_workers", ml,
 		"demand_mailing_list_drain", mlDrain,
 		"demand_jira_workers", jira,
-		"demand_scancode_workers", scancode,
+		"demand_scancode", scancode,
 		"demand_activity_history_workers", history,
+		"demand_breadth_fetchers", breadth,
 		"demand_background_loops", bg,
 	}
 }

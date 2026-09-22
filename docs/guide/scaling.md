@@ -145,15 +145,17 @@ The demand is the sum of:
 | Consumer | Connections | Where the number comes from |
 |---|---|---|
 | Collection slots | `workers × 5` | each slot runs the staged collector's three concurrent phases (issues, PRs, messages), its heartbeat, and its long-jobs watchdog |
-| Distribution workers | `distribution_tracking_workers` | when `distribution_tracking_enabled` |
+| Distribution workers | `distribution_tracking_workers + 1` | the runners and their dispatcher, when `distribution_tracking_enabled` |
 | Mailing-list workers | `(mailing_list_workers + mailing_list_processor_workers) × systems` | one worker set and one drain set per configured mailing-list system |
 | Jira workers | `jira_workers` | when `jira_enabled` |
-| ScanCode workers | `scancode_workers` | 0 on a deployment that runs a separate `scancode-worker` host |
+| ScanCode workers | `scancode_workers + 4` | the runners plus the dispatcher, orphan monitor, lock check and startup sweep; 0 when `scancode_workers` is 0 (a separate `scancode-worker` host) |
 | Activity-history workers | `activity_history_concurrency` | |
-| Background loops | one each | the health probe, stall detector, org refresh, backfills, digests, the run loop itself, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans) — the registry in `internal/scheduler/pool_demand.go`, tripwired against every goroutine label in the package |
+| Breadth fetchers | `breadth_fetch_concurrency` | each renames contributors through the store |
+| Background loops | one each | the health probe, stall detector, org refresh, backfills, digests, the run loop itself, the leftover-drain heartbeat, a one-request allowance for the monitor, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans) — the registry in `internal/scheduler/pool_demand.go`, tripwired against every goroutine label in the scheduler, collector, distribution and db packages |
 
-Serve asks the server for `max_connections` and `superuser_reserved_connections`
-before opening the pool and caps the demand at:
+Serve asks the server for `max_connections`, `superuser_reserved_connections`
+and (PostgreSQL 16+) `reserved_connections` before opening the pool and caps
+the demand at:
 
 ```
 budget = max_connections - superuser_reserved_connections - reserved_connections (PostgreSQL 16+) - 2 × 20   (the web and api pools)
@@ -178,7 +180,7 @@ that (the WARN still names the demand it falls short of).
 `max_connections` has to cover every instance's pool plus the other clients:
 
 ```
-max_connections = Σ(pool_size per serve instance) + 20 × (web + api instances) + other clients + superuser_reserved_connections
+max_connections = Σ(pool_size per serve instance) + 20 × (web + api instances) + other clients + superuser_reserved_connections + reserved_connections
 ```
 
 Read each serve's `pool_size` and `pool_demand` from its startup log. A pool

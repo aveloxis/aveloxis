@@ -88,8 +88,11 @@ func TestVulnDigestTickerGating(t *testing.T) {
 	if !strings.Contains(s, "case <-vulnDigestC:") {
 		t.Error("run loop must consume the digest ticker channel")
 	}
-	if !strings.Contains(s, `safego.Go(s.logger, "vuln-digest"`) {
-		t.Error("digest pass must run under safego like the other background passes")
+	// v0.29.58 review round 5: the digest joins the single-flight set
+	// (singleFlight spawns under safego and refuses to stack a second run
+	// over a long first one).
+	if !strings.Contains(s, `s.singleFlight(&s.vulnDigestActive, "vuln-digest"`) {
+		t.Error("digest pass must run under singleFlight (safego + one run at a time) like the other ticker-fired background passes")
 	}
 }
 

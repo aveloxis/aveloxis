@@ -21,44 +21,57 @@ import (
 // acquiring from the pool without being counted (v0.29.58).
 func TestEveryGoroutineLabelIsClassifiedForPoolDemand(t *testing.T) {
 	classified := map[string]bool{}
-	for _, n := range backgroundDBLoops {
-		classified[n] = true
-	}
-	for _, n := range perWorkerLoops {
-		classified[n] = true
+	for _, list := range [][]string{backgroundDBLoops, scancodeDBLoops, perWorkerLoops, nonDBGoroutines} {
+		for _, n := range list {
+			if classified[n] {
+				t.Errorf("label %q is classified twice", n)
+			}
+			classified[n] = true
+		}
 	}
 	// Any logger receiver (s.logger, w.Logger), goTracked, singleFlight
 	// (whose label is its second argument) and safego.Recover.
 	labelRe := regexp.MustCompile(`(?:safego\.Go\([^,]+,|s\.goTracked\(|goTracked\(|singleFlight\([^,]+,|safego\.Recover\([^,]+,)\s*"([^"]+)"`)
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Every package that receives the store (review round 5: the sweep
+	// stopped at this package while the collector, its distribution
+	// sub-package and db spawn pool consumers of their own).
+	dirs := []string{".", filepath.Join("..", "collector"), filepath.Join("..", "collector", "distribution"), filepath.Join("..", "db")}
 	examined := 0
 	seen := map[string]bool{}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(f)
+	for _, d := range dirs {
+		files, err := filepath.Glob(filepath.Join(d, "*.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, m := range labelRe.FindAllStringSubmatch(srctest.StripGoComments(string(src)), -1) {
-			examined++
-			label := m[1]
-			seen[label] = true
-			if !classified[label] {
-				t.Errorf("%s: goroutine label %q is not classified in backgroundDBLoops or perWorkerLoops — PoolDemand would not count it", f, label)
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range labelRe.FindAllStringSubmatch(srctest.StripGoComments(string(src)), -1) {
+				examined++
+				label := m[1]
+				seen[label] = true
+				if !classified[label] {
+					t.Errorf("%s: goroutine label %q is not classified in backgroundDBLoops, scancodeDBLoops, perWorkerLoops or nonDBGoroutines — PoolDemand would not count it (or say why it holds no connection)", f, label)
+				}
 			}
 		}
 	}
-	if examined < 10 {
-		t.Fatalf("examined only %d goroutine labels — the regex no longer matches the sources", examined)
+	if examined < 40 {
+		t.Fatalf("examined only %d goroutine labels across %d packages — the regex no longer matches the sources", examined, len(dirs))
 	}
-	for _, n := range backgroundDBLoops {
-		if !seen[n] && n != "run-loop" {
-			t.Errorf("backgroundDBLoops lists %q but no goroutine in the sources carries that label", n)
+	// Names without a goroutine label of their own: the run loop is Run
+	// itself; the monitor allowance is the :5555 handlers.
+	unlabeled := map[string]bool{"run-loop": true, "monitor-dashboard": true}
+	for _, list := range [][]string{backgroundDBLoops, scancodeDBLoops, perWorkerLoops, nonDBGoroutines} {
+		for _, n := range list {
+			if !seen[n] && !unlabeled[n] {
+				t.Errorf("the registry lists %q but no goroutine in the swept sources carries that label", n)
+			}
 		}
 	}
 }
@@ -89,11 +102,12 @@ func TestPoolDemandIsTheSumOfEveryConsumer(t *testing.T) {
 	cfg.Collection.JiraWorkers = 6
 	cfg.Collection.ScancodeWorkers = 0
 	cfg.Collection.ActivityHistoryConcurrency = 4
+	cfg.Collection.BreadthFetchConcurrency = 5
 
 	demand, attrs := PoolDemand(cfg, 120, 2)
-	want := 120*perSlotConnections + 10 + 8*2 + 3*2 + 0 + 0 + 4 + len(backgroundDBLoops)
+	want := 120*perSlotConnections + (10 + 1) + 8*2 + 3*2 + 0 + 0 + 4 + 5 + len(backgroundDBLoops)
 	if demand != want {
-		t.Fatalf("PoolDemand = %d, want %d (slots %d×%d + dist 10 + ml 8×2 + drain 3×2 + history 4 + bg %d)", demand, want, 120, perSlotConnections, len(backgroundDBLoops))
+		t.Fatalf("PoolDemand = %d, want %d (slots %d×%d + dist 10+dispatcher + ml 8×2 + drain 3×2 + history 4 + breadth 5 + bg %d)", demand, want, 120, perSlotConnections, len(backgroundDBLoops))
 	}
 	if perSlotConnections != 5 {
 		t.Fatalf("perSlotConnections = %d, want 5: three staged phases + heartbeat + long-jobs watchdog", perSlotConnections)
@@ -111,8 +125,25 @@ func TestPoolDemandIsTheSumOfEveryConsumer(t *testing.T) {
 	off.Collection.JiraEnabled = true
 	off.Collection.JiraWorkers = 6
 	off.Collection.ActivityHistoryConcurrency = 1
+	off.Collection.BreadthFetchConcurrency = 1
 	d2, _ := PoolDemand(off, 1, 5)
-	if d2 != perSlotConnections+6+1+len(backgroundDBLoops) {
+	if d2 != perSlotConnections+6+1+1+len(backgroundDBLoops) {
 		t.Fatalf("disabled subsystems must contribute 0: got %d", d2)
+	}
+
+	// scancode follows the spawn site's transform: 0 disables; a negative
+	// is NOT 0 there (ScancodeWorkersOrDefault → 2 runners + dispatcher);
+	// a positive count runs that many (review round 5).
+	neg := &config.Config{}
+	neg.Collection.ScancodeWorkers = -1
+	dNeg, _ := PoolDemand(neg, 0, 0)
+	pos := &config.Config{}
+	pos.Collection.ScancodeWorkers = 2
+	dPos, _ := PoolDemand(pos, 0, 0)
+	if dNeg != dPos {
+		t.Fatalf("scancode_workers -1 must count like the spawn site runs it (2 runners): got %d vs %d for 2", dNeg, dPos)
+	}
+	if dPos-d2 <= 0 && pos.Collection.ScancodeWorkers > 0 {
+		t.Fatal("scancode runners and their dispatcher/monitor loops must add to the demand")
 	}
 }

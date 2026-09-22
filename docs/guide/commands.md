@@ -37,7 +37,8 @@ The scheduler also runs these background tasks:
 |---|---|---|
 | Org refresh | Every 4 hours | Re-fetches org membership lists |
 | Contributor breadth | Every 15 minutes (config `breadth_interval_minutes`) | Discovers cross-repo contributor activity via GitHub Events API |
-| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 22 materialized views, resumes |
+| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes the 20 8Knot materialized views, resumes |
+| Supply-chain view refresh | Every `collection.supply_chain_refresh_hours` (default 24) | Refreshes the two Aveloxis-owned supply-chain views CONCURRENTLY; seconds, collection never pauses |
 | Stale lock recovery | Every 5 minutes | Re-queues jobs locked for more than 1 hour |
 
 ### Scancode worker tuning
@@ -390,7 +391,7 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 147 tables across three PostgreSQL schemas, plus 22 materialized views when `collection.materialized_views` is enabled (the default):
+Creates 147 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
 - **`aveloxis_data`** (101 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state
@@ -627,14 +628,16 @@ this command, then `aveloxis refresh-views` once the heal settles.
 
 ## `aveloxis refresh-views`
 
-Manually refreshes all 22 materialized views.
+Manually refreshes the materialized views this database has — both sets, or one.
 
 ```bash
-aveloxis refresh-views                # the materialized views
-aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggregate tables
+aveloxis refresh-views                     # both sets (--set all)
+aveloxis refresh-views --set 8knot         # the 20 views in matviews.sql (8Knot / analytics)
+aveloxis refresh-views --set supply-chain  # explorer_package_exposure + explorer_package_advisory (seconds)
+aveloxis refresh-views --aggregates        # + the dm_repo_* / dm_repo_group_* aggregate tables
 ```
 
-Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Their data is also refreshed weekly by `aveloxis serve` (default Saturday; `collection.matview_rebuild_day`, which can also disable it). A refresh keeps each view's definition: a release that changes one needs a plain `aveloxis migrate`, which re-creates the views.
+Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. A set the database does not have is reported and skipped. `aveloxis serve` refreshes the 8Knot set weekly (default Saturday; `collection.matview_rebuild_day`, which can also disable it) and the supply-chain pair every `collection.supply_chain_refresh_hours` (default 24; `0` disables the schedule). A refresh keeps each view's definition: a release that changes an 8Knot view needs a plain `aveloxis migrate`, which re-creates that set; every migrate re-creates the supply-chain pair.
 
 `--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
 

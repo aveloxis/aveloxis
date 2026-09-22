@@ -173,6 +173,9 @@ type Scheduler struct {
 	stagingCleanupActive atomic.Bool
 	vulnDigestActive     atomic.Bool
 	breadthActive        atomic.Bool
+	// v0.29.61: the supply-chain view refresh (its own cadence, apart from
+	// the weekly 8Knot rebuild).
+	supplyChainRefreshActive atomic.Bool
 	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
 	// v0.27.83: the poll-tick demand scan (maybeScanNewOrgs) runs
 	// under its OWN flag below — sharing this one meant an org
@@ -342,6 +345,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 	if !s.cfg.Collection.MatviewRebuildDayRecognized() {
 		s.logger.Warn("matview_rebuild_day value not recognized — falling back to Saturday; use a weekday name or disabled/disable/none/off",
 			"configured_value", s.cfg.Collection.MatviewRebuildDay)
+	}
+	// The supply-chain pair's cadence is logged as the EFFECTIVE value
+	// (SR-10), beside the 8Knot schedule it is independent of.
+	if interval, on := s.cfg.Collection.SupplyChainRefreshInterval(); on {
+		s.logger.Info("supply-chain view refresh schedule", "effective_interval", interval, "configured_hours", supplyChainConfiguredHours(s.cfg.Collection))
+	} else {
+		s.logger.Info("supply-chain view refresh DISABLED by collection.supply_chain_refresh_hours = 0 — `aveloxis refresh-views --set supply-chain` refreshes them by hand")
 	}
 
 	// On startup: check for tool updates (monthly), then release any
@@ -595,6 +605,16 @@ func (s *Scheduler) Run(ctx context.Context) {
 	vulnDigestC, stopVulnDigest := s.startVulnDigest()
 	defer stopVulnDigest()
 
+	// v0.29.61: the supply-chain views refresh on their own cadence
+	// (collection.supply_chain_refresh_hours), never inside the weekly
+	// 8Knot rebuild. One refresh at startup covers the downtime a restart
+	// adds to the views' age (a nil channel when the cadence is off).
+	supplyChainC, stopSupplyChain := supplyChainRefreshTicker(s.cfg.Collection)
+	defer stopSupplyChain()
+	if supplyChainC != nil {
+		s.singleFlight(&s.supplyChainRefreshActive, "supply-chain-refresh", func() { s.runSupplyChainRefresh(ctx) })
+	}
+
 	// v0.19.2: search-resolve background task. Takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email at
 	// controlled rate (search API is 30/min/token — separate from
@@ -760,6 +780,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-vulnDigestC:
 			s.singleFlight(&s.vulnDigestActive, "vuln-digest", func() { s.runVulnDigest(ctx) })
+
+		case <-supplyChainC:
+			s.singleFlight(&s.supplyChainRefreshActive, "supply-chain-refresh", func() { s.runSupplyChainRefresh(ctx) })
 
 		case <-searchResolveTicker.C:
 			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })

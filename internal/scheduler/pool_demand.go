@@ -48,6 +48,7 @@ var backgroundDBLoops = []string{
 	"stall-detector",         // runStallDetector
 	"staging-cleanup",        // runStagingCleanup (single-flight since review round 5)
 	"vuln-digest",            // runVulnDigest (single-flight since review round 5)
+	"supply-chain-refresh",   // runSupplyChainRefresh (v0.29.61; single-flight off its own ticker)
 	"matview-rebuild",        // rebuildMatviews
 	"monitor-dashboard",      // the :5555 monitor's handlers read through the same store (one request at a time is the allowance)
 	// The singleFlight periodic tasks (review round 4): each runs on its

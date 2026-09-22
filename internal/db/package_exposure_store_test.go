@@ -6,9 +6,10 @@ package db
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"math"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,51 +17,10 @@ import (
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// v0.29.60: the supply-chain package view. Two pins: the materialized
-// definition in matviews.sql is the shared Go SQL verbatim (SR-17 — one
-// body serves the fleet matview and the live cohort path), and the numbers
-// the profile reports are what a seeded cohort actually contains.
-
-func normalizeSQL(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
-func matviewBody(t *testing.T, src, view string) string {
-	t.Helper()
-	re := regexp.MustCompile(`(?s)CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data\.` + view + ` AS(.*?);\n`)
-	m := re.FindStringSubmatch(src)
-	if m == nil {
-		t.Fatalf("matviews.sql does not define %s", view)
-	}
-	return m[1]
-}
-
-func TestPackageExposureMatviewMatchesTheLiveSQL(t *testing.T) {
-	src, err := os.ReadFile("matviews.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for view, want := range map[string]string{
-		"explorer_package_exposure": PackageExposureMatviewSQL(),
-		"explorer_package_advisory": PackageAdvisoryMatviewSQL(),
-	} {
-		got := normalizeSQL(matviewBody(t, string(src), view))
-		if got != normalizeSQL(want) {
-			t.Errorf("%s in matviews.sql differs from the Go SQL the API runs live — regenerate with `go run ./scripts/gen-package-exposure-sql`", view)
-		}
-	}
-	for _, name := range []string{"aveloxis_data.explorer_package_exposure", "aveloxis_data.explorer_package_advisory"} {
-		found := false
-		for _, n := range matviewNames {
-			if n == name {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("%s is not in matviewNames — serve's startup probe and the refresh would skip it", name)
-		}
-	}
-}
+// v0.29.60: the supply-chain package view. The numbers the profile reports
+// are what a seeded cohort actually contains, through the live path, the
+// view-absent fallback and the views built by their owner
+// (supply_chain_views.go, whose body is the same Go SQL — SR-17).
 
 // TestPackageExposureProfileNumbers seeds one package's findings across
 // four repositories (three known, one carrying only stub rows) and checks
@@ -176,13 +136,8 @@ func TestPackageExposureProfileNumbers(t *testing.T) {
 
 	// The matview built from the same SQL reports the same figures (the
 	// per-package test database holds only this test's findings for pkg).
-	for _, stmt := range []string{
-		`DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_advisory`,
-		`DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_exposure`,
-		`CREATE MATERIALIZED VIEW aveloxis_data.explorer_package_exposure AS` + PackageExposureMatviewSQL(),
-		`CREATE MATERIALIZED VIEW aveloxis_data.explorer_package_advisory AS` + PackageAdvisoryMatviewSQL(),
-	} {
-		mustExecRetry(ctx, t, store, stmt)
+	if err := CreateSupplyChainViews(ctx, store, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatalf("building the supply-chain views: %v", err)
 	}
 	t.Cleanup(func() {
 		cleanupExecRetry(context.Background(), store, `DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_advisory`)

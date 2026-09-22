@@ -222,6 +222,10 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	if cfg.Collection.MaterializedViewsValue() {
 		store.SetMatviewMode(db.MatviewsIfMissing)
 	}
+	// The Aveloxis-owned supply-chain pair is built when missing on EVERY
+	// serve start, whatever materialized_views says (v0.29.61): the GUI's
+	// dependencies page reads it, and it costs seconds.
+	store.SetSupplyChainViewMode(db.MatviewsIfMissing)
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}
@@ -1255,7 +1259,7 @@ func migrateCmd(cfgPath *string) *cobra.Command {
 		Long: `Runs the schema migrations and (by default) drops and re-creates
 the materialized views used by 8Knot and analytics.
 
-Use --skip-views to skip the materialized view block entirely. This is
+Use --skip-views to skip the 8Knot materialized view block entirely (the two supply-chain views are always re-created; they cost seconds). This is
 useful when you're iterating on a schema-error fix on a large database
 where the matview rebuild adds significant time per attempt. Without it,
 every view is dropped and re-created from its definition — the only step
@@ -1287,29 +1291,42 @@ running migrations.`,
 				mode = db.MatviewsOff
 			}
 			store.SetMatviewMode(mode)
+			// The supply-chain pair is re-created by EVERY migrate — with
+			// or without --skip-views, with materialized_views on or off
+			// (v0.29.61): two statements of a few seconds each, and the
+			// only path that applies a changed definition of theirs.
+			store.SetSupplyChainViewMode(db.MatviewsRebuild)
 			store.SetMigrateNoWait(noWait)
 			return store.Migrate(ctx)
 		},
 	}
 	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
-		"skip the materialized view block (a later plain 'aveloxis migrate' re-creates the views; 'aveloxis refresh-views' only refreshes existing ones)")
+		"skip the 8Knot materialized view block (a later plain 'aveloxis migrate' re-creates those views; 'aveloxis refresh-views' only refreshes existing ones). The two supply-chain views are re-created regardless — seconds, not hours")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false,
 		"fail fast if another aveloxis migration is in progress (don't block on the advisory lock)")
 	return cmd
 }
 
+// refreshViewsSets are the values of `refresh-views --set`: the two view
+// sets a database can hold (v0.29.61, worklist 48) or both.
+var refreshViewsSets = map[string]bool{"all": true, "8knot": true, "supply-chain": true}
+
 func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	var aggregates bool
+	var set string
 	cmd := &cobra.Command{
 		Use:   "refresh-views",
-		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long: `Refreshes the data of the 22 materialized views used by 8Knot and other analytics tools — when this database has them. Materialized views are optional (collection.materialized_views, default true); on a database without them this command says so and does nothing. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
+		Short: "Refresh the materialized views (8Knot set, supply-chain pair, or both)",
+		Long: `Refreshes the data of the materialized views this database has. There are two sets: the 20 materialized views used by 8Knot and other analytics tools (optional — collection.materialized_views, default true; refreshed by serve weekly on collection.matview_rebuild_day) and the two Aveloxis-owned supply-chain views the GUI's dependencies page reads (explorer_package_exposure, explorer_package_advisory; refreshed by serve every collection.supply_chain_refresh_hours, seconds each). --set chooses: all (default), 8knot, or supply-chain. A set the database does not have is reported and skipped. A refresh keeps each view's definition: a release that changes an 8Knot view needs a plain ` + "`aveloxis migrate`" + `; every migrate re-creates the supply-chain pair.
 
 --aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
+			if !refreshViewsSets[set] {
+				return fmt.Errorf("--set %q: use all, 8knot or supply-chain", set)
+			}
 			ctx := context.Background()
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
 			if err != nil {
@@ -1321,7 +1338,13 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 			// operator who turned the knob off still HAS the views built
 			// before, and refusing to refresh those would be a silent no-op
 			// over real staleness (v0.29.57).
-			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
+			var viewErr error
+			if set == "all" || set == "8knot" {
+				viewErr = db.RefreshMaterializedViews(ctx, store, logger)
+			}
+			if set == "all" || set == "supply-chain" {
+				viewErr = errors.Join(viewErr, db.RefreshSupplyChainViews(ctx, store, logger))
+			}
 			if !aggregates {
 				return viewErr // cobra prints it once; no second copy
 			}
@@ -1338,6 +1361,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&aggregates, "aggregates", false, "also rebuild the dm_repo_* / dm_repo_group_* aggregate tables after the views (slow at fleet scale)")
+	cmd.Flags().StringVar(&set, "set", "all", "which views to refresh: all, 8knot (the 20 in matviews.sql) or supply-chain (explorer_package_exposure, explorer_package_advisory)")
 	return cmd
 }
 
@@ -2119,11 +2143,20 @@ func versionCmd() *cobra.Command {
 
 func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
-		cfg = config.DefaultConfig()
+	if err == nil {
+		return cfg
 	}
-	return cfg
+	if errors.Is(err, config.ErrNotFound) {
+		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
+		return config.DefaultConfig()
+	}
+	// v0.29.61: a file that EXISTS but does not parse or validate used to
+	// fall into the same arm and run every command on the compiled
+	// defaults — a wrong database, no keys, every knob silently reset —
+	// under a log line that said the file was not found. Refuse instead.
+	logger.Error("config file is invalid — refusing to run on defaults", "path", cfgPath, "error", err)
+	os.Exit(1)
+	return nil
 }
 
 // newLogger creates a logger from the config's log_level setting.

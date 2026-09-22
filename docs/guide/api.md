@@ -1019,8 +1019,9 @@ advisory — the one on the most repositories — as `lead_advisory`,
 fleet views served the request and `live` when the cohort was aggregated on
 request (or the fleet was, on a deployment without the views). An admin
 without `?group` reads the **fleet** from the materialized views
-`explorer_package_exposure` and `explorer_package_advisory` (refreshed with
-the others); a signed-in user without `?group` reads their own scope — every
+`explorer_package_exposure` and `explorer_package_advisory` (Aveloxis-owned:
+refreshed every `collection.supply_chain_refresh_hours`, default 24, apart
+from the weekly 8Knot rebuild — see [Materialized views](../architecture/materialized-views.md)); a signed-in user without `?group` reads their own scope — every
 repository their groups hold — computed live; `?group=<id>` reads that
 group's repositories live (a non-admin must own the group, and its
 repositories are intersected with the caller's scope; an unknown or

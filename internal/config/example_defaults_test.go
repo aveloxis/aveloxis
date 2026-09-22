@@ -20,6 +20,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -123,6 +124,10 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"ScancodeIgnoreGlobs":                         func(c *CollectionConfig) any { return c.ScancodeIgnoreGlobsOrDefault() },
 	"MatviewRebuildDay":                           func(c *CollectionConfig) any { return c.MatviewRebuildWeekday() },
 	"MaterializedViews":                           func(c *CollectionConfig) any { return c.MaterializedViewsValue() },
+	"SupplyChainRefreshHours": func(c *CollectionConfig) any {
+		d, on := c.SupplyChainRefreshInterval()
+		return fmt.Sprintf("%v/%v", d, on)
+	},
 }
 
 func TestExampleConfigCollectionValuesMatchEffectiveDefaults(t *testing.T) {

@@ -25,6 +25,7 @@ var frozenCollectionKeys = []string{
 	"materialized_views",
 	"matview_rebuild_day",
 	"matview_rebuild_skip_dm_aggregates",
+	"supply_chain_refresh_hours",
 	"activity_history_window_days",
 	"activity_history_interval_minutes",
 	"activity_history_batch",

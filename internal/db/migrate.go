@@ -156,6 +156,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 					logger.Warn("materialized view creation had errors", "error", err)
 				}
 			}
+			applySupplyChainViewMode(ctx, pg, logger)
 			return nil
 		}
 		// A serve whose binary missed the stamp is about to run the FULL
@@ -357,8 +358,13 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
 	default:
-		logger.Info("materialized views not built by this migration (collection.materialized_views is off, or --skip-views was passed); `aveloxis migrate` with them enabled creates them, `aveloxis refresh-views` refreshes the data of existing ones")
+		logger.Info("8Knot materialized views not built by this migration (collection.materialized_views is off, or --skip-views was passed); `aveloxis migrate` with them enabled creates them, `aveloxis refresh-views` refreshes the data of existing ones")
 	}
+
+	// The Aveloxis-owned supply-chain pair has its own mode and never
+	// rides the 8Knot switch (v0.29.61, worklist 48): --skip-views and
+	// materialized_views:false leave it alone, because it costs seconds.
+	applySupplyChainViewMode(ctx, pg, logger)
 
 	if len(errs) > 0 {
 		// Fail closed: surface every collected error so the operator
@@ -4166,4 +4172,25 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 		"aveloxis_data", "uq_repo_groups_rg_name",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
 		 ON aveloxis_data.repo_groups (rg_name)`)
+}
+
+// applySupplyChainViewMode runs the supply-chain pair's block of a migrate
+// (both the full walk and serve's fast path): Rebuild re-creates both,
+// IfMissing completes the pair, the zero value builds none. Warn-only like
+// the 8Knot block — derived data must not block serve — and the API
+// aggregates live while a view is absent.
+func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+	var err error
+	switch pg.supplyChainMode {
+	case MatviewsRebuild:
+		err = CreateSupplyChainViews(ctx, pg, logger)
+	case MatviewsIfMissing:
+		_, err = CreateSupplyChainViewsIfMissing(ctx, pg, logger)
+	default:
+		logger.Info("supply-chain views not built by this migration (this store did not ask for them; `aveloxis serve` and `aveloxis migrate` always do)")
+		return
+	}
+	if err != nil {
+		logger.Warn("supply-chain view creation had errors — the API aggregates live until a migrate builds them", "error", err)
+	}
 }

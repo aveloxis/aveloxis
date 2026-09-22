@@ -1,4 +1,4 @@
-# Configuration
+| `collection.matview_rebuild_day` | string | `"saturday"` | Day of the week the scheduler refreshes the 20 8Knot materialized views.| `collection.materialized_views` | boolean | `true` | Whether this deployment HAS the 20 8Knot materialized views (the two supply-chain views are not governed by this — see `supply_chain_refresh_hours`).# Configuration
 
 Aveloxis is configured via a JSON file named `aveloxis.json` in the current working directory.
 
@@ -97,6 +97,7 @@ a half against its own reference table below:
     "materialized_views": true,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_skip_dm_aggregates": false,
+    "supply_chain_refresh_hours": 24,
     "activity_history_window_days": 180,
     "activity_history_interval_minutes": 1,
     "activity_history_batch": 150,
@@ -252,6 +253,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 | `collection.activity_history_window_concurrency` | integer | `4` | v0.28.3: history windows fetched concurrently per contributor (a 10-year account is ~20 windows; the serial chain was the dominant per-contributor cost). |
 | `collection.activity_history_cooldown_days` | integer | `90` | v0.28.3: the re-audit cooldown — how long a backfilled contributor stays out of the claim pool (jittered like the breadth cooldown). |
 | `collection.matview_rebuild_skip_dm_aggregates` | boolean | `false` | When `true`, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the `dm_` aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, `dm_repo_*` / `dm_repo_group_*` tables update only when an operator runs `aveloxis refresh-views --aggregates` (v0.28.18; plain `refresh-views` and `aveloxis migrate` refresh the materialized views only). To disable the weekly rebuild entirely (matviews AND aggregates), set `matview_rebuild_day` to `"disabled"`. |
+| `collection.supply_chain_refresh_hours` | integer | `24` | v0.29.61: how often `aveloxis serve` refreshes the two Aveloxis-owned supply-chain views (`explorer_package_exposure`, `explorer_package_advisory` — the GUI\'s dependencies page reads them through the API). Independent of `materialized_views` and `matview_rebuild_day`: every `aveloxis migrate` re-creates the pair from its Go definition and `serve` builds it when missing, on every deployment; the refresh runs CONCURRENTLY and takes seconds at fleet scale, never pausing collection. `0` turns the schedule off (`aveloxis refresh-views --set supply-chain` still refreshes them); a negative value is refused at load. Default 24 because the profile\'s `median_days_open` has day resolution and exposure counts move as repositories are re-collected over days. |
 
 **REST → GraphQL refactor (v0.18.x phases)**
 

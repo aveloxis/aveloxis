@@ -6,7 +6,9 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -258,6 +260,24 @@ type CollectionConfig struct {
 	// The FULL weekly-rebuild off-switch is matview_rebuild_day:
 	// "disabled".
 	MatviewRebuildSkipDMAggregates bool `json:"matview_rebuild_skip_dm_aggregates"`
+
+	// SupplyChainRefreshHours is the scheduler's cadence for refreshing the
+	// two Aveloxis-owned supply-chain views (explorer_package_exposure,
+	// explorer_package_advisory), which the GUI's dependencies page reads
+	// through the API. They are apart from the 8Knot set above in every
+	// way: built by every migrate and by serve when missing regardless of
+	// materialized_views, refreshed on THIS cadence instead of
+	// matview_rebuild_day, and never part of the hours-long weekly rebuild
+	// (v0.29.61, worklist 48).
+	//
+	// Absent → 24: the profile's time figure (median_days_open) has day
+	// resolution and the exposure counts move as repositories are
+	// re-collected over days, so a daily refresh is the finest cadence
+	// that changes what a reader sees; the fleet aggregate costs seconds.
+	// An explicit 0 → no scheduled refresh (`aveloxis refresh-views` still
+	// does it). Negative → refused at load. SupplyChainRefreshInterval is
+	// the ONE default layer (SR-10).
+	SupplyChainRefreshHours *int `json:"supply_chain_refresh_hours,omitempty"`
 
 	// ActivityHistoryWindowDays is the span of each GitHub
 	// contributionsCollection window the v0.27.58 daily-history
@@ -1410,6 +1430,9 @@ func (m MailConfig) VulnDigestInterval() time.Duration {
 // Load reads configuration from a JSON file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
@@ -1418,7 +1441,26 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	return cfg, nil
+}
+
+// ErrNotFound is Load's answer to a config file that does not exist — the
+// ONE case a command may run on the compiled defaults (cmd/aveloxis
+// loadConfig). Every other Load error (unreadable, unparsable, invalid)
+// is a file the operator wrote and must not be silently replaced.
+var ErrNotFound = errors.New("config file not found")
+
+// validate refuses values no accessor can honour without a silent
+// coercion (SR-10: one default layer, never a clamp the operator cannot
+// see). Every refusal names the JSON key.
+func (c *Config) validate() error {
+	if h := c.Collection.SupplyChainRefreshHours; h != nil && *h < 0 {
+		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a positive number of hours, 0 for no scheduled refresh, or omit it for the daily default", *h)
+	}
+	return nil
 }
 
 // SlogLevel returns the slog.Level corresponding to the LogLevel string.
@@ -1455,6 +1497,19 @@ func (c *CollectionConfig) MaterializedViewsValue() bool {
 		return true
 	}
 	return *c.MaterializedViews
+}
+
+// SupplyChainRefreshInterval is the effective cadence of the scheduler's
+// supply-chain view refresh and whether one is scheduled at all: absent →
+// 24h on; an explicit 0 → off; n → n hours. The single default layer.
+func (c *CollectionConfig) SupplyChainRefreshInterval() (time.Duration, bool) {
+	if c.SupplyChainRefreshHours == nil {
+		return 24 * time.Hour, true
+	}
+	if *c.SupplyChainRefreshHours <= 0 {
+		return 0, false
+	}
+	return time.Duration(*c.SupplyChainRefreshHours) * time.Hour, true
 }
 
 // MatviewRebuildWeekday returns the time.Weekday for the configured matview

@@ -427,12 +427,29 @@ var deployChecklists = map[string][]deployStep{
 	// import-augur probe's error arm). No index, no view, no heal: the
 	// plain ladder.
 	"0.29.59": v02959DeployChecklist,
-	// v0.29.60: the supply-chain package views (matviews.sql 23 and 24 —
-	// a plain migrate, NOT --skip-views, is the only path that builds a
-	// view added to an existing set), the (ecosystem, package_name) index
-	// on repo_deps_vulnerabilities (CONCURRENTLY), and 0.29.59's column if
-	// that release was skipped. No heal.
+	// v0.29.60: the supply-chain package views (then matviews.sql 23 and
+	// 24, so a plain migrate was the only path that built them), the
+	// (ecosystem, package_name) index on repo_deps_vulnerabilities
+	// (CONCURRENTLY), and 0.29.59's column if that release was skipped. No
+	// heal. SUPERSEDED by 0.29.61 before any deployment: the pair moved
+	// out of the batch, and its ladder needs only --skip-views.
 	"0.29.60": v02960DeployChecklist,
+	// v0.29.61: the supply-chain views become an Aveloxis-owned set apart
+	// from the 8Knot batch (worklist 48): built from Go by EVERY migrate
+	// (--skip-views or not, materialized_views on or off), refreshed by
+	// serve every collection.supply_chain_refresh_hours. Deploying 0.29.60
+	// and 0.29.61 together, this ladder supersedes 0.29.60's plain
+	// migrate: --skip-views is enough, and a deployment that does not use
+	// 8Knot never rebuilds that batch again. Also 0.29.60's index and
+	// 0.29.59's column, both by the same migrate.
+	"0.29.61": v02961DeployChecklist,
+}
+
+var v02961DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; builds idx_repo_deps_vulns_pkg CONCURRENTLY and adds repo_lockfile_packages.purl_namespace if 0.29.59/60 were skipped; re-creates the two supply-chain views from Go (seconds) — --skip-views skips only the 8Knot batch now"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN ('explorer_package_exposure', 'explorer_package_advisory')"`, "must print 2 — both supply-chain views exist, on EVERY deployment (they no longer depend on collection.materialized_views). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first. On 0 or 1, the migrate log has a `supply-chain view creation failed` ERROR naming the cause; fix it and re-run `aveloxis migrate --skip-views`"},
+	{"aveloxis start all", "resume collection; serve refreshes the pair every collection.supply_chain_refresh_hours (default 24) and logs the effective cadence at startup; the 8Knot batch is untouched unless collection.materialized_views is on and its weekly day arrives"},
 }
 
 var v02960DeployChecklist = []deployStep{

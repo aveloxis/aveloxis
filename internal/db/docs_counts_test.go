@@ -80,6 +80,11 @@ var matviewPhraseRe = regexp.MustCompile(`(\d+) materialized views`)
 
 func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 	_, _, _, matviews := schemaCounts(t)
+	// Two sets since v0.29.61: the 8Knot batch in matviews.sql and the
+	// Aveloxis-owned supply-chain pair built from Go. A doc may state
+	// either the 8Knot count or the total; anything else is stale.
+	total := matviews + len(SupplyChainViewNames)
+	valid := map[int]bool{matviews: true, total: true}
 
 	for _, path := range append(allDocsMarkdown(t),
 		"../../cmd/aveloxis/main.go", // refresh-views / migrate help text
@@ -90,10 +95,10 @@ func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 		}
 		for _, m := range matviewPhraseRe.FindAllStringSubmatch(string(src), -1) {
 			n, _ := strconv.Atoi(m[1])
-			if n != matviews {
-				t.Errorf("%s says %q but matviews.sql defines %d materialized views — "+
+			if !valid[n] {
+				t.Errorf("%s says %q but matviews.sql defines %d 8Knot materialized views and the supply-chain pair makes %d — "+
 					"update the doc in the same commit as the view change.",
-					path, m[0], matviews)
+					path, m[0], matviews, total)
 			}
 		}
 	}

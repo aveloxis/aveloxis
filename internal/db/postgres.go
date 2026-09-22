@@ -28,6 +28,7 @@ type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
 	matviewMode      MatviewMode // what RunMigrations does with the views; zero value builds none
+	supplyChainMode  MatviewMode // the same for the Aveloxis-owned supply-chain pair (supply_chain_views.go); independent of matviewMode
 	migrateNoWait    bool        // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool        // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
 	allowSecondServe bool        // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
@@ -228,6 +229,15 @@ const (
 // that want them must say so: see MatviewMode for why the default is off.
 func (s *PostgresStore) SetMatviewMode(m MatviewMode) {
 	s.matviewMode = m
+}
+
+// SetSupplyChainViewMode chooses what the migration does with the
+// Aveloxis-owned supply-chain views, independently of the 8Knot set: serve
+// asks for MatviewsIfMissing, migrate for MatviewsRebuild (the pair costs
+// seconds, so every migrate applies the current definition), and the zero
+// value builds none. collection.materialized_views does not reach this.
+func (s *PostgresStore) SetSupplyChainViewMode(m MatviewMode) {
+	s.supplyChainMode = m
 }
 
 // SetMigrateNoWait controls how RunMigrations handles advisory-lock

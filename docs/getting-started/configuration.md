@@ -22,7 +22,8 @@ A minimal configuration only needs the `database` section:
     "user": "aveloxis",
     "password": "your-password",
     "dbname": "aveloxis",
-    "sslmode": "prefer"
+    "sslmode": "prefer",
+    "pool_max_conns": 0
   }
 }
 ```
@@ -64,7 +65,8 @@ a half against its own reference table below:
     "user": "aveloxis",
     "password": "your-password",
     "dbname": "aveloxis",
-    "sslmode": "prefer"
+    "sslmode": "prefer",
+    "pool_max_conns": 0
   },
   "github": {
     "api_keys": ["ghp_your_token_here"],
@@ -206,6 +208,7 @@ Every field is optional except `database` credentials and at least one API key s
 | `database.password` | string | (required) | Database password. |
 | `database.dbname` | string | (required) | Database name. |
 | `database.sslmode` | string | `"prefer"` | PostgreSQL SSL mode. Options: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`. |
+| `database.pool_max_conns` | int | `0` | Caps `aveloxis serve`'s connection pool (v0.29.58). `0` derives the size from the scheduler's connection demand capped by the server's budget and logs the derivation at startup; a positive value is honored as written. See [Database connection pool](../guide/scaling.md#database-connection-pool). Other commands always use a pool of 20. |
 
 ### GitHub
 

@@ -5,7 +5,8 @@
     "user": "aveloxis",
     "password": "",
     "dbname": "aveloxis",
-    "sslmode": "prefer"
+    "sslmode": "prefer",
+    "pool_max_conns": 0
   },
   "github": {
     "api_keys": [],

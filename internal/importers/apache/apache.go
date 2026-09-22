@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/importers"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // Project is re-exported for caller convenience.
@@ -227,7 +228,7 @@ func resolvePodlingRepoURL(ctx context.Context, client *http.Client, repoURL, sl
 				return "", false, fmt.Errorf("probing %s: %w", candidate, terr)
 			}
 			return target, true, nil
-		case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
+		case platform.IsRepoGoneStatus(resp.StatusCode): // 404, 410, 451 — the shared rule (v0.29.58)
 			// Definitively absent — the twin is next.
 		default:
 			return "", false, fmt.Errorf("probing %s: status %d (not a definitive answer — aborting rather than misclassifying the podling)", candidate, resp.StatusCode)

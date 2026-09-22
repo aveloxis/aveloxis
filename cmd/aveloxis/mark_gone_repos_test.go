@@ -62,8 +62,10 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	if !strings.Contains(src, "collector.ResolveRedirectTarget(") {
 		t.Error("the probe must reuse collector.ResolveRedirectTarget — one probe for prelim, reconcile-repos, and this command")
 	}
-	if !strings.Contains(src, "http.StatusNotFound") || !strings.Contains(src, "http.StatusGone") {
-		t.Error("gone requires a definitive 404/410")
+	// v0.29.58: the definitive set (404, 410, 451) is ONE shared rule —
+	// platform.IsRepoGoneStatus — not a literal list per consumer.
+	if !strings.Contains(src, "platform.IsRepoGoneStatus(") {
+		t.Error("gone requires a definitive answer through platform.IsRepoGoneStatus (404/410/451)")
 	}
 	// The error arm must skip, not decide.
 	i := strings.Index(src, "perr != nil")

@@ -583,3 +583,156 @@ func TestSBOMDuplicateScopesFoldToStrongest(t *testing.T) {
 		}
 	}
 }
+
+// TestSBOM_PurlLessTransitivesMatchAcrossFormats — v0.29.58 review round
+// 2: a transitive with no valid purl (a SwiftPM identity-only pin, a
+// composer platform package) must be one component in BOTH formats, deduped
+// against the same package declared directly, and must keep its graph edges.
+// Round 1 restored the CycloneDX component but not its identity or its
+// edges: the same name@version appeared twice and every edge touching it
+// was dropped, while SPDX (keyed by graph key) had both right.
+func TestSBOM_PurlLessTransitivesMatchAcrossFormats(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org"}
+	deps := []db.SBOMDep{
+		{Name: "Alamofire", CurrentVersion: "5.8.0", PackageManager: "swiftpm", Purl: "pkg:swift/Alamofire/Alamofire@5.8.0", Type: "runtime"},
+		{Name: "php", CurrentVersion: "8.2", PackageManager: "packagist", Purl: "", Type: "runtime"},
+	}
+	graph := &sbomGraph{
+		Transitives: []db.RepoLockfilePackage{
+			{Ecosystem: "swiftpm", PackageName: "alamofire", ResolvedVersion: "5.8.0", LockfilePath: "Package.resolved"},
+			{Ecosystem: "swiftpm", PackageName: "swift-nio", ResolvedVersion: "2.60.0", LockfilePath: "Package.resolved"},
+			{Ecosystem: "packagist", PackageName: "php", ResolvedVersion: "8.2", LockfilePath: "composer.lock"},
+		},
+		Edges: []db.RepoLockfileEdge{
+			{Ecosystem: "swiftpm", LockfilePath: "Package.resolved", ParentName: "alamofire", ParentVersion: "5.8.0", ChildName: "swift-nio", ChildConstraint: ">=2.0"},
+		},
+	}
+
+	cdxData, err := generateCycloneDX(repo, deps, nil, graph)
+	if err != nil {
+		t.Fatalf("generateCycloneDX: %v", err)
+	}
+	var bom cycloneDX
+	if err := json.Unmarshal(cdxData, &bom); err != nil {
+		t.Fatalf("invalid CycloneDX JSON: %v", err)
+	}
+	spdxData, err := generateSPDX(repo, deps, nil, graph)
+	if err != nil {
+		t.Fatalf("generateSPDX: %v", err)
+	}
+	var doc spdxDoc
+	if err := json.Unmarshal(spdxData, &doc); err != nil {
+		t.Fatalf("invalid SPDX JSON: %v", err)
+	}
+
+	// Identity: Alamofire (direct, purl) + alamofire (transitive, no purl)
+	// are ONE package; php (direct, no purl) + php (transitive) are ONE;
+	// swift-nio is the third. Both formats agree (SPDX's package list
+	// also carries the root package, so it counts one more).
+	if len(bom.Components) != 3 || len(doc.Packages) != 4 {
+		names := []string{}
+		for _, c := range bom.Components {
+			names = append(names, c.Name+"@"+c.Version+" ref="+c.BOMRef)
+		}
+		spdxNames := []string{}
+		for _, p := range doc.Packages {
+			spdxNames = append(spdxNames, p.Name+"@"+p.VersionInfo+" id="+p.SPDXID)
+		}
+		t.Fatalf("CycloneDX has %d components, SPDX %d packages, want 3 components and 3 packages + root; cdx=%v spdx=%v", len(bom.Components), len(doc.Packages), names, spdxNames)
+	}
+	refByName := map[string]string{}
+	for _, c := range bom.Components {
+		if c.BOMRef == "" {
+			t.Errorf("component %s@%s has no bom-ref; every component needs one to carry edges", c.Name, c.Version)
+		}
+		refByName[strings.ToLower(c.Name)] = c.BOMRef
+	}
+	// The purl-ful direct keeps its purl as bom-ref; the purl-less ones
+	// carry an aveloxis: ref and no purl.
+	if refByName["alamofire"] != "pkg:swift/Alamofire/Alamofire@5.8.0" {
+		t.Errorf("Alamofire bom-ref = %q, want its purl", refByName["alamofire"])
+	}
+	if !strings.HasPrefix(refByName["swift-nio"], "aveloxis:") || !strings.HasPrefix(refByName["php"], "aveloxis:") {
+		t.Errorf("purl-less components must carry an aveloxis: bom-ref, got swift-nio=%q php=%q", refByName["swift-nio"], refByName["php"])
+	}
+
+	// Edges: alamofire → swift-nio survives in both formats, attached to
+	// the deduped direct component on the CycloneDX side.
+	depsOf := map[string][]string{}
+	for _, d := range bom.Dependencies {
+		depsOf[d.Ref] = d.DependsOn
+	}
+	if got := depsOf[refByName["alamofire"]]; len(got) != 1 || got[0] != refByName["swift-nio"] {
+		t.Errorf("CycloneDX Alamofire children = %v, want [%s]", got, refByName["swift-nio"])
+	}
+	if _, ok := depsOf[refByName["swift-nio"]]; !ok {
+		t.Errorf("CycloneDX swift-nio must have an explicit (leaf) dependencies entry")
+	}
+	root := depsOf[bom.Metadata.Component.BOMRef]
+	if len(root) != 2 {
+		t.Errorf("CycloneDX root must depend on both direct components, got %v", root)
+	}
+	ids := map[string]string{}
+	for _, p := range doc.Packages {
+		ids[strings.ToLower(p.Name)] = p.SPDXID
+	}
+	var edge bool
+	for _, r := range doc.Relationships {
+		if r.RelationshipType == "DEPENDS_ON" && r.SpdxElementId == ids["alamofire"] && r.RelatedSpdxElement == ids["swift-nio"] {
+			edge = true
+		}
+	}
+	if !edge {
+		t.Errorf("SPDX DEPENDS_ON alamofire→swift-nio missing")
+	}
+}
+
+// TestSBOMDuplicateScopesFoldToStrongest_PurlLess — v0.29.58 review round
+// 3: the CycloneDX direct loop dedupes purl-less rows by their aveloxis:
+// ref since round 2, but the round-34 scope fold was keyed by purl and
+// skipped them, so a dev-first pair collapsed to "excluded" and hid the
+// runtime observation. A purl-less and a purl-ful row of one
+// package@version must also be ONE component, as SPDX has it.
+func TestSBOMDuplicateScopesFoldToStrongest_PurlLess(t *testing.T) {
+	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
+	devFirst := []db.SBOMDep{
+		{PackageManager: "conda", Name: "numpy", CurrentVersion: "1.0", Purl: "", Type: "dev"},
+		{PackageManager: "conda", Name: "numpy", CurrentVersion: "1.0", Purl: "", Type: "runtime"},
+	}
+	runtimeFirst := []db.SBOMDep{devFirst[1], devFirst[0]}
+	mixed := []db.SBOMDep{
+		{PackageManager: "packagist", Name: "laravel/framework", CurrentVersion: "10.0.0", Purl: "", Type: "dev"},
+		{PackageManager: "packagist", Name: "laravel/framework", CurrentVersion: "10.0.0", Purl: "pkg:composer/laravel/framework@10.0.0", Type: "runtime"},
+	}
+	for name, deps := range map[string][]db.SBOMDep{"dev-first": devFirst, "runtime-first": runtimeFirst, "mixed": mixed} {
+		cdx, err := generateCycloneDX(repo, deps, nil, nil)
+		if err != nil {
+			t.Fatalf("%s generateCycloneDX: %v", name, err)
+		}
+		var bom cycloneDX
+		if err := json.Unmarshal(cdx, &bom); err != nil {
+			t.Fatal(err)
+		}
+		if len(bom.Components) != 1 {
+			t.Fatalf("%s: duplicate direct rows of one package@version must be ONE component, got %d", name, len(bom.Components))
+		}
+		c := bom.Components[0]
+		if c.Scope != "required" {
+			t.Errorf("%s: scope must fold to required across purl-less duplicates, got %q", name, c.Scope)
+		}
+		if name == "mixed" && c.Purl != "pkg:composer/laravel/framework@10.0.0" {
+			t.Errorf("mixed: the component must carry the purl a duplicate row supplied, got purl=%q ref=%q", c.Purl, c.BOMRef)
+		}
+		spdx, err := generateSPDX(repo, deps, nil, nil)
+		if err != nil {
+			t.Fatalf("%s generateSPDX: %v", name, err)
+		}
+		var doc spdxDoc
+		if err := json.Unmarshal(spdx, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(doc.Packages) - 1; got != 1 { // minus the root package
+			t.Errorf("%s: SPDX must agree on one package, got %d", name, got)
+		}
+	}
+}

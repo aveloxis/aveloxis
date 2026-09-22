@@ -36,7 +36,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"net/http"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
@@ -176,7 +175,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			resurrected++
 			s.logger.Info("gone recheck: repository is reachable again — cleared gone state and re-enqueued",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
-		case status == http.StatusNotFound || status == http.StatusGone:
+		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			stillGone++
 			stampChecked(c)
 		default:

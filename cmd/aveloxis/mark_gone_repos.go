@@ -32,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
@@ -151,7 +150,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			continue
 		}
 		switch {
-		case status == http.StatusNotFound || status == http.StatusGone:
+		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			if c.GoneStamped {
 				alreadyGone++
 				stampChecked(c)

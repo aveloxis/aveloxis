@@ -633,6 +633,20 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	case resp.StatusCode == http.StatusNotFound:
 		resp.Body.Close()
 		return respDone, nil, fmt.Errorf("%w: %s", ErrNotFound, url)
+	case resp.StatusCode == http.StatusUnavailableForLegalReasons:
+		// 451 — blocked for legal reasons (a DMCA takedown on GitHub).
+		// Definitive, like 404/410: never retried. v0.29.58 — before this
+		// arm the status took the default ten-attempt backoff on EVERY
+		// endpoint of the repository, every cycle (log review finding 3).
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		reason, notice := legalBlockReason(body)
+		c.logger.Warn("resource blocked for legal reasons (451) — not retried; prelim sidelines the repository",
+			"url", RedactURLUserinfo(url), "reason", reason, "notice_url", RedactURLUserinfo(notice))
+		if reason == "" {
+			reason = "unspecified"
+		}
+		return respDone, nil, fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, url, reason)
 	case resp.StatusCode == http.StatusGone:
 		// 410 — the resource existed but was deliberately removed (e.g.,
 		// a deleted GitHub issue). Never retryable; distinct from 404 so

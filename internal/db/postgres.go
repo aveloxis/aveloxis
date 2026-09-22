@@ -86,7 +86,7 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// default 2 hours. See installKeepaliveDialer for why this is
 	// not done via conn-string params.
 	installKeepaliveDialer(cfg)
-	cfg.MaxConns = 20
+	cfg.MaxConns = DefaultPoolMaxConns
 	if len(maxConns) > 0 && maxConns[0] > 0 {
 		cfg.MaxConns = maxConns[0]
 	}

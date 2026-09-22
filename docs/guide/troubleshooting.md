@@ -835,6 +835,25 @@ level=WARN msg="collection still paused — database unavailable" unavailable_fo
 level=INFO  msg="database back — resuming collection" unavailable_for=...
 ```
 
+Since v0.29.58 the probe names the cause itself. When every pooled connection
+is acquired and none is idle, the ping never reached the server and the line
+reads:
+
+```
+level=WARN msg="connection pool exhausted — every pooled connection is in use, so the probe could not get one; the database is NOT known to be down; pausing new collection until the pool drains (see the pool_demand line at startup)" cause="connection pool exhausted"
+level=WARN msg="collection still paused — connection pool exhausted" ...
+```
+
+That is a throttle, not an outage: the pool is smaller than the scheduler's
+demand (the `database connection pool sized` line at startup carries both
+numbers and the server budget that capped it — see [Database connection
+pool](scaling.md#database-connection-pool)). Either raise `max_connections`
+so the derivation can size the pool to the demand, lower `--workers`, or set
+`database.pool_max_conns` deliberately. On a disk-bound server the throttle
+may be the right choice; what changes is only that the log now says which
+one it is. The 2026-09-22 production log had thirteen of these misreported
+as database outages while Postgres was up the whole time.
+
 Since v0.29.56 both WARN lines also carry the connection pool's state. Read the
 two halves differently:
 

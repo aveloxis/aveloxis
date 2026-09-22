@@ -4,9 +4,12 @@
 package scheduler
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestClassifyHealthTransition(t *testing.T) {
@@ -79,5 +82,34 @@ func TestDebouncedHealthy(t *testing.T) {
 	}
 	if debouncedHealthy(dbHealthFailureThreshold + 5) {
 		t.Error("debouncedHealthy must stay false past the threshold")
+	}
+}
+
+// TestClassifyProbeFailure — v0.29.58: a pooled ping that could not
+// acquire a connection is the POOL's failure, not the server's; the
+// thirteen "database unavailable" pauses in the 2026-09-22 log were all
+// this shape (135/135 acquired, 0 idle) while Postgres was up.
+func TestClassifyProbeFailure(t *testing.T) {
+	timeout := errors.New("context deadline exceeded")
+	cases := []struct {
+		name string
+		err  error
+		st   db.PoolState
+		want probeCause
+	}{
+		{"pool full, nothing idle", timeout, db.PoolState{MaxConns: 135, AcquiredConns: 135, IdleConns: 0}, probeCausePoolExhausted},
+		{"pool full but an idle connection exists", timeout, db.PoolState{MaxConns: 135, AcquiredConns: 135, IdleConns: 1}, probeCauseUnreachable},
+		{"pool has headroom", timeout, db.PoolState{MaxConns: 135, AcquiredConns: 40, IdleConns: 0}, probeCauseUnreachable},
+		{"connect refused with an empty pool", errors.New("connection refused"), db.PoolState{MaxConns: 135, AcquiredConns: 0, IdleConns: 0}, probeCauseUnreachable},
+		{"no error", nil, db.PoolState{MaxConns: 135, AcquiredConns: 135}, probeCauseUnreachable},
+		{"zero max (unknown pool)", timeout, db.PoolState{}, probeCauseUnreachable},
+	}
+	for _, c := range cases {
+		if got := classifyProbeFailure(c.err, c.st); got != c.want {
+			t.Errorf("%s: classifyProbeFailure = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if probeCausePoolExhausted.String() == probeCauseUnreachable.String() || !strings.Contains(probeCausePoolExhausted.message(), "NOT known to be down") {
+		t.Error("the two causes must read differently, and the pool message must say the database is not known to be down")
 	}
 }

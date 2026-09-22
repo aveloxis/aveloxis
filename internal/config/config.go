@@ -81,6 +81,17 @@ type DatabaseConfig struct {
 	Password string `json:"password"`
 	DBName   string `json:"dbname"`
 	SSLMode  string `json:"sslmode"`
+	// PoolMaxConns caps serve's connection pool (v0.29.58). 0 (the
+	// default) derives the size: the scheduler's connection DEMAND
+	// (every goroutine class that acquires from the pool, see
+	// scheduler.PoolDemand) capped by the server's budget (max_connections
+	// minus the superuser reserve and the web/api pools). serve logs the
+	// effective size with that derivation at startup. Set it when the
+	// database is disk-bound and fewer concurrent statements serve the
+	// fleet better than more — a pool below demand is a deliberate
+	// throttle, and the health probe then reports "connection pool
+	// exhausted", never "database unavailable".
+	PoolMaxConns int `json:"pool_max_conns"`
 }
 
 // ConnectionString returns a PostgreSQL DSN.

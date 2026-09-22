@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestMailingListMsgIDIndexIsMigrationOwned pins the v0.29.58 partial
@@ -20,7 +22,8 @@ func TestMailingListMsgIDIndexIsMigrationOwned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := string(src)
+	// Comment-stripped so prose cannot satisfy the pin (review round 2).
+	code := srctest.StripGoComments(string(src))
 	call := regexp.MustCompile(`(?s)execCreateIndexConcurrently\([^)]*?"aveloxis_data",\s*"idx_messages_mailing_list_msg_id",\s*` + "`" + `\s*CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_mailing_list_msg_id\s+ON aveloxis_data\.messages \(msg_id\) WHERE platform_id = 6` + "`")
 	if !call.MatchString(code) {
 		t.Fatal("migrate.go must build idx_messages_mailing_list_msg_id via execCreateIndexConcurrently " +

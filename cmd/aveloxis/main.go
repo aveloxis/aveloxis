@@ -193,10 +193,13 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Scale the database connection pool to the worker count so collection
-	// workers don't starve each other for connections. Each worker makes many
-	// concurrent DB calls (inserts, queries) during collection phases.
-	poolSize := max(int32(workers+15), 20)
+	// v0.29.58: the pool is sized from the scheduler's connection DEMAND
+	// (every goroutine class, scheduler.PoolDemand) capped by the server's
+	// budget, or by database.pool_max_conns; the decision is logged with
+	// its derivation. The old workers+15 literal ignored the distribution
+	// and mailing-list workers and every background loop, and the health
+	// probe reported the saturated pool as a database outage.
+	poolSize := decideServePool(ctx, cfg, workers, logger).Size
 	// application_name = "aveloxis-serve" so post-stop verification
 	// (and operators reading pg_stat_activity) can filter per-process.
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(db.AppNameForHost(db.ServeApplicationName)), logger, poolSize)

@@ -73,13 +73,21 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		return result, nil
 	}
 
-	// Repo is gone (404, 410). Sideline it permanently: keep all collected
-	// data, but remove from the queue so we never try again.
-	if statusCode == http.StatusNotFound || statusCode == http.StatusGone {
+	// Repo is gone (404, 410) or blocked for legal reasons (451 — a DMCA
+	// takedown, v0.29.58). Sideline it permanently: keep all collected
+	// data, but remove from the queue so we never try again. The gone
+	// recheck re-probes it on its cadence, so a lifted block or a
+	// restored repository comes back on its own. One shared rule for
+	// every repository-level probe (platform.IsRepoGoneStatus, SR-17).
+	if platform.IsRepoGoneStatus(statusCode) {
 		result.Skip = true
 		result.SkipReason = fmt.Sprintf("repo returned %d — sidelined permanently", statusCode)
-		logger.Warn("prelim: repo no longer exists, sidelining permanently",
-			"url", platform.RedactURLUserinfo(repo.GitURL), "status", statusCode, "repo_id", repo.ID)
+		if statusCode == http.StatusUnavailableForLegalReasons {
+			result.SkipReason = fmt.Sprintf("repo returned %d — blocked for legal reasons (DMCA takedown or similar); sidelined permanently", statusCode)
+		}
+		logger.Warn("prelim: repo no longer available, sidelining permanently",
+			"url", platform.RedactURLUserinfo(repo.GitURL), "status", statusCode, "repo_id", repo.ID,
+			"reason", result.SkipReason)
 
 		// Mark as archived AND gone in one statement. v0.27.39:
 		// dequeuing WITHOUT the archive succeeding mints a stranded

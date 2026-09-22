@@ -421,6 +421,31 @@ var deployChecklists = map[string][]deployStep{
 	// without it). The migrate builds it CONCURRENTLY; no heal, no view
 	// change, so the ladder is stop → migrate --skip-views → verify → start.
 	"0.29.58": v02958DeployChecklist,
+	// v0.29.59: worklist 46 (SwiftPM purl namespace — one new column,
+	// repo_lockfile_packages.purl_namespace, added by migrate; existing
+	// rows fill on each repository's next analysis) and worklist 47 (the
+	// import-augur probe's error arm). No index, no view, no heal: the
+	// plain ladder.
+	"0.29.59": v02959DeployChecklist,
+	// v0.29.60: the supply-chain package views (matviews.sql 23 and 24 —
+	// a plain migrate, NOT --skip-views, is the only path that builds a
+	// view added to an existing set), the (ecosystem, package_name) index
+	// on repo_deps_vulnerabilities (CONCURRENTLY), and 0.29.59's column if
+	// that release was skipped. No heal.
+	"0.29.60": v02960DeployChecklist,
+}
+
+var v02960DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate", "schema + ledgered backfills AND re-create the materialized views — NOT --skip-views: this release ADDS two views (explorer_package_exposure, explorer_package_advisory), which only a plain migrate builds into an existing set; it also builds idx_repo_deps_vulns_pkg CONCURRENTLY (one pass over repo_deps_vulnerabilities, no write lock) and adds repo_lockfile_packages.purl_namespace"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN ('explorer_package_exposure', 'explorer_package_advisory')"`, "must print 2 — both supply-chain views exist. SKIP on a deployment with collection.materialized_views off (the API then aggregates live). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first. The migrate's view block only WARNs when it fails (`materialized view creation had errors`) and still exits 0, so on 0 or 1 fix what that WARN names and re-run `aveloxis migrate`"},
+	{"aveloxis start all", "resume collection; the GUI's dependencies page reads the new endpoints from the api process"},
+}
+
+var v02959DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; adds repo_lockfile_packages.purl_namespace (an ALTER ADD COLUMN with a default — instant)"},
+	{"aveloxis start all", "resume collection; SwiftPM transitives gain their purl namespace as each repository is re-analysed"},
 }
 
 // v02958DeployChecklist — one CONCURRENTLY-built index and nothing else.

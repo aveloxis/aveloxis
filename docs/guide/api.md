@@ -981,6 +981,55 @@ Token semantics:
   set (the partial-never-replaces-complete rule), so a repo's `mode`
   only moves from `local` to `remote`, never back.
 
+## Supply-chain package view (v0.29.60)
+
+The findings turned around: keyed by **package** instead of by repository,
+so a reader can see what a Dependabot pull request for one library cannot
+show — how many repositories in a cohort are exposed, how much of that
+exposure is transitive, how long it has been open, which advisory leads, and
+how many versions are in simultaneous use.
+
+- `GET /api/v1/supply-chain/packages?ecosystem=npm&q=minimatch&sort=repos&limit=50&offset=0&group=12`
+  — the leaderboard: one row per `(ecosystem, package_name)` in the cohort,
+  `total` for paging, `sort` one of `repos` (default), `unresolved`, `cvss`,
+  `transitive`, `versions`, `days`, `name`. Every row carries the profile
+  fields below.
+- `GET /api/v1/supply-chain/packages/{ecosystem}/{name}` — one package's
+  profile plus `advisories` (most widespread first, each with `advisory_url`
+  and `cve_url`), `versions` (each scanned version among CURRENT exposures
+  with how many repositories run it — the version-agreement panel) and
+  `repos` (the exposed repositories, most findings first; `?repos=` sets the
+  list size, default 50, clamped at 500). A scoped npm name keeps its slash:
+  `/supply-chain/packages/npm/@scope/name`. A package with no finding in the
+  scope is `404`.
+
+**Profile fields.** `cohort_repos` (repositories that have ever had a finding
+on the package) and `repos_unresolved` (have one now); `findings` /
+`findings_unresolved` (rows: one per repository × advisory × version);
+`pct_unresolved`, `pct_transitive` (share of rows whose dependency is
+transitive — the exposure a manifest reader cannot see); `median_days_open`
+(median age of the current findings); `worst_severity`, `max_cvss`,
+`n_advisories`; `distinct_versions_in_use`, `modal_version` and
+`modal_version_share_pct` (over `repos_with_known_versions`); and the lead
+advisory — the one on the most repositories — as `lead_advisory`,
+`lead_cve`, `lead_severity`, `lead_fixed_version`, `lead_advisory_repos`.
+
+**Scope.** The envelope's `scope` says which cohort answered (`kind`,
+`group_id`, `repos`) and what answered it: `source` is `matview` when the
+fleet views served the request and `live` when the cohort was aggregated on
+request (or the fleet was, on a deployment without the views). An admin
+without `?group` reads the **fleet** from the materialized views
+`explorer_package_exposure` and `explorer_package_advisory` (refreshed with
+the others); a signed-in user without `?group` reads their own scope — every
+repository their groups hold — computed live; `?group=<id>` reads that
+group's repositories live (a non-admin must own the group, and its
+repositories are intersected with the caller's scope; an unknown or
+unowned group is `404`). The live path aggregates the cohort's findings on
+request through the repository index, milliseconds for hundreds of
+repositories and about three seconds for a 62,000-repository scope on the
+production fleet; responses are cached for 60 seconds per caller and query.
+Both endpoints require a Bearer session.
+
 ## Portal and admin endpoints (v0.27.3)
 
 These back the aveloxis-gui portal pages (group / monitor /

@@ -1140,6 +1140,108 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_explorer_repo_files
 ON aveloxis_data.explorer_repo_files (id, file_path, file_name);
 
 
+-- ---------------------------------------------------------------------------
+-- 23. explorer_package_exposure  --  one row per (ecosystem, package): the
+--     supply-chain cohort profile (v0.29.60). The body is
+--     db.PackageExposureMatviewSQL() verbatim — the same SQL the API runs
+--     live for a cohort with a repo filter; TestPackageExposureMatviewMatchesTheLiveSQL
+--     pins the two together. Regenerate with `go run ./scripts/gen-package-exposure-sql`.
+-- ---------------------------------------------------------------------------
+DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_exposure CASCADE;
+CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_package_exposure AS
+	WITH f AS (
+	SELECT v.ecosystem, v.package_name, v.repo_id, v.vuln_id, v.cve_id,
+	       v.severity, v.cvss_score, v.fixed_version, v.dependency_kind,
+	       v.first_detected_at, v.resolved_at,
+	       (v.resolved_at IS NULL) AS current,
+	       NULLIF(substring(v.package_purl FROM '@([^@/]+)$'), '') AS scanned_version
+	  FROM aveloxis_data.repo_deps_vulnerabilities v
+	 WHERE v.ecosystem <> '' AND v.package_name <> ''),
+	per_pkg AS (
+	    SELECT ecosystem, package_name,
+	           COUNT(DISTINCT repo_id)                                   AS cohort_repos,
+	           COUNT(DISTINCT repo_id) FILTER (WHERE current)            AS repos_unresolved,
+	           COUNT(*)                                                  AS findings,
+	           COUNT(*) FILTER (WHERE current)                           AS findings_unresolved,
+	           ROUND(100.0 * COUNT(*) FILTER (WHERE current) / COUNT(*), 1)                          AS pct_unresolved,
+	           ROUND(100.0 * COUNT(*) FILTER (WHERE dependency_kind = 'transitive') / COUNT(*), 1)  AS pct_transitive,
+	           percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (NOW() - first_detected_at)) / 86400.0)
+	               FILTER (WHERE current)                                AS median_days_open,
+	           MAX(cvss_score)                                           AS max_cvss,
+	           MAX(CASE upper(severity) WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 WHEN 'MODERATE' THEN 2 WHEN 'LOW' THEN 1 ELSE 0 END)     AS worst_rank,
+	           COUNT(DISTINCT vuln_id)                                   AS n_advisories,
+	           COUNT(DISTINCT scanned_version) FILTER (WHERE current)    AS distinct_versions_in_use,
+	           COUNT(DISTINCT repo_id) FILTER (WHERE current AND scanned_version IS NOT NULL) AS repos_with_known_versions
+	      FROM f
+	     GROUP BY ecosystem, package_name
+	),
+	versions AS (
+	    SELECT ecosystem, package_name, scanned_version, COUNT(DISTINCT repo_id) AS repos
+	      FROM f WHERE current AND scanned_version IS NOT NULL
+	     GROUP BY ecosystem, package_name, scanned_version
+	),
+	modal AS (
+	    SELECT DISTINCT ON (ecosystem, package_name)
+	           ecosystem, package_name, scanned_version AS modal_version, repos AS modal_repos
+	      FROM versions
+	     ORDER BY ecosystem, package_name, repos DESC, scanned_version
+	),
+	advisories AS (
+	    SELECT ecosystem, package_name, vuln_id,
+	           MAX(cve_id) AS cve_id,
+	           COALESCE((array_agg(severity ORDER BY CASE upper(severity) WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 WHEN 'MODERATE' THEN 2 WHEN 'LOW' THEN 1 ELSE 0 END DESC, severity DESC))[1], '') AS severity,
+	           COALESCE(mode() WITHIN GROUP (ORDER BY fixed_version) FILTER (WHERE fixed_version <> ''), '') AS fixed_version,
+	           COUNT(DISTINCT repo_id) AS repos
+	      FROM f
+	     GROUP BY ecosystem, package_name, vuln_id
+	),
+	lead AS (
+	    SELECT DISTINCT ON (ecosystem, package_name)
+	           ecosystem, package_name, vuln_id, cve_id, severity, fixed_version, repos
+	      FROM advisories
+	     ORDER BY ecosystem, package_name, repos DESC, vuln_id
+	)
+	SELECT p.ecosystem, p.package_name, p.cohort_repos, p.repos_unresolved,
+	       p.findings, p.findings_unresolved, p.pct_unresolved, p.pct_transitive,
+	       p.median_days_open, p.max_cvss,
+	       CASE p.worst_rank WHEN 4 THEN 'CRITICAL' WHEN 3 THEN 'HIGH' WHEN 2 THEN 'MEDIUM' WHEN 1 THEN 'LOW' ELSE '' END AS worst_severity,
+	       p.n_advisories, p.distinct_versions_in_use, p.repos_with_known_versions,
+	       COALESCE(m.modal_version, '') AS modal_version,
+	       CASE WHEN p.repos_with_known_versions > 0 THEN ROUND(100.0 * m.modal_repos / p.repos_with_known_versions, 1) END AS modal_version_share_pct,
+	       COALESCE(l.vuln_id, '') AS lead_advisory, COALESCE(l.cve_id, '') AS lead_cve,
+	       COALESCE(l.severity, '') AS lead_severity, COALESCE(l.fixed_version, '') AS lead_fixed_version,
+	       COALESCE(l.repos, 0) AS lead_advisory_repos
+	  FROM per_pkg p
+	  LEFT JOIN modal m USING (ecosystem, package_name)
+	  LEFT JOIN lead  l USING (ecosystem, package_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_package_exposure_pkg ON aveloxis_data.explorer_package_exposure (ecosystem, package_name);
+
+-- ---------------------------------------------------------------------------
+-- 24. explorer_package_advisory  --  one row per (ecosystem, package, advisory)
+--     (v0.29.60). Body: db.PackageAdvisoryMatviewSQL() verbatim.
+-- ---------------------------------------------------------------------------
+DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_advisory CASCADE;
+CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_package_advisory AS
+	WITH f AS (
+	SELECT v.ecosystem, v.package_name, v.repo_id, v.vuln_id, v.cve_id,
+	       v.severity, v.cvss_score, v.fixed_version, v.dependency_kind,
+	       v.first_detected_at, v.resolved_at,
+	       (v.resolved_at IS NULL) AS current,
+	       NULLIF(substring(v.package_purl FROM '@([^@/]+)$'), '') AS scanned_version
+	  FROM aveloxis_data.repo_deps_vulnerabilities v
+	 WHERE v.ecosystem <> '' AND v.package_name <> '')
+	SELECT ecosystem, package_name, vuln_id,
+	       MAX(cve_id) AS cve_id,
+	       COALESCE((array_agg(severity ORDER BY CASE upper(severity) WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 WHEN 'MODERATE' THEN 2 WHEN 'LOW' THEN 1 ELSE 0 END DESC, severity DESC))[1], '') AS severity,
+	       MAX(cvss_score) AS max_cvss,
+	       COALESCE(mode() WITHIN GROUP (ORDER BY fixed_version) FILTER (WHERE fixed_version <> ''), '') AS fixed_version,
+	       COUNT(DISTINCT repo_id) AS repos,
+	       COUNT(DISTINCT repo_id) FILTER (WHERE current) AS repos_unresolved,
+	       MIN(first_detected_at) AS first_seen
+	  FROM f
+	 GROUP BY ecosystem, package_name, vuln_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_package_advisory_pkg ON aveloxis_data.explorer_package_advisory (ecosystem, package_name, vuln_id);
+
 -- =============================================================================
 -- Materialized View Refresh List
 -- =============================================================================
@@ -1168,6 +1270,8 @@ ON aveloxis_data.explorer_repo_files (id, file_path, file_name);
 --  20. aveloxis_data.explorer_pr_files
 --  21. aveloxis_data.explorer_cntrb_per_file
 --  22. aveloxis_data.explorer_repo_files
+--  23. aveloxis_data.explorer_package_exposure
+--  24. aveloxis_data.explorer_package_advisory
 -- =============================================================================
 
 -- =============================================================================

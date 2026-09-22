@@ -1608,6 +1608,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_packages (
     -- (unknown) where the lockfile format flags it.
     direct           BOOLEAN NOT NULL DEFAULT TRUE,
     dependency_scope TEXT NOT NULL DEFAULT '',
+    -- v0.29.59 (worklist 46): the purl namespace the lockfile supplied —
+    -- a SwiftPM pin's repository host/owner ("github.com/Alamofire") —
+    -- so the transitive purl matches the direct writer's
+    -- pkg:swift/github.com/Owner/Repo shape and OSV accepts it.
+    purl_namespace   TEXT NOT NULL DEFAULT '',
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',

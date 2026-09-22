@@ -102,6 +102,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.handleLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.handleScancodeLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.handleScancodeFiles)
+	// v0.29.60: the supply-chain package view (package-centred findings).
+	s.mux.HandleFunc("GET /api/v1/supply-chain/packages", s.handleSupplyChainPackages)
+	s.mux.HandleFunc("GET /api/v1/supply-chain/packages/{ecosystem}/{name...}", s.handleSupplyChainPackage)
 	// v0.23.10 — list-of-identities + affiliation-breakdown over an
 	// operator-supplied time window. Nested under contributions/ so the
 	// paths don't collide with the Augur-compatible

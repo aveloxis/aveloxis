@@ -1709,6 +1709,16 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// partial index holds only the platform-6 msg_ids (238K rows on
 	// that fleet), so both bounds become an index endpoint read.
 	// CONCURRENTLY: messages is fleet-scale (SR-2).
+	// v0.29.60: the supply-chain package profile reads one package's
+	// findings by (ecosystem, package_name) — the version-agreement
+	// panel and the exposed-repositories list are live queries in every
+	// scope. The table has only repo_id and cve_id indexes; a package
+	// lookup was a sequential scan of 5.5M rows on the production fleet.
+	// CONCURRENTLY: fleet-scale (SR-2).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_deps_vulns_pkg",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_deps_vulns_pkg
+		 ON aveloxis_data.repo_deps_vulnerabilities (ecosystem, package_name)`)
+
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_messages_mailing_list_msg_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_mailing_list_msg_id
 		 ON aveloxis_data.messages (msg_id) WHERE platform_id = 6`)
@@ -2158,6 +2168,10 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "dependency_scope", "TEXT NOT NULL DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "direct", "BOOLEAN NOT NULL DEFAULT TRUE")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "dependency_scope", "TEXT NOT NULL DEFAULT ''")
+	// v0.29.59 (worklist 46): the purl namespace a lockfile supplies (a
+	// SwiftPM pin's host/owner). Rows written before it carry '' and mint
+	// no purl until the repository's next analysis rewrites them.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "purl_namespace", "TEXT NOT NULL DEFAULT ''")
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_lockfile_packages_pkg", `
 		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lockfile_packages_pkg
 		ON aveloxis_data.repo_lockfile_packages (ecosystem, package_name, resolved_version)`)

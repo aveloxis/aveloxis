@@ -881,7 +881,7 @@ func runImportFromAugur(cfgPath string, priority int) error {
 	}
 	logger.Info("found repos in augur_data.repo", "count", len(augurRepos))
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := importProbeClient(10 * time.Second)
 	var imported, skipped, failed int
 
 	for _, ar := range augurRepos {
@@ -935,11 +935,38 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		"failed", failed,
 		"total_augur_repos", len(augurRepos),
 	)
+	// v0.29.59 (review round 1): a scripted import must see a refusal in
+	// the exit code, as mark-gone-repos and reconcile-repos do; the
+	// failed rows are not persisted, so a rerun re-probes them.
+	if failed > 0 {
+		return fmt.Errorf("import-augur: %d of %d repositories failed (see the log); a rerun retries them", failed, len(augurRepos))
+	}
 	return nil
 }
 
 // verifyRepoExists checks that a repo URL resolves on the forge.
 // Uses HTTP HEAD to avoid downloading the full page.
+// importProbeClient is the existence probe's HTTP client: it does NOT
+// follow redirects (v0.29.59 review round 1). A followed redirect hid the
+// answer — GitLab sends a private or missing repository to
+// /users/sign_in, which lands on 403 — so verifyRepoExists classifies
+// the 3xx itself, the way the Apache importer's probe does.
+func importProbeClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// verifyRepoExists answers whether a repository URL still serves a
+// repository. Only DEFINITIVE answers decide (worklist 47, SR-16): a 2xx
+// is present; a 3xx whose Location is another repository path on the
+// same host is a rename (present) and one that leaves the repository
+// space (GitLab's /users/sign_in) is not publicly available (absent);
+// the shared gone rule (404/410/451, platform.IsRepoGoneStatus) is
+// absent; anything else — a 403/429 rate limit, a 5xx outage — is an
+// ERROR the caller counts as failed, so a rerun re-probes it instead of
+// dropping the repository from the import as "no longer exists".
 func verifyRepoExists(ctx context.Context, client *http.Client, repoURL string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, repoURL, nil)
 	if err != nil {
@@ -950,8 +977,40 @@ func verifyRepoExists(ctx context.Context, client *http.Client, repoURL string) 
 		return false, err
 	}
 	resp.Body.Close()
-	// 200 = exists. 301/302 = moved (still exists). 404/410 = gone.
-	return resp.StatusCode >= 200 && resp.StatusCode < 400, nil
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, nil
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return redirectStaysOnARepository(req.URL, resp.Header.Get("Location")), nil
+	case platform.IsRepoGoneStatus(resp.StatusCode):
+		return false, nil
+	default:
+		return false, fmt.Errorf("indeterminate status %d from %s — not an answer", resp.StatusCode, platform.RedactURLUserinfo(repoURL))
+	}
+}
+
+// redirectStaysOnARepository reports whether a probe's redirect target is
+// another repository path on the same host (owner/name, at least two
+// path segments) — a rename — rather than a sign-in page or another
+// site. No Location, an unparseable one, or a different host is not a
+// repository.
+func redirectStaysOnARepository(from *url.URL, location string) bool {
+	if location == "" {
+		return false
+	}
+	to, err := from.Parse(location)
+	if err != nil || !strings.EqualFold(to.Host, from.Host) {
+		return false
+	}
+	segs := strings.Split(strings.Trim(to.EscapedPath(), "/"), "/")
+	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
+		return false
+	}
+	switch strings.ToLower(segs[0]) {
+	case "users", "login", "sessions", "signin", "sign_in", "auth", "-":
+		return false // a forge's account or system space, not a repository
+	}
+	return true
 }
 
 // --- add-key: store API keys in the database ---
@@ -1244,7 +1303,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long: `Refreshes the data of the 20 materialized views used by 8Knot and other analytics tools — when this database has them. Materialized views are optional (collection.materialized_views, default true); on a database without them this command says so and does nothing. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
+		Long: `Refreshes the data of the 22 materialized views used by 8Knot and other analytics tools — when this database has them. Materialized views are optional (collection.materialized_views, default true); on a database without them this command says so and does nothing. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
 
 --aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {

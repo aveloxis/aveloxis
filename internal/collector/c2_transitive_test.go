@@ -118,7 +118,7 @@ func TestPurlEcosystemAliasesForRosterStrings(t *testing.T) {
 			t.Errorf("purlEcosystemTypes missing the roster alias %s — its transitives are silently dropped", needle)
 		}
 	}
-	if purlForPackage("rubygems", "rails", "7.0.8") == "" {
+	if purlForPackage("rubygems", "", "rails", "7.0.8") == "" {
 		t.Error("a rubygems transitive must produce a purl")
 	}
 }

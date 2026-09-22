@@ -44,7 +44,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
   │  │ 101 tables        │  │ 42 tables              │ │
-  │  │ 20 matviews       │  │ - collection_queue     │ │
+  │  │ 22 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
   │  │ - pull_requests   │  │ - worker_oauth         │ │
@@ -71,7 +71,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 
-### `aveloxis_data` (101 tables + 20 materialized views)
+### `aveloxis_data` (101 tables + 22 materialized views)
 
 All collected open source community health data:
 
@@ -91,7 +91,7 @@ All collected open source community health data:
 | Analysis/ML | 8 | `message_analysis`, `message_analysis_summary`, `message_sentiment`, `message_sentiment_summary`, `discourse_insights`, `lstm_anomaly_models`, `lstm_anomaly_results`, `pull_request_analysis` |
 | CHAOSS | 4 | `chaoss_metric_status`, `chaoss_user`, `repo_group_insights`, `commit_comment_ref` |
 
-Plus 20 materialized views for 8Knot compatibility when `collection.materialized_views` is enabled (the default).
+Plus 22 materialized views (20 for 8Knot compatibility, two for the supply-chain package view) when `collection.materialized_views` is enabled (the default).
 
 ### `aveloxis_scan` (4 tables)
 
@@ -239,7 +239,7 @@ aveloxis/
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
       schema.sql          # Full DDL (147 tables)
-      matviews.sql        # 20 materialized views
+      matviews.sql        # 22 materialized views
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver
       aggregates.go       # Facade aggregate refresh
@@ -283,7 +283,7 @@ Each job runs six phases. After the sequential API collection and processing pha
 | Org refresh | Configurable (default 4h) | Scans GitHub orgs and GitLab groups for new/renamed repos |
 | User org refresh | Same as org refresh | Scans user-requested org additions |
 | Contributor breadth | 15 min | Discovers cross-repo activity via GitHub Events API (7-day per-contributor cooldown) |
-| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 20 materialized views, resumes |
+| Matview rebuild | Weekly (Saturday) | Drains all workers, rebuilds 22 materialized views, resumes |
 | Gone-repo recheck | Hourly tick; per-repo cadence `gone_repo_recheck_days` (28) | v0.29.7: re-probes dequeued 404/410/451 repositories (≤ 500 per tick, unauthenticated HEAD, no key budget); 2xx resurrects + re-enqueues via `ResurrectRepo`; `repos.repo_gone_checked_at` is the cadence marker |
 
 ### Graceful shutdown

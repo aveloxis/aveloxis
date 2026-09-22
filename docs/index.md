@@ -14,7 +14,7 @@ Aveloxis is a high-performance open source community health data collection plat
 - **SBOM generation** — CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries and real dependency graphs from 19 lockfile formats
 - **Interactive visualizations** — weekly time-series charts, cross-project comparison with Z-score normalization, dependency license analysis
 - **REST API** — JSON endpoints for stats, time series, licenses, SBOM download, and repo search
-- **20 materialized views** — 8Knot-compatible analytics views, rebuilt weekly; optional (`collection.materialized_views`)
+- **22 materialized views** — 20 8Knot-compatible analytics views plus the two supply-chain package views, rebuilt weekly; optional (`collection.materialized_views`)
 - **Mailing-list ingestion** — Apache Pony Mail + lore public-inbox archives, email as a first-class entity
 - **Distribution tracking** — "where is this repo published?" across deps.dev, ecosyste.ms, release assets, and GitHub Packages
 - **Public showcase** — static, SEO-indexable collection + repo snapshot pages (`aveloxis generate-showcase`)

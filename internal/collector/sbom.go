@@ -452,7 +452,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	var transRefs []string
 	if graph != nil {
 		for _, t := range graph.Transitives {
-			purl := purlForPackage(t.Ecosystem, t.PackageName, t.ResolvedVersion)
+			purl := purlForPackage(t.Ecosystem, t.Namespace, t.PackageName, t.ResolvedVersion)
 			if purl == "" {
 				// v0.29.58 (review rounds 1 and 2): a package with no valid
 				// purl is still a component of the software — SPDX lists
@@ -837,7 +837,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 				LicenseConcluded: "NOASSERTION",
 				LicenseDeclared:  "NOASSERTION",
 			}
-			if purl := purlForPackage(t.Ecosystem, t.PackageName, t.ResolvedVersion); purl != "" {
+			if purl := purlForPackage(t.Ecosystem, t.Namespace, t.PackageName, t.ResolvedVersion); purl != "" {
 				pkg.ExternalRefs = []spdxExternalRef{{
 					ReferenceCategory: "PACKAGE-MANAGER",
 					ReferenceType:     "purl",

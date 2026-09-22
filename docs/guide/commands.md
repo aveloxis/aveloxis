@@ -37,7 +37,7 @@ The scheduler also runs these background tasks:
 |---|---|---|
 | Org refresh | Every 4 hours | Re-fetches org membership lists |
 | Contributor breadth | Every 15 minutes (config `breadth_interval_minutes`) | Discovers cross-repo contributor activity via GitHub Events API |
-| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 20 materialized views, resumes |
+| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 22 materialized views, resumes |
 | Stale lock recovery | Every 5 minutes | Re-queues jobs locked for more than 1 hour |
 
 ### Scancode worker tuning
@@ -390,9 +390,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when `collection.materialized_views` is enabled (the default):
+Creates 147 tables across three PostgreSQL schemas, plus 22 materialized views when `collection.materialized_views` is enabled (the default):
 
-- **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
+- **`aveloxis_data`** (101 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -627,7 +627,7 @@ this command, then `aveloxis refresh-views` once the heal settles.
 
 ## `aveloxis refresh-views`
 
-Manually refreshes all 20 materialized views.
+Manually refreshes all 22 materialized views.
 
 ```bash
 aveloxis refresh-views                # the materialized views

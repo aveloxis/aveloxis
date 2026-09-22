@@ -157,6 +157,7 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 					PackageName:     e.Name,
 					ResolvedVersion: e.Version,
 					LockfilePath:    pl.Path,
+					Namespace:       e.Namespace,
 					Direct:          false,
 					Scope:           e.Scope,
 				})
@@ -175,8 +176,9 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 				LockfilePath:    pl.Path,
 				// Stored 'direct' means "resolution of a repo-level
 				// declared dependency" — exactly the pre-C1 row set.
-				Direct: true,
-				Scope:  e.Scope,
+				Namespace: e.Namespace,
+				Direct:    true,
+				Scope:     e.Scope,
 			})
 		}
 		// direct_count: what the format itself flags as direct when it

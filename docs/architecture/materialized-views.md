@@ -1,6 +1,6 @@
 # Materialized Views
 
-When `collection.materialized_views` is enabled (the default), Aveloxis creates **20 materialized views + 2 alias views** under the `aveloxis_data` schema; a deployment with it disabled has none of these relations (v0.29.57 — they are derived data, and a deployment that never queries them can skip building them). v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate `augur_new_contributors` matview and converting `explorer_libyear_all` to an alias VIEW. v0.25.6 then restored `augur_new_contributors` as a plain VIEW alias (operators query it to identify new contributors), so today's count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. Their data is refreshed on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`. A refresh keeps each view's definition; a release that changes a definition applies it with a plain `aveloxis migrate` (without `--skip-views`), which drops and re-creates the views. Alias views read live from their underlying matview and need no separate refresh.
+When `collection.materialized_views` is enabled (the default), Aveloxis creates **22 materialized views + 2 alias views** under the `aveloxis_data` schema; a deployment with it disabled has none of these relations (v0.29.57 — they are derived data, and a deployment that never queries them can skip building them). v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate `augur_new_contributors` matview and converting `explorer_libyear_all` to an alias VIEW. v0.25.6 then restored `augur_new_contributors` as a plain VIEW alias (operators query it to identify new contributors), so the count was 20 matviews + 2 alias views until v0.29.60 added the two supply-chain views: 22 matviews + 2 alias views today. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. Their data is refreshed on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`. A refresh keeps each view's definition; a release that changes a definition applies it with a plain `aveloxis migrate` (without `--skip-views`), which drops and re-creates the views. Alias views read live from their underlying matview and need no separate refresh.
 
 This page explains, for each view, **what a row means**, **what the complete table tells you**, and **how an open source health and sustainability analyst would actually use it**. The audience is operators and analysts, not SQL authors — the goal is to make the catalog useful without requiring a read of the underlying query.
 
@@ -26,6 +26,7 @@ If the underlying data has changed only modestly since the last rebuild, the mos
 | **Issues** | `explorer_issue_assignments` |
 | **Files / code** | `explorer_repo_files`, `explorer_repo_languages` |
 | **Dependencies** | `explorer_libyear_all`, `explorer_libyear_summary`, `explorer_libyear_detail` |
+| **Supply chain** | `explorer_package_exposure`, `explorer_package_advisory` |
 
 ---
 
@@ -413,3 +414,44 @@ Or wait for the next weekly automatic rebuild.
 - [Analysis](analysis.md) — how `repo_labor` (drives `explorer_repo_files` / `explorer_repo_languages`) and `repo_deps_libyear` are populated.
 - [Scaling](../guide/scaling.md) — database tuning for the rebuild window.
 - [Overview](overview.md) — system architecture.
+
+
+## Supply-chain package views (v0.29.60)
+
+### `explorer_package_exposure`
+
+**One row per `(ecosystem, package_name)` across the whole fleet: the
+package's exposure profile.** `cohort_repos` (repositories that have ever
+had a finding on it) and `repos_unresolved` (have one now); `findings` /
+`findings_unresolved` (rows: repository × advisory × version);
+`pct_unresolved`; `pct_transitive` (the share of exposure a manifest reader
+cannot see); `median_days_open` (median age of the current findings);
+`worst_severity` (ranked, not alphabetical), `max_cvss`, `n_advisories`;
+`distinct_versions_in_use`, `modal_version`, `modal_version_share_pct` over
+`repos_with_known_versions`; and the lead advisory — the one on the most
+repositories — as `lead_advisory`, `lead_cve`, `lead_severity`,
+`lead_fixed_version`, `lead_advisory_repos`.
+
+**What the complete table tells you:** which libraries the fleet is exposed
+through, and the shape of that exposure. The analyst's question it answers
+is the one a single Dependabot pull request cannot: *how many projects does
+this one library reach, how much of that is invisible in their manifests,
+and are they even running the same version?* A package with high
+`pct_transitive` and low `modal_version_share_pct` is an upgrade nobody
+owns.
+
+The definition is `db.PackageExposureMatviewSQL()` verbatim — the same SQL
+the API runs live for one group or one user's scope with a repository
+filter (`go run ./scripts/gen-package-exposure-sql` regenerates it; a test
+fails when the file and the code drift). A deployment without the views
+(`collection.materialized_views` off, or before the v0.29.60 migrate) is
+served by that live aggregate over the whole table — about three seconds
+on a 5.5-million-row fleet — instead of an error.
+
+### `explorer_package_advisory`
+
+**One row per `(ecosystem, package_name, vuln_id)`: one advisory's
+footprint on one package.** `cve_id`, `severity`, `max_cvss`,
+`fixed_version`, `repos`, `repos_unresolved`, `first_seen`. The profile's
+lead advisory is this table's top row for the package; the API's package
+page lists them all.

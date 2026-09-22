@@ -49,7 +49,7 @@ var MatviewAliasNames = []string{"explorer_libyear_all", "augur_new_contributors
 // deployment that turned the feature on); a COMPLETE set is left alone; a
 // PARTIAL set is reported at ERROR, naming the missing relations and the
 // plain `aveloxis migrate` that rebuilds them, and NOT rebuilt here. The
-// probe covers the whole managed set — the 20 matviews and the 2 alias
+// probe covers the whole managed set — the 22 matviews and the 2 alias
 // views — not one sentinel, so a relation dropped by hand, or a view a new
 // release adds to matviews.sql, is noticed at every start (Copilot review
 // 5271953014: the sentinel `api_get_all_repo_prs` alone let a partial set
@@ -166,6 +166,9 @@ var matviewNames = []string{
 	"aveloxis_data.explorer_pr_files",
 	"aveloxis_data.explorer_cntrb_per_file",
 	"aveloxis_data.explorer_repo_files",
+	// v0.29.60: the supply-chain package views (matviews.sql 23, 24).
+	"aveloxis_data.explorer_package_exposure",
+	"aveloxis_data.explorer_package_advisory",
 }
 
 // RefreshMaterializedViews refreshes all materialized views concurrently.

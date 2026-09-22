@@ -4312,6 +4312,12 @@ func extractSwiftPackageName(line string) string {
 		return ""
 	}
 	url := rest[q1+1 : q1+1+q2]
+	// v0.29.59: the shared Swift URL parse (parseSwiftPackageURL), so the
+	// manifest's name is the SAME repository name the Package.resolved
+	// reader stores; a non-URL value keeps the last-segment fallback.
+	if ref, ok := parseSwiftPackageURL(url); ok {
+		return ref.Repo
+	}
 	// Extract repo name: last path component, strip .git suffix.
 	parts := strings.Split(strings.TrimSuffix(url, ".git"), "/")
 	if len(parts) > 0 {
@@ -4364,18 +4370,18 @@ func extractSwiftVersion(line string) string {
 // 2026-09-17 log). The version in use is looked up as a release tag, with
 // and without a leading "v", so libyear is computed instead of 0.
 func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearDep) (*db.LibyearRow, error) {
-	// The requirement field contains the git URL. Extract owner/repo.
-	repoURL := dep.Requirement
-	repoURL = strings.TrimSuffix(repoURL, ".git")
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://"), "/")
-	if len(parts) < 3 || !strings.Contains(parts[0], "github.com") {
+	// v0.29.59: one shared parse (parseSwiftPackageURL). GitHub has no
+	// subgroups, so the namespace must be exactly host/owner; userinfo
+	// and a port never reach the purl.
+	ref, ok := parseSwiftPackageURL(dep.Requirement)
+	if !ok || ref.Host != "github.com" || ref.Namespace != ref.Host+"/"+ref.Owner {
 		// Non-GitHub SwiftPM packages can't be resolved without a registry.
-		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s", repoURL)
+		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s", platform.RedactURLUserinfo(dep.Requirement))
 	}
 	if gh == nil {
 		return nil, errNoGitHubClient
 	}
-	owner, repo := parts[1], parts[2]
+	owner, repo := ref.Owner, ref.Repo
 	releases := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases"
 
 	type release struct {
@@ -4415,7 +4421,11 @@ func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearD
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latest.PublishedAt,
 		Libyear:            calcLibyear(currentDate, latest.PublishedAt),
-		Purl:               buildPurl("swift", owner+"/"+repo, dep.Version),
+		// v0.29.59 (worklist 46): the purl spec's swift namespace is the
+		// repository host and owner (pkg:swift/github.com/Owner/Repo@v);
+		// the Package.resolved writer emits the same shape, so the direct
+		// and transitive purls of one package are one purl.
+		Purl: buildPurl("swift", ref.Namespace+"/"+ref.Repo, dep.Version),
 	}, nil
 }
 

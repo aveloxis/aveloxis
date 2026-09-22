@@ -139,6 +139,10 @@ type RepoLockfilePackage struct {
 	PackageName     string
 	ResolvedVersion string
 	LockfilePath    string
+	// Namespace is repo_lockfile_packages.purl_namespace (v0.29.59): the
+	// purl namespace the lockfile supplied (a SwiftPM pin's host/owner),
+	// "" where the format has none.
+	Namespace string
 	// Direct (v0.27.21 C1) — TRUE for resolutions of the repo's
 	// declared direct dependencies (the only rows written pre-C1 and
 	// with vuln_scan_transitive off); FALSE for transitive entries.
@@ -216,11 +220,11 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 			batch.Queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_packages
 					(repo_id, ecosystem, package_name, resolved_version,
-					 lockfile_path, direct, dependency_scope, data_source, data_collection_date)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, 'analysis', NOW())
+					 lockfile_path, direct, dependency_scope, purl_namespace, data_source, data_collection_date)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'analysis', NOW())
 				ON CONFLICT (repo_id, lockfile_path, package_name, resolved_version) DO NOTHING`,
 				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
-				p.Direct, p.Scope)
+				p.Direct, p.Scope, p.Namespace)
 		}
 		for _, e := range edges {
 			batch.Queue(`
@@ -276,7 +280,7 @@ func (s *PostgresStore) GetRepoLockfileEdges(ctx context.Context, repoID int64) 
 // transitive entry must never reclassify a DECLARED dep as 'locked'.
 func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT ecosystem, package_name, resolved_version, lockfile_path
+		SELECT ecosystem, package_name, resolved_version, lockfile_path, COALESCE(purl_namespace, '')
 		FROM aveloxis_data.repo_lockfile_packages
 		WHERE repo_id = $1 AND COALESCE(direct, TRUE)
 		ORDER BY package_name, resolved_version`, repoID)
@@ -287,7 +291,7 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 	var out []RepoLockfilePackage
 	for rows.Next() {
 		var p RepoLockfilePackage
-		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath); err != nil {
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Namespace); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -306,10 +310,11 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version,
-		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END)
+		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END),
+		       COALESCE(purl_namespace, '')
 		FROM aveloxis_data.repo_lockfile_packages
 		WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)
-		GROUP BY ecosystem, package_name, resolved_version
+		GROUP BY ecosystem, package_name, resolved_version, COALESCE(purl_namespace, '')
 		ORDER BY package_name, resolved_version`, repoID)
 	if err != nil {
 		return nil, err
@@ -318,7 +323,7 @@ func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID in
 	var out []RepoLockfilePackage
 	for rows.Next() {
 		var p RepoLockfilePackage
-		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.Scope); err != nil {
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.Scope, &p.Namespace); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -637,10 +642,11 @@ func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) 
 func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version, COALESCE(lockfile_path, ''),
-		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END)
+		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END),
+		       COALESCE(purl_namespace, '')
 		FROM aveloxis_data.repo_lockfile_packages
 		WHERE repo_id = $1 AND NOT COALESCE(direct, TRUE)
-		GROUP BY ecosystem, package_name, resolved_version, COALESCE(lockfile_path, '')
+		GROUP BY ecosystem, package_name, resolved_version, COALESCE(lockfile_path, ''), COALESCE(purl_namespace, '')
 		ORDER BY package_name, resolved_version, 4`, repoID)
 	if err != nil {
 		return nil, err
@@ -649,7 +655,7 @@ func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, 
 	var out []RepoLockfilePackage
 	for rows.Next() {
 		p := RepoLockfilePackage{Direct: false}
-		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope); err != nil {
+		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope, &p.Namespace); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

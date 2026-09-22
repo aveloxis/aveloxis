@@ -100,7 +100,7 @@ func FuzzPurlHelpers(f *testing.F) {
 	f.Add("maven", "org.apache:commons", "1.0")
 	f.Add("gem", "tzinfo-data", "platforms: %i[mingw]")
 	f.Fuzz(func(t *testing.T, ecosystem, name, version string) {
-		p := purlForPackage(ecosystem, name, version)
+		p := purlForPackage(ecosystem, "", name, version)
 		_ = wireValidPurl(p)
 		_ = purlWithVersion(p, version)
 		_ = purlReplaceVersion(p, version)

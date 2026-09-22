@@ -88,7 +88,13 @@ var smokeRecipes = map[string]smokeRecipe{
 	// code, pinned by portal_bulk_add_test.go).
 	"POST /api/v1/groups/{groupID}/repos": {auth: "user", body: `{"urls":["https://github.com/_avsmoke/{repoName}"],"kind":"repo"}`},
 	"GET /api/v1/home/repos":              {auth: "user"},
-	"GET /api/v1/home/new-repos":          {auth: "user"},
+	// v0.29.60: supply-chain package view. The smoke token is an admin, so
+	// the FLEET path runs; the per-package test database builds no
+	// materialized views, so this exercises the live fallback the store
+	// takes when the view is absent (42P01).
+	"GET /api/v1/supply-chain/packages":                       {auth: "user", query: "sort=repos&limit=5"},
+	"GET /api/v1/supply-chain/packages/{ecosystem}/{name...}": {auth: "user", wantStatus: []int{404}},
+	"GET /api/v1/home/new-repos":                              {auth: "user"},
 	// v0.27.63 collections. Ordering via `after`: the group link and
 	// copy run before the delete so they exercise a live collection.
 	"GET /api/v1/collections":                                               {auth: "user"},
@@ -231,6 +237,11 @@ func TestEveryEndpointExecutes(t *testing.T) {
 		"{repo}", fx.repoName,
 		"{repoName}", fx.repoName,
 		"{rgName}", fx.rgName,
+		// v0.29.60: the supply-chain package path; the fixture seeds no
+		// finding, so the profile answers the typed not-found (the
+		// aggregate still executes against the real schema).
+		"{ecosystem}", "npm",
+		"{name...}", "smoke-package",
 	)
 
 	run := func(route string, r smokeRecipe) {

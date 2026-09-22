@@ -611,8 +611,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// adds to the views' age (a nil channel when the cadence is off).
 	supplyChainC, stopSupplyChain := supplyChainRefreshTicker(s.cfg.Collection)
 	defer stopSupplyChain()
-	if supplyChainC != nil {
+	if supplyChainStartupRefresh(supplyChainC != nil, s.store.SupplyChainViewsBuiltThisRun()) {
 		s.singleFlight(&s.supplyChainRefreshActive, "supply-chain-refresh", func() { s.runSupplyChainRefresh(ctx) })
+	} else if supplyChainC != nil {
+		s.logger.Info("the whole supply-chain pair was built by this start (with data) — startup refresh skipped; the next one is on the cadence")
 	}
 
 	// v0.19.2: search-resolve background task. Takes contributors

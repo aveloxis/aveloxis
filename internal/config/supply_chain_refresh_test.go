@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,9 +59,14 @@ func TestSupplyChainRefreshHoursLoadsFromJSON(t *testing.T) {
 	if got, on := cfg.Collection.SupplyChainRefreshInterval(); !on || got != 24*time.Hour {
 		t.Errorf("absent after Load: interval=%v on=%v, want the daily default", got, on)
 	}
-	if _, err := Load(write(`{"collection": {"supply_chain_refresh_hours": -1}}`)); err == nil {
-		t.Error("a negative supply_chain_refresh_hours must be refused at load")
-	} else if !strings.Contains(err.Error(), "supply_chain_refresh_hours") {
-		t.Errorf("the refusal must name the key: %v", err)
+	for _, bad := range []string{"-1", fmt.Sprint(MaxSupplyChainRefreshHours + 1)} {
+		if _, err := Load(write(`{"collection": {"supply_chain_refresh_hours": ` + bad + `}}`)); err == nil {
+			t.Errorf("supply_chain_refresh_hours %s must be refused at load (negative, or an hours value whose Duration overflows)", bad)
+		} else if !strings.Contains(err.Error(), "supply_chain_refresh_hours") {
+			t.Errorf("the refusal must name the key: %v", err)
+		}
+	}
+	if d := time.Duration(MaxSupplyChainRefreshHours) * time.Hour; d <= 0 {
+		t.Errorf("the bound itself must be representable, got %v", d)
 	}
 }

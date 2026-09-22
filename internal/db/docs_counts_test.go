@@ -76,7 +76,11 @@ func schemaCounts(t *testing.T) (data, ops, scan, matviews int) {
 	return data, ops, scan, matviews
 }
 
-var matviewPhraseRe = regexp.MustCompile(`(\d+) materialized views`)
+// The optional word between the number and "materialized" is the
+// attribution the docs actually use ("20 8Knot materialized views",
+// "8Knot-compatible"); a match carrying it must state the 8Knot count
+// (round 2 on v0.29.61: the plain phrase never saw that spelling).
+var matviewPhraseRe = regexp.MustCompile(`(\d+) (8Knot(?:-\w+)? )?materialized views`)
 
 func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 	_, _, _, matviews := schemaCounts(t)
@@ -93,8 +97,25 @@ func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		for _, m := range matviewPhraseRe.FindAllStringSubmatch(string(src), -1) {
+		text := string(src)
+		for _, loc := range matviewPhraseRe.FindAllStringSubmatchIndex(text, -1) {
+			m := []string{text[loc[0]:loc[1]], text[loc[2]:loc[3]]}
 			n, _ := strconv.Atoi(m[1])
+			attributed := loc[4] >= 0
+			// A phrase that attributes the count to 8Knot ("… for 8Knot",
+			// "… used by 8Knot", "… compatible with 8Knot", "8Knot
+			// materialized views") must state the 8Knot count, not the
+			// total (review round 1 on v0.29.61: widening the pin let
+			// "22 … for 8Knot compatibility" through).
+			after := text[loc[1]:min(len(text), loc[1]+28)]
+			before := text[max(0, loc[0]-8):loc[0]]
+			for8Knot := attributed || strings.Contains(before, "8Knot") ||
+				strings.HasPrefix(after, " for 8Knot") || strings.HasPrefix(after, " used by 8Knot") ||
+				strings.HasPrefix(after, " compatible with 8Knot")
+			if for8Knot && n != matviews {
+				t.Errorf("%s says %q of 8Knot, but matviews.sql defines %d — the supply-chain pair is not 8Knot's", path, m[0], matviews)
+				continue
+			}
 			if !valid[n] {
 				t.Errorf("%s says %q but matviews.sql defines %d 8Knot materialized views and the supply-chain pair makes %d — "+
 					"update the doc in the same commit as the view change.",

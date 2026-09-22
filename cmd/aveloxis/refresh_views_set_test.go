@@ -5,6 +5,8 @@ package main
 
 import (
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,16 +53,17 @@ func TestLoadConfigTellsMissingFromInvalid(t *testing.T) {
 	if _, err := config.Load(bad); err == nil || errors.Is(err, config.ErrNotFound) {
 		t.Errorf("an invalid file must be an error that is NOT not-found, got %v", err)
 	}
-	src, rerr := os.ReadFile("main.go")
-	if rerr != nil {
-		t.Fatal(rerr)
+	// Runtime: the seam records the exit instead of taking the process.
+	var exited []int
+	prev := exitProcess
+	exitProcess = func(code int) { exited = append(exited, code) }
+	t.Cleanup(func() { exitProcess = prev })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if cfg := loadConfig(filepath.Join(dir, "absent.json"), logger); cfg == nil || len(exited) != 0 {
+		t.Errorf("a missing file must yield the defaults without exiting (exits=%v)", exited)
 	}
-	fn := string(src[strings.Index(string(src), "func loadConfig("):])
-	fn = fn[:strings.Index(fn, "\nfunc ")]
-	if !strings.Contains(fn, "errors.Is(err, config.ErrNotFound)") {
-		t.Error("loadConfig must fall back to defaults ONLY for config.ErrNotFound")
-	}
-	if !strings.Contains(fn, "os.Exit(1)") {
-		t.Error("loadConfig must refuse to run on defaults over an invalid file")
+	loadConfig(bad, logger)
+	if len(exited) != 1 || exited[0] != 1 {
+		t.Errorf("an invalid file must exit 1, got exits=%v", exited)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -33,9 +34,19 @@ import (
 
 // SupplyChainViewNames are the two Aveloxis-owned materialized views, bare
 // (schema aveloxis_data). The ONE list: the builder, the probe, the refresh,
-// the deploy checklist's count and the tests that keep matviews.sql and
-// matviewNames free of them all read it.
+// the deploy checklist's count query (SupplyChainViewNamesSQLList) and the
+// tests that keep matviews.sql and matviewNames free of them all read it.
 var SupplyChainViewNames = []string{"explorer_package_exposure", "explorer_package_advisory"}
+
+// SupplyChainViewNamesSQLList renders the pair for an SQL IN list:
+// 'explorer_package_exposure', 'explorer_package_advisory'.
+func SupplyChainViewNamesSQLList() string {
+	quoted := make([]string, 0, len(SupplyChainViewNames))
+	for _, n := range SupplyChainViewNames {
+		quoted = append(quoted, "'"+n+"'")
+	}
+	return strings.Join(quoted, ", ")
+}
 
 type supplyChainView struct {
 	name  string
@@ -77,6 +88,10 @@ func createSupplyChainView(ctx context.Context, pg *PostgresStore, v supplyChain
 // `aveloxis migrate` does on every run because it costs seconds. Every
 // failure is logged and returned; the other view is still attempted.
 func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	present, err := supplyChainViewsPresentSet(ctx, pg)
+	if err != nil {
+		return fmt.Errorf("probing for supply-chain views: %w", err)
+	}
 	var failed []error
 	for _, v := range supplyChainViewDefs() {
 		if ctx.Err() != nil {
@@ -84,8 +99,7 @@ func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog
 		}
 		start := time.Now()
 		if err := createSupplyChainView(ctx, pg, v); err != nil {
-			logger.Error("supply-chain view creation failed — the API aggregates live for this view until a migrate builds it",
-				"view", v.name, "error", err, "duration", time.Since(start).Truncate(time.Millisecond))
+			logCreateFailure(logger, v.name, present[v.name], err, time.Since(start))
 			failed = append(failed, fmt.Errorf("view %s: %w", v.name, err))
 			continue
 		}
@@ -94,39 +108,57 @@ func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog
 	return errors.Join(failed...)
 }
 
+// logCreateFailure says what a failed (re-)create leaves behind, by path
+// (review round 1 finding 3): the transaction rolled back, so a view that
+// EXISTED keeps its previous definition and data — the API keeps serving
+// it, not "live" — and a view that did not exist is still absent, which
+// the API answers with the live aggregate.
+func logCreateFailure(logger *slog.Logger, name string, existed bool, err error, took time.Duration) {
+	if existed {
+		logger.Error("supply-chain view re-create failed — the PREVIOUS definition and its data are kept and still served; fix the cause and re-run `aveloxis migrate`",
+			"view", name, "error", err, "duration", took.Truncate(time.Millisecond))
+		return
+	}
+	logger.Error("supply-chain view creation failed — the view is absent and the API aggregates live for it until a migrate builds it",
+		"view", name, "error", err, "duration", took.Truncate(time.Millisecond))
+}
+
 // CreateSupplyChainViewsIfMissing is serve's startup rule for the pair:
 // build whichever member is absent, leave the present ones alone (their
-// data refreshes on the scheduler's cadence). Reports whether anything was
-// built so the caller can skip an immediate refresh of fresh views.
+// data refreshes on the scheduler's cadence). Reports whether the WHOLE
+// pair was built here: applySupplyChainViewMode records it on the store,
+// and the scheduler skips its startup refresh only then — views built
+// seconds earlier are WITH DATA, but a pre-existing member of a partial
+// pair aged through the downtime and still needs that refresh (round 2
+// finding 3).
 func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Logger) (bool, error) {
 	present, err := supplyChainViewsPresentSet(ctx, pg)
 	if err != nil {
 		return false, fmt.Errorf("probing for supply-chain views: %w", err)
 	}
-	built := false
+	builtCount := 0
 	var failed []error
 	for _, v := range supplyChainViewDefs() {
 		if present[v.name] {
 			continue
 		}
 		if ctx.Err() != nil {
-			return built, ctx.Err()
+			return false, ctx.Err()
 		}
 		start := time.Now()
 		if err := createSupplyChainView(ctx, pg, v); err != nil {
-			logger.Error("supply-chain view creation failed — the API aggregates live for this view until a migrate builds it",
-				"view", v.name, "error", err, "duration", time.Since(start).Truncate(time.Millisecond))
+			logCreateFailure(logger, v.name, false, err, time.Since(start))
 			failed = append(failed, fmt.Errorf("view %s: %w", v.name, err))
 			continue
 		}
-		built = true
+		builtCount++
 		logger.Info("supply-chain view created (was missing)", "view", v.name, "duration", time.Since(start).Truncate(time.Millisecond))
 	}
-	if !built && len(failed) == 0 {
+	if builtCount == 0 && len(failed) == 0 {
 		logger.Info("supply-chain views already exist, left alone at startup (their data refreshes on collection.supply_chain_refresh_hours; a changed definition lands on the next `aveloxis migrate`)",
 			"views", len(present))
 	}
-	return built, errors.Join(failed...)
+	return builtCount == len(SupplyChainViewNames), errors.Join(failed...)
 }
 
 // supplyChainViewsPresentSet names the members of the pair that exist.

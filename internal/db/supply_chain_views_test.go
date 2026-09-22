@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestSupplyChainViewsAreAveloxisOwned pins the split (worklist 48): the
@@ -92,11 +94,13 @@ func TestSupplyChainViewsBuildRefreshAndProbe(t *testing.T) {
 		t.Errorf("refresh: %v", err)
 	}
 
-	// One member dropped by hand: the next IfMissing rebuilds THAT one.
+	// One member dropped by hand: the next IfMissing rebuilds THAT one —
+	// and reports built=false, because the other member is pre-existing
+	// and still owed the startup refresh (round 2 finding 3).
 	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+SupplyChainViewNames[1])
 	built, err = CreateSupplyChainViewsIfMissing(ctx, store, logger)
-	if err != nil || !built {
-		t.Errorf("a partial pair must be completed: built=%v err=%v", built, err)
+	if err != nil || built {
+		t.Errorf("completing a partial pair must not claim the whole pair was built: built=%v err=%v", built, err)
 	}
 	if n := mustPresent(t, store); n != 2 {
 		t.Errorf("after completing the pair %d present, want 2", n)
@@ -158,6 +162,125 @@ func TestMigrateBuildsTheSupplyChainPairByItsOwnMode(t *testing.T) {
 	}
 	if n := mustPresent(t, store); n != 2 {
 		t.Errorf("the fast path left %d of 2 supply-chain views", n)
+	}
+}
+
+// TestEightKnotRefreshIgnoresTheSupplyChainPair (AVELOXIS_TEST_DB) — review
+// round 1 finding 1: the 8Knot refresh asked "any matview in aveloxis_data?"
+// so, with the pair now built on every deployment, a database WITHOUT the
+// 8Knot set answered "present" and got twenty REFRESHes of absent views
+// (20 WARNs + an ERROR, nonzero exit, every rebuild day under the claims
+// gate) — the v0.29.57 symptom back. The probe must count the 8Knot set
+// by name and no-op when it is absent.
+func TestEightKnotRefreshIgnoresTheSupplyChainPair(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	dropSupplyChainViews(t, store)
+	if n := eightKnotViewsPresentForTest(t, store); n != 0 {
+		t.Skipf("this database has %d 8Knot views; the fixture needs none", n)
+	}
+	if err := CreateSupplyChainViews(ctx, store, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	var log strings.Builder
+	logger := slog.New(slog.NewTextHandler(&log, nil))
+	if err := RefreshMaterializedViews(ctx, store, logger); err != nil {
+		t.Errorf("8Knot refresh with only the pair present must be a no-op, got %v", err)
+	}
+	if strings.Contains(log.String(), "refreshing materialized views") || strings.Contains(log.String(), "failed to refresh") {
+		t.Errorf("the 8Knot refresh issued REFRESHes for absent views:\n%s", log.String())
+	}
+	if !strings.Contains(log.String(), "no 8Knot materialized views") {
+		t.Errorf("the no-op must be said out loud:\n%s", log.String())
+	}
+	// And the pair's own refresh still works beside an absent 8Knot set.
+	if err := RefreshSupplyChainViews(ctx, store, logger); err != nil {
+		t.Errorf("pair refresh: %v", err)
+	}
+}
+
+func eightKnotViewsPresentForTest(t *testing.T, store *PostgresStore) int {
+	t.Helper()
+	n, err := eightKnotMatviewsPresent(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestServeSkipsTheStartupRefreshItJustBuilt (AVELOXIS_TEST_DB) — review
+// round 1 finding 4: a start that BUILT the pair (WITH DATA) must not
+// refresh it seconds later; a start that found it must.
+func TestServeSkipsTheStartupRefreshItJustBuilt(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dropSupplyChainViews(t, store)
+	store.SetSupplyChainViewMode(MatviewsIfMissing)
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatal(err)
+	}
+	if !store.SupplyChainViewsBuiltThisRun() {
+		t.Error("the migrate that built the pair must say so")
+	}
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatal(err)
+	}
+	if store.SupplyChainViewsBuiltThisRun() {
+		t.Error("a migrate that found the pair complete must not claim to have built it")
+	}
+	// A partial pair: the pre-existing member aged through the downtime,
+	// so the startup refresh must still run (round 2 finding 3).
+	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+SupplyChainViewNames[1])
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatal(err)
+	}
+	if store.SupplyChainViewsBuiltThisRun() {
+		t.Error("completing a partial pair must not skip the startup refresh — the other member is stale")
+	}
+	if n := mustPresent(t, store); n != 2 {
+		t.Errorf("the partial pair was not completed: %d present", n)
+	}
+}
+
+// TestRebuildFailureIsAnErrorForTheChecklist (AVELOXIS_TEST_DB) — round 2
+// finding 1: on the Rebuild path a re-create that did not land leaves the
+// previous views served, and the deploy checklist greps the migrate log
+// for a `supply-chain view` ERROR — a WARN would pass the gate over an
+// unapplied definition. A cancelled context is the one failure a test can
+// provoke without touching the database.
+func TestRebuildFailureIsAnErrorForTheChecklist(t *testing.T) {
+	store := openTestStore(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		mode  MatviewMode
+		level string
+	}{{MatviewsRebuild, "level=ERROR"}, {MatviewsIfMissing, "level=WARN"}} {
+		var log strings.Builder
+		store.SetSupplyChainViewMode(tc.mode)
+		err := applySupplyChainViewMode(cancelled, store, slog.New(slog.NewTextHandler(&log, nil)))
+		line := ""
+		for _, l := range strings.Split(log.String(), "\n") {
+			if strings.Contains(l, "supply-chain view") && strings.Contains(l, tc.level) {
+				line = l
+			}
+		}
+		if line == "" {
+			t.Errorf("mode %d: want ONE %s line naming the supply-chain view, got:\n%s", tc.mode, tc.level, log.String())
+		}
+		// Round 3: the Rebuild path is a FAILED migrate (exit nonzero, no
+		// stamp); IfMissing (serve) never blocks a start.
+		if (tc.mode == MatviewsRebuild) != (err != nil) {
+			t.Errorf("mode %d: returned %v", tc.mode, err)
+		}
+	}
+	src, rerr := os.ReadFile("migrate.go")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(srctest.StripGoComments(srctest.FuncBody(t, string(src), "func RunMigrations(")), "if err := applySupplyChainViewMode(ctx, pg, logger); err != nil {\n\t\terrs = append(errs, err)") {
+		t.Error("the full migrate walk must append the supply-chain re-create failure to errs (fail closed, no stamp)")
 	}
 }
 

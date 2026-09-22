@@ -41,6 +41,18 @@ func TestSupplyChainRefreshTickerFollowsTheConfig(t *testing.T) {
 	}
 }
 
+// The startup decision at runtime (round 2 finding 4): off → never; the
+// whole pair built this start → skip; otherwise refresh.
+func TestSupplyChainStartupRefreshDecision(t *testing.T) {
+	for _, tc := range []struct{ scheduled, built, want bool }{
+		{false, false, false}, {false, true, false}, {true, true, false}, {true, false, true},
+	} {
+		if got := supplyChainStartupRefresh(tc.scheduled, tc.built); got != tc.want {
+			t.Errorf("scheduled=%v built=%v: got %v want %v", tc.scheduled, tc.built, got, tc.want)
+		}
+	}
+}
+
 // Wiring pin: the run loop has an arm for the ticker and it goes through
 // singleFlight under the name the pool-demand registry carries; the 8Knot
 // gate (MatviewRebuildActive) is never touched by the refresh.
@@ -53,8 +65,12 @@ func TestSupplyChainRefreshIsWiredIntoTheRunLoop(t *testing.T) {
 	if !strings.Contains(body, "case <-supplyChainC:") {
 		t.Error("Run has no select arm for the supply-chain refresh ticker")
 	}
-	if strings.Count(body, `"supply-chain-refresh"`) != 2 {
+	const call = `s.singleFlight(&s.supplyChainRefreshActive, "supply-chain-refresh", func() { s.runSupplyChainRefresh(ctx) })`
+	if strings.Count(body, call) != 2 {
 		t.Error("the refresh must run under singleFlight at startup and on every tick, both under the registered name")
+	}
+	if !strings.Contains(body, "if supplyChainStartupRefresh(supplyChainC != nil, s.store.SupplyChainViewsBuiltThisRun()) {") {
+		t.Error("the startup refresh must be gated by supplyChainStartupRefresh on the cadence and the built-this-run flag")
 	}
 	refresh, err := os.ReadFile("supply_chain_refresh.go")
 	if err != nil {

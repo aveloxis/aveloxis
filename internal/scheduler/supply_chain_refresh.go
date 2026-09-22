@@ -35,6 +35,15 @@ func supplyChainConfiguredHours(cc *config.CollectionConfig) any {
 	return *cc.SupplyChainRefreshHours
 }
 
+// supplyChainStartupRefresh decides serve's ONE refresh at startup, which
+// covers the age a restart's downtime added to the views: wanted when the
+// cadence is on and this start did not just build the whole pair WITH
+// DATA (round 1 finding 4; a partial pair's pre-existing member still
+// needs it, round 2 finding 3).
+func supplyChainStartupRefresh(scheduled, builtWholePairThisRun bool) bool {
+	return scheduled && !builtWholePairThisRun
+}
+
 // runSupplyChainRefresh refreshes the two Aveloxis-owned views (a few
 // seconds at fleet scale; CONCURRENTLY, so the API keeps reading). It runs
 // off the run loop under singleFlight and never pauses collection — the

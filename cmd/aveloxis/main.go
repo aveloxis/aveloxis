@@ -2155,9 +2155,13 @@ func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	// defaults — a wrong database, no keys, every knob silently reset —
 	// under a log line that said the file was not found. Refuse instead.
 	logger.Error("config file is invalid — refusing to run on defaults", "path", cfgPath, "error", err)
-	os.Exit(1)
+	exitProcess(1)
 	return nil
 }
+
+// exitProcess is loadConfig's exit; a test replaces it to prove the
+// invalid-file path is reached (never the missing-file path).
+var exitProcess = os.Exit
 
 // newLogger creates a logger from the config's log_level setting.
 func newLogger(cfg *config.Config) *slog.Logger {

@@ -29,6 +29,7 @@ type PostgresStore struct {
 	logger           *slog.Logger
 	matviewMode      MatviewMode // what RunMigrations does with the views; zero value builds none
 	supplyChainMode  MatviewMode // the same for the Aveloxis-owned supply-chain pair (supply_chain_views.go); independent of matviewMode
+	supplyChainBuilt bool        // the last Migrate BUILT the whole supply-chain pair (WITH DATA) — the scheduler skips its startup refresh
 	migrateNoWait    bool        // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool        // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
 	allowSecondServe bool        // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
@@ -238,6 +239,16 @@ func (s *PostgresStore) SetMatviewMode(m MatviewMode) {
 // value builds none. collection.materialized_views does not reach this.
 func (s *PostgresStore) SetSupplyChainViewMode(m MatviewMode) {
 	s.supplyChainMode = m
+}
+
+// SupplyChainViewsBuiltThisRun reports whether the last Migrate on this
+// store created the WHOLE supply-chain pair (WITH DATA, so it is as fresh
+// as a refresh would make it). The scheduler reads it once, before its
+// startup refresh (review round 1 finding 4: a first start built both
+// views and refreshed them seconds later; round 2 finding 3: a partial
+// pair's pre-existing member still gets the startup refresh).
+func (s *PostgresStore) SupplyChainViewsBuiltThisRun() bool {
+	return s.supplyChainBuilt
 }
 
 // SetMigrateNoWait controls how RunMigrations handles advisory-lock

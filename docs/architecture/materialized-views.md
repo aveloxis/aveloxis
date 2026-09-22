@@ -15,7 +15,7 @@ This page explains, for each view, **what a row means**, **what the complete tab
 
 **8Knot set:** the full set rebuilds weekly. Operators tune the day via `collection.matview_rebuild_day` (default `saturday`, or `disabled`) and can force an out-of-band refresh with `aveloxis refresh-views --set 8knot`. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.
 
-**Supply-chain set:** refreshed every `collection.supply_chain_refresh_hours` (default 24; `0` turns the schedule off) off the scheduler's own ticker, once at startup and then on the cadence, CONCURRENTLY, in seconds; collection never pauses. `aveloxis refresh-views --set supply-chain` refreshes on demand. `serve` logs the effective cadence at startup.
+**Supply-chain set:** refreshed every `collection.supply_chain_refresh_hours` (default 24; `0` turns the schedule off) off the scheduler's own ticker, once at startup (unless that start built the whole pair, which is fresh by construction) and then on the cadence, CONCURRENTLY, in seconds; collection never pauses. `aveloxis refresh-views --set supply-chain` refreshes on demand. `serve` logs the effective cadence at startup.
 
 If the underlying data has changed only modestly since the last rebuild, the most-recent view contents continue to be query-able with stale-but-consistent data; consumers don't see partial state.
 

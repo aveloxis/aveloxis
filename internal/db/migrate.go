@@ -156,7 +156,15 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 					logger.Warn("materialized view creation had errors", "error", err)
 				}
 			}
-			applySupplyChainViewMode(ctx, pg, logger)
+			// Two-process note (review round 1 finding 5): this runs
+			// BEFORE the migrate advisory lock below, like the 8Knot
+			// IfMissing block above it. A `migrate` (Rebuild) committing
+			// the pair while a fast-pathing serve probes it absent makes
+			// serve's CREATE fail "already exists" after the commit — one
+			// false ERROR, the view exists. Declined: the deploy ladder
+			// starts with `stop all`, and taking the lock here would
+			// serialize every serve start behind any running migrate.
+			_ = applySupplyChainViewMode(ctx, pg, logger) // IfMissing on the fast path: WARN only, never an error
 			return nil
 		}
 		// A serve whose binary missed the stamp is about to run the FULL
@@ -364,7 +372,15 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// The Aveloxis-owned supply-chain pair has its own mode and never
 	// rides the 8Knot switch (v0.29.61, worklist 48): --skip-views and
 	// materialized_views:false leave it alone, because it costs seconds.
-	applySupplyChainViewMode(ctx, pg, logger)
+	// On the Rebuild path (`aveloxis migrate`) a failed re-create is a
+	// FAILED migrate (round 3 on v0.29.61): the pair's contract is "every
+	// migrate applies the current definition", so the exit tells the truth
+	// and the schema is not stamped over an unapplied one — unlike the
+	// 8Knot block, whose warn-only reason (hours-long batch, derived data
+	// nobody in Aveloxis reads) does not transfer.
+	if err := applySupplyChainViewMode(ctx, pg, logger); err != nil {
+		errs = append(errs, err)
+	}
 
 	if len(errs) > 0 {
 		// Fail closed: surface every collected error so the operator
@@ -4179,18 +4195,32 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 // IfMissing completes the pair, the zero value builds none. Warn-only like
 // the 8Knot block — derived data must not block serve — and the API
 // aggregates live while a view is absent.
-func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
+func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	var err error
+	pg.supplyChainBuilt = false
 	switch pg.supplyChainMode {
 	case MatviewsRebuild:
 		err = CreateSupplyChainViews(ctx, pg, logger)
+		pg.supplyChainBuilt = err == nil
 	case MatviewsIfMissing:
-		_, err = CreateSupplyChainViewsIfMissing(ctx, pg, logger)
+		pg.supplyChainBuilt, err = CreateSupplyChainViewsIfMissing(ctx, pg, logger)
 	default:
 		logger.Info("supply-chain views not built by this migration (this store did not ask for them; `aveloxis serve` and `aveloxis migrate` always do)")
-		return
+		return nil
 	}
-	if err != nil {
-		logger.Warn("supply-chain view creation had errors — the API aggregates live until a migrate builds them", "error", err)
+	if err == nil {
+		return nil
 	}
+	if pg.supplyChainMode == MatviewsRebuild {
+		// Round 2 finding 1: a re-create that did not run (a probe
+		// error) or did not land (rolled back) leaves the PREVIOUS views
+		// served; `aveloxis migrate` is the only path that applies a
+		// changed definition, so this is an ERROR the deploy checklist
+		// greps for ("supply-chain view") AND the migrate's own failure
+		// (round 3: the exit code tells the truth too).
+		logger.Error("supply-chain view re-create had errors — the previous views (if any) are still served; fix the cause and re-run `aveloxis migrate`", "error", err)
+		return fmt.Errorf("supply-chain views: %w", err)
+	}
+	logger.Warn("supply-chain view creation had errors — the API aggregates live for the absent view until a migrate builds it", "error", err)
+	return nil
 }

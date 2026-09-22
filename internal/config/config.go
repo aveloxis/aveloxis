@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,7 +276,8 @@ type CollectionConfig struct {
 	// re-collected over days, so a daily refresh is the finest cadence
 	// that changes what a reader sees; the fleet aggregate costs seconds.
 	// An explicit 0 → no scheduled refresh (`aveloxis refresh-views` still
-	// does it). Negative → refused at load. SupplyChainRefreshInterval is
+	// does it). Negative, or above MaxSupplyChainRefreshHours (the Duration
+	// would overflow) → refused at load. SupplyChainRefreshInterval is
 	// the ONE default layer (SR-10).
 	SupplyChainRefreshHours *int `json:"supply_chain_refresh_hours,omitempty"`
 
@@ -1457,11 +1459,16 @@ var ErrNotFound = errors.New("config file not found")
 // coercion (SR-10: one default layer, never a clamp the operator cannot
 // see). Every refusal names the JSON key.
 func (c *Config) validate() error {
-	if h := c.Collection.SupplyChainRefreshHours; h != nil && *h < 0 {
-		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a positive number of hours, 0 for no scheduled refresh, or omit it for the daily default", *h)
+	if h := c.Collection.SupplyChainRefreshHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
+		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
 	return nil
 }
+
+// MaxSupplyChainRefreshHours is the largest cadence a time.Duration can
+// hold: above it the hours-to-Duration product overflows and the ticker
+// panics at serve start on a value Load had accepted (review round 1).
+const MaxSupplyChainRefreshHours = int(math.MaxInt64 / int64(time.Hour))
 
 // SlogLevel returns the slog.Level corresponding to the LogLevel string.
 func (c *Config) SlogLevel() slog.Level {

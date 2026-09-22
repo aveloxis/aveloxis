@@ -187,17 +187,22 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	// views stale" ERROR on every rebuild day, about a feature the operator
 	// had switched off. This check owns the question for BOTH callers —
 	// the weekly rebuild and `aveloxis refresh-views`.
-	var present int
-	if err := pg.pool.QueryRow(ctx,
-		`SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data'`).Scan(&present); err != nil {
+	//
+	// By NAME (v0.29.61, review round 1): the supply-chain pair lives in
+	// the same schema on every deployment now, so "any matview here?"
+	// would answer yes for a database without the 8Knot set and this loop
+	// would issue twenty REFRESHes of absent views — the very symptom
+	// v0.29.57 fixed.
+	present, err := eightKnotMatviewsPresent(ctx, pg)
+	if err != nil {
 		return fmt.Errorf("checking for materialized views: %w", err)
 	}
 	if present == 0 {
-		logger.Info("no materialized views in this database — nothing to refresh (collection.materialized_views is off, or no migrate has built them yet)")
+		logger.Info("no 8Knot materialized views in this database — nothing to refresh (collection.materialized_views is off, or no migrate has built them yet; the supply-chain pair refreshes on its own)")
 		return nil
 	}
 
-	logger.Info("refreshing materialized views", "count", len(matviewNames), "present", present)
+	logger.Info("refreshing materialized views", "set", "8knot", "count", len(matviewNames), "present", present)
 
 	// Pass 26 (v0.28.18): the sibling of the dm_ aggregate fix — a failed
 	// REFRESH was a WARN and the function returned nil, so
@@ -227,6 +232,20 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 		return boundedJoin(fmt.Sprintf("materialized view refresh left %d of %d views stale", len(failed), len(matviewNames)), failed, partialFailureSample)
 	}
 	return nil
+}
+
+// eightKnotMatviewsPresent counts the members of matviewNames that exist,
+// by name in pg_matviews (the alias views are plain views and refresh
+// nothing).
+func eightKnotMatviewsPresent(ctx context.Context, pg *PostgresStore) (int, error) {
+	bare := make([]string, 0, len(matviewNames))
+	for _, n := range matviewNames {
+		bare = append(bare, strings.TrimPrefix(n, "aveloxis_data."))
+	}
+	var present int
+	err := pg.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname = ANY($1)`, bare).Scan(&present)
+	return present, err
 }
 
 // refreshMatview refreshes ONE materialized view: CONCURRENTLY first (a

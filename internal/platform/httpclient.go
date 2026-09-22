@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -310,6 +311,17 @@ func (c *HTTPClient) resetETagCacheLocked() {
 // non-standard requests (e.g., GraphQL via POST).
 func (c *HTTPClient) Keys() *KeyPool {
 	return c.keys
+}
+
+// basePath is the path component of the client's base URL ("/api/v4",
+// "/api/v3" or ""), the prefix every request path and same-host redirect
+// carries ahead of the forge's own path shape.
+func (c *HTTPClient) basePath() string {
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(u.EscapedPath(), "/")
 }
 
 // OnPermanentRedirect installs a callback that fires whenever Get observes
@@ -681,6 +693,23 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", RedactURLUserinfo(location), "error", rerr)
 			}
 			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, url)
+		}
+		// v0.29.58 (2026-09-22 log review, finding 5): an issue-scoped
+		// request answered with a redirect into ANOTHER repository is an
+		// issue or merge request that was TRANSFERRED there (GitHub:
+		// /repos/A/B/issues/118 → /repos/A/C/issues/7614). The resource
+		// has left the repository being collected; following it returned
+		// repo C's issue to a caller staging repo B, which stored C's
+		// labels, assignees and (on the open-issue refresh) the whole
+		// issue under B. Treat it as gone — the sentinel every per-issue
+		// caller already skips on — and keep it away from the rename
+		// hook: 1,419 of these in one run were logged as "possible repo
+		// rename". A rename keeps the issue number, so a redirect that
+		// changes only the repository segment still follows below.
+		if issueScopedRedirectLeavesRepository(c.basePath(), url, newURL) {
+			c.logger.Info("issue-level redirect leaves the repository — the issue or merge request was transferred; not followed",
+				"from", RedactURLUserinfo(url), "to", RedactURLUserinfo(newURL), "status", resp.StatusCode)
+			return respDone, nil, fmt.Errorf("%w: %s (transferred to %s)", ErrGone, url, newURL)
 		}
 		c.logger.Info("following redirect",
 			"from", RedactURLUserinfo(url), "to", RedactURLUserinfo(newURL),

@@ -539,12 +539,12 @@ func (s *PostgresStore) CountResolvableMailingListSenders(ctx context.Context) (
 }
 
 // MailingListMsgIDFloor returns the smallest messages.msg_id carrying a
-// mailing-list body (platform 6), or 0 when none exist. EXPENSIVE
-// (~17.5s measured: the MIN side walks messages_pkey forward through
-// every lower-id non-email row — there is no (platform_id, msg_id)
-// index, deliberately: one 17.5s read per process beats a permanent
-// index on a 68M-row table). Callers cache it for the process lifetime;
-// the floor never moves down.
+// mailing-list body (platform 6), or 0 when none exist. Served by the
+// partial index idx_messages_mailing_list_msg_id since v0.29.58 (before
+// it, a forward messages_pkey walk through every lower-id forge row —
+// 17.5 s when measured on 68M rows, 943 s on the 141M-row production
+// fleet, see MailingListMsgIDCeiling). Callers still cache it for the
+// process lifetime; the floor never moves down.
 func (s *PostgresStore) MailingListMsgIDFloor(ctx context.Context) (int64, error) {
 	var floor int64
 	err := s.pool.QueryRow(ctx, `
@@ -556,9 +556,15 @@ func (s *PostgresStore) MailingListMsgIDFloor(ctx context.Context) (int64, error
 }
 
 // MailingListMsgIDCeiling returns the largest messages.msg_id carrying a
-// mailing-list body, or 0 when none exist. Cheap (~26ms measured:
-// backward pkey scan — email rows are recent). Refresh per pass so rows
+// mailing-list body, or 0 when none exist. Refresh per pass so rows
 // staged since the last pass are covered.
+//
+// Served by the partial index idx_messages_mailing_list_msg_id (msg_id
+// WHERE platform_id = 6, v0.29.58). The "~26 ms backward pkey scan"
+// this comment once claimed held only while mailing-list rows were the
+// newest; on the production fleet forge messages keep arriving above
+// them, and the scan walked 141M rows for 943 s (2026-09-22 log review).
+// The floor query above shares the index.
 func (s *PostgresStore) MailingListMsgIDCeiling(ctx context.Context) (int64, error) {
 	var ceil int64
 	err := s.pool.QueryRow(ctx, `

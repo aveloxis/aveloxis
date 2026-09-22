@@ -56,6 +56,11 @@ type FacadeResult struct {
 	Commits        int
 	CommitMessages int
 	Errors         []error
+	// EmptyDefaultBranch is set when the default branch resolved to no
+	// commit (v0.29.58): the numstat pass completed with nothing to walk,
+	// and the whitespace phase has nothing to walk either — CollectRepo
+	// skips it at INFO instead of letting its rev-parse fail at WARN.
+	EmptyDefaultBranch bool
 	// CommitWriteFailures counts commit ROWS that failed to persist and
 	// were swallowed (warn-and-continue) — the batch path's per-row
 	// fallback failures and its ctx-cancel bail. v0.27.107 (ultrareview
@@ -118,7 +123,13 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	if ctx.Err() != nil {
 		return result, ctx.Err() // shutdown after the numstat pass: no gate WARN, no "complete" (pass 37)
 	}
-	if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
+	if result.EmptyDefaultBranch {
+		// v0.29.58 review round 1: the walk's rev-parse fails 128 on an
+		// unborn ref, so an empty repository would have traded its facade
+		// WARN for a whitespace WARN every cycle. Nothing to walk, nothing
+		// to stamp; the marker stays empty for the first real commit.
+		f.logger.Info("whitespace phase skipped — no commits on the default branch", "repo_id", repoID)
+	} else if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
 		f.runWhitespacePhase(ctx, repoID, clonePath)
 	} else {
 		f.logger.Warn("whitespace phase skipped — numstat pass lost commit rows; marker stays unstamped for a full walk next cycle",
@@ -367,6 +378,23 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	defaultBranch := resolveDefaultBranch(ctx, clonePath)
 	f.logger.Info("using default branch for git log", "repo_id", repoID, "branch", defaultBranch)
 
+	// v0.29.58 (2026-09-22 log review, finding 2): an EMPTY repository —
+	// a bare clone whose default branch has no commits — is a complete
+	// facade pass with zero commits, not a failure. Before this probe,
+	// git log exited 128 on the unborn ref and 585 such repositories in
+	// one eight-hour run each logged a WARN with no diagnostic. The probe
+	// is a yes/no with an error arm (SR-16): only a definitive "the ref
+	// resolves to no commit" (exit 1 under --quiet) takes the empty path;
+	// any other failure (not a repository, a corrupt object store) falls
+	// through to git log, whose stderr is now kept, so the real cause
+	// reaches the log.
+	if empty, perr := defaultBranchIsEmpty(ctx, clonePath, defaultBranch); perr == nil && empty {
+		f.logger.Info("repository has no commits on its default branch — facade complete with zero commits",
+			"repo_id", repoID, "branch", defaultBranch)
+		result.EmptyDefaultBranch = true
+		return nil
+	}
+
 	// Run git log with --numstat for per-file stats on the default branch only.
 	// Derived context (v0.27.105 ultrareview, same class as the
 	// whitespace walker's bug_001): a scanner error (token too long)
@@ -379,6 +407,10 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 		"--numstat",
 		"--format="+gitLogFormat,
 	)
+	// Keep git's diagnostic (bounded) for the exit-error path below;
+	// startSweptCommand owns stdout and the process group, not stderr.
+	stderr := &stderrCapture{}
+	cmd.Stderr = stderr
 
 	// startSweptCommand (not cmd.StdoutPipe) so a child that inherits
 	// git's stdout and outlives it cannot wedge this worker: the group is
@@ -501,10 +533,35 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	}
 
 	if err := swept.Wait(); err != nil {
+		// The captured stderr rides on the exit error; execErr still
+		// replaces it with ctx.Err() on a shutdown, so a kill is never
+		// reported as a git failure.
+		err = withStderr(err, stderr.String())
 		return fmt.Errorf("git log exited with error: %w", execErr(ctx, err))
 	}
 
 	return nil
+}
+
+// defaultBranchIsEmpty reports whether ref resolves to no commit in the
+// bare clone (an empty repository, or a default branch that was never
+// pushed). It is the yes/no probe parseGitLog runs before git log.
+//
+// `git rev-parse --verify --quiet <ref>^{commit}` exits 0 when the ref
+// names a commit and 1 when it does not; every other failure (128: not a
+// repository, corrupt refs) is an ERROR, not an answer, and is returned
+// so the caller does not mistake a broken clone for an empty one (SR-16).
+func defaultBranchIsEmpty(ctx context.Context, clonePath, ref string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	_, err := cmd.Output()
+	if err == nil {
+		return false, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 && ctx.Err() == nil {
+		return true, nil
+	}
+	return false, withStderr(execErr(ctx, err), exitStderr(err))
 }
 
 type parsedCommit struct {

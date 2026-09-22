@@ -422,6 +422,24 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 		for _, t := range graph.Transitives {
 			purl := purlForPackage(t.Ecosystem, t.PackageName, t.ResolvedVersion)
 			if purl == "" {
+				// v0.29.58 review round 1: a package with no valid purl (a
+				// SwiftPM identity-only pin, a composer platform package)
+				// is still a component of the software — SPDX lists it
+				// without a locator, so CycloneDX does too, under a
+				// bom-ref of our own. It takes no graph edge (edges are
+				// keyed by purl) and is never scanned.
+				ref := "aveloxis:" + sbomGraphKey(t.Ecosystem, t.PackageName) + "@" + t.ResolvedVersion
+				if seenRefs[ref] {
+					continue
+				}
+				seenRefs[ref] = true
+				bom.Components = append(bom.Components, cdxComponent{
+					Type:    "library",
+					Name:    t.PackageName,
+					Version: t.ResolvedVersion,
+					BOMRef:  ref,
+					Scope:   model.CycloneDXScopeForScope(t.Scope),
+				})
 				continue
 			}
 			gidx.addTransitive(t.LockfilePath, sbomGraphKey(t.Ecosystem, t.PackageName), t.ResolvedVersion, purl)

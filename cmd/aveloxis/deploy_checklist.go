@@ -413,6 +413,26 @@ var deployChecklists = map[string][]deployStep{
 	// stored as NULL instead of 0. NEW OPERATOR STEP — `aveloxis heal-libyear`
 	// corrects the rows already stored that re-analysis can never fix.
 	"0.29.57": v02957DeployChecklist,
+	// v0.29.58: the 2026-09-22 log-review fixes (empty repositories and
+	// subprocess stderr in the facade, the purl namespace rule, transferred
+	// issues no longer followed across repositories) plus ONE schema
+	// change: the partial index idx_messages_mailing_list_msg_id that the
+	// mailing-list workers' msg_id bounds read (two 943 s scans per pass
+	// without it). The migrate builds it CONCURRENTLY; no heal, no view
+	// change, so the ladder is stop → migrate --skip-views → verify → start.
+	"0.29.58": v02958DeployChecklist,
+}
+
+// v02958DeployChecklist — one CONCURRENTLY-built index and nothing else.
+// The verification step exists because execCreateIndexConcurrently logs
+// `schema migration error` and continues when the build fails (a CONCURRENTLY build left INVALID is dropped
+// and rebuilt on the next migrate), so the operator confirms the index is
+// valid before the mailing-list workers rely on it.
+var v02958DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; builds idx_messages_mailing_list_msg_id CONCURRENTLY on aveloxis_data.messages (the long pole: CONCURRENTLY makes two passes over the messages table, no write lock)"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'idx_messages_mailing_list_msg_id'"`, "must print t — the index exists and is valid. Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first. No row means the build did not run (check the migrate log for `schema migration error`); f means it was left INVALID — re-run `aveloxis migrate --skip-views`, which drops and rebuilds it"},
+	{"aveloxis start all", "resume collection; the mailing-list pass bounds now read the index"},
 }
 
 // deployChecklistFor returns the steps for a version, if any.

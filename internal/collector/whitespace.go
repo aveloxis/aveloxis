@@ -250,9 +250,19 @@ var whitespaceFlushEvery = 5000
 // subsequent facade cycles incremental. Returns rows updated + head.
 func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, clonePath, rangeSpec string) (int64, string, error) {
 	branch := resolveDefaultBranch(ctx, clonePath)
+	// v0.29.58 review round 1: an empty repository (unborn default
+	// branch) has no history to walk. Reached from RewalkWhitespace
+	// (CollectRepo gates on FacadeResult.EmptyDefaultBranch before the
+	// phase); the same yes/no probe as parseGitLog, error arm falls
+	// through to rev-parse, whose stderr is now kept.
+	if empty, perr := defaultBranchIsEmpty(ctx, clonePath, branch); perr == nil && empty {
+		f.logger.Info("whitespace walk skipped — no commits on the default branch", "repo_id", repoID, "branch", branch)
+		return 0, "", nil
+	}
 	headCmd := exec.CommandContext(ctx, "git", "-C", clonePath, "rev-parse", branch)
 	headOut, err := headCmd.Output()
 	if err != nil {
+		err = withStderr(err, exitStderr(err))
 		return 0, "", fmt.Errorf("rev-parse %s: %w", branch, execErr(ctx, err))
 	}
 	head := strings.TrimSpace(string(headOut))
@@ -270,6 +280,10 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	defer cancelWalk()
 	cmd := exec.CommandContext(walkCtx, "git", "-C", clonePath, "log",
 		target, "--numstat", "-p", "--format=%x1e%H")
+	// v0.29.58: keep git's diagnostic for the exit-error path (bounded;
+	// see stderrCapture) — the facade's git log had the same gap.
+	walkStderr := &stderrCapture{}
+	cmd.Stderr = walkStderr
 	// startSweptCommand (not cmd.StdoutPipe): same reason as the facade's
 	// git log — a child inheriting git's stdout that outlives the leader
 	// would otherwise wedge this walk, with no ctx cancel to rescue it.
@@ -325,6 +339,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 		return updated, head, fmt.Errorf("parse whitespace log: %w", parseErr)
 	}
 	if waitErr != nil {
+		waitErr = withStderr(waitErr, walkStderr.String())
 		return updated, head, fmt.Errorf("git log -p exited: %w", execErr(ctx, waitErr))
 	}
 	if err := flush(); err != nil {

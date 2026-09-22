@@ -1699,6 +1699,20 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_ops", "idx_staging_repo_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_staging_repo_id ON aveloxis_ops.staging (repo_id)`)
 
+	// v0.29.58: the mailing-list workers bound each pass with
+	// MIN(msg_id)/MAX(msg_id) FROM messages WHERE platform_id = 6
+	// (MailingListMsgIDFloor/Ceiling). messages has no platform_id
+	// index, so each is a pkey scan that walks forge messages until the
+	// first mailing-list row — on the 2026-09-22 production log two of
+	// them ran 943 s each against 141M rows (the mailing-list rows are
+	// NOT the newest: forge messages keep arriving above them). The
+	// partial index holds only the platform-6 msg_ids (238K rows on
+	// that fleet), so both bounds become an index endpoint read.
+	// CONCURRENTLY: messages is fleet-scale (SR-2).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_messages_mailing_list_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_mailing_list_msg_id
+		 ON aveloxis_data.messages (msg_id) WHERE platform_id = 6`)
+
 	// v0.25.34: FK-side indexes on email_message's projection links
 	// (linked_issue_id / linked_pull_request_id / linked_pr_review_id).
 	// The columns arrived in v0.25.7, after the v0.22.6/v0.22.7 FK-index

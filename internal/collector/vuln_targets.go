@@ -89,6 +89,9 @@ func selfAdvisoryPurl(ecosystem, name string) string {
 	if typ == "maven" {
 		name = strings.Replace(name, ":", "/", 1)
 	}
+	if purlNamespaceRequired[typ] && !purlNameHasNamespace(name) {
+		return "" // v0.29.58: the third minting site shares the rule (review round 1)
+	}
 	return buildPurl(typ, name, "") // v0.27.29: spec-canonical, versionless
 }
 
@@ -131,7 +134,35 @@ func purlForPackage(ecosystem, name, version string) string {
 	if typ == "maven" {
 		name = strings.Replace(name, ":", "/", 1)
 	}
+	if purlNamespaceRequired[typ] && !purlNameHasNamespace(name) {
+		// v0.29.58: a Package.resolved pin is identity-only ("alamofire"),
+		// a composer platform package has no vendor ("php"), a Gradle
+		// shorthand can drop the group — none is a purl OSV accepts, and
+		// one of them 400s the repository's whole batch. Minted nowhere
+		// rather than dropped at the wire (both gates share this rule).
+		return ""
+	}
 	return buildPurl(typ, name, version) // v0.27.29: spec-canonical
+}
+
+// purlNamespaceRequired lists the purl types whose spec makes the
+// namespace mandatory — maven (groupId), swift (the package's host and
+// owner path) and composer (vendor). OSV enforces it: "namespace is
+// required" rejected four repositories' entire scans in the 2026-09-22
+// log. npm, golang, pypi, cargo, gem, nuget, hex, pub and hackage leave
+// it optional and are untouched by this rule.
+var purlNamespaceRequired = map[string]bool{
+	"maven":    true,
+	"swift":    true,
+	"composer": true,
+}
+
+// purlNameHasNamespace reports whether a purl name (the part after the
+// type, before any version) carries a non-empty namespace segment ahead
+// of a non-empty name segment.
+func purlNameHasNamespace(name string) bool {
+	ns, rest, ok := strings.Cut(name, "/")
+	return ok && ns != "" && rest != ""
 }
 
 // isSelfDependency reports whether a declared dependency names one of
@@ -331,7 +362,15 @@ func wireValidPurl(p string) bool {
 	if strings.Trim(strings.ReplaceAll(nameRegion, "%20", " "), " /") == "" {
 		return false
 	}
-	return !strings.HasSuffix(nameRegion, "/") && !strings.Contains(nameRegion, "//")
+	if strings.HasSuffix(nameRegion, "/") || strings.Contains(nameRegion, "//") {
+		return false
+	}
+	// v0.29.58: the namespace rule at the wire too — legacy dep rows
+	// minted before purlForPackage/analysis applied it still reach here.
+	if purlNamespaceRequired[rest[:slash]] && !purlNameHasNamespace(nameRegion) {
+		return false
+	}
+	return true
 }
 
 func isHexByte(c byte) bool {

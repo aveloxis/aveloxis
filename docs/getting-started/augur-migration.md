@@ -46,7 +46,7 @@ aveloxis migrate
 
 This creates:
 
-- **`aveloxis_data`** -- 101 tables + 20 materialized views for collected data
+- **`aveloxis_data`** -- 101 tables + 20 materialized views (when `collection.materialized_views` is enabled, the default) for collected data
 - **`aveloxis_scan`** — 4 tables (ScanCode per-file license/copyright results + history)
 - **`aveloxis_ops`** -- 42 tables for operational state (queue, staging, credentials, etc.)
 - **`aveloxis_augur_data`** — the Augur-compatibility schema: no base tables of its own, just 6 views over `aveloxis_data` for the columns whose names differ from Augur's (`repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`). 8Knot reads through it with `search_path = aveloxis_augur_data,aveloxis_data`.
@@ -81,7 +81,7 @@ This reads every repository URL from `augur_data.repo` and adds it to the Avelox
 
 - **200 OK** -- repo is added to the queue
 - **301/302 redirect** -- the canonical URL is used instead
-- **404/410** -- repo is skipped (dead, private, or DMCA'd)
+- **any 4xx/5xx** -- repo is skipped (the import's existence probe accepts only a 2xx/3xx; once queued, prelim applies the 404/410/451 gone rule)
 
 This verification ensures you do not import stale or dead repos that would waste API calls.
 

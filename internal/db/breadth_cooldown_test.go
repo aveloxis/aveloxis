@@ -17,12 +17,12 @@ import (
 // kept selecting them on every cycle — the worker spun on
 // dead-end contributors and never reached the other 1.4M.
 //
-// The fix adds an unconditional per-contributor attempt timestamp
-// (cntrb_last_breadth_at) that mirrors the existing
-// cntrb_last_enriched_at / cntrb_last_search_attempted_at pattern.
-// MarkBreadthAttempted updates it after EVERY attempt regardless
-// of whether events were found, and GetContributorsForBreadth
-// filters by it with a configurable cooldown.
+// The fix adds a per-contributor attempt timestamp
+// (cntrb_last_breadth_at), a cooldown column like
+// cntrb_last_enriched_at / cntrb_last_search_attempted_at.
+// It is stamped after an attempt whether or not events were found
+// (the worker uses the batch form, MarkBreadthAttemptedBatch), and
+// GetContributorsForBreadth filters by it with a configurable cooldown.
 
 func TestSchemaHasCntrbLastBreadthAtColumn(t *testing.T) {
 	data, err := os.ReadFile("schema.sql")
@@ -51,7 +51,7 @@ func TestMarkBreadthAttemptedExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), "func (s *PostgresStore) MarkBreadthAttempted(") {
-		t.Error("MarkBreadthAttempted store method must exist — the worker calls this after EVERY contributor attempt regardless of whether events were found, so contributors with zero public events still exit the unprocessed-queue")
+		t.Error("MarkBreadthAttempted store method must exist — kept for compatibility; the worker stamps through the batch form, whether or not events were found, so contributors with zero public events still exit the unprocessed-queue")
 	}
 }
 

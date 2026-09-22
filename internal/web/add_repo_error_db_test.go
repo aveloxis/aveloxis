@@ -85,7 +85,7 @@ func TestAddRepoFailureIsShownToTheUser(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := New(store, config.WebConfig{AutoApproveAddLimit: 5}, nil, logger)
+	s := New(store, config.WebConfig{AutoApproveAddLimit: 5}, nil, "", logger)
 	s.sessions["probe-token"] = &Session{UserID: uid, LoginName: login, ExpiresAt: time.Now().Add(time.Hour)}
 	serve := func(r *http.Request) *httptest.ResponseRecorder {
 		r.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: "probe-token"})
@@ -155,7 +155,7 @@ func TestAddRepoFailureIsShownToTheUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed.Close()
-	down := New(closed, config.WebConfig{AutoApproveAddLimit: 5}, nil, logger)
+	down := New(closed, config.WebConfig{AutoApproveAddLimit: 5}, nil, "", logger)
 	down.sessions["probe-token"] = &Session{UserID: uid, LoginName: login, ExpiresAt: time.Now().Add(time.Hour)}
 	if w := post(down, gid, urlPrefix+"store-down"); w.Code != http.StatusFound || w.Header().Get("Location") != fmt.Sprintf("/groups/%d?add_error=1", gid) {
 		t.Errorf("an add with the store down = %d Location %q; want 302 to /groups/%d?add_error=1", w.Code, w.Header().Get("Location"), gid)

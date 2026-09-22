@@ -19,7 +19,8 @@ const (
 	// stays down, so a long outage logs once a minute instead of per-probe.
 	dbHealthReminderInterval = 60 * time.Second
 	// dbHealthFailureThreshold is how many CONSECUTIVE failed probes must occur
-	// before the monitor declares the database unavailable and pauses
+	// before the monitor declares the probe down (database unavailable, or
+	// connection pool exhausted — classifyProbeFailure) and pauses
 	// collection. Debounce, added after the 2026-06-11 diagnostic: on a
 	// CPU-saturated host the TLS + SCRAM-SHA-256 handshake for a NEW connection
 	// can briefly exceed the 5s connect deadline (the probe's Ping cold-opens a
@@ -112,12 +113,16 @@ func (s *Scheduler) runDBHealthMonitor(ctx context.Context) {
 			case transitionDown:
 				downSince = time.Now()
 				lastReminder = downSince
-				s.logger.Warn("database unavailable — pausing new collection until it returns",
-					"error", lastErr, "consecutive_failures", consecutiveFail,
-					"probe_interval", dbHealthProbeInterval.String())
-				// Best-effort: the DB is down, so this write typically fails.
+				st := s.store.PoolState()
+				cause := classifyProbeFailure(lastErr, st)
+				s.logger.Warn(cause.message(),
+					append([]any{"error", lastErr, "consecutive_failures", consecutiveFail,
+						"probe_interval", dbHealthProbeInterval.String(), "cause", cause.String()},
+						poolStateLogArgs(st)...)...)
+				// Best-effort: on a real outage this write fails; on a
+				// saturated pool it waits its turn like everything else.
 				_ = s.store.SetAveloxisStatus(ctx, dbHealthStatusName, dbStatusUnavailable,
-					"database probe failed "+intString(consecutiveFail)+"x consecutively ("+errString(lastErr)+") — collection paused", dbHealthSource)
+					cause.String()+": database probe failed "+intString(consecutiveFail)+"x consecutively ("+errString(lastErr)+") — collection paused", dbHealthSource)
 			case transitionUp:
 				dur := time.Since(downSince).Round(time.Second)
 				s.logger.Info("database back — resuming collection", "unavailable_for", dur.String())
@@ -127,8 +132,10 @@ func (s *Scheduler) runDBHealthMonitor(ctx context.Context) {
 				switch {
 				case !healthy && time.Since(lastReminder) >= dbHealthReminderInterval:
 					lastReminder = time.Now()
-					s.logger.Warn("collection still paused — database unavailable",
-						"unavailable_for", time.Since(downSince).Round(time.Second).String())
+					st := s.store.PoolState()
+					s.logger.Warn("collection still paused — "+classifyProbeFailure(lastErr, st).String(),
+						append([]any{"unavailable_for", time.Since(downSince).Round(time.Second).String(), "error", lastErr},
+							poolStateLogArgs(st)...)...)
 				case err != nil && healthy:
 					// Sub-threshold transient failure: a CPU-pressure connect/auth
 					// blip, not an outage. Visible at DEBUG for investigation,
@@ -153,4 +160,44 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// probeCause is WHY the pooled ping failed. v0.29.58 (2026-09-22 log
+// review, finding 1): Ping acquires from the same pool the workers use,
+// so a saturated pool times the probe out exactly like a dead server —
+// thirteen "database unavailable" pauses in one run were all pool
+// exhaustion (135/135 acquired, 0 idle) while Postgres was up. The pool
+// state at the moment of failure tells the two apart, and the message
+// and the recorded status say which one it was.
+type probeCause int
+
+const (
+	probeCauseUnreachable probeCause = iota
+	probeCausePoolExhausted
+)
+
+func (c probeCause) String() string {
+	if c == probeCausePoolExhausted {
+		return "connection pool exhausted"
+	}
+	return "database unavailable"
+}
+
+func (c probeCause) message() string {
+	if c == probeCausePoolExhausted {
+		return "connection pool exhausted — every pooled connection is in use, so the probe could not get one; the database is NOT known to be down; pausing new collection until the pool drains (see the pool_demand line at startup)"
+	}
+	return "database unavailable — pausing new collection until it returns"
+}
+
+// classifyProbeFailure attributes a failed probe: when every connection
+// the pool may open is acquired and none is idle, the probe never reached
+// the server and the failure is the pool's, whatever the error text says.
+// Any other state — a connect refusal, an auth failure, a timeout with
+// idle connections available — is the server's.
+func classifyProbeFailure(err error, st db.PoolState) probeCause {
+	if err != nil && st.MaxConns > 0 && st.AcquiredConns >= st.MaxConns && st.IdleConns == 0 {
+		return probeCausePoolExhausted
+	}
+	return probeCauseUnreachable
 }

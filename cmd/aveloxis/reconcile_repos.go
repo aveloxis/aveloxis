@@ -8,7 +8,7 @@
 // skip+dequeue; a smaller share are lost-enqueue leftovers.
 //
 // Per stranded repo, classified by LIVE redirect check:
-//   - dead upstream (404/410)      → archive (matches prelim's sidelining)
+//   - dead upstream (404/410/451)      → archive (matches prelim's sidelining)
 //   - redirects to a TRACKED repo  → dataless: HealRenamedDuplicate
 //     (repoint links, delete the dup row); data-bearing: consolidate
 //     via the dedup-repos per-pair machinery (repoints + leaves-first
@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -35,6 +34,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 func reconcileReposCmd(cfgPath *string) *cobra.Command {
@@ -90,7 +91,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		return fmt.Errorf("listing stranded repos: %w", err)
 	}
 
-	var dead, healedDataless, consolidated, enqueued, skipped int
+	var dead, healedDataless, consolidated, enqueued, skipped, refused int
 	// v0.28.18: consolidation arms refused by the email_message index
 	// precondition. The loop keeps going (dead / re-enqueue arms need no
 	// index) but the run exits nonzero so a script cannot read a fully
@@ -101,13 +102,29 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			break
 		}
 		finalURL, status, rerr := collector.ResolveRedirectTarget(ctx, sr.GitURL)
+		if errors.Is(rerr, platform.ErrRedirectTargetUserinfo) {
+			// The forge's redirect target, not the stored URL (round 7):
+			// skipped, not refused.
+			logger.Warn("reconcile: redirect target carries credentials — not followed; the stored URL is clean, skipping",
+				"repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
+			skipped++
+			continue
+		}
+		if errors.Is(rerr, platform.ErrURLUserinfo) {
+			// Not a retryable skip: the probe refuses a URL carrying
+			// credentials until repo_git is corrected (v0.29.57).
+			logger.Error("reconcile: repo URL carries credentials — not probed; correct repo_git",
+				"repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
+			refused++
+			continue
+		}
 		if rerr != nil {
-			logger.Warn("reconcile: redirect check failed — skipping this pass", "repo_id", sr.RepoID, "url", sr.GitURL, "error", rerr)
+			logger.Warn("reconcile: redirect check failed — skipping this pass", "repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
 			skipped++
 			continue
 		}
 		switch {
-		case status == http.StatusNotFound || status == http.StatusGone:
+		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			// Dead upstream — the outcome prelim would have applied.
 			fmt.Printf("  dead:        %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
@@ -214,15 +231,24 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 	if dryRun {
 		mode = " (dry run — nothing written)"
 	}
-	fmt.Printf("reconcile-repos%s: dead=%d healed_dataless=%d consolidated=%d enqueued=%d skipped=%d of %d stranded\n",
-		mode, dead, healedDataless, consolidated, enqueued, skipped, total)
+	fmt.Printf("reconcile-repos%s: dead=%d healed_dataless=%d consolidated=%d enqueued=%d skipped=%d refused=%d of %d stranded\n",
+		mode, dead, healedDataless, consolidated, enqueued, skipped, refused, total)
 	if skipped > 0 {
 		fmt.Println("re-run to retry skipped repos")
 	}
+	if refused > 0 {
+		fmt.Printf("%d repos have a repo_git carrying credentials — correct them, then rerun\n", refused)
+	}
 	if preconditionUnmet > 0 {
-		logger.Error("precondition unmet — consolidations refused: run `aveloxis migrate --skip-views` on this binary first, then re-run",
+		// db.DeployStepsAdvice, not a literal migrate: on a release whose
+		// checklist migrates without --skip-views (v0.29.57), the literal
+		// stamped the binary around its view definitions (L10 round 3).
+		logger.Error("precondition unmet — consolidations refused: run "+db.DeployStepsAdvice+" on this binary first, then re-run",
 			"repos_refused", preconditionUnmet)
-		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run `aveloxis migrate --skip-views` first", preconditionUnmet)
+		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run %s first", preconditionUnmet, db.DeployStepsAdvice)
+	}
+	if refused > 0 {
+		return fmt.Errorf("%d stranded repos have a repo_git carrying credentials — correct them, then rerun", refused)
 	}
 	return nil
 }

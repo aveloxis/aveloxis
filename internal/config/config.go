@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 func defaultCloneDir() string {
@@ -79,6 +81,17 @@ type DatabaseConfig struct {
 	Password string `json:"password"`
 	DBName   string `json:"dbname"`
 	SSLMode  string `json:"sslmode"`
+	// PoolMaxConns caps serve's connection pool (v0.29.58). 0 (the
+	// default) derives the size: the scheduler's connection DEMAND
+	// (every goroutine class that acquires from the pool, see
+	// scheduler.PoolDemand) capped by the server's budget (max_connections
+	// minus the superuser reserve and the web/api pools). serve logs the
+	// effective size with that derivation at startup. Set it when the
+	// database is disk-bound and fewer concurrent statements serve the
+	// fleet better than more — a pool below demand is a deliberate
+	// throttle, and the health probe then reports "connection pool
+	// exhausted", never "database unavailable".
+	PoolMaxConns int `json:"pool_max_conns"`
 }
 
 // ConnectionString returns a PostgreSQL DSN.
@@ -216,6 +229,18 @@ type CollectionConfig struct {
 	// Set to false after the full pass completes.
 	ForceFullCollection bool `json:"force_full"`
 
+	// MaterializedViews says whether this deployment HAS the materialized
+	// views at all. They are derived data for 8Knot and the analytics
+	// queries; a deployment that never reads them pays twenty view builds
+	// on `aveloxis migrate` for nothing, and the refresh schedule below
+	// then has nothing to refresh.
+	//
+	// Default: TRUE — an existing deployment is unchanged. Setting it
+	// false stops `serve` and `migrate` creating them; it does NOT drop
+	// views that already exist (dropping collected objects is an operator
+	// decision, not a config one). v0.29.57.
+	MaterializedViews *bool `json:"materialized_views,omitempty"`
+
 	// MatviewRebuildDay is the day of the week to rebuild materialized views.
 	// Valid values: "monday" through "sunday", or "disabled" to never auto-rebuild.
 	// Default: "saturday". Views are rebuilt once per week on this day.
@@ -260,7 +285,7 @@ type CollectionConfig struct {
 	ActivityHistoryCooldownDays      int `json:"activity_history_cooldown_days"`
 
 	// v0.29.7: the gone-repo recheck cadence. A repository whose URL
-	// returned a definitive 404/410 is dequeued, so no collection cycle
+	// returned a definitive 404/410/451 is dequeued, so no collection cycle
 	// ever probes it again; organizations do flip repositories private
 	// and back. The scheduler re-probes each gone-stamped repo once
 	// every GoneRepoRecheckDays (default 28 — operator-chosen, a
@@ -291,10 +316,10 @@ type CollectionConfig struct {
 	// inside one key's per-minute secondary budget.
 	ScorecardMaxConcurrent int `json:"scorecard_max_concurrent"`
 
-	// MatviewRebuildOnStartup controls whether materialized views are created/refreshed
-	// during schema migration (startup). For large databases this can take minutes.
-	// Default: false — views are created on first migrate but not refreshed on every startup.
-	MatviewRebuildOnStartup bool `json:"matview_rebuild_on_startup"`
+	// matview_rebuild_on_startup was removed in v0.29.57: serve set it after
+	// the startup migration that reads it, so it never did anything. A plain
+	// `aveloxis migrate` re-creates the views; the tripwire is
+	// TestDeadMatviewRebuildOnStartupNotReintroduced.
 
 	// PRChildMode selects between the REST per-PR child waterfall
 	// ("rest", default) and the batched GraphQL fetcher ("graphql").
@@ -622,7 +647,8 @@ type CollectionConfig struct {
 	// DevBuildDeps (v0.27.45, summary/19 P2): expand Python dependency
 	// collection to the dev/test/build/optional manifest families —
 	// requirements-variant files (requirements-dev.txt,
-	// test_requirements.txt, requirements/*.txt), pyproject
+	// test_requirements.txt, or another .txt directly inside a
+	// requirements/ directory — never requirements.txt itself), pyproject
 	// [build-system].requires / [project.optional-dependencies] /
 	// PEP 735 [dependency-groups] / poetry groups, Pipfile
 	// [dev-packages], setup.py tests_require + extras_require, and
@@ -1409,6 +1435,28 @@ func (c *Config) SlogLevel() slog.Level {
 	}
 }
 
+// GitHubAPIBase is the REST host this deployment's GitHub keys belong to:
+// the operator's github.base_url when set, else public GitHub. One spelling,
+// because every caller that holds the key pool needs the same answer and the
+// ones that guessed sent Enterprise tokens to api.github.com (v0.29.57).
+// Safe on a nil receiver: a config with no github block means public GitHub.
+func (p *PlatformConfig) GitHubAPIBase() string {
+	if p != nil {
+		return platform.GitHubAPIBaseOrPublic(p.BaseURL)
+	}
+	return platform.PublicGitHubAPIBase
+}
+
+// MaterializedViewsValue returns whether this deployment has materialized
+// views, defaulting to TRUE when the field is absent. This accessor is the
+// SINGLE default layer (SR-10) — consumers must never read the raw pointer.
+func (c *CollectionConfig) MaterializedViewsValue() bool {
+	if c.MaterializedViews == nil {
+		return true
+	}
+	return *c.MaterializedViews
+}
+
 // MatviewRebuildWeekday returns the time.Weekday for the configured matview
 // rebuild day, or -1 if disabled.
 // ActivityHistoryWindowDaysOrDefault returns the configured history
@@ -1585,7 +1633,7 @@ func DefaultConfig() *Config {
 			SSLMode: "prefer",
 		},
 		GitHub: PlatformConfig{
-			BaseURL: "https://api.github.com",
+			BaseURL: platform.PublicGitHubAPIBase,
 		},
 		GitLab: PlatformConfig{
 			BaseURL: "https://gitlab.com/api/v4",
@@ -1617,7 +1665,6 @@ func DefaultConfig() *Config {
 			RepoCloneDir:                     defaultCloneDir(),
 			MatviewRebuildDay:                "saturday",
 			ActivityHistoryWindowDays:        180,
-			MatviewRebuildOnStartup:          false,
 			// v0.26.0 (tech-debt Action 3, phase A): GraphQL is the
 			// default for GitHub PR-child fetch and issue+PR listing —
 			// the flip the v0.19.0 sunset plan scheduled but never

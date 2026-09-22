@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-new-platform">Adding a new platform</a></li>
@@ -1757,6 +1762,44 @@ scorecard either.</p></li>
 <section id="graphql-transport-the-github-default">
 <h2>GraphQL transport (the GitHub default)<a class="headerlink" href="#graphql-transport-the-github-default" title="Link to this heading"></a></h2>
 <p>The sub-interface tables above describe the REST methods — which remain first-class (GitLab composes them; they are also the <code class="docutils literal notranslate"><span class="pre">&quot;rest&quot;</span></code> escape hatch). But since v0.26.0 the DEFAULT GitHub transport is GraphQL: <code class="docutils literal notranslate"><span class="pre">ListIssuesAndPRs</span></code> enumerates issues + PRs in cursor-paginated GraphQL queries, and <code class="docutils literal notranslate"><span class="pre">FetchPRBatch</span></code> fetches 10–25 PRs with ALL their children (labels, assignees, reviewers, reviews, commits, files, comments) in one aliased query, with automatic batch subdivision on transient failures and a per-PR REST rescue at size 1. Both are <code class="docutils literal notranslate"><span class="pre">platform.Client</span></code> methods; GitLab implements them as REST composition.</p>
+<section id="graphql-errors-that-arrive-with-http-200">
+<h3>GraphQL errors that arrive with HTTP 200<a class="headerlink" href="#graphql-errors-that-arrive-with-http-200" title="Link to this heading"></a></h3>
+<p>GitHub reports several conditions in the response body of a 200, so no
+status-code arm ever sees them. Each has its own class, because the recovery
+differs:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Body</p></th>
+<th class="head"><p>Class</p></th>
+<th class="head"><p>What the client does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">RATE_LIMITED</span></code> (any spelling)</p></td>
+<td><p>rate limit</p></td>
+<td><p>benches the key’s GraphQL budget and rotates to another key</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">RESOURCE_LIMITS_EXCEEDED</span></code></p></td>
+<td><p>transient, <code class="docutils literal notranslate"><span class="pre">ErrResourceLimits</span></code></p></td>
+<td><p>the caller halves the batch — the one condition where a smaller query provably helps</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Something</span> <span class="pre">went</span> <span class="pre">wrong</span> <span class="pre">while</span> <span class="pre">executing</span> <span class="pre">your</span> <span class="pre">query</span> <span class="pre">…</span></code> (no type)</p></td>
+<td><p>transient, <code class="docutils literal notranslate"><span class="pre">ErrGraphQLExecutionTimeout</span></code></p></td>
+<td><p>retried with backoff like a 5xx; an exhausted budget leaves a transient error, so batching callers subdivide (v0.29.56)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NOT_FOUND</span></code> / <code class="docutils literal notranslate"><span class="pre">FORBIDDEN</span></code> per path</p></td>
+<td><p>skip</p></td>
+<td><p>the other aliases’ data is kept; the missing node is absent, never zero</p></td>
+</tr>
+</tbody>
+</table>
+<p>The execution timeout is GitHub’s answer for a query its resolver could not
+finish. It used to classify fatal, so nothing retried or subdivided it: on
+2026-09-17 it failed all seven contributor-activity ticks and the sweep wrote
+nothing for three days. It is intermittent — a probe re-ran the batch that had
+failed every tick and all 100 queries succeeded — which is why a plain retry is
+the first response.</p>
+</section>
 </section>
 <section id="pagination">
 <h2>Pagination<a class="headerlink" href="#pagination" title="Link to this heading"></a></h2>

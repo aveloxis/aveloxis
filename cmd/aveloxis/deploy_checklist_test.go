@@ -7,7 +7,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,8 +138,10 @@ func TestStartCmdGatesOnDeploySteps(t *testing.T) {
 // PR #193): the gated checklist IS the ordered deploy procedure, so it
 // must (a) run `aveloxis stop all` before any schema change — never
 // migrate under a live serve — and (b) print a USABLE mirror-link heal
-// command: the script exits immediately at DB="${1:?}" without a
-// database positional argument, so the bare form cannot be run.
+// command, dry run first. The script reads its connection and database
+// from aveloxis.json since then, so the command needs no database
+// argument (Copilot on PR #210: the `<database>` placeholder it carried
+// was a shell redirection).
 func TestDeployChecklistStartsWithStopAndHealIsUsable(t *testing.T) {
 	steps, ok := deployChecklistFor("0.29.0")
 	if !ok || len(steps) == 0 {
@@ -156,8 +163,8 @@ func TestDeployChecklistStartsWithStopAndHealIsUsable(t *testing.T) {
 			continue
 		}
 		sawHeal = true
-		if !strings.Contains(line, "<database>") || !strings.Contains(line, "--dry-run") {
-			t.Errorf("mirror-link heal command must carry a database argument AND --dry-run (the bare form exits at DB=\"${1:?}\"); got: %s", strings.TrimSpace(line))
+		if !strings.Contains(line, "--dry-run") {
+			t.Errorf("mirror-link heal command must be the dry run first; got: %s", strings.TrimSpace(line))
 		}
 	}
 	if !sawHeal {
@@ -452,5 +459,324 @@ func TestRunDeployGateDoesNotPassAnUnboundedContext(t *testing.T) {
 	if !strings.Contains(check, "deployAckContext(ctx)") {
 		t.Error("RecordDeployAck must run on deployAckContext(ctx) — the caller's bound belongs to the " +
 			"pre-prompt READS, and the operator's answer arrives after it has expired")
+	}
+}
+
+// TestV02957ChecklistAppliesTheNewViewDefinition — v0.29.57. The release
+// changes explorer_libyear_summary's DEFINITION (it now orders NULLS LAST).
+// A view definition is applied only by a plain `aveloxis migrate`:
+// `migrate --skip-views` skips the views entirely, `refresh-views`
+// refreshes their data under the definition they already have, and serve
+// never re-creates a view at startup. Deployed by the standard ladder, the
+// new ordering never shipped — and heal-libyear, which raises the share of
+// repos with no libyear, made the old ordering's problem worse. Found while
+// writing the release notes, after nine review rounds had passed it.
+//
+// Scoped by meaning, not by map key (post-loop review finding 4): every
+// checklist that carries the libyear heal is one an operator can use to
+// cross v0.29.57, so each must also apply the definition — a later
+// release that reuses the heal on a --skip-views ladder fails here.
+func TestV02957ChecklistAppliesTheNewViewDefinition(t *testing.T) {
+	if _, ok := deployChecklistFor("0.29.57"); !ok {
+		t.Fatal("0.29.57 must have a deploy checklist")
+	}
+	examined := 0
+	for version, steps := range deployChecklists {
+		carriesHeal := false
+		for _, s := range steps {
+			if s.cmd == "aveloxis heal-libyear --apply" {
+				carriesHeal = true
+			}
+		}
+		if !carriesHeal {
+			continue
+		}
+		examined++
+		checkChecklistAppliesLibyearView(t, version, steps)
+	}
+	if examined == 0 {
+		t.Fatal("no checklist carries `aveloxis heal-libyear --apply` — 0.29.57's must")
+	}
+}
+
+func checkChecklistAppliesLibyearView(t *testing.T, version string, steps []deployStep) {
+	t.Helper()
+	migrateAt, verifyAt, healAt, refreshAt := -1, -1, -1, -1
+	for i, s := range steps {
+		switch {
+		case s.cmd == "aveloxis migrate":
+			migrateAt = i
+		case strings.HasPrefix(s.cmd, "aveloxis migrate") && strings.Contains(s.cmd, "--skip-views"):
+			t.Errorf("%s step %d is %q: --skip-views skips the view definitions, so explorer_libyear_summary keeps its old ordering", version, i+1, s.cmd)
+		case strings.Contains(s.cmd, "pg_get_viewdef('aveloxis_data.explorer_libyear_summary')") && strings.Contains(s.cmd, "NULLS LAST"):
+			verifyAt = i
+		case s.cmd == "aveloxis heal-libyear --apply":
+			healAt = i
+		case s.cmd == "aveloxis refresh-views":
+			refreshAt = i
+		}
+	}
+	if migrateAt < 0 {
+		t.Fatalf("%s needs a plain `aveloxis migrate` step — it is the only step that re-creates a view from its new definition", version)
+	}
+	// Post-loop review finding 3: migrate's view block is warn-only, so a
+	// failed re-create exits 0 and stamps the schema. The checklist must
+	// check the OUTCOME before the heals, not trust the exit status.
+	if verifyAt < migrateAt || healAt < verifyAt {
+		t.Errorf("%s needs a check that the new definition is in place between the migrate (step %d) and the heal (step %d); found it at step %d", version, migrateAt+1, healAt+1, verifyAt+1)
+	}
+	if healAt < migrateAt || refreshAt < healAt {
+		t.Errorf("%s: order must be migrate (step %d) → heal-libyear --apply (step %d) → refresh-views (step %d): the migrate applies the definition, the heal changes the rows, and the refresh makes the view reflect them", version, migrateAt+1, healAt+1, refreshAt+1)
+	}
+}
+
+// The check step's description names the WARN a failed re-create logs. A
+// renamed log line would leave the operator searching for text that is
+// never printed, so the quoted text must exist in RunMigrations' view block.
+func TestV02957ViewCheckQuotesARealLogLine(t *testing.T) {
+	steps, _ := deployChecklistFor("0.29.57")
+	const warn = "materialized view creation had errors"
+	quoted := false
+	for _, s := range steps {
+		if strings.Contains(s.cmd, "pg_get_viewdef") && strings.Contains(s.desc, warn) {
+			quoted = true
+		}
+	}
+	if !quoted {
+		t.Fatalf("the view-definition check must tell the operator which WARN means the re-create failed (%q)", warn)
+	}
+	// L10 pass finding 1: a bare `psql` connects with libpq defaults
+	// (local socket, port 5432), not aveloxis.json's database block — on a
+	// fleet whose database is elsewhere the check fails to connect or
+	// answers for a different database. It must name every connection
+	// field, each from a variable the operator sets that stops the command
+	// when unset (Copilot on PR #210: `<host>`-style placeholders are shell
+	// redirections, so the pasted line failed).
+	for _, s := range steps {
+		if !strings.Contains(s.cmd, "pg_get_viewdef") {
+			continue
+		}
+		for _, field := range []string{`-h "${PGHOST:?}"`, `-p "${PGPORT:?}"`, `-U "${PGUSER:?}"`, `-d "${PGDATABASE:?}"`} {
+			if !strings.Contains(s.cmd, field) {
+				t.Errorf("the view check must connect with aveloxis.json's database block; %q is missing from %q", field, s.cmd)
+			}
+		}
+		if !strings.Contains(s.desc, "aveloxis.json") {
+			t.Errorf("the view check's description must say where the connection values come from (aveloxis.json's database block): %q", s.desc)
+		}
+	}
+	// Scoped to the branch a plain migrate takes: the create-if-missing
+	// branch logs the same text, so a match anywhere in RunMigrations
+	// survived renaming the one that matters (mutation proof, this round).
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func RunMigrations("))
+	start := strings.Index(body, "case MatviewsRebuild:")
+	if start < 0 {
+		t.Fatal("RunMigrations has no `case MatviewsRebuild:` branch — the plain-migrate view block moved; re-scope this pin")
+	}
+	branch := body[start:]
+	if end := strings.Index(branch, "case MatviewsIfMissing:"); end >= 0 {
+		branch = branch[:end]
+	} else {
+		t.Fatal("cannot find the end of the MatviewsRebuild branch (`case MatviewsIfMissing:`)")
+	}
+	if !strings.Contains(branch, "CreateMaterializedViews(") {
+		t.Fatal("the MatviewsRebuild branch no longer calls CreateMaterializedViews — re-scope this pin")
+	}
+	if !strings.Contains(branch, `logger.Warn("`+warn+`"`) {
+		t.Errorf("a plain migrate's failed view re-create no longer logs %q — update the 0.29.57 checklist's view check to the line it logs now", warn)
+	}
+}
+
+// Post-loop review finding 2: the deploy gate's refusal hardcoded
+// `aveloxis migrate --skip-views` as "step 2", so an operator who ran
+// `start all` first and did what the refusal said never applied 0.29.57's
+// view definition. The gate now names the migrate step of the checklist it
+// is enforcing; a version with no checklist keeps the standard one.
+func TestDeployGateNamesThisReleasesMigrateStep(t *testing.T) {
+	if got := ladderMigrateStep("0.29.57"); got != "aveloxis migrate" {
+		t.Fatalf("ladderMigrateStep(0.29.57) = %q, want the checklist's plain migrate", got)
+	}
+	if got := ladderMigrateStep("0.29.3"); got != "aveloxis migrate --skip-views" {
+		t.Errorf("ladderMigrateStep(0.29.3) = %q, want its checklist's `aveloxis migrate --skip-views`", got)
+	}
+	const noChecklist = "0.0.0-no-checklist"
+	if got := ladderMigrateStep(noChecklist); got != "aveloxis migrate --skip-views" {
+		t.Errorf("ladderMigrateStep(%s) = %q, want the standard ladder's step", noChecklist, got)
+	}
+
+	for _, skip := range []bool{false, true} {
+		g := &fakeGate{hasData: true, stamp: "0.29.55"}
+		var out bytes.Buffer
+		if _, err := checkDeployReadiness(context.Background(), g, "0.29.57", skip, os.Stdin, &out); err != nil {
+			t.Fatal(err)
+		}
+		// Everything BEFORE the printed checklist is the gate's own advice;
+		// the checklist itself (skip path) is covered by the test above.
+		advice := out.String()
+		if i := strings.Index(advice, "=== Deployment steps"); i >= 0 {
+			advice = advice[:i]
+		}
+		if strings.Contains(advice, "--skip-views") {
+			t.Errorf("skip=%v: the 0.29.57 gate must not send the operator to --skip-views:\n%s", skip, advice)
+		}
+		if !strings.Contains(advice, "(`aveloxis migrate`)") {
+			t.Errorf("skip=%v: the 0.29.57 gate must name its checklist's plain `aveloxis migrate` as step 2:\n%s", skip, advice)
+		}
+	}
+	if msg := startAbortMessage("0.29.57"); strings.Contains(msg, "--skip-views") || !strings.Contains(msg, "`aveloxis migrate`") {
+		t.Errorf("start's abort line for 0.29.57 must name `aveloxis migrate`, not --skip-views:\n%s", msg)
+	}
+}
+
+// L10 round 3 finding 5: the email_message-index precondition refusals in
+// reconcile-repos and dedup-repos named `aveloxis migrate --skip-views`.
+// Followed on an undeployed v0.29.57 binary, that stamps the schema around
+// the release's view definitions, so they name db.DeployStepsAdvice.
+func TestIndexPreconditionRefusalsNameTheDeploySteps(t *testing.T) {
+	examined := 0
+	for _, file := range []string{"cmd/aveloxis/reconcile_repos.go", "cmd/aveloxis/dedup_repos.go"} {
+		src := srctest.StripGoComments(srctest.Read(t, file))
+		if strings.Contains(src, "`aveloxis migrate --skip-views` on this binary first") {
+			t.Errorf("%s: a precondition refusal still names `aveloxis migrate --skip-views`; use db.DeployStepsAdvice", file)
+		}
+		if n := strings.Count(src, `db.DeployStepsAdvice+" on this binary first`); n == 0 {
+			t.Errorf("%s: the precondition refusal must send the operator to db.DeployStepsAdvice", file)
+		} else {
+			examined += n
+		}
+	}
+	if examined < 2 {
+		t.Errorf("found %d refusal sites using db.DeployStepsAdvice, want at least the reconcile-repos and dedup-repos refusals", examined)
+	}
+
+	// L10 round 4: the returned error is what cobra prints last on the
+	// nonzero exit, so it carries the same advice as the ERROR log.
+	reconcile := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/reconcile_repos.go"), "func runReconcileRepos("))
+	found := false
+	for _, line := range strings.Split(reconcile, "\n") {
+		if strings.Contains(line, "stranded repos refused for the email_message index precondition") {
+			found = true
+			if !strings.Contains(line, "db.DeployStepsAdvice") {
+				t.Errorf("reconcile-repos' returned precondition error must pass db.DeployStepsAdvice: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	if !found {
+		t.Error("cannot find reconcile-repos' returned precondition error — re-scope this pin")
+	}
+}
+
+// L10 round 4 finding 1: dedup-repos' advice to run `migrate --skip-views`
+// (to build the backstop index, and in the help's precondition) is reached
+// BEFORE any deploy on two paths: the no-duplicates return comes before the
+// index precondition, and the precondition checks index validity, never the
+// schema stamp, so a v0.28.18+ fleet passes it on an undeployed binary.
+// Every mention must therefore come AFTER the release's deploy steps.
+//
+// Round 5 made this a syntax-level check: the first version matched per
+// source line, and a re-wrapped help line, a mention placed before the
+// condition, and a message split across `+` literals all escaped it. Now
+// every string expression in the file (a literal, or a chain of literals
+// joined by `+`) is evaluated, split into paragraphs, whitespace-collapsed,
+// and each `--skip-views` must have `deploy-checklist` earlier in its
+// paragraph. Round 6 matched the flag alone (it exists only on migrate, so
+// `migrate --no-wait --skip-views`, a `%s` for "migrate", and a literal cut
+// off by a non-literal operand are all still seen) and split paragraphs on
+// whitespace-only lines, not just "\n\n".
+func TestDedupReposSendsTheDeployStepsFirst(t *testing.T) {
+	strs := stringExpressionsIn(t, "cmd/aveloxis/dedup_repos.go")
+	paragraphBreak := regexp.MustCompile(`\n[ \t]*\n`)
+	const flag = "--skip-views"
+	mentions := 0
+	for _, str := range strs {
+		for _, para := range paragraphBreak.Split(str, -1) {
+			flat := strings.Join(strings.Fields(para), " ")
+			for rest, offset := flat, 0; ; {
+				i := strings.Index(rest, flag)
+				if i < 0 {
+					break
+				}
+				mentions++
+				if !strings.Contains(flat[:offset+i], "deploy-checklist") {
+					t.Errorf("dedup_repos.go names `migrate --skip-views` without the deploy steps before it:\n%s", flat)
+				}
+				offset += i + len(flag)
+				rest = flat[offset:]
+			}
+		}
+	}
+	// The help's precondition and backstop paragraphs, the no-duplicates
+	// INFO and the next-steps INFO. Fewer means a mention was dropped or
+	// the scan stopped seeing one; re-derive before lowering.
+	srctest.MinCount(t, "`--skip-views` mentions in dedup_repos.go's strings", mentions, 4)
+}
+
+// stringExpressionsIn returns the value of every string expression in a Go
+// file: each string literal, with chains of literals joined by `+`
+// evaluated as one string (so a message split across lines is seen whole).
+func stringExpressionsIn(t *testing.T, repoRelPath string) []string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), repoRelPath, srctest.Read(t, repoRelPath), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		e, ok := n.(ast.Expr)
+		if !ok {
+			return true
+		}
+		if v, ok := constStringExpr(e); ok {
+			out = append(out, v)
+			return false // its parts are already in v
+		}
+		return true
+	})
+	return out
+}
+
+// constStringExpr evaluates e when it is a string literal, or a chain of
+// string literals joined by `+` (parenthesised or not). Anything else —
+// an identifier, a call, a chain with a non-literal operand — reports false.
+func constStringExpr(e ast.Expr) (string, bool) {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		if x.Kind != token.STRING {
+			return "", false
+		}
+		v, err := strconv.Unquote(x.Value)
+		return v, err == nil
+	case *ast.BinaryExpr:
+		if x.Op != token.ADD {
+			return "", false
+		}
+		l, ok := constStringExpr(x.X)
+		if !ok {
+			return "", false
+		}
+		r, ok := constStringExpr(x.Y)
+		return l + r, ok
+	case *ast.ParenExpr:
+		return constStringExpr(x.X)
+	}
+	return "", false
+}
+
+// TestDeployChecklistCommandsHaveNoPlaceholders (Copilot on PR #210): an
+// operator pastes these commands, and an unquoted `<host>` or `<database>`
+// is a shell redirection, so the line fails before the command runs. The
+// docs' shell fences are held to the same rule (srctest.AnglePlaceholder).
+func TestDeployChecklistCommandsHaveNoPlaceholders(t *testing.T) {
+	checked := 0
+	for version, steps := range deployChecklists {
+		for _, s := range steps {
+			checked++
+			if m := srctest.AnglePlaceholder.FindString(s.cmd); m != "" {
+				t.Errorf("%s checklist: %q carries the placeholder %s — the operator pastes this line: use a quoted variable, or drop an argument the command reads from aveloxis.json", version, s.cmd, m)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no checklist step examined")
 	}
 }

@@ -898,7 +898,7 @@ Token semantics:
   collection pass) — the GUI's signal to render the "queued for
   first collection" banner instead of misleading zeros. v0.28.1
   adds `gone_at` (omitted unless prelim's probe got a definitive
-  404/410 — the repo no longer resolves on its forge; the GUI must
+  404/410/451 — the repo no longer resolves on its forge; the GUI must
   suppress the queued banner and render the no-longer-available
   notice, with gone taking precedence over the archived chip) and
   `metadata_as_of` (the repo_info snapshot date behind the

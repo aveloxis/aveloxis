@@ -42,7 +42,6 @@ func TestGapHealConvergesToZeroCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	const owner, repoName = "_avgapheal", "converge"

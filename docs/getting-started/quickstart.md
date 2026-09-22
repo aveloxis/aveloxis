@@ -67,7 +67,7 @@ docker run -d --name aveloxis-db -p 5432:5432 \
 aveloxis migrate
 ```
 
-This creates 147 tables and 20 materialized views across three PostgreSQL schemas (`aveloxis_data`, `aveloxis_ops`, and `aveloxis_scan`), plus the `aveloxis_augur_data` compatibility views for 8Knot. It is safe to run repeatedly -- all DDL uses `CREATE ... IF NOT EXISTS`.
+This creates 147 tables and 20 materialized views across three PostgreSQL schemas (`aveloxis_data`, `aveloxis_ops`, and `aveloxis_scan`), plus the `aveloxis_augur_data` compatibility views for 8Knot; the materialized views only when `collection.materialized_views` is enabled (the default). It is safe to run repeatedly -- all DDL uses `CREATE ... IF NOT EXISTS`.
 
 ---
 
@@ -197,7 +197,7 @@ Once `aveloxis serve` is running, it continuously:
 
 1. Collects repos in priority order from the queue
 2. Re-collects repos after `days_until_recollect` (default: 1 day)
-3. Refreshes materialized views every Saturday
+3. Refreshes the materialized views' data weekly (default Saturday; `collection.matview_rebuild_day`)
 4. Runs contributor breadth discovery every 6 hours
 5. Refreshes org membership every 4 hours
 

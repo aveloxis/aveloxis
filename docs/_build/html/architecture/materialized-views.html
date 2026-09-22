@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Materialized Views &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Materialized Views &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1647,12 +1652,12 @@
              
   <section id="materialized-views">
 <h1>Materialized Views<a class="headerlink" href="#materialized-views" title="Link to this heading"></a></h1>
-<p>Aveloxis creates <strong>20 materialized views + 2 alias views</strong> under the <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> schema. v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> matview and converting <code class="docutils literal notranslate"><span class="pre">explorer_libyear_all</span></code> to an alias VIEW. v0.25.6 then restored <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> as a plain VIEW alias (operators query it to identify new contributors), so today’s count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a>) opens a dashboard. They are rebuilt on a weekly cadence (default Saturday — configurable via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>) and on demand via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code>. Alias views read live from their underlying matview and need no separate refresh.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default), Aveloxis creates <strong>20 materialized views + 2 alias views</strong> under the <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> schema; a deployment with it disabled has none of these relations (v0.29.57 — they are derived data, and a deployment that never queries them can skip building them). v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> matview and converting <code class="docutils literal notranslate"><span class="pre">explorer_libyear_all</span></code> to an alias VIEW. v0.25.6 then restored <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> as a plain VIEW alias (operators query it to identify new contributors), so today’s count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a>) opens a dashboard. Their data is refreshed on a weekly cadence (default Saturday — configurable via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>) and on demand via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code>. A refresh keeps each view’s definition; a release that changes a definition applies it with a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (without <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>), which drops and re-creates the views. Alias views read live from their underlying matview and need no separate refresh.</p>
 <p>This page explains, for each view, <strong>what a row means</strong>, <strong>what the complete table tells you</strong>, and <strong>how an open source health and sustainability analyst would actually use it</strong>. The audience is operators and analysts, not SQL authors — the goal is to make the catalog useful without requiring a read of the underlying query.</p>
 <hr class="docutils" />
 <section id="refresh-schedule">
 <h2>Refresh schedule<a class="headerlink" href="#refresh-schedule" title="Link to this heading"></a></h2>
-<p>The full set rebuilds weekly. Operators tune the day via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code> (default <code class="docutils literal notranslate"><span class="pre">saturday</span></code>) and can force an out-of-band rebuild with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code>. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.</p>
+<p>The full set rebuilds weekly. Operators tune the day via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code> (default <code class="docutils literal notranslate"><span class="pre">saturday</span></code>) and can force an out-of-band refresh with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code>. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.</p>
 <p>If the underlying data has changed only modestly since the last rebuild, the most-recent view contents continue to be query-able with stale-but-consistent data; consumers don’t see partial state.</p>
 </section>
 <hr class="docutils" />
@@ -1939,6 +1944,7 @@
 <section id="explorer-libyear-summary">
 <h3><code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code><a class="headerlink" href="#explorer-libyear-summary" title="Link to this heading"></a></h3>
 <p><strong>One row per (repo, month, year).</strong> Columns: <code class="docutils literal notranslate"><span class="pre">repo_id</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_name</span></code>, <code class="docutils literal notranslate"><span class="pre">avg_libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>.</p>
+<p><strong>Order</strong>: the definition orders rows newest month first and, within a month, stalest first with unknown libyear (<code class="docutils literal notranslate"><span class="pre">NULL</span></code>) last. That is only the order rows are written in: PostgreSQL returns rows in no guaranteed order unless the query has its own <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, so a query that needs stalest first adds <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span> <span class="pre">avg_libyear</span> <span class="pre">DESC</span> <span class="pre">NULLS</span> <span class="pre">LAST</span></code>.</p>
 <p><strong>What the table tells you</strong>: track dependency staleness over time per repo. A repo whose <code class="docutils literal notranslate"><span class="pre">avg_libyear</span></code> is climbing month-over-month is letting its deps drift; a repo whose <code class="docutils literal notranslate"><span class="pre">avg_libyear</span></code> is dropping is actively updating.</p>
 <p><strong>Health and sustainability use</strong>:</p>
 <ul class="simple">
@@ -1982,9 +1988,9 @@
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span>
 <span class="w">  </span><span class="n">schemaname</span><span class="p">,</span>
 <span class="w">  </span><span class="n">matviewname</span><span class="p">,</span>
-<span class="w">  </span><span class="n">pg_size_pretty</span><span class="p">(</span><span class="n">pg_total_relation_size</span><span class="p">(</span><span class="n">schemaname</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">'.'</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">matviewname</span><span class="p">))</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">size</span>
+<span class="w">  </span><span class="n">pg_size_pretty</span><span class="p">(</span><span class="n">pg_total_relation_size</span><span class="p">(</span><span class="n">schemaname</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s1">&#39;.&#39;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">matviewname</span><span class="p">))</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">size</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_matviews</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">schemaname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'aveloxis_data'</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">schemaname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_data&#39;</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">matviewname</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2017,7 +2023,7 @@
 <p>To audit a matview’s column list:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">attname</span><span class="p">,</span><span class="w"> </span><span class="n">format_type</span><span class="p">(</span><span class="n">atttypid</span><span class="p">,</span><span class="w"> </span><span class="n">atttypmod</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">coltype</span><span class="p">,</span><span class="w"> </span><span class="n">attnum</span>
 <span class="k">FROM</span><span class="w">   </span><span class="n">pg_attribute</span>
-<span class="k">WHERE</span><span class="w">  </span><span class="n">attrelid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'aveloxis_data.explorer_new_contributors'</span><span class="o">::</span><span class="n">regclass</span>
+<span class="k">WHERE</span><span class="w">  </span><span class="n">attrelid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_data.explorer_new_contributors&#39;</span><span class="o">::</span><span class="n">regclass</span>
 <span class="w">  </span><span class="k">AND</span><span class="w">  </span><span class="n">attnum</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0</span>
 <span class="w">  </span><span class="k">AND</span><span class="w">  </span><span class="k">NOT</span><span class="w"> </span><span class="n">attisdropped</span>
 <span class="k">ORDER</span><span class="w">  </span><span class="k">BY</span><span class="w"> </span><span class="n">attnum</span><span class="p">;</span>

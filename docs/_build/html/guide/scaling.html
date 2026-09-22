@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scaling &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Scaling &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1984,9 +1989,9 @@ package upgrade, or a hand-edit during an incident all leave the file saying
 one thing and the server doing another. Check the server, not the file:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="k">name</span><span class="p">,</span><span class="w"> </span><span class="n">setting</span><span class="p">,</span><span class="w"> </span><span class="n">unit</span><span class="p">,</span><span class="w"> </span><span class="n">source</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_settings</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">'work_mem'</span><span class="p">,</span><span class="w"> </span><span class="s1">'maintenance_work_mem'</span><span class="p">,</span><span class="w"> </span><span class="s1">'shared_buffers'</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">'effective_cache_size'</span><span class="p">,</span><span class="w"> </span><span class="s1">'max_connections'</span><span class="p">,</span><span class="w"> </span><span class="s1">'jit'</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">'max_parallel_workers_per_gather'</span><span class="p">)</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;maintenance_work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;shared_buffers&#39;</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">&#39;effective_cache_size&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;max_connections&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;jit&#39;</span><span class="p">,</span>
+<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">)</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2058,8 +2063,8 @@ into a diff instead of an investigation.</p>
 <li><p><strong>Full clones</strong> (temporary, used for analysis) are created inside the clone directory and deleted after each repo. They roughly double the disk usage of a bare clone temporarily.</p></li>
 </ul>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"repo_clone_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/data/aveloxis-repos"</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;repo_clone_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/data/aveloxis-repos&quot;</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -2138,9 +2143,9 @@ findings in summary/21). Run it per release, or monthly, and diff against the
 previous snapshot — performance review becomes a diff, not archaeology:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">DBHOST</span><span class="o">=</span>db.example.org<span class="w">        </span><span class="c1"># the PostgreSQL host</span>
 <span class="nv">PREVIOUS</span><span class="o">=</span><span class="m">20260818</span><span class="w">            </span><span class="c1"># the date stamp of the last snapshot</span>
-psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">"</span><span class="nv">$DBHOST</span><span class="s2">"</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
+psql<span class="w"> </span>-h<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$DBHOST</span><span class="s2">&quot;</span><span class="w"> </span>-p<span class="w"> </span><span class="m">5434</span><span class="w"> </span>-U<span class="w"> </span>aveloxis<span class="w"> </span>-d<span class="w"> </span>aveloxis_large<span class="w"> </span><span class="se">\</span>
 <span class="w">     </span>-f<span class="w"> </span>scripts/perf_snapshot.sql<span class="w"> </span>&gt;<span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt
-diff<span class="w"> </span><span class="s2">"perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt"</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
+diff<span class="w"> </span><span class="s2">&quot;perf-</span><span class="nv">$PREVIOUS</span><span class="s2">.txt&quot;</span><span class="w"> </span>perf-<span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span>.txt<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
 </pre></div>
 </div>
 <p>Prerequisites (one-time, superuser — full walkthrough in summary/20 Phase 0):</p>

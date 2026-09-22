@@ -122,6 +122,7 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"ScancodeTimeoutCapStrikes":                   func(c *CollectionConfig) any { return c.ScancodeTimeoutCapStrikesOrDefault() },
 	"ScancodeIgnoreGlobs":                         func(c *CollectionConfig) any { return c.ScancodeIgnoreGlobsOrDefault() },
 	"MatviewRebuildDay":                           func(c *CollectionConfig) any { return c.MatviewRebuildWeekday() },
+	"MaterializedViews":                           func(c *CollectionConfig) any { return c.MaterializedViewsValue() },
 }
 
 func TestExampleConfigCollectionValuesMatchEffectiveDefaults(t *testing.T) {

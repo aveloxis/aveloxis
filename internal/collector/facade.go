@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -27,6 +28,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // FacadeCollector handles git clone/fetch + log parsing for commit data.
@@ -53,6 +56,11 @@ type FacadeResult struct {
 	Commits        int
 	CommitMessages int
 	Errors         []error
+	// EmptyDefaultBranch is set when the default branch resolved to no
+	// commit (v0.29.58): the numstat pass completed with nothing to walk,
+	// and the whitespace phase has nothing to walk either — CollectRepo
+	// skips it at INFO instead of letting its rev-parse fail at WARN.
+	EmptyDefaultBranch bool
 	// CommitWriteFailures counts commit ROWS that failed to persist and
 	// were swallowed (warn-and-continue) — the batch path's per-row
 	// fallback failures and its ctx-cancel bail. v0.27.107 (ultrareview
@@ -72,6 +80,20 @@ type FacadeResult struct {
 // CollectRepo clones (or fetches) the repo and parses git log for commit data.
 func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL string) (*FacadeResult, error) {
 	result := &FacadeResult{}
+
+	// The URL goes to `git clone` on its command line and into the clone
+	// log line, every cycle. A URL carrying credentials is refused before
+	// either. The shared machinery refuses it (ensureClone, resolveRedirects,
+	// the scancode clone, RunScorecard, the ecosyste.ms lookup), the
+	// scheduler refuses the row at the job's entry (runJob), and this arm is
+	// the one that logs an ERROR naming the repo (v0.29.57 fix-review rounds
+	// 1–3). validateGitURL cannot do this: it accepts userinfo for the
+	// SCP/ssh shapes.
+	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
+		f.logger.Error("facade not run: repo URL carries credentials — remove the credential from repo_git",
+			"repo_id", repoID, "url", platform.RedactURLUserinfo(gitURL), "error", err)
+		return result, fmt.Errorf("repo %d: %w", repoID, err)
+	}
 
 	// Determine local clone path.
 	clonePath := f.clonePath(repoID)
@@ -101,7 +123,13 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	if ctx.Err() != nil {
 		return result, ctx.Err() // shutdown after the numstat pass: no gate WARN, no "complete" (pass 37)
 	}
-	if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
+	if result.EmptyDefaultBranch {
+		// v0.29.58 review round 1: the walk's rev-parse fails 128 on an
+		// unborn ref, so an empty repository would have traded its facade
+		// WARN for a whitespace WARN every cycle. Nothing to walk, nothing
+		// to stamp; the marker stays empty for the first real commit.
+		f.logger.Info("whitespace phase skipped — no commits on the default branch", "repo_id", repoID)
+	} else if len(result.Errors) == 0 && result.CommitWriteFailures == 0 {
 		f.runWhitespacePhase(ctx, repoID, clonePath)
 	} else {
 		f.logger.Warn("whitespace phase skipped — numstat pass lost commit rows; marker stays unstamped for a full walk next cycle",
@@ -119,11 +147,18 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 }
 
 func (f *FacadeCollector) clonePath(repoID int64) string {
-	return filepath.Join(f.repoDir, fmt.Sprintf("repo_%d", repoID))
+	return BareClonePath(f.repoDir, repoID)
 }
 
 // ensureClone either fetches updates for an existing bare clone or creates a new one.
 func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) error {
+	// Refused in the one function both clone paths share (CollectRepo and
+	// RewalkWhitespace), so the URL reaches neither the clone log line nor
+	// git's command line (round 3: `aveloxis rewalk-whitespace` bypassed
+	// CollectRepo's arm, which stays for its ERROR naming the repo).
+	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
+		return err
+	}
 	// Bare repos don't have a .git subdirectory — check for HEAD file instead.
 	if _, err := os.Stat(filepath.Join(path, "HEAD")); err == nil {
 		// Existing bare clone found — verify it's the right repo.
@@ -135,8 +170,8 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) {
 			f.logger.Warn("stale clone detected: origin URL mismatch, re-cloning",
 				"path", path,
-				"existing_url", existingURL,
-				"expected_url", gitURL)
+				"existing_url", platform.RedactURLUserinfo(existingURL),
+				"expected_url", platform.RedactURLUserinfo(gitURL))
 			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, path)
 		}
@@ -260,7 +295,7 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	if err := validateGitURL(gitURL); err != nil {
 		return fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
-	f.logger.Info("cloning repository", "url", gitURL, "path", path)
+	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -343,6 +378,23 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	defaultBranch := resolveDefaultBranch(ctx, clonePath)
 	f.logger.Info("using default branch for git log", "repo_id", repoID, "branch", defaultBranch)
 
+	// v0.29.58 (2026-09-22 log review, finding 2): an EMPTY repository —
+	// a bare clone whose default branch has no commits — is a complete
+	// facade pass with zero commits, not a failure. Before this probe,
+	// git log exited 128 on the unborn ref and 585 such repositories in
+	// one eight-hour run each logged a WARN with no diagnostic. The probe
+	// is a yes/no with an error arm (SR-16): only a definitive "the ref
+	// resolves to no commit" (exit 1 under --quiet) takes the empty path;
+	// any other failure (not a repository, a corrupt object store) falls
+	// through to git log, whose stderr is now kept, so the real cause
+	// reaches the log.
+	if empty, perr := defaultBranchIsEmpty(ctx, clonePath, defaultBranch); perr == nil && empty {
+		f.logger.Info("repository has no commits on its default branch — facade complete with zero commits",
+			"repo_id", repoID, "branch", defaultBranch)
+		result.EmptyDefaultBranch = true
+		return nil
+	}
+
 	// Run git log with --numstat for per-file stats on the default branch only.
 	// Derived context (v0.27.105 ultrareview, same class as the
 	// whitespace walker's bug_001): a scanner error (token too long)
@@ -355,6 +407,10 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 		"--numstat",
 		"--format="+gitLogFormat,
 	)
+	// Keep git's diagnostic (bounded) for the exit-error path below;
+	// startSweptCommand owns stdout and the process group, not stderr.
+	stderr := &stderrCapture{}
+	cmd.Stderr = stderr
 
 	// startSweptCommand (not cmd.StdoutPipe) so a child that inherits
 	// git's stdout and outlives it cannot wedge this worker: the group is
@@ -477,10 +533,35 @@ func (f *FacadeCollector) parseGitLog(ctx context.Context, repoID int64, clonePa
 	}
 
 	if err := swept.Wait(); err != nil {
+		// The captured stderr rides on the exit error; execErr still
+		// replaces it with ctx.Err() on a shutdown, so a kill is never
+		// reported as a git failure.
+		err = withStderr(err, stderr.String())
 		return fmt.Errorf("git log exited with error: %w", execErr(ctx, err))
 	}
 
 	return nil
+}
+
+// defaultBranchIsEmpty reports whether ref resolves to no commit in the
+// bare clone (an empty repository, or a default branch that was never
+// pushed). It is the yes/no probe parseGitLog runs before git log.
+//
+// `git rev-parse --verify --quiet <ref>^{commit}` exits 0 when the ref
+// names a commit and 1 when it does not; every other failure (128: not a
+// repository, corrupt refs) is an ERROR, not an answer, and is returned
+// so the caller does not mistake a broken clone for an empty one (SR-16).
+func defaultBranchIsEmpty(ctx context.Context, clonePath, ref string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	_, err := cmd.Output()
+	if err == nil {
+		return false, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 && ctx.Err() == nil {
+		return true, nil
+	}
+	return false, withStderr(execErr(ctx, err), exitStderr(err))
 }
 
 type parsedCommit struct {
@@ -771,4 +852,31 @@ func resolveDefaultBranch(ctx context.Context, clonePath string) string {
 	ref := strings.TrimSpace(string(out))
 	// Return the full ref so git log can use it directly.
 	return ref
+}
+
+// BareClonePath is where a repo's bare clone lives under a clone
+// directory. One spelling for the facade (which creates it), analysis
+// (which needs it) and the scheduler (which skips phases without it).
+func BareClonePath(cloneDir string, repoID int64) string {
+	return filepath.Join(cloneDir, fmt.Sprintf("repo_%d", repoID))
+}
+
+// HasBareClone reports whether a repo's bare clone exists. A repository
+// that could not be fetched at all (DMCA takedown, disabled by GitHub,
+// deleted) has none, and every phase that reads the clone — analysis,
+// scorecard's local mode — can only fail (v0.29.56: 8 repos in two hours
+// of the 2026-09-17 log logged "analysis failed: no bare clone" and then
+// spent a remote scorecard run each to be told the repository is
+// unreachable).
+func HasBareClone(cloneDir string, repoID int64) bool {
+	_, err := os.Stat(filepath.Join(BareClonePath(cloneDir, repoID), "HEAD"))
+	if err == nil {
+		return true
+	}
+	// Only a genuine "not there" means there is no clone. A stat that fails
+	// for any other reason (an unreadable or unmounted clone directory) says
+	// nothing, and reading it as "no clone" would assert a takedown or
+	// deletion that did not happen — and silently skip analysis and
+	// scorecard fleet-wide (SR-16: a probe needs an error arm).
+	return !errors.Is(err, fs.ErrNotExist)
 }

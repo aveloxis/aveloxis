@@ -27,6 +27,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // HealRepoCaseDrift corrects repos.repo_git / repo_owner / repo_name
@@ -47,6 +49,16 @@ func (s *PostgresStore) HealRepoCaseDrift(ctx context.Context, repoID int64, ful
 			return false, nil
 		}
 		return false, fmt.Errorf("load repo %d: %w", repoID, err)
+	}
+
+	// A stored URL carrying credentials is not healed: schemeAndHost would
+	// carry the userinfo into the rebuilt URL and UpdateRepoURLs would
+	// rewrite the row with it (v0.29.57 fix-review round 5). Refused like
+	// every other consumer of repo_git; the ERROR names the row to correct.
+	if uerr := platform.RefuseURLUserinfo(gitURL); uerr != nil {
+		s.logger.Error("case heal skipped: repo URL carries credentials — correct repo_git",
+			"repo_id", repoID, "stored_url", platform.RedactURLUserinfo(gitURL), "error", uerr)
+		return false, uerr
 	}
 
 	storedPath := owner + "/" + name
@@ -83,8 +95,8 @@ func (s *PostgresStore) HealRepoCaseDrift(ctx context.Context, repoID int64, ful
 		newURL, repoID).Scan(&occupant)
 	if err == nil {
 		s.logger.Warn("canonical URL already tracked by another repo — case-variant duplicate pair",
-			"repo_id", repoID, "stored", gitURL,
-			"canonical_url", newURL, "occupant_repo_id", occupant,
+			"repo_id", repoID, "stored_url", platform.RedactURLUserinfo(gitURL),
+			"canonical_url", platform.RedactURLUserinfo(newURL), "occupant_repo_id", occupant,
 			"hint", "run `aveloxis dedup-repos` to merge the pair")
 		return false, nil
 	}
@@ -99,7 +111,7 @@ func (s *PostgresStore) HealRepoCaseDrift(ctx context.Context, repoID int64, ful
 		return false, fmt.Errorf("update repo URLs %q -> %q: %w", gitURL, newURL, err)
 	}
 	s.logger.Info("healed repo case drift to forge-canonical spelling",
-		"repo_id", repoID, "old", gitURL, "new", newURL)
+		"repo_id", repoID, "old_url", platform.RedactURLUserinfo(gitURL), "new_url", platform.RedactURLUserinfo(newURL))
 	return true, nil
 }
 

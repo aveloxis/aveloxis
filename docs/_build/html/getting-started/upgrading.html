@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1688,15 +1693,26 @@ binary that migrated the schema:</p>
 <section id="the-standard-ladder">
 <h2>The standard ladder<a class="headerlink" href="#the-standard-ladder" title="Link to this heading"></a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">   </span><span class="c1"># the git checkout of this repository</span>
-<span class="nb">cd</span><span class="w"> </span><span class="s2">"</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
+<span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
 aveloxis<span class="w"> </span>version<span class="w">                </span><span class="c1"># confirm the new binary</span>
+aveloxis<span class="w"> </span>deploy-checklist<span class="w">       </span><span class="c1"># this release&#39;s exact steps: follow them where they differ from these</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">               </span><span class="c1"># serve, web, api (also cleans stale pidfiles)</span>
-aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># schema + ledgered backfills; matviews later</span>
+aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># schema + ledgered backfills; skips the materialized views</span>
 <span class="c1"># ... operator-run heals from the table below, in order ...</span>
-aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># rebuild the materialized views (add --aggregates for the dm_ tables; slow)</span>
+aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># refresh the materialized views&#39; data (add --aggregates for the dm_ tables; slow)</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">refresh-views</span></code> refreshes each view’s <strong>data</strong>; it does not change a view’s
+<strong>definition</strong>. A release that changes a view definition needs one plain
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (without <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>), which drops and re-creates the
+views from the new definitions; <code class="docutils literal notranslate"><span class="pre">serve</span></code> never does it at startup. v0.29.57 is
+such a release (<code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code>’s definition now orders unknown
+repositories last): its deploy checklist, printed by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">deploy-checklist</span></code>, uses a
+plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> in place of the <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code> step above, then
+checks that the new definition is in place. That check matters because the
+migrate only logs a WARN (<code class="docutils literal notranslate"><span class="pre">materialized</span> <span class="pre">view</span> <span class="pre">creation</span> <span class="pre">had</span> <span class="pre">errors</span></code>) when the
+views fail to re-create, and still exits 0 with the old definitions in place.</p>
 <p>Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> explicitly rather than letting <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>
 migrate at startup: <code class="docutils literal notranslate"><span class="pre">web</span></code> and <code class="docutils literal notranslate"><span class="pre">api</span></code> never migrate and log an ERROR on a
 schema-version mismatch, and (since v0.27.131) <code class="docutils literal notranslate"><span class="pre">serve</span></code> trusts the
@@ -1954,7 +1970,7 @@ re-running is always safe. Rows marked <em>fleet-scale</em> take hours on a
 <td><p>optional — the scheduled scans self-heal on their normal cadence</p></td>
 </tr>
 <tr class="row-even"><td><p>13</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">scripts/heal_mirror_links.sh</span> <span class="pre">&lt;db&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> first)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">scripts/heal_mirror_links.sh</span> <span class="pre">--dry-run</span></code>, then without it (it reads the database from <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code>; a database name as an argument overrides it)</p></td>
 <td><p>v0.28.20</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">linked_pull_request_id</span></code> / <code class="docutils literal notranslate"><span class="pre">linked_issue_id</span></code> on GitHub-mirror mailing-list messages, NULL on every such row before v0.28.20</p></td>
 <td><p>only if you collect Apache mailing lists; needs the migrate to have built the <code class="docutils literal notranslate"><span class="pre">node_id</span></code> indexes first (it refuses otherwise)</p></td>
@@ -1988,6 +2004,12 @@ re-running is always safe. Rows marked <em>fleet-scale</em> take hours on a
 <td><p>v0.29.0</p></td>
 <td><p>re-projects mailing-list messages a wrong-system drain pool processed without Layer-2 projection (the cross-system drain fix: 90%+ of Apache list mail was drained by the lore processor and never projected onto issues). The migrate itself restamps <code class="docutils literal notranslate"><span class="pre">ml_system</span></code> and resets the affected rows to pending; this command runs the keyed + thread passes over them</p></td>
 <td><p>only if you collect mailing lists AND upgraded through an affected version; one clean run converges — rerun only after a mid-run error</p></td>
+</tr>
+<tr class="row-even"><td><p>19</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code>, then <code class="docutils literal notranslate"><span class="pre">--apply</span></code></p></td>
+<td><p>v0.29.57</p></td>
+<td><p>libyear values stored as <code class="docutils literal notranslate"><span class="pre">0</span></code> for dependencies with no pinned version, whose libyear can never be computed; they become <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, which averages and medians skip (before v0.29.57 an unknown libyear was stored as <code class="docutils literal notranslate"><span class="pre">0</span></code> and read as “up to date”)</p></td>
+<td><p>any fleet upgrading to v0.29.57; the dry run is the default and reports the count; walks the table in primary-key windows, safe beside <code class="docutils literal notranslate"><span class="pre">serve</span></code>. <strong>Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code> (row 9) again afterwards</strong>, or <code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code> keeps the old values until the next weekly rebuild. The same release changed that view’s definition, so a fleet crossing v0.29.57 also needs one plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (see above) if the checklist it followed used <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>. 8Knot’s dependency-age chart reads this table itself and keeps only <code class="docutils literal notranslate"><span class="pre">libyear</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code>, so these dependencies leave that chart (it had counted them as up to date)</p></td>
 </tr>
 </tbody>
 </table>
@@ -2035,16 +2057,16 @@ needs outbound network access (Apache’s <code class="docutils literal notransl
 <code class="docutils literal notranslate"><span class="pre">podlings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">lists.apache.org</span></code> for list enumeration, and github.com
 for the redirect probe) and moves each linked repository into an
 <code class="docutils literal notranslate"><span class="pre">Apache</span> <span class="pre">PMC:</span> <span class="pre">&lt;slug&gt;</span></code> repo group.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>load-apache-lists<span class="w"> </span>--dry-run<span class="w">   </span><span class="c1"># [pmc] list → repo_id per PMC you hold; the rest are "skipped"</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>load-apache-lists<span class="w"> </span>--dry-run<span class="w">   </span><span class="c1"># [pmc] list → repo_id per PMC you hold; the rest are &quot;skipped&quot;</span>
 aveloxis<span class="w"> </span>load-apache-lists
 </pre></div>
 </div>
 <p>Then enable the worker in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> and restart <code class="docutils literal notranslate"><span class="pre">serve</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"collection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"mailing_list_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"mailing_list_polite_email"</span><span class="p">:</span><span class="w"> </span><span class="s2">"you@example.org"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"mailing_list_backfill_months"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
+<span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;mailing_list_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;mailing_list_polite_email&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;you@example.org&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;mailing_list_backfill_months&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>

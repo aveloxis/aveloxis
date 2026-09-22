@@ -14,6 +14,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/importers/numfocus"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // loadNumfocusProjectsCmd registers `aveloxis load-numfocus-projects`.
@@ -146,7 +148,7 @@ func runLoadNumfocusProjects(cfgPath string, opts numfocusLoadOpts) error {
 			}
 			if err := store.AddRepoToGroup(ctx, opts.UserID, groupID, url); err != nil {
 				logger.Warn("failed to add numfocus project",
-					"section", section, "name", p.Name, "url", url, "error", err)
+					"section", section, "name", p.Name, "url", platform.RedactURLUserinfo(url), "error", err)
 				tally.failed++
 				continue
 			}

@@ -96,7 +96,6 @@ func TestIdentityBackfillEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatal(err)
 	}

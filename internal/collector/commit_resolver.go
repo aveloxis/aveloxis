@@ -53,11 +53,18 @@ type CommitResolver struct {
 }
 
 // NewCommitResolver creates a resolver using the GitHub API via the given key pool.
-func NewCommitResolver(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *CommitResolver {
+// NewCommitResolver builds a resolver against the GitHub API at baseURL, or
+// public GitHub when baseURL is empty. The base is a parameter for the same
+// reason the breadth worker takes one (v0.29.57): these are the deployment's
+// keys, and a hardcoded api.github.com sends an Enterprise token to a third
+// party. BOTH clients here are built on it — the REST client and the search
+// client — because either one carries the key.
+func NewCommitResolver(store *db.PostgresStore, keys *platform.KeyPool, baseURL string, logger *slog.Logger) *CommitResolver {
+	baseURL = platform.GitHubAPIBaseOrPublic(baseURL)
 	return &CommitResolver{
 		store:        store,
-		http:         platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub),
-		searchClient: github.New("https://api.github.com", keys, logger),
+		http:         platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitHub),
+		searchClient: github.New(baseURL, keys, logger),
 		logger:       logger,
 		emailCache:   make(map[string]string),
 		hashCache:    make(map[string]string),

@@ -134,7 +134,7 @@ func TestAddURLByteLimit(t *testing.T) {
 	if err != nil || out.Pending != 2 {
 		t.Fatalf("non-admin add of two URLs at the limit = %+v, %v; want 2 pending", out, err)
 	}
-	if _, _, err := store.DecideAddRequest(ctx, out.RequestID, adminID, true); err != nil {
+	if _, _, err := store.DecideAddRequest(ctx, out.RequestID, adminID, true, ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if n, err := store.ProcessApprovedAddRequest(ctx, out.RequestID); err != nil || n != 2 {
@@ -147,14 +147,14 @@ func TestAddURLByteLimit(t *testing.T) {
 	if out, err := store.AddReposToGroup(ctx, adminID, adminGID, []string{sized(host+"admin-", true, MaxAddURLBytes)}, 0); err != nil || out.Enqueued != 1 {
 		t.Errorf("admin add of a URL at the limit = %+v, %v; want 1 enqueued", out, err)
 	}
-	if out, err := store.AddOrgToGroup(ctx, adminID, adminGID, sized(orgHost+"admin-", true, MaxAddURLBytes)); err != nil || !out.Registered {
+	if out, err := store.AddOrgToGroup(ctx, adminID, adminGID, sized(orgHost+"admin-", true, MaxAddURLBytes), ""); err != nil || !out.Registered {
 		t.Errorf("admin org add at the limit = %+v, %v; want registered", out, err)
 	}
-	orgOut, err := store.AddOrgToGroup(ctx, uid, gid, sized(orgHost+"user-", false, MaxAddURLBytes))
+	orgOut, err := store.AddOrgToGroup(ctx, uid, gid, sized(orgHost+"user-", false, MaxAddURLBytes), "")
 	if err != nil || orgOut.RequestID == 0 {
 		t.Fatalf("non-admin org add at the limit = %+v, %v; want a pending request", orgOut, err)
 	}
-	if _, _, err := store.DecideAddRequest(ctx, orgOut.RequestID, adminID, true); err != nil {
+	if _, _, err := store.DecideAddRequest(ctx, orgOut.RequestID, adminID, true, ""); err != nil {
 		t.Errorf("approving an org at the limit: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestAddURLByteLimit(t *testing.T) {
 			return err
 		}},
 		{"org, fewer characters than the limit", func() error {
-			_, err := store.AddOrgToGroup(ctx, uid, gid, sized(orgHost+"over-multibyte-", true, over))
+			_, err := store.AddOrgToGroup(ctx, uid, gid, sized(orgHost+"over-multibyte-", true, over), "")
 			return err
 		}},
 		{"auto-approved repos", func() error {
@@ -191,11 +191,11 @@ func TestAddURLByteLimit(t *testing.T) {
 			return err
 		}},
 		{"admin org", func() error {
-			_, err := store.AddOrgToGroup(ctx, adminID, adminGID, sized(orgHost+"over-admin-", false, over))
+			_, err := store.AddOrgToGroup(ctx, adminID, adminGID, sized(orgHost+"over-admin-", false, over), "")
 			return err
 		}},
 		{"non-admin org", func() error {
-			_, err := store.AddOrgToGroup(ctx, uid, gid, sized(orgHost+"over-user-", false, over))
+			_, err := store.AddOrgToGroup(ctx, uid, gid, sized(orgHost+"over-user-", false, over), "")
 			return err
 		}},
 	} {

@@ -191,7 +191,6 @@ func TestMarkBreadthAttemptedBatchStampsAll(t *testing.T) {
 func TestBreadthIndexExistsAfterMigrate(t *testing.T) {
 	store, ctx := realignConnect(t)
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

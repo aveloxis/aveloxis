@@ -266,10 +266,11 @@ store.RefreshRepoAggregates(ctx, repoID)
 
 If you add a new materialized view:
 
-1. Declare it in `schema.sql` (CREATE MATERIALIZED VIEW ... WITH NO DATA so fresh installs land without blocking on a populated build).
-2. Add its name to the list in `CreateMaterializedViewsIfNotExist`.
-3. Add it to `RefreshAllRepoAggregates`.
-4. Test that `aveloxis refresh-views` rebuilds it (integration test).
+1. Declare it in `internal/db/matviews.sql` as a `DROP MATERIALIZED VIEW IF EXISTS … CASCADE;` followed by its `CREATE MATERIALIZED VIEW`. The file runs as one statement batch, so a view that fails to build rolls back every other view's DROP/CREATE with it.
+2. Add its name to `matviewNames` in `internal/db/matviews.go`, so `aveloxis refresh-views` and the weekly rebuild refresh it. A unique index on the view lets the refresh run `CONCURRENTLY`. Adding it there also makes every existing deployment's managed set INCOMPLETE: `serve` logs an ERROR naming it at each start until the release's checklist runs a plain `aveloxis migrate` — startup never rebuilds the set itself, because that batch re-creates all of them.
+3. If it does not need to be materialized (it reads base tables only and is cheap to compute), make it a plain view in `internal/db/views.sql` instead: that file runs on every migrate, including `--skip-views`.
+
+**Deploying a new or changed view.** Only a plain `aveloxis migrate` (without `--skip-views`) applies a CHANGED definition or builds a view ADDED to an existing set. `migrate --skip-views`, `refresh-views` and the weekly rebuild never do. `serve`'s startup, with `collection.materialized_views` on (its fast path included), builds the set only when NONE of it exists, leaves a complete set alone, and reports a partial set — the 20 materialized views and the 2 alias views are all probed, not one sentinel — at ERROR naming the missing relations, every start, without rebuilding: `matviews.sql` runs as one batch, and re-creating twenty views before the scheduler starts is the multi-hour startup the next paragraph rules out.
 
 Operators rebuild matviews on the configured day (`collection.matview_rebuild_day`, default Saturday). Pre-existing matviews are NOT refreshed on every startup — that was a 2024 design decision to avoid multi-hour startup delays on fleet-scale databases.
 
@@ -293,7 +294,7 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
 6. Write the release-note entry (in the PR description) documenting:
    - What was added and why.
    - What the migration does on existing deployments.
-   - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`).
+   - The operator command sequence to deploy (`aveloxis stop all; aveloxis migrate --skip-views; aveloxis start all`, or a plain `aveloxis migrate` when the release changed `matviews.sql` — see "Deploying a new or changed view" above — plus any heals, in the release's `deployChecklists` entry).
    - Any operational concern (long-running CONCURRENTLY index builds, fail-closed startup behavior, etc.).
 7. **Register a write policy** for any new column whose write discipline
    matters (fill-empty-only, insert-only, monotonic, ...) in

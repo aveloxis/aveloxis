@@ -385,7 +385,7 @@ The settings most operators tune (defaults shown for reference):
 |---|---|---|
 | `database.*` | localhost:5432 | PostgreSQL connection. |
 | `github.api_keys` / `gitlab.api_keys` | `[]` | Round-robin rotated. Production should prefer the `worker_oauth` table via `aveloxis add-key`. |
-| `collection.workers` | `12` | Concurrent collection goroutines. pgx pool sizes to `max(workers + 15, 20)`. |
+| `collection.workers` | `12` | Concurrent collection goroutines. `serve` sizes its connection pool from the scheduler's demand (five connections per worker slot plus every background consumer), capped by the server's budget, or set outright by `database.pool_max_conns` — see `docs/guide/scaling.md`. |
 | `collection.days_until_recollect` | `1` | After collection, `due_at = last_collected + days_until_recollect`. |
 | `collection.repo_clone_dir` | `$HOME/aveloxis-repos` | Bare clones. Plan TB-scale for large fleets. |
 | `collection.pr_child_mode` | `"graphql"` | GraphQL is the default GitHub path (~5× faster, v0.26.0+); set `"rest"` as the escape hatch. |
@@ -544,13 +544,13 @@ Combine with `aveloxis prioritize <url>` if you want the re-collection to start 
 aveloxis migrate
 ```
 
-Creates 147 tables and 20 materialized views across three PostgreSQL schemas:
+Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when `collection.materialized_views` is enabled (the default):
 - **`aveloxis_data`** (101 tables + 20 materialized views) — all collected data plus analytics views
 - **`aveloxis_ops`** (42 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
 - **`aveloxis_scan`** (4 tables) — scancode per-file license/copyright results and history
 - **`aveloxis_augur_data`** (6 views) — Augur compatibility layer for 8Knot. Contains views that alias Aveloxis column names to Augur conventions (e.g., `star_count` → `stars_count`, `pr_number` → `pr_src_number`). Only tables with column name differences have views here; identical tables resolve via search_path fallback to `aveloxis_data`.
 
-Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates 20 materialized views for 8Knot/analytics compatibility and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
+Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates the 20 materialized views for 8Knot/analytics compatibility (when `collection.materialized_views` is enabled, the default) and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
 
 **8Knot integration:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. The two-schema search path resolves Augur-named columns from `aveloxis_augur_data` first, then falls through to `aveloxis_data` for tables with identical schemas. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` as before — the compatibility schema is not needed.
 
@@ -560,7 +560,7 @@ Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also
 aveloxis refresh-views
 ```
 
-Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Views are also rebuilt automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off).
+Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Their data is also refreshed automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off). A refresh keeps each view's definition; a release that changes one needs a plain `aveloxis migrate`, which re-creates the views. On a deployment with `collection.materialized_views` set to `false` there are no views to refresh, and this command says so.
 
 ### `aveloxis install-tools` — Install all optional analysis tools
 
@@ -761,7 +761,7 @@ Designed for 400K+ repos. Eliminates database contention on the contributors tab
 **Prelim phase:** Before any data collection, each repo's URL is checked with an HTTP HEAD request. If the URL redirects (repo was renamed or transferred):
 - If the new URL already exists in our database: the old repo is marked as a duplicate and dequeued. This prevents collecting the same repo twice.
 - If the new URL is new: the old repo's URL is updated to the canonical URL, and all stored URLs in issues, PRs, reviews, releases are bulk-updated via `REPLACE()` to reflect the new org/repo path.
-- If the URL returns 404/410: the repo is skipped as dead.
+- If the URL returns 404/410/451: the repo is skipped as gone (deleted, private, or legally blocked).
 
 **Phase 1 — Collect (fast, no contention):** Raw API responses are written to a JSONB staging table (`aveloxis_ops.staging`). No FK lookups, no contributor resolution. Multiple workers can blast data concurrently with zero contention on any relational table. Issues and PRs are staged as **envelope types** that bundle the parent entity with all its children (labels, assignees, reviewers, reviews, commits, files, head/base metadata) in a single JSONB row. Data is collected in this order:
 
@@ -907,7 +907,7 @@ All text fields (issue titles/bodies, PR titles/bodies, message text, release de
 
 ### Dead Repo Sidelining
 
-When the prelim phase detects a repo that returns 404 or 410 (deleted, made private, or DMCA'd):
+When the prelim phase detects a repo that returns 404 or 410 (deleted or made private) or 451 (blocked for legal reasons — a DMCA takedown):
 
 - **Data is preserved** — all previously collected issues, PRs, commits, messages, etc. remain in the database
 - **Collection stops permanently** — the repo is marked `repo_archived = TRUE`, stamped with the distinct `repo_gone_at` marker (v0.28.1 — "no longer reachable" is a different fact from "forge says archived"), and removed from the queue
@@ -925,7 +925,7 @@ When the prelim phase detects a repo that returns 404 or 410 (deleted, made priv
 
 ### Materialized Views (8Knot Compatibility)
 
-Aveloxis creates 20 materialized views compatible with [8Knot](https://github.com/oss-aspen/8Knot) and other Augur analytics tools:
+When `collection.materialized_views` is enabled (the default), Aveloxis creates 20 materialized views compatible with [8Knot](https://github.com/oss-aspen/8Knot) and other Augur analytics tools:
 
 | View | Purpose |
 |---|---|
@@ -950,7 +950,9 @@ Aveloxis creates 20 materialized views compatible with [8Knot](https://github.co
 | `explorer_repo_files` | Latest SCC file listing per repo (most recent analysis date) |
 | `issue_reporter_created_at` | Legacy issue reporter view |
 
-**Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; subsequent startups skip them. Manual rebuild: `aveloxis refresh-views`. The explicit `aveloxis migrate` command always creates/refreshes views.
+**Optional:** `collection.materialized_views` (default `true`) says whether this deployment has the views at all. With it `false`, neither `aveloxis serve` nor `aveloxis migrate` creates or rebuilds them. Views that already exist are kept, and `aveloxis refresh-views` and the weekly rebuild still refresh whatever exists — they ask the database catalog which views are present, not this setting — so the option prevents creation and rebuild by migration, not refreshes of views already there. Everything that follows assumes they are enabled.
+
+**Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; a later startup skips a complete set and, if any managed view is missing (dropped by hand, or added by a release), logs an ERROR naming it rather than rebuilding all of them (matviews.sql runs as one batch). Manual refresh: `aveloxis refresh-views` (data only; each view keeps its definition). The explicit `aveloxis migrate` command, without `--skip-views`, drops and re-creates every view from its definition — the only step that applies a changed definition.
 
 ### Database Schema
 
@@ -1215,21 +1217,28 @@ The suite currently stands at **~2,960 test functions across ~670 test files** (
 - **Lint gates** — `staticcheck`, `golangci-lint` (the CI version), `gofmt`, and CodeQL all block merges.
 
 # Build docs
+
+`docs/requirements.txt` pins the docs toolchain to the versions the tracked `docs/_build` was built with, so install from it, preferably in a virtualenv, with Python 3.12 or later (what CI and Read the Docs use; the pinned Sphinx needs it). The recipe deletes the search index and rebuilds every page (`-E`), so the index is rebuilt from nothing.
+
 ```bash
 cd docs
 pip install -r requirements.txt
-sphinx-build -W --keep-going -b html . _build/html   # same warnings-as-errors gate as CI / Read the Docs
+rm -f _build/html/searchindex.js
+sphinx-build -E -W --keep-going -b html . _build/html   # same warnings-as-errors gate as CI / Read the Docs
 open _build/html/index.html
+```
 
 Or if you prefer a one-liner from the repo root:
 
-pip install sphinx sphinx-rtd-theme myst-parser && sphinx-build -W --keep-going -b html docs docs/_build/html && open docs/_build/html/index.html
+```bash
+pip install -r docs/requirements.txt && rm -f docs/_build/html/searchindex.js && sphinx-build -E -W --keep-going -b html docs docs/_build/html && open docs/_build/html/index.html
 ```
 
 # Turning on Apache Mailing List Collection
 Starting Apache mailing-list collection
 
 ###### 1. Schema must be at v0.25.9+ (the mailing-list tables + platform 6):
+Run the binary's deploy steps: `aveloxis deploy-checklist` prints them. A release with none needs only:
 ```bash
 aveloxis stop all && aveloxis migrate --skip-views && aveloxis start all
 ```

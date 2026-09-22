@@ -43,4 +43,3 @@ internal/db/scancode_worker_store.go::RecordScancodeTimeout<-RecordScancodeFailu
 internal/db/vulnerability_store.go::SetVulnScanLastRun<-CountRepoVulnerabilities
 internal/platform/jira/walk.go::jiraMaxWestTZSkew<-maxStalePages
 internal/scheduler/scheduler.go::largeRepoExclusions<-fillWorkerSlots
-internal/scheduler/scheduler.go::singleFlight<-runSearchResolve

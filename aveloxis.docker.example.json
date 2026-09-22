@@ -5,7 +5,8 @@
     "user": "aveloxis",
     "password": "aveloxis",
     "dbname": "aveloxis",
-    "sslmode": "disable"
+    "sslmode": "disable",
+    "pool_max_conns": 0
   },
   "github": {
     "_comment": "REQUIRED: Add at least one GitHub PAT. Without keys, 'serve' will refuse to start. ",
@@ -20,8 +21,8 @@
     "days_until_recollect": 1,
     "workers": 12,
     "repo_clone_dir": "/data",
+    "materialized_views": true,
     "matview_rebuild_day": "saturday",
-    "matview_rebuild_on_startup": false,
     "scancode_workers": 2,
     "scancode_start_interval_s": 90,
     "scancode_cadence_days": 180,

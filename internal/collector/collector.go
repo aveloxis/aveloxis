@@ -31,6 +31,11 @@ type Collector struct {
 	platID int16
 	facade *FacadeCollector
 	ghKeys *platform.KeyPool // for commit resolution (GitHub only)
+	// ghAPIBase is the GitHub REST host those keys belong to. Empty means
+	// public GitHub. It is a REQUIRED parameter of NewWithKeys and
+	// NewWithOptions — not an optional setter — so a caller holding the key
+	// pool cannot omit the host it goes with (v0.29.57).
+	ghAPIBase string
 
 	// Staged-pipeline mode knobs, threaded from CollectionConfig by
 	// runCollect via WithCollectionModes — the same source of truth
@@ -51,21 +56,27 @@ func New(client platform.Client, store *db.PostgresStore, logger *slog.Logger) *
 	if home == "" {
 		defaultDir = os.TempDir() + "/aveloxis-repos"
 	}
-	return NewWithOptions(client, store, logger, nil, defaultDir)
+	return NewWithOptions(client, store, logger, nil, "", defaultDir)
 }
 
-// NewWithKeys creates a collector with GitHub keys for commit resolution.
-func NewWithKeys(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool) *Collector {
+// NewWithKeys creates a collector with GitHub keys for commit resolution,
+// against the GitHub REST host those keys belong to (empty = public GitHub).
+//
+// ghAPIBase is a PARAMETER rather than an optional setter because commit
+// resolution builds clients of its own from these keys: a caller that holds
+// the pool must not be able to forget the host it goes with, which is how an
+// Enterprise token reaches a third party (v0.29.57).
+func NewWithKeys(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool, ghAPIBase string) *Collector {
 	home, _ := os.UserHomeDir()
 	defaultDir := home + "/aveloxis-repos"
 	if home == "" {
 		defaultDir = os.TempDir() + "/aveloxis-repos"
 	}
-	return NewWithOptions(client, store, logger, ghKeys, defaultDir)
+	return NewWithOptions(client, store, logger, ghKeys, ghAPIBase, defaultDir)
 }
 
 // NewWithOptions creates a collector with all options specified.
-func NewWithOptions(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool, repoCloneDir string) *Collector {
+func NewWithOptions(client platform.Client, store *db.PostgresStore, logger *slog.Logger, ghKeys *platform.KeyPool, ghAPIBase, repoCloneDir string) *Collector {
 	platID := int16(client.Platform())
 	return &Collector{
 		client:         client,
@@ -74,6 +85,7 @@ func NewWithOptions(client platform.Client, store *db.PostgresStore, logger *slo
 		platID:         platID,
 		facade:         NewFacadeCollector(store, logger, repoCloneDir),
 		ghKeys:         ghKeys,
+		ghAPIBase:      ghAPIBase,
 		prChildMode:    "rest",
 		listingMode:    "rest",
 		threadingMode:  "single",
@@ -185,8 +197,17 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 
 	// Phase 4: Facade — git clone + log for commit data.
 	// Runs AFTER API phases so contributor emails can be resolved.
+	//
+	// The URL is synthesised from the platform id because CollectRepo is
+	// handed owner/name, not the stored repo_git (`aveloxis collect` is the
+	// one caller). On a deployment whose GitHub is not github.com this names
+	// the wrong host — the same class the scheduler's facade (v0.25.38) and
+	// scorecard (v0.29.57, scorecardRepoURL) phases fixed by using the row's
+	// own URL. Left as is in v0.29.57 and recorded: threading the URL in is
+	// part of routing every repository to its forge instance (worklist 44),
+	// not a one-site patch.
 	gitURL := fmt.Sprintf("https://%s/%s/%s.git",
-		platformHost(c.client.Platform()), owner, repo)
+		PlatformHost(c.client.Platform()), owner, repo)
 	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:       repoID,
 		FacadeStatus: string(StatusCollecting),
@@ -212,7 +233,7 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 
 	// Phase 5: Commit author resolution (GitHub only).
 	if c.client.Platform() == model.PlatformGitHub && c.ghKeys != nil {
-		commitResolver := NewCommitResolver(c.store, c.ghKeys, c.logger)
+		commitResolver := NewCommitResolver(c.store, c.ghKeys, c.ghAPIBase, c.logger)
 		resolveResult, resolveErr := commitResolver.ResolveCommits(ctx, repoID, owner, repo)
 		if resolveErr != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("commit resolution: %w", resolveErr))
@@ -264,7 +285,11 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 	return result, nil
 }
 
-func platformHost(p model.Platform) string {
+// PlatformHost is the ONE host table for a URL synthesised from a platform
+// id (github.com, gitlab.com, "unknown" for generic git): the scheduler's
+// facade fallback and ScorecardRepoURL both read it (SR-17; the scheduler
+// carried a byte-identical copy until round 2 on the 5268977585 fixes).
+func PlatformHost(p model.Platform) string {
 	switch p {
 	case model.PlatformGitHub:
 		return "github.com"

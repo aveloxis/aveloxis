@@ -9,11 +9,12 @@ import (
 	"testing"
 )
 
-// TestRunMigrationsRespectsMatviewSkip pins that the matview block in
-// RunMigrations checks pg.matviewSkip before either the refresh or the
-// create-if-not-exist branch fires. With this gate, `aveloxis migrate
-// --skip-views` runs schema DDL only — no matview cost.
-func TestRunMigrationsRespectsMatviewSkip(t *testing.T) {
+// TestRunMigrationsRespectsMatviewMode pins that the matview block in
+// RunMigrations switches on pg.matviewMode before either the rebuild or the
+// create-if-missing branch fires. With that gate, `aveloxis migrate
+// --skip-views` — and a deployment with collection.materialized_views off —
+// runs schema DDL only, at no matview cost (v0.29.57).
+func TestRunMigrationsRespectsMatviewMode(t *testing.T) {
 	data, err := os.ReadFile("migrate.go")
 	if err != nil {
 		t.Fatal(err)
@@ -28,24 +29,35 @@ func TestRunMigrationsRespectsMatviewSkip(t *testing.T) {
 	end := strings.Index(rest[1:], "\nfunc ")
 	body := rest[:end+1]
 
-	if !strings.Contains(body, "matviewSkip") {
-		t.Error("RunMigrations must consult pg.matviewSkip before invoking " +
+	if !strings.Contains(body, "switch pg.matviewMode") {
+		t.Error("RunMigrations must switch on pg.matviewMode before invoking " +
 			"CreateMaterializedViews or CreateMaterializedViewsIfNotExist. " +
-			"Without this branch, --skip-views has no effect.")
+			"Without that branch, --skip-views and materialized_views:false " +
+			"have no effect.")
 	}
 }
 
-// TestPostgresStoreHasSetMatviewSkip pins the public setter that
-// migrateCmd uses to forward the --skip-views flag.
-func TestPostgresStoreHasSetMatviewSkip(t *testing.T) {
+// TestPostgresStoreHasSetMatviewMode pins the public setter migrateCmd and
+// serve use, and — more importantly — that OFF is the zero value. A store
+// nobody configured must build no views: that is what makes materialized
+// views optional for a deployment, and what keeps every test from paying for
+// twenty of them (v0.29.57).
+func TestPostgresStoreHasSetMatviewMode(t *testing.T) {
 	data, err := os.ReadFile("postgres.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, "func (s *PostgresStore) SetMatviewSkip(") {
-		t.Error("PostgresStore must define SetMatviewSkip(bool) so the " +
-			"--skip-views flag flows into matview-block gating in " +
-			"RunMigrations.")
+	if !strings.Contains(src, "func (s *PostgresStore) SetMatviewMode(") {
+		t.Error("PostgresStore must define SetMatviewMode(MatviewMode) so " +
+			"--skip-views and collection.materialized_views flow into the " +
+			"matview gating in RunMigrations.")
+	}
+	if MatviewsOff != 0 {
+		t.Errorf("MatviewsOff = %d, want 0: an unconfigured store must build no views", MatviewsOff)
+	}
+	var zero PostgresStore
+	if zero.matviewMode != MatviewsOff {
+		t.Error("the zero PostgresStore must be MatviewsOff — anything else makes views the silent default again")
 	}
 }

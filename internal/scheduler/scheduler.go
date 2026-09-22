@@ -70,6 +70,30 @@ type Config struct {
 	// the GitLab API keys belong to; the legacy GitLab group refresh only
 	// sends those keys to that instance's host (v0.29.11).
 	GitLab *config.PlatformConfig
+
+	// GitHub is the operator's aveloxis.json `github` block — the same
+	// rule as GitLab, for the same reason (v0.29.57). Its base_url names
+	// the host the GitHub keys belong to, which for a self-hosted
+	// deployment is GitHub Enterprise. Before this field, clients were
+	// hardcoded to api.github.com, so an Enterprise deployment sent its
+	// token to public GitHub. Empty or nil keeps the public default.
+	//
+	// SCOPE, because a partial fix that reads as complete is worse than an
+	// open one: this covers the clients the SCHEDULER builds — both org
+	// scans and the analysis client — and, since v0.29.57, the two it hands
+	// its keys to (the breadth worker and the commit resolver, whose
+	// constructors now take the host) plus the scorecard API-spend probe.
+	// TestSchedulerGitHubKeysNeverTravelWithoutTheHost enforces that.
+	//
+	// Every client built from this deployment's GitHub keys now takes the
+	// configured host: the scheduler's own, the breadth worker, the commit
+	// resolver, the scorecard API-spend probe, the CLI collect and org-add
+	// paths, and the web server's org scan. What remains of worklist item
+	// 34 is the scorecard SUBPROCESS, which resolves its own host from the
+	// repo URL and its environment — it is not routed, so remote mode is
+	// REFUSED when the configured host is not public GitHub and the token
+	// is not lent at all (collector.remoteScorecardSupported).
+	GitHub *config.PlatformConfig
 }
 
 // DigestMailer is the narrow mailer surface the digest ticker needs
@@ -109,6 +133,12 @@ type Scheduler struct {
 	// NewWithKeys from the effective config value.
 	scorecardSem chan struct{}
 
+	// analysisGitHubAPI (v0.29.56) is the one key-pooled GitHub REST client
+	// every analysis shares for the libyear lookups GitHub hosts (Go module
+	// licenses, SwiftPM releases). Built once: a client per repo would open
+	// a transport per job. nil without GitHub keys.
+	analysisGitHubAPI *platform.HTTPClient
+
 	// matviewPending is set by the weekly matview ticker and cleared by the
 	// rebuild goroutine. The poll loop starts the rebuild once active worker
 	// count drops below the ShouldStartMatviewRebuild threshold — see
@@ -136,7 +166,13 @@ type Scheduler struct {
 	searchActive        atomic.Bool
 	goneRecheckActive   atomic.Bool
 	affiliationsActive  atomic.Bool
-	breadthActive       atomic.Bool
+	// v0.29.58 review round 5: the three ticker arms that spawned bare
+	// (and could stack a second run over a long first one — a second
+	// pooled connection each) join the single-flight set.
+	orgRefreshActive     atomic.Bool
+	stagingCleanupActive atomic.Bool
+	vulnDigestActive     atomic.Bool
+	breadthActive        atomic.Bool
 	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
 	// v0.27.83: the poll-tick demand scan (maybeScanNewOrgs) runs
 	// under its OWN flag below — sharing this one meant an org
@@ -195,6 +231,14 @@ func New(store *db.PostgresStore, ghClient, glClient platform.Client, logger *sl
 	return NewWithKeys(store, ghClient, glClient, nil, nil, logger, cfg)
 }
 
+// githubAPIBase is the REST host the scheduler's own GitHub clients target:
+// the operator's github.base_url when set, else public GitHub. One helper so
+// the org scan and the analysis client cannot diverge (v0.29.57 — they were
+// both hardcoded, which sent Enterprise tokens to api.github.com).
+func githubAPIBase(cfg Config) string {
+	return cfg.GitHub.GitHubAPIBase()
+}
+
 // NewWithKeys creates a scheduler with the GitHub key pool (commit
 // resolution, org scans, breadth, scorecard loans) and the GitLab key pool
 // (the legacy GitLab group refresh — v0.29.11: it used the GitHub pool).
@@ -234,8 +278,12 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 		workerID: workerID,
 		// Overridable in tests so the org scan can run against an
 		// httptest GitHub (v0.27.83 dedup behavioral suite).
-		ghAPIBase:    "https://api.github.com",
+		ghAPIBase:    githubAPIBase(cfg),
 		scorecardSem: make(chan struct{}, cfg.Collection.ScorecardMaxConcurrentValue()),
+	}
+
+	if ghKeys != nil {
+		s.analysisGitHubAPI = platform.NewHTTPClient(s.ghAPIBase, ghKeys, logger, platform.AuthGitHub)
 	}
 
 	// Install a permanent-redirect hook on both platform clients so that a
@@ -244,9 +292,13 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	// repo-rename detection at job start, and mutating repo identity
 	// mid-job risks splitting collected rows between old and new names.
 	// The log gives operators a signal; automated action is deferred.
-	renameHook := func(from, to string) {
+	// Both values are host-checked by the client before any request (a
+	// Location carrying userinfo is refused), so the redaction is the
+	// identity here — named and wrapped so the URL-log pin sees the site
+	// (round 3 on the 5268977585 fixes).
+	renameHook := func(fromURL, toURL string) {
 		s.logger.Warn("permanent redirect observed during collection — possible repo rename",
-			"from", from, "to", to,
+			"from", platform.RedactURLUserinfo(fromURL), "to", platform.RedactURLUserinfo(toURL),
 			"note", "prelim handles repo renames at job start; this may indicate a rename that occurred mid-collection")
 	}
 	if ghClient != nil {
@@ -413,7 +465,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	orgRefreshTicker := time.NewTicker(s.cfg.OrgRefreshInterval)
 	defer orgRefreshTicker.Stop()
 	// Run org refresh once on startup too.
-	safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
+	s.singleFlight(&s.orgRefreshActive, "org-refresh", func() { s.refreshOrgs(ctx) })
 
 	// Contributor breadth: discovers cross-repo activity for
 	// every contributor with a gh_login. v0.20.17: cadence and
@@ -447,7 +499,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.osvCache = collector.NewOSVCache()
 	}
 	if s.ghKeys != nil && s.breadthWorker == nil {
-		s.breadthWorker = collector.NewBreadthWorker(s.store, s.ghKeys, s.logger).
+		s.breadthWorker = collector.NewBreadthWorker(s.store, s.ghKeys, s.ghAPIBase, s.logger).
 			WithFetchConcurrency(s.cfg.Collection.BreadthFetchConcurrencyOrDefault())
 	}
 
@@ -566,7 +618,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	affiliationsTicker := time.NewTicker(s.cfg.Collection.AffiliationIntervalDuration())
 	defer affiliationsTicker.Stop()
 
-	// v0.29.7: gone-repo recheck. A 404/410 dequeues a repo, so this
+	// v0.29.7: gone-repo recheck. A 404/410/451 dequeues a repo, so this
 	// ticker is the only automatic path by which a re-publicized
 	// repository returns to collection (cadence + batch derived in
 	// gone_recheck.go). Disabled → nil channel, never selected.
@@ -598,6 +650,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// was reachable at startup (migrate succeeded), so start healthy.
 	s.dbHealthy.Store(true)
 	safego.Go(s.logger, "db-health-monitor", func() { s.runDBHealthMonitor(ctx) })
+
+	// Stall detector (v0.29.56): a heartbeat that reports how late it was
+	// woken, so a process-wide stall is distinguishable from workers
+	// waiting on the database. Observation only.
+	safego.Go(s.logger, "stall-detector", func() { s.runStallDetector(ctx) })
 
 	// Immediately fill worker slots on startup instead of waiting for the
 	// first poll tick (default 10s). With 30 workers and 78 queued repos,
@@ -661,7 +718,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.recoverStale(ctx)
 
 		case <-orgRefreshTicker.C:
-			safego.Go(s.logger, "org-refresh", func() { s.refreshOrgs(ctx) })
+			s.singleFlight(&s.orgRefreshActive, "org-refresh", func() { s.refreshOrgs(ctx) })
 			// Full pass (all orgs) — this is what discovers new repos in
 			// long-tracked orgs. Guarded by its own flag so full passes
 			// never overlap EACH OTHER; the poll-tick demand scan runs
@@ -696,13 +753,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 
 		case <-stagingCleanupTicker.C:
-			safego.Go(s.logger, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
+			s.singleFlight(&s.stagingCleanupActive, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
 
 		case <-enrichTicker.C:
 			s.singleFlight(&s.enrichmentActive, "contributor-enrichment", func() { s.runEnrichment(ctx) })
 
 		case <-vulnDigestC:
-			safego.Go(s.logger, "vuln-digest", func() { s.runVulnDigest(ctx) })
+			s.singleFlight(&s.vulnDigestActive, "vuln-digest", func() { s.runVulnDigest(ctx) })
 
 		case <-searchResolveTicker.C:
 			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })
@@ -773,19 +830,6 @@ func (s *Scheduler) runStagingCleanup(ctx context.Context) {
 	}
 }
 
-// runSearchResolve runs the v0.19.2 search-resolve background task.
-// Takes a batch of contributors with email but no gh_user_id and
-// calls /search/users?q=email for each — on hit, backfills the
-// platform identity onto the existing row WITHOUT changing
-// cntrb_id or cntrb_login. On miss / error, stamps
-// cntrb_last_search_attempted_at so the row exits the candidate
-// pool until the cooldown elapses.
-//
-// Batch size is bounded by SearchResolveBatchSize so a single tick
-// can't burn through more than a fraction of the search-API quota.
-// At default 100 candidates per hour, the task uses ~1.7 search
-// requests per minute — comfortable headroom against the 30/min
-// per-token budget.
 // singleFlight launches task under safego unless a prior run of the
 // SAME task is still in flight (v0.27.40, summary/18 Phase 3). The
 // scheduler's ticker arms previously spawned a fresh goroutine every
@@ -805,6 +849,20 @@ func (s *Scheduler) singleFlight(active *atomic.Bool, name string, task func()) 
 	})
 }
 
+// runSearchResolve runs the v0.19.2 search-resolve background task.
+// Takes a batch of contributors with email but no gh_user_id and
+// calls /search/users?q=email for each — on hit, backfills the
+// platform identity onto the existing row WITHOUT changing
+// cntrb_id or cntrb_login. A search that answers (a hit or a
+// definitive no-hit) stamps cntrb_last_search_attempted_at so the
+// row exits the candidate pool until the cooldown elapses; one that
+// failed without an answer is left unstamped and retried (v0.29.55).
+//
+// Batch size is bounded by SearchResolveBatchSize so a single tick
+// can't burn through more than a fraction of the search-API quota.
+// At default 100 candidates per hour, the task uses ~1.7 search
+// requests per minute — comfortable headroom against the 30/min
+// per-token budget.
 func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	if s.ghClient == nil {
 		return
@@ -1146,6 +1204,19 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 	stopWatchdog := watchdog.Start(ctx)
 	defer stopWatchdog()
+
+	// A stored URL carrying credentials is refused HERE, where the row is
+	// loaded, before prelim's HEAD request would send them as basic auth
+	// and before any phase logs the URL (v0.29.57 fix-review round 2: the
+	// facade and scorecard arms sat downstream of seven log sites and one
+	// request that saw the credential first). A failure stamp, nothing
+	// collected, no URL changed (SR-7); the ERROR names the row to correct.
+	if uerr := platform.RefuseURLUserinfo(repo.GitURL); uerr != nil {
+		s.logger.Error("job not run: repo URL carries credentials — correct repo_git",
+			"repo_id", job.RepoID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", uerr)
+		s.failJob(ctx, job.RepoID, uerr.Error())
+		return
+	}
 
 	// Prelim phase: check for redirects and duplicates.
 	prelim, err := collector.RunPrelim(ctx, s.store, repo, s.logger)
@@ -1598,7 +1669,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	var facadeResult *collector.FacadeResult
 	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	// Clone from the repo's OWN stored URL (v0.25.38). The pre-v0.25.38
-	// reconstruction via platformHostForModel produced
+	// reconstruction via the platform host table produced
 	// https://unknown/owner/name.git for every GENERIC-GIT repo —
 	// breaking facade for the exact platform whose only collection IS
 	// facade — and forced github.com/gitlab.com hosts onto
@@ -1607,7 +1678,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	gitURL := repo.GitURL
 	if gitURL == "" {
 		gitURL = fmt.Sprintf("https://%s/%s/%s.git",
-			platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+			collector.PlatformHost(repo.Platform), repo.Owner, repo.Name)
 	}
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if errors.Is(err, context.Canceled) {
@@ -1626,6 +1697,16 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 			"commit_messages", result.CommitMessages)
 	}
 	facadeResult = result
+
+	// A repository with no clone at all (DMCA takedown, disabled by
+	// GitHub, deleted) cannot be analysed or scored: analysis fails on the
+	// missing clone and scorecard spends a remote run to be told the same
+	// (v0.29.56). The facade WARN above already says why.
+	if err != nil && !collector.HasBareClone(s.cfg.Collection.RepoCloneDir, repoID) {
+		s.logger.Info("skipping analysis and scorecard — the repository has no clone",
+			"repo_id", repoID)
+		return facadeResult, nil
+	}
 
 	// GitLab commit_count backfill: GitLab's API commonly reports 0 commits
 	// (nil statistics object when the token lacks Reporter+ access, or stale
@@ -1657,6 +1738,11 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	ac.TransitiveLockfiles = s.cfg.Collection.VulnScanTransitiveValue()
 	ac.DevBuildDeps = s.cfg.Collection.DevBuildDeps
 	ac.GitHubActionsDeps = s.cfg.Collection.GitHubActionsDeps
+	if s.analysisGitHubAPI != nil {
+		// Guarded: a nil *HTTPClient in the interface field would read as
+		// a client and panic on the first lookup.
+		ac.GitHubAPI = s.analysisGitHubAPI
+	}
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if errors.Is(aErr, context.Canceled) {
 		return facadeResult, nil
@@ -1720,8 +1806,7 @@ func scorecardSkipReason(err error) string {
 // The retained temp clone is cleaned up after scorecard finishes,
 // regardless of outcome.
 func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *model.Repo, analysisClonePath string) {
-	repoURL := fmt.Sprintf("https://%s/%s/%s",
-		platformHostForModel(repo.Platform), repo.Owner, repo.Name)
+	repoURL := scorecardRepoURL(repo)
 
 	// Clean up the retained temp clone once scorecard is done — on
 	// every exit, the shutdown one included.
@@ -1788,6 +1873,7 @@ func (s *Scheduler) runScorecardPhase(ctx context.Context, repoID int64, repo *m
 		Timeout:         s.cfg.Collection.ScorecardTimeout(),
 		GithubToken:     token,
 		InstrumentToken: instrumentToken,
+		APIBaseURL:      s.ghAPIBase,
 	}, s.logger)
 	if errors.Is(scErr, context.Canceled) {
 		return // shutdown, not a failure
@@ -1833,7 +1919,7 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 		return
 	}
 
-	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.logger)
+	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.ghAPIBase, s.logger)
 	resolveResult, resolveErr := resolver.ResolveCommits(ctx, repoID, repo.Owner, repo.Name)
 	if errors.Is(resolveErr, context.Canceled) {
 		return // shutdown, not a failure
@@ -1942,15 +2028,15 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	return out
 }
 
-func platformHostForModel(p model.Platform) string {
-	switch p {
-	case model.PlatformGitHub:
-		return "github.com"
-	case model.PlatformGitLab:
-		return "gitlab.com"
-	default:
-		return "unknown"
-	}
+// scorecardRepoURL is the URL the scorecard phase hands the subprocess: the
+// row's OWN repo_git, as the facade phase has cloned from since v0.25.38 and
+// `aveloxis run-scorecard` passes since v0.29.57 — on a deployment whose
+// GitHub is not github.com, a URL synthesised from the platform id names the
+// wrong repository, and in local mode rewrites the retained clone's origin
+// to the wrong host (Copilot review 5261384568). The synthesis remains ONLY
+// for a row that has no URL, as in runFacadeAndAnalysis.
+func scorecardRepoURL(repo *model.Repo) string {
+	return collector.ScorecardRepoURL(repo.GitURL, repo.Platform, repo.Owner, repo.Name)
 }
 
 // generateSBOMs produces CycloneDX and SPDX SBOMs after collection completes.
@@ -2131,7 +2217,19 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 	if s.ghKeys == nil {
 		return 0
 	}
-	http := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
+	// Host gate — see refreshUserOrgs: the group's website names the org,
+	// and a github.com org on an Enterprise deployment (or the reverse) is
+	// not the same-named org on the configured host.
+	if !platform.OrgOnGitHubHost(g.Website, s.ghAPIBase) {
+		s.logger.Warn("org refresh skipped — the repo group's website is not on this deployment's GitHub host (the org name would be enumerated on the wrong host), or carries credentials; not enumerated",
+			"org", g.Name, "website", platform.RedactURLUserinfo(g.Website), "github_host", platform.GitHubWebHost(s.ghAPIBase))
+		return 0
+	}
+	// s.ghAPIBase, not a literal (v0.29.57): this is the SECOND org-scan
+	// client — the legacy repo_groups refresh — and it was missed when
+	// scanOrgRepos moved onto the configured host, which is exactly the
+	// divergence one shared field exists to prevent.
+	http := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
 
 	// Bridge from legacy aveloxis_data.repo_groups to modern
 	// aveloxis_ops.user_groups: any user_group whose user_org_requests
@@ -2143,7 +2241,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 		return 0 // shutdown, not a failure
 	}
 	if ugErr != nil {
-		s.logger.Warn("failed to look up user_groups for org", "org_url", g.Website, "error", ugErr)
+		s.logger.Warn("failed to look up user_groups for org", "org_url", platform.RedactURLUserinfo(g.Website), "error", ugErr)
 	}
 
 	newCount := 0
@@ -2186,7 +2284,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				return newCount // shutdown, not a failure
 			}
 			if findErr != nil {
-				s.logger.Warn("failed to check for existing repo", "url", item.HTMLURL, "error", findErr)
+				s.logger.Warn("failed to check for existing repo", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", findErr)
 			}
 			if existing > 0 {
 				repoID = existing
@@ -2215,13 +2313,13 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
 					continue
 				}
-				s.logger.Info("new repo discovered", "org", g.Name, "repo", item.HTMLURL)
+				s.logger.Info("new repo discovered", "org", g.Name, "repo", platform.RedactURLUserinfo(item.HTMLURL))
 				newCount++
 				// §5c repo-side resolution: a mailing-list message may have
 				// signaled this repo before it was in the catalog. Backfill
 				// any waiting email_message.signaled_repo_id now.
 				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.HTMLURL); rerr == nil && n > 0 {
-					s.logger.Info("resolved signaled_repo for new repo", "repo", item.HTMLURL, "messages", n)
+					s.logger.Info("resolved signaled_repo for new repo", "repo", platform.RedactURLUserinfo(item.HTMLURL), "messages", n)
 				}
 			}
 			for _, gid := range userGroupIDs {
@@ -2249,7 +2347,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	// touches the network or the store.
 	if s.glKeys == nil || s.glKeys.IsEmpty() {
 		s.logger.Warn("GitLab group refresh skipped — no GitLab API keys configured",
-			"group", g.Name, "org_url", g.Website)
+			"group", g.Name, "org_url", platform.RedactURLUserinfo(g.Website))
 		return 0
 	}
 	// No default host: a website with no scheme, or one that does not
@@ -2258,7 +2356,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	u, perr := url.Parse(g.Website)
 	if perr != nil || u.Host == "" {
 		s.logger.Warn("GitLab group refresh skipped — the group's website URL has no usable host",
-			"group", g.Name, "org_url", g.Website, "error", perr)
+			"group", g.Name, "org_url", platform.RedactURLUserinfo(g.Website), "error", perr)
 		return 0
 	}
 	glHost := u.Host
@@ -2269,7 +2367,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 	apiBase, ok := platform.GitLabAPIBaseForHost(configuredBase, glHost)
 	if !ok {
 		s.logger.Warn("GitLab group refresh skipped — the group is not on the configured GitLab instance, and GitLab API keys are only sent to that instance's host",
-			"group", g.Name, "group_host", glHost, "gitlab_base_url", configuredBase)
+			"group", g.Name, "group_host", glHost, "gitlab_base_url", platform.RedactURLUserinfo(configuredBase))
 		return 0
 	}
 	http := platform.NewHTTPClient(apiBase, s.glKeys, s.logger, platform.AuthGitLab)
@@ -2280,7 +2378,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 		return 0 // shutdown, not a failure
 	}
 	if ugErr != nil {
-		s.logger.Warn("failed to look up user_groups for group", "org_url", g.Website, "error", ugErr)
+		s.logger.Warn("failed to look up user_groups for group", "org_url", platform.RedactURLUserinfo(g.Website), "error", ugErr)
 	}
 
 	newCount := 0
@@ -2320,7 +2418,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				return newCount // shutdown, not a failure
 			}
 			if findErr != nil {
-				s.logger.Warn("failed to check for existing repo", "url", item.WebURL, "error", findErr)
+				s.logger.Warn("failed to check for existing repo", "url", platform.RedactURLUserinfo(item.WebURL), "error", findErr)
 			}
 			if existing > 0 {
 				repoID = existing
@@ -2349,10 +2447,10 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
 					continue
 				}
-				s.logger.Info("new repo discovered", "group", g.Name, "repo", item.WebURL)
+				s.logger.Info("new repo discovered", "group", g.Name, "repo", platform.RedactURLUserinfo(item.WebURL))
 				newCount++
 				if n, rerr := s.store.ResolveSignaledRepoForURL(ctx, repoID, item.WebURL); rerr == nil && n > 0 {
-					s.logger.Info("resolved signaled_repo for new repo", "repo", item.WebURL, "messages", n)
+					s.logger.Info("resolved signaled_repo for new repo", "repo", platform.RedactURLUserinfo(item.WebURL), "messages", n)
 				}
 			}
 			for _, gid := range userGroupIDs {
@@ -2387,15 +2485,21 @@ func (s *Scheduler) checkForRenames(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Same refusal as runJob's, for the same reason (round 2).
+		if uerr := platform.RefuseURLUserinfo(repo.GitURL); uerr != nil {
+			s.logger.Error("rename check: repo URL carries credentials — skipped; correct repo_git",
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", uerr)
+			continue
+		}
 		prelim, err := collector.RunPrelim(ctx, s.store, &repo, s.logger)
 		if err != nil {
 			continue
 		}
 		if prelim != nil && (prelim.Skip || prelim.Redirected) {
 			s.logger.Info("rename check result",
-				"repo_id", repo.ID, "url", repo.GitURL,
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL),
 				"skip", prelim.Skip, "redirected", prelim.Redirected,
-				"reason", prelim.SkipReason, "new_url", prelim.NewURL)
+				"reason", prelim.SkipReason, "new_url", platform.RedactURLUserinfo(prelim.NewURL))
 		}
 	}
 }
@@ -2518,7 +2622,7 @@ func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 	if !s.dbHealthy.Load() {
 		return
 	}
-	pending, err := s.store.HasNeverScannedOrgs(ctx)
+	pending, err := s.store.HasNeverScannedOrgs(ctx, s.ghAPIBase)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return // shutdown, not a failure (the v0.27.28 ClassCanceled rule)
@@ -2602,6 +2706,22 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		if status, serr := s.store.GetGroupStatus(ctx, groupID); serr == nil && status == "rejected" {
 			s.logger.Warn("org scan skipped — owning group is rejected",
 				"group_id", groupID, "org", org.OrgName)
+			continue
+		}
+
+		// Host gate (v0.29.57, rounds 1–2 on the 5260961848 fixes): the
+		// registered URL names the org; the NAME alone does not. An org
+		// registered on a host other than the deployment's GitHub host is
+		// never enumerated here — the same name on the deployment's host
+		// is a different org. The store refuses such a registration in
+		// every writer (db.ErrOrgOffGitHubHost); this is the belt for rows
+		// that predate it. The row stays unstamped (SR-3), so this log
+		// repeats each 4-hour pass until the operator removes the row —
+		// and the never-scanned probe does not count it
+		// (db.OrgScanEligible), so it does not re-fire the demand scan.
+		if org.Platform == "github" && !platform.OrgOnGitHubHost(org.OrgURL, s.ghAPIBase) {
+			s.logger.Warn("org scan skipped — the registered URL is not on this deployment's GitHub host (the org name would be enumerated on the wrong host), or carries credentials; not enumerated",
+				"group_id", groupID, "org", org.OrgName, "org_url", platform.RedactURLUserinfo(org.OrgURL), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			continue
 		}
 
@@ -2700,7 +2820,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				return // shutdown, not a failure
 			}
 			if findErr != nil {
-				s.logger.Warn("failed to find repo by URL", "url", repo.URL, "error", findErr)
+				s.logger.Warn("failed to find repo by URL", "url", platform.RedactURLUserinfo(repo.URL), "error", findErr)
 			}
 			if repoID == 0 {
 				var err error

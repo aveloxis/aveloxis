@@ -353,6 +353,17 @@ func parsePubspecLock(data []byte) (parsedLockfileData, error) {
 // Swift
 // ============================================================
 
+// v0.29.58 review round 1 — RECORDED, NOT TAKEN here: a Package.resolved
+// pin's "location" (v2/v3) / "repositoryURL" (v1) carries the host and
+// owner that a spec-valid swift purl needs (pkg:swift/github.com/Owner/
+// Name@v); the pin is stored under its identity alone, so every SwiftPM
+// transitive is now purl-less (listed in both SBOM formats without a
+// locator, never scanned). Emitting host/owner/identity as the NAME would
+// change lockfileMatchKey on one side of the direct↔locked match (the
+// Package.swift parser extracts the repo name) and the stored
+// repo_lockfile_packages rows already on every fleet; the namespace
+// needs its own stored column and a coordinated change to both parsers.
+// Worklist item 46.
 // parsePackageResolved handles SwiftPM's Package.resolved: v1 nests
 // pins under "object" and names them "package"; v2/v3 have top-level
 // "pins" named by "identity" (the lowercased repo name — matching the

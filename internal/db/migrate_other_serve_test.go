@@ -63,7 +63,10 @@ func TestStartupMigrateRefusalDecision(t *testing.T) {
 		// Round-5 finding 5: the operator needs the other serve's address
 		// to tell the primary from a lingering backend of a serve just
 		// stopped on this very host.
-		for _, needle := range []string{"aveloxis start scancode-worker", "aveloxis stop all", "aveloxis migrate --skip-views", ToolVersion, "10.0.0.5"} {
+		// Post-loop review finding 2 (v0.29.57): the ladder's migrate is
+		// the CHECKLIST's, so the refusal points at deploy-checklist and
+		// keeps the standard migrate only as the fallback.
+		for _, needle := range []string{"aveloxis start scancode-worker", "aveloxis stop all", "aveloxis deploy-checklist", "aveloxis migrate --skip-views", ToolVersion, "10.0.0.5"} {
 			if !strings.Contains(msg, needle) {
 				t.Errorf("%s: the refusal must tell the operator %q, got %q", c.name, needle, msg)
 			}
@@ -103,7 +106,6 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 	if v := store.GetSchemaVersion(ctx); v != ToolVersion {
 		t.Fatalf("precondition: stamp %q != ToolVersion %q", v, ToolVersion)
@@ -289,7 +291,6 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 			return
 		}
 		defer heal.Close()
-		heal.SetMatviewSkip(true)
 		_ = RunMigrations(cctx, heal, quiet)
 	})
 	indexExists := func() bool {
@@ -974,7 +975,7 @@ func TestOtherServeProbeAcquiresRatherThanBegins(t *testing.T) {
 func TestAllowSecondServeIsWiredAndNarrow(t *testing.T) {
 	pg := srctest.Read(t, "internal/db/postgres.go")
 	if !strings.Contains(pg, "func (s *PostgresStore) SetAllowSecondServe(") {
-		t.Error("PostgresStore must expose SetAllowSecondServe (the SetMatviewSkip / SetMigrateFastPath pattern)")
+		t.Error("PostgresStore must expose SetAllowSecondServe (the SetMatviewMode / SetMigrateFastPath pattern)")
 	}
 
 	main := srctest.Read(t, "cmd/aveloxis/main.go")

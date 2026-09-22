@@ -37,12 +37,19 @@ import (
 
 // Server is the web GUI server.
 type Server struct {
-	store     *db.PostgresStore
-	cfg       config.WebConfig
-	logger    *slog.Logger
-	ghOAuth   *oauth2.Config
-	glOAuth   *oauth2.Config
-	ghKeys    *platform.KeyPool // for immediate org scanning
+	store   *db.PostgresStore
+	cfg     config.WebConfig
+	logger  *slog.Logger
+	ghOAuth *oauth2.Config
+	glOAuth *oauth2.Config
+	ghKeys  *platform.KeyPool // for immediate org scanning
+	// ghAPIBase is the GitHub REST host those keys belong to, normalised by
+	// New through platform.GitHubAPIBaseOrPublic so it is never empty. A
+	// REQUIRED parameter of New, next to the pool, so a
+	// caller cannot hand over the keys and forget the host they go with —
+	// which is how the org scan below sent an Enterprise token to public
+	// GitHub (v0.29.57, the last site of worklist item 34's client half).
+	ghAPIBase string
 	sessionMu sync.RWMutex
 	sessions  map[string]*Session // session token -> session
 	tmpl      *template.Template
@@ -72,13 +79,14 @@ type Session struct {
 
 // New creates a web server. ghKeys is optional — if provided, org repos are
 // scanned immediately when added via the GUI.
-func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool, logger *slog.Logger) *Server {
+func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool, ghAPIBase string, logger *slog.Logger) *Server {
 	s := &Server{
-		store:    store,
-		cfg:      cfg,
-		ghKeys:   ghKeys,
-		logger:   logger,
-		sessions: make(map[string]*Session),
+		store:     store,
+		cfg:       cfg,
+		ghKeys:    ghKeys,
+		ghAPIBase: platform.GitHubAPIBaseOrPublic(ghAPIBase),
+		logger:    logger,
+		sessions:  make(map[string]*Session),
 	}
 
 	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
@@ -86,7 +94,14 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 		baseURL = "http://localhost" + cfg.Addr
 	}
 
-	// GitHub OAuth config.
+	// GitHub OAuth config. Login identity is PUBLIC GitHub by design — the
+	// endpoints below and the /user fetches stay on github.com whatever
+	// github.base_url says. Copilot review 5261384568 asked for them to
+	// follow the base; declined (v0.29.57): under the forge-instances design
+	// (public GitHub plus 1..n Enterprise hosts on one deployment) the base
+	// is one instance among several and a deployment always serves
+	// github.com, so login is not per instance. Enterprise SSO is a separate
+	// decision, recorded, not built.
 	if cfg.GitHubClientID != "" {
 		s.ghOAuth = &oauth2.Config{
 			ClientID:     cfg.GitHubClientID,
@@ -145,7 +160,7 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 		s.apiProxy = rp
 	} else {
 		logger.Warn("invalid api_internal_url; /api proxy disabled",
-			"api_internal_url", apiURL, "error", err)
+			"api_internal_url", platform.RedactURLUserinfo(apiURL), "error", err)
 	}
 
 	// Parse embedded templates.
@@ -1260,6 +1275,8 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"Query":      query,
 		"PageWindow": pageWindow,
 		"AddError":   r.URL.Query().Get("add_error"),
+		"OrgError":   r.URL.Query().Get("org_error"),
+		"GitHubHost": platform.GitHubWebHost(s.ghAPIBase),
 	})
 }
 
@@ -1277,9 +1294,9 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 		raw = r.FormValue("repo_url") // backward compat with old single-URL form
 	}
 
+	var invalid []string
 	if raw != "" && groupID > 0 {
 		var urls []string
-		var invalid []string
 		for _, line := range strings.Split(raw, "\n") {
 			repoURL := strings.TrimSpace(line)
 			if repoURL == "" {
@@ -1288,7 +1305,9 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 			// Validate the URL before adding.
 			v := ValidateRepoURL(repoURL)
 			if !v.Valid {
-				invalid = append(invalid, fmt.Sprintf("%s: %s", repoURL, v.Error))
+				// Logged below; a refused credential must not be written to
+				// the log by the line that refuses it (fix-review round 1).
+				invalid = append(invalid, fmt.Sprintf("%s: %s", platform.RedactURLUserinfo(repoURL), v.Error))
 				continue
 			}
 			urls = append(urls, v.URL)
@@ -1307,8 +1326,13 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				// (Copilot review of PR #207); a rejected group gets its own
 				// notice, since trying again cannot work (round-24 review).
 				flag := "1"
-				if errors.Is(err, db.ErrGroupRejected) {
+				switch {
+				case errors.Is(err, db.ErrGroupRejected):
 					flag = "rejected"
+				case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo):
+					// The user's input: "try again" cannot work, and the
+					// store refused the WHOLE paste (round 2).
+					flag = "invalid"
 				}
 				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, flag), http.StatusFound)
 				return
@@ -1317,15 +1341,30 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				"linked", out.Linked, "enqueued", out.Enqueued, "pending_approval", out.Pending)
 			if out.Pending > 0 {
 				s.notifyAddRequestSubmitted(out.RequestID)
-				http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d", groupID, out.Pending), http.StatusFound)
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d%s", groupID, out.Pending, invalidFlag(invalid)), http.StatusFound)
 				return
 			}
 		}
 		if len(invalid) > 0 {
+			// The page says so too (round 2: the lines the validator refused
+			// were only logged, so a refused paste looked like a success).
 			s.logger.Warn("some URLs were invalid", "errors", invalid)
 		}
 	}
-	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
+	loc := fmt.Sprintf("/groups/%d", groupID)
+	if len(invalid) > 0 {
+		loc += "?add_error=invalid"
+	}
+	http.Redirect(w, r, loc, http.StatusFound)
+}
+
+// invalidFlag is the add_error query fragment for a paste with refused
+// lines, empty when every line was accepted.
+func invalidFlag(invalid []string) string {
+	if len(invalid) == 0 {
+		return ""
+	}
+	return "&add_error=invalid"
 }
 
 func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
@@ -1338,8 +1377,25 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 	orgURL := strings.TrimSpace(r.FormValue("org_url"))
 
 	if orgURL != "" && groupID > 0 {
-		out, err := s.store.AddOrgToGroup(r.Context(), sess.UserID, groupID, orgURL)
+		// The host travels with the registration: the store refuses a
+		// GitHub org that is not on this deployment's GitHub host
+		// (db.ErrOrgOffGitHubHost) in every writer, and the page says so.
+		out, err := s.store.AddOrgToGroup(r.Context(), sess.UserID, groupID, orgURL, s.ghAPIBase)
 		switch {
+		case errors.Is(err, db.ErrOrgOffGitHubHost):
+			s.logger.Warn("org not added — its host is not this deployment's GitHub host",
+				"group_id", groupID, "org_url", platform.RedactURLUserinfo(truncateForLog([]byte(orgURL), 200)), "github_host", platform.GitHubWebHost(s.ghAPIBase))
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=host", groupID), http.StatusFound)
+			return
+		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong):
+			// The user's input, fixable by the user: say so on the page, as
+			// the repo path (add_error=invalid) and the portal (400) do
+			// (fix-review round 1: the store's refusal fell through to a plain
+			// redirect, so a credentialed org URL was silently not added). The
+			// URL itself is not logged.
+			s.logger.Warn("org not added — invalid URL", "group_id", groupID, "error", err)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=invalid", groupID), http.StatusFound)
+			return
 		case err != nil:
 			s.logger.Warn("failed to add org to group", "error", err)
 		case out.Registered:
@@ -1374,18 +1430,23 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	if err != nil {
 		return
 	}
-	isGitHub := host == "github.com"
+	// The deployment's GitHub host, not the literal "github.com": on an
+	// Enterprise deployment the org lives on that host, and an org on
+	// public GitHub is not one this deployment's keys can enumerate
+	// (v0.29.57, Copilot review 5260961848 — the routed client below was
+	// unreachable for the only orgs it could serve).
+	isGitHub := platform.IsGitHubHost(host, s.ghAPIBase)
 
 	if !isGitHub || s.ghKeys == nil {
 		return
 	}
 
 	if status, err := s.store.GetGroupStatus(ctx, groupID); err == nil && status == "rejected" {
-		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org", orgURL)
+		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org_url", platform.RedactURLUserinfo(orgURL))
 		return
 	}
 
-	httpClient := platform.NewHTTPClient("https://api.github.com", s.ghKeys, s.logger, platform.AuthGitHub)
+	httpClient := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
 	s.logger.Info("scanning repos for user group", "name", name, "group_id", groupID)
 
 	added := 0
@@ -1445,7 +1506,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				// refresh retries it next scan.
 				repoID, err := s.store.FindRepoByURL(ctx, item.HTMLURL)
 				if err != nil {
-					s.logger.Warn("org scan: repo lookup failed", "url", item.HTMLURL, "error", err)
+					s.logger.Warn("org scan: repo lookup failed", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
 					continue
 				}
 				if repoID > 0 {
@@ -1471,14 +1532,14 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 						PlatformID: model.ForgeIDString(item.ID), // v0.27.102 — enables the rename-heal inside UpsertRepo
 					})
 					if err != nil {
-						s.logger.Warn("org scan: upserting new repo failed", "url", item.HTMLURL, "error", err)
+						s.logger.Warn("org scan: upserting new repo failed", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
 						continue
 					}
 					// A silently failed enqueue strands a catalog row with no
 					// queue row — a suspected origin of the reconciliation
 					// gap found in the 2026-07-21 audit (summary/18 Phase 2).
 					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", item.HTMLURL, "error", err)
+						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
 					}
 					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 						s.logger.Warn("org scan: linking new repo failed", "repo_id", repoID, "error", err)

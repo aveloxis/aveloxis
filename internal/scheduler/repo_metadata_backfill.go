@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
@@ -44,6 +45,10 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 	s.logger.Info("repo metadata backfill starting (v0.23.0)")
 	totalProcessed := 0
 	totalFailed := 0
+	// Keyset cursor: pages advance past every repo seen, including the ones
+	// whose fetch failed (nothing is stamped on failure, so a plain LIMIT
+	// re-served them on every later page).
+	var afterRepoID int64
 
 	for {
 		if ctx.Err() != nil {
@@ -52,7 +57,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			return
 		}
 
-		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, metadataBackfillPageSize)
+		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, afterRepoID, metadataBackfillPageSize)
 		if errors.Is(err, context.Canceled) {
 			return // shutdown, not a failure
 		}
@@ -80,14 +85,14 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			case model.PlatformGitLab:
 				client = s.glClient
 			default:
-				// Generic-git repos have no API; skip them. They'll
-				// be excluded from the next candidate query
-				// automatically once we stamp something on the row,
-				// but for now the simplest thing is to leave them
-				// in the candidate set and let the SELECT filter
-				// out generic-git via repo_archived = FALSE
-				// (generic-git repos aren't archived but they also
-				// have no useful description source).
+				// Generic-git repos have no API to ask. The candidate
+				// query excludes them (platform_id IN (1, 2), v0.29.57),
+				// so this arm should be unreachable — it stays as a
+				// backstop for a platform added to the query and not to
+				// the switch. Reaching it once per restart forever is
+				// what the filter fixed: nothing here stamps the row, so
+				// without the filter the same rows came back every time
+				// and were counted as failures.
 				totalFailed++
 				continue
 			}
@@ -127,8 +132,21 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			}
 		}
 
+		afterRepoID = metadataBackfillCursor(targets, afterRepoID)
+
 		// Log progress every page so operators can monitor.
 		s.logger.Info("repo metadata backfill progress",
-			"processed", totalProcessed, "failed", totalFailed)
+			"processed", totalProcessed, "failed", totalFailed, "after_repo_id", afterRepoID)
 	}
+}
+
+// metadataBackfillCursor returns the keyset cursor for the next page: the
+// highest repo_id in this page, or the current cursor for an empty page.
+func metadataBackfillCursor(targets []db.RepoMetadataBackfillTarget, current int64) int64 {
+	for _, t := range targets {
+		if t.RepoID > current {
+			current = t.RepoID
+		}
+	}
+	return current
 }

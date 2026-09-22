@@ -43,7 +43,7 @@ The dependency scanner walks the full checkout looking for manifest files across
 | Manifest File | Ecosystem | Parser |
 |---|---|---|
 | `package.json` | npm (JavaScript/TypeScript) | JSON parser extracts `dependencies` + `devDependencies` |
-| `requirements.txt` | Python (pip) | Line parser, handles `==`, `>=`, comments, `-r` includes |
+| `requirements.txt` | Python (pip) | Line parser (byte-exact filename), handles `==`, `>=` and comments; pip's option lines (`-e`, `-r`) are skipped, so an `-r` include is never followed |
 | `go.mod` | Go | Parses `require` block |
 | `Cargo.toml` | Rust (Cargo) | TOML parser extracts `[dependencies]` + `[dev-dependencies]` |
 | `Gemfile` | Ruby (Bundler) | Parses `gem` declarations |
@@ -94,9 +94,69 @@ Twelve registries are queried: npm, PyPI, Go proxy, crates.io, RubyGems, Maven C
 |---|---|---|
 | **npm** | `https://registry.npmjs.org/{package}` | JavaScript, TypeScript |
 | **PyPI** | `https://pypi.org/pypi/{package}/json` | Python |
-| **Go proxy** | `https://proxy.golang.org/{module}/@v/list` | Go |
+| **Go proxy** | `https://proxy.golang.org/{module}/@latest` | Go |
 | **crates.io** | `https://crates.io/api/v1/crates/{crate}` | Rust |
 | **RubyGems** | `https://rubygems.org/api/v1/versions/{gem}.json` | Ruby |
+| **Maven Central** | `https://repo1.maven.org/maven2/{group path}/{artifact}/maven-metadata.xml` | Java, Kotlin, Scala |
+
+How requests are made (since v0.29.56):
+
+- **Go module paths and versions are case-encoded.** The module proxy replaces
+  every uppercase letter with `!` and its lowercase form, so
+  `github.com/Masterminds/semver/v3` is requested as
+  `github.com/!masterminds/semver/v3`. The unencoded spelling returns 404.
+- **Maven Central is read from the repository, not the search API.**
+  `maven-metadata.xml` gives the latest release and the version list, and each
+  version's `.pom` carries its publication time in the `Last-Modified` header —
+  which is what makes a Maven libyear value possible at all.
+- **Lookups GitHub hosts go through the API key pool**: the license of a Go
+  module's repository, and a SwiftPM package's releases. They were anonymous
+  before, which GitHub limits to 60 requests an hour per IP.
+- **Answers are reused for a day.** Successful lookups and definitive
+  "no such package" answers are cached in the process, keyed by package and
+  version (and by repository for licenses). A failure that says nothing — a
+  rate limit, a timeout, a server error — is never cached.
+- **Registries with a published request rate are paced across all workers.**
+  crates.io allows one request per second, so the collector spaces its requests
+  to it however many repos are being analysed at once, and honours `Retry-After`
+  on a 429 within the lookup's own time budget.
+- **Dependencies that are not from the registry** — a local path or workspace
+  package, a git or URL reference — are never looked up **for npm and cargo**:
+  the registry package of the same name is a different thing, and the lookup
+  only ever returned 404. One deliberate exception: a Cargo path dependency
+  that ALSO declares a `version` is a published crate being developed locally
+  (`published-member = { path = "../member", version = "2.1.0" }`), so that
+  version is what gets published and it is looked up normally. They appear in the dependency inventory
+  (`repo_dependencies`) but get no libyear row, so they do not enter the
+  vulnerability scan as unscannable dependencies. One line per repository
+  reports how many were skipped. Python splits the two: the
+  libyear and vulnerability parsers drop such requirement lines while parsing
+  — in every entry point (`requirements*.txt`, `pyproject.toml` including its
+  Poetry tables, `setup.py`, `setup.cfg`, `Pipfile` and the dev/build
+  variants) — so those dependencies get no libyear row and are never looked
+  up in a registry. The inventory parser drops them only where
+  `requirements.txt` holds them as one of pip's option lines (`-e`, `-r`), so
+  an editable install has no inventory row. In the line-shaped entry points
+  it reads (`requirements.txt` exactly, PEP 621 `dependencies`, `setup.py`
+  and `setup.cfg`'s `install_requires`) it cannot split the rest, so
+  `repo_dependencies` holds the requirement line itself as the dependency
+  name: `./local-pkg`, `https://example.com/pkg-1.0.tar.gz`,
+  `requests @ git+https://…`. The requirements VARIANTS are read only by the
+  libyear and vulnerability path, and only with `collection.dev_build_deps`
+  on, so they produce no inventory row at all. That arm takes `.txt` files
+  alone: a requirements variant by name (`requirements-dev.txt`,
+  `test_requirements.txt`, matched case-insensitively) or any other `.txt`
+  directly inside a directory named `requirements` (that directory name
+  byte-exact),
+  and never `requirements.txt` itself in any casing. Both walks match
+  `requirements.txt` byte for byte, so `requirements/requirements.txt` is the
+  ordinary manifest, gate or no gate, and a differently cased
+  `Requirements.txt` matches no arm at all — nothing collects it. The Poetry and Pipfile tables key on the
+  dependency's name, so those rows keep the clean name. A named PEP 508 direct reference does carry a
+  package name (`requests`), so that stored name is a wart rather than a
+  design.
+  The other ecosystems (RubyGems, Packagist, Maven, …) do not yet make this
+  distinction: a `path:`- or `git:`-sourced gem is still looked up by name.
 
 ### Version cleaning
 
@@ -209,7 +269,7 @@ For a repo with a 500 MB bare clone, the analysis phase temporarily uses an addi
 
 - **Missing manifest files:** Silently skipped. Not all repos have dependencies.
 - **Malformed manifest files:** A warning is logged, but analysis continues with other manifests.
-- **Registry errors:** If a registry query fails (timeout, 404, rate limit), the dependency's libyear is not calculated. Other dependencies are still processed.
+- **Registry errors:** If a registry query fails (timeout, 404, rate limit), the dependency's libyear is not calculated. Other dependencies are still processed. Failures are counted per ecosystem and surfaced as one `libyear resolution failures for ecosystem` warning per repository, with a sample error. License lookups that fail without an answer get their own line (`libyear license lookups failed without an answer`); the row is still stored, without a license.
 - **scc failure:** If scc crashes or returns invalid JSON, a warning is logged and `repo_labor` is not populated for that repo.
 - **Disk full during checkout:** The checkout is cleaned up in a deferred function that runs even on error.
 

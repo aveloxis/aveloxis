@@ -41,6 +41,17 @@ func TestRequirementsFileScope(t *testing.T) {
 		{"readme.txt", "/r/readme.txt", "", false},
 		{"notes.txt", "/r/docs/notes.txt", "", false},
 		{"requirements.in", "/r/requirements.in", "", false}, // only .txt
+		{"constraints.in", "/r/requirements/constraints.in", "", false},
+		// The properties docs/architecture/analysis.md states (v0.29.57
+		// review round 8): variant NAMES match in any casing, the
+		// requirements DIRECTORY is byte-exact, requirements.txt is excluded
+		// in every casing, and only the immediate parent counts.
+		{"Requirements-Dev.txt", "/r/Requirements-Dev.txt", model.ScopeDev, true},
+		{"REQUIREMENTS-DEV.TXT", "/r/REQUIREMENTS-DEV.TXT", model.ScopeDev, true},
+		{"base.txt", "/r/Requirements/base.txt", "", false},
+		{"Requirements.txt", "/r/Requirements.txt", "", false},
+		{"REQUIREMENTS.TXT", "/r/requirements/REQUIREMENTS.TXT", "", false},
+		{"base.txt", "/r/requirements/prod/base.txt", "", false},
 	}
 	for _, c := range cases {
 		scope, ok := requirementsFileScope(c.base, c.path)
@@ -92,9 +103,18 @@ doc = ["sphinx>=7.2"]
 [dependency-groups]
 dev = ["ruff>=0.4"]
 test = ["coverage>=7.0"]
+test-slow = [
+    "pytest-timeout>=2.3",
+]
+typecheck = [
+    "mypy>=1.10",
+]
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.0"
+"zope.interface" = "^6.0"
+ruamel.yaml = "^0.18"
+faker2 = "^25.0"   # trailing comment
 
 [tool.poetry.group.test.dependencies]
 faker = "^25.0"
@@ -121,8 +141,36 @@ flake8 = "^7.0"
 	if got := scopeOf(t, deps, "coverage"); got != model.ScopeTest {
 		t.Errorf("PEP 735 test group → %q, want test", got)
 	}
+	// A multiline group keeps the group's own scope: the continuation
+	// items are not [dependency-groups]' default (Copilot on PR #210).
+	if got := scopeOf(t, deps, "pytest-timeout"); got != model.ScopeTest {
+		t.Errorf("PEP 735 multiline test-slow group → %q, want test", got)
+	}
+	if got := scopeOf(t, deps, "mypy"); got != model.ScopeDev {
+		t.Errorf("PEP 735 multiline typecheck group → %q, want dev", got)
+	}
 	if got := scopeOf(t, deps, "black"); got != model.ScopeDev {
 		t.Errorf("poetry group.dev → %q, want dev", got)
+	}
+	// A quoted TOML key is the package name without its quotes — the
+	// shape splitTOMLDottedKey exists for (zope.interface, ruamel.yaml).
+	if got := scopeOf(t, deps, "zope.interface"); got != model.ScopeDev {
+		t.Errorf("poetry group.dev quoted key → %q, want dev", got)
+	}
+	// The same name written UNQUOTED is how these appear in the wild, and
+	// it was collected before v0.29.57 touched this branch: keep it.
+	if got := scopeOf(t, deps, "ruamel.yaml"); got != model.ScopeDev {
+		t.Errorf("poetry group.dev unquoted dotted key → %q, want dev", got)
+	}
+	// A trailing comment is not part of the version (it reaches the purl).
+	// scopeOf fails if the dep is missing, so this cannot pass vacuously.
+	if got := scopeOf(t, deps, "faker2"); got != model.ScopeDev {
+		t.Errorf("poetry group.dev with a trailing comment → %q, want dev", got)
+	}
+	for _, d := range deps {
+		if d.Name == "faker2" && d.Version != "25.0" {
+			t.Errorf("poetry group.dev version with a trailing comment → %q, want 25.0", d.Version)
+		}
 	}
 	if got := scopeOf(t, deps, "faker"); got != model.ScopeTest {
 		t.Errorf("poetry group.test → %q, want test", got)
@@ -365,5 +413,106 @@ func TestRequirementsExtrasStripped(t *testing.T) {
 	}
 	if deps[1].Name != "httpx" {
 		t.Errorf("multi-extras must strip: got %q, want httpx", deps[1].Name)
+	}
+}
+
+// A differently cased Requirements.txt reaches no arm of the inventory:
+// its map and its parser switch match the basename byte-exact, and
+// requirementsFileScope (the libyear walk's variant arm) excludes the name
+// in every casing. docs/architecture/analysis.md states this. NOT pinned
+// here: the libyear walk's own `switch base`, which needs a store to drive
+// — a case-folding fix applied there alone passes this test, so closing the
+// worklist's case gap means updating the page by hand too.
+func TestCasedRequirementsFileIsCollectedByNothing(t *testing.T) {
+	for _, name := range []string{"Requirements.txt", "REQUIREMENTS.TXT"} {
+		if lang, ok := manifestFiles[name]; ok {
+			t.Errorf("manifestFiles[%q] = %q — the inventory walk now claims it; update the docs and this test", name, lang)
+		}
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("flask==2.0.0\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deps, err := parseDependencyFile(path, "Python")
+		if err != nil || len(deps) != 0 {
+			t.Errorf("parseDependencyFile(%q) = (%v, %v), want no dependencies — its switch is byte-exact", name, deps, err)
+		}
+		if scope, ok := requirementsFileScope(name, "/r/"+name); ok {
+			t.Errorf("requirementsFileScope(%q) = (%q, true) — the variant arm now claims it", name, scope)
+		}
+	}
+}
+
+// A multiline array's CLOSING line can carry brackets of its own — an extra
+// (`"pytest[all]>=7.0"]`) or a comment (`]  # see [docs]`) — and they are not
+// array syntax. Detecting them as such leaves the walk believing it is still
+// inside the array, and the scope it pinned for that array's items then
+// follows every group after it: the `dev` group below came back as test
+// (v0.29.57). That is the leak this test pins, and it is prevented by the
+// quote-aware bracket scan — NOT by `arrayItemScope`, which fixes the other
+// direction (a multiline `test` group emitting dev) and is pinned by
+// TestPyprojectDevBuildVersions. Naming the wrong mechanism here would send
+// the next reader to the wrong function.
+func TestGroupScopeEndsWithItsArray(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, item string
+	}{
+		{"bracket in an item's extras", "[dependency-groups]\ntest = [\n    \"pytest[all]>=7.0\"]\ndev = [\"ruff>=0.4\"]\n", "pytest"},
+		{"bracket in a trailing comment", "[dependency-groups]\ntest = [\n    \"coverage>=7\"\n]   # see [docs]\ndev = [\"ruff>=0.4\"]\n", "coverage"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parsePyprojectDevBuildVersions(tc.content)
+			if scopeOf(t, got, "ruff") != model.ScopeDev {
+				t.Errorf("ruff is declared in the dev group but came back %q — the test group's array never closed", scopeOf(t, got, "ruff"))
+			}
+			// The multiline group's OWN item must keep its scope, or the
+			// array could be closing too early instead of too late.
+			if scopeOf(t, got, tc.item) != model.ScopeTest {
+				t.Errorf("%s is declared in the test group but came back %q", tc.item, scopeOf(t, got, tc.item))
+			}
+		})
+	}
+}
+
+// A dotted sub-key names an ATTRIBUTE of the dependency, and only `version`
+// holds one. Treating any other sub-key's value as the version invents a
+// version for a real package name — `"zope.interface".optional = true`
+// became zope.interface@true, which reaches the purl and the OSV lookup
+// (SR-6: never fabricate). The same rule the shared table scanner applies.
+func TestNonVersionDottedSubKeyIsNotAVersion(t *testing.T) {
+	content := "[tool.poetry.dependencies]\n\"zope.interface\".version  = \"^6.0\"\n\"zope.interface\".optional = true\n"
+	for _, d := range parsePoetryVersions(content) {
+		if d.Version == "true" || d.Version == "false" {
+			t.Errorf("%s came back at version %q — that is the value of a non-version sub-key, not a release", d.Name, d.Version)
+		}
+	}
+	// The version sub-key still works: this is the line the round before
+	// this one was added for.
+	found := false
+	for _, d := range parsePoetryVersions(content) {
+		if d.Name == "zope.interface" && d.Version == "6.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error(`"zope.interface".version = "^6.0" must still yield zope.interface@6.0`)
+	}
+}
+
+// The `=` that selects this branch is looked for in the RAW line, but the
+// value is split from the comment-stripped one, so a line whose only `=` is
+// inside a comment reaches the split with nothing to split. It must be
+// dropped, not indexed into (the FuzzManifestParsers contract: never panic).
+//
+// The fixture has to carry something BEFORE the comment: a line that starts
+// with `#` is rejected by the arm's own `!HasPrefix("#")` test and never
+// reaches the guard, so it would prove nothing about it (v0.29.57).
+func TestCommentOnlyEqualsIsNotADependency(t *testing.T) {
+	for _, content := range []string{
+		"[tool.poetry.group.dev.dependencies]\nblack  # = \"^24\"\n",
+		"[tool.poetry.group.dev.dependencies]\nruff   #  = \n",
+	} {
+		if got := parsePyprojectDevBuildVersions(content); len(got) != 0 {
+			t.Errorf("parsePyprojectDevBuildVersions(%q) = %+v, want no dependencies: the only `=` is inside a comment", content, got)
+		}
 	}
 }

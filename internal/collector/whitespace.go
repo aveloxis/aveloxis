@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -249,9 +250,19 @@ var whitespaceFlushEvery = 5000
 // subsequent facade cycles incremental. Returns rows updated + head.
 func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, clonePath, rangeSpec string) (int64, string, error) {
 	branch := resolveDefaultBranch(ctx, clonePath)
+	// v0.29.58 review round 1: an empty repository (unborn default
+	// branch) has no history to walk. Reached from RewalkWhitespace
+	// (CollectRepo gates on FacadeResult.EmptyDefaultBranch before the
+	// phase); the same yes/no probe as parseGitLog, error arm falls
+	// through to rev-parse, whose stderr is now kept.
+	if empty, perr := defaultBranchIsEmpty(ctx, clonePath, branch); perr == nil && empty {
+		f.logger.Info("whitespace walk skipped — no commits on the default branch", "repo_id", repoID, "branch", branch)
+		return 0, "", nil
+	}
 	headCmd := exec.CommandContext(ctx, "git", "-C", clonePath, "rev-parse", branch)
 	headOut, err := headCmd.Output()
 	if err != nil {
+		err = withStderr(err, exitStderr(err))
 		return 0, "", fmt.Errorf("rev-parse %s: %w", branch, execErr(ctx, err))
 	}
 	head := strings.TrimSpace(string(headOut))
@@ -269,6 +280,10 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	defer cancelWalk()
 	cmd := exec.CommandContext(walkCtx, "git", "-C", clonePath, "log",
 		target, "--numstat", "-p", "--format=%x1e%H")
+	// v0.29.58: keep git's diagnostic for the exit-error path (bounded;
+	// see stderrCapture) — the facade's git log had the same gap.
+	walkStderr := &stderrCapture{}
+	cmd.Stderr = walkStderr
 	// startSweptCommand (not cmd.StdoutPipe): same reason as the facade's
 	// git log — a child inheriting git's stdout that outlives the leader
 	// would otherwise wedge this walk, with no ctx cancel to rescue it.
@@ -281,19 +296,22 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	stdout := swept.Stdout
 
 	var (
-		updated int64
-		matched int64
-		total   int64
-		pending []db.CommitWhitespaceStat
+		updated   int64
+		matched   int64
+		total     int64
+		unmatched []string
+		pending   []db.CommitWhitespaceStat
 	)
 	flush := func() error {
 		if len(pending) == 0 {
 			return nil
 		}
-		n, m, ferr := f.store.UpdateCommitWhitespaceBatch(ctx, repoID, pending)
+		n, m, um, ferr := f.store.UpdateCommitWhitespaceBatch(ctx, repoID, pending,
+			db.WhitespaceUnmatchedSample-len(unmatched))
 		pending = pending[:0]
 		updated += n
 		matched += m
+		unmatched = appendUnmatchedSample(unmatched, um)
 		return ferr
 	}
 	parseErr := parseWhitespaceLog(stdout, func(c whitespaceCommit) error {
@@ -321,6 +339,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 		return updated, head, fmt.Errorf("parse whitespace log: %w", parseErr)
 	}
 	if waitErr != nil {
+		waitErr = withStderr(waitErr, walkStderr.String())
 		return updated, head, fmt.Errorf("git log -p exited: %w", execErr(ctx, waitErr))
 	}
 	if err := flush(); err != nil {
@@ -338,8 +357,9 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	if matched < total {
 		return updated, head, fmt.Errorf(
 			"%d of %d whitespace stats matched no stored commit row — refusing to stamp the marker; "+
-				"the repo's next facade numstat pass re-inserts the missing rows, rerun after it",
-			total-matched, total)
+				"the repo's next facade numstat pass re-inserts the missing rows, rerun after it "+
+				"(unmatched: %s)",
+			total-matched, total, formatUnmatchedWhitespace(unmatched))
 	}
 	if err := f.store.SetWhitespaceHead(ctx, repoID, head); err != nil {
 		return updated, head, fmt.Errorf("stamp whitespace head: %w", err)
@@ -420,4 +440,37 @@ func (f *FacadeCollector) RewalkWhitespace(ctx context.Context, repoID int64, gi
 	}
 	updated, _, err := f.runWhitespaceWalk(ctx, repoID, clonePath, "")
 	return updated, err
+}
+
+// appendUnmatchedSample grows the walk's sample of unmatched keys up to
+// db.WhitespaceUnmatchedSample. The store is asked for only what is left of
+// that room, so this is the belt: it keeps the cap true if a future caller
+// forgets to pass its remaining room. Without a walk-level cap at all, a
+// large repo whose stats all miss collected a batch's worth per flush —
+// hundreds of keys in one error string and one log line.
+func appendUnmatchedSample(have, more []string) []string {
+	room := db.WhitespaceUnmatchedSample - len(have)
+	if room <= 0 {
+		return have
+	}
+	return append(have, more[:min(room, len(more))]...)
+}
+
+// formatUnmatchedWhitespace renders the sample of unmatched keys for the
+// refusal message. Without it the message carried only counts, and a
+// missing commit row could not be told from a filename the numstat and
+// patch walks spell differently (v0.29.56).
+func formatUnmatchedWhitespace(keys []string) string {
+	if len(keys) == 0 {
+		return "none reported"
+	}
+	// The keys are repository-controlled filenames and this message is
+	// printed by the rewalk CLI, so they are scrubbed like any other logged
+	// value: a filename carrying CR/LF or an escape sequence could otherwise
+	// forge lines in that output (Copilot on PR #210).
+	safe := make([]string, len(keys))
+	for i, k := range keys {
+		safe[i] = scrubLogValue(k)
+	}
+	return strings.Join(safe, ", ") + " (first " + strconv.Itoa(len(safe)) + ")"
 }

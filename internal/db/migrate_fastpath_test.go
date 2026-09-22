@@ -53,7 +53,7 @@ func TestMigrateFastPathContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(pg), "func (s *PostgresStore) SetMigrateFastPath(") {
-		t.Error("PostgresStore must expose SetMigrateFastPath (the SetMatviewSkip pattern)")
+		t.Error("PostgresStore must expose SetMigrateFastPath (the SetMatviewMode pattern)")
 	}
 }
 
@@ -88,7 +88,6 @@ func TestMigrateFastPathSkipsAndFullRunHeals(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 
 	// Ensure the stamp is current (full migrate if needed).
 	testMigrate(ctx, t, store)
@@ -151,7 +150,6 @@ func TestMigrateFastPathSkipsAndFullRunHeals(t *testing.T) {
 			return
 		}
 		defer healStore.Close()
-		healStore.SetMatviewSkip(true)
 		_ = RunMigrations(cctx, healStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	})
 

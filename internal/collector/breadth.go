@@ -125,10 +125,19 @@ type BreadthWorker struct {
 	circuitOpenUntil time.Time
 }
 
-// NewBreadthWorker creates a breadth worker using the GitHub API.
-func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, logger *slog.Logger) *BreadthWorker {
+// NewBreadthWorker creates a breadth worker using the GitHub API at baseURL,
+// or public GitHub when baseURL is empty.
+//
+// The base is a PARAMETER rather than a constant because these are the
+// scheduler's keys: on a GitHub Enterprise deployment a hardcoded
+// api.github.com hands the Enterprise token to a third party (v0.29.57,
+// Copilot review 5260539069 — the half the scheduler-side fix missed,
+// because the guard that enumerates GitHub clients reads the scheduler
+// package and this client is built here).
+func NewBreadthWorker(store *db.PostgresStore, keys *platform.KeyPool, baseURL string, logger *slog.Logger) *BreadthWorker {
+	baseURL = platform.GitHubAPIBaseOrPublic(baseURL)
 	return NewBreadthWorkerWithHTTP(store,
-		platform.NewHTTPClient("https://api.github.com", keys, logger, platform.AuthGitHub), logger)
+		platform.NewHTTPClient(baseURL, keys, logger, platform.AuthGitHub), logger)
 }
 
 // NewBreadthWorkerWithHTTP builds a breadth worker around an arbitrary
@@ -223,9 +232,8 @@ type breadthFetchOutcome struct {
 //     filters by cntrb_last_breadth_at; contributors past the
 //     cooldown window are eligible regardless of whether their
 //     prior attempt yielded events.
-//   - MarkBreadthAttempted(Batch) covers EVERY contributor attempt —
-//     success, zero events, and per-user fetch errors all count as
-//     attempted. Without this, contributors with no public activity
+//   - MarkBreadthAttempted(Batch) covers success, zero events and
+//     per-user fetch errors alike — all count as attempted. Without this, contributors with no public activity
 //     stayed at the head of the queue forever (observed: 225/1.4M
 //     coverage on the live fleet).
 //   - The 200ms inter-contributor sleep is removed. HTTPClient
@@ -347,6 +355,7 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 	// eligible for the attempted stamp. See ORDERING CONTRACT in the
 	// package doc: IDs enter this buffer only after their
 	// InsertContributorRepoBatch call succeeded.
+	var tally breadthErrorTally
 	var pendingMarks []string
 	flushMarks := func() {
 		if len(pendingMarks) == 0 {
@@ -425,12 +434,17 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		}
 
 		if oc.err != nil {
-			bw.logger.Warn("breadth: failed to process contributor",
+			// One line per batch, not per contributor: 184 identical
+			// "not found: /users/X/events" WARNs in two hours of the
+			// 2026-09-17 log were deleted accounts, which is an answer
+			// (v0.29.56, the v0.27.91 flood class).
+			tally.note(oc.contributor.Login, oc.err)
+			bw.logger.Debug("breadth: failed to process contributor",
 				"login", oc.contributor.Login, "error", oc.err)
 			result.Errors++
 			// v0.20.17 invariant: a per-user fetch error still counts
-			// as attempted (only a circuit trip, an insert failure, or
-			// a shutdown mid-insert leaves a contributor unmarked). A
+			// as attempted (a circuit trip, an insert failure or a
+			// shutdown leaves a contributor unmarked). A
 			// canceled fetch never reaches here: the loop-top ctx check
 			// aborts the drain first.
 			pendingMarks = append(pendingMarks, oc.contributor.ID)
@@ -447,10 +461,29 @@ func (bw *BreadthWorker) Run(ctx context.Context, limit int, cooldown time.Durat
 		}
 	}
 
-	// Contributors persisted before an abort keep their stamp — their
-	// events are already durable, exactly like the sequential shape
-	// where each pre-trip contributor was marked as it completed.
+	// Contributors persisted before a circuit trip keep their stamp — their
+	// events are already durable, exactly like the sequential shape where
+	// each pre-trip contributor was marked as it completed. On a shutdown
+	// the flush runs on the cancelled context and fails (quietly), so
+	// those contributors are fetched again next cycle; their inserts are
+	// idempotent.
 	flushMarks()
+
+	// A shutdown can also end the drain with no outcome left to observe
+	// it: the fetchers stop sending once the context is cancelled, so the
+	// loop ends with abortErr nil and the run would report a clean cycle.
+	if abortErr == nil {
+		abortErr = ctx.Err()
+	}
+
+	// Shutdown is not a failure: the tally is not reported on the way out.
+	if tally.any() && !errors.Is(abortErr, context.Canceled) {
+		bw.logger.Warn("breadth: contributors not collected",
+			"gone_accounts", tally.missing,
+			"forbidden", tally.forbidden,
+			"failed_without_an_answer", tally.failed,
+			"sample_login", tally.sampleLogin, "sample_error", tally.sampleErr)
+	}
 
 	if abortErr != nil {
 		return result, abortErr
@@ -642,3 +675,44 @@ type ghUserEvent struct {
 	} `json:"repo"`
 	CreatedAt string `json:"created_at"` // RFC3339
 }
+
+// breadthErrorTally aggregates one run's per-contributor errors in three
+// kinds: accounts the forge says are gone (deleted, renamed away —
+// expected churn), accounts it refused (a non-rate-limit 403: a
+// suspended account or a narrowed token scope, worth a look), and lookups
+// that failed without an answer. It keeps one sample of the first error
+// that is not a gone account.
+type breadthErrorTally struct {
+	missing     int
+	forbidden   int
+	failed      int
+	sampleLogin string
+	sampleErr   error
+}
+
+func (t *breadthErrorTally) note(login string, err error) {
+	if err == nil {
+		return
+	}
+	// Only "the account is not there" counts as gone. v0.29.56 first used
+	// platform.IsDefinitiveAnswer, which also covers ErrForbidden — a 403
+	// on /users/X/events (suspended account, narrowed token scope) is
+	// exactly the case worth waking up for, and reporting it as routine
+	// account churn would hide a systemic permission problem.
+	if errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrGone) {
+		t.missing++
+		return
+	}
+	// A 403 is an answer too, but not churn (Copilot on PR #210): counted
+	// on its own, so the WARN never files it under "without an answer".
+	if errors.Is(err, platform.ErrForbidden) {
+		t.forbidden++
+	} else {
+		t.failed++
+	}
+	if t.sampleErr == nil {
+		t.sampleLogin, t.sampleErr = login, err
+	}
+}
+
+func (t *breadthErrorTally) any() bool { return t.missing > 0 || t.forbidden > 0 || t.failed > 0 }

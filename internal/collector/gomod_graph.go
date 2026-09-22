@@ -154,8 +154,11 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 			return "", false // shutdown killed the toolchain: not a module failure (pass 35); a budget DEADLINE still warns below
 		}
 		if rerr != nil {
+			// v0.29.58: cmd.Output() keeps the toolchain's stderr on the
+			// ExitError; without it 147 warnings in one run read "exit
+			// status 1" and nothing else (2026-09-22 log review).
 			ac.logger.Warn("go toolchain invocation failed — skipping this module's transitive expansion",
-				"module_dir", rel, "args", strings.Join(args, " "), "error", rerr)
+				"module_dir", rel, "args", strings.Join(args, " "), "error", rerr, "stderr", exitStderr(rerr))
 			return "", false
 		}
 		return string(out), true

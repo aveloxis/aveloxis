@@ -837,7 +837,7 @@ Write the `v0.24.0 — Bugzilla platform support` release-note entry into the PR
 
 Some things the walkthrough doesn't cover that you'll bump into:
 
-1. **`SetMatviewSkip` interaction.** The dm_repo_* aggregates JOIN on commits, which Bugzilla doesn't have. Those views will still build but return zero rows for Bugzilla repos. Fine — they just don't apply.
+1. **Materialized-view interaction** (a test builds them with `store.SetMatviewMode(db.MatviewsRebuild)`; the default builds none). The dm_repo_* aggregates JOIN on commits, which Bugzilla doesn't have. Those views will still build but return zero rows for Bugzilla repos. Fine — they just don't apply.
 
 2. **`repo_info` columns** that don't apply to Bugzilla (star_count, fork_count, watcher_count, clone_count, default_branch). Leave them at zero / empty. Don't fabricate values. Document the parity gap in the architecture docs (mirroring how `docs/architecture/contributor-resolution.md` documents the GitHub/GitLab gaps).
 

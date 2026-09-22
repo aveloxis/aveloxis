@@ -41,7 +41,6 @@ func caseConnect(t *testing.T) (context.Context, *PostgresStore) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	// v0.27.125 (round 16): route through the shared lock-and-recheck
 	// helper — the inline stamp check raced RunMigrations' advisory
 	// lock on fresh parallel runs (every binary saw the old stamp and

@@ -47,24 +47,47 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	result := &PrelimResult{OldURL: repo.GitURL}
 
 	finalURL, statusCode, err := resolveRedirects(ctx, repo.GitURL)
+	if errors.Is(err, platform.ErrRedirectTargetUserinfo) {
+		// The forge's redirect target carries credentials (round 6): not
+		// followed, nothing written, the row keeps its (clean) URL;
+		// collection proceeds against the stored URL and fails naturally if
+		// the forge insists.
+		logger.Error("prelim: redirect target carries credentials — not followed, repo URL unchanged",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
+		return result, nil
+	}
+	if errors.Is(err, platform.ErrURLUserinfo) {
+		// The STORED URL carries them (a caller that bypassed runJob's gate).
+		logger.Error("prelim: repo URL carries credentials — not probed; correct repo_git",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
+		return result, nil
+	}
 	if err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is
 		// unchanged and the work is retried on the next cycle.
 		if !errors.Is(err, context.Canceled) {
-			logger.Warn("prelim: failed to check URL", "url", repo.GitURL, "error", err)
+			logger.Warn("prelim: failed to check URL", "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
 		}
 		// Network error — don't skip, let collection try and fail naturally.
 		return result, nil
 	}
 
-	// Repo is gone (404, 410). Sideline it permanently: keep all collected
-	// data, but remove from the queue so we never try again.
-	if statusCode == http.StatusNotFound || statusCode == http.StatusGone {
+	// Repo is gone (404, 410) or blocked for legal reasons (451 — a DMCA
+	// takedown, v0.29.58). Sideline it permanently: keep all collected
+	// data, but remove from the queue so we never try again. The gone
+	// recheck re-probes it on its cadence, so a lifted block or a
+	// restored repository comes back on its own. One shared rule for
+	// every repository-level probe (platform.IsRepoGoneStatus, SR-17).
+	if platform.IsRepoGoneStatus(statusCode) {
 		result.Skip = true
 		result.SkipReason = fmt.Sprintf("repo returned %d — sidelined permanently", statusCode)
-		logger.Warn("prelim: repo no longer exists, sidelining permanently",
-			"url", repo.GitURL, "status", statusCode, "repo_id", repo.ID)
+		if statusCode == http.StatusUnavailableForLegalReasons {
+			result.SkipReason = fmt.Sprintf("repo returned %d — blocked for legal reasons (DMCA takedown or similar); sidelined permanently", statusCode)
+		}
+		logger.Warn("prelim: repo no longer available, sidelining permanently",
+			"url", platform.RedactURLUserinfo(repo.GitURL), "status", statusCode, "repo_id", repo.ID,
+			"reason", result.SkipReason)
 
 		// Mark as archived AND gone in one statement. v0.27.39:
 		// dequeuing WITHOUT the archive succeeding mints a stranded
@@ -130,7 +153,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	result.Redirected = true
 	result.NewURL = finalURL
 	logger.Info("prelim: repo redirected",
-		"old", repo.GitURL, "new", finalURL, "repo_id", repo.ID)
+		"old_url", platform.RedactURLUserinfo(repo.GitURL), "new_url", platform.RedactURLUserinfo(finalURL), "repo_id", repo.ID)
 
 	// Check if we already have a repo entry for the new URL.
 	existingID, err := store.FindRepoByURL(ctx, finalURL)
@@ -145,8 +168,8 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			"redirected to %s which is already collected as repo_id %d",
 			finalURL, existingID)
 		logger.Warn("prelim: duplicate repo detected — already collecting under new URL",
-			"old_repo_id", repo.ID, "old_url", repo.GitURL,
-			"new_repo_id", existingID, "new_url", finalURL)
+			"old_repo_id", repo.ID, "old_url", platform.RedactURLUserinfo(repo.GitURL),
+			"new_repo_id", existingID, "new_url", platform.RedactURLUserinfo(finalURL))
 
 		// v0.27.22 self-heal: an add-by-old-name should silently land
 		// the user on the collected repo they meant. For a
@@ -168,7 +191,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			}
 		case healed:
 			logger.Info("prelim: rename-duplicate healed — user links repointed to the collected repo",
-				"old_repo_id", repo.ID, "new_repo_id", existingID, "new_url", finalURL)
+				"old_repo_id", repo.ID, "new_repo_id", existingID, "new_url", platform.RedactURLUserinfo(finalURL))
 			return result, nil // duplicate row is gone; nothing to dequeue
 		default:
 			logger.Warn("prelim: duplicate retained — it has collected data; consolidation is a manual decision",
@@ -193,7 +216,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		return result, fmt.Errorf("updating repo URLs: %w", err)
 	}
 	logger.Info("prelim: updated repo URL to canonical",
-		"repo_id", repo.ID, "old", repo.GitURL, "new", finalURL)
+		"repo_id", repo.ID, "old_url", platform.RedactURLUserinfo(repo.GitURL), "new_url", platform.RedactURLUserinfo(finalURL))
 
 	// Update the repo struct so collection uses the new URL.
 	repo.GitURL = finalURL
@@ -222,48 +245,127 @@ func ResolveRedirectTarget(ctx context.Context, repoURL string) (string, int, er
 }
 
 func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) {
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil // follow redirects
-		},
+	// The HEAD below would send userinfo as basic auth. Refused HERE, in the
+	// one probe every caller shares (SR-18) — the scheduler's gates sat at
+	// its callers, and two CLIs (`mark-gone-repos`, `reconcile-repos`) reached
+	// it ungated (v0.29.57 fix-review round 3).
+	if err := platform.RefuseURLUserinfo(repoURL); err != nil {
+		return "", 0, err
 	}
+	// The redirect chain is walked HERE, on the transport, not by
+	// http.Client: a Location that carries credentials must be refused
+	// before any request to it (net/http would send them as basic auth, and
+	// the final URL would then be written to repo_git by the rename path),
+	// and http.Client's own error texts quote the raw Location: "failed to
+	// parse Location header %q" is raised BEFORE CheckRedirect is consulted
+	// (client.go: the parse precedes the policy call), and ANY CheckRedirect
+	// error — the hop limit included — is returned with url.Error.URL set to
+	// the raw Location (client.go, "ue.(*url.Error).URL = loc"), so the old
+	// hop-limit arm leaked when the credentialed Location arrived exactly at
+	// the limit (fix-review rounds 7–9; round 8 said otherwise from a fixture
+	// that never reached the boundary). Walking the chain here makes both
+	// fixed strings. Each Location is refused, then parsed, then refused
+	// again once resolved; no error returned from here names a redirect
+	// target.
+	current := repoURL
+	for hop := 0; ; hop++ {
+		resp, err := headWithRetry(ctx, current)
+		if err != nil {
+			return "", 0, err
+		}
+		resp.Body.Close()
+		if !isRedirectStatus(resp.StatusCode) {
+			return current, resp.StatusCode, nil
+		}
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return current, resp.StatusCode, nil // a 3xx without Location: as net/http reports it
+		}
+		if hop >= maxHops {
+			return "", 0, errTooManyRedirects
+		}
+		if platform.RefuseURLUserinfo(loc) != nil {
+			return "", 0, platform.ErrRedirectTargetUserinfo
+		}
+		next, err := resp.Request.URL.Parse(loc)
+		if err != nil {
+			return "", 0, errors.New("redirect target: unparseable Location header")
+		}
+		if platform.RefuseURLUserinfo(next.String()) != nil {
+			return "", 0, platform.ErrRedirectTargetUserinfo
+		}
+		current = next.String()
+	}
+}
 
-	// Retry transient DNS/network errors with exponential backoff (1s, 3s, 9s).
-	// During system crashes or network blips, DNS resolution fails briefly and
-	// all prelim checks that fire during that window would permanently skip repos.
+// maxHops is how many redirects the probe follows before giving up with
+// errTooManyRedirects — one more than net/http's client (10 requests,
+// refuses the 11th); the test that serves a credentialed Location exactly
+// at the limit reads this constant, so the boundary pin moves with it
+// (fix-review round 10).
+const maxHops = 10
+
+// errTooManyRedirects is the hop-limit error: a fixed string, never the
+// Location that would have been next.
+var errTooManyRedirects = errors.New("too many redirects")
+
+// isRedirectStatus reports the statuses net/http follows for a HEAD.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
+// probeTransport is the redirect probe's transport: one round trip per
+// hop, no redirect handling (that is resolveRedirects' job). The 15 s
+// budget in headWithRetry is per HOP, where the http.Client's covered the
+// whole chain; ResponseHeaderTimeout covers write-to-headers only.
+var probeTransport http.RoundTripper = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	ResponseHeaderTimeout: 15 * time.Second,
+	IdleConnTimeout:       90 * time.Second,
+}
+
+// headWithRetry issues one HEAD to url on the transport (a redirect
+// response is returned as is, never followed or parsed here), retrying
+// transient DNS/network errors with exponential backoff (1s, 3s, 9s): during
+// system crashes or network blips DNS resolution fails briefly, and every
+// prelim check in that window would otherwise permanently skip its repo.
+// url has passed RefuseURLUserinfo, so an error's quoted URL carries no
+// credential.
+func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
 	var lastErr error
 	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
 	for attempt, delay := range delays {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, repoURL, nil)
+		hopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		req, err := http.NewRequestWithContext(hopCtx, http.MethodHead, url, nil)
 		if err != nil {
-			return "", 0, err
+			cancel()
+			return nil, err
 		}
 		req.Header.Set("User-Agent", "Aveloxis/1.0")
-
-		resp, err := client.Do(req)
+		resp, err := probeTransport.RoundTrip(req)
+		cancel() // a HEAD's body is empty; the response is complete
 		if err != nil {
 			lastErr = err
 			// Only retry on DNS/network errors, not on context cancellation.
 			if ctx.Err() != nil {
-				return "", 0, err
+				return nil, err
 			}
 			if isTransientNetError(err) && attempt < len(delays)-1 {
 				continue // retry
 			}
-			return "", 0, err
+			return nil, err
 		}
-		resp.Body.Close()
-		return resp.Request.URL.String(), resp.StatusCode, nil
+		return resp, nil
 	}
-	return "", 0, lastErr
+	return nil, lastErr
 }
 
 // isTransientNetError returns true for DNS resolution failures and connection

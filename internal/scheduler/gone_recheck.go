@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // gone_recheck.go — v0.29.7: the periodic re-verification of the gone
-// cohort. prelim's 404/410 sideline stamps repo_gone_at and DELETES the
+// cohort. prelim's 404/410/451 sideline stamps repo_gone_at and DELETES the
 // queue row, and the scheduler only ever visits queued repositories —
 // so until this ticker existed, a repository that was made private and
 // later public again stayed "gone" until an operator ran
@@ -14,7 +14,7 @@
 //
 //   - DEFINITIVE 2xx  → ResurrectRepo (clear the stamp + re-enqueue,
 //     one transaction).
-//   - DEFINITIVE 404/410 → still gone; stamp the check.
+//   - DEFINITIVE 404/410/451 → still gone; stamp the check.
 //   - anything else — an indeterminate HTTP status (403/429/5xx,
 //     unresolved 3xx) OR a transport error after the probe's own four
 //     attempts — → still gone; stamp the check anyway. The row was
@@ -36,11 +36,12 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"net/http"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // goneRecheckTick is how often the scheduler looks for due rows. The
@@ -113,7 +114,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		"recheck_every", s.cfg.Collection.GoneRepoRecheckInterval())
 	started := time.Now()
 
-	var resurrected, stillGone, indeterminate, unreachable, failed int
+	var resurrected, stillGone, indeterminate, unreachable, failed, refused int
 	stampChecked := func(c db.GoneProbeCandidate) {
 		if err := s.store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil && !errors.Is(err, context.Canceled) {
 			failed++
@@ -124,18 +125,39 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// A gone row whose URL carries credentials is not probed (the HEAD
+		// would send them as basic auth) — stamped checked so it waits out
+		// the cadence like an unreachable one, never every tick (round 2).
+		if uerr := platform.RefuseURLUserinfo(c.GitURL); uerr != nil {
+			s.logger.Error("gone recheck: repo URL carries credentials — not probed; correct repo_git",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", uerr)
+			refused++
+			stampChecked(c)
+			continue
+		}
 		_, status, perr := goneProbe(ctx, c.GitURL)
+		if errors.Is(perr, context.Canceled) {
+			return // shutdown mid-probe: classified before any failure arm (the ticker ratchet)
+		}
+		if errors.Is(perr, platform.ErrRedirectTargetUserinfo) {
+			// The stored URL is clean; the forge's redirect target carries
+			// credentials and was not followed (round 8). Not a transport
+			// failure, but the same verdict: gone stays, stamped, retried
+			// next cadence — counted with the unreachable.
+			unreachable++
+			s.logger.Warn("gone recheck: redirect target carries credentials — not followed; repo stays gone, retried next cadence",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
+			stampChecked(c)
+			continue
+		}
 		if perr != nil {
-			if errors.Is(perr, context.Canceled) {
-				return
-			}
 			// SR-16: a transport failure is not "no" — the gone state
 			// is untouched. The CHECK is stamped (see the header): the
 			// row is retried next cadence, never allowed to head every
 			// tick.
 			unreachable++
 			s.logger.Warn("gone recheck: probe failed — repo stays gone, retried next cadence",
-				"repo_id", c.RepoID, "url", c.GitURL, "error", perr)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
 			stampChecked(c)
 			continue
 		}
@@ -147,19 +169,19 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 				}
 				failed++
 				s.logger.Warn("gone recheck: failed to resurrect repo — nothing committed, next tick retries",
-					"repo_id", c.RepoID, "url", c.GitURL, "error", err)
+					"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", err)
 				continue
 			}
 			resurrected++
 			s.logger.Info("gone recheck: repository is reachable again — cleared gone state and re-enqueued",
-				"repo_id", c.RepoID, "url", c.GitURL)
-		case status == http.StatusNotFound || status == http.StatusGone:
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
+		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			stillGone++
 			stampChecked(c)
 		default:
 			indeterminate++
 			s.logger.Warn("gone recheck: indeterminate probe status — repo stays gone, retried next cadence",
-				"repo_id", c.RepoID, "url", c.GitURL, "status", status)
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
 			stampChecked(c)
 		}
 	}
@@ -167,7 +189,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 	elapsed := time.Since(started)
 	s.logger.Info("gone recheck cycle complete",
 		"candidates", len(cands), "resurrected", resurrected, "still_gone", stillGone,
-		"indeterminate", indeterminate, "unreachable", unreachable, "failed", failed,
+		"indeterminate", indeterminate, "unreachable", unreachable, "refused", refused, "failed", failed,
 		"elapsed", elapsed.Round(time.Second))
 	if overran, perHour := goneRecheckOverrun(len(cands), elapsed); overran {
 		// Observation-only (SR-7): nothing is cancelled or resized.

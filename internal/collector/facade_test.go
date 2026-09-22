@@ -183,9 +183,9 @@ func TestPlatformHost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// model.Platform is an int type; we cast here for simplicity.
-			got := platformHost(model.Platform(tt.plat))
+			got := PlatformHost(model.Platform(tt.plat))
 			if got != tt.want {
-				t.Errorf("platformHost(%d) = %q, want %q", tt.plat, got, tt.want)
+				t.Errorf("PlatformHost(%d) = %q, want %q", tt.plat, got, tt.want)
 			}
 		})
 	}

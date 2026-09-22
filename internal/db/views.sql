@@ -2,8 +2,8 @@
 --
 -- v0.27.115 (2026-08-20 schema-drift audit, finding 1): a view that
 -- lives in matviews.sql is STRUCTURALLY UNREACHABLE on a populated
--- fleet — CreateMaterializedViewsIfNotExist probes one sentinel
--- matview and skips the whole file when it exists; refresh-views and
+-- fleet — CreateMaterializedViewsIfNotExist skips a complete set and only
+-- reports a partial one (it probed one sentinel until v0.29.57); refresh-views and
 -- the weekly rebuild only REFRESH known matview names; and the deploy
 -- recipe is `aveloxis migrate --skip-views`. mailing_list_pr_equivalents
 -- was missing on production from v0.25.7 until this fix for exactly

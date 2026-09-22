@@ -62,11 +62,18 @@ If the URL redirects (repo was renamed or transferred):
 
 ### Dead repo sidelining
 
-If the URL returns 404 or 410 (deleted, made private, or DMCA'd):
+If the URL returns 404 or 410 (deleted or made private) or, since v0.29.58,
+451 (blocked for legal reasons — a DMCA takedown; GitHub answers 451 on the
+repository page and on every API endpoint, and the clone fails with
+"Repository unavailable due to DMCA takedown"):
 
 - The repo is marked `repo_archived = TRUE` and removed from the queue
 - All previously collected data is preserved in the database
-- No further API calls are wasted on this repo
+- No further API calls are wasted on this repo (before v0.29.58 a 451 was
+  not recognised: every endpoint of a blocked repository burned ten retries,
+  eleven minutes per job, every cycle)
+- The gone-repo recheck re-probes it on its cadence, so a lifted block or a
+  restored repository is re-enqueued on its own
 
 ### Duplicate checking
 
@@ -255,7 +262,7 @@ For each versioned dependency, queries its package registry to compare the curre
 |---|---|
 | npm | `https://registry.npmjs.org/{pkg}` |
 | PyPI | `https://pypi.org/pypi/{pkg}/json` |
-| Go proxy | `https://proxy.golang.org/{mod}/@v/list` |
+| Go proxy | `https://proxy.golang.org/{mod}/@latest` |
 | crates.io | `https://crates.io/api/v1/crates/{crate}` |
 | RubyGems | `https://rubygems.org/api/v1/versions/{gem}.json` |
 
@@ -343,7 +350,7 @@ In addition to per-repo collection, `aveloxis serve` runs these periodic tasks:
 | **Org refresh** | Every 4 hours | Re-fetches organization membership lists to discover new repos |
 | **Contributor breadth** | Every 15 minutes | Calls `GET /users/{login}/events` for up to 2,000 contributors per cycle (7-day jittered cooldown) to discover cross-repo activity. Results stored in `contributor_repo`. |
 | **Materialized view rebuild** | Weekly (Saturday) | Pauses all collection workers, refreshes all 20 matviews, resumes collection |
-| **Gone-repo recheck** | Hourly tick, each repo every `gone_repo_recheck_days` (28) | v0.29.7: re-probes up to 500 "gone" (404/410-sidelined, dequeued) repositories per tick with an unauthenticated `HEAD`; a definitive 2xx clears the gone state and re-enqueues the repo. `gone_repo_recheck_disabled: true` switches it off. |
+| **Gone-repo recheck** | Hourly tick, each repo every `gone_repo_recheck_days` (28) | v0.29.7: re-probes up to 500 "gone" (404/410/451-sidelined, dequeued) repositories per tick with an unauthenticated `HEAD`; a definitive 2xx clears the gone state and re-enqueues the repo. `gone_repo_recheck_disabled: true` switches it off. |
 
 ---
 

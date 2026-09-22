@@ -44,6 +44,11 @@ type Options struct {
 	TrustedProxy   string   // peer IP whose X-Forwarded-For is believed
 	RequireAuth    bool     // v0.27.1: gate all data endpoints behind Bearer sessions
 
+	// GitHubAPIBase is github.base_url — the host an org registered through
+	// the portal must be on (db.ErrOrgOffGitHubHost); empty means public
+	// GitHub (v0.29.57 round 2).
+	GitHubAPIBase string
+
 	// Mailer carries the transactional mailer for the v0.27.20
 	// add-request notifications (submission → operator, decision →
 	// requester). nil = notifications silently skipped, matching the

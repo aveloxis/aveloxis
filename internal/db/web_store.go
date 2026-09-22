@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // GetUserEmail returns the email column for the given user_id.
@@ -493,7 +495,7 @@ func (s *PostgresStore) IsOrgRegisteredAnywhere(ctx context.Context, orgURL stri
 // already tracked and its future repos already auto-enqueue via the
 // existing registration, so this branch adds no new enqueue
 // reachability.
-func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID int64, orgURL string) (OrgAddOutcome, error) {
+func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID int64, orgURL, ghAPIBase string) (OrgAddOutcome, error) {
 	var out OrgAddOutcome
 	if err := s.verifyGroupOwned(ctx, userID, groupID); err != nil {
 		return out, err
@@ -522,6 +524,19 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 	}
 	if len(orgURL) > MaxAddURLBytes {
 		return out, ErrURLTooLong
+	}
+	// An org URL is stored, shown and enumerated; credentials in it are
+	// refused like a repo URL's (v0.29.57, review 5261384568).
+	if err := platform.RefuseURLUserinfo(orgURL); err != nil {
+		return out, err
+	}
+	// The host gate, before the admin/non-admin split so neither path can
+	// register or pend an org the deployment cannot enumerate; the same
+	// label registerApprovedOrg will store decides it (SR-17/SR-18).
+	if _, platformName := parseOrgURLMeta(orgURL); true {
+		if err := orgRegistrable(platformName, orgURL, ghAPIBase); err != nil {
+			return out, err
+		}
 	}
 	isAdmin, _ := s.IsUserAdmin(ctx, userID)
 	if !isAdmin {
@@ -555,7 +570,7 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 		if err != nil {
 			return out, err
 		}
-		if _, err := registerApprovedOrg(ctx, tx, AddRequest{UserID: userID, GroupID: groupID, OrgURL: orgURL}); err != nil {
+		if _, err := registerApprovedOrg(ctx, tx, AddRequest{UserID: userID, GroupID: groupID, OrgURL: orgURL}, ghAPIBase); err != nil {
 			return out, err
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -573,7 +588,7 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 		return out, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := registerApprovedOrg(ctx, tx, AddRequest{UserID: userID, GroupID: groupID, OrgURL: orgURL}); err != nil {
+	if _, err := registerApprovedOrg(ctx, tx, AddRequest{UserID: userID, GroupID: groupID, OrgURL: orgURL}, ghAPIBase); err != nil {
 		return out, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -627,18 +642,32 @@ func (s *PostgresStore) GetOrgRequests(ctx context.Context) ([]GroupOrg, error) 
 // Orgs whose owning group is 'rejected' are EXCLUDED: the scan's
 // rejected gate skips them without ever stamping last_scanned, so
 // counting them here would re-fire the demand probe on every poll
-// tick forever.
-func (s *PostgresStore) HasNeverScannedOrgs(ctx context.Context) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM aveloxis_ops.user_org_requests o
-			JOIN aveloxis_ops.user_groups g USING (group_id)
-			WHERE o.last_scanned IS NULL
-			  AND COALESCE(g.status, 'approved') <> 'rejected'
-		)`).Scan(&exists)
-	return exists, err
+// tick forever. For the same reason only rows the scan will enumerate
+// count (OrgScanEligible: a "github" row on this deployment's GitHub host,
+// ghAPIBase): a row the host gate skips stays NULL forever too, and a
+// GitLab group — which the full pass stamps but nothing enumerates — is
+// not worth a demand scan that would only stamp it (v0.29.57 rounds 2–3).
+func (s *PostgresStore) HasNeverScannedOrgs(ctx context.Context, ghAPIBase string) (bool, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.platform, o.org_url
+		FROM aveloxis_ops.user_org_requests o
+		JOIN aveloxis_ops.user_groups g USING (group_id)
+		WHERE o.last_scanned IS NULL
+		  AND COALESCE(g.status, 'approved') <> 'rejected'`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var platformName, orgURL string
+		if err := rows.Scan(&platformName, &orgURL); err != nil {
+			return false, err
+		}
+		if OrgScanEligible(platformName, orgURL, ghAPIBase) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // GetGroupIDForOrgRequest returns the group_id for an org request.

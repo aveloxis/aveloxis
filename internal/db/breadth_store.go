@@ -68,10 +68,11 @@ const BreadthCooldownJitterFrac = 0.10
 // inserted, so contributors whose /users/{login}/events returned
 // empty stayed at the head of the queue forever and the worker
 // reprocessed the same dead-end users every cycle. The new query
-// filters by cntrb_last_breadth_at — which MarkBreadthAttempted
-// stamps after EVERY attempt regardless of events found — so
-// every contributor exits the queue after one attempt and
-// re-enters only when the cooldown expires.
+// filters by cntrb_last_breadth_at — which the worker stamps after
+// an attempt whether or not it found events — so a contributor exits
+// the queue after one attempt and re-enters only when the cooldown
+// expires (a circuit trip, an insert failure or a shutdown leaves it
+// for the next cycle).
 //
 // Filter on cntrb_deleted = 0 (since v0.20.2 logical merges) so
 // soft-deleted loser rows aren't re-attempted on every cycle.
@@ -117,9 +118,9 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 }
 
 // MarkBreadthAttempted stamps cntrb_last_breadth_at = NOW() for a
-// contributor. The breadth worker calls this AFTER every attempt
-// regardless of whether events were found. The unconditional
-// stamp is what makes the cooldown-based queue actually drain —
+// contributor. The breadth worker uses the batch form; the stamp, set
+// whether or not events were found, is what makes the cooldown-based
+// queue actually drain —
 // a contributor with zero public events still exits the
 // unprocessed-queue and won't reappear until the cooldown window
 // passes.
@@ -140,8 +141,8 @@ const breadthMarkChunkSize = 500
 
 // MarkBreadthAttemptedBatch stamps cntrb_last_breadth_at = NOW() for a
 // set of contributors in chunked multi-row UPDATEs (v0.27.8). Same
-// semantics as the single-row MarkBreadthAttempted — the unconditional
-// stamp is what drains the cooldown queue — but one statement per
+// semantics as the single-row MarkBreadthAttempted — the stamp, set
+// whether or not events were found, drains the cooldown queue — but one statement per
 // breadthMarkChunkSize IDs instead of one per contributor. The
 // single-row method is kept for compatibility.
 //

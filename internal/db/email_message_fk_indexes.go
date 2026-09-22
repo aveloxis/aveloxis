@@ -140,7 +140,7 @@ func emailMessageFKIndexesReadyFor(ctx context.Context, q lockQuerier, parent st
 			return err
 		}
 		if !ready {
-			return fmt.Errorf("%w: email_message(%s) has no valid index — run `aveloxis migrate --skip-views` first (v0.28.18 builds %s CONCURRENTLY); without it every %s consolidation sequential-scans email_message", ErrEmailMessageIndexesNotReady, idx.column, idx.indexName, parent)
+			return fmt.Errorf("%w: email_message(%s) has no valid index — run %s first (v0.28.18 builds %s CONCURRENTLY); without it every %s consolidation sequential-scans email_message", ErrEmailMessageIndexesNotReady, idx.column, DeployStepsAdvice, idx.indexName, parent)
 		}
 	}
 	if probed == 0 {

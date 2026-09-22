@@ -27,6 +27,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailer"
+	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
@@ -296,7 +297,7 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "add organizations one at a time — bulk paste is for repositories", http.StatusBadRequest)
 			return
 		}
-		out, oerr := s.store.AddOrgToGroup(r.Context(), info.UserID, groupID, urls[0])
+		out, oerr := s.store.AddOrgToGroup(r.Context(), info.UserID, groupID, urls[0], s.ghAPIBase)
 		err = oerr
 		if err == nil && !out.Registered {
 			resp["pending_approval"] = 1
@@ -326,10 +327,15 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
 			http.Error(w, err.Error(), http.StatusBadRequest)
-		case errors.Is(err, db.ErrURLTooLong), db.IsRejectedValue(err):
-			// A URL too long, or one the database refused; retrying cannot
-			// help (rounds 25 and 27).
-			http.Error(w, "a URL in the request is invalid or too long", http.StatusBadRequest)
+		case errors.Is(err, db.ErrOrgOffGitHubHost):
+			// The caller's URL, not the server: an org on another host is
+			// a different org (round 2 of the 5260961848 fixes).
+			http.Error(w, err.Error()+" ("+platform.GitHubWebHost(s.ghAPIBase)+")", http.StatusBadRequest)
+		case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo), db.IsRejectedValue(err):
+			// A URL too long, one carrying credentials (review 5261384568;
+			// the message must not echo it), or one the database refused;
+			// retrying cannot help (rounds 25 and 27).
+			http.Error(w, "a URL in the request is invalid, carries credentials or is too long", http.StatusBadRequest)
 		case errors.Is(err, db.ErrAddItemsFailed):
 			// The message holds counts only, no database text.
 			s.logger.Warn("group add: some repositories could not be added", "group_id", groupID, "user_id", info.UserID, "error", err)
@@ -475,7 +481,15 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		http.Error(w, "decision must be approve or reject", http.StatusBadRequest)
 		return
 	}
-	req, changed, err := s.store.DecideAddRequest(r.Context(), requestID, info.UserID, approve)
+	req, changed, err := s.store.DecideAddRequest(r.Context(), requestID, info.UserID, approve, s.ghAPIBase)
+	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) {
+		// A pending org that is not on this deployment's GitHub host cannot
+		// be approved: nothing would ever enumerate it (round 2).
+		// Or a legacy org URL carrying credentials (review 5267193512).
+		s.logger.Warn("admin add-request approval refused — the org cannot be registered", "request_id", requestID, "error", err)
+		http.Error(w, db.OrgApprovalRefusalAdvice(err, s.ghAPIBase), http.StatusConflict)
+		return
+	}
 	if err != nil {
 		s.logger.Warn("admin add-request decision failed", "request_id", requestID, "decision", r.PathValue("decision"), "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

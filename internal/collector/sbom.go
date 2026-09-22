@@ -134,6 +134,15 @@ func sbomGraphKey(eco, name string) string {
 	return db.LockfileGraphKey(eco, name)
 }
 
+// purlLessBOMRef is the CycloneDX bom-ref of a component that has no
+// purl: "aveloxis:" + graph key + "@" + version. The prefix cannot
+// collide with a purl ("pkg:") or the root ref, and the graph key is the
+// same identity SPDX hashes into its package id, so the two formats name
+// one package the same way (v0.29.58).
+func purlLessBOMRef(graphKey, version string) string {
+	return "aveloxis:" + graphKey + "@" + version
+}
+
 // sbomGraphIndex resolves edge endpoints WITH lockfile provenance —
 // v0.27.151 (round 30), the round-19 per-lockfile rule applied to the
 // SBOM side: a monorepo's lockfiles are independent resolved graphs,
@@ -361,67 +370,115 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	// side — the component's single Scope field must carry the
 	// strongest observation, not whichever manifest the walk met
 	// first (a dev-first order marked a RUNTIME dep "excluded").
-	cdxScopeFor := map[string]string{}
+	//
+	// v0.29.58 (review rounds 2 and 3): one component per graph key +
+	// version, the identity SPDX has always used (spdxPackageID). Two
+	// passes: the first folds every row of a package into one entry —
+	// scope by StrongerScope, the purl from whichever row carries one
+	// (a purl-less row and a purl-ful row of one package are the SAME
+	// package), the first license seen — and the second emits it. A
+	// package with no purl on any row gets an aveloxis: bom-ref
+	// (purlLessBOMRef), so it can carry edges and a transitive of the
+	// same package can dedupe against it.
+	type cdxDirect struct {
+		gk, version, name, purl, scope, license string
+	}
+	directByKeyVer := map[string]*cdxDirect{}
+	var directOrder []string
 	for _, dep := range deps {
-		if dep.Purl == "" {
+		gk := sbomGraphKey(dep.PackageManager, dep.Name)
+		kv := gk + "@" + dep.CurrentVersion
+		d, ok := directByKeyVer[kv]
+		if !ok {
+			d = &cdxDirect{gk: gk, version: dep.CurrentVersion, name: dep.Name, purl: dep.Purl, scope: dep.Type, license: dep.License}
+			directByKeyVer[kv] = d
+			directOrder = append(directOrder, kv)
 			continue
 		}
-		if cur, ok := cdxScopeFor[dep.Purl]; ok {
-			cdxScopeFor[dep.Purl] = model.StrongerScope(cur, dep.Type)
-		} else {
-			cdxScopeFor[dep.Purl] = dep.Type
+		d.scope = model.StrongerScope(d.scope, dep.Type)
+		if d.purl == "" {
+			d.purl = dep.Purl
+		}
+		if d.license == "" {
+			d.license = dep.License
 		}
 	}
 	// v0.27.151 (round 30): endpoint resolution goes through the
 	// per-lockfile sbomGraphIndex — see its doc for the fabrication
 	// class the old repo-wide maps produced.
 	gidx := newSBOMGraphIndex()
-
-	for _, dep := range deps {
-		if dep.Purl != "" && seenRefs[dep.Purl] {
-			continue
+	directRefByKeyVer := map[string]string{}
+	for _, kv := range directOrder {
+		d := directByKeyVer[kv]
+		ref := d.purl
+		if ref == "" {
+			ref = purlLessBOMRef(d.gk, d.version)
 		}
-		if dep.Purl != "" {
-			seenRefs[dep.Purl] = true
+		directRefByKeyVer[kv] = ref
+		if seenRefs[ref] {
+			continue // two graph keys folding to one purl: bom-ref must stay unique
 		}
+		seenRefs[ref] = true
 		comp := cdxComponent{
 			Type:    "library",
-			Name:    dep.Name,
-			Version: dep.CurrentVersion,
-			Purl:    dep.Purl,
-			BOMRef:  dep.Purl,
+			Name:    d.name,
+			Version: d.version,
+			Purl:    d.purl,
+			BOMRef:  ref,
 		}
 		// CycloneDX scope describes runtime inclusion (v0.27.46:
 		// mapping centralized in model — required for runtime,
 		// optional for optional/peer, excluded for dev/test/build).
-		// Round-34: folded across duplicates when a purl exists.
-		compScope := dep.Type
-		if dep.Purl != "" {
-			compScope = cdxScopeFor[dep.Purl]
-		}
-		comp.Scope = model.CycloneDXScopeForScope(compScope)
-		if dep.License != "" {
-			comp.Licenses = makeCDXLicenses(dep.License)
+		comp.Scope = model.CycloneDXScopeForScope(d.scope)
+		if d.license != "" {
+			comp.Licenses = makeCDXLicenses(d.license)
 		}
 		bom.Components = append(bom.Components, comp)
 
-		if dep.Purl != "" {
-			depRefs = append(depRefs, dep.Purl)
-			gidx.addDirect(sbomGraphKey(dep.PackageManager, dep.Name), dep.CurrentVersion, dep.Purl)
-		}
+		depRefs = append(depRefs, ref)
+		gidx.addDirect(d.gk, d.version, ref)
 	}
 
 	// v0.27.134: lockfile transitives join the component list. Purls
 	// come from purlForPackage — the SAME builder the vuln scan uses,
-	// so cross-kind dedup against direct components works by ref.
-	// Unmapped ecosystems yield "" and are honestly omitted (they can
-	// never be referenced by a resolvable graph edge either). NO
-	// license data — lockfiles don't carry it; absence beats guessing.
+	// so cross-kind dedup against direct components works by ref. A
+	// transitive with no valid purl (an unmapped ecosystem, or a
+	// namespace-required type without one, v0.29.58) is still a
+	// component: it takes the direct component's ref when the same
+	// package@version was declared directly, else an aveloxis: ref
+	// (purlLessBOMRef), and joins the graph index either way so its
+	// edges resolve. NO license data — lockfiles don't carry it;
+	// absence beats guessing.
 	var transRefs []string
 	if graph != nil {
 		for _, t := range graph.Transitives {
 			purl := purlForPackage(t.Ecosystem, t.PackageName, t.ResolvedVersion)
 			if purl == "" {
+				// v0.29.58 (review rounds 1 and 2): a package with no valid
+				// purl is still a component of the software — SPDX lists
+				// it without a locator, so CycloneDX does too. Its ref is
+				// the direct component's when the same package@version was
+				// declared directly (one identity, as SPDX has), else an
+				// aveloxis: ref; it joins the graph index so the edges that
+				// name it resolve. Never scanned (no purl to send).
+				gk := sbomGraphKey(t.Ecosystem, t.PackageName)
+				ref, declared := directRefByKeyVer[gk+"@"+t.ResolvedVersion]
+				if !declared {
+					ref = purlLessBOMRef(gk, t.ResolvedVersion)
+				}
+				gidx.addTransitive(t.LockfilePath, gk, t.ResolvedVersion, ref)
+				if seenRefs[ref] {
+					continue
+				}
+				seenRefs[ref] = true
+				bom.Components = append(bom.Components, cdxComponent{
+					Type:    "library",
+					Name:    t.PackageName,
+					Version: t.ResolvedVersion,
+					BOMRef:  ref,
+					Scope:   model.CycloneDXScopeForScope(t.Scope),
+				})
+				transRefs = append(transRefs, ref)
 				continue
 			}
 			gidx.addTransitive(t.LockfilePath, sbomGraphKey(t.Ecosystem, t.PackageName), t.ResolvedVersion, purl)

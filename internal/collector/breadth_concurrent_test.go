@@ -87,7 +87,7 @@ func TestBreadthFetchesRunConcurrently(t *testing.T) {
 	}
 	if len(store.attempted) != want {
 		t.Errorf("attempted = %d, want %d — every contributor must still be marked "+
-			"(the v0.20.17 unconditional stamp survives the concurrency restructure)",
+			"(the v0.20.17 stamp, set whether or not events were found, survives the concurrency restructure)",
 			len(store.attempted), want)
 	}
 }

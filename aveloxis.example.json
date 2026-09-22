@@ -5,7 +5,8 @@
     "user": "aveloxis",
     "password": "",
     "dbname": "aveloxis",
-    "sslmode": "prefer"
+    "sslmode": "prefer",
+    "pool_max_conns": 0
   },
   "github": {
     "api_keys": [],
@@ -33,8 +34,8 @@
     "workers": 12,
     "repo_clone_dir": "/data/aveloxis-repos",
     "force_full": false,
+    "materialized_views": true,
     "matview_rebuild_day": "saturday",
-    "matview_rebuild_on_startup": false,
     "matview_rebuild_skip_dm_aggregates": false,
     "activity_history_window_days": 180,
     "activity_history_interval_minutes": 1,

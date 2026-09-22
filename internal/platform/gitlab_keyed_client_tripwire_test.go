@@ -40,9 +40,12 @@ const (
 //
 // Allowed base URLs (every production site as of v0.29.11):
 //   - a string literal ("https://api.github.com");
-//   - the matching forge's config block: <x>.GitHub.BaseURL for a GitHub
-//     client, <x>.GitLab.BaseURL for a GitLab client (a BaseURL field filled
-//     from the database, or the other forge's, is not allowed);
+//   - the GitHub config accessor <x>.GitHub.GitHubAPIBase() for a GitHub
+//     client (the RAW <x>.GitHub.BaseURL field is refused since Copilot
+//     review 5261384568: empty when unset, it built hostless clients at seven
+//     sites; scripts/raw_github_base_test.go bans every read of it outside
+//     internal/config), <x>.GitLab.BaseURL for a GitLab client (a BaseURL
+//     field filled from the database, or the other forge's, is not allowed);
 //   - s.ghAPIBase on a GitHub client (the org scan's base, a literal default);
 //   - the baseURL parameter of github.New / gitlab.New themselves;
 //   - on a GitLab client, a variable assigned exactly once, from
@@ -89,7 +92,16 @@ func checkKeyedClients(fset *token.FileSet, f *ast.File) (examined int, findings
 				continue
 			}
 			body = d.Body
-			isConstructor = clientPkg && d.Recv == nil && d.Name.Name == "New"
+			// A constructor may take its host as a `baseURL` parameter:
+			// the forge clients always could, and since v0.29.57 the
+			// collector's breadth worker and commit resolver do too, because
+			// a hardcoded api.github.com there sent an Enterprise token to a
+			// third party. The parameter is only as trustworthy as the CALL
+			// SITES, which TestConstructorBaseArgumentsAreAllowed below
+			// checks with this same allowlist — widening one without the
+			// other would hand the rule away.
+			isConstructor = d.Recv == nil &&
+				(clientPkg && d.Name.Name == "New" || baseTakingKeyedConstructors[d.Name.Name] > 0)
 			for _, field := range d.Type.Params.List {
 				for _, n := range field.Names {
 					params[n.Name] = true
@@ -253,8 +265,19 @@ func allowedBase(e ast.Expr, forge string, isConstructor bool, params, fromHelpe
 			return forge == "github"
 		}
 		if x.Sel.Name == "BaseURL" {
+			// Only GitLab's raw field: GitHub's is empty when unset and
+			// goes through GitHubAPIBase() below (review 5261384568).
 			block, ok := x.X.(*ast.SelectorExpr)
-			return ok && ((forge == "github" && block.Sel.Name == "GitHub") || (forge == "gitlab" && block.Sel.Name == "GitLab"))
+			return ok && forge == "gitlab" && block.Sel.Name == "GitLab"
+		}
+	case *ast.CallExpr:
+		// cfg.GitHub.GitHubAPIBase() — the one accessor for "which GitHub
+		// host do this deployment's keys belong to" (v0.29.57). Safer than
+		// the raw BaseURL field below, which is empty when unset; this
+		// defaults to public GitHub. Accepted by NAME, so an arbitrary call
+		// still is not.
+		if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "GitHubAPIBase" {
+			return forge == "github"
 		}
 	case *ast.Ident:
 		if x.Name == "baseURL" && isConstructor && params[x.Name] {
@@ -273,6 +296,131 @@ func exprName(e ast.Expr) string {
 		return x.Name
 	}
 	return ""
+}
+
+// baseTakingKeyedConstructors are the constructors OUTSIDE the forge client
+// packages that take a deployment's host and build a KEYED client from it,
+// mapped to the 1-based position of their `baseURL` parameter. They exist
+// because hardcoding api.github.com in them sent an Enterprise token to a
+// third party (v0.29.57).
+//
+// The list is explicit rather than derived, because no syntactic test tells a
+// keyed forge client from a mailing-list archive host: NewPonyMail also takes
+// a base, and its host legitimately comes from stored data. Adding a
+// constructor here is how it joins the rule; the check below fails if a name
+// no longer exists, so the list cannot rot quietly.
+var baseTakingKeyedConstructors = map[string]int{
+	"NewBreadthWorker":  3,
+	"NewCommitResolver": 3,
+}
+
+// constructorBaseParam returns the registered constructors declared in this
+// file, with the 0-based argument position of their baseURL parameter, and
+// fails loudly if a registered name's parameter has moved.
+func constructorBaseParam(t *testing.T, f *ast.File) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, decl := range f.Decls {
+		d, ok := decl.(*ast.FuncDecl)
+		if !ok || d.Recv != nil {
+			continue
+		}
+		want, registered := baseTakingKeyedConstructors[d.Name.Name]
+		if !registered {
+			continue
+		}
+		idx := 0
+		found := -1
+		for _, field := range d.Type.Params.List {
+			for _, n := range field.Names {
+				if n.Name == "baseURL" {
+					found = idx
+				}
+				idx++
+			}
+		}
+		if found != want-1 {
+			t.Errorf("%s takes its baseURL at position %d, but the registry says %d — a keyed client's host moved and the call-site check would read the wrong argument", d.Name.Name, found+1, want)
+			continue
+		}
+		out[d.Name.Name] = found
+	}
+	return out
+}
+
+// TestConstructorBaseArgumentsAreAllowed is the other half of letting a
+// constructor take a `baseURL` parameter: wherever one is CALLED, the host it
+// is handed must itself be an allowed expression — a literal, the github
+// config block's BaseURL, or s.ghAPIBase.
+//
+// What it stops is a host taken from DATA travelling in through the new
+// parameter (the v0.29.11 incident, one package further out). It does NOT
+// stop re-hardcoding, because a literal is allowed here exactly as it is at a
+// direct NewHTTPClient call; that is the scheduler-side guard's job for the
+// scheduler, and a required constructor parameter's job everywhere else
+// (v0.29.57).
+func TestConstructorBaseArgumentsAreAllowed(t *testing.T) {
+	root := srctest.Root(t)
+	// Pass 1: which constructors take a base, and where.
+	takers := map[string]int{}
+	files := map[string]*ast.File{}
+	fsets := map[string]*token.FileSet{}
+	for _, dir := range []string{"cmd", "internal"} {
+		if err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			fset := token.NewFileSet()
+			f, perr := parser.ParseFile(fset, path, nil, 0)
+			if perr != nil {
+				return perr
+			}
+			files[path], fsets[path] = f, fset
+			for name, idx := range constructorBaseParam(t, f) {
+				takers[name] = idx
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(takers) != len(baseTakingKeyedConstructors) {
+		t.Fatalf("found %d of the %d registered base-taking constructors: %v — a registered name that no longer exists leaves its call sites unchecked", len(takers), len(baseTakingKeyedConstructors), takers)
+	}
+
+	// Pass 2: every call to one of them.
+	checked := 0
+	for path, f := range files {
+		rel, _ := filepath.Rel(root, path)
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name := ""
+			switch fn := call.Fun.(type) {
+			case *ast.Ident:
+				name = fn.Name
+			case *ast.SelectorExpr:
+				name = fn.Sel.Name
+			}
+			idx, ok := takers[name]
+			if !ok || idx >= len(call.Args) {
+				return true
+			}
+			checked++
+			// forge is "github" here: every current taker is a GitHub
+			// client. A GitLab one would need its own arm.
+			if !allowedBase(call.Args[idx], "github", false, nil, nil, nil) {
+				pos := fsets[path].Position(call.Pos())
+				t.Errorf("%s:%d: %s is handed a host that is not a literal, cfg.GitHub.GitHubAPIBase() or s.ghAPIBase — a constructor's baseURL parameter is only as safe as what callers put in it (the raw cfg.GitHub.BaseURL is empty when unset)", rel, pos.Line, name)
+			}
+			return true
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no call to a base-taking constructor was examined — the rule is guarding nothing")
+	}
 }
 
 // TestKeyedClientBaseURLAllowlist — v0.29.11 tripwire over cmd/ and
@@ -327,7 +475,8 @@ func TestCheckKeyedClientsFixtures(t *testing.T) {
 		// Allowed shapes.
 		{name: "literal GitHub base", body: `platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)`, wantExamined: 1},
 		{name: "config GitLab BaseURL on a GitLab client", body: `gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)`, wantExamined: 1},
-		{name: "config GitHub BaseURL via an aliased import", body: `gh.New(cfg.GitHub.BaseURL, ghKeys, logger)`, wantExamined: 1},
+		{name: "config GitHub accessor via an aliased import", body: `gh.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)`, wantExamined: 1},
+		{name: "config GitHub accessor on NewHTTPClient", body: `platform.NewHTTPClient(cfg.GitHub.GitHubAPIBase(), ghKeys, logger, platform.AuthGitHub)`, wantExamined: 1},
 		{name: "org scan base", body: `platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)`, wantExamined: 1},
 		{name: "helper result", body: "apiBase, ok := platform.GitLabAPIBaseForHost(cfg.GitLab.BaseURL, host)\n_ = ok\nplatform.NewHTTPClient(apiBase, glKeys, logger, platform.AuthGitLab)", wantExamined: 1},
 		{name: "GitHub client with a keys parameter", src: "package p\n\n" + imports + "func resolver(keys *platform.KeyPool) {\n\tplatform.NewHTTPClient(\"https://api.github.com\", keys, nil, platform.AuthGitHub)\n}\n", wantExamined: 1},
@@ -350,7 +499,11 @@ func TestCheckKeyedClientsFixtures(t *testing.T) {
 		{name: "GitHub pool to a GitLab client", body: `platform.NewHTTPClient(cfg.GitLab.BaseURL, s.ghKeys, logger, platform.AuthGitLab)`, wantExamined: 1, wantFindings: 1},
 		{name: "GitHub pool under another name to a GitLab client", body: "keys := s.ghKeys\nplatform.NewHTTPClient(cfg.GitLab.BaseURL, keys, logger, platform.AuthGitLab)", wantExamined: 1, wantFindings: 1},
 		{name: "pool parameter on a GitLab client outside gitlab.New", src: "package p\n\n" + imports + "func glClient(keys *platform.KeyPool) {\n\tplatform.NewHTTPClient(cfg.GitLab.BaseURL, keys, nil, platform.AuthGitLab)\n}\n", wantExamined: 1, wantFindings: 1},
-		{name: "GitLab pool to a GitHub client", body: `gh.New(cfg.GitHub.BaseURL, glKeys, logger)`, wantExamined: 1, wantFindings: 1},
+		{name: "GitLab pool to a GitHub client", body: `gh.New(cfg.GitHub.GitHubAPIBase(), glKeys, logger)`, wantExamined: 1, wantFindings: 1},
+		// Review 5261384568: the raw GitHub field is empty when unset and
+		// built hostless clients at seven sites; only the accessor is allowed.
+		{name: "raw config GitHub BaseURL", body: `gh.New(cfg.GitHub.BaseURL, ghKeys, logger)`, wantExamined: 1, wantFindings: 1},
+		{name: "raw config GitHub BaseURL on NewHTTPClient", body: `platform.NewHTTPClient(cfg.GitHub.BaseURL, ghKeys, logger, platform.AuthGitHub)`, wantExamined: 1, wantFindings: 1},
 		{name: "both wrong at once", body: `platform.NewHTTPClient("https://"+glHost+"/api/v4", s.ghKeys, s.logger, platform.AuthGitLab)`, wantExamined: 1, wantFindings: 2},
 		{name: "auth style in a variable (the incident, restyled)", body: "style := platform.AuthGitLab\nplatform.NewHTTPClient(\"https://\"+glHost+\"/api/v4\", s.ghKeys, s.logger, style)", wantExamined: 1, wantFindings: 1},
 		{name: "bare style identifier outside package platform", body: `platform.NewHTTPClient(cfg.GitLab.BaseURL, glKeys, logger, AuthGitLab)`, wantExamined: 1, wantFindings: 1},

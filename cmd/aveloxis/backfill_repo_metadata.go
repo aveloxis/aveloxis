@@ -86,7 +86,7 @@ Resumable: on interruption, re-run with --after-repo-id <last logged id>.`,
 			if err != nil {
 				return fmt.Errorf("loading API keys: %w", err)
 			}
-			ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+			ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 			glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 			return runBackfillRepoMetadata(ctx, store, ghClient, glClient, logger, limit, afterRepoID, workers)

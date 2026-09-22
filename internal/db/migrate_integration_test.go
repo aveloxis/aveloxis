@@ -40,9 +40,9 @@ package db
 //   AVELOXIS_TEST_DB="postgres://postgres:test@localhost:5433/aveloxis_test?sslmode=disable" \
 //     go test ./internal/db/ -run TestRunMigrationsOnFreshDB -v
 //
-// The Docker container is empty Postgres; the test owns the entire
-// DB and is destructive (it CREATEs the aveloxis_* schemas and all
-// tables). Don't point AVELOXIS_TEST_DB at a DB you care about.
+// AVELOXIS_TEST_DB names the BASE database (v0.29.57, internal/testdb):
+// these tests create an empty database of their own next to it, migrate
+// that, and drop it, so the role needs CREATEDB.
 //
 // # CI
 //
@@ -57,6 +57,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/testdb"
 )
 
 // TestRunMigrationsOnFreshDB is the v0.21.1 safety net. It runs the
@@ -64,27 +66,18 @@ import (
 // errors. Any column-name typo / wrong-schema-prefix / SQL syntax
 // error in any migration step fails here.
 //
-// Pre-test state: DB must exist and be reachable, but the
-// aveloxis_data / aveloxis_ops / aveloxis_scan / aveloxis_augur_data
-// schemas can be either absent (fresh DB) or pre-migrated (rerun on
-// the same DB). Both states are handled — schema.sql uses
-// CREATE SCHEMA IF NOT EXISTS / CREATE TABLE IF NOT EXISTS
-// throughout, and every migration step is idempotent.
-//
-// Post-test state: the DB has the full aveloxis schema applied.
-// This is intentionally NOT cleaned up because (a) the CI container
-// is ephemeral and gets discarded after the job, and (b) on local
-// dev, leaving the schema in place lets a subsequent unit-tier
-// integration test (e.g. queue_realign_integration_test.go) reuse
-// the same DB without re-migrating.
+// It migrates a database created empty for it (Copilot on PR #210): the
+// package's own database is migrated before any test runs, so migrating
+// that one again would never build the schema from scratch.
 func TestRunMigrationsOnFreshDB(t *testing.T) {
-	dsn := os.Getenv("AVELOXIS_TEST_DB")
-	if dsn == "" {
+	base := os.Getenv("AVELOXIS_TEST_DB")
+	if base == "" {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test. See test docstring for setup.")
 	}
 
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dsn := emptyTestDatabase(t, ctx, base)
 
 	store, err := NewPostgresStore(ctx, dsn, logger)
 	if err != nil {
@@ -92,11 +85,23 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
+	var schemas int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'aveloxis\_%'`).Scan(&schemas); err != nil {
+		t.Fatal(err)
+	}
+	if schemas != 0 {
+		t.Fatalf("the database this test migrates already has %d aveloxis schemas — it is not fresh, so SQL that fails only while building the schema from scratch would pass", schemas)
+	}
+
 	// Run migrations. Any non-nil return means at least one
 	// schema-changing step failed. The error message includes
 	// errors.Join of every collected failure, so the test failure
 	// surfaces the full list — operators don't have to fix
 	// failures one at a time.
+	// This test checks that every view builds on an EMPTY database, so it
+	// asks for them: since v0.29.57 materialized views are optional and a
+	// store nobody configured builds none.
+	store.SetMatviewMode(MatviewsRebuild)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations on fresh DB failed — this is exactly the v0.21.0 bug shape (wrong column / table / schema name) that source-contract tests can't catch. Error:\n%v", err)
 	}
@@ -121,6 +126,46 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 	if !exists {
 		t.Error("aveloxis_data.repos.scancode_last_run does not exist after RunMigrations — the v0.21.0 column adds either silently no-op'd or the migration ran against a different DB than the test verifies.")
 	}
+
+	// Every materialized view was built. The view block only WARNs when a
+	// view fails and RunMigrations still returns nil, so without this a
+	// broken view definition would pass.
+	built := map[string]bool{}
+	rows, err := store.pool.Query(ctx, `SELECT schemaname || '.' || matviewname FROM pg_matviews`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		built[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range matviewNames {
+		if !built[name] {
+			t.Errorf("materialized view %s was not built on a fresh database — see the migrate's \"materialized view creation had errors\" WARN", name)
+		}
+	}
+}
+
+// emptyTestDatabase creates a database next to the package's own, empty,
+// and drops it when the test ends.
+func emptyTestDatabase(t *testing.T, ctx context.Context, base string) string {
+	t.Helper()
+	d, err := testdb.Create(ctx, base)
+	if err != nil {
+		t.Fatalf("creating an empty database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := d.Drop(context.Background()); err != nil {
+			t.Errorf("dropping %s: %v", d.Name, err)
+		}
+	})
+	return d.DSN
 }
 
 // TestRunMigrationsIsIdempotent runs RunMigrations twice on the
@@ -136,13 +181,14 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 //   - A CREATE INDEX CONCURRENTLY missing its IF NOT EXISTS and
 //     failing the second run with "relation already exists."
 func TestRunMigrationsIsIdempotent(t *testing.T) {
-	dsn := os.Getenv("AVELOXIS_TEST_DB")
-	if dsn == "" {
+	base := os.Getenv("AVELOXIS_TEST_DB")
+	if base == "" {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dsn := emptyTestDatabase(t, ctx, base) // first run builds from scratch
 
 	store, err := NewPostgresStore(ctx, dsn, logger)
 	if err != nil {
@@ -150,6 +196,12 @@ func TestRunMigrationsIsIdempotent(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
+	// matviews.sql is part of what must be safe to run twice, so this
+	// test asks for the views: since v0.29.57 they are optional and a
+	// store nobody configured builds none, which would have left the
+	// view batch out of the idempotency contract entirely (Copilot
+	// review 5260880711).
+	store.SetMatviewMode(MatviewsRebuild)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("first RunMigrations: %v", err)
 	}

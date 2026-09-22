@@ -93,7 +93,6 @@ func sbConnect(t *testing.T) (*PostgresStore, context.Context) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 	return store, ctx
 }

@@ -31,7 +31,7 @@ func (r RepoURL) APIURL() string {
 	switch r.Platform {
 	case model.PlatformGitHub:
 		if r.Host == "github.com" {
-			return "https://api.github.com"
+			return PublicGitHubAPIBase
 		}
 		// GitHub Enterprise
 		return fmt.Sprintf("https://%s/api/v3", r.Host)
@@ -66,6 +66,11 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 	rawURL = strings.TrimSuffix(rawURL, "/")
 	rawURL = strings.TrimSuffix(rawURL, ".git")
 
+	// Before url.Parse: its error quotes the input, credential included, and
+	// callers log that error (Copilot review 5267193512).
+	if uerr := RefuseURLUserinfo(rawURL); uerr != nil {
+		return RepoURL{}, fmt.Errorf("%w: %w", ErrInvalidRepoURL, uerr)
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return RepoURL{}, fmt.Errorf("%w: %v", ErrInvalidRepoURL, err)
@@ -174,6 +179,16 @@ func ParseOrgURL(rawURL string) (host, orgName string, err error) {
 	}
 	if !strings.Contains(rawURL, "://") {
 		rawURL = "https://" + rawURL
+	}
+	// Refused before url.Parse (whose error quotes the input): this is the
+	// ONE parser behind OrgOnGitHubHost, so both periodic org refreshes and
+	// the eligibility predicate refuse a registered URL carrying credentials
+	// — a row written before the refusal existed was still enumerated by
+	// name every pass (round 3 on the 5267x fixes). The store refuses such a
+	// URL earlier, through RefuseURLUserinfo itself, ahead of orgRegistrable,
+	// whose parse-failure arm deliberately passes.
+	if uerr := RefuseURLUserinfo(rawURL); uerr != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrInvalidRepoURL, uerr)
 	}
 	u, perr := url.Parse(rawURL)
 	if perr != nil {

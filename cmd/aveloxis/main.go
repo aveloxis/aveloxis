@@ -46,6 +46,15 @@ import (
 var Version = db.ToolVersion
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the whole command tree. It is separate from main so tests
+// can inspect the tree exactly as `--help` renders it
+// (TestBoolFlagUsageRendersNoValueName).
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "aveloxis",
 		Short: "Open source community health data collection",
@@ -96,6 +105,7 @@ func main() {
 		testMailCmd(&cfgPath),
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
+		healLibyearCmd(&cfgPath),
 		healCollectionGapsCmd(&cfgPath),
 		markGoneReposCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),
@@ -108,10 +118,7 @@ func main() {
 		backfillRepoMetadataCmd(&cfgPath),
 		rewalkWhitespaceCmd(&cfgPath),
 	)
-
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return root
 }
 
 // --- serve: long-running scheduler + monitor ---
@@ -186,10 +193,13 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Scale the database connection pool to the worker count so collection
-	// workers don't starve each other for connections. Each worker makes many
-	// concurrent DB calls (inserts, queries) during collection phases.
-	poolSize := max(int32(workers+15), 20)
+	// v0.29.58: the pool is sized from the scheduler's connection DEMAND
+	// (every goroutine class, scheduler.PoolDemand) capped by the server's
+	// budget, or by database.pool_max_conns; the decision is logged with
+	// its derivation. The old workers+15 literal ignored the distribution
+	// and mailing-list workers and every background loop, and the health
+	// probe reported the saturated pool as a database outage.
+	poolSize := decideServePool(ctx, cfg, workers, logger).Size
 	// application_name = "aveloxis-serve" so post-stop verification
 	// (and operators reading pg_stat_activity) can filter per-process.
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionStringWithAppName(db.AppNameForHost(db.ServeApplicationName)), logger, poolSize)
@@ -204,6 +214,14 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	// remains the full-run self-heal path and never fast-paths.
 	store.SetMigrateFastPath(true)
 	store.SetAllowSecondServe(allowSecondServe)
+	// serve builds the views when none exist, leaves a complete set alone,
+	// and reports a partial set at ERROR without rebuilding it
+	// (MatviewsIfMissing); a changed definition, or a view added to an
+	// existing set, is a plain `aveloxis migrate`'s job. A deployment with
+	// materialized_views off gets none (v0.29.57).
+	if cfg.Collection.MaterializedViewsValue() {
+		store.SetMatviewMode(db.MatviewsIfMissing)
+	}
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}
@@ -212,12 +230,10 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+	ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	// Start scheduler.
-	store.SetMatviewOnStartup(cfg.Collection.MatviewRebuildOnStartup)
-
 	sched := scheduler.NewWithKeys(store, ghClient, glClient, ghKeys, glKeys, logger, scheduler.Config{
 		Workers: workers,
 		// The whole aveloxis.json collection block, consumed directly —
@@ -230,6 +246,11 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 		// The gitlab block: its base_url names the one instance the
 		// GitLab keys (glKeys, above) may be sent to (v0.29.11).
 		GitLab: &cfg.GitLab,
+		// The github block, for the same reason (v0.29.57): its base_url
+		// names the host ghKeys may be sent to. Without it the scheduler's
+		// own clients were hardcoded to api.github.com, so an Enterprise
+		// deployment shipped its token to public GitHub.
+		GitHub: &cfg.GitHub,
 	})
 	// v0.27.12: operator vulnerability digest. Must be injected
 	// BEFORE Run starts (the ticker gate is evaluated at startup).
@@ -349,7 +370,7 @@ func warnAPIPortMismatch(cfg *config.Config, logger *slog.Logger) {
 		return
 	}
 	logger.Warn("web.api_internal_url points at a loopback port the API is not listening on — /api/* will 502 and every chart in the GUI will be empty",
-		"api_internal_url", cfg.Web.APIInternalURL,
+		"api_internal_url", platform.RedactURLUserinfo(cfg.Web.APIInternalURL),
 		"api_addr", cfg.API.AddrOrDefault(),
 		"fix", "set web.api_internal_url to http://127.0.0.1:"+apiPort)
 }
@@ -452,13 +473,13 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	if err != nil {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
-	ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+	ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 	glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 	for _, repoURL := range repoURLs {
 		client, owner, repo, err := collector.ClientForRepo(repoURL, ghClient, glClient)
 		if err != nil {
-			logger.Error("skipping repo", "url", repoURL, "error", err)
+			logger.Error("skipping repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 
@@ -469,7 +490,7 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			Owner:    owner,
 		})
 		if err != nil {
-			logger.Error("failed to upsert repo", "url", repoURL, "error", err)
+			logger.Error("failed to upsert repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 
@@ -484,22 +505,24 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		var since time.Time
 		if !full {
 			if lc, lcErr := store.GetRepoLastCollected(ctx, repoID); lcErr != nil {
-				logger.Warn("last_collected lookup failed — collecting FULL", "url", repoURL, "error", lcErr)
+				logger.Warn("last_collected lookup failed — collecting FULL", "url", platform.RedactURLUserinfo(repoURL), "error", lcErr)
 			} else if lc != nil {
 				since = *lc
 			}
 		}
 
-		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.Collection.RepoCloneDir).
+		// The same host the client above was built from: commit resolution
+		// builds its own clients from these keys (v0.29.57).
+		coll := collector.NewWithOptions(client, store, logger, ghKeys, cfg.GitHub.GitHubAPIBase(), cfg.Collection.RepoCloneDir).
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
 		if err != nil {
-			logger.Error("collection failed", "url", repoURL, "error", err)
+			logger.Error("collection failed", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 
-		logger.Info("done", "url", repoURL,
+		logger.Info("done", "url", platform.RedactURLUserinfo(repoURL),
 			"issues", result.Issues, "prs", result.PullRequests,
 			"messages", result.Messages, "events", result.Events,
 			"releases", result.Releases, "contributors", result.Contributors,
@@ -547,8 +570,13 @@ and only repos that still exist are imported.`,
 }
 
 // isOrgURL checks if a URL points to a GitHub org or GitLab group (not a specific repo).
-// Returns (isOrg, host, orgName, platform).
-func isOrgURL(rawURL string) (bool, string, string, model.Platform) {
+// Returns (isOrg, host, orgName, platform). ghAPIBase is the deployment's
+// GitHub API base (github.base_url): an org is a GitHub org only when it lives
+// on that base's web host (platform.IsGitHubHost), because those are the only
+// orgs the deployment's keys can enumerate (v0.29.57, Copilot review
+// 5260961848 named the web scan's literal "github.com"; this is its CLI
+// sibling).
+func isOrgURL(rawURL, ghAPIBase string) (bool, string, string, model.Platform) {
 	rawURL = strings.TrimSpace(rawURL)
 	rawURL = strings.TrimSuffix(rawURL, "/")
 	u, err := url.Parse(rawURL)
@@ -559,8 +587,9 @@ func isOrgURL(rawURL string) (bool, string, string, model.Platform) {
 	path := strings.Trim(u.Path, "/")
 	parts := strings.Split(path, "/")
 
-	// GitHub org: https://github.com/chaoss (exactly 1 path segment)
-	if (host == "github.com") && len(parts) == 1 && parts[0] != "" {
+	// GitHub org: https://github.com/chaoss (exactly 1 path segment) on the
+	// deployment's GitHub host.
+	if platform.IsGitHubHost(host, ghAPIBase) && len(parts) == 1 && parts[0] != "" {
 		return true, host, parts[0], model.PlatformGitHub
 	}
 	// GitLab group: could be 1+ segments, but we only treat it as a group
@@ -590,9 +619,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 		return fmt.Errorf("loading API keys: %w", err)
 	}
 
+	refusedURLs := 0
 	for _, repoURL := range repoURLs {
 		// Check if this is an org/group URL instead of a repo URL.
-		if isOrg, host, orgName, plat := isOrgURL(repoURL); isOrg {
+		if isOrg, host, orgName, plat := isOrgURL(repoURL, cfg.GitHub.GitHubAPIBase()); isOrg {
 			logger.Info("expanding organization", "org", orgName, "platform", plat)
 
 			// Create a repo_group for this org so the refresh job can re-scan it later.
@@ -601,6 +631,14 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 				rgType = "gitlab_group"
 			}
 			groupID, err := store.UpsertRepoGroup(ctx, orgName, rgType, repoURL)
+			if errors.Is(err, platform.ErrURLUserinfo) {
+				// The store refuses a URL carrying credentials (round 6);
+				// nothing of this org is expanded, and the run exits nonzero.
+				logger.Error("organization not added: its URL carries credentials — remove them and rerun",
+					"org", orgName, "url", platform.RedactURLUserinfo(repoURL), "error", err)
+				refusedURLs++
+				continue
+			}
 			if err != nil {
 				logger.Warn("failed to create repo group for org", "org", orgName, "error", err)
 			}
@@ -608,7 +646,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			var repos []orgRepo
 			switch plat {
 			case model.PlatformGitHub:
-				ghHTTP := platform.NewHTTPClient("https://api.github.com", ghKeys, logger, platform.AuthGitHub)
+				// The configured host, not a literal: these are the
+				// deployment's keys, and add-repo on an org is the CLI half
+				// of the same leak the scheduler's clients had (v0.29.57).
+				ghHTTP := platform.NewHTTPClient(cfg.GitHub.GitHubAPIBase(), ghKeys, logger, platform.AuthGitHub)
 				repos, err = listGitHubOrgRepos(ctx, ghHTTP, orgName)
 			case model.PlatformGitLab:
 				// v0.29.11: GitLab keys only ever go to the configured
@@ -638,7 +679,7 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			// runs once per scan.
 			userGroupIDs, ugErr := store.GetUserGroupIDsForOrgURL(ctx, repoURL)
 			if ugErr != nil {
-				logger.Warn("failed to look up user_groups for org", "org_url", repoURL, "error", ugErr)
+				logger.Warn("failed to look up user_groups for org", "org_url", platform.RedactURLUserinfo(repoURL), "error", ugErr)
 			}
 			for _, r := range repos {
 				addOneRepoWithGroup(ctx, store, logger, r, plat, priority, groupID)
@@ -661,11 +702,22 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 
 		// Regular repo URL.
 		parsed, err := platform.ParseRepoURL(repoURL)
+		if errors.Is(err, platform.ErrURLUserinfo) {
+			// Same refusal as the organisation arm above, same exit (round 7:
+			// a refused repo URL exited 0 while a refused org URL did not).
+			logger.Error("repository not added: its URL carries credentials — remove them and rerun",
+				"url", platform.RedactURLUserinfo(repoURL), "error", err)
+			refusedURLs++
+			continue
+		}
 		if err != nil {
-			logger.Error("invalid URL", "url", repoURL, "error", err)
+			logger.Error("invalid URL", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
 		}
 		addOneRepo(ctx, store, logger, repoURL, parsed.Owner, parsed.Repo, parsed.Platform, priority)
+	}
+	if refusedURLs > 0 {
+		return fmt.Errorf("%d URL(s) carry credentials and were not added — remove them and rerun", refusedURLs)
 	}
 	return nil
 }
@@ -683,14 +735,14 @@ func addOneRepoWithGroup(ctx context.Context, store *db.PostgresStore, logger *s
 		PlatformID: r.ForgeID,
 	})
 	if err != nil {
-		logger.Error("failed to register repo", "url", r.URL, "error", err)
+		logger.Error("failed to register repo", "url", platform.RedactURLUserinfo(r.URL), "error", err)
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-		logger.Error("failed to enqueue repo", "url", r.URL, "error", err)
+		logger.Error("failed to enqueue repo", "url", platform.RedactURLUserinfo(r.URL), "error", err)
 		return
 	}
-	logger.Info("repo added to queue", "url", r.URL, "repo_id", repoID, "priority", priority)
+	logger.Info("repo added to queue", "url", platform.RedactURLUserinfo(r.URL), "repo_id", repoID, "priority", priority)
 }
 
 func addOneRepo(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoURL, owner, name string, plat model.Platform, priority int) {
@@ -701,14 +753,14 @@ func addOneRepo(ctx context.Context, store *db.PostgresStore, logger *slog.Logge
 		Owner:    owner,
 	})
 	if err != nil {
-		logger.Error("failed to register repo", "url", repoURL, "error", err)
+		logger.Error("failed to register repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 		return
 	}
 	if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-		logger.Error("failed to enqueue repo", "url", repoURL, "error", err)
+		logger.Error("failed to enqueue repo", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 		return
 	}
-	logger.Info("repo added to queue", "url", repoURL, "repo_id", repoID, "priority", priority)
+	logger.Info("repo added to queue", "url", platform.RedactURLUserinfo(repoURL), "repo_id", repoID, "priority", priority)
 }
 
 type orgRepo struct {
@@ -836,7 +888,7 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		// Parse the URL to determine platform and owner/repo.
 		parsed, err := platform.ParseRepoURL(ar.RepoGit)
 		if err != nil {
-			logger.Warn("skipping unparseable URL", "url", ar.RepoGit, "augur_repo_id", ar.RepoID, "error", err)
+			logger.Warn("skipping unparseable URL", "url", platform.RedactURLUserinfo(ar.RepoGit), "augur_repo_id", ar.RepoID, "error", err)
 			skipped++
 			continue
 		}
@@ -844,12 +896,12 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		// Verify the repo still exists on the forge with an HTTP HEAD.
 		exists, err := verifyRepoExists(ctx, httpClient, ar.RepoGit)
 		if err != nil {
-			logger.Warn("error verifying repo", "url", ar.RepoGit, "error", err)
+			logger.Warn("error verifying repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
 			failed++
 			continue
 		}
 		if !exists {
-			logger.Warn("repo no longer exists on forge, skipping", "url", ar.RepoGit)
+			logger.Warn("repo no longer exists on forge, skipping", "url", platform.RedactURLUserinfo(ar.RepoGit))
 			skipped++
 			continue
 		}
@@ -862,19 +914,19 @@ func runImportFromAugur(cfgPath string, priority int) error {
 			Owner:    parsed.Owner,
 		})
 		if err != nil {
-			logger.Error("failed to register repo", "url", ar.RepoGit, "error", err)
+			logger.Error("failed to register repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
 			failed++
 			continue
 		}
 
 		if err := store.EnqueueRepo(ctx, repoID, priority); err != nil {
-			logger.Error("failed to enqueue repo", "url", ar.RepoGit, "error", err)
+			logger.Error("failed to enqueue repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
 			failed++
 			continue
 		}
 
 		imported++
-		logger.Info("imported repo", "url", ar.RepoGit, "repo_id", repoID)
+		logger.Info("imported repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "repo_id", repoID)
 	}
 
 	logger.Info("import complete",
@@ -1036,7 +1088,7 @@ func runPrioritize(cfgPath, target string) error {
 		if err := store.PrioritizeRepo(ctx, repoID); err != nil {
 			return err
 		}
-		logger.Info("repo pushed to top of queue", "url", target, "repo_id", repoID)
+		logger.Info("repo pushed to top of queue", "url", platform.RedactURLUserinfo(target), "repo_id", repoID)
 		return nil
 	}
 
@@ -1099,7 +1151,7 @@ func runRecollect(cfgPath string, targets []string) error {
 	for _, target := range targets {
 		parsed, parseErr := platform.ParseRepoURL(target)
 		if parseErr != nil {
-			logger.Error("could not parse repo URL — skipping", "url", target, "error", parseErr)
+			logger.Error("could not parse repo URL — skipping", "url", platform.RedactURLUserinfo(target), "error", parseErr)
 			if firstErr == nil {
 				firstErr = parseErr
 			}
@@ -1114,21 +1166,21 @@ func runRecollect(cfgPath string, targets []string) error {
 			Owner:    parsed.Owner,
 		})
 		if err != nil {
-			logger.Error("failed to resolve repo_id — skipping", "url", target, "error", err)
+			logger.Error("failed to resolve repo_id — skipping", "url", platform.RedactURLUserinfo(target), "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
 		if err := store.SetForceFullCollect(ctx, repoID, true); err != nil {
-			logger.Error("failed to set force_full_collect — skipping", "url", target, "repo_id", repoID, "error", err)
+			logger.Error("failed to set force_full_collect — skipping", "url", platform.RedactURLUserinfo(target), "repo_id", repoID, "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
 		logger.Info("force_full_collect set — repo will be fully re-collected on next scheduler cycle",
-			"url", target, "repo_id", repoID)
+			"url", platform.RedactURLUserinfo(target), "repo_id", repoID)
 	}
 	return firstErr
 }
@@ -1141,14 +1193,16 @@ func migrateCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Run database schema migrations",
-		Long: `Runs the schema migrations and (by default) creates/refreshes
-materialized views used by 8Knot and analytics.
+		Long: `Runs the schema migrations and (by default) drops and re-creates
+the materialized views used by 8Knot and analytics.
 
 Use --skip-views to skip the materialized view block entirely. This is
 useful when you're iterating on a schema-error fix on a large database
-where the matview rebuild adds significant time per attempt — run a
-plain ` + "`aveloxis refresh-views`" + ` (or wait for the next scheduler
-tick) once the schema errors are resolved.
+where the matview rebuild adds significant time per attempt. Without it,
+every view is dropped and re-created from its definition — the only step
+that applies a changed definition. ` + "`aveloxis refresh-views`" + ` (and
+the weekly rebuild) refresh the data of views that already exist, under
+the definitions they already have.
 
 Use --no-wait to fail fast if another aveloxis migration is already in
 progress (rather than blocking on the advisory lock until the holder
@@ -1165,18 +1219,21 @@ running migrations.`,
 				return err
 			}
 			defer store.Close()
-			// The explicit migrate command always creates/refreshes views,
-			// unless --skip-views is passed.
-			store.SetMatviewSkip(skipViews)
-			if !skipViews {
-				store.SetMatviewOnStartup(true)
+			// The explicit migrate command drops and re-creates every view,
+			// which is the only path that applies a CHANGED definition —
+			// unless --skip-views is passed, or this deployment does not
+			// have materialized views at all (v0.29.57).
+			mode := db.MatviewsRebuild
+			if skipViews || !cfg.Collection.MaterializedViewsValue() {
+				mode = db.MatviewsOff
 			}
+			store.SetMatviewMode(mode)
 			store.SetMigrateNoWait(noWait)
 			return store.Migrate(ctx)
 		},
 	}
 	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
-		"skip materialized view creation/refresh (run `aveloxis refresh-views` separately when ready)")
+		"skip the materialized view block (a later plain 'aveloxis migrate' re-creates the views; 'aveloxis refresh-views' only refreshes existing ones)")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false,
 		"fail fast if another aveloxis migration is in progress (don't block on the advisory lock)")
 	return cmd
@@ -1187,7 +1244,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "refresh-views",
 		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long: `Refreshes all 20 materialized views used by 8Knot and other analytics tools. Views are also rebuilt automatically by aveloxis serve on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json).
+		Long: `Refreshes the data of the 20 materialized views used by 8Knot and other analytics tools — when this database has them. Materialized views are optional (collection.materialized_views, default true); on a database without them this command says so and does nothing. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
 
 --aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1200,6 +1257,11 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
+			// RefreshMaterializedViews itself reports a database that has no
+			// views, and it asks the database rather than the config — an
+			// operator who turned the knob off still HAS the views built
+			// before, and refusing to refresh those would be a silent no-op
+			// over real staleness (v0.29.57).
 			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
 			if !aggregates {
 				return viewErr // cobra prints it once; no second copy
@@ -2087,7 +2149,7 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config {
 // newWebServer builds `aveloxis web`'s server with its mailer attached.
 // TestProcessMailWiring checks the mailer it carries.
 func newWebServer(store *db.PostgresStore, cfg *config.Config, ghKeys *platform.KeyPool, logger *slog.Logger) *web.Server {
-	return web.New(store, cfg.Web, ghKeys, logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
+	return web.New(store, cfg.Web, ghKeys, cfg.GitHub.GitHubAPIBase(), logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
 }
 
 // apiOptions maps aveloxis.json onto `aveloxis api`'s server options.
@@ -2105,6 +2167,7 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		// the auto-approve limit for the portal repo-add endpoint.
 		Mailer:              mailer.New(mailerConfigFrom(cfg), logger),
 		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
+		GitHubAPIBase:       cfg.GitHub.GitHubAPIBase(),
 	}
 }
 

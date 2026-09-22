@@ -138,6 +138,24 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			}
 			logger.Info("schema stamp matches binary — skipping migrations (F13 fast path); run `aveloxis migrate` for a full pass",
 				"schema_version", v)
+			// The fast path skips the migration WALK. Whether this
+			// deployment HAS its materialized views is a different
+			// question, and the stamp cannot answer it: an operator who
+			// turns collection.materialized_views back on keeps the stamp
+			// they already had, so without this the setting would take
+			// effect only on a manual `aveloxis migrate` — while the
+			// config documents serve as creating the missing ones
+			// (v0.29.57, Copilot review 5260880711). One catalog query
+			// when the managed set is complete; an empty set is built; a
+			// partial set is reported, never rebuilt here (the
+			// MatviewsIfMissing contract). Applying a changed definition,
+			// or building a missing view into an existing set, is what
+			// `aveloxis migrate` is for and why it never fast-paths.
+			if pg.matviewMode != MatviewsOff {
+				if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
+					logger.Warn("materialized view creation had errors", "error", err)
+				}
+			}
 			return nil
 		}
 		// A serve whose binary missed the stamp is about to run the FULL
@@ -299,40 +317,47 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 	// EVERY migrate, unconditionally — including --skip-views. They
 	// cost nothing (no storage, no refresh, CREATE OR REPLACE), and
 	// this is the ONLY path that reaches a populated fleet: the matview
-	// block below is sentinel-gated or skipped, so a view stranded in
-	// matviews.sql never materializes on an existing installation
+	// block below skips a complete set and only REPORTS a partial one, so
+	// a view stranded in matviews.sql never materializes on an existing
+	// installation
 	// (mailing_list_pr_equivalents was missing on production from
 	// v0.25.7 until this fix). Runs after all stages so every base
 	// table + column the views reference exists.
 	execMigrationStep(ctx, pg, logger, &errs, "base-table views", viewsSQL)
 
-	// Create/update materialized views for 8Knot and analytics.
-	// Skipped by default on startup (can take minutes on large databases).
-	// Set collection.matview_rebuild_on_startup=true in aveloxis.json to enable,
-	// or run `aveloxis refresh-views` manually. The scheduler rebuilds them
-	// weekly on the configured day (default: Saturday).
+	// Create/update materialized views for 8Knot and analytics — when this
+	// deployment HAS them. They are optional (v0.29.57): the mode's zero
+	// value builds none, `aveloxis serve` asks for MatviewsIfMissing and
+	// `aveloxis migrate` for MatviewsRebuild, both from
+	// collection.materialized_views. MatviewsRebuild is the one path that
+	// applies a CHANGED definition; `aveloxis refresh-views` and the weekly
+	// rebuild refresh DATA under the definition a view already has.
 	//
-	// Matview refresh is warn-only — these are derived data, refreshable
-	// via `aveloxis refresh-views` or the next scheduler tick, and
-	// failing them shouldn't block serve startup.
+	// The view block is warn-only — these are derived data, and failing
+	// them shouldn't block serve startup. The cost of that: a failed
+	// re-create still exits 0 and stamps the schema, with the old
+	// definitions in place (matviews.sql runs as one statement batch, so a
+	// single failing view rolls back every DROP/CREATE). A release that
+	// changes a definition checks the outcome in its deploy checklist
+	// (v0.29.57's pg_get_viewdef step).
 	//
-	// matviewSkip (set by `aveloxis migrate --skip-views`) bypasses both
-	// branches so an operator iterating on schema-error fixes doesn't
-	// pay the rebuild cost on every retry. The user can run
-	// `aveloxis refresh-views` separately when ready, or let the
-	// scheduler's weekly rebuild handle it.
-	switch {
-	case pg.matviewSkip:
-		logger.Info("matview block skipped (--skip-views); run `aveloxis refresh-views` separately to materialize")
-	case pg.matviewOnStartup:
+	// `aveloxis migrate --skip-views` forces MatviewsOff so an operator
+	// iterating on schema-error fixes doesn't pay the rebuild cost on every
+	// retry; a later plain `aveloxis migrate` re-creates them.
+	switch pg.matviewMode {
+	case MatviewsRebuild:
 		if err := CreateMaterializedViews(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
-	default:
-		// Still create views if they don't exist (first run), but don't refresh existing ones.
+	case MatviewsIfMissing:
+		// The three-arm contract is the constant's doc (postgres.go) and
+		// CreateMaterializedViewsIfNotExist's: build none→all, skip
+		// complete, report partial.
 		if err := CreateMaterializedViewsIfNotExist(ctx, pg, logger); err != nil {
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
+	default:
+		logger.Info("materialized views not built by this migration (collection.materialized_views is off, or --skip-views was passed); `aveloxis migrate` with them enabled creates them, `aveloxis refresh-views` refreshes the data of existing ones")
 	}
 
 	if len(errs) > 0 {
@@ -525,7 +550,9 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// Contributors: search-resolve tracking column (v0.19.2). The
 	// scheduler's runSearchResolve background task takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email, and
-	// stamps this column on every attempt (success or no-hit). Used
+	// stamps this column when the search answers (a hit or a definitive
+	// no-hit; since v0.29.55 a search that failed without an answer is
+	// left unstamped). Used
 	// by GetContributorsNeedingSearch as the cooldown filter so the
 	// same emails aren't re-searched every cycle, wasting the
 	// 30/min/token search-API quota.
@@ -534,8 +561,9 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// Contributors: breadth tracking column (v0.20.17). The
 	// scheduler's runBreadth ticker takes contributors past the
 	// configured cooldown, calls /users/{login}/events, and stamps
-	// this column on every attempt — even when the response is
-	// empty. Pre-v0.20.17 the worker used
+	// this column after an attempt — even when the response is empty
+	// (a circuit trip, an insert failure or a shutdown leaves it
+	// unstamped). Pre-v0.20.17 the worker used
 	// MAX(contributor_repo.data_collection_date) NULLS FIRST as
 	// the "processed" signal, which left contributors with zero
 	// public events permanently at the front of the queue. With
@@ -1670,6 +1698,20 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// for multi-hour windows on existing fleets.
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_ops", "idx_staging_repo_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_staging_repo_id ON aveloxis_ops.staging (repo_id)`)
+
+	// v0.29.58: the mailing-list workers bound each pass with
+	// MIN(msg_id)/MAX(msg_id) FROM messages WHERE platform_id = 6
+	// (MailingListMsgIDFloor/Ceiling). messages has no platform_id
+	// index, so each is a pkey scan that walks forge messages until the
+	// first mailing-list row — on the 2026-09-22 production log two of
+	// them ran 943 s each against 141M rows (the mailing-list rows are
+	// NOT the newest: forge messages keep arriving above them). The
+	// partial index holds only the platform-6 msg_ids (238K rows on
+	// that fleet), so both bounds become an index endpoint read.
+	// CONCURRENTLY: messages is fleet-scale (SR-2).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_messages_mailing_list_msg_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_mailing_list_msg_id
+		 ON aveloxis_data.messages (msg_id) WHERE platform_id = 6`)
 
 	// v0.25.34: FK-side indexes on email_message's projection links
 	// (linked_issue_id / linked_pull_request_id / linked_pr_review_id).
@@ -3274,6 +3316,15 @@ func (s *PostgresStore) otherServeConnected(ctx context.Context) (bool, error) {
 		})
 }
 
+// DeployStepsAdvice is what every schema-behind message tells the operator
+// to run. A release's deploy checklist can differ from the standard ladder
+// (v0.29.57 migrates WITHOUT --skip-views, because only a plain migrate
+// applies a changed view definition), and this package cannot see the
+// checklists, so the messages point at `aveloxis deploy-checklist` — which
+// prints the binary's own list — and name the standard migrate only as the
+// fallback for a release that has none.
+const DeployStepsAdvice = "the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
+
 // startupMigrateRefusal is the pure decision behind the serve-startup
 // gate: with another serve connected, a stamp that is not this
 // binary's (missing, different, or unreadable — the read error is
@@ -3292,8 +3343,8 @@ func startupMigrateRefusal(stamp string, stampErr error, sight OtherServe) error
 	default:
 		stampDesc = fmt.Sprintf("the schema stamp is %s", stamp)
 	}
-	return fmt.Errorf("%w (from %s) and %s while this binary is %s — refusing to run the startup migration beside it (a full pass takes ACCESS EXCLUSIVE locks a live fleet's workers deadlock against). %s If it is draining, retrying once it clears is enough. Otherwise run the upgrade ladder from the primary: `aveloxis stop all`, then `aveloxis migrate --skip-views`, then `aveloxis start all`",
-		ErrOtherServeConnected, sight.Describe(), stampDesc, ToolVersion, sight.Advice())
+	return fmt.Errorf("%w (from %s) and %s while this binary is %s — refusing to run the startup migration beside it (a full pass takes ACCESS EXCLUSIVE locks a live fleet's workers deadlock against). %s If it is draining, retrying once it clears is enough. Otherwise run the upgrade ladder from the primary: `aveloxis stop all`, then %s, then `aveloxis start all`",
+		ErrOtherServeConnected, sight.Describe(), stampDesc, ToolVersion, sight.Advice(), DeployStepsAdvice)
 }
 
 // schemaVersionProbe is GetSchemaVersion with the error arm kept (SR-5:
@@ -3322,12 +3373,34 @@ func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) 
 	return "", err
 }
 
-// CheckSchemaVersion compares the database schema version against the running
-// binary's ToolVersion and logs a warning if they don't match. Intended for
-// non-migrating commands (web, api) so operators get a clear signal to run
-// `aveloxis migrate` or restart `aveloxis serve`.
+// CheckSchemaVersion compares the database schema stamp against the running
+// binary's ToolVersion and logs an ERROR (since v0.20.15) when they differ,
+// when there is no stamp, or when the stamp cannot be read. Called by the
+// non-migrating commands (web, api, scancode-worker) so the operator gets a
+// clear signal to run the release's deploy steps; since v0.29.4 a bare
+// `start serve` refuses while the stamp is behind, so restarting serve is
+// not the remedy.
 func (s *PostgresStore) CheckSchemaVersion(ctx context.Context, logger *slog.Logger) {
-	dbVersion := s.GetSchemaVersion(ctx)
+	// schemaVersionProbe, not GetSchemaVersion: the latter maps every read
+	// failure to "", which reported a timeout or a missing grant as "migrate
+	// has not run" (SR-5, v0.29.57 L10 round 3).
+	stamp, err := s.schemaVersionProbe(ctx)
+	logSchemaVersionCheck(logger, stamp, err)
+}
+
+// logSchemaVersionCheck is CheckSchemaVersion's verdict on a stamp read,
+// split out so what it LOGS is testable without a database (v0.29.57: the
+// messages and their action attribute point at the release's deploy steps).
+func logSchemaVersionCheck(logger *slog.Logger, dbVersion string, readErr error) {
+	if readErr != nil {
+		if errors.Is(readErr, context.Canceled) {
+			return // shutdown during startup, not a finding
+		}
+		logger.Error("schema version could not be read — this process cannot tell whether this binary's migration has run. Check the database connection and that this role can read aveloxis_ops.schema_meta; if the schema turns out to be behind, run "+DeployStepsAdvice+", then restart.",
+			"error", readErr,
+			"binary_version", ToolVersion)
+		return
+	}
 	if dbVersion == "" {
 		// schema_meta is empty — either migrate has never run or
 		// the row was deleted. Either way the binary is about to
@@ -3336,7 +3409,8 @@ func (s *PostgresStore) CheckSchemaVersion(ctx context.Context, logger *slog.Log
 		// incident where the WARN was missed and the next hour
 		// produced repeated `column "email_pending" does not
 		// exist` runtime errors.
-		logger.Error("schema version unknown — `aveloxis migrate` has not run against this database. Run `aveloxis migrate --skip-views` then restart this process. Without it, queries against columns added by recent migrations (e.g. users.email_pending from v0.20.4) will fail at runtime.")
+		logger.Error("schema version unknown — `aveloxis migrate` has not run against this database. Run "+DeployStepsAdvice+", then restart this process. Without it, queries against columns added by recent migrations (e.g. users.email_pending from v0.20.4) will fail at runtime.",
+			"action", DeployStepsAdvice)
 		return
 	}
 	if dbVersion != ToolVersion {
@@ -3345,10 +3419,10 @@ func (s *PostgresStore) CheckSchemaVersion(ctx context.Context, logger *slog.Log
 		// not have. The recovery action is in the message so
 		// operators reading the log don't have to dig through
 		// docs.
-		logger.Error("schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. Until then, queries against columns added by intervening migrations will fail at runtime (e.g. `column \"email_pending\" does not exist` was the 2026-05-13 production symptom).",
+		logger.Error("schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run "+DeployStepsAdvice+", then restart. Until then, queries against columns added by intervening migrations will fail at runtime (e.g. `column \"email_pending\" does not exist` was the 2026-05-13 production symptom).",
 			"db_schema_version", dbVersion,
 			"binary_version", ToolVersion,
-			"action", "aveloxis migrate --skip-views")
+			"action", DeployStepsAdvice)
 	}
 }
 

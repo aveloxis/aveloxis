@@ -21,10 +21,3 @@ func TestMatviewRebuildDayDisabled(t *testing.T) {
 		t.Error("should accept 'disabled'")
 	}
 }
-
-func TestMatviewRebuildOnStartupDefault(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.Collection.MatviewRebuildOnStartup {
-		t.Error("default MatviewRebuildOnStartup should be false")
-	}
-}

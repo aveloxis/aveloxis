@@ -27,11 +27,10 @@ import (
 type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
-	matviewOnStartup bool // whether to refresh materialized views during migration
-	matviewSkip      bool // whether to skip the matview block entirely (--skip-views on migrate)
-	migrateNoWait    bool // whether to fail fast on advisory-lock contention (--no-wait on migrate)
-	migrateFastPath  bool // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
-	allowSecondServe bool // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
+	matviewMode      MatviewMode // what RunMigrations does with the views; zero value builds none
+	migrateNoWait    bool        // whether to fail fast on advisory-lock contention (--no-wait on migrate)
+	migrateFastPath  bool        // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
+	allowSecondServe bool        // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
 
 	// backendPIDs are the server-side PIDs of THIS process's pool
 	// connections (v0.28.18), maintained by the pool's AfterConnect /
@@ -74,9 +73,11 @@ func (s *PostgresStore) ownBackendPIDs() []int32 {
 }
 
 // NewPostgresStore connects to PostgreSQL and returns a Store.
-// Optional maxConns parameter scales the connection pool (default 20).
-// For scheduler use, pass workers+15 so collection workers don't starve
-// each other for database connections.
+// Optional maxConns parameter scales the connection pool (default
+// DefaultPoolMaxConns). serve passes the size decideServePool derives —
+// scheduler.PoolDemand capped by the server budget, or
+// database.pool_max_conns (v0.29.58); every other command takes the
+// default.
 func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logger, maxConns ...int32) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(connString)
 	if err != nil {
@@ -87,7 +88,7 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// default 2 hours. See installKeepaliveDialer for why this is
 	// not done via conn-string params.
 	installKeepaliveDialer(cfg)
-	cfg.MaxConns = 20
+	cfg.MaxConns = DefaultPoolMaxConns
 	if len(maxConns) > 0 && maxConns[0] > 0 {
 		cfg.MaxConns = maxConns[0]
 	}
@@ -193,18 +194,40 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
-// SetMatviewOnStartup controls whether materialized views are refreshed during migration.
-func (s *PostgresStore) SetMatviewOnStartup(enabled bool) {
-	s.matviewOnStartup = enabled
-}
+// MatviewMode says what RunMigrations does with the materialized views.
+//
+// Materialized views are an OPTIONAL part of a deployment (v0.29.57,
+// operator decision): they are derived data, several deployments never query
+// them, and building twenty of them costs real time on every database that
+// does not. So the ZERO VALUE is MatviewsOff — a store nobody configured
+// builds none. `aveloxis serve` and `aveloxis migrate` set the mode from
+// collection.materialized_views, which defaults to true, so an existing
+// deployment is unchanged; everything else (the one-shot commands, and every
+// test) gets a database without views unless it asks.
+type MatviewMode int
 
-// SetMatviewSkip controls whether the matview block in RunMigrations is
-// skipped entirely. Used by `aveloxis migrate --skip-views` so an
-// operator iterating on schema-error fixes doesn't pay the matview
-// rebuild cost on every retry. Wins over SetMatviewOnStartup when both
-// are set — skip is the stronger signal.
-func (s *PostgresStore) SetMatviewSkip(skip bool) {
-	s.matviewSkip = skip
+const (
+	// MatviewsOff neither creates nor refreshes any view.
+	MatviewsOff MatviewMode = iota
+	// MatviewsIfMissing builds an EMPTY managed set, leaves a COMPLETE one
+	// alone, and reports a PARTIAL one at ERROR without rebuilding it —
+	// serve's startup behaviour: a first run gets the views, a restart never
+	// re-creates them (matviews.sql is one batch; a rebuild is hours on a
+	// fleet-scale database), and a relation missing for any reason is named
+	// at every start with the plain migrate that builds it
+	// (CreateMaterializedViewsIfNotExist).
+	MatviewsIfMissing
+	// MatviewsRebuild drops and re-creates every view from its definition.
+	// This is the ONLY path that applies a CHANGED definition, which is why
+	// a release that edits matviews.sql tells the operator to run a plain
+	// `aveloxis migrate`.
+	MatviewsRebuild
+)
+
+// SetMatviewMode chooses what the migration does with the views. Callers
+// that want them must say so: see MatviewMode for why the default is off.
+func (s *PostgresStore) SetMatviewMode(m MatviewMode) {
+	s.matviewMode = m
 }
 
 // SetMigrateNoWait controls how RunMigrations handles advisory-lock
@@ -236,7 +259,7 @@ func (s *PostgresStore) SetMigrateFastPath(enabled bool) {
 
 // SetAllowSecondServe permits this serve to start even though another
 // aveloxis-serve is already connected to the same database (the
-// SetMatviewSkip / SetMigrateFastPath pattern).
+// SetMatviewMode / SetMigrateFastPath pattern).
 //
 // Default false, i.e. REFUSE — closing the residual v0.29.4 deliberately
 // left open. That residual cost a real incident: from 2026-08-30 to
@@ -290,9 +313,54 @@ func (s *PostgresStore) withRetry(ctx context.Context, fn func(ctx context.Conte
 // Repos
 // ============================================================
 
+// EnsureDefaultRepoGroup returns the id of the 'Default' repo group, creating
+// it if it does not exist. UpsertRepo files a repo with no group there; test
+// databases create it up front (internal/testdb/prepare), as a deployment
+// that has added repos has it.
+func (s *PostgresStore) EnsureDefaultRepoGroup(ctx context.Context) (int64, error) {
+	// v0.27.17: the arbiter is NAMED. The previous bare ON CONFLICT had no
+	// unique to arbitrate against, so this INSERT succeeded on EVERY call —
+	// production accumulated 93,912 'Default' groups (one per repo),
+	// shattering every repo_group_id rollup. With uq_repo_groups_rg_name in
+	// place the conflict fires and the lookup below runs.
+	var groupID int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description)
+		VALUES ('Default', 'Auto-created default repo group')
+		ON CONFLICT (rg_name) DO NOTHING
+		RETURNING repo_group_id`).Scan(&groupID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// ON CONFLICT DO NOTHING returns no rows: it exists — look it up.
+		if lerr := s.pool.QueryRow(ctx,
+			`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = 'Default'`,
+		).Scan(&groupID); lerr != nil {
+			return 0, fmt.Errorf("looking up the default repo group: %w", lerr)
+		}
+	case err != nil:
+		// v0.29.57 (worklist 38, SR-5): any other failure is returned as
+		// itself. It used to fall through to the lookup with its error
+		// discarded, so a primary-key collision (an explicit repo_group_id
+		// that left the sequence behind), a missing table or a lost
+		// connection all read "failed to resolve default repo group".
+		return 0, fmt.Errorf("creating the default repo group: %w", err)
+	}
+	if groupID == 0 {
+		return 0, fmt.Errorf("failed to resolve default repo group")
+	}
+	return groupID, nil
+}
+
 // UpsertRepoGroup creates or finds a repo group by name and type.
 // Returns the repo_group_id.
 func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, website string) (int64, error) {
+	// rg_website and rg_description store the URL; the CLI `add-repo` on an
+	// organisation reached this writer with a credentialed URL that the web
+	// path's AddOrgToGroup refuses (round 6). Same rule, this writer.
+	if err := platform.RefuseURLUserinfo(website); err != nil {
+		// Not the name: register-mailing-list names the group after the URL.
+		return 0, fmt.Errorf("repo group: %w", err)
+	}
 	var id int64
 	// Try to find existing group by name and type.
 	err := s.pool.QueryRow(ctx,
@@ -320,6 +388,14 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 }
 
 func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, error) {
+	// The store owns repo_git (SR-18): a URL carrying credentials is refused
+	// here, whatever path it arrived by, before any statement runs (v0.29.57,
+	// Copilot review 5261384568 — run-scorecard forwarded a stored URL to a
+	// subprocess verbatim). The entry points refuse it too, with a message
+	// for the user; this is the guarantee behind them.
+	if err := platform.RefuseURLUserinfo(r.GitURL); err != nil {
+		return 0, fmt.Errorf("repo %s/%s: %w", r.Owner, r.Name, err) // never the URL: it carries the secret
+	}
 	// Normalize the repo slug at the write boundary so a ".git" suffix never
 	// reaches the DB. API URLs built from repo_name (/repos/{owner}/{name}/...)
 	// 404 when the slug has a ".git" suffix.
@@ -394,7 +470,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				uerr := s.UpdateRepoURLs(ctx, existing, oldURL, r.GitURL)
 				if uerr == nil {
 					s.logger.Info("rename detected at add time — healed existing repo URL instead of creating a duplicate",
-						"repo_id", existing, "old_url", oldURL, "new_url", r.GitURL, "platform_repo_id", r.PlatformID)
+						"repo_id", existing, "old_url", platform.RedactURLUserinfo(oldURL), "new_url", platform.RedactURLUserinfo(r.GitURL), "platform_repo_id", r.PlatformID)
 					return existing, nil
 				}
 				// ONLY a genuine uniqueness race (another writer landed
@@ -417,27 +493,11 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 		// Ensure a default repo group exists if no group is specified.
 		groupID := r.GroupID
 		if groupID == 0 {
-			// v0.27.17: the arbiter is NAMED. The previous bare
-			// ON CONFLICT had no unique to arbitrate against, so this
-			// INSERT succeeded on EVERY call — production accumulated
-			// 93,912 'Default' groups (one per repo), shattering every
-			// repo_group_id rollup. With uq_repo_groups_rg_name in
-			// place the conflict fires and the lookup below (dead code
-			// until now) finally runs.
-			err := s.pool.QueryRow(ctx, `
-				INSERT INTO aveloxis_data.repo_groups (rg_name, rg_description)
-				VALUES ('Default', 'Auto-created default repo group')
-				ON CONFLICT (rg_name) DO NOTHING
-				RETURNING repo_group_id`).Scan(&groupID)
+			id, err := s.EnsureDefaultRepoGroup(ctx)
 			if err != nil {
-				// ON CONFLICT DO NOTHING returns no rows — look it up.
-				_ = s.pool.QueryRow(ctx,
-					`SELECT repo_group_id FROM aveloxis_data.repo_groups WHERE rg_name = 'Default'`,
-				).Scan(&groupID)
+				return err
 			}
-			if groupID == 0 {
-				return fmt.Errorf("failed to resolve default repo group")
-			}
+			groupID = id
 		}
 
 		// Use NULL for zero timestamps — they'll be populated by FetchRepoInfo during collection.
@@ -722,6 +782,12 @@ func (s *PostgresStore) ArchiveRepo(ctx context.Context, repoID int64) error {
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
 func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL, newURL string) error {
+	// The store owns repo_git (SR-18): the rename path is a WRITER of it
+	// too, and a redirect target carrying credentials reached it (v0.29.57
+	// fix-review round 6). Refused before anything else, like UpsertRepo.
+	if err := platform.RefuseURLUserinfo(newURL); err != nil {
+		return fmt.Errorf("repo %d rename: %w", repoID, err)
+	}
 	// v0.27.113 (Copilot round 9): normalize the stored URL exactly like
 	// UpdateRepoURL does — prelim passes the RAW redirect target, so a
 	// redirect to ".../name.git" (or a trailing slash) would otherwise
@@ -819,6 +885,9 @@ func extractRepoPath(u string) string {
 // UpdateRepoURL changes the git URL, owner, and name of a repo (e.g., after a redirect).
 // Extracts the new owner/name from the URL so the dashboard and API show correct values.
 func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL string) error {
+	if err := platform.RefuseURLUserinfo(newURL); err != nil { // as UpdateRepoURLs (round 6)
+		return fmt.Errorf("repo %d rename: %w", repoID, err)
+	}
 	// Parse owner/name from the new URL via the shared parser (v0.25.32
 	// consolidation; unparseable URLs keep empty owner/name — the URL
 	// column still updates, matching the historical permissiveness).

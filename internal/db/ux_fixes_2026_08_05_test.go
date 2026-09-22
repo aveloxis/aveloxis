@@ -82,7 +82,7 @@ func TestOrgAutoApproveWhenAlreadyRegisteredEndToEnd(t *testing.T) {
 
 	org := "_avorgauto_tracked" + itoa64(suffix)
 	// Admin registers the org first (the pre-existing registration).
-	out, err := store.AddOrgToGroup(ctx, adminID, adminGroup, "https://github.com/"+org)
+	out, err := store.AddOrgToGroup(ctx, adminID, adminGroup, "https://github.com/"+org, "")
 	if err != nil || !out.Registered {
 		t.Fatalf("admin registration failed: out=%+v err=%v", out, err)
 	}
@@ -90,7 +90,7 @@ func TestOrgAutoApproveWhenAlreadyRegisteredEndToEnd(t *testing.T) {
 	// (1) Non-admin adds the SAME org as a CASE VARIANT: must register
 	// immediately (no pending), with an auto-approved audit row.
 	variant := "https://github.com/" + strings.ToUpper(org[:3]) + org[3:]
-	out, err = store.AddOrgToGroup(ctx, plainID, plainGroup, variant)
+	out, err = store.AddOrgToGroup(ctx, plainID, plainGroup, variant, "")
 	if err != nil {
 		t.Fatalf("non-admin add of already-registered org: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestOrgAutoApproveWhenAlreadyRegisteredEndToEnd(t *testing.T) {
 
 	// (2) Non-admin adds an UNREGISTERED org: must still pend (the
 	// v0.27.20 principle — a new org is an unbounded future commitment).
-	out, err = store.AddOrgToGroup(ctx, plainID, plainGroup, "https://github.com/_avorgauto_new"+itoa64(suffix))
+	out, err = store.AddOrgToGroup(ctx, plainID, plainGroup, "https://github.com/_avorgauto_new"+itoa64(suffix), "")
 	if err != nil {
 		t.Fatal(err)
 	}

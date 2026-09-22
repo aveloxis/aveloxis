@@ -46,7 +46,6 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	if err := db.RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
@@ -54,7 +53,7 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	t.Cleanup(raw.Close) // not defer: it ran before the cleanup below, which then deleted nothing (SR-9)
 
 	// Serve 200 for prelim's HEAD check; git clone against this URL
 	// fails fast (not a git repo).

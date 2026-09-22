@@ -91,7 +91,7 @@ func runDataVerify(cfgPath string, sample, groundTruth int, jsonOut bool, minIde
 		if err != nil {
 			return fmt.Errorf("--ground-truth needs API keys: %w", err)
 		}
-		client := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+		client := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 		results = append(results, collector.GroundTruthCheck(ctx, store, client, logger, groundTruth)...)
 	}
 

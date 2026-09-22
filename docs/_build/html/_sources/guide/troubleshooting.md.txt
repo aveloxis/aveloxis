@@ -654,20 +654,33 @@ The `migrate` command includes a data cleanup pass that detects and nullifies ga
 logs an ERROR at startup (v0.20.15 raised it from WARN):
 
 ```
-level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run `aveloxis migrate --skip-views` then restart. ..." db_schema_version=0.29.2 binary_version=0.29.4 action="aveloxis migrate --skip-views"
+level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
 ```
+
+If the ERROR instead reads `schema version could not be read`, the process
+could not query `aveloxis_ops.schema_meta` (lost connection, timeout, or a
+role without access to it). That is not evidence the schema is behind: check
+the connection and grants first. (Before v0.29.57 a failed read was logged as
+`schema version unknown — … has not run against this database`.)
 
 **Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without running `migrate` (or a foreground `aveloxis serve`, which migrates at startup).
 
 **Solution:**
 
-Run the upgrade ladder — `stop all`, migrate, `start all`:
+Run the release's upgrade ladder. `aveloxis deploy-checklist` prints it; a
+release with no checklist needs only:
 
 ```bash
 aveloxis stop all
 aveloxis migrate --skip-views     # moves the schema stamp
 aveloxis start all
 ```
+
+Use the checklist when there is one: its migrate step can differ. v0.29.57's
+is a plain `aveloxis migrate`, because only that applies its changed view
+definition, and it carries heals a bare migrate does not run. (Before
+v0.29.57 this ERROR, and its `action` attribute, always named
+`aveloxis migrate --skip-views`.)
 
 Since v0.29.4, `aveloxis start serve` on an existing fleet REFUSES while
 the schema stamp is behind the binary (that is the evidence the release's
@@ -822,9 +835,62 @@ level=WARN msg="collection still paused — database unavailable" unavailable_fo
 level=INFO  msg="database back — resuming collection" unavailable_for=...
 ```
 
+Since v0.29.56 both WARN lines also carry the connection pool's state. Read the
+two halves differently:
+
+- **A snapshot of right now** — `pool_max_conns`, `pool_total_conns`,
+  `pool_acquired_conns`, `pool_idle_conns`. This is what separates the two
+  causes: every connection acquired means the pool was too small for the work
+  in flight, while idle connections mean the server stopped answering.
+- **Cumulative counters since the process started** — `pool_empty_acquires`
+  and `pool_acquire_wait_total`. These are pgxpool lifetime totals, NOT a count
+  of callers waiting now, so a large value may be left over from a busy period
+  hours earlier and says nothing about the current outage. Use them by
+  COMPARING successive log lines: a jump between two WARNs means callers were
+  queueing during that window; a flat value means they were not, however large
+  the number is.
+
 and the outage is recorded in `aveloxis_ops.aveloxis_status` (`status_name='database'`; `status='unavailable'` during the outage where writable, `status='ok'` with the recovery duration in `status_detail` afterward). In-flight jobs running at the instant of the restart still error and re-queue (that's expected), but no *new* work is dispatched into the dead window, which also avoids the reconnect deadlock pile-up.
 
 Still fix the host trigger (above) — pausing is graceful degradation, not a substitute for not restarting Postgres under a live fleet. The pre-v0.25.25 behavior (no backoff → `57P03` storm) is what bloats the log; if you're on an older build, truncate on restart (`aveloxis stop all && : > ~/.aveloxis/aveloxis.log && aveloxis start all`).
+
+---
+
+## `process stalled` — the whole collector stops for seconds at a time
+
+**Symptom (v0.29.56+)**
+
+```
+level=WARN msg="process stalled — the scheduler heartbeat was late; collection threads were not running"
+  late=12.4s heartbeat_interval=1s goroutines=412 gc_pause_total=1m2s gc_cycles=8123
+  heap_in_use_mb=1840 host_pressure="cpu=41.20 io=8.90 memory=0.00"
+```
+
+`aveloxis serve` runs a heartbeat that wakes every second. It reports only when
+it was woken later than the database probe deadline (5 s) — a stall that long is
+one that can also fail a probe and pause collection.
+
+**What the line tells you**
+
+- **A late heartbeat means the process itself was not running.** Nothing in the
+  collector can delay it: it does no I/O and takes no locks. The causes are
+  outside it — the host is short of CPU, the process is being swapped, or the Go
+  runtime paused the world.
+- `host_pressure` is Linux's pressure-stall information (the share of the last
+  10 seconds during which work was stalled waiting for that resource). `cpu`
+  high means the host is oversubscribed; `io` high means the disk is the
+  bottleneck; `memory` above zero means reclaim, often the start of swapping.
+  It is empty on macOS and on kernels without it.
+- `gc_pause_total` is cumulative for the process, so compare consecutive lines:
+  a jump of seconds between two stalls points at garbage collection, a flat
+  figure rules it out.
+
+**What it rules out.** If the log goes quiet but the heartbeat stays on time,
+the process was running and the workers were blocked — on the database, on a
+subprocess, or on the network. Check the pool state in the
+`database unavailable` lines above, and `pg_stat_activity` for lock waits.
+
+The detector only observes. It never cancels or kills anything.
 
 ---
 
@@ -1372,14 +1438,17 @@ msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_g
 **Fix sequence (v0.25.32+):**
 
 ```bash
+aveloxis deploy-checklist           # first: this binary's deploy steps, if not done
+                                    # yet (its migrate creates the LOWER(repo_git)
+                                    # lookup index and WARNs + skips the unique
+                                    # index while dups remain; with no checklist,
+                                    # `stop all`, `migrate --skip-views`, `start all`)
 aveloxis stop serve                 # optional — dedup-repos skips mid-flight
                                     # pairs, but a quiet window drains all in one run
-aveloxis migrate --skip-views       # creates the LOWER(repo_git) lookup index;
-                                    # WARNs + skips the unique index while dups remain
 aveloxis dedup-repos --dry-run      # review the plan
 aveloxis dedup-repos --limit 50     # canary, then:
 aveloxis dedup-repos                # full run — repeat until "0 pairs"
-aveloxis migrate --skip-views       # now builds uq_repos_repo_git_ci (the backstop)
+aveloxis migrate --skip-views       # after the deploy steps: builds uq_repos_repo_git_ci
 aveloxis refresh-views              # matviews stop double-counting immediately
 aveloxis start all
 ```

@@ -143,7 +143,7 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 	// the per-repo discovery.
 	var projects []importers.Project
 	if !opts.ApacheOnly {
-		logger.Info("fetching CNCF landscape", "url", opts.CncfURL)
+		logger.Info("fetching CNCF landscape", "url", platform.RedactURLUserinfo(opts.CncfURL))
 		cncfProjects, ferr := cncf.Fetch(ctx, opts.CncfURL)
 		if ferr != nil {
 			return fmt.Errorf("fetching CNCF landscape: %w", ferr)
@@ -151,7 +151,7 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 		projects = append(projects, cncfProjects...)
 	}
 	if !opts.CncfOnly {
-		logger.Info("fetching Apache projects", "projects_url", opts.ApacheProjURL, "podlings_url", opts.ApachePodURL)
+		logger.Info("fetching Apache projects", "projects_url", platform.RedactURLUserinfo(opts.ApacheProjURL), "podlings_url", platform.RedactURLUserinfo(opts.ApachePodURL))
 		apacheProjects, ferr := apache.Fetch(ctx, opts.ApacheProjURL, opts.ApachePodURL)
 		if ferr != nil {
 			return fmt.Errorf("fetching Apache projects: %w", ferr)
@@ -223,8 +223,12 @@ func runLoadFoundationOrgs(cfgPath string, opts foundationOrgsOpts) error {
 			continue
 		}
 		for _, org := range sortedKeys(orgsByFoundation[f]) {
-			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, org); err != nil {
-				logger.Warn("failed to track org", "foundation", f, "org", org, "error", err)
+			if _, err := store.AddOrgToGroup(ctx, opts.UserID, groupID, org, cfg.GitHub.GitHubAPIBase()); err != nil {
+				// org_url: under the redaction pin's key rule. The value is
+				// rebuilt from a parsed owner (orgURLForRepo) and cannot carry
+				// userinfo, so the wrap is the identity here (review 5268977585
+				// assumed otherwise; the round-1 review checked).
+				logger.Warn("failed to track org", "foundation", f, "org_url", platform.RedactURLUserinfo(org), "error", err)
 				failed++
 				continue
 			}

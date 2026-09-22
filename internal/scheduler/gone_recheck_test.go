@@ -4,8 +4,10 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +20,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // v0.29.7 — the gone-repo recheck ticker. Wiring pin: the run loop
@@ -118,6 +122,16 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	still := mk("still")     // 404 → stays gone, checked
 	flaky := mk("flaky")     // 503 → stays gone, checked (bounded: retried next cadence, not next tick)
 	unreach := mk("unreach") // transport error → stays gone, checked (same bound — review round 1 MEDIUM)
+	target := mk("target")   // the forge redirected to a credentialed URL → not followed; stays gone, checked (round 9)
+	// A legacy row whose stored URL carries credentials (the store refuses
+	// such a URL on write, so it is planted by UPDATE): never probed — the
+	// HEAD would send the credential as basic auth — stays gone, stamped
+	// checked so it waits out the cadence (v0.29.57 fix-review round 3).
+	creds := mk("creds")
+	creds.url = "https://user:s3cret@github.com/" + slug + "/creds"
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_data.repos SET repo_git = $2 WHERE repo_id = $1`, creds.id, creds.url); err != nil {
+		t.Fatal(err)
+	}
 
 	// Isolation on the shared scratch DB (review round 1): the claim set
 	// is global, so any OTHER gone row with a NULL/aged stamp would be
@@ -136,7 +150,9 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		still.url:   {http.StatusNotFound, nil},
 		flaky.url:   {http.StatusServiceUnavailable, nil},
 		unreach.url: {0, errors.New("dial tcp: i/o timeout")},
+		target.url:  {0, platform.ErrRedirectTargetUserinfo},
 	}
+	// Not in verdicts on purpose: a probe of creds.url is the failure.
 	prev := goneProbe
 	ours := func(url string) bool { return strings.Contains(url, "/"+slug+"/") }
 	goneProbe = func(_ context.Context, url string) (string, int, error) {
@@ -152,7 +168,7 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		}
 		v, ok := verdicts[url]
 		if !ok {
-			t.Errorf("probe called for an unexpected URL %q", url)
+			t.Errorf("probe called for an unexpected URL %q — a credentialed row must never be probed", platform.RedactURLUserinfo(url))
 			return "", 0, errors.New("unexpected")
 		}
 		return url, v.status, v.err
@@ -160,8 +176,19 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	t.Cleanup(func() { goneProbe = prev })
 
 	cfg := config.DefaultConfig()
-	s := New(store, nil, nil, logger, Config{Collection: &cfg.Collection})
+	var logs bytes.Buffer
+	s := New(store, nil, nil, slog.New(slog.NewTextHandler(&logs, nil)), Config{Collection: &cfg.Collection})
 	s.runGoneRecheck(ctx)
+	// The target row must take ITS arm, not the generic one: the outcome is
+	// the same either way, so only the WARN text tells them apart (round 10).
+	targetLines := linesWithRepoID(logs.String(), target.id)
+	if !strings.Contains(targetLines, "redirect target carries credentials") ||
+		strings.Contains(targetLines, "probe failed") || strings.Contains(targetLines, "correct repo_git") {
+		t.Errorf("the credentialed-target row must be logged by its own arm; its lines: %q", targetLines)
+	}
+	if strings.Contains(logs.String(), "s3cret") {
+		t.Errorf("a credential reached the log: %s", logs.String())
+	}
 
 	state := func(id int64) (gone bool, checked bool, queued bool) {
 		var g, c *time.Time
@@ -187,6 +214,12 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	}
 	if gone, checked, queued := state(unreach.id); !gone || !checked || queued {
 		t.Errorf("a transport error must stay gone AND stamp the check (an unreachable cohort must not head every tick): gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	if gone, checked, queued := state(target.id); !gone || !checked || queued {
+		t.Errorf("a credentialed redirect target must stay gone AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	if gone, checked, queued := state(creds.id); !gone || !checked || queued {
+		t.Errorf("a credentialed row must stay gone, unprobed, AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)
 	}
 	// A second run within the cadence probes NONE of our rows: every
 	// non-definitive answer was bounded to the cadence, and the
@@ -260,4 +293,16 @@ func TestGoneRecheckOverrun(t *testing.T) {
 	if strings.Count(body, `"gone recheck cycle overran its tick`) != 1 {
 		t.Error("the overrun WARN must be emitted from exactly one place — inside the gate")
 	}
+}
+
+// linesWithRepoID returns the log lines that carry repo_id=<id>.
+func linesWithRepoID(logs string, id int64) string {
+	var out []string
+	needle := fmt.Sprintf("repo_id=%d ", id)
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line+" ", needle) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }

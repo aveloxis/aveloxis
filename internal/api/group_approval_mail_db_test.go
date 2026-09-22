@@ -190,7 +190,7 @@ func TestAdminAddRequestDecisionThroughTheHandler(t *testing.T) {
 
 	// The first approval flips the request but its processing pass never
 	// runs (the process stopped): the item stays unprocessed.
-	if _, changed, err := store.DecideAddRequest(ctx, out.RequestID, uid, true); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, out.RequestID, uid, true, ""); err != nil || !changed {
 		t.Fatalf("first approval: changed=%v err=%v", changed, err)
 	}
 	unprocessed := func() int {
@@ -227,7 +227,7 @@ func TestAdminAddRequestDecisionThroughTheHandler(t *testing.T) {
 	if err != nil || rejected.RequestID == 0 {
 		t.Fatalf("AddReposToGroup = %+v, %v", rejected, err)
 	}
-	if _, changed, err := store.DecideAddRequest(ctx, rejected.RequestID, uid, false); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, rejected.RequestID, uid, false, ""); err != nil || !changed {
 		t.Fatalf("reject: changed=%v err=%v", changed, err)
 	}
 	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(store, false)}
@@ -314,7 +314,7 @@ func TestAdminOrgApprovalNotifiesWhenItRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := store.AddOrgToGroup(ctx, uid, gid, orgURL)
+	out, err := store.AddOrgToGroup(ctx, uid, gid, orgURL, "")
 	if err != nil || out.RequestID == 0 {
 		t.Fatalf("AddOrgToGroup = %+v, %v; want a pending request", out, err)
 	}
@@ -512,7 +512,7 @@ func TestAdminAddRequestProcessingInvalidatesTheAuthCache(t *testing.T) {
 	if err != nil || resumed.RequestID == 0 {
 		t.Fatalf("AddReposToGroup = %+v, %v; want a pending request", resumed, err)
 	}
-	if _, changed, err := store.DecideAddRequest(ctx, resumed.RequestID, uid, true); err != nil || !changed {
+	if _, changed, err := store.DecideAddRequest(ctx, resumed.RequestID, uid, true, ""); err != nil || !changed {
 		t.Fatalf("first approval (processing never ran): changed=%v err=%v", changed, err)
 	}
 	t.Run("resume", func(t *testing.T) { approveAndWatch(t, resumed.RequestID, `"changed":false`) })

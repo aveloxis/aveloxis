@@ -135,33 +135,60 @@ aveloxis serve --workers 4 --monitor :5556
 
 ## Database connection pool
 
-Aveloxis automatically scales the database connection pool based on the worker count. The formula is `workers + 15`, with a minimum of 20. For example, `--workers 30` uses a pool of 45 connections. Non-scheduler commands (web, api, migrate) use the default pool of 20.
+Since v0.29.58 `aveloxis serve` sizes its pool from the scheduler's connection
+**demand** — every goroutine class that can hold a pooled connection at once —
+capped by what the server can give it. Non-scheduler commands (web, api,
+migrate, the heals) use the default pool of 20.
+
+The demand is the sum of:
+
+| Consumer | Connections | Where the number comes from |
+|---|---|---|
+| Collection slots | `workers × 5` | each slot runs the staged collector's three concurrent phases (issues, PRs, messages), its heartbeat, and its long-jobs watchdog |
+| Distribution workers | `distribution_tracking_workers + 1` | the runners and their dispatcher, when `distribution_tracking_enabled` |
+| Mailing-list workers | `(mailing_list_workers + mailing_list_processor_workers) × systems` (+ 2 when at least one system is loaded) | one worker set and one drain set per mailing-list system in the catalog, plus the sender-resolve and sender-backfill loops once any system spawned; 0 unless `mailing_list_enabled` |
+| Jira workers | `jira_workers + 1` | the workers and their drain loop, when `jira_enabled` |
+| ScanCode workers | `scancode_workers + 4` | the runners plus the dispatcher, orphan monitor, lock check and startup sweep; 0 when `scancode_workers` is 0 (a separate `scancode-worker` host) |
+| Activity-history workers | `activity_history_concurrency` | |
+| Breadth fetchers | `breadth_fetch_concurrency` | each renames contributors through the store |
+| Background loops | one each | among them the health probe, stall detector, org refresh, the leftover-staging drain and its heartbeat, the metadata backfill, staging cleanup, the digest, the matview rebuild, the run loop itself, a one-request allowance for the monitor, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans); the mailing-list, Jira and ScanCode singletons are charged in their own rows, only when enabled — the registry in `internal/scheduler/pool_demand.go`, tripwired against every goroutine label in the scheduler, collector, distribution and db packages |
+
+Serve asks the server for `max_connections`, `superuser_reserved_connections`
+and (PostgreSQL 16+) `reserved_connections` before opening the pool and caps
+the demand at:
+
+```
+budget = max_connections - superuser_reserved_connections - reserved_connections (PostgreSQL 16+) - 2 × 20   (the web and api pools)
+```
+
+The decision is logged once at startup with every term
+(`database connection pool sized … pool_size=… pool_demand=… server_budget=…`).
+When the pool ends up **below** the demand, serve says so in a WARN and the
+consequence is a throttle, not an outage: at peak, workers wait for a
+connection, and the health probe reports `connection pool exhausted` (it pings
+through the same pool) rather than `database unavailable`. Before v0.29.58 the
+pool was a fixed `workers + 15` and that wait was misreported as a database
+outage, repeatedly, in one production run.
+
+`database.pool_max_conns` overrides the derivation. Set it when the throttle
+is the point: on a disk-bound server, fewer concurrent statements can serve
+the fleet better than more, and an explicit pool is the honest way to choose
+that (the WARN still names the demand it falls short of).
 
 ### PostgreSQL configuration
 
-For multiple instances or high worker counts, ensure your PostgreSQL `max_connections` is sufficient:
+`max_connections` has to cover every instance's pool plus the other clients:
 
 ```
-max_connections = (workers + 15) * (number of Aveloxis instances) + connections for other clients
+max_connections = Σ(pool_size per serve instance) + 20 × (web + api instances) + other clients + superuser_reserved_connections + reserved_connections
 ```
 
-For example, 3 Aveloxis instances plus psql and monitoring tools:
-
-```
-max_connections = 20 * 3 + 10 = 70
-```
-
-Adjust in `postgresql.conf`:
-
-```ini
-max_connections = 100
-```
-
-That formula gives the **floor** — the number below which Aveloxis cannot
-open its pools. It is not a target: every connection you add above the floor
-is another `work_mem` multiplier, so raise `max_connections` and the
-[`work_mem` budget](#why-work_mem-is-the-dangerous-one) together. A large
-fleet runs 300; the `100` above is a small-deployment example.
+Read each serve's `pool_size` and `pool_demand` from its startup log. A pool
+capped by the budget is fine as long as it is a deliberate choice; a demand far
+above the budget on a server that is not disk-bound is the signal to raise
+`max_connections`. Every connection you add is another `work_mem` multiplier,
+so raise `max_connections` and the [`work_mem`
+budget](#why-work_mem-is-the-dangerous-one) together.
 
 ---
 

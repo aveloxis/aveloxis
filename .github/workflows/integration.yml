@@ -29,12 +29,13 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
 
-    # Postgres 16 service container. Empty DB on every job
-    # invocation — the test (TestRunMigrationsOnFreshDB) owns the
-    # full schema and is destructive. health-cmd + retries ensure
-    # the steps below don't try to connect before Postgres is
-    # accepting connections; ports binding to 5432:5432 makes the
-    # service reachable on localhost from the test binary.
+    # Postgres 16 service container, empty on every job invocation.
+    # AVELOXIS_TEST_DB names its database as the BASE: each test package
+    # creates, migrates and drops a database of its own from it
+    # (internal/testdb; the service user is a superuser, so CREATEDB).
+    # health-cmd + retries ensure the steps below don't try to connect
+    # before Postgres is accepting connections; ports binding to
+    # 5432:5432 makes the service reachable on localhost.
     services:
       postgres:
         image: postgres:16
@@ -98,17 +99,25 @@ jobs:
       # no DB, so the worker pools / KeyPool / caches never executed under
       # the race detector before this. This is the only tier where the
       # goroutine-heavy paths actually run.
+      # -shuffle=on (v0.29.57): each package now runs in a fresh database of
+      # its own, so a test that only passes because an earlier test left
+      # rows behind is an ORDER dependency; shuffling surfaces it (one was
+      # found this way: an explicit repo_group_id = 1 that collided with the
+      # Default group's sequence). A failure prints `-test.shuffle N`;
+      # rerun with that seed to reproduce.
       - name: Run full suite with integration tier enabled
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -shuffle=on ./...
 
-      # v0.27.43 (summary/18 Phase 5a): run the data-verify invariant
-      # battery against the CI database AFTER the full suite. Two jobs
-      # in one: (a) the battery itself is smoke-tested end-to-end
-      # (build → connect → probe → report) on every PR, and (b) any
-      # integration test that leaks invariant-violating residue
-      # (stranded repos, duplicate Default groups, cross-kind message
-      # rows outside the worklist) fails the build here instead of
-      # silently accumulating, as it did on long-lived scratch DBs.
+      # v0.27.43: smoke-test the data-verify command end to end (build →
+      # connect → probe → report) on every PR. The base database is
+      # migrated first: since v0.29.57 the test packages run in databases
+      # of their own and nothing else touches it. The residue check this
+      # step also used to be — an integration test leaking rows that break
+      # an invariant the battery rates FAIL (cached queue counts that
+      # disagree with the tables, duplicate Default groups, case-variant
+      # duplicate repos, new cross-kind message collisions) — now runs per
+      # package, over each package's own database after its tests pass
+      # (testdb.Main's verify hook), so it names the package that leaked.
       # The production and --ground-truth probes deliberately do NOT
       # run in CI (no prod credentials in Actions; ground truth needs
       # API keys + a DB with collected repos) — those are host-side
@@ -121,4 +130,5 @@ jobs:
             "dbname": "aveloxis_test", "user": "aveloxis_test",
             "password": "aveloxis_test", "sslmode": "disable"}}
           CFG
+          /tmp/aveloxis migrate -c /tmp/ci-verify.json
           /tmp/aveloxis data-verify -c /tmp/ci-verify.json

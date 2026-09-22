@@ -90,7 +90,7 @@ func backfillIdentitiesCmd(cfgPath *string) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("phase 3 needs API keys: %w", err)
 				}
-				client := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+				client := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 				sweep := collector.NewClosedBySweep(store, client, logger, sweepBatch)
 				n, err := sweep.Run(ctx, limit, dryRun)
 				if err != nil {

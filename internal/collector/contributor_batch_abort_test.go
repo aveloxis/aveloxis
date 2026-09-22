@@ -56,7 +56,6 @@ func TestContributorBatchFailureLeavesStagedRowsForReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	if err := db.RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
@@ -67,7 +66,7 @@ func TestContributorBatchFailureLeavesStagedRowsForReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	t.Cleanup(raw.Close) // not defer: deferred calls run before the data cleanups (SR-9)
 
 	const slug = "_avc5abort"
 	cleanup := func() {

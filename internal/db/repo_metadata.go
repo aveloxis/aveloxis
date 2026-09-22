@@ -121,27 +121,40 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 // ReposNeedingMetadataBackfill returns repo IDs whose description AND
 // primary_language are both empty. Used by the startup backfill task.
 // Capped at `limit` to avoid pulling 100K rows into memory; the caller
-// pages by repeatedly calling until len(result) < limit.
+// pages with a keyset cursor, passing the highest repo_id it has seen as
+// afterRepoID (0 to start). v0.29.56: a plain LIMIT re-served every repo
+// whose fetch had failed, because nothing is stamped on failure — the
+// re-fetched cohort grew page by page (197 → 238 → 279 in two hours of the
+// 2026-09-17 log), each repo costing an API call and a second of pacing on
+// every later page. The cursor drains the candidate set monotonically;
+// failures are retried on the next restart.
 //
 // Filters archived repos out — archived projects' descriptions rarely
 // matter and we don't want to spend API budget on them. Operators can
 // remove the filter manually if needed.
 //
 // v0.23.0.
-func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, limit int) ([]RepoMetadataBackfillTarget, error) {
+func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterRepoID int64, limit int) ([]RepoMetadataBackfillTarget, error) {
 	if limit <= 0 {
 		limit = 500
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT repo_id, repo_owner, repo_name, platform_id
 		FROM aveloxis_data.repos
-		WHERE COALESCE(repo_description, '') = ''
+		WHERE repo_id > $1
+		  -- Only the API-backed platforms, as GetReposForMetadataRefresh
+		  -- below has always done: generic git (3) has nothing to ask, so
+		  -- the scheduler skips such a row WITHOUT stamping either field
+		  -- and it stays a candidate — re-read and re-counted as a failure
+		  -- on every restart (v0.29.57).
+		  AND platform_id IN (1, 2)
+		  AND COALESCE(repo_description, '') = ''
 		  AND COALESCE(primary_language, '') = ''
 		  AND COALESCE(repo_archived, FALSE) = FALSE
 		  AND COALESCE(repo_owner, '') != ''
 		  AND COALESCE(repo_name, '') != ''
 		ORDER BY repo_id
-		LIMIT $1`, limit)
+		LIMIT $2`, afterRepoID, limit)
 	if err != nil {
 		return nil, err
 	}

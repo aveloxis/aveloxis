@@ -84,7 +84,7 @@ func TestGoneProbeCandidatesShape(t *testing.T) {
 	}
 }
 
-// Prelim's 404/410 branch stamps gone (not the bare ArchiveRepo),
+// Prelim's 404/410/451 branch stamps gone (not the bare ArchiveRepo),
 // and its healthy path clears a stale stamp — set/clear live in the
 // SAME probe so resurrection is symmetric.
 func TestPrelimStampsAndClearsGone(t *testing.T) {
@@ -102,7 +102,7 @@ func TestPrelimStampsAndClearsGone(t *testing.T) {
 		body = body[:end]
 	}
 	if !strings.Contains(body, "store.MarkRepoGone(") {
-		t.Error("prelim's 404/410 sideline must stamp via MarkRepoGone")
+		t.Error("prelim's 404/410/451 sideline must stamp via MarkRepoGone")
 	}
 	if strings.Contains(body, "store.ArchiveRepo(") {
 		t.Error("the bare ArchiveRepo call must be gone from RunPrelim — MarkRepoGone supersedes it in the sideline")

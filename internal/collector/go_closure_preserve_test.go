@@ -37,7 +37,6 @@ func TestIncompleteGoExpansionPreservesPriorClosure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	// v0.27.152 (round 31): the repo_id comes from the SEQUENCE via
@@ -131,7 +130,6 @@ func TestGoModuleRemovalClearsStaleClosure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	testMigrate(ctx, t, store)
 
 	repoID, err := store.UpsertRepo(ctx, &model.Repo{

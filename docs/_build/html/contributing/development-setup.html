@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Local development setup &mdash; Aveloxis 0.29.55 documentation</title>
+  <title>Local development setup &mdash; Aveloxis 0.29.57 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b8f7acb8"></script>
+      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -245,6 +245,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -606,6 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#process-stalled-the-whole-collector-stops-for-seconds-at-a-time"><code class="docutils literal notranslate"><span class="pre">process</span> <span class="pre">stalled</span></code> — the whole collector stops for seconds at a time</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#brief-database-unavailable-blips-that-aren-t-real-outages-connect-sasl-auth-timeouts">Brief “database unavailable” blips that aren’t real outages (connect/SASL-auth timeouts)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-procedure">Restart procedure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#checking-queue-status">Checking queue status</a><ul>
@@ -1112,7 +1114,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#key-pool-contract">Key pool contract</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#graphql-transport-the-github-default">GraphQL transport (the GitHub default)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
@@ -1700,7 +1705,7 @@ createdb<span class="w"> </span>aveloxis_dev
 </section>
 <section id="verify">
 <h3>Verify<a class="headerlink" href="#verify" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-d<span class="w"> </span>aveloxis_dev<span class="w"> </span>-c<span class="w"> </span><span class="s2">"SELECT version();"</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span>-d<span class="w"> </span>aveloxis_dev<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;SELECT version();&quot;</span>
 </pre></div>
 </div>
 <p>You should see something like <code class="docutils literal notranslate"><span class="pre">PostgreSQL</span> <span class="pre">18.3</span> <span class="pre">on</span> <span class="pre">...</span></code>. If you don’t, the rest of this chapter won’t work — fix your PostgreSQL setup first.</p>
@@ -1714,13 +1719,13 @@ createdb<span class="w"> </span>aveloxis_dev
 </div>
 <p>Edit <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> and adjust the <code class="docutils literal notranslate"><span class="pre">database</span></code> block to point at your local PostgreSQL:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"database"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"localhost"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"user"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis"</span><span class="p">,</span><span class="w">       </span><span class="c1">// or your username</span>
-<span class="w">    </span><span class="nt">"password"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w">        </span><span class="c1">// your local password (or "" if trust auth)</span>
-<span class="w">    </span><span class="nt">"dbname"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aveloxis_dev"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"sslmode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"prefer"</span>
+<span class="w">  </span><span class="nt">&quot;database&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5432</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span><span class="w">       </span><span class="c1">// or your username</span>
+<span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w">        </span><span class="c1">// your local password (or &quot;&quot; if trust auth)</span>
+<span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis_dev&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="c1">// ...</span>
 <span class="p">}</span>
@@ -1734,12 +1739,12 @@ createdb<span class="w"> </span>aveloxis_dev
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Expect a short stream of <code class="docutils literal notranslate"><span class="pre">migration</span> <span class="pre">step</span> <span class="pre">ok</span></code> log lines. The full schema (147 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation.</p>
+<p>Expect a short stream of <code class="docutils literal notranslate"><span class="pre">migration</span> <span class="pre">step</span> <span class="pre">ok</span></code> log lines. The full schema (147 tables, 20 materialized views, 50+ indexes) lands in two passes — DDL then matview creation; the second pass runs only with <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> enabled (the default), and the per-package test databases skip it.</p>
 <p>If you want to skip the matview build for faster iteration (you typically do during development):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views
 </pre></div>
 </div>
-<p>You can refresh views later with <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">run</span> <span class="pre">./cmd/aveloxis</span> <span class="pre">refresh-views</span></code> or let the scheduler’s weekly rebuild handle them.</p>
+<p>On a fresh database this leaves the materialized views uncreated. <code class="docutils literal notranslate"><span class="pre">refresh-views</span></code> and the weekly rebuild only refresh views that exist, so they keep the database view-less; <code class="docutils literal notranslate"><span class="pre">serve</span></code>, though, builds them at startup when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is on (the default) and none of the managed set exists — even on its fast path, where the schema stamp already matches its version. A partial set is reported, not rebuilt.</p>
 </section>
 <section id="optional-install-scc-scorecard">
 <h2>6. (Optional) Install scc + scorecard<a class="headerlink" href="#optional-install-scc-scorecard" title="Link to this heading"></a></h2>
@@ -1776,16 +1781,16 @@ go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="
 <section id="run-integration-tests">
 <h2>9. Run integration tests<a class="headerlink" href="#run-integration-tests" title="Link to this heading"></a></h2>
 <p>Integration tests live alongside unit tests under <code class="docutils literal notranslate"><span class="pre">internal/db/</span></code> (and a few other packages). They’re gated on <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code>:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Point at a SCRATCH database — NOT your production aveloxis_dev.</span>
-<span class="c1"># Integration tests truncate tables and write fixture rows.</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Point at a database on a SCRATCH server — never a production one.</span>
+<span class="c1"># The tests create, fill and drop databases of their own next to it.</span>
 createdb<span class="w"> </span>aveloxis_scratch_test
 
-<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">"postgres://aveloxis:yourpass@localhost:5432/aveloxis_scratch_test?sslmode=prefer"</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">AVELOXIS_TEST_DB</span><span class="o">=</span><span class="s2">&quot;postgres://aveloxis:yourpass@localhost:5432/aveloxis_scratch_test?sslmode=prefer&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./internal/db/<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>120s
 </pre></div>
 </div>
-<p>The tests run migrations against the scratch DB first, then exercise specific code paths. Tests skip cleanly if <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> is unset, so <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./...</span></code> stays fast for contributors without a database.</p>
-<p><strong>Safety:</strong> integration tests assume a scratch database. Some helpers (e.g. v0.16.6’s <code class="docutils literal notranslate"><span class="pre">RealignDueDates</span></code>) update every matching row in the queue. Pointing them at a production database would damage operator data. Use a separate scratch DB or accept the consequences.</p>
+<p>Each package’s tests run in a database of their own, created from the one you name (<code class="docutils literal notranslate"><span class="pre">aveloxis_t_&lt;pid&gt;_&lt;random&gt;</span></code>), prepared before any test, checked with the data-verify battery after them, and dropped, so the role needs <code class="docutils literal notranslate"><span class="pre">CREATEDB</span></code> (<code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">aveloxis</span> <span class="pre">CREATEDB</span></code>). See <a class="reference internal" href="testing.html"><span class="std std-doc">testing.md</span></a> (“Each package gets a database of its own”). Tests skip cleanly if <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> is unset, so <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./...</span></code> stays fast for contributors without a database.</p>
+<p><strong>Safety:</strong> point <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> at a scratch server, never a production one. Test data goes to the per-package databases, but the tests also act on the server as a whole: they create and drop databases there (the per-package ones, and <code class="docutils literal notranslate"><span class="pre">_avcolfill_sidedb</span></code> for the column-fill diff test), create and drop login roles (the backend-visibility tests), and some helpers (e.g. v0.16.6’s <code class="docutils literal notranslate"><span class="pre">RealignDueDates</span></code>) update every matching row of the database they run in.</p>
 <p>See <a class="reference internal" href="testing.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">testing.md</span></code></span></a> for the testing philosophy and patterns.</p>
 </section>
 <section id="set-up-your-editor">
@@ -1805,7 +1810,7 @@ createdb<span class="w"> </span>aveloxis_scratch_test
 </section>
 <section id="column-x-does-not-exist">
 <h3><code class="docutils literal notranslate"><span class="pre">column</span> <span class="pre">&quot;X&quot;</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span></code><a class="headerlink" href="#column-x-does-not-exist" title="Link to this heading"></a></h3>
-<p>Your binary is newer than the DB. Re-run <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">run</span> <span class="pre">./cmd/aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>. This is the v0.20.15 ERROR-level startup log that warns about exactly this state.</p>
+<p>Your binary is newer than the DB. Re-run <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">run</span> <span class="pre">./cmd/aveloxis</span> <span class="pre">migrate</span></code> (add <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code> to skip the views, unless your branch changed <code class="docutils literal notranslate"><span class="pre">matviews.sql</span></code>). This is the v0.20.15 ERROR-level startup log that warns about exactly this state.</p>
 </section>
 <section id="failed-to-connect-to-server-is-starting-up">
 <h3><code class="docutils literal notranslate"><span class="pre">failed</span> <span class="pre">to</span> <span class="pre">connect</span> <span class="pre">to</span> <span class="pre">...</span> <span class="pre">server</span> <span class="pre">is</span> <span class="pre">starting</span> <span class="pre">up</span></code><a class="headerlink" href="#failed-to-connect-to-server-is-starting-up" title="Link to this heading"></a></h3>

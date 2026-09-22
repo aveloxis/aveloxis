@@ -58,7 +58,6 @@ func TestV0264ParityBackfillEndToEnd(t *testing.T) {
 	// callbacks, and the seed-row cleanup below needs the pool alive.
 	// LIFO ordering makes this close run AFTER the deletes.
 	t.Cleanup(store.Close)
-	store.SetMatviewSkip(true)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("initial migrate: %v", err)
 	}

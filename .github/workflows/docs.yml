@@ -29,6 +29,19 @@ jobs:
       - name: Install docs toolchain
         run: pip install -r docs/requirements.txt
 
+      # The search index is built with the Python snowballstemmer and
+      # queried with the JS stemmer this Sphinx ships; they must be one
+      # Snowball version or site search misses words (v0.29.57). A Sphinx
+      # bump that ships a newer JS stemmer fails here until the
+      # snowballstemmer pin in docs/requirements.txt moves with it.
+      - name: Check the stemmer pin against Sphinx's search stemmer
+        run: |
+          js="$(python -c 'import pathlib, sphinx; print(pathlib.Path(sphinx.__file__).parent / "search" / "non-minified-js" / "english-stemmer.js")')"
+          want="$(sed -n 's/.*Generated from english\.sbl by Snowball \([^ ]*\).*/\1/p' "$js" | head -n 1)"
+          have="$(python -c 'import importlib.metadata as m; print(m.version("snowballstemmer"))')"
+          echo "Sphinx's JS stemmer: Snowball ${want:-unknown}; installed snowballstemmer: $have"
+          test -n "$want" && test "$want" = "$have"
+
       # -W promotes every warning to an error; --keep-going still walks the
       # whole tree so one run lists ALL offenders, not just the first.
       - name: Build docs (warnings are errors)

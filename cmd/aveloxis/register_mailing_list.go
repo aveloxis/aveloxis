@@ -11,6 +11,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/spf13/cobra"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // registerMailingListCmd registers `aveloxis register-mailing-list` — a
@@ -45,6 +47,11 @@ func registerMailingListCmd(cfgPath *string) *cobra.Command {
 			}
 			defer store.Close()
 
+			// Refused before the lookup: the error texts below quote the URL
+			// (round 7).
+			if err := platform.RefuseURLUserinfo(repoURL); err != nil {
+				return fmt.Errorf("--repo: %w", err)
+			}
 			repoID, err := store.FindRepoByURL(ctx, repoURL)
 			if err != nil || repoID == 0 {
 				return fmt.Errorf("repo %q not found in catalog — add it first (add-repo / load-foundation-core-repos)", repoURL)

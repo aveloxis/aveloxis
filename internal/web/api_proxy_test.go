@@ -132,7 +132,7 @@ func TestAPIProxyReturns502WhenBackendDown(t *testing.T) {
 // silently disable the proxy; it falls back to 127.0.0.1:8383 so the "just
 // works" configuration (aveloxis start all, no custom config) keeps working.
 func TestAPIProxyDefaultURLFallback(t *testing.T) {
-	s := New(nil, config.WebConfig{Addr: ":0"}, nil, slog.Default())
+	s := New(nil, config.WebConfig{Addr: ":0"}, nil, "", slog.Default())
 	if s.apiProxy == nil {
 		t.Fatal("empty api_internal_url should fall back to a default, not disable the proxy")
 	}
@@ -146,5 +146,5 @@ func newTestServerWithAPIURL(t *testing.T, apiURL string) *Server {
 	return New(nil, config.WebConfig{
 		Addr:           ":0",
 		APIInternalURL: apiURL,
-	}, nil, slog.Default())
+	}, nil, "", slog.Default())
 }

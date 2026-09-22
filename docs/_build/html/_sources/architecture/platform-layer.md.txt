@@ -115,6 +115,26 @@ Other behaviour:
 
 The sub-interface tables above describe the REST methods — which remain first-class (GitLab composes them; they are also the `"rest"` escape hatch). But since v0.26.0 the DEFAULT GitHub transport is GraphQL: `ListIssuesAndPRs` enumerates issues + PRs in cursor-paginated GraphQL queries, and `FetchPRBatch` fetches 10–25 PRs with ALL their children (labels, assignees, reviewers, reviews, commits, files, comments) in one aliased query, with automatic batch subdivision on transient failures and a per-PR REST rescue at size 1. Both are `platform.Client` methods; GitLab implements them as REST composition.
 
+### GraphQL errors that arrive with HTTP 200
+
+GitHub reports several conditions in the response body of a 200, so no
+status-code arm ever sees them. Each has its own class, because the recovery
+differs:
+
+| Body | Class | What the client does |
+|---|---|---|
+| `RATE_LIMITED` (any spelling) | rate limit | benches the key's GraphQL budget and rotates to another key |
+| `RESOURCE_LIMITS_EXCEEDED` | transient, `ErrResourceLimits` | the caller halves the batch — the one condition where a smaller query provably helps |
+| `Something went wrong while executing your query …` (no type) | transient, `ErrGraphQLExecutionTimeout` | retried with backoff like a 5xx; an exhausted budget leaves a transient error, so batching callers subdivide (v0.29.56) |
+| `NOT_FOUND` / `FORBIDDEN` per path | skip | the other aliases' data is kept; the missing node is absent, never zero |
+
+The execution timeout is GitHub's answer for a query its resolver could not
+finish. It used to classify fatal, so nothing retried or subdivided it: on
+2026-09-17 it failed all seven contributor-activity ticks and the sweep wrote
+nothing for three days. It is intermittent — a probe re-ran the batch that had
+failed every tick and all 100 queries succeeded — which is why a plain retry is
+the first response.
+
 ## Pagination
 
 Both GitHub and GitLab use 100-item pages. The pagination engine is shared, with platform-specific next-page resolution:

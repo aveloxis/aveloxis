@@ -61,7 +61,9 @@ func TestAllLibyearResolversParseRealRegistryShapes(t *testing.T) {
 			libyearDep{Name: "serde", Version: "1.0.0", Manager: "cargo"}, "pkg:cargo/serde@"},
 		{"rubygems", "rubygems_rails.json", &rubygemsRegistryBase, resolveRubyGemsLibyear,
 			libyearDep{Name: "rails", Version: "7.0.0", Manager: "gem"}, "pkg:gem/rails@"},
-		{"maven", "maven_commonslang.json", &mavenSearchBase, resolveMavenLibyear,
+		// v0.29.56: Maven Central's repository metadata (captured live
+		// 2026-09-17), not the search API.
+		{"maven", "maven_commonslang3_metadata.xml", &mavenRepositoryBase, resolveMavenLibyear,
 			libyearDep{Name: "org.apache.commons:commons-lang3", Version: "3.12.0", Manager: "maven"}, "pkg:maven/org.apache.commons/commons-lang3@"},
 		{"packagist", "packagist_monolog.json", &packagistRegistryBase, resolvePackagistLibyear,
 			libyearDep{Name: "monolog/monolog", Version: "3.0.0", Manager: "composer"}, "pkg:composer/monolog/monolog@"},
@@ -73,11 +75,6 @@ func TestAllLibyearResolversParseRealRegistryShapes(t *testing.T) {
 			libyearDep{Name: "http", Version: "1.0.0", Manager: "pub"}, "pkg:pub/http@"},
 		{"hackage", "hackage_aeson_preferred.json", &hackageRegistryBase, resolveHackageLibyear,
 			libyearDep{Name: "aeson", Version: "2.0.0.0", Manager: "haskell"}, "pkg:hackage/aeson@"},
-		{"swiftpm", "github_alamofire_latest.json", &githubAPIBase, resolveSwiftPMLibyear,
-			// SwiftPM carries the git URL in Requirement (Package.swift's
-			// .package(url:)) — Name holds the package label.
-			libyearDep{Name: "Alamofire", Version: "5.8.0", Manager: "swift",
-				Requirement: "https://github.com/Alamofire/Alamofire.git"}, "pkg:swift/"},
 	}
 
 	for _, tc := range cases {
@@ -112,5 +109,31 @@ func TestAllLibyearResolversParseRealRegistryShapes(t *testing.T) {
 				t.Errorf("%s: purl %q, want canonical prefix %q", tc.name, row.Purl, tc.purlWant)
 			}
 		})
+	}
+}
+
+// TestSwiftPMResolverParsesRealReleaseShape: SwiftPM resolves through the
+// key-pooled GitHub client (v0.29.56), so its real captured release body
+// is served by a fake client instead of a base-URL override. SwiftPM
+// carries the git URL in Requirement (Package.swift's .package(url:));
+// Name holds the package label.
+func TestSwiftPMResolverParsesRealReleaseShape(t *testing.T) {
+	data, err := os.ReadFile("testdata/registries/github_alamofire_latest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := &fakeGitHubAPI{answers: map[string]string{
+		"/repos/Alamofire/Alamofire/releases/latest": string(data),
+	}}
+	row, err := resolveSwiftPMLibyear(context.Background(), gh, libyearDep{Name: "Alamofire", Version: "5.8.0", Manager: "swift",
+		Requirement: "https://github.com/Alamofire/Alamofire.git"})
+	if err != nil {
+		t.Fatalf("swiftpm resolver error against REAL captured shape: %v", err)
+	}
+	if row.LatestVersion == "" {
+		t.Error("swiftpm: LatestVersion empty — the parser read nothing from the real release shape")
+	}
+	if !strings.HasPrefix(row.Purl, "pkg:swift/") {
+		t.Errorf("swiftpm: purl %q, want canonical prefix pkg:swift/", row.Purl)
 	}
 }

@@ -323,7 +323,7 @@ func mailingListBackendFor(sys *mailinglist.System, userAgent string) mailinglis
 // would starve the high-msg_id tail forever. A pass ends when the
 // cursor clears the ceiling (never on rows-affected — sparse windows
 // legally resolve 0); the floor is cached for the process lifetime
-// (~17.5s to compute, and it never moves down).
+// (an index endpoint read since v0.29.58, and it never moves down).
 func (s *Scheduler) runMailingListSenderBackfill(ctx context.Context) {
 	interval := s.cfg.Collection.MailingListSenderBackfillInterval()
 	// SR-10's logging half: the EFFECTIVE cadence, post-default.

@@ -6,6 +6,8 @@ package db
 import (
 	"context"
 	"fmt"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // GetUserIDByGHLogin looks up an aveloxis_ops.users row by GitHub login so
@@ -37,6 +39,14 @@ func (s *PostgresStore) GetUserIDByGHLogin(ctx context.Context, ghLogin string) 
 func (s *PostgresStore) UpsertFoundationMembership(ctx context.Context,
 	foundation, status, projectName, homepageURL, repoURL string,
 ) error {
+	// Both URL columns are stored verbatim; a credential in either is
+	// refused at the writer (round 7 — the sentinel's doc claims every
+	// writer, so every writer refuses).
+	for _, u := range []string{homepageURL, repoURL} {
+		if err := platform.RefuseURLUserinfo(u); err != nil {
+			return fmt.Errorf("foundation membership %s/%s: %w", foundation, projectName, err)
+		}
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.foundation_membership
 		    (foundation, status, project_name, homepage_url, repo_url)

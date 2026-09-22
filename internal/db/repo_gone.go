@@ -10,7 +10,7 @@
 //
 // repos.repo_gone_at is the marker: NULL = reachable (or never
 // probed since the column landed); a timestamp = prelim's probe got
-// a DEFINITIVE 404/410. repo_archived alone cannot express this —
+// a DEFINITIVE 404/410/451. repo_archived alone cannot express this —
 // it conflates "GitHub says archived" (still public, still cycling)
 // with "unreachable" (privatized or deleted).
 

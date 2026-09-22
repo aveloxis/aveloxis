@@ -111,25 +111,29 @@ func TestResolveMirrorLinkByNodeIDRoutesByPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed repo: %v", err)
 	}
+	// Cleanup is registered BEFORE the first seed, and residue from an earlier
+	// run is cleared first (v0.29.57): the seeds use fixed ids, and a run that
+	// died between the two seeds (a 40P01 on the shared scratch DB) used to
+	// leak its PR row past a cleanup registered only after both succeeded —
+	// every later run then failed "seed pr" on the unique key.
+	t.Cleanup(func() {
+		c := context.Background()
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id = $1`, repoID)
+	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
+
 	// Distinct node IDs so a wrong-table lookup cannot accidentally succeed.
 	const prNode, issueNode = "PR_avTESTnode111", "I_avTESTnode222"
 	var wantPR, wantIssue int64
-	if err := store.pool.QueryRow(ctx, `
+	mustQueryRowRetry(ctx, t, store, `
 		INSERT INTO aveloxis_data.pull_requests (repo_id, platform_pr_id, pr_number, node_id)
-		VALUES ($1, 99000001, 990001, $2) RETURNING pull_request_id`, repoID, prNode).Scan(&wantPR); err != nil {
-		t.Fatalf("seed pr: %v", err)
-	}
-	if err := store.pool.QueryRow(ctx, `
+		VALUES ($1, 99000001, 990001, $2) RETURNING pull_request_id`, &wantPR, repoID, prNode)
+	mustQueryRowRetry(ctx, t, store, `
 		INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, node_id)
-		VALUES ($1, 99000002, 990002, $2) RETURNING issue_id`, repoID, issueNode).Scan(&wantIssue); err != nil {
-		t.Fatalf("seed issue: %v", err)
-	}
-	t.Cleanup(func() {
-		c := context.Background()
-		_, _ = store.pool.Exec(c, `DELETE FROM aveloxis_data.pull_requests WHERE repo_id = $1`, repoID)
-		_, _ = store.pool.Exec(c, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
-		_, _ = store.pool.Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
-	})
+		VALUES ($1, 99000002, 990002, $2) RETURNING issue_id`, &wantIssue, repoID, issueNode)
 
 	t.Run("PR_ resolves to the pull request", func(t *testing.T) {
 		gotIssue, gotPR, err := store.ResolveMirrorLinkByNodeID(ctx, prNode, repoID, nil)

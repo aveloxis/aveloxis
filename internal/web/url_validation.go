@@ -6,6 +6,8 @@ package web
 import (
 	"net/url"
 	"strings"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // URLValidationResult describes the outcome of validating a repo URL.
@@ -39,6 +41,12 @@ func ValidateRepoURL(rawURL string) URLValidationResult {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" {
 		return URLValidationResult{Error: "Invalid URL format. Expected: https://github.com/owner/repo"}
+	}
+	// Credentials in a repo URL would be stored, shown and handed to
+	// subprocesses (v0.29.57, Copilot review 5261384568). platform.RefuseURLUserinfo
+	// is the one check; the store refuses the same URL on write.
+	if platform.RefuseURLUserinfo(rawURL) != nil {
+		return URLValidationResult{Error: "URL must not contain credentials (user:token@host). Expected: https://github.com/owner/repo"}
 	}
 
 	// Must have at least owner/repo in the path.

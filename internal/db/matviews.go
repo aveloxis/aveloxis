@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -36,23 +37,102 @@ func CreateMaterializedViews(ctx context.Context, pg *PostgresStore, logger *slo
 	return nil
 }
 
-// CreateMaterializedViewsIfNotExist creates views only on first run.
-// If the first view already exists, this is a no-op. Much faster than
-// CreateMaterializedViews which drops and recreates every time.
+// MatviewAliasNames are the two plain VIEWs matviews.sql manages beside
+// the materialized ones (aliases over a matview, sharing its lifecycle; not
+// refreshed, since a plain view has no data of its own). The ONE list
+// (SR-17): the startup probe counts them, and the drift test that bans new
+// plain views in matviews.sql reads it.
+var MatviewAliasNames = []string{"explorer_libyear_all", "augur_new_contributors"}
+
+// CreateMaterializedViewsIfNotExist is serve's startup rule for the views
+// (MatviewsIfMissing): an EMPTY managed set is built (a first run, or a
+// deployment that turned the feature on); a COMPLETE set is left alone; a
+// PARTIAL set is reported at ERROR, naming the missing relations and the
+// plain `aveloxis migrate` that rebuilds them, and NOT rebuilt here. The
+// probe covers the whole managed set — the 20 matviews and the 2 alias
+// views — not one sentinel, so a relation dropped by hand, or a view a new
+// release adds to matviews.sql, is noticed at every start (Copilot review
+// 5271953014: the sentinel `api_get_all_repo_prs` alone let a partial set
+// stay partial silently). Startup does not rebuild a partial set because
+// matviews.sql is one batch: rebuilding "the missing one" drops and
+// re-creates all twenty, hours of work on a fleet-scale database before
+// the scheduler starts — the 2024 decision that startup never does that
+// (fix-review round 2 traced it: a release adding a 21st view would have
+// rebuilt every fleet's set at its next `serve`). Operator-facing, observation
+// only (SR-7); the deploy checklist's plain migrate is the fix.
 func CreateMaterializedViewsIfNotExist(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
-	var exists bool
-	if err := pg.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM pg_matviews
-			WHERE schemaname = 'aveloxis_data' AND matviewname = 'api_get_all_repo_prs'
-		)`).Scan(&exists); err != nil {
+	present, err := managedMatviewsPresent(ctx, pg)
+	if err != nil {
 		return fmt.Errorf("probing for existing matviews: %w", err)
 	}
-	if exists {
-		logger.Info("materialized views already exist, skipping creation on startup (use 'aveloxis refresh-views' or wait for scheduled rebuild)")
+	managed := len(matviewNames) + len(MatviewAliasNames)
+	switch {
+	case present == managed:
+		logger.Info("materialized views already exist, skipping creation on startup (their data refreshes with 'aveloxis refresh-views' or the weekly rebuild; a changed definition needs a plain 'aveloxis migrate')",
+			"views", present)
 		return nil
+	case present == 0:
+		return CreateMaterializedViews(ctx, pg, logger)
 	}
-	return CreateMaterializedViews(ctx, pg, logger)
+	missing, err := managedMatviewsMissing(ctx, pg)
+	if err != nil {
+		return fmt.Errorf("listing missing matviews: %w", err)
+	}
+	logger.Error("materialized views are incomplete — NOT rebuilt at startup (matviews.sql is one batch, so that would re-create all of them); run a plain 'aveloxis migrate' (without --skip-views) to build the missing ones",
+		"present", present, "managed", managed, "missing", missing)
+	return nil
+}
+
+// managedMatviewsMissing names the managed relations absent from the
+// database, in matviewNames order, then MatviewAliasNames.
+func managedMatviewsMissing(ctx context.Context, pg *PostgresStore) ([]string, error) {
+	rows, err := pg.pool.Query(ctx, `
+		SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'aveloxis_data' AND c.relkind IN ('m', 'v')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var missing []string
+	for _, n := range matviewNames {
+		if b := strings.TrimPrefix(n, "aveloxis_data."); !have[b] {
+			missing = append(missing, b)
+		}
+	}
+	for _, a := range MatviewAliasNames {
+		if !have[a] {
+			missing = append(missing, a)
+		}
+	}
+	return missing, nil
+}
+
+// managedMatviewsPresent counts how many of the managed relations — the
+// matviews of matviewNames (schema-qualified in the list) and the alias
+// views of MatviewAliasNames — exist in the database, by relation kind in
+// pg_class (a typed catalogue view would miss the other kind).
+func managedMatviewsPresent(ctx context.Context, pg *PostgresStore) (int, error) {
+	bare := make([]string, 0, len(matviewNames)+len(MatviewAliasNames))
+	for _, n := range matviewNames {
+		bare = append(bare, strings.TrimPrefix(n, "aveloxis_data."))
+	}
+	bare = append(bare, MatviewAliasNames...)
+	var present int
+	err := pg.pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'aveloxis_data' AND c.relkind IN ('m', 'v') AND c.relname = ANY($1)`, bare).Scan(&present)
+	return present, err
 }
 
 // matviewNames lists all materialized views to refresh, in order.
@@ -93,7 +173,27 @@ var matviewNames = []string{
 // Falls back to non-concurrent refresh if the view has never been populated.
 func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	start := time.Now()
-	logger.Info("refreshing materialized views", "count", len(matviewNames))
+
+	// Materialized views are optional (v0.29.57), so ask the DATABASE
+	// whether this one has them — not the config, which can disagree with
+	// reality in both directions: a deployment that turned them off still
+	// HAS the views it built before (turning the knob off does not drop
+	// them), and one that turned them on has none until a migrate runs.
+	// Refreshing what is not there logged twenty WARNs and a "20 of 20
+	// views stale" ERROR on every rebuild day, about a feature the operator
+	// had switched off. This check owns the question for BOTH callers —
+	// the weekly rebuild and `aveloxis refresh-views`.
+	var present int
+	if err := pg.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data'`).Scan(&present); err != nil {
+		return fmt.Errorf("checking for materialized views: %w", err)
+	}
+	if present == 0 {
+		logger.Info("no materialized views in this database — nothing to refresh (collection.materialized_views is off, or no migrate has built them yet)")
+		return nil
+	}
+
+	logger.Info("refreshing materialized views", "count", len(matviewNames), "present", present)
 
 	// Pass 26 (v0.28.18): the sibling of the dm_ aggregate fix — a failed
 	// REFRESH was a WARN and the function returned nil, so

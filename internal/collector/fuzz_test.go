@@ -109,10 +109,20 @@ func FuzzPurlHelpers(f *testing.F) {
 	})
 }
 
-// FuzzManifestParsers feeds one hostile document to every pure
-// content-string manifest parser the analysis walk dispatches. These
-// consume files exactly as they appear in cloned repositories —
-// attacker-authored by definition. Contract: never panic.
+// FuzzManifestParsers feeds one hostile document to the pure content-string
+// manifest parsers listed below. These consume files exactly as they appear
+// in cloned repositories — attacker-authored by definition. Contract: never
+// panic.
+//
+// The list is NOT every parser the analysis walk dispatches, and saying so
+// was an over-claim (v0.29.57). Absent — each stem checked against the
+// target's body by TestFuzzManifestParsersNoteIsCurrent, since the first
+// version of this note went stale within the release: the BuildGradle,
+// MixExs, Pubspec, PackageYaml, ComposerJSON, SetupCfgDeps and
+// SetupCfgVersions readers (the SetupCfgExtras reader IS here), and the
+// lockfile readers (every *Lock* parser and PackageResolved). A parser this
+// release touches is added here, which is the rule that keeps the gap from
+// growing.
 func FuzzManifestParsers(f *testing.F) {
 	// Seed with the committed manifest corpus (the v0.27.72 golden net) —
 	// every fixture carries both legit declarations and production
@@ -148,5 +158,28 @@ func FuzzManifestParsers(f *testing.F) {
 		_ = parsePoetryVersions(content)
 		_ = parsePipfileVersions(content)
 		_ = parseSetupPyVersions(content)
+		// The dev/build readers walk the same files with their own
+		// line-splitting, and one of them met this contract the hard way:
+		// its case arm is chosen on an `=` in the RAW line while the value
+		// is split from the comment-stripped one, so `black  # = "^24"`
+		// reached the split with nothing to split (v0.29.57).
+		_ = parsePyprojectDevBuildVersions(content)
+		_ = parsePipfileDevPackages(content)
+		_ = parseSetupPyDevBuildVersions(content)
+		_ = parseSetupCfgExtrasVersions(content)
+		// Rewritten in v0.29.57 to strip `//` comments.
+		_ = parseBuildSbt(content)
+		_ = parseBuildSbtVersions(content)
+		_ = parsePackageSwiftDeps(content)
+		_ = parsePackageSwiftVersions(content)
+		// Rewritten in v0.29.57 to strip `<!-- … -->` blocks.
+		_ = parsePomXML(content)
+		_ = parsePomXMLVersions(content)
+		_, _ = parseCsprojDeps(content)
+		_ = parseCsprojVersions(content)
+		_ = parseNuGetPackagesConfig(content)
+		_ = parseNuGetPackagesConfigVersions(content)
+		_, _ = parseDirectoryPackagesProps(content)
+		_ = parseDirectoryPackagesPropsVersions(content)
 	})
 }

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.25.5 — source-contract tests for the matview rewrites + four
@@ -52,11 +54,41 @@ func TestExplorerLibyearAllIsAViewAlias(t *testing.T) {
 	}
 
 	// Negative pin — the old MATERIALIZED VIEW declaration must be gone.
-	// We allow a "DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_libyear_all" line
-	// (intentionally dropping the old matview before creating the alias view).
 	body := src
 	if strings.Contains(body, "CREATE MATERIALIZED VIEW IF NOT EXISTS aveloxis_data.explorer_libyear_all") {
 		t.Error("explorer_libyear_all must NOT be declared as MATERIALIZED VIEW post-v0.25.5 — converted to a regular VIEW alias.")
+	}
+
+	assertAliasDroppedByRelkind(t, src, "explorer_libyear_all")
+}
+
+// assertAliasDroppedByRelkind pins the transition an alias that has been
+// both a matview and a plain view needs (v0.29.57, Copilot on PR #210): the
+// DROP is chosen from pg_class, because a typed DROP fails on the wrong kind
+// even with IF EXISTS (42809), and matviews.sql runs as ONE statement, so a
+// mismatch rolls back every DROP/CREATE in it — every view keeps its
+// previous definition — while the migrate's view block only WARNs. The behaviour is TestPlainMigrateRecreatesViewsWhateverKindTheAliasesAre;
+// this reads the alias's own DO block, comment-stripped, so neither prose nor
+// another alias's block can satisfy it.
+func assertAliasDroppedByRelkind(t *testing.T, src, alias string) {
+	t.Helper()
+	sql := srctest.StripSQLComments(src)
+	start := strings.Index(sql, "c.relname = '"+alias+"'")
+	if start < 0 {
+		t.Fatalf("matviews.sql must choose %s's DROP by the relkind in pg_class — a typed DROP fails on the wrong kind even with IF EXISTS.", alias)
+	}
+	end := strings.Index(sql[start:], "END $$;")
+	if end < 0 {
+		t.Fatalf("%s's DO block does not end", alias)
+	}
+	block := sql[start : start+end]
+	for _, drop := range []string{
+		"DROP MATERIALIZED VIEW aveloxis_data." + alias + " CASCADE",
+		"DROP VIEW aveloxis_data." + alias + " CASCADE",
+	} {
+		if !strings.Contains(block, drop) {
+			t.Errorf("%s's DO block must be able to run %q: the alias has been both kinds across releases, and CASCADE clears anything downstream of it.", alias, drop)
+		}
 	}
 }
 

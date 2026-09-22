@@ -85,7 +85,7 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 			if err != nil {
 				return fmt.Errorf("loading API keys: %w", err)
 			}
-			ghClient := github.New(cfg.GitHub.BaseURL, ghKeys, logger)
+			ghClient := github.New(cfg.GitHub.GitHubAPIBase(), ghKeys, logger)
 			glClient := gitlab.New(cfg.GitLab.BaseURL, glKeys, logger)
 
 			workerID := fmt.Sprintf("gap-heal-%d", os.Getpid())

@@ -1,6 +1,6 @@
 # Materialized Views
 
-Aveloxis creates **20 materialized views + 2 alias views** under the `aveloxis_data` schema. v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate `augur_new_contributors` matview and converting `explorer_libyear_all` to an alias VIEW. v0.25.6 then restored `augur_new_contributors` as a plain VIEW alias (operators query it to identify new contributors), so today's count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. They are rebuilt on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`. Alias views read live from their underlying matview and need no separate refresh.
+When `collection.materialized_views` is enabled (the default), Aveloxis creates **20 materialized views + 2 alias views** under the `aveloxis_data` schema; a deployment with it disabled has none of these relations (v0.29.57 — they are derived data, and a deployment that never queries them can skip building them). v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate `augur_new_contributors` matview and converting `explorer_libyear_all` to an alias VIEW. v0.25.6 then restored `augur_new_contributors` as a plain VIEW alias (operators query it to identify new contributors), so today's count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. Their data is refreshed on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`. A refresh keeps each view's definition; a release that changes a definition applies it with a plain `aveloxis migrate` (without `--skip-views`), which drops and re-creates the views. Alias views read live from their underlying matview and need no separate refresh.
 
 This page explains, for each view, **what a row means**, **what the complete table tells you**, and **how an open source health and sustainability analyst would actually use it**. The audience is operators and analysts, not SQL authors — the goal is to make the catalog useful without requiring a read of the underlying query.
 
@@ -8,7 +8,7 @@ This page explains, for each view, **what a row means**, **what the complete tab
 
 ## Refresh schedule
 
-The full set rebuilds weekly. Operators tune the day via `collection.matview_rebuild_day` (default `saturday`) and can force an out-of-band rebuild with `aveloxis refresh-views`. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.
+The full set rebuilds weekly. Operators tune the day via `collection.matview_rebuild_day` (default `saturday`) and can force an out-of-band refresh with `aveloxis refresh-views`. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.
 
 If the underlying data has changed only modestly since the last rebuild, the most-recent view contents continue to be query-able with stale-but-consistent data; consumers don't see partial state.
 
@@ -281,6 +281,8 @@ These three views aggregate the `repo_deps_libyear` table (one row per (repo, de
 ### `explorer_libyear_summary`
 
 **One row per (repo, month, year).** Columns: `repo_id`, `repo_name`, `avg_libyear`, `month`, `year`.
+
+**Order**: the definition orders rows newest month first and, within a month, stalest first with unknown libyear (`NULL`) last. That is only the order rows are written in: PostgreSQL returns rows in no guaranteed order unless the query has its own `ORDER BY`, so a query that needs stalest first adds `ORDER BY avg_libyear DESC NULLS LAST`.
 
 **What the table tells you**: track dependency staleness over time per repo. A repo whose `avg_libyear` is climbing month-over-month is letting its deps drift; a repo whose `avg_libyear` is dropping is actively updating.
 

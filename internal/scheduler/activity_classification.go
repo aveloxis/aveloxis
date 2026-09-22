@@ -35,27 +35,43 @@ import (
 // the GitHub client (the DigestMailer / breadthStore narrow-interface
 // pattern).
 type contributorActivityFetcher interface {
-	FetchContributorActivity(ctx context.Context, logins []string) (map[string]model.ContributionActivity, error)
+	// Returns the activity it fetched, the logins whose chunk did NOT
+	// complete (their absence from the map says nothing), and an error
+	// describing any chunk failures.
+	FetchContributorActivity(ctx context.Context, logins []string) (map[string]model.ContributionActivity, []string, error)
 }
 
 // Cadence constants — derived, not magic. Batch 2,500 every 15 minutes
 // = 240K checks/day = the 2.44M-contributor pool every ~10 days,
 // comfortably inside the breadth cooldown the sweep shares (the two
-// stay roughly in phase). API cost: 2,500 logins / 100-per-query = 25
-// GraphQL queries per tick ≈ 2,400/day — noise against the pooled
-// 5K-points/hour/token GraphQL budget.
+// stay roughly in phase). API cost: 2,500 logins at
+// contributorActivityBatchSize (25) per query = 100 GraphQL queries per
+// tick ≈ 9,600/day — noise against the pooled 5K-points/hour/token
+// GraphQL budget. (This said "100-per-query = 25 queries" until
+// v0.29.56; the batch size has been 25 since v0.27.81.)
 const (
 	activityCheckInterval = 15 * time.Minute
 	activityCheckBatch    = 2500
 )
 
-// runActivityClassification performs one sweep tick. Failure contract:
-// a failed FETCH marks nothing (the claimed batch stays at the queue
-// head and retries next tick — a transient GraphQL outage must not
-// stamp 2,500 contributors dataless for a whole cooldown period);
-// contributors ABSENT from a successful fetch (deleted/renamed
-// accounts, per-path NOT_FOUND) are mark-only stamped so they leave
-// the NULLS-FIRST claim head (the v0.20.17 lesson).
+// runActivityClassification performs one sweep tick. Failure contract, per
+// CHUNK rather than per tick (v0.29.56):
+//
+//   - A login the fetch got no answer about — its chunk failed, or was
+//     never attempted — is UNKNOWN. It is neither classified nor stamped,
+//     so it stays at the queue head and retries next tick (a transient
+//     GraphQL outage must not stamp 2,500 contributors dataless for a
+//     whole cooldown period).
+//   - Every row the fetch returned is written, whichever chunk it came
+//     from: proven data. Discarding a tick because one chunk failed is why
+//     the sweep made no progress at all for three days (7 of 7 ticks on
+//     2026-09-17; nobody checked since 2026-09-14).
+//   - A contributor ABSENT from a chunk that COMPLETED (deleted or renamed
+//     account, per-path NOT_FOUND) is mark-only stamped so they leave the
+//     NULLS-FIRST claim head — even when another chunk in the same tick
+//     failed. Waiting for a wholly successful tick meant that during a run
+//     of partial failures nobody ever retired, and an un-retired cohort
+//     pins the head (the v0.20.17 lesson).
 func (s *Scheduler) runActivityClassification(ctx context.Context) {
 	fetcher, ok := s.ghClient.(contributorActivityFetcher)
 	if !ok {
@@ -78,22 +94,67 @@ func (s *Scheduler) runActivityClassification(ctx context.Context) {
 		logins = append(logins, c.Login)
 	}
 	start := time.Now()
-	activities, err := fetcher.FetchContributorActivity(ctx, logins)
-	if errors.Is(err, context.Canceled) {
+	activities, unfetched, fetchErr := fetcher.FetchContributorActivity(ctx, logins)
+	if errors.Is(fetchErr, context.Canceled) {
 		return // shutdown, not a failure: nothing is stamped, the batch is re-claimed next tick
 	}
-	if err != nil {
-		s.logger.Warn("activity classification: fetch failed — batch will retry next tick", "claimed", len(claimed), "error", err)
+
+	// Absence is only meaningful inside a chunk that completed. Marking on
+	// the whole batch's success (v0.29.56's first shape) meant one failing
+	// chunk per tick stopped every deleted account from ever retiring, and
+	// an un-retired cohort of 2,500 pins the NULLS-FIRST claim head (the
+	// v0.20.17 lesson).
+	updates, absent := planActivityWrites(claimed, activities, unfetched)
+	if len(updates) > 0 {
+		err := s.store.UpdateContributorActivityBatch(ctx, updates)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if err != nil {
+			s.logger.Warn("activity classification: update failed", "count", len(updates), "error", err)
+			return
+		}
+	}
+	// Marking comes BEFORE the fetch-error return: `absent` holds only
+	// logins whose own chunk completed, so they are deleted or renamed
+	// whatever happened elsewhere in the tick. Returning first (v0.29.56's
+	// first shape) made the per-chunk split dead code — with one failing
+	// chunk per tick no deleted account ever retired, and an un-retired
+	// cohort pins the NULLS-FIRST claim head (the v0.20.17 lesson).
+	if len(absent) > 0 {
+		err := s.store.MarkActivityCheckedBatch(ctx, absent)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if err != nil {
+			s.logger.Warn("activity classification: mark-absent failed", "count", len(absent), "error", err)
+		}
+	}
+	if fetchErr != nil {
+		s.logger.Warn("activity classification: some chunks failed — fetched rows kept, unanswered logins retry next tick",
+			"claimed", len(claimed), "classified", len(updates), "retired", len(absent), "error", fetchErr)
 		return
 	}
+	s.logger.Info("activity classification cycle complete",
+		"claimed", len(claimed), "classified", len(updates), "absent", len(absent),
+		"duration", time.Since(start).Truncate(time.Millisecond))
+}
 
-	// classification split: present → classified update; absent → mark-only.
-	var updates []db.ContributorActivityUpdate
-	var absent []string
+// planActivityWrites splits a fetch result into classified updates (logins
+// the fetch returned) and mark-only absentees (logins a COMPLETED chunk did
+// not return — deleted or renamed accounts). A login the fetch never got an
+// answer for is unknown, not deleted: it is left unstamped and retried.
+func planActivityWrites(claimed []db.ActivityCheckContributor, activities map[string]model.ContributionActivity, unfetched []string) (updates []db.ContributorActivityUpdate, absent []string) {
+	noAnswer := make(map[string]bool, len(unfetched))
+	for _, l := range unfetched {
+		noAnswer[l] = true
+	}
 	for _, c := range claimed {
 		act, ok := activities[c.Login]
 		if !ok {
-			absent = append(absent, c.ID)
+			if !noAnswer[c.Login] {
+				absent = append(absent, c.ID)
+			}
 			continue
 		}
 		public := act.PublicContributions()
@@ -106,26 +167,5 @@ func (s *Scheduler) runActivityClassification(ctx context.Context) {
 			ActivityClass:        model.ClassifyContributorActivity(public, act.Restricted, lastYear),
 		})
 	}
-	if len(updates) > 0 {
-		err := s.store.UpdateContributorActivityBatch(ctx, updates)
-		if errors.Is(err, context.Canceled) {
-			return // shutdown, not a failure
-		}
-		if err != nil {
-			s.logger.Warn("activity classification: update failed", "count", len(updates), "error", err)
-			return
-		}
-	}
-	if len(absent) > 0 {
-		err := s.store.MarkActivityCheckedBatch(ctx, absent)
-		if errors.Is(err, context.Canceled) {
-			return // shutdown, not a failure
-		}
-		if err != nil {
-			s.logger.Warn("activity classification: mark-absent failed", "count", len(absent), "error", err)
-		}
-	}
-	s.logger.Info("activity classification cycle complete",
-		"claimed", len(claimed), "classified", len(updates), "absent", len(absent),
-		"duration", time.Since(start).Truncate(time.Millisecond))
+	return updates, absent
 }

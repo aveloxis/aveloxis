@@ -115,13 +115,17 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 		// A URL the database cannot store is the caller's mistake, not an
 		// outage (round-25 review: a NUL byte or an over-long URL was a 500
 		// saying "try again").
-		{"NUL in a URL", store, gid, `{"urls":["` + urlPrefix + `nul\u0000x"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
-		{"NUL in an org URL", store, gid, `{"url":"https://github.com/_avapi-add-status-nul\u0000x","kind":"org"}`, http.StatusBadRequest, "invalid or too long", false},
-		{"URL too long", store, gid, `{"urls":["` + urlPrefix + incompressible(6000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
+		{"NUL in a URL", store, gid, `{"urls":["` + urlPrefix + `nul\u0000x"],"kind":"repo"}`, http.StatusBadRequest, "invalid, carries credentials or is too long", false},
+		{"NUL in an org URL", store, gid, `{"url":"https://github.com/_avapi-add-status-nul\u0000x","kind":"org"}`, http.StatusBadRequest, "invalid, carries credentials or is too long", false},
+		{"URL too long", store, gid, `{"urls":["` + urlPrefix + incompressible(6000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid, carries credentials or is too long", false},
 		// Round 27: past 8191 bytes Postgres's index-size error named no index
 		// and was answered 500.
-		{"URL far too long", store, gid, `{"urls":["` + urlPrefix + incompressible(9000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid or too long", false},
-		{"org URL too long", store, gid, `{"url":"https://github.com/` + incompressible(9000) + `","kind":"org"}`, http.StatusBadRequest, "invalid or too long", false},
+		{"URL far too long", store, gid, `{"urls":["` + urlPrefix + incompressible(9000) + `"],"kind":"repo"}`, http.StatusBadRequest, "invalid, carries credentials or is too long", false},
+		{"org URL too long", store, gid, `{"url":"https://github.com/` + incompressible(9000) + `","kind":"org"}`, http.StatusBadRequest, "invalid, carries credentials or is too long", false},
+		// Review 5261384568: credentials in a URL are the caller's mistake and
+		// must not be stored, shown or echoed.
+		{"credentials in a URL", store, gid, `{"urls":["https://user:s3cret-token@git.example.invalid/_avapi-add-status/creds"],"kind":"repo"}`, http.StatusBadRequest, "carries credentials", false},
+		{"credentials in an org URL", store, gid, `{"url":"https://s3cret-token@github.com/_avapi-add-status-creds-org","kind":"org"}`, http.StatusBadRequest, "carries credentials", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
@@ -132,6 +136,9 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 			r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: uid}))
 			w := httptest.NewRecorder()
 			s.handleGroupAddRepo(w, r)
+			if strings.Contains(w.Body.String(), "s3cret-token") {
+				t.Errorf("the response echoes the credential: %q", w.Body.String())
+			}
 			if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.inBody) {
 				t.Errorf("= %d %q; want %d with %q", w.Code, w.Body.String(), tc.code, tc.inBody)
 			}

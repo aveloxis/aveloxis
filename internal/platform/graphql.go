@@ -153,7 +153,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// REST request (onClientHost) — refused before the loop leases a key.
 	if herr := onClientHostString(c.baseURL, url); herr != nil {
 		c.logger.Error("off-host GraphQL request refused — the endpoint leaves this client's API host or scheme, so no API key is sent",
-			"endpoint", url, "error", herr)
+			"endpoint", RedactURLUserinfo(url), "error", herr)
 		return herr
 	}
 
@@ -180,16 +180,24 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		budget = graphqlFastFailRetries
 	}
 
-	// lastRateLimit remembers the most recent in-body RATE_LIMITED so the
-	// budget-exhausted error names the real condition (the bare "exhausted
-	// N retries" text hid the cause for the 2026-05-13 stuck-repo cohort).
-	// rateLimitAttempt records WHICH attempt it was: the rate-limit wrap
-	// applies only when the FINAL attempt was the rate limit — a mixed
-	// exhaustion (one rate limit then nine 5xxs) must classify Transient,
-	// or subdividing/deferring callers dispatch on a stale cause (review
-	// F3).
-	var lastRateLimit error
-	rateLimitAttempt := -1
+	// lastCause remembers the most recent named condition so the
+	// budget-exhausted error names the real one (the bare "exhausted N
+	// retries" text hid the cause for the 2026-05-13 stuck-repo cohort).
+	// lastCauseAttempt records WHICH attempt it was: the wrap applies only
+	// when the FINAL attempt carried it — a mixed exhaustion (one rate
+	// limit then nine 5xxs) must classify Transient, or subdividing and
+	// deferring callers dispatch on a stale cause (review F3).
+	//
+	// ONE pair, not one per condition (v0.29.57): a rate limit rotates to a
+	// fresh key and undoes the budget spend, so the replacement request
+	// REUSES that attempt index. Separate per-condition markers could both
+	// equal budget-1, and whichever arm was written first won — reporting a
+	// rate limit for an attempt that actually timed out, which makes a
+	// subdivision caller defer where it should halve. Whichever condition
+	// is recorded last is the one that exhausted the budget.
+	var lastCause error
+	lastCauseAttempt := -1
+	noteCause := func(err error, attempt int) { lastCause, lastCauseAttempt = err, attempt }
 
 	// Copilot round 24 (PR #193): an in-body rate-limit rotation swaps to a
 	// FRESH key — it is not a transport retry and must not spend the fixed
@@ -253,11 +261,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// v0.27.28: cancellation bails quietly before the
 			// "retrying" WARN — same contract as httpclient.Get.
 			if ctx.Err() != nil {
-				c.logger.Debug("graphql request aborted by context cancellation", "url", url)
+				c.logger.Debug("graphql request aborted by context cancellation", "url", RedactURLUserinfo(url))
 				return ctx.Err()
 			}
 			c.logger.Warn("graphql request failed, retrying",
-				"url", url, "query", query, "attempt", attempt+1, "error", err)
+				"url", RedactURLUserinfo(url), "query", query, "attempt", attempt+1, "error", err)
 			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
 				return err
 			}
@@ -368,7 +376,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 					// the happy-path-after-abort recovery.
 					wait := time.Duration(readRetries) * time.Second
 					c.logger.Warn("graphql body read error, retrying",
-						"url", url, "error", readErr, "query", query,
+						"url", RedactURLUserinfo(url), "error", readErr, "query", query,
 						"read_retry", readRetries, "wait", wait)
 					// The read-retry sub-budget's sleep always precedes a
 					// real retry (the guard above), so it routes through
@@ -393,16 +401,29 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// or fast-fails for callers with their own recovery
 				// machinery.
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
-					"url", url, "attempt", attempt+1, "error", parsed,
+					"url", RedactURLUserinfo(url), "attempt", attempt+1, "error", parsed,
 					"token_prefix", tokenPrefix(key.Token))
-				lastRateLimit = parsed
-				rateLimitAttempt = attempt
+				noteCause(parsed, attempt)
 				if rotations < maxRotations {
 					// A key rotation, not a transport retry — undo this
 					// iteration's budget spend (the loop post-increment
 					// re-adds it) so all keys get a shot.
 					rotations++
 					attempt--
+				}
+				continue
+			}
+			if errors.Is(parsed, ErrGraphQLExecutionTimeout) {
+				// v0.29.56: GitHub could not finish the query. It is
+				// intermittent, so retry it like a 5xx (same backoff, same
+				// budget); an exhausted budget returns the timeout itself,
+				// which classifies ClassTransient for subdivision callers.
+				noteCause(parsed, attempt)
+				wait := jitteredBackoff(attempt)
+				c.logger.Warn("graphql execution timeout, retrying with backoff",
+					"url", RedactURLUserinfo(url), "query", query, "wait", wait, "attempt", attempt+1, "error", parsed)
+				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
+					return err
 				}
 				continue
 			}
@@ -416,7 +437,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			// The strike was recorded by UpdateFromResponse under the
 			// lease (Copilot review round 2 on PR #203).
-			c.logger.Warn("graphql 401 — auth failure recorded (quarantined only after repeated 401s)", "url", url)
+			c.logger.Warn("graphql 401 — auth failure recorded (quarantined only after repeated 401s)", "url", RedactURLUserinfo(url))
 			continue
 
 		case resp.StatusCode == http.StatusForbidden:
@@ -426,7 +447,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// key; anything else is a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
-				c.logger.Info("graphql secondary rate limit", "url", url, "query", query, "wait", wait,
+				c.logger.Info("graphql secondary rate limit", "url", RedactURLUserinfo(url), "query", query, "wait", wait,
 					"token_prefix", tokenPrefix(key.Token))
 				// 2026-09-12 (Bug C of the chaoss.tv analysis): rest THIS
 				// key in the pool for the Retry-After. Pre-fix only this
@@ -441,9 +462,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// in-body RATE_LIMITED, or a persistently-throttled
 				// exhaustion wears ErrTransient and downstream
 				// deferral/subdivision never sees ClassRateLimit.
-				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-					message: "graphql secondary rate limit (403 + Retry-After) persisted through the retry budget"}
-				rateLimitAttempt = attempt
+				noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql secondary rate limit (403 + Retry-After) persisted through the retry budget"}, attempt)
 				if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 					return err
 				}
@@ -454,7 +474,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// ErrForbidden for a key the pool just benched (Copilot review
 			// on PR #209).
 			if isPrimaryRefusal(resp) {
-				c.logger.Info("graphql rate limit exhausted", "url", url,
+				c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url),
 					"token_prefix", tokenPrefix(key.Token))
 				// Copilot round 7 on PR #193: a 403 carrying
 				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
@@ -465,9 +485,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// eligible and the retry budget burned on immediate
 				// reuse. The budget THIS client's checkout reads was
 				// marked before release (markBudgetExhausted, above).
-				lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-					message: "graphql rate limit exhausted (403 primary refusal, remaining 0) persisted through the retry budget"}
-				rateLimitAttempt = attempt
+				noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql rate limit exhausted (403 primary refusal, remaining 0) persisted through the retry budget"}, attempt)
 				// 2026-09-17: a refusal is a key ROTATION like the in-body
 				// arm, not a transport retry. The key is benched pool-wide,
 				// and spending the attempt let a pool with more refused keys
@@ -485,11 +504,10 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// no Retry-After): the same rotation as the 403 arm above. The
 			// key's checkout budget was marked before release.
 			_ = resp.Body.Close()
-			c.logger.Info("graphql rate limit exhausted", "url", url, "status", resp.StatusCode,
+			c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"token_prefix", tokenPrefix(key.Token))
-			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}
-			rateLimitAttempt = attempt
+			noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}, attempt)
 			if rotations < maxRotations {
 				rotations++
 				attempt--
@@ -499,7 +517,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		case resp.StatusCode == http.StatusTooManyRequests:
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
-			c.logger.Info("graphql 429 rate limited", "url", url, "wait", wait,
+			c.logger.Info("graphql 429 rate limited", "url", RedactURLUserinfo(url), "wait", wait,
 				"token_prefix", tokenPrefix(key.Token))
 			// 429 is the same per-key throttle as 403 + Retry-After
 			// (GitHub documents both shapes for secondary limits): the
@@ -508,9 +526,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// Round 6 suppressed #3: see the 403 branch — HTTP 429 is
 			// explicit throttling and must win the exhaustion class
 			// when it lands on the final attempt.
-			lastRateLimit = &classifiedGraphQLError{class: ClassRateLimit,
-				message: "graphql 429 rate limited persisted through the retry budget"}
-			rateLimitAttempt = attempt
+			noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+				message: "graphql 429 rate limited persisted through the retry budget"}, attempt)
 			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 				return err
 			}
@@ -523,7 +540,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			c.keys.NoteServerError()
 			wait := jitteredBackoff(attempt)
 			c.logger.Warn("graphql server error, retrying with backoff",
-				"url", url, "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
+				"url", RedactURLUserinfo(url), "query", query, "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
 			if err := retrySleep(ctx, wait, attempt, budget); err != nil {
 				return err
 			}
@@ -533,7 +550,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			c.logger.Warn("graphql unexpected status",
-				"url", url, "status", resp.StatusCode,
+				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"body_snippet", truncateBody(string(respBody), 200),
 				"attempt", attempt+1)
 			if err := retrySleep(ctx, time.Duration(attempt+1)*2*time.Second, attempt, budget); err != nil {
@@ -550,12 +567,13 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 	// subdivision never fires. Production diagnostic on
 	// 2026-05-13 traced 6 of 7 stuck repos to exactly this
 	// missing classification.
-	if lastRateLimit != nil && rateLimitAttempt == budget-1 {
-		// The FINAL attempt burned on a rate-limited key: surface the
-		// rate-limit class (subdivision defers/halves on it; the ticker
-		// callers defer to their next claim) rather than the generic
-		// transient wrap.
-		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastRateLimit)
+	if lastCause != nil && lastCauseAttempt == budget-1 {
+		// The FINAL attempt carried a named condition: surface it. A
+		// rate limit makes subdivision defer and the ticker callers wait
+		// for their next claim; an execution timeout classifies
+		// ClassTransient so they halve instead. Reporting the wrong one
+		// sends the caller down the wrong path.
+		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastCause)
 	}
 	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
 }
@@ -670,7 +688,14 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 		// rate limit left in the partial arm returns an
 		// empty-but-successful result that bypasses the mark/rotate
 		// machinery entirely.
-		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" || isGraphQLRateLimitError(e) {
+		// v0.29.56: the execution timeout hoists for the same reason. The
+		// 2026-09-17 samples were all pathless, but its two siblings above
+		// both arrive per-path, and left in the partial arm it would be
+		// logged, swallowed, and its null nodes read as ABSENT — which for
+		// the activity sweep means mark-stamping those contributors for a
+		// whole cooldown on a query that never ran.
+		if len(e.Path) == 0 || e.Type == "RESOURCE_LIMITS_EXCEEDED" || isGraphQLRateLimitError(e) ||
+			isGraphQLExecutionTimeout(e) {
 			globalErrs = append(globalErrs, e)
 		} else {
 			partialErrs = append(partialErrs, e)
@@ -724,6 +749,14 @@ func isGraphQLRateLimitError(e graphqlError) bool {
 		strings.Contains(strings.ToLower(e.Message), "rate limit")
 }
 
+// isGraphQLExecutionTimeout recognizes GitHub's answer for a query its
+// resolver could not finish (ErrGraphQLExecutionTimeout). The error has no
+// type, so the message prefix is the only signal; a typed error is never
+// read as one.
+func isGraphQLExecutionTimeout(e graphqlError) bool {
+	return e.Type == "" && strings.HasPrefix(e.Message, "Something went wrong while executing your query")
+}
+
 // rateLimitTypeOrDefault names the rate-limit error type in the message,
 // falling back to the documented spelling for typeless variants.
 func rateLimitTypeOrDefault(t string) string {
@@ -764,6 +797,15 @@ func classifyGraphQLErrors(errs []graphqlError) error {
 				class:   ClassTransient,
 				message: "graphql RESOURCE_LIMITS_EXCEEDED (query too expensive — subdivide the batch): " + e.Message,
 				wrapped: ErrResourceLimits,
+			}
+		}
+	}
+	for _, e := range errs {
+		if isGraphQLExecutionTimeout(e) {
+			return &classifiedGraphQLError{
+				class:   ClassTransient,
+				message: "graphql execution timeout (GitHub could not finish the query; retry, then subdivide): " + e.Message,
+				wrapped: ErrGraphQLExecutionTimeout,
 			}
 		}
 	}
@@ -834,6 +876,19 @@ var ErrNotGraphQLClassified = errors.New("graphql: not classified")
 // are in the batch, so no fixed batch size is safe without
 // subdivision.
 var ErrResourceLimits = errors.New("graphql resource limits exceeded")
+
+// ErrGraphQLExecutionTimeout (v0.29.56) marks GitHub's answer for a query
+// its resolver could not finish: HTTP 200 with a single TYPELESS
+// top-level error, "Something went wrong while executing your query …
+// Please include `ID` when reporting this issue." GitHub's own text for
+// it says it may be the result of a timeout. It is intermittent (the
+// 2026-09-17 probe re-ran the batch that had failed 7 production ticks
+// running and all 100 queries succeeded), so the GraphQL loop retries it
+// like a 5xx and an exhausted budget classifies ClassTransient, which is
+// what subdivision callers act on. It is deliberately NOT
+// ErrResourceLimits: that is the one condition where halving provably
+// helps.
+var ErrGraphQLExecutionTimeout = errors.New("graphql execution timeout")
 
 // isRetryableReadError classifies an error surfaced while READING or
 // DECODING a 200-OK response body — GraphQL (io.ReadAll) and REST

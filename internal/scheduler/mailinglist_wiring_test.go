@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/mailinglist"
 )
 
 // TestSchedulerConfigHasMailingListFields — Config must carry the v0.25.7
@@ -132,5 +134,27 @@ func TestMailingListWorkerStampsTheKernelBootID(t *testing.T) {
 	}
 	if strings.Contains(src, "UnixNano") {
 		t.Error("the per-process synthetic boot_id (pid-nanos) is banned — nothing compares it and it defeats the same-host liveness rule")
+	}
+}
+
+// TestEveryCatalogSystemHasABackend — v0.29.58 review round 8: PoolDemand
+// charges one worker set per CATALOG system (mailinglist.LoadSystems),
+// while spawnMailingListWorker spawns one per system whose backend
+// mailingListBackendFor supports. The two agree only while every catalog
+// entry is supported; a catalog entry with an unsupported backend would
+// silently overcount the demand (and spawn nothing), so the pin iterates
+// the real catalog rather than naming the two constructors.
+func TestEveryCatalogSystemHasABackend(t *testing.T) {
+	systems, err := mailinglist.LoadSystems()
+	if err != nil {
+		t.Fatalf("LoadSystems: %v", err)
+	}
+	if len(systems) == 0 {
+		t.Fatal("the embedded catalog is empty")
+	}
+	for name, sys := range systems {
+		if mailingListBackendFor(sys, "aveloxis-test") == nil {
+			t.Errorf("catalog system %q (backend %q) has no supported backend — PoolDemand would charge a worker set the wiring never spawns", name, sys.ArchiveBackend)
+		}
 	}
 }

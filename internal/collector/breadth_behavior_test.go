@@ -56,6 +56,14 @@ type fakeBreadthStore struct {
 	// context.Canceled for batches containing this cntrb_id — the
 	// shutdown-mid-insert shape (Copilot round 8).
 	insertCanceledFor string
+	// getNewestErrFor returns a per-contributor error from
+	// GetNewestContributorRepoEvent (checked before getNewestErr).
+	getNewestErrFor map[string]error
+	// onGetNewest and onInsert run on those calls (onInsert after a
+	// successful insert), outside the lock — a test uses them to land a
+	// shutdown at an exact point in the run.
+	onGetNewest func(cntrbID string)
+	onInsert    func(rows []*db.ContributorRepoRow)
 }
 
 func (f *fakeBreadthStore) GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]db.BreadthContributor, error) {
@@ -87,8 +95,14 @@ func (f *fakeBreadthStore) RenameContributorGhLogin(ctx context.Context, cntrbID
 }
 
 func (f *fakeBreadthStore) GetNewestContributorRepoEvent(ctx context.Context, cntrbID string) (time.Time, error) {
+	if f.onGetNewest != nil {
+		f.onGetNewest(cntrbID)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.getNewestErrFor[cntrbID]; err != nil {
+		return time.Time{}, err
+	}
 	if f.getNewestErr != nil {
 		return time.Time{}, f.getNewestErr
 	}
@@ -116,6 +130,11 @@ func (f *fakeBreadthStore) InsertContributorRepoBatch(ctx context.Context, rows 
 	f.insertedRows = append(f.insertedRows, rows...)
 	for _, r := range rows {
 		f.ops = append(f.ops, "insert:"+r.CntrbID)
+	}
+	if f.onInsert != nil {
+		f.mu.Unlock()
+		f.onInsert(rows)
+		f.mu.Lock()
 	}
 	return nil
 }
@@ -212,8 +231,7 @@ func TestBreadthCounterResetsOnSuccess(t *testing.T) {
 }
 
 // Healthy responses must never trip the breaker, every contributor must
-// be marked attempted (success or empty — the v0.20.17 unconditional
-// stamp), and the counter must reset on success so isolated failures
+// be marked attempted (success or empty — the v0.20.17 stamp), and the counter must reset on success so isolated failures
 // can't accumulate across a healthy run.
 func TestBreadthHealthyRunDoesNotTrip(t *testing.T) {
 	store := &fakeBreadthStore{contributors: breadthFixture(30)}
@@ -231,7 +249,7 @@ func TestBreadthHealthyRunDoesNotTrip(t *testing.T) {
 	}
 	if len(store.attempted) != 30 {
 		t.Errorf("every contributor must be marked attempted (got %d of 30) — the "+
-			"unconditional stamp is what drains the cooldown queue", len(store.attempted))
+			"stamp, set whether or not events were found, is what drains the cooldown queue", len(store.attempted))
 	}
 }
 

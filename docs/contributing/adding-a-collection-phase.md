@@ -65,6 +65,9 @@ func (sc *StagedCollector) collectThings(ctx context.Context, sw *db.StagingWrit
 
     for thing, err := range sc.client.ListThings(ctx, owner, repo, since) {
         if err != nil {
+            if errors.Is(err, context.Canceled) {
+                return // shutdown is not a failure
+            }
             if isOptionalEndpointSkip(err) {
                 sc.logger.Info("things endpoint unavailable, skipping",
                     "owner", owner, "repo", repo, "error", err)
@@ -79,6 +82,9 @@ func (sc *StagedCollector) collectThings(ctx context.Context, sw *db.StagingWrit
             RepoID: result.RepoID,
             Data:   mustMarshal(thing),
         }); err != nil {
+            if errors.Is(err, context.Canceled) {
+                return
+            }
             sc.logger.Warn("stage thing failed",
                 "owner", owner, "repo", repo, "error", err)
             result.Errors = append(result.Errors, err)
@@ -157,24 +163,43 @@ case <-myThingTicker.C:
 func (s *Scheduler) runMyThing(ctx context.Context) {
     candidates, err := s.store.GetThingsNeedingMyThing(ctx, batchSize)
     if err != nil {
+        if errors.Is(err, context.Canceled) {
+            return // shutdown is not a failure
+        }
         s.logger.Warn("get my-thing candidates failed", "error", err)
         return
     }
     for _, c := range candidates {
         if err := s.doMyThing(ctx, c); err != nil {
+            if errors.Is(err, context.Canceled) {
+                return // shutdown is not a failure
+            }
             s.logger.Warn("my-thing failed",
                 "id", c.ID, "error", err)
-            // Stamp last_attempted_at unconditionally so the cooldown gate works
-            // (the v0.18.29 / v0.19.2 / v0.20.17 pattern).
-            _ = s.store.MarkThingAttempted(ctx, c.ID)
+            // Stamp the attempt only when the forge answered about c (not
+            // found, gone, forbidden, ...). A transport, rate-limit or auth
+            // failure says nothing about c, so the next cycle retries it.
+            if platform.IsDefinitiveAnswer(err) {
+                if err := s.store.MarkThingAttempted(ctx, c.ID); err != nil {
+                    if errors.Is(err, context.Canceled) {
+                        return
+                    }
+                    s.logger.Warn("marking my-thing attempted failed", "id", c.ID, "error", err)
+                }
+            }
             continue
         }
-        _ = s.store.MarkThingDone(ctx, c.ID)
+        if err := s.store.MarkThingDone(ctx, c.ID); err != nil {
+            if errors.Is(err, context.Canceled) {
+                return
+            }
+            s.logger.Warn("marking my-thing done failed", "id", c.ID, "error", err)
+        }
     }
 }
 ```
 
-**The cooldown discipline (mandatory):** if your background task has the failure pattern "I tried X, it failed, I'll try again next cycle, it fails again, repeat forever," add a `last_attempted_at TIMESTAMPTZ` column AND a query gate `WHERE last_attempted_at IS NULL OR last_attempted_at < NOW() - cooldown`. Stamp the column on EVERY attempt — success, failure, even network errors. v0.18.29, v0.19.2, and v0.20.17 are all this pattern. The v0.18.29 / v0.19.2 / v0.20.17 release notes carry the full rationale; don't reinvent it.
+**The cooldown discipline (mandatory):** if your background task has the failure pattern "I tried X, it failed, I'll try again next cycle, it fails again, repeat forever," add a `last_attempted_at TIMESTAMPTZ` column AND a query gate `WHERE last_attempted_at IS NULL OR last_attempted_at < NOW() - cooldown`. Stamp the column when an attempt ends in an answer: success, or a failure the forge answered about the item (`platform.IsDefinitiveAnswer`: not found, gone, forbidden, …). A transport, rate-limit, auth or shutdown failure says nothing about the item, so leave it unstamped and let the next cycle retry it; recording it as an answer would hide the item for a whole cooldown. Profile enrichment and email search-resolve work this way. If an item can keep failing without an answer, bound it with a failure marker and a shorter cooldown of its own, as contributor history does with `gh_history_failed_at`; otherwise a fixed claim order keeps putting the same items first. Contributor breadth is a deliberate exception: it stamps every per-contributor fetch error (a run of transient ones trips its circuit breaker first) and waits `collection.breadth_cooldown_days` before trying again.
 
 Add config knobs:
 

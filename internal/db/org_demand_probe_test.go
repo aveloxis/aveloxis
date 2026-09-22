@@ -83,7 +83,7 @@ func TestHasNeverScannedOrgsBehavior(t *testing.T) {
 	// Baseline: no never-scanned org from THIS seed. The shared scratch
 	// DB may legitimately carry other never-scanned rows, so assert on
 	// transitions driven by our own rows only when the baseline is false.
-	baseline, err := store.HasNeverScannedOrgs(ctx)
+	baseline, err := store.HasNeverScannedOrgs(ctx, "")
 	if err != nil {
 		t.Fatalf("probe baseline: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestHasNeverScannedOrgsBehavior(t *testing.T) {
 		t.Fatalf("seed org request: %v", err)
 	}
 
-	got, err := store.HasNeverScannedOrgs(ctx)
+	got, err := store.HasNeverScannedOrgs(ctx, "")
 	if err != nil {
 		t.Fatalf("probe after seed: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestHasNeverScannedOrgsBehavior(t *testing.T) {
 	if err := store.MarkOrgRequestScanned(ctx, orgReqID); err != nil {
 		t.Fatalf("mark scanned: %v", err)
 	}
-	got, err = store.HasNeverScannedOrgs(ctx)
+	got, err = store.HasNeverScannedOrgs(ctx, "")
 	if err != nil {
 		t.Fatalf("probe after stamp: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestHasNeverScannedOrgsBehavior(t *testing.T) {
 		`UPDATE aveloxis_ops.user_org_requests SET last_scanned = NULL WHERE org_request_id = $1`, orgReqID); err != nil {
 		t.Fatalf("reset last_scanned: %v", err)
 	}
-	got, err = store.HasNeverScannedOrgs(ctx)
+	got, err = store.HasNeverScannedOrgs(ctx, "")
 	if err != nil {
 		t.Fatalf("probe rejected case: %v", err)
 	}

@@ -5,7 +5,8 @@
     "user": "aveloxis",
     "password": "xxxxxxxxxx",
     "dbname": "aveloxis",
-    "sslmode": "prefer"
+    "sslmode": "prefer",
+    "pool_max_conns": 0
   },
   "github": {
     "api_keys": [],
@@ -30,8 +31,8 @@
     "workers": 180,
     "force_full": false,
     "repo_clone_dir": "PATH FOR BARE CLONES",
+    "materialized_views": true,
     "matview_rebuild_day": "sunday",
-    "matview_rebuild_on_startup": false,
     "pr_child_mode": "graphql",
     "listing_mode": "graphql",
     "threading_mode": "sharded",

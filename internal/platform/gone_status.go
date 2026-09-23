@@ -20,9 +20,8 @@ var ErrLegallyBlocked = errors.New("blocked for legal reasons")
 
 // IsRepoGoneStatus is the ONE rule for "this repository is definitively
 // not available" shared by every probe that sidelines — prelim, the gone
-// recheck, reconcile-repos, mark-gone-repos and the Apache importer
-// (SR-17; the import-augur existence check keeps its own "< 400 exists"
-// rule, worklist 47): 404 (deleted
+// recheck, reconcile-repos, mark-gone-repos, the Apache importer and,
+// since v0.29.59, the import-augur existence probe (SR-17): 404 (deleted
 // or private), 410 (gone) and 451 (blocked for legal reasons). Anything
 // else — 403, 429, 5xx, an unresolved 3xx — is not an answer.
 func IsRepoGoneStatus(code int) bool {

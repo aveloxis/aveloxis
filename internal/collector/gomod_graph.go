@@ -143,7 +143,11 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 	// ctx carries the REPO-WIDE deadline (round 28) — no per-module
 	// timeout here, or N modules would multiply the budget.
 	rel, _ := filepath.Rel(workDir, filepath.Join(dir, "go.mod"))
-	env := append(os.Environ(), "GOFLAGS=-mod=mod")
+	// GOWORK=off: each module is expanded on its own, and inside a go.work
+	// the toolchain refuses -mod=mod ("may only be set to readonly or
+	// vendor when in workspace mode") — 52 of 64 failures on kate
+	// (2026-09-23 log review), each an empty Go closure.
+	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 
 	run := func(args ...string) (string, bool) {
 		cmd := exec.CommandContext(ctx, goBin, args...)

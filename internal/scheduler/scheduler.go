@@ -173,6 +173,9 @@ type Scheduler struct {
 	stagingCleanupActive atomic.Bool
 	vulnDigestActive     atomic.Bool
 	breadthActive        atomic.Bool
+	// v0.29.61: the supply-chain view refresh (its own cadence, apart from
+	// the weekly 8Knot rebuild).
+	supplyChainRefreshActive atomic.Bool
 	// v0.27.52: guards the orgRefreshTicker's unscoped full pass.
 	// v0.27.83: the poll-tick demand scan (maybeScanNewOrgs) runs
 	// under its OWN flag below — sharing this one meant an org
@@ -343,6 +346,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.logger.Warn("matview_rebuild_day value not recognized — falling back to Saturday; use a weekday name or disabled/disable/none/off",
 			"configured_value", s.cfg.Collection.MatviewRebuildDay)
 	}
+	// The supply-chain pair's cadence is logged as the EFFECTIVE value
+	// (SR-10), beside the 8Knot schedule it is independent of.
+	if interval, on := s.cfg.Collection.SupplyChainRefreshInterval(); on {
+		s.logger.Info("supply-chain view refresh schedule", "effective_interval", interval, "configured_hours", supplyChainConfiguredHours(s.cfg.Collection))
+	} else {
+		s.logger.Info("supply-chain view refresh DISABLED by collection.supply_chain_refresh_hours = 0 — `aveloxis refresh-views --set supply-chain` refreshes them by hand")
+	}
 
 	// On startup: check for tool updates (monthly), then release any
 	// stale locks BEFORE processing leftover staging. Lock recovery
@@ -450,7 +460,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.processLeftoverStaging(ctx)
 		} else if len(locked) > 0 {
 			s.logger.Info("launching background leftover-staging drain", "repos", len(locked))
-			safego.Go(s.logger, "leftover-staging-drain", func() { s.processLeftoverStagingBackground(ctx, locked) })
+			// Tracked (v0.29.64): shutdown waits for the drain to leave its
+			// current repo (up to the bounded shutdown wait) before
+			// releasing the parked set.
+			s.goTracked("leftover-staging-drain", func() { s.processLeftoverStagingBackground(ctx, locked) })
 		}
 	}
 
@@ -595,6 +608,18 @@ func (s *Scheduler) Run(ctx context.Context) {
 	vulnDigestC, stopVulnDigest := s.startVulnDigest()
 	defer stopVulnDigest()
 
+	// v0.29.61: the supply-chain views refresh on their own cadence
+	// (collection.supply_chain_refresh_hours), never inside the weekly
+	// 8Knot rebuild. One refresh at startup covers the downtime a restart
+	// adds to the views' age (a nil channel when the cadence is off).
+	supplyChainC, stopSupplyChain := supplyChainRefreshTicker(s.cfg.Collection)
+	defer stopSupplyChain()
+	if supplyChainStartupRefresh(supplyChainC != nil, s.store.SupplyChainViewsBuiltThisRun()) {
+		s.singleFlight(&s.supplyChainRefreshActive, "supply-chain-refresh", func() { s.runSupplyChainRefresh(ctx) })
+	} else if supplyChainC != nil {
+		s.logger.Info("the whole supply-chain pair was built by this start (with data) — startup refresh skipped; the next one is on the cadence")
+	}
+
 	// v0.19.2: search-resolve background task. Takes contributors
 	// with email but no gh_user_id, calls /search/users?q=email at
 	// controlled rate (search API is 30/min/token — separate from
@@ -698,12 +723,18 @@ func (s *Scheduler) Run(ctx context.Context) {
 			select {
 			case <-bgDone:
 			case <-time.After(bgBound):
-				s.logger.Warn("background pools did not finish their shutdown bookkeeping in time — their locks are recovered on the next start",
+				s.logger.Warn("background pools did not finish their shutdown bookkeeping in time — any locks they still hold are reclaimed by their own stale-lock recovery; queue and drain-parked locks are released below",
 					"bound", bgBound.String())
 			}
 			// Release queue locks so repos return to 'queued' immediately
 			// instead of waiting for stale-lock timeout.
 			s.releaseOurLocks(context.Background())
+			// And the drain-parked set (v0.29.64): owned by
+			// '<workerID>:drain', which releaseOurLocks does not match, so
+			// it stayed "collecting" while serve was down (107 rows on
+			// 2026-09-23). The next start re-parks whatever still has
+			// staging, before any worker claims.
+			s.releaseOurDrainLocks(context.Background())
 			// Explicitly close the pgx pool so backends disconnect
 			// cleanly. Without this, FIN-to-postgres only fires when
 			// runServe's defer chain runs — which can miss SIGKILL
@@ -760,6 +791,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-vulnDigestC:
 			s.singleFlight(&s.vulnDigestActive, "vuln-digest", func() { s.runVulnDigest(ctx) })
+
+		case <-supplyChainC:
+			s.singleFlight(&s.supplyChainRefreshActive, "supply-chain-refresh", func() { s.runSupplyChainRefresh(ctx) })
 
 		case <-searchResolveTicker.C:
 			s.singleFlight(&s.searchActive, "search-resolve", func() { s.runSearchResolve(ctx) })
@@ -2006,7 +2040,12 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	// wrongly flagged ~100 small-but-real repos like
 	// biocorecrg/ggplot2_functions (9 commits, 0 API data) as
 	// failures every cycle.
-	if result != nil && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
+	// v0.29.62: a repository the facade PROVED empty (the default branch
+	// resolves to no commit — FacadeResult.EmptyDefaultBranch, v0.29.58)
+	// is explained, not suspicious: 668 of 677 failed jobs on kate were
+	// these (2026-09-23 log review; worklist 33).
+	provenEmpty := facadeResult != nil && facadeResult.EmptyDefaultBranch
+	if result != nil && !provenEmpty && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
 		out.success = false
 		if out.errMsg == "" {
 			out.errMsg = "no data collected (possible API auth failure or empty repo)"
@@ -2098,10 +2137,11 @@ func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
 // can be picked up for a fresh re-collection without waiting for the
 // rest of the drain set to complete.
 //
-// On context cancel (process shutting down), the loop exits cleanly. Any
-// repos still locked stay 'collecting' under the synthetic worker ID;
-// the next process startup's RecoverOtherWorkerLocks will release them
-// and the drain set will be re-identified and re-parked.
+// On context cancel (process shutting down), the loop exits cleanly and
+// the shutdown arm releases every repo still parked (releaseOurDrainLocks,
+// v0.29.64); the next start re-identifies and re-parks what still has
+// staging. A process that dies without shutting down leaves them to the
+// next start's RecoverOtherWorkerLocks.
 func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainSet []int64) {
 	// v0.27.147 (round 26)/v0.27.150 (round 29): heartbeat the WHOLE
 	// parked set for the drain's lifetime — the set is lock-parked up
@@ -2122,10 +2162,10 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 		s.drainOneRepo(ctx, repoID)
 		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID)
 		if errors.Is(err, context.Canceled) {
-			return // shutdown: the drain locks are recovered by the next start's RecoverOtherWorkerLocks
+			return // shutdown: the shutdown arm releases the parked set (releaseOurDrainLocks)
 		}
 		if err != nil {
-			s.logger.Warn("failed to release drain lock; repo stays locked until next restart's RecoverOtherWorkerLocks", "repo_id", repoID, "error", err)
+			s.logger.Warn("failed to release drain lock; the stop releases it, or stale-lock recovery reclaims it once the drain ends", "repo_id", repoID, "error", err)
 		}
 	}
 	s.logger.Info("background leftover-staging drain complete", "repos", len(drainSet))
@@ -2172,6 +2212,20 @@ func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 	}
 	if tag.RowsAffected() > 0 {
 		s.logger.Info("released queue locks", "count", tag.RowsAffected(), "worker_id", s.workerID)
+	}
+}
+
+// releaseOurDrainLocks returns this process's drain-parked rows to
+// 'queued' at shutdown (v0.29.64). A failure is logged; the next start's
+// RecoverOtherWorkerLocks still reclaims them.
+func (s *Scheduler) releaseOurDrainLocks(ctx context.Context) {
+	n, err := s.store.ReleaseDrainLocks(ctx, s.workerID)
+	if err != nil {
+		s.logger.Warn("failed to release drain-parked locks on shutdown — the next start reclaims them", "error", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Info("released drain-parked queue locks", "count", n, "worker_id", s.workerID)
 	}
 }
 
@@ -2257,10 +2311,11 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
-			ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-			HTMLURL string `json:"html_url"`
-			Name    string `json:"name"`
-			Owner   struct {
+			ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+			CreatedAt time.Time `json:"created_at"`
+			HTMLURL   string    `json:"html_url"`
+			Name      string    `json:"name"`
+			Owner     struct {
 				Login string `json:"login"`
 			} `json:"owner"`
 		}
@@ -2290,7 +2345,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				repoID = existing
 				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
 				// only) — see refreshUserOrgs for the rationale.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
+				idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, model.ForgeIDString(item.ID), item.CreatedAt)
 				if errors.Is(idErr, context.Canceled) {
 					return newCount // shutdown, not a failure
 				}
@@ -2395,9 +2450,10 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
-			ID        int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-			WebURL    string `json:"web_url"`
-			Name      string `json:"name"`
+			ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+			CreatedAt time.Time `json:"created_at"`
+			WebURL    string    `json:"web_url"`
+			Name      string    `json:"name"`
 			Namespace struct {
 				FullPath string `json:"full_path"`
 			} `json:"namespace"`
@@ -2424,7 +2480,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				repoID = existing
 				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
 				// only) — see refreshUserOrgs for the rationale.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
+				idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, model.ForgeIDString(item.ID), item.CreatedAt)
 				if errors.Is(idErr, context.Canceled) {
 					return newCount // shutdown, not a failure
 				}
@@ -2745,7 +2801,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 
 		// ForgeID (v0.27.102) is the forge's numeric repo ID from the
 		// listing JSON — the rename-proof identity UpsertRepo dedups on.
-		var repos []struct{ URL, Owner, Name, ForgeID string }
+		type orgRepo struct {
+			URL, Owner, Name, ForgeID string
+			CreatedAt                 time.Time // v0.29.63: dates a forge-ID change the scan records
+		}
+		var repos []orgRepo
 		switch g.platform {
 		case "github":
 			if s.ghKeys == nil {
@@ -2767,10 +2827,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 						break
 					}
 					var items []struct {
-						ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-						HTMLURL string `json:"html_url"`
-						Name    string `json:"name"`
-						Owner   struct {
+						ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+						HTMLURL   string    `json:"html_url"`
+						Name      string    `json:"name"`
+						CreatedAt time.Time `json:"created_at"`
+						Owner     struct {
 							Login string `json:"login"`
 						} `json:"owner"`
 					}
@@ -2787,7 +2848,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					}
 					found = true
 					for _, item := range items {
-						repos = append(repos, struct{ URL, Owner, Name, ForgeID string }{item.HTMLURL, item.Owner.Login, item.Name, model.ForgeIDString(item.ID)})
+						repos = append(repos, orgRepo{item.HTMLURL, item.Owner.Login, item.Name, model.ForgeIDString(item.ID), item.CreatedAt})
 					}
 					page++
 				}
@@ -2848,7 +2909,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				// its IDs on every scan pass closes the protection gap
 				// now instead of waiting for each repo's Phase 0 cycle.
 				// Fill-empty-only; best-effort.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, repo.ForgeID)
+				idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, repo.ForgeID, repo.CreatedAt)
 				if errors.Is(idErr, context.Canceled) {
 					return // shutdown, not a failure
 				}

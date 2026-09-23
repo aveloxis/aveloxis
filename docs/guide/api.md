@@ -79,6 +79,45 @@ Returns gathered (collected totals) vs metadata (API-reported totals) for a sing
   `(unknown upstream)` means the forge reports fork status but the
   upstream was deleted or is inaccessible. Drives the repo page's
   "Forked from X" chip.
+- **forge_id_changes** (v0.29.62, omitted when empty) lists the forge-ID
+  changes the operator adopted with `aveloxis adopt-forge-id` or the admin
+  approvals page's Adopt button: the
+  upstream repository was deleted and re-created under the same URL, and
+  the new one was treated as a continuation, so this row holds data from
+  both. Each entry carries `old_forge_id`, `new_forge_id`,
+  `forge_created_at` (when the forge created the new repository; omitted
+  when unknown), `first_observed_at`, `adopted_at`, `adopted_by` and an
+  optional `note`. Pending (observed, not adopted) changes are not listed.
+  The repo page shows one notice per entry. Single-repo endpoint only.
+
+### Forge-ID changes (admin, v0.29.63)
+
+```
+GET  /api/v1/admin/forge-id-changes?pending=1
+POST /api/v1/admin/forge-id-changes/{repoID}/adopt
+```
+
+A repository deleted and re-created upstream under the same URL gets a new
+forge ID. The org scan records the change as pending (it never changes the
+repository row itself). `GET` lists the recorded changes: `repo_id`,
+`repo_git`, `old_forge_id`, `new_forge_id`, `forge_created_at` (the new
+repository's creation date, when the scan listed it), `first_observed_at`,
+`last_observed_at`, and for adopted ones `adopted_at`, `adopted_by`, `note`.
+A pending change whose old ID is no longer the one the repository stores
+is `superseded`: it stays in the full list as history and can no longer be
+adopted. `pending=1` lists only the
+adoptable changes; the full list orders adoptable, superseded, then adopted.
+
+`POST …/adopt` treats the new repository as a continuation: it moves the
+stored forge ID to the one the scan observed and records the admin's login.
+The JSON body names the change, since a repository can have more than one:
+`{"old_forge_id": "…", "new_forge_id": "…", "note": "…"}` (the note is
+optional, at most 1,000 bytes). Answers `400` without both IDs, `404` when
+no unadopted change with that pair is recorded, and `409` when the change is
+superseded (nothing is written). The api
+process holds no forge API keys, so this adopts the recorded observation;
+`aveloxis adopt-forge-id` asks the forge live. Both require an admin Bearer
+session.
 
 ### Batch Statistics
 
@@ -981,6 +1020,56 @@ Token semantics:
   set (the partial-never-replaces-complete rule), so a repo's `mode`
   only moves from `local` to `remote`, never back.
 
+## Supply-chain package view (v0.29.60)
+
+The findings turned around: keyed by **package** instead of by repository,
+so a reader can see what a Dependabot pull request for one library cannot
+show — how many repositories in a cohort are exposed, how much of that
+exposure is transitive, how long it has been open, which advisory leads, and
+how many versions are in simultaneous use.
+
+- `GET /api/v1/supply-chain/packages?ecosystem=npm&q=minimatch&sort=repos&limit=50&offset=0&group=12`
+  — the leaderboard: one row per `(ecosystem, package_name)` in the cohort,
+  `total` for paging, `sort` one of `repos` (default), `unresolved`, `cvss`,
+  `transitive`, `versions`, `days`, `name`. Every row carries the profile
+  fields below.
+- `GET /api/v1/supply-chain/packages/{ecosystem}/{name}` — one package's
+  profile plus `advisories` (most widespread first, each with `advisory_url`
+  and `cve_url`), `versions` (each scanned version among CURRENT exposures
+  with how many repositories run it — the version-agreement panel) and
+  `repos` (the exposed repositories, most findings first; `?repos=` sets the
+  list size, default 50, clamped at 500). A scoped npm name keeps its slash:
+  `/supply-chain/packages/npm/@scope/name`. A package with no finding in the
+  scope is `404`.
+
+**Profile fields.** `cohort_repos` (repositories that have ever had a finding
+on the package) and `repos_unresolved` (have one now); `findings` /
+`findings_unresolved` (rows: one per repository × advisory × version);
+`pct_unresolved`, `pct_transitive` (share of rows whose dependency is
+transitive — the exposure a manifest reader cannot see); `median_days_open`
+(median age of the current findings); `worst_severity`, `max_cvss`,
+`n_advisories`; `distinct_versions_in_use`, `modal_version` and
+`modal_version_share_pct` (over `repos_with_known_versions`); and the lead
+advisory — the one on the most repositories — as `lead_advisory`,
+`lead_cve`, `lead_severity`, `lead_fixed_version`, `lead_advisory_repos`.
+
+**Scope.** The envelope's `scope` says which cohort answered (`kind`,
+`group_id`, `repos`) and what answered it: `source` is `matview` when the
+fleet views served the request and `live` when the cohort was aggregated on
+request (or the fleet was, on a deployment without the views). An admin
+without `?group` reads the **fleet** from the materialized views
+`explorer_package_exposure` and `explorer_package_advisory` (Aveloxis-owned:
+refreshed every `collection.supply_chain_refresh_hours`, default 24, apart
+from the weekly 8Knot rebuild — see [Materialized views](../architecture/materialized-views.md)); a signed-in user without `?group` reads their own scope — every
+repository their groups hold — computed live; `?group=<id>` reads that
+group's repositories live (a non-admin must own the group, and its
+repositories are intersected with the caller's scope; an unknown or
+unowned group is `404`). The live path aggregates the cohort's findings on
+request through the repository index, milliseconds for hundreds of
+repositories and about three seconds for a 62,000-repository scope on the
+production fleet; responses are cached for 60 seconds per caller and query.
+Both endpoints require a Bearer session.
+
 ## Portal and admin endpoints (v0.27.3)
 
 These back the aveloxis-gui portal pages (group / monitor /
@@ -1110,7 +1199,9 @@ Admin-only:
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
   request was already decided (idempotent double-click).
-- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.
+- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`:
+  `queued`, `collecting` (real jobs), `draining` (repos parked by the
+  startup staging drain or by heal-collection-gaps, v0.29.64) and `total`.
 - `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
   queue, 100 rows per page, optional search. Each job carries the
   repo label (`owner/name`), status, priority, due_at,

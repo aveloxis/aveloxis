@@ -421,6 +421,116 @@ var deployChecklists = map[string][]deployStep{
 	// without it). The migrate builds it CONCURRENTLY; no heal, no view
 	// change, so the ladder is stop → migrate --skip-views → verify → start.
 	"0.29.58": v02958DeployChecklist,
+	// v0.29.59: worklist 46 (SwiftPM purl namespace — one new column,
+	// repo_lockfile_packages.purl_namespace, added by migrate; existing
+	// rows fill on each repository's next analysis) and worklist 47 (the
+	// import-augur probe's error arm). No index, no view, no heal: the
+	// plain ladder.
+	"0.29.59": v02959DeployChecklist,
+	// v0.29.60: the supply-chain package views (then matviews.sql 23 and
+	// 24, so a plain migrate was the only path that built them), the
+	// (ecosystem, package_name) index on repo_deps_vulnerabilities
+	// (CONCURRENTLY), and 0.29.59's column if that release was skipped. No
+	// heal. SUPERSEDED by 0.29.61 before any deployment: the pair moved
+	// out of the batch, and its ladder needs only --skip-views.
+	"0.29.60": v02960DeployChecklist,
+	// v0.29.61: the supply-chain views become an Aveloxis-owned set apart
+	// from the 8Knot batch (worklist 48): built from Go by EVERY migrate
+	// (--skip-views or not, materialized_views on or off), refreshed by
+	// serve every collection.supply_chain_refresh_hours. Deploying 0.29.60
+	// and 0.29.61 together, this ladder supersedes 0.29.60's plain
+	// migrate: --skip-views is enough, and a deployment that does not use
+	// 8Knot never rebuilds that batch again. Also 0.29.60's index and
+	// 0.29.59's column, both by the same migrate.
+	"0.29.61": v02961DeployChecklist,
+	// v0.29.62: the 2026-09-23 log review — the migrate no longer re-runs
+	// the tool_version backfill (about 1.5 h of full scans per run), plus
+	// one new table (repo_forge_id_changes, born empty) and the
+	// adopt-forge-id command. The plain ladder, and the two known
+	// re-created repositories can be adopted once serve is back.
+	"0.29.62": v02962DeployChecklist,
+	// v0.29.63: the admin Adopt button (two api endpoints, a card on the
+	// approvals page) and the org scan now records when the forge created
+	// a re-created repository. No schema change of its own; the migrate
+	// creates 0.29.62's table if that release was skipped.
+	"0.29.63": v02963DeployChecklist,
+	// v0.29.64: the monitors count drain-parked repos as "Draining
+	// staging" and stop releases them. No schema change; the stop of THIS
+	// deploy still runs the old binary, so rows parked by it stay
+	// "collecting" until the new serve starts and reclaims them.
+	"0.29.64": v02964DeployChecklist,
+	// v0.29.65: the v0.29.64 review round 1 — the monitors' parked count
+	// is labelled "Parked (drain / heal)", heal-collection-gaps releases
+	// its parked rows on exit or interrupt, and a rename merge keeps an
+	// adoption. No schema change.
+	"0.29.65": v02965DeployChecklist,
+	// v0.29.66: the Copilot-style review of PR #212 — the supply-chain
+	// views leave out self advisories (every migrate rebuilds them), plus
+	// parser, dedup, Phase 0 and GUI fixes. No schema change.
+	"0.29.66": v02966DeployChecklist,
+}
+
+// 0.29.66 carries the same skipped-release notes as 0.29.65 (a fleet on
+// 0.29.63 or older goes straight here) plus this release's view change.
+var v02966DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api. A stop by 0.29.64 or later releases serve's drain-parked rows; a stop by an older binary leaves them 'collecting' until the new serve starts and reclaims them — expected, not a failure of this release"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views from Go, which now leave out a repository's advisories against its own package (dependency_kind 'self') — --skip-views skips only the 8Knot batch"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN (` + db.SupplyChainViewNamesSQLList() + `)"`, "must print 2 AND the migrate must have exited 0 with no `supply-chain view` ERROR in its log (a failed re-create keeps the PREVIOUS definition, so the count alone cannot tell). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first"},
+	{"aveloxis start all", "the new serve reclaims any rows an older stop left parked; the monitors show Parked (drain / heal) apart from Collecting"},
+}
+
+// Carries the stop-release note of 0.29.64 and the table note of 0.29.62
+// for a fleet that skips them (only the running version's list is printed;
+// v0.29.65 review round 2). 0.29.62's optional adopt-forge-id step and
+// 0.29.63's Adopt card are not repeated: both act on pending changes, which
+// the approvals page lists whenever there are any.
+var v02965DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api. A stop by 0.29.64 or later releases serve's drain-parked rows; a stop by an older binary leaves them 'collecting' until the new serve starts and reclaims them — expected, not a failure of this release"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views"},
+	{"aveloxis start all", "the new serve reclaims any rows an older stop left parked; the monitors show Parked (drain / heal) apart from Collecting"},
+}
+
+var v02964DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api (this stop still runs the previous binary: its drain-parked rows show as collecting until the new serve starts)"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; applies 0.29.62's table if that release was skipped"},
+	{"aveloxis start all", "the new serve reclaims the old parked rows at startup; from now on the monitors show Draining staging apart from Collecting, and a stop releases the parked set"},
+}
+
+var v02963DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views"},
+	{"aveloxis start all", "resume collection; web and api start only after the migrate has finished"},
+	{"open the admin approvals page (pending-groups.html)", "optional: the Re-created repositories card lists the forge-ID changes the org scan recorded; Adopt treats one as a continuation (the CLI `aveloxis adopt-forge-id` does the same). The card is hidden when nothing is pending"},
+}
+
+var v02962DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; creates aveloxis_data.repo_forge_id_changes (born empty) and re-creates the two supply-chain views; no longer re-scans ~31 tables for tool_version, so it should finish in minutes, not ~1.5 h"},
+	{"aveloxis start all", "resume collection; web and api start only after the migrate has finished"},
+	{"aveloxis adopt-forge-id --list", "optional: the forge-ID changes the org scan recorded; adopt the re-created repositories you treat as continuations with --repo-id (the 2026-09-23 decision: 126257 intel/Enterprise-RAG and 98226 GNOME/gimp-macos-build)"},
+}
+
+var v02961DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; builds idx_repo_deps_vulns_pkg CONCURRENTLY and adds repo_lockfile_packages.purl_namespace if 0.29.59/60 were skipped; re-creates the two supply-chain views from Go (seconds) — --skip-views skips only the 8Knot batch now"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN (` + db.SupplyChainViewNamesSQLList() + `)"`, "must print 2 AND the migrate must have exited 0 with no `supply-chain view` ERROR in its log — a failed RE-create rolls back to the previous view, so the count alone cannot tell (the per-view line says which: `re-create failed — the PREVIOUS definition and its data are kept` or `creation failed — the view is absent`; a probe failure shows only the summary `supply-chain view re-create had errors`). Both views exist on EVERY deployment now (they no longer depend on collection.materialized_views). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first. On an ERROR, fix its cause and re-run `aveloxis migrate --skip-views`"},
+	{"aveloxis start all", "resume collection; serve refreshes the pair every collection.supply_chain_refresh_hours (default 24) and logs the effective cadence at startup; the 8Knot batch is untouched unless collection.materialized_views is on and its weekly day arrives"},
+}
+
+// The 0.29.60 list below spells the two view names by hand where 0.29.61's
+// derives them from db.SupplyChainViewNames: historical checklists are
+// frozen as the operator saw them (round 2 on v0.29.61, declined).
+var v02960DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate", "schema + ledgered backfills AND re-create the materialized views — NOT --skip-views: this release ADDS two views (explorer_package_exposure, explorer_package_advisory), which only a plain migrate builds into an existing set; it also builds idx_repo_deps_vulns_pkg CONCURRENTLY (one pass over repo_deps_vulnerabilities, no write lock) and adds repo_lockfile_packages.purl_namespace"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN ('explorer_package_exposure', 'explorer_package_advisory')"`, "must print 2 — both supply-chain views exist. SKIP on a deployment with collection.materialized_views off (the API then aggregates live). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first. The migrate's view block only WARNs when it fails (`materialized view creation had errors`) and still exits 0, so on 0 or 1 fix what that WARN names and re-run `aveloxis migrate`"},
+	{"aveloxis start all", "resume collection; the GUI's dependencies page reads the new endpoints from the api process"},
+}
+
+var v02959DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; adds repo_lockfile_packages.purl_namespace (an ALTER ADD COLUMN with a default — instant)"},
+	{"aveloxis start all", "resume collection; SwiftPM transitives gain their purl namespace as each repository is re-analysed"},
 }
 
 // v02958DeployChecklist — one CONCURRENTLY-built index and nothing else.

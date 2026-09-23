@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestSchedulerRunClosesStoreOnCtxCancel pins the v0.20.0 graceful
@@ -115,5 +117,65 @@ func TestPostgresStoreSetsApplicationName(t *testing.T) {
 			"(via cfg.ConnConfig.RuntimeParams or AfterConnect hook). " +
 			"v0.20.0 stop-verification needs this to filter " +
 			"pg_stat_activity to aveloxis-managed backends only.")
+	}
+}
+
+// TestShutdownReleasesDrainParkedLocks — v0.29.64 (the 107 drain-parked
+// rows the monitor showed as "collecting" with serve stopped). The
+// shutdown path must release this process's drain-parked rows through the
+// store's one owner spelling, AFTER waiting for the tracked background
+// goroutines (the drain among them, so it is not mid-repo unless the
+// bounded wait expires) and BEFORE the
+// pool closes. The drain goroutine must be tracked by s.background.
+func TestShutdownReleasesDrainParkedLocks(t *testing.T) {
+	data, err := os.ReadFile("scheduler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	fnIdx := strings.Index(src, "func (s *Scheduler) Run(")
+	if fnIdx < 0 {
+		t.Fatal("cannot find Scheduler.Run")
+	}
+	rest := src[fnIdx:]
+	body := rest[:strings.Index(rest[1:], "\nfunc ")+1]
+	waitIdx := strings.Index(body, "s.background.Wait()")
+	releaseIdx := strings.Index(body, "s.releaseOurDrainLocks(context.Background())")
+	closeIdx := strings.Index(body, "s.store.Close()")
+	if releaseIdx < 0 {
+		t.Fatal("the shutdown path must call s.releaseOurDrainLocks(context.Background())")
+	}
+	if !(waitIdx >= 0 && waitIdx < releaseIdx && releaseIdx < closeIdx) {
+		t.Errorf("order must be background.Wait → releaseOurDrainLocks → store.Close (got %d, %d, %d)", waitIdx, releaseIdx, closeIdx)
+	}
+	helper := src[strings.Index(src, "func (s *Scheduler) releaseOurDrainLocks("):]
+	helper = helper[:strings.Index(helper[1:], "\nfunc ")+1]
+	if !strings.Contains(helper, "s.store.ReleaseDrainLocks(ctx, s.workerID)") {
+		t.Error("releaseOurDrainLocks must go through store.ReleaseDrainLocks (the one drain-owner spelling, SR-17)")
+	}
+	if !strings.Contains(helper, "s.logger.Warn(") {
+		t.Error("a failed drain-lock release must be logged")
+	}
+	// The drain goroutine is tracked, so the Wait above covers it: it is
+	// launched through goTracked, the one helper that registers on
+	// s.background (v0.29.64 review: the first version inlined Add/Done
+	// and this pin demanded that shape).
+	code := srctest.StripGoComments(src)
+	if !strings.Contains(srctest.StripGoComments(body), `s.goTracked("leftover-staging-drain",`) {
+		t.Error("the leftover-staging drain must be launched with s.goTracked so shutdown's background.Wait covers it")
+	}
+	gt := strings.Index(code, "func (s *Scheduler) goTracked(")
+	if gt < 0 {
+		t.Fatal("goTracked not found — the drain's tracking cannot be checked")
+	}
+	tracked := code[gt:]
+	if end := strings.Index(tracked[1:], "\nfunc "); end > 0 {
+		tracked = tracked[:end+1]
+	}
+	add := strings.Index(tracked, "s.background.Add(1)")
+	launch := strings.Index(tracked, "safego.Go(")
+	done := strings.Index(tracked, "defer s.background.Done()")
+	if add < 0 || launch < 0 || done < 0 || !(add < launch && launch < done) {
+		t.Error("goTracked must Add(1) BEFORE launching the goroutine (an Add inside it races Wait) and Done inside it")
 	}
 }

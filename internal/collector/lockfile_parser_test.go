@@ -304,8 +304,15 @@ func TestParsePubspecLock(t *testing.T) {
 }
 
 func TestParsePackageResolved(t *testing.T) {
+	// v0.29.59 (worklist 46): the entry name is the repository name as the
+	// pin's location spells it ("Alamofire"), not the lowercased identity —
+	// OSV matches Swift purls case-sensitively (probed 2026-09-22:
+	// pkg:swift/github.com/apple/swift-nio answers, Swift-NIO does not),
+	// and the graph key lowercases anyway, so the direct dependency still
+	// matches. The limit: a manifest that spells the URL non-canonically
+	// mints a purl OSV does not match; the spelling is the manifest's.
 	for fixture, want := range map[string]string{
-		"Package.resolved.v2": "alamofire@5.8.1",
+		"Package.resolved.v2": "Alamofire@5.8.1",
 		"Package.resolved.v1": "Alamofire@5.6.4",
 	} {
 		res, err := ParseLockfile("Package.resolved", readLockFixture(t, fixture))

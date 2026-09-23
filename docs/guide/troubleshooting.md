@@ -249,7 +249,7 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 **Causes:**
 - No API keys loaded (see above) — the staged collection returns 0 items when the key pool is empty
 - Authentication failure (token not valid for this repo)
-- The repo is empty (no issues, PRs, or commits)
+- The repo has no issues, PRs or releases and its clone could not prove it empty (since v0.29.62 a repository whose default branch has no commits completes as collected, with zero data, instead of failing)
 - The repo is private and the token does not have access
 
 **Solution:**
@@ -1355,6 +1355,8 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 **Cause:** Before v0.18.29, `processLeftoverStaging` ran synchronously on the scheduler's main goroutine before `fillWorkerSlots` could claim any new jobs. Each repo with backlogged staging from a prior interrupted run could take 30+ hours to process; with 23 backlogged repos, the worker pool sat idle for ~3 days while staging drained.
 
 **Solution (v0.18.29):** The drain now runs in a background goroutine. Repos with leftover staging are atomically lock-parked (`status='collecting'`, `locked_by='<workerID>:drain'`) before the goroutine launches, so `fillWorkerSlots` skips them naturally and immediately starts claiming the rest of the fleet's queued repos. Each drained repo rejoins the queue as draining completes.
+
+Parked repos hold no worker slot. Since v0.29.64 the monitors count them apart from Collecting, and `aveloxis stop` releases them to `queued`. Before v0.29.64 the Collecting count could exceed the worker count (for example 200+ with 120 workers), and parked repos stayed `collecting` while serve was down until the next start reclaimed them. The count is labelled **Draining staging** in v0.29.64 and **Parked (drain / heal)** from v0.29.65. The next start re-parks whatever still has staging before any worker claims a job.
 
 **Confirm the fix is active:**
 

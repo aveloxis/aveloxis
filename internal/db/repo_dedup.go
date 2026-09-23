@@ -70,6 +70,11 @@ type RepoDupPair struct {
 	// the batch window excludes such pairs (v0.28.18) and the dry-run
 	// sample shows them flagged.
 	Collecting bool
+	// IsRename marks a reconcile-repos rename pair (DedupRenamedRepoPair):
+	// the winner is the redirect target, and the loser's stored forge ID
+	// may belong to a repository that held the old URL before, so the
+	// merge does not copy it (v0.29.63 review round 4).
+	IsRename bool
 }
 
 // repoDupCandidatesSQL is the shared candidate query. Winner =
@@ -397,6 +402,23 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		return nil
 	}
 
+	// The loser's forge ID, read under this transaction for the forge-ID
+	// steps below (v0.29.63 review rounds 3–4). A loser deleted since the
+	// candidate query (pgx.ErrNoRows, the typed not-found) is ABSENT: every
+	// step then touches nothing, as before this read existed. Any other
+	// error stops the merge (SR-5).
+	var loserForgeID string
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(platform_repo_id, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
+		pair.LoserID).Scan(&loserForgeID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("read loser forge ID: %w", err)
+	}
+	// A rename pair never copies the loser's ID onto the redirect target.
+	fillForgeID := loserForgeID
+	if pair.IsRename {
+		fillForgeID = ""
+	}
+
 	// --- Step 1: ops linkage. user_repos is repointed (PK (group_id,
 	// repo_id), no FK on repo_id) so every group that referenced either
 	// variant keeps the repo; queue/status/staging rows are loser-scoped
@@ -422,6 +444,70 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"repoint mailing_list_staging", `UPDATE aveloxis_ops.mailing_list_staging SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
+		// v0.29.62: a forge-ID change is a fact about the upstream
+		// repository both variants point at, and an adopted one is the
+		// operator's record — repoint it, then drop the duplicates. When
+		// the winner already holds the same change the two MERGE (v0.29.63,
+		// round-2 #12 on v0.29.62: DO NOTHING deleted an adoption made on
+		// the loser); the span covers both observations.
+		//
+		// First, for a case-variant pair, the winner's EMPTY forge ID is
+		// filled from the loser's — fill-empty-only, the policy every
+		// platform_repo_id writer follows (v0.29.63 review round 3: the
+		// winner is the oldest row and often has none; both rows name the
+		// same URL). A rename pair skips the fill (IsRename).
+		//
+		// Then the loser's adoptions (adopted_at, adopted_by and note
+		// together) carry only when the winner now stores what the LOSER
+		// stored, or stores nothing: the moves are then true of the winner,
+		// or at least nothing it stores contradicts them yet. The empty
+		// case is a rename pair's (no fill), where dropping to pending
+		// discarded the operator's record for good (v0.29.64 review
+		// round 1). Otherwise "adopted" would claim a move that never
+		// happened on this row (round 1; round 4 found "unless the winner
+		// stores the old ID" carrying a chain's later link onto a winner at
+		// its start, which the Adopt button could then never finish). Such
+		// changes arrive PENDING and are adopted in order. Dedup never
+		// overwrites a stored forge ID.
+		//
+		// Accepted residual (v0.29.65 review round 2, declined): if the
+		// rename winner's first scan then fills a DIFFERENT forge ID (the
+		// old URL held another repository before the rename), the page
+		// shows an adoption whose new ID the row never stored, and only
+		// SQL undoes it. That needs an adoption, a later delete-recreate
+		// and a rename at the old URL; the alternative discards the
+		// adoption on every rename.
+		//
+		// The fill step: $2 is empty (and the step writes nothing) when the
+		// loser has no stored forge ID, and for every rename pair.
+		{"fill winner's empty forge ID", `
+			UPDATE aveloxis_data.repos SET platform_repo_id = $2
+			 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = '' AND $2 <> ''`, []any{pair.WinnerID, fillForgeID}},
+		{"repoint repo_forge_id_changes", `
+			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
+				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note,
+				 tool_source, tool_version, data_source, data_collection_date)
+			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
+			       CASE WHEN carries THEN l.adopted_at END,
+			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
+			       CASE WHEN carries THEN l.note ELSE '' END,
+			       -- The moved row keeps its provenance (PR #212 review: an
+			       -- INSERT without these restamped it with this binary and NOW()).
+			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
+			  FROM aveloxis_data.repo_forge_id_changes l
+			  CROSS JOIN LATERAL (
+			      SELECT l.adopted_at IS NOT NULL AND EXISTS (
+			          SELECT 1 FROM aveloxis_data.repos w
+			           WHERE w.repo_id = $2 AND COALESCE(w.platform_repo_id, '') IN ('', $3)) AS carries) k
+			 WHERE l.repo_id = $1
+			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
+				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
+				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),
+				forge_created_at  = COALESCE(c.forge_created_at, EXCLUDED.forge_created_at),
+				adopted_at = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_at ELSE c.adopted_at END,
+				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
+				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`, []any{pair.LoserID, pair.WinnerID, loserForgeID}},
+		{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, []any{pair.LoserID}},
 
 		// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These
 		// tables are globally unique — the pair shares ONE row, owned by

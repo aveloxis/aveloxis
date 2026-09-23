@@ -37,7 +37,8 @@ The scheduler also runs these background tasks:
 |---|---|---|
 | Org refresh | Every 4 hours | Re-fetches org membership lists |
 | Contributor breadth | Every 15 minutes (config `breadth_interval_minutes`) | Discovers cross-repo contributor activity via GitHub Events API |
-| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes all 20 materialized views, resumes |
+| Materialized view rebuild | Weekly (Saturday) | Pauses collection, refreshes the 20 8Knot materialized views, resumes |
+| Supply-chain view refresh | Every `collection.supply_chain_refresh_hours` (default 24) | Refreshes the two Aveloxis-owned supply-chain views CONCURRENTLY; seconds, collection never pauses |
 | Stale lock recovery | Every 5 minutes | Re-queues jobs locked for more than 1 hour |
 
 ### Scancode worker tuning
@@ -390,9 +391,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when `collection.materialized_views` is enabled (the default):
+Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (101 tables + 20 materialized views) -- all collected data
+- **`aveloxis_data`** (102 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -605,13 +606,26 @@ the resume state: healed repos drop out, so the workflow is re-running
 until "0 candidates". Safe beside a running serve: each repo is
 drain-locked for the duration of its heal, and repos mid-collection
 are skipped (a rerun catches them). Neither the lock nor the heal
-touches `last_collected`.
+touches `last_collected`. While a repo is locked the monitors count it
+under **Parked (drain / heal)**. Ctrl-C (or SIGTERM) stops the run
+cleanly, releases every repo it still holds, and exits nonzero
+(v0.29.65). The log line names the `after_repo_id` of the interrupted
+page's start, so `--after-repo-id` revisits that page; a plain rerun
+works too.
 
-Flags: `--dry-run`, `--limit N`, `--workers N` (default 4),
+Flags: `--dry-run` (list the candidates and their gap sizes, healing
+nothing; with `--repo-id`, print that repo and whether a real run could
+lock it — before v0.29.65 that combination actually healed the repo),
+`--limit N`, `--workers N` (default 4),
 `--repo-id N`, `--after-repo-id N` (keyset resume), `--all` (sweep
 every collected repo — the completeness mode for repos whose
 stored-but-deleted rows numerically hide the gap; not recommended for
-routine use). Exits nonzero when any repo's heal failed.
+routine use). Exits nonzero when any repo's heal failed, and with
+`--repo-id` also when the repo could not be locked: the message says
+whether it is being collected, is parked by a staging drain or another
+heal run, has no queue row (gone or dequeued, so nothing will heal it),
+became queued again in the meantime (rerun now), or whether its queue
+status could not be read.
 
 Sizing, measured on a ~140K-repo fleet (2026-08-23): 6,809 candidates /
 279,100 items took ~65 hours at `--workers 4` (the largest single repo
@@ -627,14 +641,16 @@ this command, then `aveloxis refresh-views` once the heal settles.
 
 ## `aveloxis refresh-views`
 
-Manually refreshes all 20 materialized views.
+Manually refreshes the materialized views this database has — both sets, or one.
 
 ```bash
-aveloxis refresh-views                # the materialized views
-aveloxis refresh-views --aggregates   # + the dm_repo_* / dm_repo_group_* aggregate tables
+aveloxis refresh-views                     # both sets (--set all)
+aveloxis refresh-views --set 8knot         # the 20 views in matviews.sql (8Knot / analytics)
+aveloxis refresh-views --set supply-chain  # explorer_package_exposure + explorer_package_advisory (seconds)
+aveloxis refresh-views --aggregates        # + the dm_repo_* / dm_repo_group_* aggregate tables
 ```
 
-Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. Their data is also refreshed weekly by `aveloxis serve` (default Saturday; `collection.matview_rebuild_day`, which can also disable it). A refresh keeps each view's definition: a release that changes one needs a plain `aveloxis migrate`, which re-creates the views.
+Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist, so reads are not blocked during the refresh. A set the database does not have is reported and skipped. `aveloxis serve` refreshes the 8Knot set weekly (default Saturday; `collection.matview_rebuild_day`, which can also disable it) and the supply-chain pair every `collection.supply_chain_refresh_hours` (default 24; `0` disables the schedule). A refresh keeps each view's definition: a release that changes an 8Knot view needs a plain `aveloxis migrate`, which re-creates that set; every migrate re-creates the supply-chain pair.
 
 `--aggregates` (v0.28.18) additionally runs the `dm_` aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless `collection.matview_rebuild_skip_dm_aggregates` is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the `dm_` tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another `--aggregates` run) is already in it, the command exits nonzero with `another dm_ aggregate rebuild is already running` instead of interleaving two DELETE+INSERT passes over tables that have no unique key.
 
@@ -1095,6 +1111,44 @@ Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
 in the aveloxis-gui repo's `deploy/` directory). Read-only on the
 schema; does not run migrations (v0.21.5 policy). Safe alongside an
 active `aveloxis serve`.
+
+## `aveloxis adopt-forge-id`
+
+Treats a repository that was deleted and re-created on its forge under the
+same URL as a continuation of the one Aveloxis already tracks (v0.29.62).
+
+```bash
+aveloxis adopt-forge-id --list                         # recorded changes: pending, superseded, adopted
+aveloxis adopt-forge-id --repo-id 126257 --repo-id 98226
+aveloxis adopt-forge-id --repo-id 126257 --note "upstream re-created by the org"
+```
+
+A re-created repository gets a new numeric forge ID. The org scan notices
+the stored and the forge's ID differ, logs a `forge-ID mismatch` ERROR, and
+records the change as pending; it never changes the repository row itself.
+`--repo-id` asks GitHub or GitLab for the repository's current ID and
+creation date, replaces the stored ID, and records the change as adopted.
+It refuses, changing nothing, when the forge lookup fails, when the forge
+still reports the stored ID, or when the stored ID changed in the meantime.
+A GitLab repository is only looked up on the configured GitLab instance
+(project IDs are per instance, and the keys stay on that host); a generic
+git repository has no API to ask.
+
+The repository page then shows: "Note: this repository changed forge
+identifiers on <date>, from <old id> to <new id>. This is unusual, and may
+affect statistics." The row holds data from both upstream repositories:
+commit history usually lines up (a re-push keeps the hashes), but issue and
+pull request numbers restart in the new repository. The mismatch ERROR
+stops once the change is adopted.
+
+An admin can do the same from the web GUI (v0.29.63): the approvals page
+lists pending changes under "Re-created repositories", each with an Adopt
+button, one per recorded change. The button adopts exactly that change, with
+the creation date the scan saw; it does not ask the forge again, because the api
+process holds no forge keys. The card is hidden when nothing is pending.
+When the scan recorded two changes for one repository and one is adopted,
+the other no longer starts from the stored ID: `--list` marks it
+superseded, it leaves the card, and adopting it is refused.
 
 ## `aveloxis backfill-repo-metadata`
 

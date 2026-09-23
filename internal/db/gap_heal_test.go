@@ -30,29 +30,39 @@ func TestGapFillThresholdSeam(t *testing.T) {
 	if !strings.Contains(s, "func gapExceedsThreshold(gathered, metadata int64, threshold float64) bool") {
 		t.Error("gapExceedsThreshold must take the threshold as a parameter")
 	}
-	h := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go")
+	// The command and its run (v0.29.65 split; the run's refresh-per-heal
+	// is also driven by TestGapHealFleetCompletes in cmd/aveloxis).
+	h := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go") + srctest.Read(t, "cmd/aveloxis/heal_collection_gaps_run.go")
 	if !strings.Contains(h, "AssessAndFillGapsWithThreshold(ctx, c.RepoID, c.Owner, c.Name, c.MetaIssues, c.MetaPRs, threshold)") {
 		t.Error("the healer must pass its derived threshold (0 = any gap; GapForceList for the completeness modes)")
 	}
 	// Round-23: --all/--repo-id run FORCE-LIST — threshold 0 requires
 	// metadata > gathered and cannot see count-netting.
-	if !strings.Contains(h, "threshold = collector.GapForceList") {
+	// v0.29.65: the selection lives in gapHealFlags.threshold(), driven from
+	// real flag strings by TestGapHealFlagsDriveTheRun in cmd/aveloxis.
+	if !strings.Contains(h, "if f.sweepAll || f.repoID > 0 {\n\t\treturn collector.GapForceList") {
 		t.Error("--all and --repo-id must switch to collector.GapForceList")
 	}
-	if !strings.Contains(h, "RefreshQueueGatheredCounts(ctx, c.RepoID)") {
+	if !strings.Contains(h, "r.store.RefreshQueueGatheredCounts(ctx, c.RepoID)") {
 		t.Error("a successful heal must refresh the queue's cached counts — otherwise healed repos never leave the candidate set and rerun-until-0 never converges")
 	}
 }
 
 func TestHealCollectionGapsCommandContract(t *testing.T) {
-	h := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go"))
+	// The command and its run (v0.29.65 moved the loop into
+	// heal_collection_gaps_run.go so its interrupt behavior is driven).
+	h := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go") +
+		srctest.Read(t, "cmd/aveloxis/heal_collection_gaps_run.go"))
 	if strings.Contains(h, "store.Migrate(") {
 		t.Error("heal-collection-gaps must not migrate (v0.21.5 — only serve and migrate do)")
 	}
 	for _, needle := range []string{
-		"LockReposForDrain(", // serve-safety: the v0.18.29 drain lock per repo
-		"ReleaseDrainLock(",  // ...and its release on every heal path
-		"GetGapHealCandidates(",
+		// Call spellings, not bare names: the gapHealStore interface
+		// declares all three (v0.29.65 review round 4); the behavior is
+		// driven by the TestGapHeal* runtime tests in cmd/aveloxis.
+		"r.store.LockReposForDrain(", // serve-safety: the v0.18.29 drain lock per repo
+		"r.store.ReleaseDrainLock(",  // ...and its release on every heal path
+		"r.store.GetGapHealCandidates(",
 		`"dry-run"`, `"limit"`, `"workers"`, `"repo-id"`, `"after-repo-id"`, `"all"`,
 	} {
 		if !strings.Contains(h, needle) {

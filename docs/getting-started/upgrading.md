@@ -51,7 +51,7 @@ aveloxis deploy-checklist       # this release's exact steps: follow them where 
 aveloxis stop all               # serve, web, api (also cleans stale pidfiles)
 aveloxis migrate --skip-views   # schema + ledgered backfills; skips the materialized views
 # ... operator-run heals from the table below, in order ...
-aveloxis refresh-views          # refresh the materialized views' data (add --aggregates for the dm_ tables; slow)
+aveloxis refresh-views          # refresh the materialized views' data (--set 8knot or supply-chain for one set; add --aggregates for the dm_ tables; slow)
 aveloxis start all
 ```
 

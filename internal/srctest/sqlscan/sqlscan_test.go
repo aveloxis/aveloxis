@@ -226,7 +226,7 @@ func TestSetExprsHostileShapes(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // WhereGuardsEmpty — the guarded fill-empty-only shape
-// (SetPlatformRepoIDIfEmpty: bare `SET col = $2` legitimized by
+// (SetPlatformRepoIDIfEmptySeen: bare `SET col = $2` legitimized by
 // `WHERE ... COALESCE(col, '') = ''`).
 // ---------------------------------------------------------------------------
 

@@ -57,6 +57,11 @@ type RepoStats struct {
 	// pre-disappearance snapshot; this field lets the GUI date it
 	// honestly ("metadata N (as of Jul 24, 2026)").
 	MetadataAsOf *time.Time `json:"metadata_as_of,omitempty"`
+	// ForgeIDChanges (v0.29.62) — adopted forge-ID changes: the upstream
+	// repository was deleted and re-created under the same URL and the
+	// operator adopted the new one as a continuation, so this row holds
+	// data from both. The GUI shows a notice; statistics may be affected.
+	ForgeIDChanges []ForgeIDChange `json:"forge_id_changes,omitempty"`
 	// HasMetadataSnapshot (v0.28.11, Copilot round 10) — TRUE when a
 	// repo_info ROW exists, independent of its (nullable)
 	// data_collection_date. MetadataAsOf presence is NOT a snapshot-
@@ -180,6 +185,24 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		repoID).Scan(&st.ForkedFrom, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fork lineage: %w", err)
 	}
+	// The forge-ID notice degrades ONLY when its table does not exist yet
+	// (v0.29.62 review round 2: an api running before the migrate that
+	// creates repo_forge_id_changes, worklist 49's incident, must still
+	// serve the rest of the page). Any other failure fails the stats: a
+	// page that silently drops "this may affect statistics" is a wrong
+	// answer, not a degraded one (v0.29.63 review, SR-5). A caller leaving
+	// (cancelled or past its deadline) is not a failure.
+	changes, ferr := s.repoForgeIDChangesAdopted(ctx, repoID)
+	if ferr != nil {
+		if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+			return nil, ferr
+		}
+		if !isUndefinedTable(ferr) {
+			return nil, fmt.Errorf("forge-ID changes: %w", ferr)
+		}
+		s.logger.Error("repo stats: repo_forge_id_changes does not exist — run aveloxis migrate; the page renders without the forge-ID notice", "repo_id", repoID, "error", ferr)
+	}
+	st.ForgeIDChanges = changes
 
 	// v0.27.50: last observed activity — drives the chart last-active
 	// ceiling and the dormant/archived chip. Non-fatal: an error here

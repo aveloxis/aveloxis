@@ -83,7 +83,7 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- given repo; a DIFFERENT incoming ID means an upstream
 			    -- delete-and-recreate under the same URL, and this
 			    -- "backfill" overwriting the stored value would erase the
-			    -- exact mismatch signal SetPlatformRepoIDIfEmpty surfaces.
+			    -- exact mismatch signal SetPlatformRepoIDIfEmptySeen surfaces.
 			    -- The RETURNING below makes Phase 0 the fleet-wide
 			    -- detector instead.
 			    platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), $7),
@@ -108,11 +108,20 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 		// detection on the Phase 0 path — fires within one collection
 		// cycle for every affected repo, fleet-wide. OBSERVATION-ONLY
 		// (the house never-auto-mutate rule); same message class as
-		// SetPlatformRepoIDIfEmpty's scan-time detector.
+		// SetPlatformRepoIDIfEmptySeen's scan-time detector.
 		if storedForgeID != "" && platformRepoID != "" && storedForgeID != platformRepoID {
-			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
+			s.logger.Error(forgeIDMismatchMsg,
 				"repo_id", repoID, "stored_forge_id", storedForgeID, "observed_forge_id", platformRepoID,
-				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+				"remediation", forgeIDMismatchRemediation)
+			// Recorded like the org scan's detector (PR #212 review: a repo
+			// reached only by Phase 0 never reached the Adopt list). Still
+			// observation-only: the stored ID is untouched.
+			if rerr := s.recordForgeIDObservation(ctx, repoID, storedForgeID, platformRepoID, createdAt); rerr != nil {
+				if errors.Is(rerr, context.Canceled) {
+					return rerr
+				}
+				s.logger.Error("recording the forge-ID change failed — the next Phase 0 pass records it", "repo_id", repoID, "error", rerr)
+			}
 		}
 		return nil
 	})

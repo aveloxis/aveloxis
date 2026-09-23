@@ -46,7 +46,7 @@ aveloxis migrate
 
 This creates:
 
-- **`aveloxis_data`** -- 101 tables + 20 materialized views (when `collection.materialized_views` is enabled, the default) for collected data
+- **`aveloxis_data`** -- 102 tables + 22 materialized views (20 for 8Knot when `collection.materialized_views` is enabled, the default; two supply-chain views always) for collected data
 - **`aveloxis_scan`** — 4 tables (ScanCode per-file license/copyright results + history)
 - **`aveloxis_ops`** -- 42 tables for operational state (queue, staging, credentials, etc.)
 - **`aveloxis_augur_data`** — the Augur-compatibility schema: no base tables of its own, just 6 views over `aveloxis_data` for the columns whose names differ from Augur's (`repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`). 8Knot reads through it with `search_path = aveloxis_augur_data,aveloxis_data`.
@@ -99,7 +99,7 @@ Aveloxis and Augur use completely separate schemas in the same PostgreSQL databa
 |---|---|---|
 | `augur_data` | Augur | Augur's collected data |
 | `augur_operations` | Augur | Augur's operational tables |
-| `aveloxis_data` | Aveloxis | Aveloxis collected data (101 tables + 20 matviews) |
+| `aveloxis_data` | Aveloxis | Aveloxis collected data (102 tables + 22 matviews) |
 | `aveloxis_ops` | Aveloxis | Aveloxis operational tables (42 tables) |
 | `aveloxis_scan` | Aveloxis | ScanCode per-file license/copyright results (4 tables) |
 | `aveloxis_augur_data` | Aveloxis | Augur-compatibility views (no base tables) |

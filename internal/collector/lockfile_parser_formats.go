@@ -353,28 +353,25 @@ func parsePubspecLock(data []byte) (parsedLockfileData, error) {
 // Swift
 // ============================================================
 
-// v0.29.58 review round 1 — RECORDED, NOT TAKEN here: a Package.resolved
-// pin's "location" (v2/v3) / "repositoryURL" (v1) carries the host and
-// owner that a spec-valid swift purl needs (pkg:swift/github.com/Owner/
-// Name@v); the pin is stored under its identity alone, so every SwiftPM
-// transitive is now purl-less (listed in both SBOM formats without a
-// locator, never scanned). Emitting host/owner/identity as the NAME would
-// change lockfileMatchKey on one side of the direct↔locked match (the
-// Package.swift parser extracts the repo name) and the stored
-// repo_lockfile_packages rows already on every fleet; the namespace
-// needs its own stored column and a coordinated change to both parsers.
-// Worklist item 46.
 // parsePackageResolved handles SwiftPM's Package.resolved: v1 nests
-// pins under "object" and names them "package"; v2/v3 have top-level
-// "pins" named by "identity" (the lowercased repo name — matching the
-// Package.swift manifest parser's repo-name extraction after the
-// case-insensitive lockfileMatchKey). Direct deps are not
-// distinguished.
+// pins under "object" and names them "package" with a "repositoryURL";
+// v2/v3 have top-level "pins" named by "identity" (the lowercased repo
+// name) with a "location". Since v0.29.59 (worklist 46) an entry is
+// named by the repository name as the URL spells it and carries the
+// host/owner as its purl Namespace — OSV matches Swift purls
+// case-sensitively, so the purl carries the manifest's spelling and a
+// manifest that spells the URL non-canonically ("Apple/Swift-NIO", which
+// GitHub serves) mints a purl OSV does not match — and the identity is
+// the fallback for a pin with no host; the case-insensitive lockfileMatchKey still matches the
+// Package.swift manifest parser's repo-name extraction either way.
+// Direct deps are not distinguished.
 func parsePackageResolved(data []byte) (parsedLockfileData, error) {
 	type pin struct {
-		Identity string `json:"identity"` // v2/v3
-		Package  string `json:"package"`  // v1
-		State    struct {
+		Identity      string `json:"identity"`      // v2/v3
+		Package       string `json:"package"`       // v1
+		Location      string `json:"location"`      // v2/v3: the package repository URL
+		RepositoryURL string `json:"repositoryURL"` // v1
+		State         struct {
 			Version string `json:"version"`
 		} `json:"state"`
 	}
@@ -397,8 +394,23 @@ func parsePackageResolved(data []byte) (parsedLockfileData, error) {
 		if name == "" {
 			name = p.Package
 		}
+		// v0.29.59 (worklist 46): the pin's repository URL carries the purl
+		// namespace (host/owner) and the case-preserved repository name —
+		// the identity is that name lowercased, so the graph key
+		// (LockfileGraphKey lowercases) still matches the Package.swift
+		// direct dependency, and the purl now matches the direct writer's
+		// pkg:swift/github.com/Owner/Repo shape. A pin with no host (a
+		// local path) keeps its identity and stays namespace-less.
+		namespace := ""
+		loc := p.Location
+		if loc == "" {
+			loc = p.RepositoryURL // Package.resolved v1
+		}
+		if ns, repo := swiftRepoNamespace(loc); ns != "" {
+			namespace, name = ns, repo
+		}
 		if name != "" && p.State.Version != "" {
-			entries = append(entries, LockfileEntry{Name: name, Version: p.State.Version})
+			entries = append(entries, LockfileEntry{Name: name, Version: p.State.Version, Namespace: namespace})
 		}
 	}
 	return parsedLockfileData{Entries: entries}, nil
@@ -518,4 +530,15 @@ func parseStackYamlLock(data []byte) (parsedLockfileData, error) {
 		}
 	}
 	return parsedLockfileData{Entries: entries}, nil
+}
+
+// swiftRepoNamespace is parseSwiftPackageURL's (namespace, repo) view for
+// the Package.resolved reader: "", "" for anything that is not a package
+// repository URL, so the caller keeps the pin's identity with no namespace.
+func swiftRepoNamespace(rawURL string) (namespace, repo string) {
+	ref, ok := parseSwiftPackageURL(rawURL)
+	if !ok {
+		return "", ""
+	}
+	return ref.Namespace, ref.Repo
 }

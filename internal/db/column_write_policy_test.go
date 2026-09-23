@@ -64,6 +64,9 @@ var columnWritePolicies = []sqlscan.Registered{
 // FIRST-RUN findings (v0.27.126), each triaged as a deliberate
 // deviation rather than a bug or a wrong policy:
 var columnWriteExceptions = []sqlscan.Exception{
+	{Table: "aveloxis_data.repos", Column: "platform_repo_id", File: "internal/db/repo_forge_id_changes.go",
+		Match:  "UPDATE aveloxis_data.repos SET platform_repo_id = $3",
+		Reason: "v0.29.62 AdoptForgeID — the operator's explicit adoption of a re-created upstream (2026-09-23 decision), guarded WHERE platform_repo_id = the expected old ID in the same transaction that records the change in repo_forge_id_changes; the mismatch signal the fill-empty policy protects is preserved there, not erased"},
 	{Table: "aveloxis_data.repos", Column: "added_at", File: "internal/db/migrate.go",
 		Match:  "SET added_at = COALESCE(data_collection_date, created_at, NOW())",
 		Reason: "the v0.27.60 one-shot backfill for pre-column rows — WHERE added_at IS NULL makes it self-disabling, so it can never degrade a real stamp"},

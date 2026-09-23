@@ -68,7 +68,7 @@ func TestUpsertRepoHasForgeIDRenameHeal(t *testing.T) {
 // REVISED in v0.27.117 (Copilot round 11, active — real): the original
 // prefer-NONEMPTY-INCOMING shape let a non-empty incoming ID OVERWRITE
 // a different stored one, silently destroying the delete-and-recreate
-// mismatch signal SetPlatformRepoIDIfEmpty and Phase 0 surface. The
+// mismatch signal SetPlatformRepoIDIfEmptySeen and Phase 0 surface. The
 // forge ID never changes for a given repo, so the correct shape is
 // FILL-EMPTY-ONLY: prefer the STORED value; an id-less re-upsert still
 // can't wipe a captured ID, and the first observation still fills.
@@ -282,15 +282,15 @@ func TestRenameDedupAtAddTime(t *testing.T) {
 		t.Fatalf("id-less re-upsert wiped platform_repo_id: got %q", storedForge)
 	}
 
-	// 5. SetPlatformRepoIDIfEmpty fills only empty — never overwrites.
-	if err := store.SetPlatformRepoIDIfEmpty(ctx, oldID, "111"); err != nil {
+	// 5. SetPlatformRepoIDIfEmptySeen fills only empty — never overwrites.
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, oldID, "111", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, oldID).Scan(&storedForge); err != nil {
 		t.Fatal(err)
 	}
 	if storedForge != forgeID {
-		t.Fatalf("SetPlatformRepoIDIfEmpty overwrote a populated value: got %q", storedForge)
+		t.Fatalf("SetPlatformRepoIDIfEmptySeen overwrote a populated value: got %q", storedForge)
 	}
 
 	// 6. A different forge ID under an untracked URL creates a NEW row —

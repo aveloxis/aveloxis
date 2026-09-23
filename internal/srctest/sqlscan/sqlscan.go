@@ -238,7 +238,7 @@ func isSpace(c byte) bool {
 // WhereGuardsEmpty reports whether the statement's text, after a
 // top-level WHERE, guards the column to its empty state — the shape
 // that legitimizes a bare `SET col = $N` as fill-empty-only
-// (SetPlatformRepoIDIfEmpty, internal/db/repo_forge_id.go):
+// (SetPlatformRepoIDIfEmptySeen, internal/db/repo_forge_id.go):
 //
 //	WHERE ... COALESCE(col, '') = ''
 //	WHERE ... col IS NULL

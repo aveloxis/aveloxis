@@ -104,7 +104,7 @@ Then run migrations:
 aveloxis migrate
 ```
 
-This creates 147 tables (101 in `aveloxis_data`, 42 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
+This creates 148 tables (102 in `aveloxis_data`, 42 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
 
 ### OAUTH App Setup
 You will need a github OAUTH application for login to work on the web view. And there's nothing available without login. You can also use GitLab's OAUTH, or configure both. 
@@ -391,7 +391,8 @@ The settings most operators tune (defaults shown for reference):
 | `collection.pr_child_mode` | `"graphql"` | GraphQL is the default GitHub path (~5× faster, v0.26.0+); set `"rest"` as the escape hatch. |
 | `collection.listing_mode` | `"graphql"` | Default since v0.26.0; `"rest"` restores the repo-wide REST issue/PR scans. |
 | `collection.threading_mode` | `"single"` | Set to `"sharded"` with `pr_child_mode=graphql` to parallelize large-repo PR batches (v0.18.3+). |
-| `collection.matview_rebuild_day` | `"saturday"` | Or `"disabled"` to turn off scheduled rebuilds. |
+| `collection.matview_rebuild_day` | `"saturday"` | Or `"disabled"` to turn off the weekly 8Knot view rebuild. |
+| `collection.supply_chain_refresh_hours` | `24` | Cadence of the two supply-chain views' refresh (seconds each); `0` turns the schedule off (`aveloxis refresh-views --set supply-chain` still works). |
 | `web.dev_mode` | `false` | Set `true` for local HTTP development (see Development Mode below): plain-HTTP cookies, and loopback email confirmation links when `mail.site_url` is unset. Never enable in production. |
 | `log_level` | `"info"` | `debug` / `info` / `warn` / `error`. |
 
@@ -544,13 +545,13 @@ Combine with `aveloxis prioritize <url>` if you want the re-collection to start 
 aveloxis migrate
 ```
 
-Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when `collection.materialized_views` is enabled (the default):
-- **`aveloxis_data`** (101 tables + 20 materialized views) — all collected data plus analytics views
+Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, on every deployment, the two supply-chain views the GUI reads:
+- **`aveloxis_data`** (102 tables + 22 materialized views) — all collected data plus analytics views
 - **`aveloxis_ops`** (42 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
 - **`aveloxis_scan`** (4 tables) — scancode per-file license/copyright results and history
 - **`aveloxis_augur_data`** (6 views) — Augur compatibility layer for 8Knot. Contains views that alias Aveloxis column names to Augur conventions (e.g., `star_count` → `stars_count`, `pr_number` → `pr_src_number`). Only tables with column name differences have views here; identical tables resolve via search_path fallback to `aveloxis_data`.
 
-Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates the 20 materialized views for 8Knot/analytics compatibility (when `collection.materialized_views` is enabled, the default) and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
+Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also creates the 20 8Knot materialized views (when `collection.materialized_views` is enabled, the default) and re-creates the two supply-chain views from their Go definition (always, with or without `--skip-views`; seconds) and runs a data cleanup pass that fixes any garbage timestamps (e.g., year 0001 BC from uninitialized fields) by setting them to NULL.
 
 **8Knot integration:** Set `AUGUR_SCHEMA=aveloxis_augur_data,aveloxis_data` (no space after comma) in 8Knot's `.env`. The two-schema search path resolves Augur-named columns from `aveloxis_augur_data` first, then falls through to `aveloxis_data` for tables with identical schemas. For existing Augur databases, use `AUGUR_SCHEMA=augur_data` as before — the compatibility schema is not needed.
 
@@ -560,7 +561,7 @@ Safe to run repeatedly. Does not touch Augur schemas if sharing a database. Also
 aveloxis refresh-views
 ```
 
-Manually refreshes all 20 materialized views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools. Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). Their data is also refreshed automatically on a configurable schedule by `aveloxis serve` (default: Saturday; set `collection.matview_rebuild_day` in `aveloxis.json` to change, or `"disabled"` to turn off). A refresh keeps each view's definition; a release that changes one needs a plain `aveloxis migrate`, which re-creates the views. On a deployment with `collection.materialized_views` set to `false` there are no views to refresh, and this command says so.
+Manually refreshes the materialized views: `--set all` (default), `--set 8knot` (the 20 views used by [8Knot](https://github.com/oss-aspen/8Knot) and other analytics tools) or `--set supply-chain` (the two views the GUI's dependencies page reads; seconds). Uses `REFRESH MATERIALIZED VIEW CONCURRENTLY` where unique indexes exist (doesn't block reads). `aveloxis serve` refreshes the 8Knot set weekly (default Saturday; `collection.matview_rebuild_day`, or `"disabled"`) and the supply-chain pair every `collection.supply_chain_refresh_hours` (default 24; `0` turns that schedule off). A refresh keeps each view's definition; a release that changes an 8Knot view needs a plain `aveloxis migrate`, which re-creates that set, while every migrate re-creates the supply-chain pair. A set the database does not have (no 8Knot views on a deployment with `collection.materialized_views` set to `false`) is said so and skipped.
 
 ### `aveloxis install-tools` — Install all optional analysis tools
 
@@ -950,6 +951,8 @@ When `collection.materialized_views` is enabled (the default), Aveloxis creates 
 | `explorer_repo_files` | Latest SCC file listing per repo (most recent analysis date) |
 | `issue_reporter_created_at` | Legacy issue reporter view |
 
+Two further materialized views, `explorer_package_exposure` and `explorer_package_advisory`, are **Aveloxis-owned** (v0.29.61): the GUI's dependencies page reads them through the API, nothing in 8Knot does, and they have their own lifecycle — every `aveloxis migrate` re-creates them from their Go definition (seconds), `aveloxis serve` builds them when missing regardless of `collection.materialized_views`, and refreshes them every `collection.supply_chain_refresh_hours` (default 24), never inside the weekly 8Knot rebuild. See [Materialized views → Supply-chain package views](docs/architecture/materialized-views.md).
+
 **Optional:** `collection.materialized_views` (default `true`) says whether this deployment has the views at all. With it `false`, neither `aveloxis serve` nor `aveloxis migrate` creates or rebuilds them. Views that already exist are kept, and `aveloxis refresh-views` and the weekly rebuild still refresh whatever exists — they ask the database catalog which views are present, not this setting — so the option prevents creation and rebuild by migration, not refreshes of views already there. Everything that follows assumes they are enabled.
 
 **Rebuild schedule:** Configurable via `collection.matview_rebuild_day` in `aveloxis.json` (default: `"saturday"`). Set to `"disabled"` to turn off automatic rebuilds. Views are NOT refreshed on every startup (was causing slow starts on large databases). On first run, views are created; a later startup skips a complete set and, if any managed view is missing (dropped by hand, or added by a release), logs an ERROR naming it rather than rebuilding all of them (matviews.sql runs as one batch). Manual refresh: `aveloxis refresh-views` (data only; each view keeps its definition). The explicit `aveloxis migrate` command, without `--skip-views`, drops and re-creates every view from its definition — the only step that applies a changed definition.
@@ -958,7 +961,7 @@ When `collection.materialized_views` is enabled (the default), Aveloxis creates 
 
 Four schemas in PostgreSQL: two with full parity to Augur's `augur_data` and `augur_operations`, a dedicated schema for ScanCode results, and one carrying the Augur-compatibility views:
 
-- **`aveloxis_data`** (101 tables + 20 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility.
+- **`aveloxis_data`** (102 tables + 22 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility and the two supply-chain views.
 - **`aveloxis_ops`** (42 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
 - **`aveloxis_scan`** (4 tables) — ScanCode per-file license and copyright detection: `scancode_scans` (scan metadata), `scancode_file_results` (per-file SPDX license, copyrights, holders, packages as JSONB), plus `_history` tables for both.
 - **`aveloxis_augur_data`** (views only, no tables) — Augur-compatibility views for 8Knot: `repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`. Only the entities whose column names differ from Augur's need a view; 8Knot reads with `search_path = aveloxis_augur_data,aveloxis_data` so everything else resolves straight through to the real tables.
@@ -1136,7 +1139,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | API key source | Keyman service + Redis | Config file and/or Augur's `worker_oauth` table |
 | API efficiency | No conditional requests | ETag caching (304 = free), HTTP/2 multiplexing, 20 idle connections per host |
 | Commit author resolution | Separate Python scripts, long process with contention. | Built-in post-facade phase: noreply parse, DB lookup, Commits API, Search API |
-| Materialized views | 18 views, manual refresh or Celery task | 20 materialized views + 2 alias views, configurable auto-rebuild schedule (default Saturday), not refreshed on startup |
+| Materialized views | 18 views, manual refresh or Celery task | 20 8Knot materialized views + 2 alias views on a weekly schedule (default Saturday), plus two Aveloxis-owned supply-chain views on their own cadence (default daily, plus once at startup); the 8Knot set is not refreshed on startup |
 | Contributor breadth | Separate Celery worker, manual scheduling | Built-in 15-minute cycles with cooldown + circuit breaker; plus per-day contributor activity history and activity classification |
 | Contributor IDs | Deterministic GithubUUID from gh_user_id | Deterministic GithubUUID from gh_user_id (Augur byte-compatible) |
 | Facade aggregates | Post-processing in Python | SQL-based aggregate refresh per repo after git log |

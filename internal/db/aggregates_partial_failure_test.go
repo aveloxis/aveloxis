@@ -54,14 +54,26 @@ func TestRefreshAllRepoAggregatesReturnsPartialFailures(t *testing.T) {
 		t.Error("RefreshRepoGroupAggregates must return a repo_group lookup error (SR-5), never fold it into the no-group nil")
 	}
 	// The matview half of the same command has the same contract.
-	views := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "matviews.go"), "func RefreshMaterializedViews("))
-	for _, needle := range []string{`failed = append(failed, fmt.Errorf("view %s: %w", name, err))`, "return boundedJoin("} {
-		if !strings.Contains(views, needle) {
-			t.Errorf("RefreshMaterializedViews must accumulate and return per-view failures: missing %q", needle)
-		}
+	// v0.29.61: the per-view refresh (CONCURRENTLY, then plain; the
+	// view-named wrap) is the shared refreshMatview; each set's loop
+	// accumulates what it returns and reports through boundedJoin.
+	one := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "matviews.go"), "func refreshMatview("))
+	if !strings.Contains(one, `return fmt.Errorf("view %s: %w", name, err)`) {
+		t.Error("refreshMatview must return a failure wrapped with the view's name")
 	}
-	if strings.Count(views, "if ctx.Err() != nil {") < 2 {
-		t.Error("RefreshMaterializedViews must check ctx.Err() per view AND once after the loop")
+	for fn, file := range map[string]string{
+		"func RefreshMaterializedViews(": "matviews.go",
+		"func RefreshSupplyChainViews(":  "supply_chain_views.go",
+	} {
+		views := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, file), fn))
+		for _, needle := range []string{"failed = append(failed, err)", "return boundedJoin("} {
+			if !strings.Contains(views, needle) {
+				t.Errorf("%s must accumulate and return per-view failures: missing %q", fn, needle)
+			}
+		}
+		if strings.Count(views, "if ctx.Err() != nil {") < 2 {
+			t.Errorf("%s must check ctx.Err() per view AND once after the loop", fn)
+		}
 	}
 	// The CLI returns the pass's error verbatim (nonzero exit), and the
 	// weekly caller still distinguishes the lock skip from a failure.

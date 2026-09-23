@@ -156,6 +156,15 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 					logger.Warn("materialized view creation had errors", "error", err)
 				}
 			}
+			// Two-process note (review round 1 finding 5): this runs
+			// BEFORE the migrate advisory lock below, like the 8Knot
+			// IfMissing block above it. A `migrate` (Rebuild) committing
+			// the pair while a fast-pathing serve probes it absent makes
+			// serve's CREATE fail "already exists" after the commit — one
+			// false ERROR, the view exists. Declined: the deploy ladder
+			// starts with `stop all`, and taking the lock here would
+			// serialize every serve start behind any running migrate.
+			_ = applySupplyChainViewMode(ctx, pg, logger) // IfMissing on the fast path: WARN only, never an error
 			return nil
 		}
 		// A serve whose binary missed the stamp is about to run the FULL
@@ -357,7 +366,20 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 			logger.Warn("materialized view creation had errors", "error", err)
 		}
 	default:
-		logger.Info("materialized views not built by this migration (collection.materialized_views is off, or --skip-views was passed); `aveloxis migrate` with them enabled creates them, `aveloxis refresh-views` refreshes the data of existing ones")
+		logger.Info("8Knot materialized views not built by this migration (collection.materialized_views is off, or --skip-views was passed); `aveloxis migrate` with them enabled creates them, `aveloxis refresh-views` refreshes the data of existing ones")
+	}
+
+	// The Aveloxis-owned supply-chain pair has its own mode and never
+	// rides the 8Knot switch (v0.29.61, worklist 48): --skip-views and
+	// materialized_views:false leave it alone, because it costs seconds.
+	// On the Rebuild path (`aveloxis migrate`) a failed re-create is a
+	// FAILED migrate (round 3 on v0.29.61): the pair's contract is "every
+	// migrate applies the current definition", so the exit tells the truth
+	// and the schema is not stamped over an unapplied one — unlike the
+	// 8Knot block, whose warn-only reason (hours-long batch, derived data
+	// nobody in Aveloxis reads) does not transfer.
+	if err := applySupplyChainViewMode(ctx, pg, logger); err != nil {
+		errs = append(errs, err)
 	}
 
 	if len(errs) > 0 {
@@ -477,9 +499,13 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	setToolVersionDefaults(ctx, pg, logger)
 
-	// Backfill tool_version on rows that were inserted before defaults were set.
-	// After the first run this is a no-op (zero rows matched).
-	backfillToolVersion(ctx, pg, logger)
+	// No tool_version backfill (removed v0.29.62, worklist 32). The step
+	// that stood here scanned ~31 tables in full on every migrate — about
+	// 50 min for commits alone on kate, 1.5 h per run — and stamped the
+	// current binary on rows an older one gathered, which the v0.25.11
+	// provenance rule forbids. The column DEFAULTs above and
+	// `tool_version = EXCLUDED.tool_version` on refreshing upserts are the
+	// writers; TestMigrateNeverBackfillsToolVersion pins it.
 
 	// Add columns that may not exist on older schemas.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "license", "TEXT DEFAULT ''")
@@ -1709,6 +1735,16 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// partial index holds only the platform-6 msg_ids (238K rows on
 	// that fleet), so both bounds become an index endpoint read.
 	// CONCURRENTLY: messages is fleet-scale (SR-2).
+	// v0.29.60: the supply-chain package profile reads one package's
+	// findings by (ecosystem, package_name) — the version-agreement
+	// panel and the exposed-repositories list are live queries in every
+	// scope. The table has only repo_id and cve_id indexes; a package
+	// lookup was a sequential scan of 5.5M rows on the production fleet.
+	// CONCURRENTLY: fleet-scale (SR-2).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_deps_vulns_pkg",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_deps_vulns_pkg
+		 ON aveloxis_data.repo_deps_vulnerabilities (ecosystem, package_name)`)
+
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_messages_mailing_list_msg_id",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_mailing_list_msg_id
 		 ON aveloxis_data.messages (msg_id) WHERE platform_id = 6`)
@@ -2158,6 +2194,10 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "dependency_scope", "TEXT NOT NULL DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "direct", "BOOLEAN NOT NULL DEFAULT TRUE")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "dependency_scope", "TEXT NOT NULL DEFAULT ''")
+	// v0.29.59 (worklist 46): the purl namespace a lockfile supplies (a
+	// SwiftPM pin's host/owner). Rows written before it carry '' and mint
+	// no purl until the repository's next analysis rewrites them.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "purl_namespace", "TEXT NOT NULL DEFAULT ''")
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_lockfile_packages_pkg", `
 		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lockfile_packages_pkg
 		ON aveloxis_data.repo_lockfile_packages (ecosystem, package_name, resolved_version)`)
@@ -3464,61 +3504,6 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog
 	}
 }
 
-// backfillToolVersion sets tool_version on rows where it's empty.
-// After setToolVersionDefaults has run and collection uses the new defaults,
-// this becomes a no-op on subsequent startups.
-func backfillToolVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
-	tables := []string{
-		"aveloxis_data.repo_groups",
-		"aveloxis_data.repos",
-		"aveloxis_data.contributors",
-		"aveloxis_data.contributors_aliases",
-		"aveloxis_data.issues",
-		"aveloxis_data.issue_labels",
-		"aveloxis_data.issue_assignees",
-		"aveloxis_data.issue_events",
-		"aveloxis_data.pull_requests",
-		"aveloxis_data.pull_request_labels",
-		"aveloxis_data.pull_request_assignees",
-		"aveloxis_data.pull_request_reviewers",
-		"aveloxis_data.pull_request_reviews",
-		"aveloxis_data.pull_request_commits",
-		"aveloxis_data.pull_request_files",
-		"aveloxis_data.pull_request_meta",
-		"aveloxis_data.pull_request_events",
-		"aveloxis_data.messages",
-		"aveloxis_data.issue_message_ref",
-		"aveloxis_data.pull_request_message_ref",
-		"aveloxis_data.releases",
-		"aveloxis_data.commits",
-		"aveloxis_data.commit_messages",
-		"aveloxis_data.commit_parents",
-		"aveloxis_data.repo_info",
-		"aveloxis_data.repo_clones",
-		"aveloxis_data.repo_labor",
-		"aveloxis_data.repo_dependencies",
-		"aveloxis_data.repo_deps_libyear",
-		"aveloxis_data.contributor_repo",
-		"aveloxis_data.unresolved_commit_emails",
-	}
-	totalFixed := 0
-	for _, table := range tables {
-		tag, err := pg.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %s SET tool_version = $1 WHERE tool_version IS NULL OR tool_version = ''`,
-			table), ToolVersion)
-		if err != nil {
-			continue
-		}
-		if n := tag.RowsAffected(); n > 0 {
-			totalFixed += int(n)
-			logger.Debug("backfilled tool_version", "table", table, "rows", n)
-		}
-	}
-	if totalFixed > 0 {
-		logger.Info("backfilled tool_version on rows missing it", "total_rows", totalFixed)
-	}
-}
-
 // addColumnIfMissing adds a column to a table if it doesn't exist.
 // deduplicateCommits removes duplicate rows in the commits table and creates
 // a unique index to prevent future duplicates. Previous versions had no
@@ -4152,4 +4137,41 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 		"aveloxis_data", "uq_repo_groups_rg_name",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_repo_groups_rg_name
 		 ON aveloxis_data.repo_groups (rg_name)`)
+}
+
+// applySupplyChainViewMode runs the supply-chain pair's block of a migrate
+// (both the full walk and serve's fast path): Rebuild re-creates both,
+// IfMissing completes the pair, the zero value builds none. IfMissing
+// (serve) is warn-only, so derived data never blocks a start; Rebuild
+// (`aveloxis migrate`) returns the failure, so the migrate exits non-zero
+// rather than stamp over a definition it did not apply. The API aggregates
+// live while a view is absent.
+func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	var err error
+	pg.supplyChainBuilt = false
+	switch pg.supplyChainMode {
+	case MatviewsRebuild:
+		err = CreateSupplyChainViews(ctx, pg, logger)
+		pg.supplyChainBuilt = err == nil
+	case MatviewsIfMissing:
+		pg.supplyChainBuilt, err = CreateSupplyChainViewsIfMissing(ctx, pg, logger)
+	default:
+		logger.Info("supply-chain views not built by this migration (this store did not ask for them; `aveloxis serve` and `aveloxis migrate` always do)")
+		return nil
+	}
+	if err == nil {
+		return nil
+	}
+	if pg.supplyChainMode == MatviewsRebuild {
+		// Round 2 finding 1: a re-create that did not run (a probe
+		// error) or did not land (rolled back) leaves the PREVIOUS views
+		// served; `aveloxis migrate` is the only path that applies a
+		// changed definition, so this is an ERROR the deploy checklist
+		// greps for ("supply-chain view") AND the migrate's own failure
+		// (round 3: the exit code tells the truth too).
+		logger.Error("supply-chain view re-create had errors — the previous views (if any) are still served; fix the cause and re-run `aveloxis migrate`", "error", err)
+		return fmt.Errorf("supply-chain views: %w", err)
+	}
+	logger.Warn("supply-chain view creation had errors — the API aggregates live for the absent view until a migrate builds it", "error", err)
+	return nil
 }

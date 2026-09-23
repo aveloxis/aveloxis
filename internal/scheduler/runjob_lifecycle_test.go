@@ -10,9 +10,20 @@
 // The repo is a GENERIC-GIT repo served by httptest: prelim's HEAD
 // check gets a fast 200 (no redirect, no retry backoff), the API
 // collection phase is skipped (git-only platform), and facade's `git
-// clone` fails deterministically (the URL is not a git repo) — so the
-// test drives the full claim → run → failure-outcome → release cycle
-// with real code and no platform API.
+// clone` fails deterministically (the server answers 404 to every GET,
+// so git's info/refs fetch reports the repository as not found) — so
+// the test drives the full claim → run → failure-outcome → release
+// cycle with real code and no platform API.
+//
+// The fixture answers 200 to HEAD ONLY. A server that answers 200 with
+// an empty body to git's GET is NOT a failing clone: git's dumb-HTTP
+// fallback reads an empty info/refs as an empty repository and the
+// clone succeeds ("You appear to have cloned an empty repository").
+// Until v0.29.58 the failure this test recorded was `git log` on the
+// unborn branch of that empty clone; v0.29.58 made an empty repository
+// a clean zero-commit facade (2026-09-22 log review, finding 2) and the
+// test went red on main. The assertion below names the phase, so a
+// later change cannot pass it with some other failure.
 //
 // Gated on AVELOXIS_TEST_DB (scratch DB only).
 
@@ -25,6 +36,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,9 +67,13 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(raw.Close) // not defer: it ran before the cleanup below, which then deleted nothing (SR-9)
 
-	// Serve 200 for prelim's HEAD check; git clone against this URL
-	// fails fast (not a git repo).
+	// 200 for prelim's HEAD check; 404 for git's GET (see the file
+	// comment: a 200 with an empty body is a successful empty clone).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -142,6 +158,10 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	}
 	if lastError == nil || *lastError == "" {
 		t.Error("the facade clone failure must be recorded in last_error")
+	} else if !strings.HasPrefix(*lastError, "facade collection failed") {
+		// The scheduler records the PHASE (the git detail is in the log);
+		// the fixture provokes the facade, nothing later.
+		t.Errorf("last_error must be the facade failure this fixture provokes, got %q", *lastError)
 	}
 	if !dueAt.After(time.Now()) {
 		t.Error("due_at must move into the future after completion")

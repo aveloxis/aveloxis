@@ -120,6 +120,10 @@ var convergenceContracts = []convergenceContract{
 		// "rerun until 0 candidates" — the flagship: candidate → fill →
 		// RefreshQueueGatheredCounts → candidate set empty.
 		DrivingTests: []string{"TestGapHealConvergesToZeroCandidates"}},
+	{File: "cmd/aveloxis/heal_collection_gaps_run.go",
+		// The run's failure message quotes the same contract (v0.29.65
+		// moved the loop here from heal_collection_gaps.go).
+		DrivingTests: []string{"TestGapHealConvergesToZeroCandidates"}},
 	{File: "internal/db/gap_heal_store.go",
 		// RefreshQueueGatheredCounts' doc quotes the same contract — the
 		// store half of the flagship's loop.

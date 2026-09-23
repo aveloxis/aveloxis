@@ -4,6 +4,7 @@
 package scheduler
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -132,3 +133,25 @@ func readSchedulerSource() (string, error) {
 	b, err := os.ReadFile("scheduler.go")
 	return string(b), err
 }
+
+// TestBuildOutcome_ProvenEmptyRepoIsNotAFailure — 2026-09-23 log review:
+// 668 of 677 failed jobs were empty repositories ("repository has no
+// commits on its default branch"). v0.29.58 made the facade SAY so
+// (FacadeResult.EmptyDefaultBranch, probed against the bare clone), which
+// is the distinction the test above could not draw: zero commits proven
+// empty is not an auth failure. A zero-commit result WITHOUT the flag
+// stays a failure.
+func TestBuildOutcome_ProvenEmptyRepoIsNotAFailure(t *testing.T) {
+	var s Scheduler
+	outcome := s.buildOutcome(&collector.CollectResult{}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil)
+	if !outcome.success || outcome.errMsg != "" {
+		t.Errorf("a repository the facade proved empty is collected, not failed: success=%v errMsg=%q", outcome.success, outcome.errMsg)
+	}
+	// An API error still fails the job, empty or not.
+	withErr := s.buildOutcome(&collector.CollectResult{Errors: []error{errForTest}}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil)
+	if withErr.success {
+		t.Error("an API collection error must still fail the job on an empty repository")
+	}
+}
+
+var errForTest = fmt.Errorf("issues: HTTP 500")

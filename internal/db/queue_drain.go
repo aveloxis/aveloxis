@@ -20,12 +20,15 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/safego"
+	"github.com/jackc/pgx/v5"
 )
 
 // drainLockedBy is the ONE spelling of the drain-park lock owner
@@ -33,7 +36,74 @@ import (
 // must all match the same locked_by string, or a heartbeat/release
 // silently stops finding the row it is supposed to touch.
 func drainLockedBy(workerID string) string {
-	return fmt.Sprintf("%s:drain", workerID)
+	return workerID + drainLockSuffix
+}
+
+// QueueRowStatus is a collection_queue row's status and lock owner.
+type QueueRowStatus struct {
+	Status   string
+	LockedBy string
+}
+
+// Drain reports whether the row is parked by a staging drain or a
+// heal-collection-gaps run (owner '<worker>:drain') rather than claimed by
+// a collection job — the same split QueueStats makes.
+func (q QueueRowStatus) Drain() bool {
+	return strings.HasSuffix(q.LockedBy, drainLockSuffix)
+}
+
+// GetQueueStatus returns a repo's collection_queue status and owner; found
+// is false when the repo has no queue row (prelim dequeues gone repos and
+// retained rename duplicates). Only pgx.ErrNoRows means "no row"; any other
+// error is returned (SR-5). The single-repo gap heal uses it to explain a
+// refused drain lock (v0.29.65 review rounds 8-9).
+func (s *PostgresStore) GetQueueStatus(ctx context.Context, repoID int64) (QueueRowStatus, bool, error) {
+	var q QueueRowStatus
+	err := s.pool.QueryRow(ctx,
+		`SELECT status, COALESCE(locked_by, '') FROM aveloxis_ops.collection_queue WHERE repo_id = $1`,
+		repoID).Scan(&q.Status, &q.LockedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return QueueRowStatus{}, false, nil
+	}
+	if err != nil {
+		return QueueRowStatus{}, false, fmt.Errorf("queue status for repo %d: %w", repoID, err)
+	}
+	return q, true, nil
+}
+
+// drainLockSuffix marks a drain-parked row's owner. QueueStats matches
+// it to count parked rows apart from real jobs (v0.29.64); drainLockedBy
+// is the only place that appends it.
+const drainLockSuffix = ":drain"
+
+// ReleaseDrainLocks returns every row this worker drain-parked to
+// 'queued' — the exit twin of ReleaseDrainLock, used by serve's shutdown
+// (v0.29.64, 2026-09-23: with serve stopped the monitor showed 107
+// "collecting" rows, all drain-parked, because the shutdown release matched
+// only the worker ID itself) and by heal-collection-gaps on exit (v0.29.65).
+// For serve's rows, the next start re-identifies the drain set from staging
+// and re-parks it before any worker can claim (the drain set is computed and
+// parked ahead of the first fillWorkerSlots); a heal's rows are simply
+// queued again, and a rerun of the heal picks up what it did not finish.
+// due_at = NOW() matches the per-repo release and the startup reclaim;
+// RealignDueDates recomputes it at the next start for rows that were ever
+// collected. Like the per-repo release it never touches last_collected;
+// the locked_by + status guards leave other processes' rows and this
+// worker's own job locks alone.
+func (s *PostgresStore) ReleaseDrainLocks(ctx context.Context, workerID string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.collection_queue
+		SET status = 'queued',
+		    locked_by = NULL,
+		    locked_at = NULL,
+		    due_at = NOW(),
+		    updated_at = NOW()
+		WHERE locked_by = $1 AND status = 'collecting'`,
+		drainLockedBy(workerID))
+	if err != nil {
+		return 0, fmt.Errorf("release drain locks for %s: %w", workerID, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // drainHeartbeatInterval matches the scheduler's 30-second job
@@ -168,6 +238,13 @@ func (s *PostgresStore) StartDrainHeartbeat(ctx context.Context, logger *slog.Lo
 				return
 			case <-ticker.C:
 				if err := s.HeartbeatDrainLocks(hbCtx, workerID); err != nil {
+					if hbCtx.Err() != nil {
+						// Stopped or interrupted mid-beat: not a failure
+						// (v0.29.65). Not driven by a test: the beat interval
+						// is a fixed 30 s, and the only effect of losing this
+						// arm is a WARN line (review round 10, declined).
+						return
+					}
 					logger.Warn("drain heartbeat failed", "worker_id", workerID, "error", err)
 				}
 			}

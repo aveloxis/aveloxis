@@ -88,7 +88,13 @@ var smokeRecipes = map[string]smokeRecipe{
 	// code, pinned by portal_bulk_add_test.go).
 	"POST /api/v1/groups/{groupID}/repos": {auth: "user", body: `{"urls":["https://github.com/_avsmoke/{repoName}"],"kind":"repo"}`},
 	"GET /api/v1/home/repos":              {auth: "user"},
-	"GET /api/v1/home/new-repos":          {auth: "user"},
+	// v0.29.60: supply-chain package view. The smoke token is an admin, so
+	// the FLEET path runs; the per-package test database builds no
+	// materialized views, so this exercises the live fallback the store
+	// takes when the view is absent (42P01).
+	"GET /api/v1/supply-chain/packages":                       {auth: "user", query: "sort=repos&limit=5"},
+	"GET /api/v1/supply-chain/packages/{ecosystem}/{name...}": {auth: "user", wantStatus: []int{404}},
+	"GET /api/v1/home/new-repos":                              {auth: "user"},
 	// v0.27.63 collections. Ordering via `after`: the group link and
 	// copy run before the delete so they exercise a live collection.
 	"GET /api/v1/collections":                                               {auth: "user"},
@@ -113,9 +119,11 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/admin/monitor/queue":                        {auth: "admin"},
 	"POST /api/v1/admin/users/{userID}/admin":                {auth: "admin", body: `{"admin":true}`},
 	"POST /api/v1/admin/groups/{groupID}/{decision}":         {auth: "admin"},
-	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"}, // v0.27.14 Boost (fixture seeds the queue row)
-	"GET /api/v1/admin/add-requests":                         {auth: "admin"}, // v0.27.20 per-add approval queue
-	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"}, // v0.27.20 (fixture seeds the pending request)
+	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"},                                                                          // v0.27.14 Boost (fixture seeds the queue row)
+	"GET /api/v1/admin/add-requests":                         {auth: "admin"},                                                                          // v0.27.20 per-add approval queue
+	"GET /api/v1/admin/forge-id-changes":                     {auth: "admin", query: "pending=1"},                                                      // v0.29.63
+	"POST /api/v1/admin/forge-id-changes/{repoID}/adopt":     {auth: "admin", body: `{"old_forge_id":"1","new_forge_id":"2"}`, wantStatus: []int{404}}, // v0.29.63: the fixture repo has nothing pending
+	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"},                                                                          // v0.27.20 (fixture seeds the pending request)
 
 	// Augur-compat metric routes (metrics.go).
 	"GET /api/v1/owner/{owner}/repo/{repo}":                    {},
@@ -231,6 +239,11 @@ func TestEveryEndpointExecutes(t *testing.T) {
 		"{repo}", fx.repoName,
 		"{repoName}", fx.repoName,
 		"{rgName}", fx.rgName,
+		// v0.29.60: the supply-chain package path; the fixture seeds no
+		// finding, so the profile answers the typed not-found (the
+		// aggregate still executes against the real schema).
+		"{ecosystem}", "npm",
+		"{name...}", "smoke-package",
 	)
 
 	run := func(route string, r smokeRecipe) {

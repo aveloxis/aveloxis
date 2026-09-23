@@ -1,6 +1,11 @@
 # Materialized Views
 
-When `collection.materialized_views` is enabled (the default), Aveloxis creates **20 materialized views + 2 alias views** under the `aveloxis_data` schema; a deployment with it disabled has none of these relations (v0.29.57 — they are derived data, and a deployment that never queries them can skip building them). v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate `augur_new_contributors` matview and converting `explorer_libyear_all` to an alias VIEW. v0.25.6 then restored `augur_new_contributors` as a plain VIEW alias (operators query it to identify new contributors), so today's count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like [8Knot](https://github.com/oss-aspen/8Knot)) opens a dashboard. Their data is refreshed on a weekly cadence (default Saturday — configurable via `collection.matview_rebuild_day`) and on demand via `aveloxis refresh-views`. A refresh keeps each view's definition; a release that changes a definition applies it with a plain `aveloxis migrate` (without `--skip-views`), which drops and re-creates the views. Alias views read live from their underlying matview and need no separate refresh.
+Aveloxis keeps two sets of materialized views under the `aveloxis_data` schema, with different owners, different economics and, since v0.29.61, different lifecycles:
+
+- **The 8Knot set — 20 materialized views + 2 alias views**, defined in `matviews.sql`, built when `collection.materialized_views` is enabled (the default) and absent otherwise (v0.29.57 — they are derived data for [8Knot](https://github.com/oss-aspen/8Knot) and other Augur analytics tools; a deployment that never queries them can skip building them). One statement batch, hours at fleet scale. Their data is refreshed on a weekly cadence (default Saturday — `collection.matview_rebuild_day`) while collection is paused, and on demand via `aveloxis refresh-views --set 8knot`. A refresh keeps each view's definition; a release that changes one applies it with a plain `aveloxis migrate` (without `--skip-views`), which drops and re-creates the whole set. Alias views read live from their underlying matview and need no refresh. (History: v0.25.5 dropped the duplicate `augur_new_contributors` matview and made `explorer_libyear_all` an alias; v0.25.6 restored `augur_new_contributors` as a plain VIEW alias.)
+- **The supply-chain set — two materialized views**, `explorer_package_exposure` and `explorer_package_advisory`, defined in Go (`internal/db/supply_chain_views.go`) and read by Aveloxis's own GUI through the API; nothing in 8Knot uses them. Seconds at fleet scale. Every `aveloxis migrate` re-creates them (with or without `--skip-views`), `aveloxis serve` builds them when missing, and the scheduler refreshes them every `collection.supply_chain_refresh_hours` (default 24) without pausing anything — all of it regardless of `collection.materialized_views`. Documented in full under [Supply-chain package views](#supply-chain-package-views-aveloxis-owned) below.
+
+Nothing else in Aveloxis reads a materialized view: the API's retention, labor, time-series and repository statistics compute live from base tables scoped to the caller.
 
 This page explains, for each view, **what a row means**, **what the complete table tells you**, and **how an open source health and sustainability analyst would actually use it**. The audience is operators and analysts, not SQL authors — the goal is to make the catalog useful without requiring a read of the underlying query.
 
@@ -8,7 +13,9 @@ This page explains, for each view, **what a row means**, **what the complete tab
 
 ## Refresh schedule
 
-The full set rebuilds weekly. Operators tune the day via `collection.matview_rebuild_day` (default `saturday`) and can force an out-of-band refresh with `aveloxis refresh-views`. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.
+**8Knot set:** the full set rebuilds weekly. Operators tune the day via `collection.matview_rebuild_day` (default `saturday`, or `disabled`) and can force an out-of-band refresh with `aveloxis refresh-views --set 8knot`. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.
+
+**Supply-chain set:** refreshed every `collection.supply_chain_refresh_hours` (default 24; `0` turns the schedule off) off the scheduler's own ticker, once at startup (unless that start built the whole pair, which is fresh by construction) and then on the cadence, CONCURRENTLY, in seconds; collection never pauses. `aveloxis refresh-views --set supply-chain` refreshes on demand. `serve` logs the effective cadence at startup.
 
 If the underlying data has changed only modestly since the last rebuild, the most-recent view contents continue to be query-able with stale-but-consistent data; consumers don't see partial state.
 
@@ -26,6 +33,7 @@ If the underlying data has changed only modestly since the last rebuild, the mos
 | **Issues** | `explorer_issue_assignments` |
 | **Files / code** | `explorer_repo_files`, `explorer_repo_languages` |
 | **Dependencies** | `explorer_libyear_all`, `explorer_libyear_summary`, `explorer_libyear_detail` |
+| **Supply chain** (Aveloxis-owned; its own lifecycle, see below) | `explorer_package_exposure`, `explorer_package_advisory` |
 
 ---
 
@@ -413,3 +421,93 @@ Or wait for the next weekly automatic rebuild.
 - [Analysis](analysis.md) — how `repo_labor` (drives `explorer_repo_files` / `explorer_repo_languages`) and `repo_deps_libyear` are populated.
 - [Scaling](../guide/scaling.md) — database tuning for the rebuild window.
 - [Overview](overview.md) — system architecture.
+
+
+## Supply-chain package views (Aveloxis-owned)
+
+These two views (v0.29.60; their own lifecycle since v0.29.61) turn the vulnerability findings around. The raw table, `repo_deps_vulnerabilities`, is repository-centred: one row per repository × package × scanned version × advisory, written by each repository's vulnerability scan (see [Vulnerability scanning](vulnerability-and-sbom.md)). It answers "what is wrong in this repository". The views are package-centred: one row per package across every repository in the fleet, so they answer the question a single Dependabot pull request cannot — *how many projects does this one library reach, how much of that reach is invisible in their manifests, how long has it been open, and are the projects even running the same version?* That is the figure the GUI's dependencies page draws: the pull request's view on the left (one library, one advisory, one bump), the cohort profile on the right.
+
+### What is new here, and what is only regrouped
+
+Every column is derived from `repo_deps_vulnerabilities` alone; nothing is fetched. What the views add is the cross-repository aggregation the raw rows cannot express, and four decisions baked into it:
+
+- **Currency.** A finding whose `resolved_at` is NULL is *current*; the scan stamps `resolved_at` instead of deleting, so the raw table carries history and the views separate "has ever been exposed" from "is exposed now" (`cohort_repos` vs `repos_unresolved`, `findings` vs `findings_unresolved`).
+- **The scanned version** is not a column of the raw table; it is read out of the finding's purl (`package_purl`), as the text after the last `@` that contains no `/` — a scoped npm purl minted before v0.27.29 (`pkg:npm/@scope/name@1.0.0`) keeps its first `@` as the scope marker, and a versionless purl yields no version rather than a wrong one.
+- **Direct vs transitive** comes from the finding's `dependency_kind`, which the scan sets from the manifest and lockfile parse: a transitive finding is one a manifest reader cannot see.
+- **One label per advisory.** The raw rows for one advisory can disagree: a failed detail fetch stores a stub (severity `UNKNOWN` or empty, no fixed version). The views prefer the known value — severity is the highest-ranked label across the rows (`CRITICAL` > `HIGH` > `MEDIUM`/`MODERATE` > `LOW`), the fixed version the most common non-empty one — the same preference the scan's own upsert applies.
+
+### `explorer_package_exposure`
+
+**One row per `(ecosystem, package_name)`: the package's exposure profile across the fleet.** Unique index on that pair (the refresh runs CONCURRENTLY).
+
+| Column | Meaning | Derived how |
+|---|---|---|
+| `ecosystem`, `package_name` | the package, as the scan names it (`npm`, `pypi`, `go`, `maven`, `cargo`, `rubygems`, `packagist`, `nuget`, `hex`, `pub`, `swiftpm`, `hackage`, `githubactions`) | group key; rows with an empty ecosystem or name are excluded |
+| `cohort_repos` | repositories that have EVER had a finding on the package | `COUNT(DISTINCT repo_id)` |
+| `repos_unresolved` | repositories with a current finding | the same over current rows |
+| `findings`, `findings_unresolved` | finding rows (repository × advisory × scanned version), all and current | `COUNT(*)` |
+| `pct_unresolved` | share of finding rows still open | `findings_unresolved / findings`, one decimal |
+| `pct_transitive` | share of finding rows that are transitive — the exposure a manifest reader cannot see | `dependency_kind = 'transitive'` over all rows |
+| `median_days_open` | median age, in days, of the current findings | `percentile_cont(0.5)` over `now() - first_detected_at`, current rows only; NULL when nothing is open |
+| `max_cvss` | the highest CVSS score among the package's findings | `MAX(cvss_score)` |
+| `worst_severity` | the worst severity label, ranked not alphabetical | `CRITICAL` > `HIGH` > `MEDIUM` > `LOW`; empty when every label is unknown |
+| `n_advisories` | distinct advisories (OSV ids) on the package | `COUNT(DISTINCT vuln_id)` |
+| `distinct_versions_in_use` | distinct scanned versions among the CURRENT findings | from the purl; unknown versions do not count |
+| `repos_with_known_versions` | current-exposed repositories whose finding carries a version | the denominator of the modal share |
+| `modal_version` | the version the most repositories are on | ties broken by version text |
+| `modal_version_share_pct` | that version's share of `repos_with_known_versions` | NULL when no version is known |
+| `lead_advisory`, `lead_cve`, `lead_severity`, `lead_fixed_version`, `lead_advisory_repos` | the advisory on the most repositories (ties broken by id), its CVE alias, its one label and fixed version, and its repository count | the top row of `explorer_package_advisory` for the package |
+
+**What the complete table tells you:** which libraries the fleet is exposed through, and the shape of that exposure. Sort by `cohort_repos` for reach, by `pct_transitive` for invisibility, by `median_days_open` for neglect, by `distinct_versions_in_use` and a low `modal_version_share_pct` for fragmentation — a package with high transitive share and low modal share is an upgrade nobody owns. The API's leaderboard sorts are exactly these columns.
+
+### `explorer_package_advisory`
+
+**One row per `(ecosystem, package_name, vuln_id)`: one advisory's footprint on one package.** Unique index on the triple.
+
+| Column | Meaning | Derived how |
+|---|---|---|
+| `vuln_id` | the OSV advisory id (`GHSA-…`, `PYSEC-…`, `GO-…`, …) | group key |
+| `cve_id` | its CVE alias when OSV carries one | `MAX(cve_id)` across the rows |
+| `severity` | the one label for the advisory | highest-ranked across its rows (stubs never outvote known labels) |
+| `max_cvss` | the highest score stored for it | `MAX(cvss_score)` |
+| `fixed_version` | the version that closes it | most common non-empty value across its rows |
+| `repos`, `repos_unresolved` | repositories it has ever touched, and touches now | `COUNT(DISTINCT repo_id)`, all and current |
+| `first_seen` | when the fleet first recorded it | `MIN(first_detected_at)` |
+
+The profile's lead advisory is this table's top row for the package (most repositories first); the API's package page lists them all with their OSV and CVE links.
+
+### Live cohorts, and a deployment without the views
+
+The views hold the FLEET. The API serves an admin's fleet request from them and marks the answer `scope.source = "matview"`; a signed-in user's own scope, or a `?group=` request, is aggregated live with the same SQL plus a repository filter (`scope.source = "live"`) — milliseconds for hundreds of repositories, about three seconds for a 62,000-repository group on the production fleet. When a view is missing (a fresh deployment before its first migrate, or a build failure logged as `supply-chain view creation failed`), the fleet request falls back to the live aggregate over the whole table instead of an error. The views' body and the live SQL are one function in `internal/db/package_exposure_store.go`, so they cannot drift.
+
+### Lifecycle
+
+| | 8Knot set | Supply-chain set |
+|---|---|---|
+| Definition | `internal/db/matviews.sql` (one batch) | `internal/db/supply_chain_views.go` (Go SQL, one statement per view) |
+| Governed by | `collection.materialized_views` | nothing — every deployment has them |
+| `aveloxis migrate` | re-creates the set; `--skip-views` skips it | re-creates both, always (seconds) |
+| `aveloxis serve` start | builds an empty set, reports a partial one | builds whichever view is missing |
+| Scheduled refresh | weekly on `matview_rebuild_day`, collection paused | every `supply_chain_refresh_hours` (default 24), nothing paused |
+| On demand | `aveloxis refresh-views --set 8knot` | `aveloxis refresh-views --set supply-chain` |
+| Changed definition | needs a plain `migrate` | lands on the next `migrate` |
+
+### Dropping the 8Knot set on a deployment that does not use it
+
+Setting `collection.materialized_views` to `false` stops `serve` and `migrate` from creating or rebuilding the 8Knot set, and `matview_rebuild_day: "disabled"` stops the weekly refresh; neither drops views that already exist (dropping collected objects is an operator decision, not a config one), and `aveloxis refresh-views` without `--set` will still refresh whatever exists. To reclaim the space, drop the set by hand while `serve` is stopped — the two alias views first, then the matviews:
+
+```sql
+DROP VIEW IF EXISTS aveloxis_data.augur_new_contributors, aveloxis_data.explorer_libyear_all;
+DROP MATERIALIZED VIEW IF EXISTS
+  aveloxis_data.api_get_all_repo_prs, aveloxis_data.api_get_all_repos_commits, aveloxis_data.api_get_all_repos_issues,
+  aveloxis_data.explorer_entry_list, aveloxis_data.explorer_commits_and_committers_daily_count,
+  aveloxis_data.explorer_contributor_actions, aveloxis_data.explorer_new_contributors, aveloxis_data.explorer_user_repos,
+  aveloxis_data.explorer_pr_response_times, aveloxis_data.explorer_pr_assignments, aveloxis_data.explorer_issue_assignments,
+  aveloxis_data.explorer_pr_response, aveloxis_data.explorer_repo_languages, aveloxis_data.explorer_libyear_summary,
+  aveloxis_data.explorer_libyear_detail, aveloxis_data.issue_reporter_created_at,
+  aveloxis_data.explorer_contributor_recent_actions, aveloxis_data.explorer_pr_files, aveloxis_data.explorer_cntrb_per_file,
+  aveloxis_data.explorer_repo_files
+  CASCADE;
+```
+
+The supply-chain views are untouched by this, and the `aveloxis_augur_data` compatibility views (plain views over base tables) are a separate schema.

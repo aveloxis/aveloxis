@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -84,7 +85,7 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 	return id, err
 }
 
-// SetPlatformRepoIDIfEmpty backfills the forge numeric ID onto an
+// SetPlatformRepoIDIfEmptySeen backfills the forge numeric ID onto an
 // already-tracked row — fill-empty-only, never an overwrite (the forge
 // ID never changes for a given repo; a differing stored value means a
 // pre-existing consolidation problem that a scan pass must not paper
@@ -92,7 +93,14 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 // cohort — exactly the population at risk of rename re-discovery —
 // gains rename protection on the NEXT scan pass instead of waiting for
 // each repo's Phase 0 collection cycle.
-func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int64, forgeID string) error {
+//
+// forgeCreatedAt is the forge's creation date of the repository the scan
+// just listed (zero = unknown). On a forge-ID mismatch it is recorded with
+// the pending change, so the admin page's Adopt button can carry it
+// without a forge call (the api process holds no API keys). The plain
+// SetPlatformRepoIDIfEmpty was removed in v0.29.63 once every scan passed
+// the date (dead code, not deprecated).
+func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time) error {
 	if forgeID == "" {
 		return nil
 	}
@@ -132,9 +140,14 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int
 			return fmt.Errorf("verify stored forge ID for repo %d: %w", repoID, perr)
 		}
 		if stored != "" && stored != forgeID {
-			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
+			s.logger.Error(forgeIDMismatchMsg,
 				"repo_id", repoID, "stored_forge_id", stored, "observed_forge_id", forgeID,
-				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+				"remediation", forgeIDMismatchRemediation)
+			// v0.29.62: the observation is RECORDED, not only logged, so the
+			// operator has a list to act on. repos is still untouched.
+			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt); rerr != nil {
+				return fmt.Errorf("record forge-ID change for repo %d: %w", repoID, rerr)
+			}
 		}
 	}
 	return nil
@@ -153,3 +166,12 @@ func ensureForgeIDIndex(ctx context.Context, pg *PostgresStore, logger *slog.Log
 		 ON aveloxis_data.repos (platform_id, platform_repo_id)
 		 WHERE platform_repo_id <> ''`)
 }
+
+// forgeIDMismatchMsg and forgeIDMismatchRemediation are the ONE wording of
+// the forge-ID mismatch ERROR, shared by the org scan's detector
+// (SetPlatformRepoIDIfEmptySeen) and Phase 0's (review round 1 on v0.29.66:
+// the two had drifted apart, and only one named the Adopt page).
+const (
+	forgeIDMismatchMsg         = "forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row"
+	forgeIDMismatchRemediation = "recorded as a pending forge-ID change: adopt it from the admin approvals page or with `aveloxis adopt-forge-id --repo-id N` if the new repository is a continuation (reconcile-repos consolidates the INVERSE case only); otherwise inspect the row's data eras"
+)

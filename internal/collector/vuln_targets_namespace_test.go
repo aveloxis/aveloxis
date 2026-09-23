@@ -60,19 +60,19 @@ func TestWireValidPurlRequiresNamespaceWhereOSVDoes(t *testing.T) {
 // the wire gate as a purl at all (SR-17: one rule, applied where the purl
 // is minted and where it is sent).
 func TestPurlForPackageDropsNamespacelessTransitives(t *testing.T) {
-	if got := purlForPackage("swiftpm", "alamofire", "5.8.0"); got != "" {
+	if got := purlForPackage("swiftpm", "", "alamofire", "5.8.0"); got != "" {
 		t.Errorf("swiftpm identity-only pin produced %q, want \"\"", got)
 	}
-	if got := purlForPackage("packagist", "php", "8.2"); got != "" {
+	if got := purlForPackage("packagist", "", "php", "8.2"); got != "" {
 		t.Errorf("composer platform package produced %q, want \"\"", got)
 	}
-	if got := purlForPackage("maven", "artifact", "1.0"); got != "" {
+	if got := purlForPackage("maven", "", "artifact", "1.0"); got != "" {
 		t.Errorf("maven without a group produced %q, want \"\"", got)
 	}
-	if got := purlForPackage("maven", "org.example:artifact", "1.0"); got != "pkg:maven/org.example/artifact@1.0" {
+	if got := purlForPackage("maven", "", "org.example:artifact", "1.0"); got != "pkg:maven/org.example/artifact@1.0" {
 		t.Errorf("maven group:artifact = %q", got)
 	}
-	if got := purlForPackage("packagist", "laravel/framework", "10.0.0"); got != "pkg:composer/laravel/framework@10.0.0" {
+	if got := purlForPackage("packagist", "", "laravel/framework", "10.0.0"); got != "pkg:composer/laravel/framework@10.0.0" {
 		t.Errorf("composer vendor/package = %q", got)
 	}
 }

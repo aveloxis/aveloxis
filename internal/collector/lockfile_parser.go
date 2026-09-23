@@ -38,6 +38,12 @@ type LockfileEntry struct {
 	Name    string
 	Version string
 	Direct  bool
+	// Namespace is the purl namespace the entry's ecosystem requires and
+	// the lockfile can supply — for SwiftPM the package repository's host
+	// and owner ("github.com/Alamofire"), read from the pin's location
+	// (v0.29.59, worklist 46). Empty where the format has none; such an
+	// entry of a namespace-required type never becomes a purl.
+	Namespace string
 	// Scope (v0.27.21 C1) — 'dev' when the format flags the entry as
 	// development-only (package-lock v2/3 `dev`, poetry `category`),
 	// '' otherwise (unknown/runtime). Refined per-format extraction is

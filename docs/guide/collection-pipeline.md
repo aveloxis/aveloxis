@@ -349,7 +349,8 @@ In addition to per-repo collection, `aveloxis serve` runs these periodic tasks:
 |---|---|---|
 | **Org refresh** | Every 4 hours | Re-fetches organization membership lists to discover new repos |
 | **Contributor breadth** | Every 15 minutes | Calls `GET /users/{login}/events` for up to 2,000 contributors per cycle (7-day jittered cooldown) to discover cross-repo activity. Results stored in `contributor_repo`. |
-| **Materialized view rebuild** | Weekly (Saturday) | Pauses all collection workers, refreshes all 20 matviews, resumes collection |
+| **Materialized view rebuild** | Weekly (Saturday) | Pauses all collection workers, refreshes the 20 8Knot matviews, resumes collection |
+| **Supply-chain view refresh** | Every `collection.supply_chain_refresh_hours` (default 24) | Refreshes the two Aveloxis-owned supply-chain views CONCURRENTLY (seconds); collection never pauses |
 | **Gone-repo recheck** | Hourly tick, each repo every `gone_repo_recheck_days` (28) | v0.29.7: re-probes up to 500 "gone" (404/410/451-sidelined, dequeued) repositories per tick with an unauthenticated `HEAD`; a definitive 2xx clears the gone state and re-enqueues the repo. `gone_repo_recheck_disabled: true` switches it off. |
 
 ---

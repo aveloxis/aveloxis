@@ -41,8 +41,15 @@ jobs:
       # per .golangci.yml, which carries the exclusion philosophy. The
       # version is PINNED so a new linter release can't break builds by
       # surprise — bump it deliberately, run locally first.
+      #
+      # Uncached (v0.29.65, PR #212): from 2026-09-22 every run failed with
+      # false SA5011 reports on t.Fatal-guarded test code, a different set
+      # of files each run, while the plain staticcheck step above passed on
+      # the same tree. The restored analysis cache was stale; the step takes
+      # seconds without it.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
           args: --timeout 10m
+          skip-cache: true

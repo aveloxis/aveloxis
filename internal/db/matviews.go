@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// Package db — matviews.go manages materialized views used by 8Knot and other
-// analytics tools. Views are created during migration and refreshed periodically.
+// Package db — matviews.go manages the 8Knot materialized views (matviews.sql,
+// one batch). Views are created during migration and refreshed weekly. The
+// two Aveloxis-owned supply-chain views live in supply_chain_views.go.
 package db
 
 import (
@@ -135,7 +136,7 @@ func managedMatviewsPresent(ctx context.Context, pg *PostgresStore) (int, error)
 	return present, err
 }
 
-// matviewNames lists all materialized views to refresh, in order.
+// matviewNames lists the 8Knot materialized views to refresh, in order.
 var matviewNames = []string{
 	"aveloxis_data.api_get_all_repo_prs",
 	"aveloxis_data.api_get_all_repos_commits",
@@ -166,6 +167,9 @@ var matviewNames = []string{
 	"aveloxis_data.explorer_pr_files",
 	"aveloxis_data.explorer_cntrb_per_file",
 	"aveloxis_data.explorer_repo_files",
+	// The supply-chain package views are NOT here: they are Aveloxis-owned
+	// (supply_chain_views.go, v0.29.61) with their own build, probe and
+	// refresh cadence; this list is the 8Knot set.
 }
 
 // RefreshMaterializedViews refreshes all materialized views concurrently.
@@ -183,17 +187,22 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	// views stale" ERROR on every rebuild day, about a feature the operator
 	// had switched off. This check owns the question for BOTH callers —
 	// the weekly rebuild and `aveloxis refresh-views`.
-	var present int
-	if err := pg.pool.QueryRow(ctx,
-		`SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data'`).Scan(&present); err != nil {
+	//
+	// By NAME (v0.29.61, review round 1): the supply-chain pair lives in
+	// the same schema on every deployment now, so "any matview here?"
+	// would answer yes for a database without the 8Knot set and this loop
+	// would issue twenty REFRESHes of absent views — the very symptom
+	// v0.29.57 fixed.
+	present, err := eightKnotMatviewsPresent(ctx, pg)
+	if err != nil {
 		return fmt.Errorf("checking for materialized views: %w", err)
 	}
 	if present == 0 {
-		logger.Info("no materialized views in this database — nothing to refresh (collection.materialized_views is off, or no migrate has built them yet)")
+		logger.Info("no 8Knot materialized views in this database — nothing to refresh (collection.materialized_views is off, or no migrate has built them yet; the supply-chain pair refreshes on its own)")
 		return nil
 	}
 
-	logger.Info("refreshing materialized views", "count", len(matviewNames), "present", present)
+	logger.Info("refreshing materialized views", "set", "8knot", "count", len(matviewNames), "present", present)
 
 	// Pass 26 (v0.28.18): the sibling of the dm_ aggregate fix — a failed
 	// REFRESH was a WARN and the function returned nil, so
@@ -205,37 +214,13 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 			return ctx.Err()
 		}
 
-		viewStart := time.Now()
-
-		// Try CONCURRENTLY first (requires a unique index and at least one row).
-		_, err := pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name))
-		if err != nil {
-			// Copilot round 8: a shutdown is not a failed view. The
-			// loop-top guard cannot see it — the in-flight Exec that
-			// OBSERVED the cancellation is already past it — and the
-			// non-concurrent retry below would be issued on the same
-			// dead ctx, so it fails too and the pair lands as a WARN
-			// plus a stale-view failure on every `stop serve`.
-			if errors.Is(err, context.Canceled) {
-				logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+		if err := refreshMatview(ctx, pg, logger, name); err != nil {
+			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			// Fall back to non-concurrent refresh (blocks reads but always works).
-			_, err = pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name))
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					logger.Info("materialized view refresh interrupted by shutdown", "view", name)
-					return ctx.Err()
-				}
-				logger.Warn("failed to refresh materialized view",
-					"view", name, "error", err, "duration", time.Since(viewStart))
-				failed = append(failed, fmt.Errorf("view %s: %w", name, err))
-				continue // Don't abort all views if one fails.
-			}
+			failed = append(failed, err)
+			continue // Don't abort all views if one fails.
 		}
-
-		logger.Info("refreshed materialized view",
-			"view", name, "duration", time.Since(viewStart).Truncate(time.Millisecond))
 	}
 
 	if ctx.Err() != nil {
@@ -246,5 +231,51 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	if len(failed) > 0 {
 		return boundedJoin(fmt.Sprintf("materialized view refresh left %d of %d views stale", len(failed), len(matviewNames)), failed, partialFailureSample)
 	}
+	return nil
+}
+
+// eightKnotMatviewsPresent counts the members of matviewNames that exist,
+// by name in pg_matviews (the alias views are plain views and refresh
+// nothing).
+func eightKnotMatviewsPresent(ctx context.Context, pg *PostgresStore) (int, error) {
+	bare := make([]string, 0, len(matviewNames))
+	for _, n := range matviewNames {
+		bare = append(bare, strings.TrimPrefix(n, "aveloxis_data."))
+	}
+	var present int
+	err := pg.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname = ANY($1)`, bare).Scan(&present)
+	return present, err
+}
+
+// refreshMatview refreshes ONE materialized view: CONCURRENTLY first (a
+// unique index and a populated view; reads keep going), then plainly. A
+// shutdown is not a failed view (Copilot round 8: the in-flight Exec that
+// OBSERVED the cancellation is past the loop-top guard, and the plain
+// retry on the same dead ctx would land as a WARN plus a stale-view
+// failure on every `stop serve`) — the caller reads ctx.Err(). Any other
+// failure is logged here and returned for the caller to accumulate. Shared
+// by the 8Knot set and the supply-chain pair (SR-17).
+func refreshMatview(ctx context.Context, pg *PostgresStore, logger *slog.Logger, name string) error {
+	viewStart := time.Now()
+	_, err := pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name))
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+			return err
+		}
+		_, err = pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name))
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				logger.Info("materialized view refresh interrupted by shutdown", "view", name)
+				return err
+			}
+			logger.Warn("failed to refresh materialized view",
+				"view", name, "error", err, "duration", time.Since(viewStart))
+			return fmt.Errorf("view %s: %w", name, err)
+		}
+	}
+	logger.Info("refreshed materialized view",
+		"view", name, "duration", time.Since(viewStart).Truncate(time.Millisecond))
 	return nil
 }

@@ -68,3 +68,23 @@ func TestCIBadgesInREADME(t *testing.T) {
 		}
 	}
 }
+
+// TestGolangciLintRunsWithoutItsCache — v0.29.65 (PR #212): from
+// 2026-09-22 10:34 every golangci-lint run on a PR failed with SA5011
+// "possible nil pointer dereference" on test sites guarded by t.Fatal,
+// while the same job's plain `staticcheck ./...` step (no cache) passed,
+// the same tree linted clean locally (also as linux/amd64 with Go 1.26.0),
+// and a docs-only Dependabot PR failed too. The flagged files differed
+// from run to run with Go, linter and cache key identical: the restored
+// analysis cache had lost the fact that t.Fatal does not return. The step
+// takes seconds, so it runs uncached.
+func TestGolangciLintRunsWithoutItsCache(t *testing.T) {
+	src := srctest.Read(t, ".github/workflows/lint.yml")
+	step := src[strings.Index(src, "uses: golangci/golangci-lint-action@"):]
+	if end := strings.Index(step, "\n      - "); end > 0 {
+		step = step[:end]
+	}
+	if !strings.Contains(step, "skip-cache: true") {
+		t.Error("the golangci-lint step must set skip-cache: true (a stale restored cache produced false SA5011 failures)")
+	}
+}

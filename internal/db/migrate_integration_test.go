@@ -102,6 +102,10 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 	// asks for them: since v0.29.57 materialized views are optional and a
 	// store nobody configured builds none.
 	store.SetMatviewMode(MatviewsRebuild)
+	// The supply-chain pair too (v0.29.61 moved it out of matviews.sql):
+	// its body must build against the columns an EMPTY database has after
+	// the walk, or a fresh install's first migrate fails.
+	store.SetSupplyChainViewMode(MatviewsRebuild)
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations on fresh DB failed — this is exactly the v0.21.0 bug shape (wrong column / table / schema name) that source-contract tests can't catch. Error:\n%v", err)
 	}
@@ -125,6 +129,10 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 	}
 	if !exists {
 		t.Error("aveloxis_data.repos.scancode_last_run does not exist after RunMigrations — the v0.21.0 column adds either silently no-op'd or the migration ran against a different DB than the test verifies.")
+	}
+
+	if n, err := supplyChainViewsPresent(ctx, store); err != nil || n != len(SupplyChainViewNames) {
+		t.Errorf("fresh database: %d of %d supply-chain views built (err=%v)", n, len(SupplyChainViewNames), err)
 	}
 
 	// Every materialized view was built. The view block only WARNs when a

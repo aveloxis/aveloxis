@@ -28,6 +28,8 @@ type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
 	matviewMode      MatviewMode // what RunMigrations does with the views; zero value builds none
+	supplyChainMode  MatviewMode // the same for the Aveloxis-owned supply-chain pair (supply_chain_views.go); independent of matviewMode
+	supplyChainBuilt bool        // the last Migrate BUILT the whole supply-chain pair (WITH DATA) — the scheduler skips its startup refresh
 	migrateNoWait    bool        // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool        // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
 	allowSecondServe bool        // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
@@ -230,6 +232,25 @@ func (s *PostgresStore) SetMatviewMode(m MatviewMode) {
 	s.matviewMode = m
 }
 
+// SetSupplyChainViewMode chooses what the migration does with the
+// Aveloxis-owned supply-chain views, independently of the 8Knot set: serve
+// asks for MatviewsIfMissing, migrate for MatviewsRebuild (the pair costs
+// seconds, so every migrate applies the current definition), and the zero
+// value builds none. collection.materialized_views does not reach this.
+func (s *PostgresStore) SetSupplyChainViewMode(m MatviewMode) {
+	s.supplyChainMode = m
+}
+
+// SupplyChainViewsBuiltThisRun reports whether the last Migrate on this
+// store created the WHOLE supply-chain pair (WITH DATA, so it is as fresh
+// as a refresh would make it). The scheduler reads it once, before its
+// startup refresh (review round 1 finding 4: a first start built both
+// views and refreshed them seconds later; round 2 finding 3: a partial
+// pair's pre-existing member still gets the startup refresh).
+func (s *PostgresStore) SupplyChainViewsBuiltThisRun() bool {
+	return s.supplyChainBuilt
+}
+
 // SetMigrateNoWait controls how RunMigrations handles advisory-lock
 // contention with another in-flight migration (or serve's startup
 // migrate). When false (default), the advisory-lock acquire blocks
@@ -285,18 +306,28 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 // maxDeadlockRetries and retry logic mirrors Augur's DatabaseSession.
 const maxDeadlockRetries = 10
 
-// withRetry executes fn, retrying on deadlock (40P01) with exponential backoff.
+// isRetryableTxError reports whether err is a transient whole-transaction
+// failure that retrying the transaction resolves: a deadlock (40P01) or a
+// serialization failure (40001). ONE classifier (SR-17) for withRetry and
+// for the contributor batch's savepoint handlers, which must let exactly
+// these escape rather than skip the contributor (2026-09-23 log review).
+func isRetryableTxError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "40001")
+}
+
+// withRetry executes fn, retrying a deadlock (40P01) or serialization
+// failure (40001) with exponential backoff.
 func (s *PostgresStore) withRetry(ctx context.Context, fn func(ctx context.Context) error) error {
 	for attempt := range maxDeadlockRetries {
 		err := fn(ctx)
 		if err == nil {
 			return nil
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "40P01" {
+		if isRetryableTxError(err) {
 			wait := time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
 			jitter := time.Duration(rand.IntN(100)) * time.Millisecond
-			s.logger.Warn("deadlock detected, retrying", "attempt", attempt+1, "wait", wait+jitter)
+			s.logger.Warn("deadlock or serialization failure, retrying the transaction", "attempt", attempt+1, "wait", wait+jitter, "error", err)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -531,7 +562,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- the forge numeric ID never changes for a given repo, so a
 				-- DIFFERENT incoming ID means an upstream delete-and-recreate
 				-- under the same URL, and overwriting the stored ID would
-				-- destroy the mismatch signal SetPlatformRepoIDIfEmpty and
+				-- destroy the mismatch signal SetPlatformRepoIDIfEmptySeen and
 				-- Phase 0 (UpdateRepoMetadata) now surface. An id-less
 				-- re-upsert still can't wipe a captured value, and the first
 				-- observed ID still fills an empty column.
@@ -2035,14 +2066,18 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 				contrib.FullName, contrib.Company, contrib.Location,
 				contrib.Canonical, ToolVersion,
 			); updErr != nil {
-				// Roll back to the savepoint so the tx is usable, then
-				// fall through to the ordinary path: the INSERT will
-				// trip contributors_pkey and the 23505 backstop reports
-				// it with full context.
+				// Roll back to the savepoint so the tx is usable. A deadlock
+				// or serialization failure returns (the batch retries);
+				// anything else falls through to the ordinary path: the
+				// INSERT will trip contributors_pkey and the 23505
+				// backstop reports it with full context.
 				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
 					return rbErr
 				}
 				captureErr("contributors_rename_preprobe_update", login, updErr)
+				if isRetryableTxError(updErr) {
+					return updErr // the batch rolls back and withRetry retries it
+				}
 			} else {
 				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
 					return relErr
@@ -2120,12 +2155,16 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			); updErr != nil {
 				// Recovery UPDATE itself failed (rare —
 				// would require some other constraint
-				// violation on this row). Roll back, capture
-				// diagnostic, skip this contributor.
+				// violation on this row). Roll back and capture;
+				// a deadlock returns for the batch retry, anything
+				// else skips this contributor.
 				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
 					return rbErr
 				}
 				captureErr("contributors_rename_update", login, updErr)
+				if isRetryableTxError(updErr) {
+					return updErr // the batch rolls back and withRetry retries it
+				}
 				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
 					return relErr
 				}
@@ -2148,6 +2187,9 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			// state, so the next contributor in the for loop
 			// can still commit.
 			captureErr("contributors_insert", login, err)
+			if isRetryableTxError(err) {
+				return err // the batch rolls back and withRetry retries it
+			}
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
 				return relErr
 			}
@@ -2212,6 +2254,9 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("contributor_identities_insert", login, identErr)
+			if isRetryableTxError(identErr) {
+				return identErr // the batch rolls back and withRetry retries it
+			}
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
 				return relErr
 			}
@@ -2235,6 +2280,13 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("contributor_login_history_insert", login, histErr)
+			// A deadlock or serialization failure (isRetryableTxError) here
+			// is NOT escaped to withRetry, unlike
+			// the contributor and identity writes above (v0.29.62 review
+			// round 2): the rollback to the savepoint releases this row's
+			// locks, the history row is re-recorded the next time this
+			// identity is observed, and retrying the whole batch would redo
+			// every contributor in it for one derived row. captureErr logs it.
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
 				return relErr
 			}
@@ -2252,6 +2304,9 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("identity_denorm_backfill", login, backfillErr)
+			// Not escaped on a retryable failure either, for the same reason as the
+			// login-history write above: the mirror columns are rewritten
+			// from the identity on every later upsert of this contributor.
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
 				return relErr
 			}

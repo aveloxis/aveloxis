@@ -349,14 +349,11 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 
 // parseDependencyFile extracts dependency names from a manifest file.
 func parseDependencyFile(path, lang string) ([]string, error) {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil, err
 	}
-	// Detect and transcode UTF-16 encoded files. Some Windows-created
-	// requirements.txt files use UTF-16LE (BOM 0xff 0xfe) which produces
-	// null-interleaved ASCII that PostgreSQL rejects with "invalid byte sequence".
-	data = decodeIfUTF16(data)
+	// readManifest already transcoded UTF-16 and dropped a UTF-8 BOM.
 	content := string(data)
 
 	switch filepath.Base(path) {
@@ -425,25 +422,60 @@ func parsePackageJSON(data []byte) ([]string, error) {
 	return deps, nil
 }
 
+// cutPyInlineComment returns s up to an inline comment: a '#' that opens
+// the text or follows whitespace (space or tab), pip's own rule. It is the
+// ONE comment cut for every Python requirement reader, inventory and libyear
+// alike (SR-17; review round 4 on v0.29.66: the readers cut " #" in three
+// places, one of them missing, and none cut a tab). A '#' inside a URL
+// (a "#sha256=" fragment) has no whitespace before it and is kept.
+func cutPyInlineComment(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// cleanPyRequirementLine reduces one requirements-file line to the
+// requirement itself, or "" when the line holds none: blank, comment and
+// option lines ("-r", "-e", "--hash=…") are skipped; a trailing "\"
+// continuation, an inline comment, a PEP 508 environment marker and
+// same-line pip options are stripped. ONE cleanup for both requirements
+// readers (SR-17; v0.29.62 review round 1: only the libyear reader
+// stripped " --" options, so "name --global-option=x" was a dependency
+// there and nothing on the name path).
+func cleanPyRequirementLine(raw string) string {
+	line := strings.TrimSpace(raw)
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
+		return ""
+	}
+	// v0.27.71 (the zephyr false-CRITICAL incident): pip's hash-pinned
+	// format ends the pin line with a backslash continuation
+	// ("pyyaml==6.0.3 \"); it survived into the version and defeated
+	// OSV's version matching.
+	line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
+	// Inline comments, PEP 508 environment markers, and same-line pip
+	// args are not version content ("attrs==3.1.0  # Apache-2.0",
+	// "croniter==0.4.6 ; sys_platform == 'win32'").
+	line = cutPyInlineComment(line)
+	if idx := strings.Index(line, ";"); idx > 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	if idx := strings.Index(line, " --"); idx > 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	return line
+}
+
 func parseRequirementsTxt(content string) []string {
 	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
+	for _, raw := range strings.Split(content, "\n") {
+		line := cleanPyRequirementLine(raw)
+		if line == "" {
 			continue
 		}
-		// Strip inline comments: "flask==2.0 # pinned"
-		if idx := strings.Index(line, " #"); idx > 0 {
-			line = line[:idx]
-		}
-		// Strip environment markers: "flask>=2.0; python_version>='3.8'"
-		if idx := strings.Index(line, ";"); idx > 0 {
-			line = line[:idx]
-		}
-		line = stripPyExtras(line)
-		// Strip version specifiers.
-		line, _ = splitPyNameSpec(line)
-		if name := strings.TrimSpace(line); name != "" {
+		if name := pyInventoryName(line); name != "" {
 			deps = append(deps, name)
 		}
 	}
@@ -633,16 +665,19 @@ func extractPEP621DepName(line string) string {
 	// the same file (v0.29.56).
 	line = strings.Trim(line, "\"',")
 	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
+	// The inline comment goes before the marker strip, because a comment
+	// can contain a ';' (review round 4 on v0.29.66: PEP 621 kept
+	// "requests # HTTP" whole, so it failed the name gate while the
+	// libyear side cut the comment and looked requests up).
+	line = cutPyInlineComment(line)
+	if line == "" {
 		return ""
 	}
 	// Strip environment markers: everything after ';'
 	if idx := strings.Index(line, ";"); idx > 0 {
 		line = strings.TrimSpace(line[:idx])
 	}
-	line = stripPyExtras(line)
-	name, _ := splitPyNameSpec(line)
-	return name
+	return pyInventoryName(line)
 }
 
 // extractPEP621DepsFromLine extracts dep names from an inline deps array.
@@ -744,13 +779,46 @@ func extractPyDepName(req string) string {
 	if req == "" {
 		return ""
 	}
+	// The inline comment goes before the marker strip, because a comment
+	// can contain a ';' (review rounds 3-4 on v0.29.66).
+	req = cutPyInlineComment(req)
 	// Strip environment markers.
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
 	}
-	req = stripPyExtras(req)
-	name, _ := splitPyNameSpec(req)
+	return pyInventoryName(req)
+}
+
+// pyInventoryName is the ONE name rule for the Python dependency inventory
+// (requirements.txt, PEP 621 dependencies, setup.py/setup.cfg
+// install_requires; SR-17, PR #212 review): given a requirement with its
+// comment and environment marker already stripped, it returns the package
+// name, or "" when the requirement names none.
+//   - A PEP 508 direct reference names its package before the '@'
+//     ("requests @ git+https://…"); an '@' after a "://" belongs to a bare
+//     URL, which names no package.
+//   - Extras and the version specifier (operators or the parenthesized
+//     form) are not part of the name.
+//   - The result must be a PEP 508 name: a URL, path or prose line is not.
+func pyInventoryName(req string) string {
+	if at := strings.IndexByte(req, '@'); at > 0 && !strings.Contains(req[:at], "://") && isPyDirectReferenceURI(req[at+1:]) {
+		req = req[:at]
+	}
+	name, _ := splitPyNameSpec(stripPyExtras(req))
+	if !isPyRequirementName(name) {
+		return ""
+	}
 	return name
+}
+
+// isPyDirectReferenceURI reports whether the text after a requirement's
+// '@' is PEP 508's url_req URI: a scheme URL (git+https://, file:///) or a
+// file: reference. Anything else is not a direct reference — scp-style
+// "git@github.com:o/r.git" names no package, and cutting at its '@' stored
+// "git" (review round 1 on v0.29.66).
+func isPyDirectReferenceURI(rest string) bool {
+	rest = strings.ToLower(strings.TrimSpace(rest))
+	return strings.Contains(rest, "://") || strings.HasPrefix(rest, "file:")
 }
 
 // parseSetupPyVersions extracts deps with versions from setup.py install_requires.
@@ -846,6 +914,20 @@ func stripPyExtras(req string) string {
 	return req[:idx]
 }
 
+// pep508NameRe is PEP 508's project-name grammar: letters and digits at
+// both ends, ".", "_" and "-" allowed inside.
+var pep508NameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+// isPyRequirementName reports whether a requirements-file line split to a
+// real package name. splitPyNameSpec splits only at a version operator, so
+// a line that is not a requirement becomes one long "name" — conda exports
+// ("ujson=5.9.0", "pytorch::cpuonly"), RST and prose, templates, and
+// space-separated lists all fail this check and are skipped by BOTH
+// requirements readers (2026-09-23 log review; SR-17: one rule).
+func isPyRequirementName(name string) bool {
+	return pep508NameRe.MatchString(name)
+}
+
 // splitPyNameSpec splits a PEP 508 requirement at its LEFTMOST version
 // operator: name is the text before it, spec the whole specifier set from
 // that operator on ("" when the requirement carries no operator, and name ""
@@ -860,8 +942,21 @@ func stripPyExtras(req string) string {
 // the dependency got no libyear row, no purl and no OSV coverage. The
 // preference lists were reaching for the VERSION, which is a separate
 // question — see pyFloorVersion (SR-17).
+//
+// A '(' ends the name too (PR #212 review): "requests (>=2.0)" is PEP 508's
+// parenthesized form ('(' version_many ')', which Poetry 2.x writes); the
+// spec is the text inside the parentheses.
 func splitPyNameSpec(req string) (name, spec string) {
 	for i := 0; i < len(req); i++ {
+		// PEP 508's parenthesized form, "name (>=1.0)": the '(' ends the
+		// name only when a version operator follows it — "Note (optional)"
+		// is prose, not a requirement (review round 1 on v0.29.66).
+		if req[i] == '(' {
+			inner := strings.TrimSpace(req[i+1:])
+			if hasPyVersionOperatorPrefix(inner) {
+				return strings.TrimSpace(req[:i]), strings.TrimSpace(strings.TrimSuffix(inner, ")"))
+			}
+		}
 		for _, op := range pyVersionOperators {
 			if strings.HasPrefix(req[i:], op) {
 				return strings.TrimSpace(req[:i]), strings.TrimSpace(req[i:])
@@ -869,6 +964,17 @@ func splitPyNameSpec(req string) (name, spec string) {
 		}
 	}
 	return strings.TrimSpace(req), ""
+}
+
+// hasPyVersionOperatorPrefix reports whether s opens with a PEP 440
+// comparison operator.
+func hasPyVersionOperatorPrefix(s string) bool {
+	for _, op := range pyVersionOperators {
+		if strings.HasPrefix(s, op) {
+			return true
+		}
+	}
+	return false
 }
 
 // pyPermittedVersionRank ranks the PEP 440 operators that may supply the
@@ -941,10 +1047,7 @@ func parsePyRequirement(req string) *libyearDep {
 	// must strip the same way. (The trailing `",` also left versions like
 	// `2.31.0"` behind on the PEP 621 path.)
 	req = strings.Trim(strings.TrimSpace(req), "\"',")
-	if idx := strings.Index(req, " #"); idx > 0 {
-		req = strings.TrimSpace(req[:idx])
-	}
-	req = strings.Trim(strings.TrimSpace(req), "\"',")
+	req = strings.Trim(cutPyInlineComment(req), "\"',")
 	// Strip environment markers.
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
@@ -963,7 +1066,12 @@ func parsePyRequirement(req string) *libyearDep {
 
 	name, spec := splitPyNameSpec(cleanReq)
 	version := pyFloorVersion(spec)
-	if name == "" {
+	// The same PEP 508 name gate as the inventory (pyInventoryName) and
+	// requirements.txt's libyear reader: prose such as "Note (optional)"
+	// names no package, and without the gate it reached PyPI and OSV from
+	// setup.py, setup.cfg, PEP 621 and the dev/build variants (review
+	// round 2 on v0.29.66).
+	if !isPyRequirementName(name) {
 		return nil
 	}
 	return &libyearDep{Name: name, Version: version, Requirement: req, Type: "runtime", Manager: "pypi"}
@@ -1414,7 +1522,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			deps := parseRequirementsTxtVersions(path)
 			allDeps = append(allDeps, deps...)
 		case "pyproject.toml":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parsePyprojectVersionsFromContent(string(data))
 				allDeps = append(allDeps, deps...)
 				if ac.DevBuildDeps {
@@ -1422,7 +1530,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				}
 			}
 		case "setup.py":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseSetupPyVersions(string(data))
 				allDeps = append(allDeps, deps...)
 				if ac.DevBuildDeps {
@@ -1430,7 +1538,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				}
 			}
 		case "Pipfile":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parsePipfileVersions(string(data))
 				allDeps = append(allDeps, deps...)
 				if ac.DevBuildDeps {
@@ -1438,7 +1546,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				}
 			}
 		case "setup.cfg":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseSetupCfgVersions(string(data))
 				allDeps = append(allDeps, deps...)
 				if ac.DevBuildDeps {
@@ -1455,12 +1563,12 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			deps := parseGemfileVersions(path)
 			allDeps = append(allDeps, deps...)
 		case "pom.xml":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parsePomXMLVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "build.gradle", "build.gradle.kts":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseBuildGradleVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
@@ -1471,37 +1579,37 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 			allDeps = append(allDeps, deps...)
 		case "mix.exs":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseMixExsVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "packages.config":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseNuGetPackagesConfigVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "Directory.Packages.props":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseDirectoryPackagesPropsVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "build.sbt":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseBuildSbtVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "pubspec.yaml":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parsePubspecVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "Package.swift":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parsePackageSwiftVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
 		case "package.yaml":
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readManifest(path); err == nil {
 				deps := parseHaskellPackageYamlVersions(string(data))
 				allDeps = append(allDeps, deps...)
 			}
@@ -1518,13 +1626,13 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			// v0.27.47 (summary/19 P4): GitHub Actions workflow
 			// `uses:` references → build-scope deps.
 			if ac.GitHubActionsDeps && isWorkflowPath(path) {
-				if data, err := os.ReadFile(path); err == nil {
+				if data, err := readManifest(path); err == nil {
 					allDeps = append(allDeps, parseWorkflowUses(string(data))...)
 				}
 			}
 			// Extension-based matching (e.g., *.csproj).
 			if strings.HasSuffix(base, ".csproj") {
-				if data, err := os.ReadFile(path); err == nil {
+				if data, err := readManifest(path); err == nil {
 					deps := parseCsprojVersions(string(data))
 					allDeps = append(allDeps, deps...)
 				}
@@ -1749,7 +1857,7 @@ func fetchRegistryJSON(ctx context.Context, url string, headers ...string) ([]by
 }
 
 func parsePackageJSONVersions(path string) ([]libyearDep, error) {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1820,37 +1928,13 @@ func npmManifestDep(name, requirement, scope string) (libyearDep, bool) {
 }
 
 func parseRequirementsTxtVersions(path string) []libyearDep {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil
 	}
 	var deps []libyearDep
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
-			continue
-		}
-		// v0.27.71 (the zephyr false-CRITICAL incident): pip's
-		// hash-pinned format ends the pin line with a backslash
-		// continuation ("pyyaml==6.0.3 \"). The --hash continuation
-		// lines are already skipped by the "-" prefix filter above,
-		// but the backslash survived into the version — and from
-		// there into purls, where it defeated OSV's version matching
-		// (unparseable version → package-level match → the package's
-		// entire advisory history reported as findings).
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
-		// Inline comments, PEP 508 environment markers, and same-line
-		// pip args are not version content ("attrs==3.1.0  # Apache-2.0",
-		// "croniter==0.4.6 ; sys_platform == 'win32'").
-		if idx := strings.Index(line, " #"); idx > 0 {
-			line = strings.TrimSpace(line[:idx])
-		}
-		if idx := strings.Index(line, ";"); idx > 0 {
-			line = strings.TrimSpace(line[:idx])
-		}
-		if idx := strings.Index(line, " --"); idx > 0 {
-			line = strings.TrimSpace(line[:idx])
-		}
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := cleanPyRequirementLine(raw)
 		if line == "" {
 			continue
 		}
@@ -1868,7 +1952,7 @@ func parseRequirementsTxtVersions(path string) []libyearDep {
 		// produced 404ing registry URLs and unmatchable purls, so
 		// those deps silently got no libyear and no OSV coverage.
 		name = strings.TrimSpace(stripPyExtras(name))
-		if name != "" {
+		if isPyRequirementName(name) {
 			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "pypi"})
 		}
 	}
@@ -1926,6 +2010,24 @@ func cleanVersion(v string) string {
 		v = strings.TrimSpace(v[:idx])
 	}
 	return v
+}
+
+// readManifest reads a dependency manifest and normalizes its encoding:
+// UTF-16 (LE or BE, by its byte-order mark) becomes UTF-8, and a UTF-8
+// byte-order mark is dropped. It is the ONE raw manifest read in this file
+// (SR-17): the libyear walk used a bare os.ReadFile while the
+// dependency-name path decoded UTF-16, so the same file produced clean
+// names on one path and NUL-interleaved ones on the other, and neither
+// stripped a UTF-8 BOM (2026-09-23 log review: 8 UTF-16LE requirements
+// files, a BOM on "astroid" and on a root package.json).
+// TestAnalysisReadsManifestsThroughOneReader pins it.
+func readManifest(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	data = decodeIfUTF16(data)
+	return bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), nil
 }
 
 // decodeIfUTF16 detects UTF-16 BOM and converts to UTF-8. Some Windows-created
@@ -2028,11 +2130,22 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		DistTags struct {
 			Latest string `json:"latest"`
 		} `json:"dist-tags"`
-		Time    map[string]string `json:"time"`
-		License json.RawMessage   `json:"license"`
+		// time maps each version to its publish date — and, for a package
+		// with an unpublish record, "unpublished" to an OBJECT (2026-09-23
+		// log review: that entry failed the whole decode). Values are read
+		// one by one below; non-string entries are skipped.
+		Time    map[string]json.RawMessage `json:"time"`
+		License json.RawMessage            `json:"license"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
+	}
+	timeOf := func(version string) string {
+		var s string
+		if raw, ok := info.Time[version]; ok && json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+		return ""
 	}
 	info2 := struct{ Version, License string }{Version: info.DistTags.Latest}
 	// license is usually a string, but old packages use the object
@@ -2048,8 +2161,8 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		}
 	}
 
-	currentDate := info.Time[dep.Version]
-	latestDate := info.Time[info2.Version]
+	currentDate := timeOf(dep.Version)
+	latestDate := timeOf(info2.Version)
 	libyear := calcLibyear(currentDate, latestDate)
 
 	return &db.LibyearRow{
@@ -2140,7 +2253,7 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 // parseGoModVersions extracts deps with versions from go.mod.
 // Handles both block form "require (" and single-line "require module version".
 func parseGoModVersions(path string) []libyearDep {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil
 	}
@@ -2192,7 +2305,7 @@ func parseGoModVersions(path string) []libyearDep {
 // path dep counts only with the version it is published as, so none of
 // them is looked up on crates.io.
 func parseCargoVersions(path string) []libyearDep {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil
 	}
@@ -2219,7 +2332,7 @@ func parseCargoVersions(path string) []libyearDep {
 
 // parseGemfileVersions extracts deps with versions from Gemfile.
 func parseGemfileVersions(path string) []libyearDep {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil
 	}
@@ -3711,7 +3824,7 @@ func extractXMLValue(line, tag string) string {
 
 // parseComposerJSONVersions extracts deps with versions from composer.json.
 func parseComposerJSONVersions(path string) ([]libyearDep, error) {
-	data, err := os.ReadFile(path)
+	data, err := readManifest(path)
 	if err != nil {
 		return nil, err
 	}
@@ -4048,46 +4161,94 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 	}, nil
 }
 
+// nugetCatalogEntry is one version in a NuGet registration page.
+type nugetCatalogEntry struct {
+	Version           string `json:"version"`
+	Published         string `json:"published"`
+	Listed            *bool  `json:"listed"` // absent = listed
+	LicenseExpression string `json:"licenseExpression"`
+}
+
+type nugetRegistrationPage struct {
+	ID    string `json:"@id"`
+	Items []struct {
+		CatalogEntry nugetCatalogEntry `json:"catalogEntry"`
+	} `json:"items"`
+}
+
+// nugetIsStable reports a SemVer release version: no prerelease label
+// ("-…") before any build metadata ("+…").
+func nugetIsStable(v string) bool {
+	core, _, _ := strings.Cut(v, "+")
+	return !strings.Contains(core, "-")
+}
+
 // resolveNuGetLibyear checks nuget.org for .NET package versions.
+//
+// 2026-09-23 log review, three defects fixed together (probed live):
+// it reads the SemVer-2 registration hive (registration5-semver1 omits
+// every SemVer-2-only package, e.g. microsoft.semantickernel.agents.openai
+// 404ed there); it fetches each page NuGet does not inline, by its @id
+// (large packages such as System.Text.Json inline none, so the latest
+// version and the current date came back empty); and "latest" is the
+// newest LISTED STABLE version, not the last entry (a prerelease:
+// Newtonsoft.Json read 14.0.1-beta2). A package with no stable version
+// falls back to its newest listed one. Pages come oldest first.
 func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
-	// NuGet registration API.
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(nugetRegistryBase+"/v3/registration5-semver1/%s/index.json",
+		fmt.Sprintf(nugetRegistryBase+"/v3/registration5-gz-semver2/%s/index.json",
 			strings.ToLower(dep.Name)))
 	if err != nil {
 		return nil, err
 	}
-	var info struct {
-		Items []struct {
-			Upper string `json:"upper"`
-			Items []struct {
-				CatalogEntry struct {
-					Version           string `json:"version"`
-					Published         string `json:"published"`
-					LicenseExpression string `json:"licenseExpression"`
-				} `json:"catalogEntry"`
-			} `json:"items"`
-		} `json:"items"`
+	var index struct {
+		Items []nugetRegistrationPage `json:"items"`
 	}
-	if err := json.Unmarshal(body, &info); err != nil {
+	if err := json.Unmarshal(body, &index); err != nil {
 		return nil, err
 	}
 
-	latestVersion := ""
-	latestDate := ""
-	currentDate := ""
-	license := ""
-	// Walk all pages — latest is the last item in the last page.
-	for _, page := range info.Items {
-		for _, item := range page.Items {
-			entry := item.CatalogEntry
-			latestVersion = entry.Version
-			latestDate = entry.Published
-			license = entry.LicenseExpression
-			if strings.EqualFold(entry.Version, dep.Version) {
-				currentDate = entry.Published
+	var entries []nugetCatalogEntry
+	for _, page := range index.Items {
+		if page.Items == nil {
+			// Not inlined: fetch the page itself. A failure is the whole
+			// resolution's failure (SR-5) — a partial version list would
+			// produce a wrong "latest", not a missing one.
+			pbody, perr := fetchRegistryJSON(ctx, page.ID)
+			if perr != nil {
+				return nil, fmt.Errorf("nuget registration page %s: %w", page.ID, perr)
+			}
+			if err := json.Unmarshal(pbody, &page); err != nil {
+				return nil, fmt.Errorf("nuget registration page %s: %w", page.ID, err)
 			}
 		}
+		for _, item := range page.Items {
+			entries = append(entries, item.CatalogEntry)
+		}
+	}
+
+	latestVersion, latestDate, license := "", "", ""
+	currentDate := ""
+	var newestListed *nugetCatalogEntry
+	for i := range entries {
+		e := &entries[i]
+		unlisted := e.Listed != nil && !*e.Listed
+		// An unlisted version is published as 1900-01-01 (review round 1:
+		// a dependency pinned to one read ~125 years stale). Its real date
+		// is unknown, so the current date stays empty for it.
+		if strings.EqualFold(e.Version, dep.Version) && !unlisted && !strings.HasPrefix(e.Published, "1900-") {
+			currentDate = e.Published
+		}
+		if unlisted {
+			continue
+		}
+		newestListed = e
+		if nugetIsStable(e.Version) {
+			latestVersion, latestDate, license = e.Version, e.Published, e.LicenseExpression
+		}
+	}
+	if latestVersion == "" && newestListed != nil {
+		latestVersion, latestDate, license = newestListed.Version, newestListed.Published, newestListed.LicenseExpression
 	}
 
 	return &db.LibyearRow{
@@ -4312,6 +4473,12 @@ func extractSwiftPackageName(line string) string {
 		return ""
 	}
 	url := rest[q1+1 : q1+1+q2]
+	// v0.29.59: the shared Swift URL parse (parseSwiftPackageURL), so the
+	// manifest's name is the SAME repository name the Package.resolved
+	// reader stores; a non-URL value keeps the last-segment fallback.
+	if ref, ok := parseSwiftPackageURL(url); ok {
+		return ref.Repo
+	}
 	// Extract repo name: last path component, strip .git suffix.
 	parts := strings.Split(strings.TrimSuffix(url, ".git"), "/")
 	if len(parts) > 0 {
@@ -4364,18 +4531,18 @@ func extractSwiftVersion(line string) string {
 // 2026-09-17 log). The version in use is looked up as a release tag, with
 // and without a leading "v", so libyear is computed instead of 0.
 func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearDep) (*db.LibyearRow, error) {
-	// The requirement field contains the git URL. Extract owner/repo.
-	repoURL := dep.Requirement
-	repoURL = strings.TrimSuffix(repoURL, ".git")
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://"), "/")
-	if len(parts) < 3 || !strings.Contains(parts[0], "github.com") {
+	// v0.29.59: one shared parse (parseSwiftPackageURL). GitHub has no
+	// subgroups, so the namespace must be exactly host/owner; userinfo
+	// and a port never reach the purl.
+	ref, ok := parseSwiftPackageURL(dep.Requirement)
+	if !ok || ref.Host != "github.com" || ref.Namespace != ref.Host+"/"+ref.Owner {
 		// Non-GitHub SwiftPM packages can't be resolved without a registry.
-		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s", repoURL)
+		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s", platform.RedactURLUserinfo(dep.Requirement))
 	}
 	if gh == nil {
 		return nil, errNoGitHubClient
 	}
-	owner, repo := parts[1], parts[2]
+	owner, repo := ref.Owner, ref.Repo
 	releases := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases"
 
 	type release struct {
@@ -4415,7 +4582,11 @@ func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearD
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latest.PublishedAt,
 		Libyear:            calcLibyear(currentDate, latest.PublishedAt),
-		Purl:               buildPurl("swift", owner+"/"+repo, dep.Version),
+		// v0.29.59 (worklist 46): the purl spec's swift namespace is the
+		// repository host and owner (pkg:swift/github.com/Owner/Repo@v);
+		// the Package.resolved writer emits the same shape, so the direct
+		// and transitive purls of one package are one purl.
+		Purl: buildPurl("swift", ref.Namespace+"/"+ref.Repo, dep.Version),
 	}, nil
 }
 

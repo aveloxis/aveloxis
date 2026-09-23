@@ -125,8 +125,10 @@ var purlEcosystemTypes = map[string]string{
 
 // purlForPackage builds a purl for a transitive lockfile resolution.
 // Returns "" for unmapped ecosystems (the target is skipped — honest
-// omission beats a malformed purl OSV can't match).
-func purlForPackage(ecosystem, name, version string) string {
+// omission beats a malformed purl OSV can't match). namespace is the
+// stored purl namespace (repo_lockfile_packages.purl_namespace, v0.29.59:
+// a SwiftPM pin's host/owner); when present it is prefixed to the name.
+func purlForPackage(ecosystem, namespace, name, version string) string {
 	typ, ok := purlEcosystemTypes[ecosystem]
 	if !ok || name == "" || version == "" {
 		return ""
@@ -134,10 +136,15 @@ func purlForPackage(ecosystem, name, version string) string {
 	if typ == "maven" {
 		name = strings.Replace(name, ":", "/", 1)
 	}
+	if namespace != "" {
+		name = strings.Trim(namespace, "/") + "/" + name
+	}
 	if purlNamespaceRequired[typ] && !purlNameHasNamespace(name) {
-		// v0.29.58: a Package.resolved pin is identity-only ("alamofire"),
-		// a composer platform package has no vendor ("php"), a Gradle
-		// shorthand can drop the group — none is a purl OSV accepts, and
+		// v0.29.58: a Package.resolved pin without a repository URL keeps
+		// its identity alone ("alamofire"; since v0.29.59 a hosted pin
+		// carries its namespace), a composer platform package has no
+		// vendor ("php"), a Gradle shorthand can drop the group — none is
+		// a purl OSV accepts, and
 		// one of them 400s the repository's whole batch. Minted nowhere
 		// rather than dropped at the wire (both gates share this rule).
 		return ""

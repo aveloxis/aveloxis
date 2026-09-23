@@ -548,6 +548,10 @@ function sortTable(col) {
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Total</div></div>`, stats["total"])
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Queued</div></div>`, stats["queued"])
 	fmt.Fprintf(w, `<div class="stat"><div class="value">%d</div><div class="label">Collecting</div></div>`, stats["collecting"])
+	// v0.29.64: repositories parked by the startup staging drain or by
+	// heal-collection-gaps hold no worker slot; counting them as
+	// Collecting showed more jobs than workers.
+	fmt.Fprintf(w, `<div class="stat" title="Parked by serve's leftover-staging drain or by heal-collection-gaps; they hold no worker slot"><div class="value">%d</div><div class="label">Parked (drain / heal)</div></div>`, stats["draining"])
 	fmt.Fprint(w, `</div>`)
 
 	// Search box + page-size selector. Server-side search replaces the

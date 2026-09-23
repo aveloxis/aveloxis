@@ -436,7 +436,7 @@ func TestProjectionAndVulnWritersRetryDeadlocks(t *testing.T) {
 // list before shipping.
 // ---------------------------------------------------------------------------
 
-// Active #1: SetPlatformRepoIDIfEmpty's zero-row update was silent for
+// Active #1: SetPlatformRepoIDIfEmptySeen's zero-row update was silent for
 // BOTH "already set to the same value" and "set to a DIFFERENT value" —
 // the second is a delete-and-recreate-under-the-same-URL identity
 // conflict whose histories silently merge. Detection is OBSERVATION-ONLY
@@ -447,9 +447,15 @@ func TestForgeIDMismatchIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(")
+	// v0.29.63: the only form is SetPlatformRepoIDIfEmptySeen (the org
+	// scans pass the forge's created_at); a second entry point would be a
+	// second copy of the probe to drift.
+	if strings.Contains(srctest.StripGoComments(string(src)), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(") {
+		t.Error("the plain SetPlatformRepoIDIfEmpty was removed in v0.29.63 — call SetPlatformRepoIDIfEmptySeen")
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(")
 	if !strings.Contains(body, "RowsAffected() == 0") {
-		t.Error("SetPlatformRepoIDIfEmpty must inspect the zero-row case — silence papers over the identity conflict its own doc comment warns about")
+		t.Error("SetPlatformRepoIDIfEmptySeen must inspect the zero-row case — silence papers over the identity conflict its own doc comment warns about")
 	}
 	if !strings.Contains(body, `stored != "" && stored != forgeID`) {
 		t.Error("the zero-row probe must distinguish same-value (benign) from DIFFERENT-value (delete-recreate identity conflict)")
@@ -755,7 +761,7 @@ func TestHistoryIndexIsMigrationOnlyAndDropIsConcurrent(t *testing.T) {
 	}
 }
 
-// Suppressed #5: SetPlatformRepoIDIfEmpty's zero-row verification probe
+// Suppressed #5: SetPlatformRepoIDIfEmptySeen's zero-row verification probe
 // treated a QUERY FAILURE as success — the caller got neither the DB
 // error nor the promised forge-ID conflict signal. Only a genuinely
 // missing row (deleted between UPDATE and probe) may be ignored; every
@@ -766,7 +772,7 @@ func TestForgeIDProbeErrorIsNotSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(")
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(")
 	if !strings.Contains(body, "errors.Is(perr, pgx.ErrNoRows)") {
 		t.Error("only a genuinely-missing row may be ignored on the verification probe (ErrNoRows)")
 	}
@@ -1256,10 +1262,20 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 	if strings.Contains(hb, "repo_id =") {
 		t.Error("the beat must cover the worker's WHOLE parked set — a repo_id filter recreates the round-29 parked-tail gap")
 	}
-	// SR-17: exactly one spelling of the drain owner string — inside
-	// drainLockedBy. A second inline Sprintf WILL drift.
-	if n := strings.Count(srctest.StripGoComments(qd), `"%s:drain"`); n != 1 {
-		t.Errorf("queue_drain.go must build the ':drain' owner in exactly one place (drainLockedBy); found %d spellings", n)
+	// SR-17: exactly one spelling of the drain owner suffix — the
+	// drainLockSuffix constant, which drainLockedBy appends and QueueStats
+	// matches (v0.29.64). A second inline spelling WILL drift. Counted over
+	// every non-test source in the package, not one file.
+	spellings := 0
+	for _, src := range srctest.PackageFiles(t, "internal/db", 20) {
+		code := srctest.StripGoComments(src)
+		spellings += strings.Count(code, `":drain"`) + strings.Count(code, `"%s:drain"`) + strings.Count(code, "':drain'")
+	}
+	if spellings != 1 {
+		t.Errorf("the ':drain' owner suffix must be spelled once in internal/db (the drainLockSuffix const); found %d", spellings)
+	}
+	if !strings.Contains(srctest.StripGoComments(qd), `const drainLockSuffix = ":drain"`) {
+		t.Error("drainLockSuffix must be the one spelling")
 	}
 	// Both holders start the ONE runner for their whole run.
 	sched := srctest.Read(t, "internal/scheduler/scheduler.go")
@@ -1269,9 +1285,14 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 	if hbPos < 0 || loopPos < 0 || hbPos > loopPos {
 		t.Error("the leftover-staging drain must start the set-wide heartbeat BEFORE the drain loop (the parked tail is what round 29 protects)")
 	}
-	healer := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go")
-	if !strings.Contains(healer, "store.StartDrainHeartbeat(ctx, logger, workerID)") {
-		t.Error("heal-collection-gaps must run the set-wide heartbeat for the whole run")
+	// v0.29.65: the heal's run lives in heal_collection_gaps_run.go; its
+	// heartbeat covers the whole run (TestGapHealFleet* drive the order).
+	healer := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/heal_collection_gaps_run.go"))
+	run := srctest.FuncBody(t, healer, "func (r *gapHealRun) run(")
+	hbAt := strings.Index(run, "r.store.StartDrainHeartbeat(ctx, r.logger, r.workerID)")
+	workAt := strings.Index(run, "r.runFleet(")
+	if hbAt < 0 || workAt < 0 || hbAt > workAt {
+		t.Error("heal-collection-gaps must start the set-wide heartbeat before its work, for the whole run")
 	}
 }
 

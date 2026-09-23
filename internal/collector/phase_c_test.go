@@ -8,10 +8,13 @@ package collector
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // ---------------------------------------------------------------------------
@@ -148,7 +151,7 @@ func TestPurlForPackageMapping(t *testing.T) {
 		{"npm", "x", "", ""},
 	}
 	for _, tc := range cases {
-		if got := purlForPackage(tc.eco, tc.name, tc.ver); got != tc.want {
+		if got := purlForPackage(tc.eco, "", tc.name, tc.ver); got != tc.want {
 			t.Errorf("purlForPackage(%q,%q,%q) = %q, want %q", tc.eco, tc.name, tc.ver, got, tc.want)
 		}
 	}
@@ -227,10 +230,14 @@ func TestScanLockfilesTransitiveGate(t *testing.T) {
 		t.Error("the transitive storage branch must be gated on ac.TransitiveLockfiles — " +
 			"knob off must keep the pre-C1 declared-only row set")
 	}
-	if !strings.Contains(s, "Direct:          false,") && !strings.Contains(s, "Direct: false,") {
+	// gofmt realigns struct literals as fields come and go (v0.29.59 added
+	// Namespace), so the pin matches the field and its value, not the
+	// spacing.
+	s = srctest.StripGoComments(s)
+	if !regexp.MustCompile(`Direct:\s+false,`).MatchString(s) {
 		t.Error("transitive rows must be stored with Direct=false")
 	}
-	if !strings.Contains(s, "Direct: true,") {
+	if !regexp.MustCompile(`Direct:\s+true,`).MatchString(s) {
 		t.Error("declared-dep resolutions must be stored with Direct=true")
 	}
 }

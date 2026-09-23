@@ -37,6 +37,7 @@
     "materialized_views": true,
     "matview_rebuild_day": "saturday",
     "matview_rebuild_skip_dm_aggregates": false,
+    "supply_chain_refresh_hours": 24,
     "activity_history_window_days": 180,
     "activity_history_interval_minutes": 1,
     "activity_history_batch": 150,

@@ -116,6 +116,7 @@ func newRootCmd() *cobra.Command {
 		dataVerifyCmd(&cfgPath),
 		generateShowcaseCmd(&cfgPath),
 		backfillRepoMetadataCmd(&cfgPath),
+		adoptForgeIDCmd(&cfgPath),
 		rewalkWhitespaceCmd(&cfgPath),
 	)
 	return root
@@ -222,6 +223,10 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	if cfg.Collection.MaterializedViewsValue() {
 		store.SetMatviewMode(db.MatviewsIfMissing)
 	}
+	// The Aveloxis-owned supply-chain pair is built when missing on EVERY
+	// serve start, whatever materialized_views says (v0.29.61): the GUI's
+	// dependencies page reads it, and it costs seconds.
+	store.SetSupplyChainViewMode(db.MatviewsIfMissing)
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrating database: %w", err)
 	}
@@ -881,7 +886,7 @@ func runImportFromAugur(cfgPath string, priority int) error {
 	}
 	logger.Info("found repos in augur_data.repo", "count", len(augurRepos))
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := importProbeClient(10 * time.Second)
 	var imported, skipped, failed int
 
 	for _, ar := range augurRepos {
@@ -935,11 +940,36 @@ func runImportFromAugur(cfgPath string, priority int) error {
 		"failed", failed,
 		"total_augur_repos", len(augurRepos),
 	)
+	// v0.29.59 (review round 1): a scripted import must see a refusal in
+	// the exit code, as mark-gone-repos and reconcile-repos do; the
+	// failed rows are not persisted, so a rerun re-probes them.
+	if failed > 0 {
+		return fmt.Errorf("import-augur: %d of %d repositories failed (see the log); a rerun retries them", failed, len(augurRepos))
+	}
 	return nil
 }
 
-// verifyRepoExists checks that a repo URL resolves on the forge.
-// Uses HTTP HEAD to avoid downloading the full page.
+// importProbeClient is the existence probe's HTTP client: it does NOT
+// follow redirects (v0.29.59 review round 1). A followed redirect hid the
+// answer — GitLab sends a private or missing repository to
+// /users/sign_in, which lands on 403 — so verifyRepoExists classifies
+// the 3xx itself, the way the Apache importer's probe does.
+func importProbeClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// verifyRepoExists answers whether a repository URL still serves a
+// repository. Only DEFINITIVE answers decide (worklist 47, SR-16): a 2xx
+// is present; a 3xx whose Location is another repository path on the
+// same host is a rename (present) and one that leaves the repository
+// space (GitLab's /users/sign_in) is not publicly available (absent);
+// the shared gone rule (404/410/451, platform.IsRepoGoneStatus) is
+// absent; anything else — a 403/429 rate limit, a 5xx outage — is an
+// ERROR the caller counts as failed, so a rerun re-probes it instead of
+// dropping the repository from the import as "no longer exists".
 func verifyRepoExists(ctx context.Context, client *http.Client, repoURL string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, repoURL, nil)
 	if err != nil {
@@ -950,8 +980,40 @@ func verifyRepoExists(ctx context.Context, client *http.Client, repoURL string) 
 		return false, err
 	}
 	resp.Body.Close()
-	// 200 = exists. 301/302 = moved (still exists). 404/410 = gone.
-	return resp.StatusCode >= 200 && resp.StatusCode < 400, nil
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, nil
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return redirectStaysOnARepository(req.URL, resp.Header.Get("Location")), nil
+	case platform.IsRepoGoneStatus(resp.StatusCode):
+		return false, nil
+	default:
+		return false, fmt.Errorf("indeterminate status %d from %s — not an answer", resp.StatusCode, platform.RedactURLUserinfo(repoURL))
+	}
+}
+
+// redirectStaysOnARepository reports whether a probe's redirect target is
+// another repository path on the same host (owner/name, at least two
+// path segments) — a rename — rather than a sign-in page or another
+// site. No Location, an unparseable one, or a different host is not a
+// repository.
+func redirectStaysOnARepository(from *url.URL, location string) bool {
+	if location == "" {
+		return false
+	}
+	to, err := from.Parse(location)
+	if err != nil || !strings.EqualFold(to.Host, from.Host) {
+		return false
+	}
+	segs := strings.Split(strings.Trim(to.EscapedPath(), "/"), "/")
+	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
+		return false
+	}
+	switch strings.ToLower(segs[0]) {
+	case "users", "login", "sessions", "signin", "sign_in", "auth", "-":
+		return false // a forge's account or system space, not a repository
+	}
+	return true
 }
 
 // --- add-key: store API keys in the database ---
@@ -1196,7 +1258,7 @@ func migrateCmd(cfgPath *string) *cobra.Command {
 		Long: `Runs the schema migrations and (by default) drops and re-creates
 the materialized views used by 8Knot and analytics.
 
-Use --skip-views to skip the materialized view block entirely. This is
+Use --skip-views to skip the 8Knot materialized view block entirely (the two supply-chain views are always re-created; they cost seconds). This is
 useful when you're iterating on a schema-error fix on a large database
 where the matview rebuild adds significant time per attempt. Without it,
 every view is dropped and re-created from its definition — the only step
@@ -1228,29 +1290,42 @@ running migrations.`,
 				mode = db.MatviewsOff
 			}
 			store.SetMatviewMode(mode)
+			// The supply-chain pair is re-created by EVERY migrate — with
+			// or without --skip-views, with materialized_views on or off
+			// (v0.29.61): two statements of a few seconds each, and the
+			// only path that applies a changed definition of theirs.
+			store.SetSupplyChainViewMode(db.MatviewsRebuild)
 			store.SetMigrateNoWait(noWait)
 			return store.Migrate(ctx)
 		},
 	}
 	cmd.Flags().BoolVar(&skipViews, "skip-views", false,
-		"skip the materialized view block (a later plain 'aveloxis migrate' re-creates the views; 'aveloxis refresh-views' only refreshes existing ones)")
+		"skip the 8Knot materialized view block (a later plain 'aveloxis migrate' re-creates those views; 'aveloxis refresh-views' only refreshes existing ones). The two supply-chain views are re-created regardless — seconds, not hours")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false,
 		"fail fast if another aveloxis migration is in progress (don't block on the advisory lock)")
 	return cmd
 }
 
+// refreshViewsSets are the values of `refresh-views --set`: the two view
+// sets a database can hold (v0.29.61, worklist 48) or both.
+var refreshViewsSets = map[string]bool{"all": true, "8knot": true, "supply-chain": true}
+
 func refreshViewsCmd(cfgPath *string) *cobra.Command {
 	var aggregates bool
+	var set string
 	cmd := &cobra.Command{
 		Use:   "refresh-views",
-		Short: "Refresh all materialized views (for 8Knot/analytics)",
-		Long: `Refreshes the data of the 20 materialized views used by 8Knot and other analytics tools — when this database has them. Materialized views are optional (collection.materialized_views, default true); on a database without them this command says so and does nothing. aveloxis serve also refreshes them on a weekly schedule (default Saturday; collection.matview_rebuild_day in aveloxis.json). A refresh keeps each view's definition: a release that changes one needs a plain ` + "`aveloxis migrate`" + `, which re-creates the views.
+		Short: "Refresh the materialized views (8Knot set, supply-chain pair, or both)",
+		Long: `Refreshes the data of the materialized views this database has. There are two sets: the 20 materialized views used by 8Knot and other analytics tools (optional — collection.materialized_views, default true; refreshed by serve weekly on collection.matview_rebuild_day) and the two Aveloxis-owned supply-chain views the GUI's dependencies page reads (explorer_package_exposure, explorer_package_advisory; refreshed by serve every collection.supply_chain_refresh_hours, seconds each). --set chooses: all (default), 8knot, or supply-chain. A set the database does not have is reported and skipped. A refresh keeps each view's definition: a release that changes an 8Knot view needs a plain ` + "`aveloxis migrate`" + `; every migrate re-creates the supply-chain pair.
 
 --aggregates additionally rebuilds the dm_repo_* / dm_repo_group_* aggregate tables after the views — the per-repo pass the weekly rebuild runs unless collection.matview_rebuild_skip_dm_aggregates is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the ONLY way the dm_ tables update (v0.28.18).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
+			if !refreshViewsSets[set] {
+				return fmt.Errorf("--set %q: use all, 8knot or supply-chain", set)
+			}
 			ctx := context.Background()
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
 			if err != nil {
@@ -1262,7 +1337,13 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 			// operator who turned the knob off still HAS the views built
 			// before, and refusing to refresh those would be a silent no-op
 			// over real staleness (v0.29.57).
-			viewErr := db.RefreshMaterializedViews(ctx, store, logger)
+			var viewErr error
+			if set == "all" || set == "8knot" {
+				viewErr = db.RefreshMaterializedViews(ctx, store, logger)
+			}
+			if set == "all" || set == "supply-chain" {
+				viewErr = errors.Join(viewErr, db.RefreshSupplyChainViews(ctx, store, logger))
+			}
 			if !aggregates {
 				return viewErr // cobra prints it once; no second copy
 			}
@@ -1279,6 +1360,7 @@ func refreshViewsCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&aggregates, "aggregates", false, "also rebuild the dm_repo_* / dm_repo_group_* aggregate tables after the views (slow at fleet scale)")
+	cmd.Flags().StringVar(&set, "set", "all", "which views to refresh: all, 8knot (the 20 in matviews.sql) or supply-chain (explorer_package_exposure, explorer_package_advisory)")
 	return cmd
 }
 
@@ -2060,12 +2142,25 @@ func versionCmd() *cobra.Command {
 
 func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
-		cfg = config.DefaultConfig()
+	if err == nil {
+		return cfg
 	}
-	return cfg
+	if errors.Is(err, config.ErrNotFound) {
+		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
+		return config.DefaultConfig()
+	}
+	// v0.29.61: a file that EXISTS but does not parse or validate used to
+	// fall into the same arm and run every command on the compiled
+	// defaults — a wrong database, no keys, every knob silently reset —
+	// under a log line that said the file was not found. Refuse instead.
+	logger.Error("config file is invalid — refusing to run on defaults", "path", cfgPath, "error", err)
+	exitProcess(1)
+	return nil
 }
+
+// exitProcess is loadConfig's exit; a test replaces it to prove the
+// invalid-file path is reached (never the missing-file path).
+var exitProcess = os.Exit
 
 // newLogger creates a logger from the config's log_level setting.
 func newLogger(cfg *config.Config) *slog.Logger {

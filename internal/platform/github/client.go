@@ -853,8 +853,17 @@ func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string
 
 // --- ReleaseCollector ---
 
+// releasesPerPage is smaller than the house 100 because a release carries
+// its asset list: on release-heavy repositories a 100-release page exceeds
+// GitHub's ~10 s server limit and 504s on every retry (2026-09-23 log
+// review, measured live: page 2 took 9.4 s on canonical/charmcraftcache-hub
+// and 504ed at 11.2 s on kairos-io/kairos at 100; 4.1 s and 2.8 s at 30 —
+// a ~2.5x margin). A repository with fewer than 30 releases still costs
+// one request.
+const releasesPerPage = 30
+
 func (c *Client) ListReleases(ctx context.Context, owner, repo string) iter.Seq2[model.Release, error] {
-	path := fmt.Sprintf("/repos/%s/%s/releases", owner, repo)
+	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=%d", owner, repo, releasesPerPage)
 	return func(yield func(model.Release, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghRelease](ctx, c.http, path) {
 			if err != nil {

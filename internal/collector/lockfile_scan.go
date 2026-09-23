@@ -64,7 +64,9 @@ func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
 			out = append(out, parsedLockfile{Path: rel, Result: res})
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
+		// Through readManifest (PR #212 review): a UTF-8 BOM or UTF-16 lockfile
+		// is decoded like its manifest, not failed whole (SR-17).
+		data, readErr := readManifest(path)
 		if readErr != nil {
 			logger.Warn("failed to read lockfile", "path", rel, "error", readErr)
 			return nil
@@ -157,6 +159,7 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 					PackageName:     e.Name,
 					ResolvedVersion: e.Version,
 					LockfilePath:    pl.Path,
+					Namespace:       e.Namespace,
 					Direct:          false,
 					Scope:           e.Scope,
 				})
@@ -175,8 +178,9 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 				LockfilePath:    pl.Path,
 				// Stored 'direct' means "resolution of a repo-level
 				// declared dependency" — exactly the pre-C1 row set.
-				Direct: true,
-				Scope:  e.Scope,
+				Namespace: e.Namespace,
+				Direct:    true,
+				Scope:     e.Scope,
 			})
 		}
 		// direct_count: what the format itself flags as direct when it

@@ -1478,10 +1478,11 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				break
 			}
 			var items []struct {
-				ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-				HTMLURL string `json:"html_url"`
-				Name    string `json:"name"`
-				Owner   struct {
+				ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+				CreatedAt time.Time `json:"created_at"`
+				HTMLURL   string    `json:"html_url"`
+				Name      string    `json:"name"`
+				Owner     struct {
 					Login string `json:"login"`
 				} `json:"owner"`
 			}
@@ -1517,7 +1518,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 					// v0.27.102: opportunistic forge-ID backfill (fill-
 					// empty-only) so the org-tracked cohort gains rename
 					// protection on the next scan pass.
-					if idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID)); idErr != nil {
+					if idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, model.ForgeIDString(item.ID), item.CreatedAt); idErr != nil {
 						s.logger.Warn("org scan: platform_repo_id backfill failed", "repo_id", repoID, "error", idErr)
 					}
 					alreadyExisted++

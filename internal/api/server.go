@@ -102,6 +102,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.handleLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.handleScancodeLicenses)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.handleScancodeFiles)
+	// v0.29.60: the supply-chain package view (package-centred findings).
+	s.mux.HandleFunc("GET /api/v1/supply-chain/packages", s.handleSupplyChainPackages)
+	s.mux.HandleFunc("GET /api/v1/supply-chain/packages/{ecosystem}/{name...}", s.handleSupplyChainPackage)
 	// v0.23.10 — list-of-identities + affiliation-breakdown over an
 	// operator-supplied time window. Nested under contributions/ so the
 	// paths don't collide with the Augur-compatible
@@ -138,6 +141,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/groups/{groupID}/{decision}", s.handleAdminGroupDecision)
 	// v0.27.20 per-add approval queue (summary/15).
 	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/pending-adds", s.handleGroupPendingAdds)
+	s.mux.HandleFunc("GET /api/v1/admin/forge-id-changes", s.handleAdminForgeIDChanges)               // v0.29.63
+	s.mux.HandleFunc("POST /api/v1/admin/forge-id-changes/{repoID}/adopt", s.handleAdminForgeIDAdopt) // v0.29.63
 	s.mux.HandleFunc("GET /api/v1/admin/add-requests", s.handleAdminAddRequests)
 	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)

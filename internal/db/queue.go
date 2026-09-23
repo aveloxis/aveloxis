@@ -554,15 +554,26 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 }
 
 // QueueStats returns counts by status.
+//
+// "collecting" counts real jobs only. Rows parked by the startup staging
+// drain or by heal-collection-gaps (status 'collecting', owner
+// '<worker>:drain') are "draining": they hold no worker slot, so counting
+// them as collecting showed more jobs than workers (v0.29.64; 2026-09-23
+// the monitor showed 200+ with 120 workers, and 107 with serve stopped).
+// "total" still covers every row.
 func (s *PostgresStore) QueueStats(ctx context.Context) (map[string]int, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT status, COUNT(*) FROM aveloxis_ops.collection_queue GROUP BY status`)
+		SELECT CASE WHEN status = 'collecting' AND right(locked_by, length($1)) = $1
+		            THEN 'draining' ELSE status END,
+		       COUNT(*)
+		  FROM aveloxis_ops.collection_queue
+		 GROUP BY 1`, drainLockSuffix)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	stats := map[string]int{"queued": 0, "collecting": 0, "total": 0}
+	stats := map[string]int{"queued": 0, "collecting": 0, "draining": 0, "total": 0}
 	for rows.Next() {
 		var status string
 		var count int

@@ -8,8 +8,11 @@ package web
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestScanOrgReposCapturesForgeRepoID(t *testing.T) {
@@ -32,7 +35,22 @@ func TestScanOrgReposCapturesForgeRepoID(t *testing.T) {
 	if !strings.Contains(body, "PlatformID:") {
 		t.Error("scanOrgRepos must pass the forge ID into UpsertRepo via model.Repo.PlatformID")
 	}
-	if !strings.Contains(body, "SetPlatformRepoIDIfEmpty(") {
+	// v0.29.63: the Seen form, with the listing's created_at, so a recorded
+	// forge-ID change is dated (the plain form was accepted here and in the
+	// scheduler pin, which let refreshUserOrgs skip the date).
+	code := srctest.StripGoComments(body)
+	if strings.Contains(code, "SetPlatformRepoIDIfEmpty(") {
+		t.Error("scanOrgRepos calls the plain SetPlatformRepoIDIfEmpty — use SetPlatformRepoIDIfEmptySeen with the listing's created_at")
+	}
+	if !strings.Contains(code, "`json:\"created_at\"`") {
+		t.Error("scanOrgRepos must decode the listing's created_at")
+	}
+	for _, call := range regexp.MustCompile(`SetPlatformRepoIDIfEmptySeen\(.*`).FindAllString(code, -1) {
+		if !strings.Contains(call, "CreatedAt") {
+			t.Errorf("%s: %q — the listing's CreatedAt must be the date argument", "scanOrgRepos", call)
+		}
+	}
+	if !strings.Contains(code, "SetPlatformRepoIDIfEmptySeen(") {
 		t.Error("scanOrgRepos must backfill the forge ID onto already-tracked rows (found branch)")
 	}
 }

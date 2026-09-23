@@ -202,6 +202,14 @@ type historyRepoEntry struct {
 func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string, windows []HistoryWindow) ([]model.ContributorDayActivity, []model.ContributorDayTotal, error) {
 	// Background sweep — same reserve rationale as FetchContributorHistoryMeta.
 	ctx = platform.WithGraphQLBackgroundBudget(ctx)
+	// NOT fast-fail (v0.29.62 review round 1, declined B5): the flag also
+	// turns the wait at the foreground reserve into an immediate budget
+	// error and spends RATE_LIMITED retries instead of rotating keys, and
+	// this sweep stamps any error as a 24 h failure — so under budget
+	// pressure every claimed contributor would be retired unfetched
+	// (SR-20: background sweeps wait at the reserve). The cost it would
+	// have saved — three accounts, one slow claim each, then the failure
+	// cooldown — is bounded.
 	acc := newHistoryAccumulator()
 	conc := int(c.historyWindowConc.Load())
 	if conc < 1 {

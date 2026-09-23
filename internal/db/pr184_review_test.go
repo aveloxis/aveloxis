@@ -447,7 +447,14 @@ func TestForgeIDMismatchIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(")
+	// v0.29.63: the logic lives in SetPlatformRepoIDIfEmptySeen (the org
+	// scans pass the forge's created_at); the plain form must delegate to
+	// it, so the checks below cover every caller.
+	plain := srctest.StripGoComments(extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty("))
+	if !strings.Contains(plain, "return s.SetPlatformRepoIDIfEmptySeen(ctx, repoID, forgeID, time.Time{})") {
+		t.Error("SetPlatformRepoIDIfEmpty must delegate to SetPlatformRepoIDIfEmptySeen — a second copy of the probe would drift")
+	}
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(")
 	if !strings.Contains(body, "RowsAffected() == 0") {
 		t.Error("SetPlatformRepoIDIfEmpty must inspect the zero-row case — silence papers over the identity conflict its own doc comment warns about")
 	}
@@ -766,7 +773,7 @@ func TestForgeIDProbeErrorIsNotSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(")
+	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(")
 	if !strings.Contains(body, "errors.Is(perr, pgx.ErrNoRows)") {
 		t.Error("only a genuinely-missing row may be ignored on the verification probe (ErrNoRows)")
 	}

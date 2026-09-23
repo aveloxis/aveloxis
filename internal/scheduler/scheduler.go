@@ -2287,10 +2287,11 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
-			ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-			HTMLURL string `json:"html_url"`
-			Name    string `json:"name"`
-			Owner   struct {
+			ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+			CreatedAt time.Time `json:"created_at"`
+			HTMLURL   string    `json:"html_url"`
+			Name      string    `json:"name"`
+			Owner     struct {
 				Login string `json:"login"`
 			} `json:"owner"`
 		}
@@ -2320,7 +2321,7 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				repoID = existing
 				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
 				// only) — see refreshUserOrgs for the rationale.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
+				idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, model.ForgeIDString(item.ID), item.CreatedAt)
 				if errors.Is(idErr, context.Canceled) {
 					return newCount // shutdown, not a failure
 				}
@@ -2425,9 +2426,10 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 			break
 		}
 		var items []struct {
-			ID        int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-			WebURL    string `json:"web_url"`
-			Name      string `json:"name"`
+			ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+			CreatedAt time.Time `json:"created_at"`
+			WebURL    string    `json:"web_url"`
+			Name      string    `json:"name"`
 			Namespace struct {
 				FullPath string `json:"full_path"`
 			} `json:"namespace"`
@@ -2454,7 +2456,7 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				repoID = existing
 				// v0.27.102: opportunistic forge-ID backfill (fill-empty-
 				// only) — see refreshUserOrgs for the rationale.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, model.ForgeIDString(item.ID))
+				idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, model.ForgeIDString(item.ID), item.CreatedAt)
 				if errors.Is(idErr, context.Canceled) {
 					return newCount // shutdown, not a failure
 				}

@@ -185,11 +185,19 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		repoID).Scan(&st.ForkedFrom, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fork lineage: %w", err)
 	}
-	changes, err := s.repoForgeIDChangesAdopted(ctx, repoID)
-	if err != nil {
-		return nil, fmt.Errorf("forge-ID changes: %w", err)
+	// Non-fatal (v0.29.62 review round 2): an api running before the
+	// migrate that creates repo_forge_id_changes (worklist 49's incident)
+	// must still serve the rest of the page. The failure is logged; the
+	// notice is simply absent.
+	// A cancelled request is the caller leaving, not a failure: return it.
+	if changes, err := s.repoForgeIDChangesAdopted(ctx, repoID); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		s.logger.Error("repo stats: forge-ID changes lookup failed — the page renders without the notice", "repo_id", repoID, "error", err)
+	} else {
+		st.ForgeIDChanges = changes
 	}
-	st.ForgeIDChanges = changes
 
 	// v0.27.50: last observed activity — drives the chart last-active
 	// ceiling and the dormant/archived chip. Non-fatal: an error here

@@ -32,7 +32,7 @@ func TestScanOrgReposCapturesForgeRepoID(t *testing.T) {
 	if !strings.Contains(body, "PlatformID:") {
 		t.Error("scanOrgRepos must pass the forge ID into UpsertRepo via model.Repo.PlatformID")
 	}
-	if !strings.Contains(body, "SetPlatformRepoIDIfEmpty(") {
+	if !strings.Contains(body, "SetPlatformRepoIDIfEmpty(") && !strings.Contains(body, "SetPlatformRepoIDIfEmptySeen(") { // the Seen form also records the listed creation date (v0.29.63)
 		t.Error("scanOrgRepos must backfill the forge ID onto already-tracked rows (found branch)")
 	}
 }

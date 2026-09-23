@@ -424,14 +424,24 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"repoint mailing_list_staging", `UPDATE aveloxis_ops.mailing_list_staging SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
 		// v0.29.62: a forge-ID change is a fact about the upstream
 		// repository both variants point at, and an adopted one is the
-		// operator's record — repoint it (skipping a change the winner
-		// already holds), then drop the duplicates.
+		// operator's record — repoint it, then drop the duplicates. When
+		// the winner already holds the same change the two MERGE (v0.29.63,
+		// round-2 #12 on v0.29.62: DO NOTHING kept the winner's pending
+		// copy and deleted an adoption made on the loser): the span covers
+		// both observations and an adoption on either side is kept whole
+		// (adopted_at, adopted_by and note travel together).
 		{"repoint repo_forge_id_changes", `
-			INSERT INTO aveloxis_data.repo_forge_id_changes
+			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
 				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note)
 			SELECT $2, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note
 			  FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1
-			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
+			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
+				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
+				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),
+				forge_created_at  = COALESCE(c.forge_created_at, EXCLUDED.forge_created_at),
+				adopted_at = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_at ELSE c.adopted_at END,
+				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
+				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`, []any{pair.LoserID, pair.WinnerID}},
 		{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, []any{pair.LoserID}},
 
 		// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These

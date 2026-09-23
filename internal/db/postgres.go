@@ -2066,10 +2066,11 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 				contrib.FullName, contrib.Company, contrib.Location,
 				contrib.Canonical, ToolVersion,
 			); updErr != nil {
-				// Roll back to the savepoint so the tx is usable, then
-				// fall through to the ordinary path: the INSERT will
-				// trip contributors_pkey and the 23505 backstop reports
-				// it with full context.
+				// Roll back to the savepoint so the tx is usable. A deadlock
+				// or serialization failure returns (the batch retries);
+				// anything else falls through to the ordinary path: the
+				// INSERT will trip contributors_pkey and the 23505
+				// backstop reports it with full context.
 				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
 					return rbErr
 				}
@@ -2154,8 +2155,9 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			); updErr != nil {
 				// Recovery UPDATE itself failed (rare —
 				// would require some other constraint
-				// violation on this row). Roll back, capture
-				// diagnostic, skip this contributor.
+				// violation on this row). Roll back and capture;
+				// a deadlock returns for the batch retry, anything
+				// else skips this contributor.
 				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
 					return rbErr
 				}
@@ -2278,6 +2280,12 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("contributor_login_history_insert", login, histErr)
+			// A deadlock (40P01) here is NOT escaped to withRetry, unlike
+			// the contributor and identity writes above (v0.29.62 review
+			// round 2): the rollback to the savepoint releases this row's
+			// locks, the history row is re-recorded the next time this
+			// identity is observed, and retrying the whole batch would redo
+			// every contributor in it for one derived row. captureErr logs it.
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
 				return relErr
 			}
@@ -2295,6 +2303,9 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("identity_denorm_backfill", login, backfillErr)
+			// Not escaped on a deadlock either, for the same reason as the
+			// login-history write above: the mirror columns are rewritten
+			// from the identity on every later upsert of this contributor.
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
 				return relErr
 			}

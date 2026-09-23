@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -93,6 +94,15 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 // gains rename protection on the NEXT scan pass instead of waiting for
 // each repo's Phase 0 collection cycle.
 func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int64, forgeID string) error {
+	return s.SetPlatformRepoIDIfEmptySeen(ctx, repoID, forgeID, time.Time{})
+}
+
+// SetPlatformRepoIDIfEmptySeen is SetPlatformRepoIDIfEmpty with the forge's
+// creation date of the repository the scan just listed (zero = unknown).
+// On a forge-ID mismatch the date is recorded with the pending change, so
+// the admin page's Adopt button can carry it without a forge call (the
+// api process holds no API keys; v0.29.62).
+func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time) error {
 	if forgeID == "" {
 		return nil
 	}
@@ -137,7 +147,7 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int
 				"remediation", "recorded as a pending forge-ID change; `aveloxis adopt-forge-id --repo-id N` treats the new repository as a continuation (reconcile-repos consolidates the INVERSE case only)")
 			// v0.29.62: the observation is RECORDED, not only logged, so the
 			// operator has a list to act on. repos is still untouched.
-			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID); rerr != nil {
+			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt); rerr != nil {
 				return fmt.Errorf("record forge-ID change for repo %d: %w", repoID, rerr)
 			}
 		}

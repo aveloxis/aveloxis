@@ -449,6 +449,18 @@ var deployChecklists = map[string][]deployStep{
 	// adopt-forge-id command. The plain ladder, and the two known
 	// re-created repositories can be adopted once serve is back.
 	"0.29.62": v02962DeployChecklist,
+	// v0.29.63: the admin Adopt button (two api endpoints, a card on the
+	// approvals page) and the org scan now records when the forge created
+	// a re-created repository. No schema change of its own; the migrate
+	// creates 0.29.62's table if that release was skipped.
+	"0.29.63": v02963DeployChecklist,
+}
+
+var v02963DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views"},
+	{"aveloxis start all", "resume collection; web and api start only after the migrate has finished"},
+	{"open the admin approvals page (pending-groups.html)", "optional: the Re-created repositories card lists the forge-ID changes the org scan recorded; Adopt treats one as a continuation (the CLI `aveloxis adopt-forge-id` does the same). The card is hidden when nothing is pending"},
 }
 
 var v02962DeployChecklist = []deployStep{

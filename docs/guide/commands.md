@@ -1117,6 +1117,9 @@ records the change as pending; it never changes the repository row itself.
 creation date, replaces the stored ID, and records the change as adopted.
 It refuses, changing nothing, when the forge lookup fails, when the forge
 still reports the stored ID, or when the stored ID changed in the meantime.
+A GitLab repository is only looked up on the configured GitLab instance
+(project IDs are per instance, and the keys stay on that host); a generic
+git repository has no API to ask.
 
 The repository page then shows: "Note: this repository changed forge
 identifiers on <date>, from <old id> to <new id>. This is unusual, and may
@@ -1124,6 +1127,12 @@ affect statistics." The row holds data from both upstream repositories:
 commit history usually lines up (a re-push keeps the hashes), but issue and
 pull request numbers restart in the new repository. The mismatch ERROR
 stops once the change is adopted.
+
+An admin can do the same from the web GUI (v0.29.63): the approvals page
+lists pending changes under "Re-created repositories", each with an Adopt
+button. The button adopts the change the org scan recorded, with the
+creation date the scan saw; it does not ask the forge again, because the api
+process holds no forge keys. The card is hidden when nothing is pending.
 
 ## `aveloxis backfill-repo-metadata`
 

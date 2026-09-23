@@ -129,10 +129,21 @@ var tablePhraseRe = regexp.MustCompile(`(\d+) tables`)
 
 var schemaBreakdownRe = regexp.MustCompile("(\\d+) in `(aveloxis_data|aveloxis_ops|aveloxis_scan)`")
 
+// schemaHeadingRe matches the per-schema headings ("`aveloxis_ops` (42
+// tables"). They were checked only against the SET of counts, so swapping
+// two schemas' numbers passed (v0.29.62 review round 2, #13).
+var schemaHeadingRe = regexp.MustCompile("`(aveloxis_data|aveloxis_ops|aveloxis_scan)` \\((\\d+) tables")
+
 func TestDocsTableCountsMatchSchema(t *testing.T) {
 	data, ops, scan, _ := schemaCounts(t)
 	total := data + ops + scan
 	valid := map[int]bool{data: true, ops: true, scan: true, total: true}
+	headingsSeen := 0
+	defer func() {
+		if headingsSeen < 3 {
+			t.Errorf("found %d per-schema headings (want the three in docs/architecture/overview.md) — schemaHeadingRe is not reading them", headingsSeen)
+		}
+	}()
 
 	for _, path := range allDocsMarkdown(t) {
 		src, err := os.ReadFile(path)
@@ -148,6 +159,14 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 			if n != want {
 				t.Errorf("%s says %q but schema.sql defines %d tables in %s", path, m[0], want, m[2])
 			}
+		}
+		for _, m := range schemaHeadingRe.FindAllStringSubmatch(string(src), -1) {
+			n, _ := strconv.Atoi(m[2])
+			want := map[string]int{"aveloxis_data": data, "aveloxis_ops": ops, "aveloxis_scan": scan}[m[1]]
+			if n != want {
+				t.Errorf("%s says %q but schema.sql defines %d tables in %s", path, m[0], want, m[1])
+			}
+			headingsSeen++
 		}
 		for _, m := range tablePhraseRe.FindAllStringSubmatch(string(src), -1) {
 			n, _ := strconv.Atoi(m[1])

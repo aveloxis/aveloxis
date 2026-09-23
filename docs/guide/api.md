@@ -89,6 +89,30 @@ Returns gathered (collected totals) vs metadata (API-reported totals) for a sing
   optional `note`. Pending (observed, not adopted) changes are not listed.
   The repo page shows one notice per entry. Single-repo endpoint only.
 
+### Forge-ID changes (admin, v0.29.63)
+
+```
+GET  /api/v1/admin/forge-id-changes?pending=1
+POST /api/v1/admin/forge-id-changes/{repoID}/adopt
+```
+
+A repository deleted and re-created upstream under the same URL gets a new
+forge ID. The org scan records the change as pending (it never changes the
+repository row itself). `GET` lists the recorded changes, pending first
+(`pending=1` lists only those): `repo_id`, `repo_git`, `old_forge_id`,
+`new_forge_id`, `forge_created_at` (the new repository's creation date, when
+the scan listed it), `first_observed_at`, `last_observed_at`, and for adopted
+ones `adopted_at`, `adopted_by`, `note`.
+
+`POST …/adopt` treats the new repository as a continuation: it moves the
+stored forge ID to the one the scan observed and records the admin's login.
+The optional JSON body `{"note": "…"}` (at most 1,000 bytes) is stored with
+it. Answers `404` when nothing is pending for the repository and `409` when
+the stored ID changed since the observation (nothing is written). The api
+process holds no forge API keys, so this adopts the recorded observation;
+`aveloxis adopt-forge-id` asks the forge live. Both require an admin Bearer
+session.
+
 ### Batch Statistics
 
 ```

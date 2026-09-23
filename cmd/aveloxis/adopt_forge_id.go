@@ -189,6 +189,9 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 			}
 			var failed []error
 			for _, id := range repoIDs {
+				if ctx.Err() != nil {
+					return ctx.Err() // interrupted: one exit, not an ERROR per remaining id
+				}
 				if err := adoptForgeIDFor(ctx, store, clientFor, id, adoptedBy, note, os.Stdout); err != nil {
 					logger.Error("adopt-forge-id failed", "repo_id", id, "error", err)
 					failed = append(failed, err)

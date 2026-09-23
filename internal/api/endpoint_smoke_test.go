@@ -119,9 +119,11 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/admin/monitor/queue":                        {auth: "admin"},
 	"POST /api/v1/admin/users/{userID}/admin":                {auth: "admin", body: `{"admin":true}`},
 	"POST /api/v1/admin/groups/{groupID}/{decision}":         {auth: "admin"},
-	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"}, // v0.27.14 Boost (fixture seeds the queue row)
-	"GET /api/v1/admin/add-requests":                         {auth: "admin"}, // v0.27.20 per-add approval queue
-	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"}, // v0.27.20 (fixture seeds the pending request)
+	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"},                         // v0.27.14 Boost (fixture seeds the queue row)
+	"GET /api/v1/admin/add-requests":                         {auth: "admin"},                         // v0.27.20 per-add approval queue
+	"GET /api/v1/admin/forge-id-changes":                     {auth: "admin", query: "pending=1"},     // v0.29.63
+	"POST /api/v1/admin/forge-id-changes/{repoID}/adopt":     {auth: "admin", wantStatus: []int{404}}, // v0.29.63: the fixture repo has nothing pending
+	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"},                         // v0.27.20 (fixture seeds the pending request)
 
 	// Augur-compat metric routes (metrics.go).
 	"GET /api/v1/owner/{owner}/repo/{repo}":                    {},

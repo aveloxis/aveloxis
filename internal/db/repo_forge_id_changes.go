@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ForgeIDChange is one observed change of a repository's forge ID — the
@@ -37,13 +39,48 @@ var ErrForgeIDNotAsExpected = errors.New("stored forge ID is not the expected ol
 // recordForgeIDObservation writes what the org scan saw: stored ≠
 // observed. A repeat observation only moves last_observed_at. It never
 // touches repos (the observation-only rule, SR-7).
-func (s *PostgresStore) recordForgeIDObservation(ctx context.Context, repoID int64, stored, observed string) error {
+func (s *PostgresStore) recordForgeIDObservation(ctx context.Context, repoID int64, stored, observed string, forgeCreatedAt time.Time) error {
+	var created *time.Time
+	if !forgeCreatedAt.IsZero() {
+		c := forgeCreatedAt.UTC()
+		created = &c
+	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET last_observed_at = NOW()`,
-		repoID, stored, observed)
+		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, forge_created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
+			last_observed_at = NOW(),
+			forge_created_at = COALESCE(EXCLUDED.forge_created_at, repo_forge_id_changes.forge_created_at)`,
+		repoID, stored, observed, created)
 	return err
+}
+
+// ErrNoPendingForgeIDChange — AdoptPendingForgeIDChange found nothing the
+// scan observed and nobody has adopted for this repository.
+var ErrNoPendingForgeIDChange = errors.New("no pending forge-ID change for this repository")
+
+// AdoptPendingForgeIDChange adopts the repository's most recently observed
+// pending change as recorded by the org scan — the new ID and the forge's
+// creation date it listed — through AdoptForgeID, so the same guard
+// applies (the stored ID must still be the change's old ID). The admin
+// page's Adopt button calls it; `aveloxis adopt-forge-id` instead asks the
+// forge live.
+func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID int64, adoptedBy, note string) error {
+	var oldID, newID string
+	var created *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT old_forge_id, new_forge_id, forge_created_at
+		  FROM aveloxis_data.repo_forge_id_changes
+		 WHERE repo_id = $1 AND adopted_at IS NULL
+		 ORDER BY last_observed_at DESC, change_id DESC
+		 LIMIT 1`, repoID).Scan(&oldID, &newID, &created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("repo %d: %w", repoID, ErrNoPendingForgeIDChange)
+	}
+	if err != nil {
+		return fmt.Errorf("repo %d pending forge-ID change: %w", repoID, err)
+	}
+	return s.AdoptForgeID(ctx, repoID, oldID, newID, created, adoptedBy, note)
 }
 
 // AdoptForgeID is the operator's approval of a forge-ID change: in one
@@ -142,4 +179,12 @@ func (s *PostgresStore) GetRepoForgeID(ctx context.Context, repoID int64) (strin
 	err := s.pool.QueryRow(ctx,
 		`SELECT COALESCE(platform_repo_id, '') FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&id)
 	return id, err
+}
+
+// UserLabel names a user for an audit field: their login. A missing user
+// is pgx.ErrNoRows (SR-5), never an empty label.
+func (s *PostgresStore) UserLabel(ctx context.Context, userID int) (string, error) {
+	var login string
+	err := s.pool.QueryRow(ctx, `SELECT login_name FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&login)
+	return login, err
 }

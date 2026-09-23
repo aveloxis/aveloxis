@@ -109,3 +109,36 @@ func filterRepo(cs []ForgeIDChange, repoID int64) []ForgeIDChange {
 	}
 	return out
 }
+
+// TestAdoptPendingForgeIDChange (AVELOXIS_TEST_DB) — the admin page's
+// Adopt button (2026-09-23 operator request): it adopts what the org scan
+// OBSERVED — the new ID, and the forge's creation date recorded with it —
+// without a live forge call, because the api process holds no API keys.
+func TestAdoptPendingForgeIDChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-button")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '318353587' WHERE repo_id = $1`, repoID)
+
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "admin@example.org", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
+		t.Fatalf("nothing observed yet: want ErrNoPendingForgeIDChange, got %v", err)
+	}
+	created := time.Date(2026, 9, 16, 23, 25, 49, 0, time.UTC)
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373725939", created); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "admin@example.org", "from the admin page"); err != nil {
+		t.Fatalf("adopt the pending change: %v", err)
+	}
+	stats, err := store.GetRepoStats(ctx, repoID)
+	if err != nil || len(stats.ForgeIDChanges) != 1 {
+		t.Fatalf("stats: %+v %v", stats, err)
+	}
+	c := stats.ForgeIDChanges[0]
+	if c.NewForgeID != "1373725939" || c.ForgeCreatedAt == nil || !c.ForgeCreatedAt.Equal(created) || c.AdoptedBy != "admin@example.org" {
+		t.Errorf("adopted from the observation: %+v", c)
+	}
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "admin@example.org", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
+		t.Errorf("a second click finds nothing pending: %v", err)
+	}
+}

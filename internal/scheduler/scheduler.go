@@ -460,7 +460,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.processLeftoverStaging(ctx)
 		} else if len(locked) > 0 {
 			s.logger.Info("launching background leftover-staging drain", "repos", len(locked))
-			safego.Go(s.logger, "leftover-staging-drain", func() { s.processLeftoverStagingBackground(ctx, locked) })
+			// Tracked (v0.29.64): shutdown waits for the drain to leave its
+			// current repo before releasing the parked set.
+			s.background.Add(1)
+			safego.Go(s.logger, "leftover-staging-drain", func() {
+				defer s.background.Done()
+				s.processLeftoverStagingBackground(ctx, locked)
+			})
 		}
 	}
 
@@ -726,6 +732,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// Release queue locks so repos return to 'queued' immediately
 			// instead of waiting for stale-lock timeout.
 			s.releaseOurLocks(context.Background())
+			// And the drain-parked set (v0.29.64): owned by
+			// '<workerID>:drain', which releaseOurLocks does not match, so
+			// it stayed "collecting" while serve was down (107 rows on
+			// 2026-09-23). The next start re-parks whatever still has
+			// staging, before any worker claims.
+			s.releaseOurDrainLocks(context.Background())
 			// Explicitly close the pgx pool so backends disconnect
 			// cleanly. Without this, FIN-to-postgres only fires when
 			// runServe's defer chain runs — which can miss SIGKILL
@@ -2202,6 +2214,20 @@ func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 	}
 	if tag.RowsAffected() > 0 {
 		s.logger.Info("released queue locks", "count", tag.RowsAffected(), "worker_id", s.workerID)
+	}
+}
+
+// releaseOurDrainLocks returns this process's drain-parked rows to
+// 'queued' at shutdown (v0.29.64). A failure is logged; the next start's
+// RecoverOtherWorkerLocks still reclaims them.
+func (s *Scheduler) releaseOurDrainLocks(ctx context.Context) {
+	n, err := s.store.ReleaseDrainLocks(ctx, s.workerID)
+	if err != nil {
+		s.logger.Warn("failed to release drain-parked locks on shutdown — the next start reclaims them", "error", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Info("released drain-parked queue locks", "count", n, "worker_id", s.workerID)
 	}
 }
 

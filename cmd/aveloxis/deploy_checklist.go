@@ -454,6 +454,17 @@ var deployChecklists = map[string][]deployStep{
 	// a re-created repository. No schema change of its own; the migrate
 	// creates 0.29.62's table if that release was skipped.
 	"0.29.63": v02963DeployChecklist,
+	// v0.29.64: the monitors count drain-parked repos as "Draining
+	// staging" and stop releases them. No schema change; the stop of THIS
+	// deploy still runs the old binary, so rows parked by it stay
+	// "collecting" until the new serve starts and reclaims them.
+	"0.29.64": v02964DeployChecklist,
+}
+
+var v02964DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api (this stop still runs the previous binary: its drain-parked rows show as collecting until the new serve starts)"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; applies 0.29.62's table if that release was skipped"},
+	{"aveloxis start all", "the new serve reclaims the old parked rows at startup; from now on the monitors show Draining staging apart from Collecting, and a stop releases the parked set"},
 }
 
 var v02963DeployChecklist = []deployStep{

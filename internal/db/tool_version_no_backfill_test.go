@@ -4,13 +4,14 @@
 package db
 
 import (
+	"go/scanner"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestMigrateNeverBackfillsToolVersion — 2026-09-23 log review: migrate
@@ -42,7 +43,7 @@ func TestMigrateNeverBackfillsToolVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 		checked++
-		bad, paired := toolVersionAssignments(srctest.StripGoComments(string(src)))
+		bad, paired := toolVersionAssignments(string(src))
 		if paired > 0 {
 			pairedSeen = true
 		}
@@ -63,48 +64,89 @@ func TestMigrateNeverBackfillsToolVersion(t *testing.T) {
 // run restamping its own row (renameRecoveryUpdateSQL does this). A
 // tool_version assignment without that refresh is a backfill.
 //
-// Every assignment is judged by ITS OWN SET list: the text from the nearest
-// SET before it to the next WHERE, RETURNING, `;` or end of a string
-// literal (a backtick or a double quote) after it; parenthesized text (a
-// subquery's own WHERE) does not end a list. Any value counts — a
-// parameter, a literal, a Go concatenation, a Sprintf verb, COALESCE,
-// `tool_version || $1` — except `EXCLUDED.tool_version` (the upsert refresh
-// path) or the column alone. Upserts' `DO UPDATE SET` lists are judged the
-// same way (round 2: exempting them pointed at a test that checks only the
-// opposite direction). The tuple form `SET (tool_version, …) = (…)` and a
-// quoted identifier `"tool_version"` are assignments too.
+// v0.29.63 review round 3: the scanner reads Go TOKENS (go/scanner), not
+// raw source text. Five rounds of widening a regex over the source each
+// left escapes, because which string literal a SET list sits in (raw or
+// interpreted, where it ends, which statement is next) was being guessed
+// from quote counts. Now each SQL expression is rebuilt from the tokens:
+// string literals are unquoted, and literals joined by `+` through simple
+// operands (identifiers, selectors, calls) form ONE expression, with each
+// operand standing in as `?`. Anything else (a comma, a newline, an
+// assignment) ends it, so two statements never share a SET list.
 //
-// Known limit, failing loud rather than silent: a paired SET list split
-// across two concatenated double-quoted literals reads as unpaired. Write
-// such a statement in one literal.
-//
-// History: v0.29.62 round 2 found one paired statement excusing another
-// anywhere in its file; the v0.29.63 review found a SET list running on
-// into the NEXT statement's WHERE when the SQL sat in double-quoted
-// literals (no backtick to stop it), and the Sprintf / backtick-concat /
-// COALESCE / tuple shapes unseen.
+// Within one expression, every assignment is judged by ITS OWN SET list:
+// from the nearest SET before it to the first WHERE, RETURNING, FROM or `;`
+// at its own parenthesis depth, or an unmatched `)` (the end of a CTE's
+// UPDATE). Any value counts — a parameter, a literal, a concatenated
+// operand, a Sprintf verb, COALESCE, `tool_version || $1` — except
+// `EXCLUDED.tool_version` or the column alone. Upserts' `DO UPDATE SET`
+// lists are judged the same way. The tuple form `SET (tool_version, …) =
+// (…)` and a quoted identifier `"tool_version"` are assignments too.
 var (
 	tvAssignRe = regexp.MustCompile(`(?i)"?\btool_version"?\s*=\s*`)
 	tvTupleRe  = regexp.MustCompile(`(?i)\bSET\s*\(([^)]*)\)\s*=`)
 	tvSetRe    = regexp.MustCompile(`(?i)\bSET\b`)
-	// The list ends at a clause keyword or at the end of its string
-	// literal: a backtick inside a raw string (where a double quote is a
-	// quoted identifier), a double quote inside an interpreted one.
-	tvEndRawRe = regexp.MustCompile("(?i)\\bWHERE\\b|\\bRETURNING\\b|;|`")
-	tvEndRe    = regexp.MustCompile("(?i)\\bWHERE\\b|\\bRETURNING\\b|;|`|\"")
-	// Between a SET and its assignment: a string boundary is allowed there
-	// (a SET list may be split across concatenated literals), a clause end
-	// is not.
-	tvClauseEndRe = regexp.MustCompile("(?i)\\bWHERE\\b|\\bRETURNING\\b|;|`")
+	// A clause that ends a SET list (checked at the list's own depth).
+	tvStopRe = regexp.MustCompile(`(?i)\bWHERE\b|\bRETURNING\b|\bFROM\b|;`)
 	// The refresh must be a real one: NOW() or a parameter, never the
 	// column assigned to itself (review round 1 on v0.29.62).
-	tvDCDRe = regexp.MustCompile(`(?i)\bdata_collection_date"?\s*=\s*(?:NOW\(\)|\$\d+)`)
+	tvDCDRe = regexp.MustCompile(`(?i)"?\bdata_collection_date"?\s*=\s*(?:NOW\(\)|NOW_CALL|\$\d+)`)
+	tvNowRe = regexp.MustCompile(`(?i)\bNOW\(\s*\)`)
 	// The value is exactly EXCLUDED.tool_version or the column itself,
 	// ending the item; `tool_version || $1` is a new value.
-	tvExcludedRe = regexp.MustCompile("(?i)^(?:EXCLUDED\\.)?\"?tool_version\"?\\s*(?:,|$|\\bWHERE\\b|\\bRETURNING\\b|;|`|\")")
+	tvExcludedRe = regexp.MustCompile(`(?i)^(?:EXCLUDED\.)?"?tool_version"?\s*(?:,|\)|$|\bWHERE\b|\bRETURNING\b|\bFROM\b|;)`)
 	tvParenRe    = regexp.MustCompile(`\([^()]*\)`)
 	tvColumnRe   = regexp.MustCompile(`(?i)\btool_version\b`)
+	// IS [NOT] DISTINCT FROM is a comparison, not a FROM clause (round 4).
+	tvDistinctRe = regexp.MustCompile(`(?i)\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\b`)
 )
+
+// sqlExpressions rebuilds the string expressions of Go source from its
+// tokens (comments are skipped by the scanner).
+func sqlExpressions(src string) []string {
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	var sc scanner.Scanner
+	sc.Init(file, []byte(src), nil, 0)
+	var (
+		out   []string
+		cur   strings.Builder
+		open  bool
+		depth int // parentheses opened by a call operand inside the expression
+	)
+	flush := func() {
+		if open {
+			out = append(out, cur.String())
+		}
+		cur.Reset()
+		open, depth = false, 0
+	}
+	for {
+		_, tok, lit := sc.Scan()
+		switch {
+		case tok == token.EOF:
+			flush()
+			return out
+		case tok == token.STRING:
+			text, err := strconv.Unquote(lit)
+			if err != nil {
+				text = lit
+			}
+			cur.WriteString(text)
+			open = true
+		case open && tok == token.ADD:
+		case open && (tok == token.IDENT || tok == token.PERIOD || tok == token.INT):
+			cur.WriteString("?")
+		case open && tok == token.LPAREN:
+			depth++
+		case open && tok == token.RPAREN && depth > 0:
+			depth--
+		case open && tok == token.COMMA && depth > 0:
+		default:
+			flush()
+		}
+	}
+}
 
 // blankParens removes parenthesized text, innermost first, so a subquery's
 // own WHERE inside a SET item is not read as the end of the list.
@@ -118,46 +160,67 @@ func blankParens(s string) string {
 	}
 }
 
+// setListEnd returns the index in sql where the SET list continuing at
+// from ends: the first stop clause at depth 0, or an unmatched `)`.
+func setListEnd(sql string, from int) int {
+	stops := map[int]bool{}
+	for _, loc := range tvStopRe.FindAllStringIndex(sql[from:], -1) {
+		stops[from+loc[0]] = true
+	}
+	depth := 0
+	for i := from; i < len(sql); i++ {
+		switch sql[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return i
+			}
+		}
+		if depth == 0 && stops[i] {
+			return i
+		}
+	}
+	return len(sql)
+}
+
 // toolVersionAssignments returns the unpaired assignments (each with its
-// SET list) and how many paired ones it saw.
-func toolVersionAssignments(code string) (bad []string, paired int) {
-	var sites [][2]int // [start of the value or tuple, end of the match]
-	for _, loc := range tvAssignRe.FindAllStringIndex(code, -1) {
-		if tvExcludedRe.MatchString(code[loc[1]:]) {
-			continue // EXCLUDED.tool_version (or itself): not a new value
+// SET list) and how many paired ones it saw, in Go source.
+func toolVersionAssignments(src string) (bad []string, paired int) {
+	for _, sql := range sqlExpressions(src) {
+		sql = tvDistinctRe.ReplaceAllString(sql, "IS_DISTINCT_COMPARISON")
+		var sites [][2]int // [start of the assignment or tuple, end of the match]
+		for _, loc := range tvAssignRe.FindAllStringIndex(sql, -1) {
+			if tvExcludedRe.MatchString(sql[loc[1]:]) {
+				continue // EXCLUDED.tool_version (or itself): not a new value
+			}
+			sites = append(sites, [2]int{loc[0], loc[1]})
 		}
-		sites = append(sites, [2]int{loc[0], loc[1]})
-	}
-	for _, m := range tvTupleRe.FindAllStringSubmatchIndex(code, -1) {
-		if tvColumnRe.MatchString(code[m[2]:m[3]]) {
-			sites = append(sites, [2]int{m[0] + len("SET"), m[1]})
+		for _, m := range tvTupleRe.FindAllStringSubmatchIndex(sql, -1) {
+			if tvColumnRe.MatchString(sql[m[2]:m[3]]) {
+				sites = append(sites, [2]int{m[0] + len("SET"), m[1]})
+			}
 		}
-	}
-	for _, site := range sites {
-		sets := tvSetRe.FindAllStringIndex(code[:site[0]], -1)
-		if len(sets) == 0 {
-			continue // not in an UPDATE's SET list
+		for _, site := range sites {
+			sets := tvSetRe.FindAllStringIndex(sql[:site[0]], -1)
+			if len(sets) == 0 {
+				continue // not in an UPDATE's SET list
+			}
+			from := sets[len(sets)-1][0]
+			if tvStopRe.MatchString(blankParens(sql[from:site[0]])) {
+				continue // past its SET list: a WHERE comparison, not an assignment
+			}
+			list := sql[from:setListEnd(sql, site[1])]
+			// The refresh must be one of the list's own items, not text
+			// inside a subquery (round 4).
+			// NOW() is kept as a token so blanking parentheses keeps it.
+			if tvDCDRe.MatchString(blankParens(tvNowRe.ReplaceAllString(list, "NOW_CALL"))) {
+				paired++
+				continue
+			}
+			bad = append(bad, strings.Join(strings.Fields(list), " "))
 		}
-		from := sets[len(sets)-1][0]
-		if tvClauseEndRe.MatchString(blankParens(code[from:site[0]])) {
-			continue // past its SET list: a WHERE comparison, not an assignment
-		}
-		to := len(code)
-		endRe := tvEndRe
-		if strings.Count(code[:site[0]], "`")%2 == 1 {
-			endRe = tvEndRawRe // inside a raw string literal
-		}
-		if e := endRe.FindStringIndex(code[site[1]:]); e != nil {
-			to = site[1] + e[0]
-			// A value that is itself a string boundary (`= '"+v+"'`, `= ` + v`)
-			// ends the literal at once: the list is what came before it.
-		}
-		list := code[from:to]
-		if tvDCDRe.MatchString(list) {
-			paired++
-			continue
-		}
-		bad = append(bad, strings.Join(strings.Fields(list), " "))
 	}
 	return bad, paired
 }
@@ -197,6 +260,21 @@ func TestToolVersionAssignmentsJudgesEachSetList(t *testing.T) {
 		{"quoted identifier", "`UPDATE t SET \"tool_version\" = $1`", 1, 0},
 		{"a subquery's WHERE before the assignment", "`UPDATE t SET x = (SELECT y FROM z WHERE z.id = t.id), tool_version = $1`", 1, 0},
 		{"self-concatenation is a new value", "`UPDATE t SET tool_version = tool_version || $1`", 1, 0},
+		// Round 3's probes:
+		{"quoted identifier in an interpreted string", "q := \"UPDATE t SET \\\"tool_version\\\" = $1\"", 1, 0},
+		{"a SET list split across raw literals", "q := `UPDATE t SET a = $2, ` + `tool_version = $1`", 1, 0},
+		{"SET and the assignment in different raw literals", "q := `UPDATE t SET ` + `tool_version = $1`", 1, 0},
+		{"a backtick inside an interpreted string does not flip anything",
+			"k := \"press ` key\"\na := \"UPDATE \" + tbl + \" SET tool_version = $1\"\nb := \"UPDATE t2 SET data_collection_date = NOW() WHERE id = $1\"", 1, 0},
+		{"a CTE's UPDATE ends at its closing parenthesis", "`WITH a AS (UPDATE t SET tool_version = $1) UPDATE t2 SET data_collection_date = NOW()`", 1, 0},
+		{"a paired list split across two double-quoted literals now pairs", "q := \"UPDATE t SET tool_version = $1, \" +\n\t\"data_collection_date = NOW() WHERE id = $2\"", 0, 1},
+		{"two statements in a slice literal stay apart", "qs := []string{\"UPDATE a SET tool_version = $1\", \"UPDATE b SET data_collection_date = NOW()\"}", 1, 0},
+		{"a comment is not SQL", "// UPDATE t SET tool_version = $1\nx := 1", 0, 0},
+		// Round 4's probes:
+		{"IS DISTINCT FROM before the assignment", "`UPDATE t SET flag = a IS DISTINCT FROM b, tool_version = $1 WHERE id = $2`", 1, 0},
+		{"CASE with IS NOT DISTINCT FROM before the assignment", "`UPDATE t SET x = CASE WHEN a IS NOT DISTINCT FROM b THEN 1 END, tool_version = $1`", 1, 0},
+		{"IS DISTINCT FROM after a paired assignment", "`UPDATE t SET tool_version = $1, data_collection_date = NOW(), flag = a IS DISTINCT FROM b WHERE id = $2`", 0, 1},
+		{"a subquery's data_collection_date is not the refresh", "`UPDATE t SET tool_version = $1, x = (SELECT 1 FROM z WHERE data_collection_date = $2)`", 1, 0},
 		{"a quoted data_collection_date still pairs", "`UPDATE t SET tool_version = $2, \"data_collection_date\" = NOW() WHERE id = $1`", 0, 1},
 	}
 	for _, c := range cases {

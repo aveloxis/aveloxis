@@ -35,7 +35,8 @@ The top of the dashboard shows aggregate queue statistics:
 |---|---|
 | **Total** | Total number of repos in the queue |
 | **Queued** | Repos waiting to be collected |
-| **Collecting** | Repos currently being collected by a worker |
+| **Collecting** | Repos currently being collected by a worker (never more than the worker count) |
+| **Draining staging** | Repos parked while serve processes leftover staging data from the previous run (v0.29.64). They hold no worker slot, so they are counted here rather than as Collecting, and serve releases them when it stops |
 
 ---
 
@@ -130,6 +131,7 @@ Response:
 {
   "queued": 150,
   "collecting": 4,
+  "draining": 3,
   "total": 200
 }
 ```

@@ -33,7 +33,38 @@ import (
 // must all match the same locked_by string, or a heartbeat/release
 // silently stops finding the row it is supposed to touch.
 func drainLockedBy(workerID string) string {
-	return fmt.Sprintf("%s:drain", workerID)
+	return workerID + drainLockSuffix
+}
+
+// drainLockSuffix marks a drain-parked row's owner. QueueStats matches
+// it to count parked rows apart from real jobs (v0.29.64); drainLockedBy
+// is the only place that appends it.
+const drainLockSuffix = ":drain"
+
+// ReleaseDrainLocks returns every row this worker drain-parked to
+// 'queued' — the shutdown twin of ReleaseDrainLock (v0.29.64, 2026-09-23:
+// with serve stopped the monitor showed 107 "collecting" rows, all
+// drain-parked, because the shutdown release matched only the worker ID
+// itself). due_at = NOW() so the next start's drain re-identifies and
+// re-parks them before any worker can claim one (the drain set is
+// computed and parked ahead of the first fillWorkerSlots). Like the
+// per-repo release it never touches last_collected; the locked_by +
+// status guards leave other processes' rows and this worker's own job
+// locks alone.
+func (s *PostgresStore) ReleaseDrainLocks(ctx context.Context, workerID string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE aveloxis_ops.collection_queue
+		SET status = 'queued',
+		    locked_by = NULL,
+		    locked_at = NULL,
+		    due_at = NOW(),
+		    updated_at = NOW()
+		WHERE locked_by = $1 AND status = 'collecting'`,
+		drainLockedBy(workerID))
+	if err != nil {
+		return 0, fmt.Errorf("release drain locks for %s: %w", workerID, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // drainHeartbeatInterval matches the scheduler's 30-second job

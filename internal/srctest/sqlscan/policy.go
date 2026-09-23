@@ -37,7 +37,7 @@ const (
 	// COALESCE(NULLIF(stored, ''), incoming) — text columns;
 	// COALESCE(stored, incoming) — nullable columns; or a bare
 	// incoming assignment guarded by WhereGuardsEmpty (the
-	// SetPlatformRepoIDIfEmpty form).
+	// SetPlatformRepoIDIfEmptySeen form).
 	FillEmptyOnly Policy = iota + 1
 	// PreferNonemptyIncoming: a non-empty incoming value overwrites;
 	// empty incoming preserves stored. COALESCE(NULLIF(incoming, ''), stored).

@@ -906,6 +906,7 @@ if (urlRepos.length > 0) {
 <div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem"><div style="font-size:2rem;font-weight:bold">{{.Stats.total}}</div><div style="color:#666;font-size:0.85rem">Total</div></div>
 <div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem"><div style="font-size:2rem;font-weight:bold">{{.Stats.queued}}</div><div style="color:#666;font-size:0.85rem">Queued</div></div>
 <div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem"><div style="font-size:2rem;font-weight:bold">{{.Stats.collecting}}</div><div style="color:#666;font-size:0.85rem">Collecting</div></div>
+<div class="card" style="flex:1;min-width:120px;text-align:center;padding:1rem" title="Parked while serve processes leftover staging data; they hold no worker slot"><div style="font-size:2rem;font-weight:bold">{{.Stats.draining}}</div><div style="color:#666;font-size:0.85rem">Draining staging</div></div>
 </div>
 
 <div class="card" style="overflow-x:auto">

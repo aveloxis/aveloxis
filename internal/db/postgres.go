@@ -562,7 +562,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- the forge numeric ID never changes for a given repo, so a
 				-- DIFFERENT incoming ID means an upstream delete-and-recreate
 				-- under the same URL, and overwriting the stored ID would
-				-- destroy the mismatch signal SetPlatformRepoIDIfEmpty and
+				-- destroy the mismatch signal SetPlatformRepoIDIfEmptySeen and
 				-- Phase 0 (UpdateRepoMetadata) now surface. An id-less
 				-- re-upsert still can't wipe a captured value, and the first
 				-- observed ID still fills an empty column.

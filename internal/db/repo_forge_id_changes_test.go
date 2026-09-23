@@ -25,7 +25,7 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 
 	// 1. The scan observes a different forge ID: recorded, repos untouched.
 	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil {
-		t.Fatalf("SetPlatformRepoIDIfEmpty: %v", err)
+		t.Fatalf("SetPlatformRepoIDIfEmptySeen: %v", err)
 	}
 	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil { // the next 4-hourly scan
 		t.Fatalf("second observation: %v", err)

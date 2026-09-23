@@ -84,5 +84,6 @@ func DedupRenamedRepoPair(ctx context.Context, store *PostgresStore, winnerID, l
 		LoserID:   loserID,
 		LoserGit:  loserGit,
 		GroupSize: 2,
+		IsRename:  true,
 	})
 }

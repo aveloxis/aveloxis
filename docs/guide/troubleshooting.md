@@ -1356,6 +1356,8 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 
 **Solution (v0.18.29):** The drain now runs in a background goroutine. Repos with leftover staging are atomically lock-parked (`status='collecting'`, `locked_by='<workerID>:drain'`) before the goroutine launches, so `fillWorkerSlots` skips them naturally and immediately starts claiming the rest of the fleet's queued repos. Each drained repo rejoins the queue as draining completes.
 
+Parked repos hold no worker slot. Since v0.29.64 the monitors count them as **Draining staging**, not Collecting (before, the Collecting count could exceed the worker count, for example 200+ with 120 workers), and `aveloxis stop` releases them to `queued` (before, they stayed `collecting` while serve was down until the next start reclaimed them). The next start re-parks whatever still has staging before any worker claims a job.
+
 **Confirm the fix is active:**
 
 ```bash

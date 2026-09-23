@@ -103,8 +103,8 @@ repository row itself). `GET` lists the recorded changes: `repo_id`,
 repository's creation date, when the scan listed it), `first_observed_at`,
 `last_observed_at`, and for adopted ones `adopted_at`, `adopted_by`, `note`.
 A pending change whose old ID is no longer the one the repository stores
-(another change for it was adopted) is `superseded`: it stays in the full
-list as history and can no longer be adopted. `pending=1` lists only the
+is `superseded`: it stays in the full list as history and can no longer be
+adopted. `pending=1` lists only the
 adoptable changes; the full list orders adoptable, superseded, then adopted.
 
 `POST …/adopt` treats the new repository as a continuation: it moves the
@@ -1198,7 +1198,9 @@ Admin-only:
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
   request was already decided (idempotent double-click).
-- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.
+- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`:
+  `queued`, `collecting` (real jobs), `draining` (repos parked for the
+  startup staging drain, v0.29.64) and `total`.
 - `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
   queue, 100 rows per page, optional search. Each job carries the
   repo label (`owner/name`), status, priority, due_at,

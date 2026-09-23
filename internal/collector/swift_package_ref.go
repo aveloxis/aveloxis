@@ -3,7 +3,11 @@
 
 package collector
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
+)
 
 // swiftPackageRef is ONE parse of a SwiftPM package repository URL — the
 // normalizer every Swift site shares (SR-17; v0.29.59 review round 1: the
@@ -12,7 +16,8 @@ import "strings"
 // subgroups, userinfo and ports, which broke the "direct and transitive
 // are one purl" invariant this release exists to hold).
 //
-//	Host      lowercased, userinfo and port stripped ("github.com")
+//	Host      lowercased, userinfo and port stripped, a leading "www." folded
+//	          for every host (platform.CanonicalWebHost) ("github.com")
 //	Owner     the first path segment ("Alamofire")
 //	Repo      the LAST path segment, ".git" trimmed, case as spelled ("Alamofire")
 //	Namespace host plus every segment before the repo ("github.com/Alamofire";
@@ -48,9 +53,12 @@ func parseSwiftPackageURL(raw string) (ref swiftPackageRef, ok bool) {
 		host = host[:colon] // port
 	}
 	host = strings.ToLower(host)
-	// www.github.com is github.com (PR #212 review): folded here so the
-	// GitHub check and the purl namespace agree with IsGitHubHost.
-	host = strings.TrimPrefix(host, "www.")
+	// www.github.com is github.com (PR #212 review): folded through the
+	// helper IsGitHubHost uses (SR-17; review round 1 on v0.29.66), so the
+	// purl namespace and resolveSwiftPMLibyear's github.com comparison see
+	// the folded host. That comparison is a literal, not IsGitHubHost: an
+	// Enterprise host is worklist 44.
+	host = platform.CanonicalWebHost(host)
 	if host == "" || !strings.Contains(host, ".") {
 		return swiftPackageRef{}, false
 	}

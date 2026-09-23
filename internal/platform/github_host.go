@@ -42,7 +42,7 @@ func GitHubWebHost(apiBase string) string {
 
 // IsPublicGitHubBase reports whether apiBase names public GitHub's REST host
 // over https, in any spelling whose host canonicalises to it (case, a
-// default port, a www. prefix; canonicalWebHost) — the ONE answer to "is
+// default port, a www. prefix; CanonicalWebHost) — the ONE answer to "is
 // this deployment on public GitHub" (SR-17), for the web-host derivation
 // above and for scorecard's token loan (round 6: a byte-exact compare
 // against PublicGitHubAPIBase read `https://api.github.com:443` and a
@@ -57,7 +57,7 @@ func IsPublicGitHubBase(apiBase string) bool {
 	if err != nil || u.Scheme != "https" {
 		return false
 	}
-	return canonicalWebHost(strings.ToLower(u.Host)) == "api.github.com"
+	return CanonicalWebHost(strings.ToLower(u.Host)) == "api.github.com"
 }
 
 // apiBaseHost is the host of a GitHub API base as configured, verbatim
@@ -80,11 +80,11 @@ func apiBaseHost(apiBase string) string {
 // (`https://:443/…` parses), has no web host and matches nothing, so a
 // schemeless org argument (empty host) cannot pair with it.
 func IsGitHubHost(host, apiBase string) bool {
-	w := canonicalWebHost(GitHubWebHost(apiBase))
-	return w != "" && canonicalWebHost(host) == w
+	w := CanonicalWebHost(GitHubWebHost(apiBase))
+	return w != "" && CanonicalWebHost(host) == w
 }
 
-// canonicalWebHost is the ONE spelling of "these two host strings name the
+// CanonicalWebHost is the ONE spelling of "these two host strings name the
 // same web host", applied to BOTH sides of IsGitHubHost (round 4: applied
 // to the org side only, a base configured with an explicit default port
 // matched nothing, not even itself). www.github.com serves the same orgs
@@ -92,8 +92,9 @@ func IsGitHubHost(host, apiBase string) bool {
 // repos (round 2); a scheme's default port names the same host (round 3:
 // github.com:443 registered and enumerated correctly before the gate
 // existed). GitHubWebHost's verbatim output stays what the logs and the
-// page show.
-func canonicalWebHost(host string) string {
+// page show. Exported for the SwiftPM URL parser, which folds www. the
+// same way (review round 1 on v0.29.66).
+func CanonicalWebHost(host string) string {
 	host = strings.TrimPrefix(host, "www.")
 	return strings.TrimSuffix(strings.TrimSuffix(host, ":443"), ":80")
 }

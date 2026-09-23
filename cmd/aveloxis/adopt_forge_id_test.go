@@ -128,30 +128,40 @@ func TestAdoptClientForGuardsTheGitLabHost(t *testing.T) {
 // dropping the real failure, and the id in flight when the interrupt
 // landed was still logged at ERROR.
 func TestAdoptEachKeepsFailuresAcrossAnInterrupt(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	boom := errors.New("forge said no")
-	var tried []int64
-	err := adoptEach(ctx, []int64{1, 2, 3}, logger, func(ctx context.Context, id int64) error {
-		tried = append(tried, id)
-		switch id {
-		case 1:
-			return boom
-		case 2:
-			cancel() // the interrupt lands while 2 is in flight
-			return ctx.Err()
-		}
-		return nil
-	})
-	if !errors.Is(err, boom) || !errors.Is(err, context.Canceled) {
-		t.Errorf("the exit error must carry the earlier failure and the interrupt: %v", err)
-	}
-	if fmt.Sprint(tried) != "[1 2]" {
-		t.Errorf("tried %v; nothing after the interrupt", tried)
-	}
-	if strings.Count(logs.String(), "level=ERROR") != 1 {
-		t.Errorf("only the real failure is logged at ERROR:\n%s", logs.String())
+	// Two ways the interrupt meets the loop (review round 1 on v0.29.66:
+	// only the first was driven, so the original top-of-loop bug could
+	// come back unseen): the in-flight adopt returns the cancellation, or
+	// it finishes nil and the NEXT iteration sees the interrupt.
+	for _, inFlightErr := range []bool{true, false} {
+		t.Run(fmt.Sprintf("in-flight returns error=%v", inFlightErr), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			boom := errors.New("forge said no")
+			var tried []int64
+			err := adoptEach(ctx, []int64{1, 2, 3}, logger, func(ctx context.Context, id int64) error {
+				tried = append(tried, id)
+				switch id {
+				case 1:
+					return boom
+				case 2:
+					cancel() // the interrupt lands while 2 is in flight
+					if inFlightErr {
+						return ctx.Err()
+					}
+				}
+				return nil
+			})
+			if !errors.Is(err, boom) || !errors.Is(err, context.Canceled) {
+				t.Errorf("the exit error must carry the earlier failure and the interrupt: %v", err)
+			}
+			if fmt.Sprint(tried) != "[1 2]" {
+				t.Errorf("tried %v; nothing after the interrupt", tried)
+			}
+			if strings.Count(logs.String(), "level=ERROR") != 1 {
+				t.Errorf("only the real failure is logged at ERROR:\n%s", logs.String())
+			}
+		})
 	}
 }

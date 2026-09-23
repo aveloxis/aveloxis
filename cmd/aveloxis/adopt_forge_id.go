@@ -205,7 +205,9 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 // loop goes on; an interrupt ends it at once (no ERROR per remaining id,
 // and none for the id in flight), and the exit error carries every failure
 // seen so far as well as the interrupt (PR #212 review: returning only
-// ctx.Err() dropped them).
+// ctx.Err() dropped them). The in-flight id's own error is not kept: once
+// the interrupt has landed, the adoption fails because of it, and a rerun
+// retries that id (review round 1 on v0.29.66, declined).
 func adoptEach(ctx context.Context, repoIDs []int64, logger *slog.Logger, adopt func(context.Context, int64) error) error {
 	var failed []error
 	for _, id := range repoIDs {

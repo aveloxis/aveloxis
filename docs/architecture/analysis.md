@@ -134,15 +134,16 @@ How requests are made (since v0.29.56):
   — in every entry point (`requirements*.txt`, `pyproject.toml` including its
   Poetry tables, `setup.py`, `setup.cfg`, `Pipfile` and the dev/build
   variants) — so those dependencies get no libyear row and are never looked
-  up in a registry. The inventory parser drops them only where
-  `requirements.txt` holds them as one of pip's option lines (`-e`, `-r`), so
-  an editable install has no inventory row. In the line-shaped entry points
+  up in a registry. The inventory parser skips pip's option lines in
+  `requirements.txt` (`-e`, `-r`), so an editable install has no inventory
+  row. In the line-shaped entry points
   it reads (`requirements.txt` exactly, PEP 621 `dependencies`, `setup.py`
   and `setup.cfg`'s `install_requires`) one name rule applies (v0.29.66): a
   PEP 508 direct reference keeps the name before its `@`
   (`requests @ git+https://…` is stored as `requests`), and a line that names
   no package (a bare URL such as `https://example.com/pkg-1.0.tar.gz`, or a
-  local path such as `./local-pkg`) gets no inventory row. The requirements VARIANTS are read only by the
+  local path such as `./local-pkg`, an scp-style `git@github.com:o/r.git`, or
+  prose such as `Note (optional)`) gets no inventory row. The requirements VARIANTS are read only by the
   libyear and vulnerability path, and only with `collection.dev_build_deps`
   on, so they produce no inventory row at all. That arm takes `.txt` files
   alone: a requirements variant by name (`requirements-dev.txt`,
@@ -153,9 +154,7 @@ How requests are made (since v0.29.56):
   `requirements.txt` byte for byte, so `requirements/requirements.txt` is the
   ordinary manifest, gate or no gate, and a differently cased
   `Requirements.txt` matches no arm at all — nothing collects it. The Poetry and Pipfile tables key on the
-  dependency's name, so those rows keep the clean name. A named PEP 508 direct reference does carry a
-  package name (`requests`), so that stored name is a wart rather than a
-  design.
+  dependency's name, so those rows keep the clean name too.
   The other ecosystems (RubyGems, Packagist, Maven, …) do not yet make this
   distinction: a `path:`- or `git:`-sourced gem is still looked up by name.
 

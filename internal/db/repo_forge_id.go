@@ -140,9 +140,9 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID
 			return fmt.Errorf("verify stored forge ID for repo %d: %w", repoID, perr)
 		}
 		if stored != "" && stored != forgeID {
-			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
+			s.logger.Error(forgeIDMismatchMsg,
 				"repo_id", repoID, "stored_forge_id", stored, "observed_forge_id", forgeID,
-				"remediation", "recorded as a pending forge-ID change; `aveloxis adopt-forge-id --repo-id N` treats the new repository as a continuation (reconcile-repos consolidates the INVERSE case only)")
+				"remediation", forgeIDMismatchRemediation)
 			// v0.29.62: the observation is RECORDED, not only logged, so the
 			// operator has a list to act on. repos is still untouched.
 			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt); rerr != nil {
@@ -166,3 +166,12 @@ func ensureForgeIDIndex(ctx context.Context, pg *PostgresStore, logger *slog.Log
 		 ON aveloxis_data.repos (platform_id, platform_repo_id)
 		 WHERE platform_repo_id <> ''`)
 }
+
+// forgeIDMismatchMsg and forgeIDMismatchRemediation are the ONE wording of
+// the forge-ID mismatch ERROR, shared by the org scan's detector
+// (SetPlatformRepoIDIfEmptySeen) and Phase 0's (review round 1 on v0.29.66:
+// the two had drifted apart, and only one named the Adopt page).
+const (
+	forgeIDMismatchMsg         = "forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row"
+	forgeIDMismatchRemediation = "recorded as a pending forge-ID change: adopt it from the admin approvals page or with `aveloxis adopt-forge-id --repo-id N` if the new repository is a continuation (reconcile-repos consolidates the INVERSE case only); otherwise inspect the row's data eras"
+)

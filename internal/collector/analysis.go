@@ -422,6 +422,21 @@ func parsePackageJSON(data []byte) ([]string, error) {
 	return deps, nil
 }
 
+// cutPyInlineComment returns s up to an inline comment: a '#' that opens
+// the text or follows whitespace (space or tab), pip's own rule. It is the
+// ONE comment cut for every Python requirement reader, inventory and libyear
+// alike (SR-17; review round 4 on v0.29.66: the readers cut " #" in three
+// places, one of them missing, and none cut a tab). A '#' inside a URL
+// (a "#sha256=" fragment) has no whitespace before it and is kept.
+func cutPyInlineComment(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
 // cleanPyRequirementLine reduces one requirements-file line to the
 // requirement itself, or "" when the line holds none: blank, comment and
 // option lines ("-r", "-e", "--hash=…") are skipped; a trailing "\"
@@ -443,9 +458,7 @@ func cleanPyRequirementLine(raw string) string {
 	// Inline comments, PEP 508 environment markers, and same-line pip
 	// args are not version content ("attrs==3.1.0  # Apache-2.0",
 	// "croniter==0.4.6 ; sys_platform == 'win32'").
-	if idx := strings.Index(line, " #"); idx > 0 {
-		line = strings.TrimSpace(line[:idx])
-	}
+	line = cutPyInlineComment(line)
 	if idx := strings.Index(line, ";"); idx > 0 {
 		line = strings.TrimSpace(line[:idx])
 	}
@@ -652,7 +665,12 @@ func extractPEP621DepName(line string) string {
 	// the same file (v0.29.56).
 	line = strings.Trim(line, "\"',")
 	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
+	// The inline comment goes before the marker strip, because a comment
+	// can contain a ';' (review round 4 on v0.29.66: PEP 621 kept
+	// "requests # HTTP" whole, so it failed the name gate while the
+	// libyear side cut the comment and looked requests up).
+	line = cutPyInlineComment(line)
+	if line == "" {
 		return ""
 	}
 	// Strip environment markers: everything after ';'
@@ -761,6 +779,9 @@ func extractPyDepName(req string) string {
 	if req == "" {
 		return ""
 	}
+	// The inline comment goes before the marker strip, because a comment
+	// can contain a ';' (review rounds 3-4 on v0.29.66).
+	req = cutPyInlineComment(req)
 	// Strip environment markers.
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
@@ -780,7 +801,7 @@ func extractPyDepName(req string) string {
 //     form) are not part of the name.
 //   - The result must be a PEP 508 name: a URL, path or prose line is not.
 func pyInventoryName(req string) string {
-	if at := strings.IndexByte(req, '@'); at > 0 && !strings.Contains(req[:at], "://") {
+	if at := strings.IndexByte(req, '@'); at > 0 && !strings.Contains(req[:at], "://") && isPyDirectReferenceURI(req[at+1:]) {
 		req = req[:at]
 	}
 	name, _ := splitPyNameSpec(stripPyExtras(req))
@@ -788,6 +809,16 @@ func pyInventoryName(req string) string {
 		return ""
 	}
 	return name
+}
+
+// isPyDirectReferenceURI reports whether the text after a requirement's
+// '@' is PEP 508's url_req URI: a scheme URL (git+https://, file:///) or a
+// file: reference. Anything else is not a direct reference — scp-style
+// "git@github.com:o/r.git" names no package, and cutting at its '@' stored
+// "git" (review round 1 on v0.29.66).
+func isPyDirectReferenceURI(rest string) bool {
+	rest = strings.ToLower(strings.TrimSpace(rest))
+	return strings.Contains(rest, "://") || strings.HasPrefix(rest, "file:")
 }
 
 // parseSetupPyVersions extracts deps with versions from setup.py install_requires.
@@ -917,10 +948,14 @@ func isPyRequirementName(name string) bool {
 // spec is the text inside the parentheses.
 func splitPyNameSpec(req string) (name, spec string) {
 	for i := 0; i < len(req); i++ {
+		// PEP 508's parenthesized form, "name (>=1.0)": the '(' ends the
+		// name only when a version operator follows it — "Note (optional)"
+		// is prose, not a requirement (review round 1 on v0.29.66).
 		if req[i] == '(' {
 			inner := strings.TrimSpace(req[i+1:])
-			inner = strings.TrimSpace(strings.TrimSuffix(inner, ")"))
-			return strings.TrimSpace(req[:i]), inner
+			if hasPyVersionOperatorPrefix(inner) {
+				return strings.TrimSpace(req[:i]), strings.TrimSpace(strings.TrimSuffix(inner, ")"))
+			}
 		}
 		for _, op := range pyVersionOperators {
 			if strings.HasPrefix(req[i:], op) {
@@ -929,6 +964,17 @@ func splitPyNameSpec(req string) (name, spec string) {
 		}
 	}
 	return strings.TrimSpace(req), ""
+}
+
+// hasPyVersionOperatorPrefix reports whether s opens with a PEP 440
+// comparison operator.
+func hasPyVersionOperatorPrefix(s string) bool {
+	for _, op := range pyVersionOperators {
+		if strings.HasPrefix(s, op) {
+			return true
+		}
+	}
+	return false
 }
 
 // pyPermittedVersionRank ranks the PEP 440 operators that may supply the
@@ -1001,10 +1047,7 @@ func parsePyRequirement(req string) *libyearDep {
 	// must strip the same way. (The trailing `",` also left versions like
 	// `2.31.0"` behind on the PEP 621 path.)
 	req = strings.Trim(strings.TrimSpace(req), "\"',")
-	if idx := strings.Index(req, " #"); idx > 0 {
-		req = strings.TrimSpace(req[:idx])
-	}
-	req = strings.Trim(strings.TrimSpace(req), "\"',")
+	req = strings.Trim(cutPyInlineComment(req), "\"',")
 	// Strip environment markers.
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
@@ -1023,7 +1066,12 @@ func parsePyRequirement(req string) *libyearDep {
 
 	name, spec := splitPyNameSpec(cleanReq)
 	version := pyFloorVersion(spec)
-	if name == "" {
+	// The same PEP 508 name gate as the inventory (pyInventoryName) and
+	// requirements.txt's libyear reader: prose such as "Note (optional)"
+	// names no package, and without the gate it reached PyPI and OSV from
+	// setup.py, setup.cfg, PEP 621 and the dev/build variants (review
+	// round 2 on v0.29.66).
+	if !isPyRequirementName(name) {
 		return nil
 	}
 	return &libyearDep{Name: name, Version: version, Requirement: req, Type: "runtime", Manager: "pypi"}

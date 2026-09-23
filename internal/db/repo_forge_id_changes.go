@@ -29,8 +29,8 @@ type ForgeIDChange struct {
 	Note            string     `json:"note,omitempty"`
 	// Listing fields (ListForgeIDChanges): the repository as stored, and
 	// whether a pending change is SUPERSEDED — its old ID is no longer the
-	// stored one (another change was adopted), so it can no longer be
-	// adopted. Derived from the current state on every read, never stored,
+	// stored one (usually because another change was adopted), so it can no
+	// longer be adopted. Derived from the current state on every read, never stored,
 	// so it cannot drift; the row stays as the scan's history.
 	RepoGit    string `json:"repo_git,omitempty"`
 	Superseded bool   `json:"superseded,omitempty"`

@@ -85,7 +85,7 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 	return id, err
 }
 
-// SetPlatformRepoIDIfEmpty backfills the forge numeric ID onto an
+// SetPlatformRepoIDIfEmptySeen backfills the forge numeric ID onto an
 // already-tracked row — fill-empty-only, never an overwrite (the forge
 // ID never changes for a given repo; a differing stored value means a
 // pre-existing consolidation problem that a scan pass must not paper
@@ -93,15 +93,13 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 // cohort — exactly the population at risk of rename re-discovery —
 // gains rename protection on the NEXT scan pass instead of waiting for
 // each repo's Phase 0 collection cycle.
-func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int64, forgeID string) error {
-	return s.SetPlatformRepoIDIfEmptySeen(ctx, repoID, forgeID, time.Time{})
-}
-
-// SetPlatformRepoIDIfEmptySeen is SetPlatformRepoIDIfEmpty with the forge's
-// creation date of the repository the scan just listed (zero = unknown).
-// On a forge-ID mismatch the date is recorded with the pending change, so
-// the admin page's Adopt button can carry it without a forge call (the
-// api process holds no API keys; v0.29.62).
+//
+// forgeCreatedAt is the forge's creation date of the repository the scan
+// just listed (zero = unknown). On a forge-ID mismatch it is recorded with
+// the pending change, so the admin page's Adopt button can carry it
+// without a forge call (the api process holds no API keys). The plain
+// SetPlatformRepoIDIfEmpty was removed in v0.29.63 once every scan passed
+// the date (dead code, not deprecated).
 func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time) error {
 	if forgeID == "" {
 		return nil

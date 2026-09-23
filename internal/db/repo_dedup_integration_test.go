@@ -523,6 +523,12 @@ func TestDedupOnePairKeepsAnAdoptedForgeIDChange(t *testing.T) {
 	}{
 		{"winner already stores the new ID", "22", true, "admin@example.org"},
 		{"winner still stores the old ID", "11", false, ""},
+		// Round 2 (finding 1): the winner is MIN(repo_id), the oldest row,
+		// often without a captured forge ID. The next scan fills it with
+		// the forge's (new) ID, so the adoption is true of it — dropping it
+		// lost the operator's record for good (fill-empty then made the
+		// change unadoptable).
+		{"winner stores no forge ID", "", true, "admin@example.org"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, store := caseConnect(t)
@@ -533,7 +539,7 @@ func TestDedupOnePairKeepsAnAdoptedForgeIDChange(t *testing.T) {
 			winnerURL := "https://github.com/" + slug + "_Org/Repo"
 			loserURL := strings.ToLower(winnerURL)
 			winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, loserURL)
-			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = $2 WHERE repo_id = $1`, winnerID, tc.winnerStored)
+			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = NULLIF($2, '') WHERE repo_id = $1`, winnerID, tc.winnerStored)
 			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '22' WHERE repo_id = $1`, loserID)
 			mustExecRetry(ctx, t, store, `
 				INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at)
@@ -559,7 +565,7 @@ func TestDedupOnePairKeepsAnAdoptedForgeIDChange(t *testing.T) {
 			if err := store.pool.QueryRow(ctx, `
 				SELECT COUNT(*) OVER (), adopted_by, adopted_at IS NOT NULL, forge_created_at IS NOT NULL,
 				       first_observed_at < NOW() - interval '2 days 12 hours', last_observed_at > NOW() - interval '12 hours',
-				       (SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1)
+				       (SELECT COALESCE(platform_repo_id, '') FROM aveloxis_data.repos WHERE repo_id = $1)
 				  FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, winnerID,
 			).Scan(&n, &adoptedBy, &adopted, &created, &firstOldest, &lastNewer, &stored); err != nil {
 				t.Fatalf("the winner must hold the change: %v", err)

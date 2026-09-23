@@ -8,6 +8,7 @@ package web
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -43,6 +44,11 @@ func TestScanOrgReposCapturesForgeRepoID(t *testing.T) {
 	}
 	if !strings.Contains(code, "`json:\"created_at\"`") {
 		t.Error("scanOrgRepos must decode the listing's created_at")
+	}
+	for _, call := range regexp.MustCompile(`SetPlatformRepoIDIfEmptySeen\(.*`).FindAllString(code, -1) {
+		if !strings.Contains(call, "CreatedAt") {
+			t.Errorf("%s: %q — the listing's CreatedAt must be the date argument", "scanOrgRepos", call)
+		}
 	}
 	if !strings.Contains(code, "SetPlatformRepoIDIfEmptySeen(") {
 		t.Error("scanOrgRepos must backfill the forge ID onto already-tracked rows (found branch)")

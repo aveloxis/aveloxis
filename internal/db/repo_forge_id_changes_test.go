@@ -24,10 +24,10 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '861974784' WHERE repo_id = $1`, repoID)
 
 	// 1. The scan observes a different forge ID: recorded, repos untouched.
-	if err := store.SetPlatformRepoIDIfEmpty(ctx, repoID, "1373652440"); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil {
 		t.Fatalf("SetPlatformRepoIDIfEmpty: %v", err)
 	}
-	if err := store.SetPlatformRepoIDIfEmpty(ctx, repoID, "1373652440"); err != nil { // the next 4-hourly scan
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil { // the next 4-hourly scan
 		t.Fatalf("second observation: %v", err)
 	}
 	pending, err := store.ListForgeIDChanges(ctx, true)
@@ -80,7 +80,7 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	}
 
 	// 4. The next scan agrees with the stored ID: nothing new is recorded.
-	if err := store.SetPlatformRepoIDIfEmpty(ctx, repoID, "1373652440"); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	all, _ := store.ListForgeIDChanges(ctx, false)

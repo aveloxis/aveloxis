@@ -283,7 +283,7 @@ func TestRenameDedupAtAddTime(t *testing.T) {
 	}
 
 	// 5. SetPlatformRepoIDIfEmpty fills only empty — never overwrites.
-	if err := store.SetPlatformRepoIDIfEmpty(ctx, oldID, "111"); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, oldID, "111", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, oldID).Scan(&storedForge); err != nil {

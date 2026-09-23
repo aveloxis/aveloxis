@@ -15,6 +15,7 @@ package scheduler
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -58,6 +59,13 @@ func TestOrgScansCaptureForgeRepoID(t *testing.T) {
 		}
 		if !strings.Contains(code, "`json:\"created_at\"`") {
 			t.Errorf("%s must decode the listing's created_at", fn)
+		}
+		// The date must REACH the call (round 2: a zero time.Time{} passed
+		// the two checks above).
+		for _, call := range regexp.MustCompile(`SetPlatformRepoIDIfEmptySeen\(.*`).FindAllString(code, -1) {
+			if !strings.Contains(call, "CreatedAt") {
+				t.Errorf("%s: %q — the listing's CreatedAt must be the date argument", fn, call)
+			}
 		}
 		if !strings.Contains(code, "SetPlatformRepoIDIfEmptySeen(") {
 			t.Errorf("%s must backfill the forge ID onto already-tracked rows (found branch)", fn)

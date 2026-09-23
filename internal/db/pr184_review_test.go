@@ -447,12 +447,11 @@ func TestForgeIDMismatchIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// v0.29.63: the logic lives in SetPlatformRepoIDIfEmptySeen (the org
-	// scans pass the forge's created_at); the plain form must delegate to
-	// it, so the checks below cover every caller.
-	plain := srctest.StripGoComments(extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty("))
-	if !strings.Contains(plain, "return s.SetPlatformRepoIDIfEmptySeen(ctx, repoID, forgeID, time.Time{})") {
-		t.Error("SetPlatformRepoIDIfEmpty must delegate to SetPlatformRepoIDIfEmptySeen — a second copy of the probe would drift")
+	// v0.29.63: the only form is SetPlatformRepoIDIfEmptySeen (the org
+	// scans pass the forge's created_at); a second entry point would be a
+	// second copy of the probe to drift.
+	if strings.Contains(srctest.StripGoComments(string(src)), "func (s *PostgresStore) SetPlatformRepoIDIfEmpty(") {
+		t.Error("the plain SetPlatformRepoIDIfEmpty was removed in v0.29.63 — call SetPlatformRepoIDIfEmptySeen")
 	}
 	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(")
 	if !strings.Contains(body, "RowsAffected() == 0") {

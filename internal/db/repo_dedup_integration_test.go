@@ -687,3 +687,36 @@ func TestDedupRenamePairKeepsTheLosersAdoption(t *testing.T) {
 		t.Errorf("a rename pair still never copies the loser's ID: %q", stored)
 	}
 }
+
+// TestDedupForgeIDRepointKeepsProvenance — PR #212 review: the repoint
+// moved the loser's change rows by INSERT … SELECT without tool_version,
+// tool_source, data_source or data_collection_date, so each moved row was
+// restamped with the current binary and NOW() — the provenance restamp
+// v0.29.62 removed from migrate.
+func TestDedupForgeIDRepointKeepsProvenance(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_provenance"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_forge_id_changes
+		  (repo_id, old_forge_id, new_forge_id, tool_source, tool_version, data_source, data_collection_date)
+		VALUES ($1, '11', '22', 'aveloxis', '0.0.1-old', 'forge', '2020-01-02T03:04:05Z')`, loserID)
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil {
+		t.Fatal("candidate query did not surface the seeded pair")
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair: %v", err)
+	}
+	var tv string
+	var dcd time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT tool_version, data_collection_date FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, winnerID).Scan(&tv, &dcd); err != nil {
+		t.Fatal(err)
+	}
+	if tv != "0.0.1-old" || !dcd.Equal(time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Errorf("the moved row was restamped: tool_version=%q data_collection_date=%v", tv, dcd)
+	}
+}

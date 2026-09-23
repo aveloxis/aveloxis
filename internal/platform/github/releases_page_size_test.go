@@ -26,7 +26,10 @@ func TestListReleasesRequestsTheMeasuredPageSize(t *testing.T) {
 		queries = append(queries, r.URL.Query().Get("per_page"))
 		mu.Unlock()
 		if r.URL.Query().Get("page") == "" {
-			w.Header().Set("Link", `<`+r.URL.Path+`?per_page=30&page=2>; rel="next"`)
+			// Echo the request's own per_page, as GitHub does, so the second
+			// request shows what the client sent (PR #212 review: a hard-coded
+			// 30 made the page-2 check unable to fail).
+			w.Header().Set("Link", `<`+r.URL.Path+`?per_page=`+r.URL.Query().Get("per_page")+`&page=2>; rel="next"`)
 		}
 		_, _ = w.Write([]byte(`[]`))
 	}))

@@ -24,8 +24,8 @@ import (
 //
 // One SQL body serves two scopes (SR-17): the FLEET, materialized as
 // aveloxis_data.explorer_package_exposure and explorer_package_advisory
-// (matviews.sql; the definitions there are this text without the repo
-// filter, pinned by TestPackageExposureMatviewMatchesTheLiveSQL), and a
+// (built from this same text without the repo filter by
+// CreateSupplyChainViews in supply_chain_views.go, v0.29.61), and a
 // COHORT — a user's scope or one group's repositories — computed live
 // with `repo_id = ANY($1)`. Fleet-wide the aggregate walks every finding
 // (5.5M rows on the 2026-09-22 production fleet, ~3 s), which is why it
@@ -127,6 +127,14 @@ var PackageExposureSorts = map[string]string{
 const packageExposureDefaultLimit = 50
 const packageExposureMaxLimit = 500
 
+// notSelfFindingSQL excludes "self" rows: advisories against a repository's
+// OWN published package, versionless and never resolved by a later scan.
+// They are not exposure (PR #212 review: one made a package read CRITICAL
+// and its publisher an exposed repository); CountRepoVulnerabilities, the
+// repo stats and the digest exclude them the same way. One spelling for
+// every supply-chain read in this file (SR-17).
+const notSelfFindingSQL = ` AND COALESCE(v.dependency_kind, '') <> 'self'`
+
 // packageFindingsSQL is the per-finding base every package-level
 // aggregate reads: one row per finding with the scanned version pulled
 // out of the purl (the version is stored only inside package_purl) and
@@ -139,7 +147,7 @@ const packageFindingsSQL = `
 	       (v.resolved_at IS NULL) AS current,
 	       ` + purlVersionSQL + ` AS scanned_version
 	  FROM aveloxis_data.repo_deps_vulnerabilities v
-	 WHERE v.ecosystem <> '' AND v.package_name <> ''%s`
+	 WHERE v.ecosystem <> '' AND v.package_name <> ''` + notSelfFindingSQL + `%s`
 
 // purlVersionSQL reads the scanned version out of v.package_purl: the text
 // after the LAST '@' when it contains no '/' (review round 1 on v0.29.60).
@@ -255,14 +263,21 @@ func PackageAdvisoryMatviewSQL() string { return packageAdvisorySQL("") }
 const cohortFilter = " AND v.repo_id = ANY($1)"
 
 // isUndefinedTable reports PostgreSQL's 42P01 (undefined_table): the ONE
-// error that means the materialized view has not been built — a
-// deployment with collection.materialized_views off, or a fleet whose
-// migrate has not yet created the v0.29.60 views. The fleet readers then
+// error that means a relation does not exist yet — here, a supply-chain
+// view on a fleet whose migrate has not run, or whose view build failed
+// (since v0.29.61 the pair is built whatever collection.materialized_views
+// says). The fleet readers then
 // aggregate live over the whole table (the same SQL, no filter) instead of
 // failing; any other error is returned (SR-5).
 func isUndefinedTable(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
+}
+
+// likeLiteral escapes LIKE's metacharacters (backslash first, then % and
+// _) for a pattern whose ESCAPE character is backslash.
+func likeLiteral(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 func exposureSelectColumns() string {
@@ -348,8 +363,11 @@ func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposu
 		where += fmt.Sprintf(" AND x.ecosystem = $%d", len(args))
 	}
 	if q.Search != "" {
-		args = append(args, "%"+strings.ToLower(q.Search)+"%")
-		where += fmt.Sprintf(" AND lower(x.package_name) LIKE $%d", len(args))
+		// A literal substring (PR #212 review): LIKE's wildcards in the
+		// search text are escaped, so "_" (common in package names) and "%"
+		// match only themselves.
+		args = append(args, "%"+likeLiteral(strings.ToLower(q.Search))+"%")
+		where += fmt.Sprintf(` AND lower(x.package_name) LIKE $%d ESCAPE '\'`, len(args))
 	}
 	pageArgs := append(append([]any{}, args...), limit, offset)
 	pageSQL := func(src string) string {
@@ -472,7 +490,7 @@ func (s *PostgresStore) GetPackageVersionsInUse(ctx context.Context, ecosystem, 
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+purlVersionSQL+` AS ver, COUNT(DISTINCT v.repo_id)
 		  FROM aveloxis_data.repo_deps_vulnerabilities v
-		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+filter+`
+		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
 		 GROUP BY 1 HAVING `+purlVersionSQL+` IS NOT NULL
 		 ORDER BY 2 DESC, 1`, args...)
 	if err != nil {
@@ -512,7 +530,7 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 		       array_remove(array_agg(DISTINCT `+purlVersionSQL+`), NULL) AS versions
 		  FROM aveloxis_data.repo_deps_vulnerabilities v
 		  JOIN aveloxis_data.repos r USING (repo_id)
-		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+filter+`
+		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
 		 GROUP BY v.repo_id, r.repo_owner, r.repo_name
 		 ORDER BY findings_unresolved DESC, r.repo_owner, r.repo_name
 		 LIMIT $3`, args...)

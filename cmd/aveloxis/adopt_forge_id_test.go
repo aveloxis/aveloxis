@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -119,5 +120,38 @@ func TestAdoptClientForGuardsTheGitLabHost(t *testing.T) {
 	}
 	if _, err := adoptClientFor(&model.Repo{Platform: model.PlatformGenericGit, GitURL: "https://example.org/x.git"}, gh, base, keys, logger); err == nil {
 		t.Error("generic git has no API to ask")
+	}
+}
+
+// TestAdoptEachKeepsFailuresAcrossAnInterrupt — PR #212 review: a Ctrl-C
+// after an earlier --repo-id had failed returned only "context canceled",
+// dropping the real failure, and the id in flight when the interrupt
+// landed was still logged at ERROR.
+func TestAdoptEachKeepsFailuresAcrossAnInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	boom := errors.New("forge said no")
+	var tried []int64
+	err := adoptEach(ctx, []int64{1, 2, 3}, logger, func(ctx context.Context, id int64) error {
+		tried = append(tried, id)
+		switch id {
+		case 1:
+			return boom
+		case 2:
+			cancel() // the interrupt lands while 2 is in flight
+			return ctx.Err()
+		}
+		return nil
+	})
+	if !errors.Is(err, boom) || !errors.Is(err, context.Canceled) {
+		t.Errorf("the exit error must carry the earlier failure and the interrupt: %v", err)
+	}
+	if fmt.Sprint(tried) != "[1 2]" {
+		t.Errorf("tried %v; nothing after the interrupt", tried)
+	}
+	if strings.Count(logs.String(), "level=ERROR") != 1 {
+		t.Errorf("only the real failure is logged at ERROR:\n%s", logs.String())
 	}
 }

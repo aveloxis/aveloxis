@@ -949,8 +949,6 @@ func runImportFromAugur(cfgPath string, priority int) error {
 	return nil
 }
 
-// verifyRepoExists checks that a repo URL resolves on the forge.
-// Uses HTTP HEAD to avoid downloading the full page.
 // importProbeClient is the existence probe's HTTP client: it does NOT
 // follow redirects (v0.29.59 review round 1). A followed redirect hid the
 // answer — GitLab sends a private or missing repository to

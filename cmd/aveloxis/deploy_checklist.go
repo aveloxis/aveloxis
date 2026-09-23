@@ -464,6 +464,19 @@ var deployChecklists = map[string][]deployStep{
 	// its parked rows on exit or interrupt, and a rename merge keeps an
 	// adoption. No schema change.
 	"0.29.65": v02965DeployChecklist,
+	// v0.29.66: the Copilot-style review of PR #212 — the supply-chain
+	// views leave out self advisories (every migrate rebuilds them), plus
+	// parser, dedup, Phase 0 and GUI fixes. No schema change.
+	"0.29.66": v02966DeployChecklist,
+}
+
+// 0.29.66 carries the same skipped-release notes as 0.29.65 (a fleet on
+// 0.29.63 or older goes straight here) plus this release's view change.
+var v02966DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api. A stop by 0.29.64 or later releases serve's drain-parked rows; a stop by an older binary leaves them 'collecting' until the new serve starts and reclaims them — expected, not a failure of this release"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views from Go, which now leave out a repository's advisories against its own package (dependency_kind 'self') — --skip-views skips only the 8Knot batch"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN (` + db.SupplyChainViewNamesSQLList() + `)"`, "must print 2 AND the migrate must have exited 0 with no `supply-chain view` ERROR in its log (a failed re-create keeps the PREVIOUS definition, so the count alone cannot tell). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first"},
+	{"aveloxis start all", "the new serve reclaims any rows an older stop left parked; the monitors show Parked (drain / heal) apart from Collecting"},
 }
 
 // Carries the stop-release note of 0.29.64 and the table note of 0.29.62

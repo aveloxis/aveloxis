@@ -31,8 +31,8 @@ func TestForgeIDTableMissingIsTheOnlyDegrade(t *testing.T) {
 		{"deadline", context.DeadlineExceeded, false},
 	}
 	for _, c := range cases {
-		if got := forgeIDTableMissing(c.err); got != c.want {
-			t.Errorf("%s: forgeIDTableMissing = %v, want %v", c.name, got, c.want)
+		if got := isUndefinedTable(c.err); got != c.want {
+			t.Errorf("%s: isUndefinedTable = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

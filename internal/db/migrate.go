@@ -4141,9 +4141,11 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 
 // applySupplyChainViewMode runs the supply-chain pair's block of a migrate
 // (both the full walk and serve's fast path): Rebuild re-creates both,
-// IfMissing completes the pair, the zero value builds none. Warn-only like
-// the 8Knot block — derived data must not block serve — and the API
-// aggregates live while a view is absent.
+// IfMissing completes the pair, the zero value builds none. IfMissing
+// (serve) is warn-only, so derived data never blocks a start; Rebuild
+// (`aveloxis migrate`) returns the failure, so the migrate exits non-zero
+// rather than stamp over a definition it did not apply. The API aggregates
+// live while a view is absent.
 func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
 	var err error
 	pg.supplyChainBuilt = false

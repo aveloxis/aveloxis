@@ -138,10 +138,11 @@ How requests are made (since v0.29.56):
   `requirements.txt` holds them as one of pip's option lines (`-e`, `-r`), so
   an editable install has no inventory row. In the line-shaped entry points
   it reads (`requirements.txt` exactly, PEP 621 `dependencies`, `setup.py`
-  and `setup.cfg`'s `install_requires`) it cannot split the rest, so
-  `repo_dependencies` holds the requirement line itself as the dependency
-  name: `./local-pkg`, `https://example.com/pkg-1.0.tar.gz`,
-  `requests @ git+https://…`. The requirements VARIANTS are read only by the
+  and `setup.cfg`'s `install_requires`) one name rule applies (v0.29.66): a
+  PEP 508 direct reference keeps the name before its `@`
+  (`requests @ git+https://…` is stored as `requests`), and a line that names
+  no package (a bare URL such as `https://example.com/pkg-1.0.tar.gz`, or a
+  local path such as `./local-pkg`) gets no inventory row. The requirements VARIANTS are read only by the
   libyear and vulnerability path, and only with `collection.dev_build_deps`
   on, so they produce no inventory row at all. That arm takes `.txt` files
   alone: a requirements variant by name (`requirements-dev.txt`,

@@ -48,6 +48,9 @@ func parseSwiftPackageURL(raw string) (ref swiftPackageRef, ok bool) {
 		host = host[:colon] // port
 	}
 	host = strings.ToLower(host)
+	// www.github.com is github.com (PR #212 review): folded here so the
+	// GitHub check and the purl namespace agree with IsGitHubHost.
+	host = strings.TrimPrefix(host, "www.")
 	if host == "" || !strings.Contains(host, ".") {
 		return swiftPackageRef{}, false
 	}

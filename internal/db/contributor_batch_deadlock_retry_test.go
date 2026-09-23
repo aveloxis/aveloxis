@@ -81,21 +81,20 @@ func TestContributorDeadlockAbortsTheBatchForRetry(t *testing.T) {
 	noCapture := func(string, string, error) {}
 
 	for _, tc := range []struct {
-		name               string
-		tx                 faultTx
-		renamedTo          map[string]string
-		wantCode           string // "" = the contributor is skipped, the batch continues
-		wantRollbackBefore bool
+		name      string
+		tx        faultTx
+		renamedTo map[string]string
+		wantCode  string // "" = the contributor is skipped, the batch continues
 	}{
-		{"contributor insert deadlock", faultTx{insertCode: "40P01"}, nil, "40P01", true},
-		{"contributor insert serialization failure", faultTx{insertCode: "40001"}, nil, "40001", true},
-		{"identity insert deadlock", faultTx{identCode: "40P01"}, nil, "40P01", true},
+		{"contributor insert deadlock", faultTx{insertCode: "40P01"}, nil, "40P01"},
+		{"contributor insert serialization failure", faultTx{insertCode: "40001"}, nil, "40001"},
+		{"identity insert deadlock", faultTx{identCode: "40P01"}, nil, "40P01"},
 		// The two rename sites (review round 1): the known-rename pre-probe
 		// UPDATE and the 23505 contributors_pkey recovery UPDATE.
-		{"rename pre-probe update deadlock", faultTx{renameCode: "40P01"}, map[string]string{PlatformUUID(int(model.PlatformGitHub), 42).String(): "alice-old"}, "40P01", true},
-		{"rename recovery update deadlock", faultTx{insertCode: "23505", insertConstraint: "contributors_pkey", renameCode: "40P01"}, nil, "40P01", true},
-		{"contributor insert other failure is skipped", faultTx{insertCode: "23502"}, nil, "", true},
-		{"identity insert other failure is skipped", faultTx{identCode: "23502"}, nil, "", true},
+		{"rename pre-probe update deadlock", faultTx{renameCode: "40P01"}, map[string]string{PlatformUUID(int(model.PlatformGitHub), 42).String(): "alice-old"}, "40P01"},
+		{"rename recovery update deadlock", faultTx{insertCode: "23505", insertConstraint: "contributors_pkey", renameCode: "40P01"}, nil, "40P01"},
+		{"contributor insert other failure is skipped", faultTx{insertCode: "23502"}, nil, ""},
+		{"identity insert other failure is skipped", faultTx{identCode: "23502"}, nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := tc.tx
@@ -109,8 +108,8 @@ func TestContributorDeadlockAbortsTheBatchForRetry(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("a non-transient failure must skip this contributor and keep the batch, got %v", err)
 			}
-			if tc.wantRollbackBefore && tx.rollbacks == 0 {
-				t.Error("the savepoint must be rolled back before either path")
+			if tx.rollbacks == 0 {
+				t.Error("the savepoint must be rolled back on either path")
 			}
 		})
 	}

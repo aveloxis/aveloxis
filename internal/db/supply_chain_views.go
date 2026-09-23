@@ -180,15 +180,6 @@ func supplyChainViewsPresentSet(ctx context.Context, pg *PostgresStore) (map[str
 	return present, rows.Err()
 }
 
-// supplyChainViewsPresent counts the members of the pair that exist.
-func supplyChainViewsPresent(ctx context.Context, pg *PostgresStore) (int, error) {
-	present, err := supplyChainViewsPresentSet(ctx, pg)
-	if err != nil {
-		return 0, err
-	}
-	return len(present), nil
-}
-
 // RefreshSupplyChainViews refreshes the data of whichever members of the
 // pair exist (CONCURRENTLY: the unique index is part of the build). It
 // asks the database, not the config, for the same reason

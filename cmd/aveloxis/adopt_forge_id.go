@@ -190,21 +190,35 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 			if u, uerr := user.Current(); uerr == nil && u.Username != "" {
 				adoptedBy = u.Username
 			}
-			var failed []error
-			for _, id := range repoIDs {
-				if ctx.Err() != nil {
-					return ctx.Err() // interrupted: one exit, not an ERROR per remaining id
-				}
-				if err := adoptForgeIDFor(ctx, store, clientFor, id, adoptedBy, note, os.Stdout); err != nil {
-					logger.Error("adopt-forge-id failed", "repo_id", id, "error", err)
-					failed = append(failed, err)
-				}
-			}
-			return errors.Join(failed...)
+			return adoptEach(ctx, repoIDs, logger, func(ctx context.Context, id int64) error {
+				return adoptForgeIDFor(ctx, store, clientFor, id, adoptedBy, note, os.Stdout)
+			})
 		},
 	}
 	cmd.Flags().Int64SliceVar(&repoIDs, "repo-id", nil, "repository to adopt the forge's current ID for (repeatable)")
 	cmd.Flags().BoolVar(&list, "list", false, "list the recorded forge-ID changes")
 	cmd.Flags().StringVar(&note, "note", "", "optional operator note stored with the change")
 	return cmd
+}
+
+// adoptEach adopts each --repo-id in turn. A failure is logged and the
+// loop goes on; an interrupt ends it at once (no ERROR per remaining id,
+// and none for the id in flight), and the exit error carries every failure
+// seen so far as well as the interrupt (PR #212 review: returning only
+// ctx.Err() dropped them).
+func adoptEach(ctx context.Context, repoIDs []int64, logger *slog.Logger, adopt func(context.Context, int64) error) error {
+	var failed []error
+	for _, id := range repoIDs {
+		if ctx.Err() != nil {
+			return errors.Join(append(failed, ctx.Err())...)
+		}
+		if err := adopt(ctx, id); err != nil {
+			if ctx.Err() != nil {
+				return errors.Join(append(failed, ctx.Err())...)
+			}
+			logger.Error("adopt-forge-id failed", "repo_id", id, "error", err)
+			failed = append(failed, err)
+		}
+	}
+	return errors.Join(failed...)
 }

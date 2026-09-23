@@ -33,8 +33,12 @@ func TestRefreshViewsSetValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := src[strings.Index(string(src), "func refreshViewsCmd("):]
-	if strings.Index(string(fn), "refreshViewsSets[set]") > strings.Index(string(fn), "db.NewPostgresStore(") {
-		t.Error("--set must be validated BEFORE the store is opened")
+	// Both anchors must exist (PR #212 review: a missing validation gave
+	// -1, which is never greater than the store's index, so it passed).
+	v := strings.Index(string(fn), "refreshViewsSets[set]")
+	o := strings.Index(string(fn), "db.NewPostgresStore(")
+	if v < 0 || o < 0 || v > o {
+		t.Errorf("--set must be validated BEFORE the store is opened (validation at %d, store at %d)", v, o)
 	}
 }
 

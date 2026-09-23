@@ -64,7 +64,9 @@ func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
 			out = append(out, parsedLockfile{Path: rel, Result: res})
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
+		// Through readManifest (PR #212 review): a UTF-8 BOM or UTF-16 lockfile
+		// is decoded like its manifest, not failed whole (SR-17).
+		data, readErr := readManifest(path)
 		if readErr != nil {
 			logger.Warn("failed to read lockfile", "path", rel, "error", readErr)
 			return nil

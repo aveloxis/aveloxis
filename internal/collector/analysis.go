@@ -462,10 +462,7 @@ func parseRequirementsTxt(content string) []string {
 		if line == "" {
 			continue
 		}
-		line = stripPyExtras(line)
-		// Strip version specifiers.
-		line, _ = splitPyNameSpec(line)
-		if name := strings.TrimSpace(line); isPyRequirementName(name) {
+		if name := pyInventoryName(line); name != "" {
 			deps = append(deps, name)
 		}
 	}
@@ -662,9 +659,7 @@ func extractPEP621DepName(line string) string {
 	if idx := strings.Index(line, ";"); idx > 0 {
 		line = strings.TrimSpace(line[:idx])
 	}
-	line = stripPyExtras(line)
-	name, _ := splitPyNameSpec(line)
-	return name
+	return pyInventoryName(line)
 }
 
 // extractPEP621DepsFromLine extracts dep names from an inline deps array.
@@ -770,8 +765,28 @@ func extractPyDepName(req string) string {
 	if idx := strings.Index(req, ";"); idx > 0 {
 		req = strings.TrimSpace(req[:idx])
 	}
-	req = stripPyExtras(req)
-	name, _ := splitPyNameSpec(req)
+	return pyInventoryName(req)
+}
+
+// pyInventoryName is the ONE name rule for the Python dependency inventory
+// (requirements.txt, PEP 621 dependencies, setup.py/setup.cfg
+// install_requires; SR-17, PR #212 review): given a requirement with its
+// comment and environment marker already stripped, it returns the package
+// name, or "" when the requirement names none.
+//   - A PEP 508 direct reference names its package before the '@'
+//     ("requests @ git+https://…"); an '@' after a "://" belongs to a bare
+//     URL, which names no package.
+//   - Extras and the version specifier (operators or the parenthesized
+//     form) are not part of the name.
+//   - The result must be a PEP 508 name: a URL, path or prose line is not.
+func pyInventoryName(req string) string {
+	if at := strings.IndexByte(req, '@'); at > 0 && !strings.Contains(req[:at], "://") {
+		req = req[:at]
+	}
+	name, _ := splitPyNameSpec(stripPyExtras(req))
+	if !isPyRequirementName(name) {
+		return ""
+	}
 	return name
 }
 
@@ -896,8 +911,17 @@ func isPyRequirementName(name string) bool {
 // the dependency got no libyear row, no purl and no OSV coverage. The
 // preference lists were reaching for the VERSION, which is a separate
 // question — see pyFloorVersion (SR-17).
+//
+// A '(' ends the name too (PR #212 review): "requests (>=2.0)" is PEP 508's
+// parenthesized form ('(' version_many ')', which Poetry 2.x writes); the
+// spec is the text inside the parentheses.
 func splitPyNameSpec(req string) (name, spec string) {
 	for i := 0; i < len(req); i++ {
+		if req[i] == '(' {
+			inner := strings.TrimSpace(req[i+1:])
+			inner = strings.TrimSpace(strings.TrimSuffix(inner, ")"))
+			return strings.TrimSpace(req[:i]), inner
+		}
 		for _, op := range pyVersionOperators {
 			if strings.HasPrefix(req[i:], op) {
 				return strings.TrimSpace(req[:i]), strings.TrimSpace(req[i:])

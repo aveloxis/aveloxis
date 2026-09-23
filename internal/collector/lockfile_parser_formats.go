@@ -402,12 +402,11 @@ func parsePackageResolved(data []byte) (parsedLockfileData, error) {
 		// pkg:swift/github.com/Owner/Repo shape. A pin with no host (a
 		// local path) keeps its identity and stays namespace-less.
 		namespace := ""
-		if loc := p.Location; loc == "" {
-			loc = p.RepositoryURL
-			if ns, repo := swiftRepoNamespace(loc); ns != "" {
-				namespace, name = ns, repo
-			}
-		} else if ns, repo := swiftRepoNamespace(loc); ns != "" {
+		loc := p.Location
+		if loc == "" {
+			loc = p.RepositoryURL // Package.resolved v1
+		}
+		if ns, repo := swiftRepoNamespace(loc); ns != "" {
 			namespace, name = ns, repo
 		}
 		if name != "" && p.State.Version != "" {

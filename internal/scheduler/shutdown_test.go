@@ -124,7 +124,8 @@ func TestPostgresStoreSetsApplicationName(t *testing.T) {
 // rows the monitor showed as "collecting" with serve stopped). The
 // shutdown path must release this process's drain-parked rows through the
 // store's one owner spelling, AFTER waiting for the tracked background
-// goroutines (the drain among them, so it is not mid-repo) and BEFORE the
+// goroutines (the drain among them, so it is not mid-repo unless the
+// bounded wait expires) and BEFORE the
 // pool closes. The drain goroutine must be tracked by s.background.
 func TestShutdownReleasesDrainParkedLocks(t *testing.T) {
 	data, err := os.ReadFile("scheduler.go")

@@ -112,7 +112,16 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 		if storedForgeID != "" && platformRepoID != "" && storedForgeID != platformRepoID {
 			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
 				"repo_id", repoID, "stored_forge_id", storedForgeID, "observed_forge_id", platformRepoID,
-				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+				"remediation", "recorded as a pending forge-ID change: adopt it from the admin approvals page or with `aveloxis adopt-forge-id`, or inspect the row's data eras if it is not a continuation")
+			// Recorded like the org scan's detector (PR #212 review: a repo
+			// reached only by Phase 0 never reached the Adopt list). Still
+			// observation-only: the stored ID is untouched.
+			if rerr := s.recordForgeIDObservation(ctx, repoID, storedForgeID, platformRepoID, createdAt); rerr != nil {
+				if errors.Is(rerr, context.Canceled) {
+					return rerr
+				}
+				s.logger.Error("recording the forge-ID change failed — the next Phase 0 pass records it", "repo_id", repoID, "error", rerr)
+			}
 		}
 		return nil
 	})

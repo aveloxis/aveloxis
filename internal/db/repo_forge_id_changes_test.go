@@ -194,3 +194,30 @@ func TestAdoptPendingForgeIDChangeAdoptsTheClickedPair(t *testing.T) {
 		t.Errorf("adopting a superseded pair: want ErrForgeIDNotAsExpected, got %v", err)
 	}
 }
+
+// TestPhase0RecordsAForgeIDChange — PR #212 review: the Phase 0 metadata
+// path saw the same mismatch as the org scan but only logged it, so a repo
+// reached only by Phase 0 (added one by one, not through an org scan)
+// never reached the admin Adopt list. It records the observation too, with
+// the forge's creation date.
+func TestPhase0RecordsAForgeIDChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-phase0")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '555' WHERE repo_id = $1`, repoID)
+	created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "777", created, created); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.ListForgeIDChanges(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := filterRepo(pending, repoID)
+	if len(got) != 1 || got[0].OldForgeID != "555" || got[0].NewForgeID != "777" || got[0].ForgeCreatedAt == nil || !got[0].ForgeCreatedAt.Equal(created) {
+		t.Errorf("Phase 0 must record the pending change with its creation date: %+v", got)
+	}
+	if id, _ := store.GetRepoForgeID(ctx, repoID); id != "555" {
+		t.Errorf("recording is observation-only: stored ID %q, want 555", id)
+	}
+}

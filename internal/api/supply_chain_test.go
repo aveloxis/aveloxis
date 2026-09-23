@@ -10,8 +10,9 @@ import (
 )
 
 // v0.29.60: the supply-chain endpoints' request contract, with a bare
-// Server (no store): a session is required before anything else, and the
-// sort key and group id are validated against the allowlist and shape.
+// Server (no store): a session is required before anything else. (The
+// sort-key and group-id validation sits behind the session and is driven
+// with a real session by the endpoint smoke test.)
 func TestSupplyChainEndpointsRequireASession(t *testing.T) {
 	srv := newTestServer()
 	for _, path := range []string{"/api/v1/supply-chain/packages", "/api/v1/supply-chain/packages/npm/minimatch", "/api/v1/supply-chain/packages/npm/@scope/name"} {
@@ -29,7 +30,7 @@ func TestSupplyChainScopedNameRouteMatches(t *testing.T) {
 	srv := newTestServer()
 	rec := httptest.NewRecorder()
 	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/supply-chain/packages/npm/@jest/transform", nil))
-	if rec.Code == http.StatusNotFound {
-		t.Fatal("a scoped package name must route to the package handler")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a scoped package name must route to the package handler's session gate: %d, want 401", rec.Code)
 	}
 }

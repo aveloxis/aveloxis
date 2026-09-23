@@ -61,6 +61,18 @@ func TestPackageExposureProfileNumbers(t *testing.T) {
 	seed(r4, "GHSA-A", "", "1.0.0", "UNKNOWN", 0, "", "transitive", old, nil)
 	seed(r4, "GHSA-A", "", "1.0.1", "", 0, "", "transitive", old, nil)
 	seed(r4, "GHSA-A", "", "1.0.2", "", 0, "", "transitive", old, nil) // three stubs vs three known: a tie
+	// PR #212 Copilot-style review: a "self" row is an advisory against the
+	// repository's OWN published package (versionless, never resolved by a
+	// later scan). It is not exposure: every other live-exposure reader
+	// excludes it, and so must every figure here — or a repo that publishes
+	// a package would count as exposed to all its historical advisories.
+	r5 := seedRepoForDeps(t, store, ctx, "aveloxis-it", "exposure-publisher")
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_deps_vulnerabilities
+		  (repo_id, vuln_id, cve_id, package_name, package_purl, ecosystem, severity, cvss_score,
+		   fixed_version, dependency_kind, first_detected_at, last_seen_at, resolved_at, tool_source, data_source)
+		VALUES ($1, 'GHSA-SELF', 'CVE-9', $2, $3, 'npm', 'CRITICAL', 9.8, '', 'self', $4, NOW(), NULL, 'aveloxis', 'test')`,
+		r5, pkg, "pkg:npm/"+pkg, old)
 
 	check := func(label string, e *PackageExposure) {
 		t.Helper()
@@ -87,8 +99,9 @@ func TestPackageExposureProfileNumbers(t *testing.T) {
 		}
 	}
 
-	// Live cohort path: the four seeded repositories.
-	live, isLive, err := store.GetPackageExposure(ctx, "npm", pkg, []int64{r1, r2, r3, r4})
+	// Live cohort path: the four exposed repositories plus the publisher,
+	// whose self row must change no figure.
+	live, isLive, err := store.GetPackageExposure(ctx, "npm", pkg, []int64{r1, r2, r3, r4, r5})
 	if err != nil {
 		t.Fatalf("live profile: %v", err)
 	}
@@ -96,6 +109,18 @@ func TestPackageExposureProfileNumbers(t *testing.T) {
 		t.Error("a cohort profile must report itself as live")
 	}
 	check("live", live)
+	if repos, err := store.GetPackageExposedRepos(ctx, "npm", pkg, []int64{r1, r2, r3, r4, r5}, 50); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, r := range repos {
+			if r.RepoID == r5 {
+				t.Error("the publisher's own self row made it an exposed repository")
+			}
+		}
+	}
+	if vers, err := store.GetPackageVersionsInUse(ctx, "npm", pkg, []int64{r5}); err != nil || len(vers) != 0 {
+		t.Errorf("the publisher's self row counted as a version in use: %+v %v", vers, err)
+	}
 
 	// A narrower cohort changes the numbers: r1 + r2 only.
 	narrow, _, err := store.GetPackageExposure(ctx, "npm", pkg, []int64{r1, r2})
@@ -293,5 +318,39 @@ func TestLeaderboardAggregatesOnce(t *testing.T) {
 	guard := strings.Index(body, "len(page.Rows) == 0 && offset > 0")
 	if strings.Count(body, "SELECT COUNT(*) FROM") != 1 || guard < 0 || count < guard {
 		t.Error("the only standalone COUNT(*) must sit inside the past-the-end guard; a second count re-runs the whole aggregate")
+	}
+}
+
+// TestPackageSearchIsLiteral — PR #212 review: the search text went into
+// LIKE unescaped, so "_" (common in package names) and "%" acted as
+// wildcards: q=a_b also matched "axb", and q=% matched every package.
+func TestPackageSearchIsLiteral(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	r := seedRepoForDeps(t, store, ctx, "aveloxis-it", "search-literal")
+	names := []string{"zz_lit_a_b", "zz_lit_axb"}
+	t.Cleanup(func() {
+		for _, n := range names {
+			cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE package_name = $1`, n)
+		}
+	})
+	for _, n := range names {
+		mustExecRetry(ctx, t, store, `
+			INSERT INTO aveloxis_data.repo_deps_vulnerabilities
+			  (repo_id, vuln_id, package_name, package_purl, ecosystem, severity, dependency_kind, first_detected_at, last_seen_at, tool_source, data_source)
+			VALUES ($1, 'GHSA-L', $2, $3, 'pypi', 'HIGH', 'direct', NOW(), NOW(), 'aveloxis', 'test')`, r, n, "pkg:pypi/"+n+"@1.0")
+	}
+	cohort := []int64{r}
+	for _, tc := range []struct {
+		q    string
+		want int
+	}{{"lit_a_b", 1}, {"lit_a_", 1}, {"%", 0}, {"zz_lit", 2}} {
+		pg, err := store.ListPackageExposure(ctx, PackageExposureQuery{Search: tc.q, RepoIDs: cohort})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pg.Total != tc.want {
+			t.Errorf("search %q matched %d packages, want %d (a literal substring)", tc.q, pg.Total, tc.want)
+		}
 	}
 }

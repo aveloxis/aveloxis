@@ -485,11 +485,15 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 			 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = '' AND $2 <> ''`, []any{pair.WinnerID, fillForgeID}},
 		{"repoint repo_forge_id_changes", `
 			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
-				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note)
+				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note,
+				 tool_source, tool_version, data_source, data_collection_date)
 			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
 			       CASE WHEN carries THEN l.adopted_at END,
 			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
-			       CASE WHEN carries THEN l.note ELSE '' END
+			       CASE WHEN carries THEN l.note ELSE '' END,
+			       -- The moved row keeps its provenance (PR #212 review: an
+			       -- INSERT without these restamped it with this binary and NOW()).
+			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
 			  FROM aveloxis_data.repo_forge_id_changes l
 			  CROSS JOIN LATERAL (
 			      SELECT l.adopted_at IS NOT NULL AND EXISTS (

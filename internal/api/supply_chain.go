@@ -122,7 +122,9 @@ func (s *Server) handleSupplyChainPackages(w http.ResponseWriter, r *http.Reques
 		Limit:     limit,
 		Offset:    offset,
 	}
-	key := fmt.Sprintf("sc-list|%s|%d|%d|%s|%s|%s|%d|%d", scope.Kind, scope.GroupID, info.UserID, query.Ecosystem, query.Search, sortKey, limit, offset)
+	// Free-text parts are quoted so a "|" inside one cannot make two
+	// different queries share a key (PR #212 review).
+	key := fmt.Sprintf("sc-list|%s|%d|%d|%q|%q|%s|%d|%d", scope.Kind, scope.GroupID, info.UserID, query.Ecosystem, query.Search, sortKey, limit, offset)
 	if body, ok := s.cmpCache.get(key); ok {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
@@ -177,7 +179,7 @@ func (s *Server) handleSupplyChainPackage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	repoLimit, _ := strconv.Atoi(r.URL.Query().Get("repos"))
-	key := fmt.Sprintf("sc-pkg|%s|%d|%d|%s|%s|%d", scope.Kind, scope.GroupID, info.UserID, ecosystem, name, repoLimit)
+	key := fmt.Sprintf("sc-pkg|%s|%d|%d|%q|%q|%d", scope.Kind, scope.GroupID, info.UserID, ecosystem, name, repoLimit)
 	if body, ok := s.cmpCache.get(key); ok {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)

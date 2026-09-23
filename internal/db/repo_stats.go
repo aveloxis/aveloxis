@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // RepoStats holds gathered (actual row counts) and metadata (from repo_info API snapshot)
@@ -198,7 +197,7 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
 			return nil, ferr
 		}
-		if !forgeIDTableMissing(ferr) {
+		if !isUndefinedTable(ferr) {
 			return nil, fmt.Errorf("forge-ID changes: %w", ferr)
 		}
 		s.logger.Error("repo stats: repo_forge_id_changes does not exist — run aveloxis migrate; the page renders without the forge-ID notice", "repo_id", repoID, "error", ferr)
@@ -442,12 +441,4 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	}
 
 	return result, nil
-}
-
-// forgeIDTableMissing reports whether err is PostgreSQL's undefined_table
-// (42P01): the one failure GetRepoStats may degrade past, because the
-// schema is behind the binary rather than the data being unreadable.
-func forgeIDTableMissing(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }

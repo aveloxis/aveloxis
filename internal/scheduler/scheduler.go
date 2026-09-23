@@ -461,7 +461,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 		} else if len(locked) > 0 {
 			s.logger.Info("launching background leftover-staging drain", "repos", len(locked))
 			// Tracked (v0.29.64): shutdown waits for the drain to leave its
-			// current repo before releasing the parked set.
+			// current repo (up to the bounded shutdown wait) before
+			// releasing the parked set.
 			s.goTracked("leftover-staging-drain", func() { s.processLeftoverStagingBackground(ctx, locked) })
 		}
 	}

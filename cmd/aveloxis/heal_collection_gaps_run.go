@@ -448,7 +448,7 @@ func (r *gapHealRun) runFleet(ctx context.Context, after int64) error {
 		return nil
 	}
 	r.logger.Info("gap heal complete",
-		"candidates", processed, "healed", r.visited,
+		"candidates", processed, "visited", r.visited,
 		"items_filled", r.filled, "skipped_not_queued", r.skipped,
 		"failed", r.failed)
 	if r.failed > 0 {

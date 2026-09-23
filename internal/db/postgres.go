@@ -2280,7 +2280,8 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("contributor_login_history_insert", login, histErr)
-			// A deadlock (40P01) here is NOT escaped to withRetry, unlike
+			// A deadlock or serialization failure (isRetryableTxError) here
+			// is NOT escaped to withRetry, unlike
 			// the contributor and identity writes above (v0.29.62 review
 			// round 2): the rollback to the savepoint releases this row's
 			// locks, the history row is re-recorded the next time this
@@ -2303,7 +2304,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("identity_denorm_backfill", login, backfillErr)
-			// Not escaped on a deadlock either, for the same reason as the
+			// Not escaped on a retryable failure either, for the same reason as the
 			// login-history write above: the mirror columns are rewritten
 			// from the identity on every later upsert of this contributor.
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {

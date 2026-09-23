@@ -459,14 +459,27 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		//
 		// Then the loser's adoptions (adopted_at, adopted_by and note
 		// together) carry only when the winner now stores what the LOSER
-		// stored (or neither stores one): the moves are then true of the
-		// winner. Otherwise "adopted" would claim a move that never
+		// stored, or stores nothing: the moves are then true of the winner,
+		// or at least nothing it stores contradicts them yet. The empty
+		// case is a rename pair's (no fill), where dropping to pending
+		// discarded the operator's record for good (v0.29.64 review
+		// round 1). Otherwise "adopted" would claim a move that never
 		// happened on this row (round 1; round 4 found "unless the winner
 		// stores the old ID" carrying a chain's later link onto a winner at
 		// its start, which the Adopt button could then never finish). Such
 		// changes arrive PENDING and are adopted in order. Dedup never
 		// overwrites a stored forge ID.
-		// A loser without one leaves "$2 = ''" and the step writes nothing.
+		//
+		// Accepted residual (v0.29.65 review round 2, declined): if the
+		// rename winner's first scan then fills a DIFFERENT forge ID (the
+		// old URL held another repository before the rename), the page
+		// shows an adoption whose new ID the row never stored, and only
+		// SQL undoes it. That needs an adoption, a later delete-recreate
+		// and a rename at the old URL; the alternative discards the
+		// adoption on every rename.
+		//
+		// The fill step: $2 is empty (and the step writes nothing) when the
+		// loser has no stored forge ID, and for every rename pair.
 		{"fill winner's empty forge ID", `
 			UPDATE aveloxis_data.repos SET platform_repo_id = $2
 			 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = '' AND $2 <> ''`, []any{pair.WinnerID, fillForgeID}},
@@ -481,7 +494,7 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 			  CROSS JOIN LATERAL (
 			      SELECT l.adopted_at IS NOT NULL AND EXISTS (
 			          SELECT 1 FROM aveloxis_data.repos w
-			           WHERE w.repo_id = $2 AND COALESCE(w.platform_repo_id, '') = $3) AS carries) k
+			           WHERE w.repo_id = $2 AND COALESCE(w.platform_repo_id, '') IN ('', $3)) AS carries) k
 			 WHERE l.repo_id = $1
 			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
 				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),

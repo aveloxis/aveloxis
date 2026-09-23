@@ -462,11 +462,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.logger.Info("launching background leftover-staging drain", "repos", len(locked))
 			// Tracked (v0.29.64): shutdown waits for the drain to leave its
 			// current repo before releasing the parked set.
-			s.background.Add(1)
-			safego.Go(s.logger, "leftover-staging-drain", func() {
-				defer s.background.Done()
-				s.processLeftoverStagingBackground(ctx, locked)
-			})
+			s.goTracked("leftover-staging-drain", func() { s.processLeftoverStagingBackground(ctx, locked) })
 		}
 	}
 
@@ -726,7 +722,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			select {
 			case <-bgDone:
 			case <-time.After(bgBound):
-				s.logger.Warn("background pools did not finish their shutdown bookkeeping in time — their locks are recovered on the next start",
+				s.logger.Warn("background pools did not finish their shutdown bookkeeping in time — any locks they still hold are reclaimed by their own stale-lock recovery; queue and drain-parked locks are released below",
 					"bound", bgBound.String())
 			}
 			// Release queue locks so repos return to 'queued' immediately
@@ -2140,10 +2136,11 @@ func (s *Scheduler) processLeftoverStaging(ctx context.Context) {
 // can be picked up for a fresh re-collection without waiting for the
 // rest of the drain set to complete.
 //
-// On context cancel (process shutting down), the loop exits cleanly. Any
-// repos still locked stay 'collecting' under the synthetic worker ID;
-// the next process startup's RecoverOtherWorkerLocks will release them
-// and the drain set will be re-identified and re-parked.
+// On context cancel (process shutting down), the loop exits cleanly and
+// the shutdown arm releases every repo still parked (releaseOurDrainLocks,
+// v0.29.64); the next start re-identifies and re-parks what still has
+// staging. A process that dies without shutting down leaves them to the
+// next start's RecoverOtherWorkerLocks.
 func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainSet []int64) {
 	// v0.27.147 (round 26)/v0.27.150 (round 29): heartbeat the WHOLE
 	// parked set for the drain's lifetime — the set is lock-parked up
@@ -2164,10 +2161,10 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 		s.drainOneRepo(ctx, repoID)
 		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID)
 		if errors.Is(err, context.Canceled) {
-			return // shutdown: the drain locks are recovered by the next start's RecoverOtherWorkerLocks
+			return // shutdown: the shutdown arm releases the parked set (releaseOurDrainLocks)
 		}
 		if err != nil {
-			s.logger.Warn("failed to release drain lock; repo stays locked until next restart's RecoverOtherWorkerLocks", "repo_id", repoID, "error", err)
+			s.logger.Warn("failed to release drain lock; the stop releases it, or stale-lock recovery reclaims it once the drain ends", "repo_id", repoID, "error", err)
 		}
 	}
 	s.logger.Info("background leftover-staging drain complete", "repos", len(drainSet))

@@ -18,7 +18,7 @@ func TestWebMonitorShowsDrainingSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, `{{.Stats.draining}}</div><div style="color:#666;font-size:0.85rem">Draining staging</div>`) {
-		t.Error(`the monitor template must render {{.Stats.draining}} as "Draining staging"`)
+	if !strings.Contains(src, `{{.Stats.draining}}</div><div style="color:#666;font-size:0.85rem">Parked (drain / heal)</div>`) {
+		t.Error(`the monitor template must render {{.Stats.draining}} as "Parked (drain / heal)"`)
 	}
 }

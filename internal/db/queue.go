@@ -555,11 +555,12 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 
 // QueueStats returns counts by status.
 //
-// "collecting" counts real jobs only. Rows the startup drain parked
-// (status 'collecting', owner '<worker>:drain') are "draining": they hold
-// no worker slot, so counting them as collecting showed more jobs than
-// workers (v0.29.64; 2026-09-23 the monitor showed 200+ with 120 workers,
-// and 107 with serve stopped). "total" still covers every row.
+// "collecting" counts real jobs only. Rows parked by the startup staging
+// drain or by heal-collection-gaps (status 'collecting', owner
+// '<worker>:drain') are "draining": they hold no worker slot, so counting
+// them as collecting showed more jobs than workers (v0.29.64; 2026-09-23
+// the monitor showed 200+ with 120 workers, and 107 with serve stopped).
+// "total" still covers every row.
 func (s *PostgresStore) QueueStats(ctx context.Context) (map[string]int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT CASE WHEN status = 'collecting' AND right(locked_by, length($1)) = $1

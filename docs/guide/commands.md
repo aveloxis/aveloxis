@@ -606,13 +606,26 @@ the resume state: healed repos drop out, so the workflow is re-running
 until "0 candidates". Safe beside a running serve: each repo is
 drain-locked for the duration of its heal, and repos mid-collection
 are skipped (a rerun catches them). Neither the lock nor the heal
-touches `last_collected`.
+touches `last_collected`. While a repo is locked the monitors count it
+under **Parked (drain / heal)**. Ctrl-C (or SIGTERM) stops the run
+cleanly, releases every repo it still holds, and exits nonzero
+(v0.29.65). The log line names the `after_repo_id` of the interrupted
+page's start, so `--after-repo-id` revisits that page; a plain rerun
+works too.
 
-Flags: `--dry-run`, `--limit N`, `--workers N` (default 4),
+Flags: `--dry-run` (list the candidates and their gap sizes, healing
+nothing; with `--repo-id`, print that repo and whether a real run could
+lock it — before v0.29.65 that combination actually healed the repo),
+`--limit N`, `--workers N` (default 4),
 `--repo-id N`, `--after-repo-id N` (keyset resume), `--all` (sweep
 every collected repo — the completeness mode for repos whose
 stored-but-deleted rows numerically hide the gap; not recommended for
-routine use). Exits nonzero when any repo's heal failed.
+routine use). Exits nonzero when any repo's heal failed, and with
+`--repo-id` also when the repo could not be locked: the message says
+whether it is being collected, is parked by a staging drain or another
+heal run, has no queue row (gone or dequeued, so nothing will heal it),
+became queued again in the meantime (rerun now), or whether its queue
+status could not be read.
 
 Sizing, measured on a ~140K-repo fleet (2026-08-23): 6,809 candidates /
 279,100 items took ~65 hours at `--workers 4` (the largest single repo

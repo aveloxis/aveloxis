@@ -459,6 +459,22 @@ var deployChecklists = map[string][]deployStep{
 	// deploy still runs the old binary, so rows parked by it stay
 	// "collecting" until the new serve starts and reclaims them.
 	"0.29.64": v02964DeployChecklist,
+	// v0.29.65: the v0.29.64 review round 1 — the monitors' parked count
+	// is labelled "Parked (drain / heal)", heal-collection-gaps releases
+	// its parked rows on exit or interrupt, and a rename merge keeps an
+	// adoption. No schema change.
+	"0.29.65": v02965DeployChecklist,
+}
+
+// Carries the stop-release note of 0.29.64 and the table note of 0.29.62
+// for a fleet that skips them (only the running version's list is printed;
+// v0.29.65 review round 2). 0.29.62's optional adopt-forge-id step and
+// 0.29.63's Adopt card are not repeated: both act on pending changes, which
+// the approvals page lists whenever there are any.
+var v02965DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api. A stop by 0.29.64 or later releases serve's drain-parked rows; a stop by an older binary leaves them 'collecting' until the new serve starts and reclaims them — expected, not a failure of this release"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views"},
+	{"aveloxis start all", "the new serve reclaims any rows an older stop left parked; the monitors show Parked (drain / heal) apart from Collecting"},
 }
 
 var v02964DeployChecklist = []deployStep{

@@ -19,7 +19,7 @@ func TestDashboardShowsDrainingSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), `<div class="label">Draining staging</div></div>`+"`"+`, stats["draining"])`) {
-		t.Error(`monitor.go must render stats["draining"] as "Draining staging"`)
+	if !strings.Contains(string(src), `<div class="label">Parked (drain / heal)</div></div>`+"`"+`, stats["draining"])`) {
+		t.Error(`monitor.go must render stats["draining"] as "Parked (drain / heal)"`)
 	}
 }

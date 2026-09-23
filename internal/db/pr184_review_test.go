@@ -1285,9 +1285,14 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 	if hbPos < 0 || loopPos < 0 || hbPos > loopPos {
 		t.Error("the leftover-staging drain must start the set-wide heartbeat BEFORE the drain loop (the parked tail is what round 29 protects)")
 	}
-	healer := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps.go")
-	if !strings.Contains(healer, "store.StartDrainHeartbeat(ctx, logger, workerID)") {
-		t.Error("heal-collection-gaps must run the set-wide heartbeat for the whole run")
+	// v0.29.65: the heal's run lives in heal_collection_gaps_run.go; its
+	// heartbeat covers the whole run (TestGapHealFleet* drive the order).
+	healer := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/heal_collection_gaps_run.go"))
+	run := srctest.FuncBody(t, healer, "func (r *gapHealRun) run(")
+	hbAt := strings.Index(run, "r.store.StartDrainHeartbeat(ctx, r.logger, r.workerID)")
+	workAt := strings.Index(run, "r.runFleet(")
+	if hbAt < 0 || workAt < 0 || hbAt > workAt {
+		t.Error("heal-collection-gaps must start the set-wide heartbeat before its work, for the whole run")
 	}
 }
 

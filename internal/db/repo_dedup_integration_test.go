@@ -650,3 +650,40 @@ func TestDedupOnePairWithAVanishedLoserIsANoOp(t *testing.T) {
 		t.Errorf("a vanished loser must be a no-op, got %v", err)
 	}
 }
+
+// TestDedupRenamePairKeepsTheLosersAdoption — v0.29.64 review round 1: a
+// rename pair skips the forge-ID fill, so an empty winner compared "" with
+// the loser's ID and every adoption landed PENDING (the operator's record
+// discarded); once the next scan filled the winner the change read as
+// superseded and could never be adopted again. An empty winner now
+// carries: it has no ID that contradicts the record.
+func TestDedupRenamePairKeepsTheLosersAdoption(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_renameadopt"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	loserURL := strings.ToLower(winnerURL)
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, loserURL)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '22' WHERE repo_id = $1`, loserID)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, adopted_at, adopted_by, note)
+		VALUES ($1, '11', '22', NOW(), 'admin@example.org', 'continuation')`, loserID)
+	if err := DedupRenamedRepoPair(ctx, store, winnerID, loserID, winnerURL, loserURL); err != nil {
+		t.Fatalf("DedupRenamedRepoPair: %v", err)
+	}
+	var adopted bool
+	var by, note, stored string
+	if err := store.pool.QueryRow(ctx, `
+		SELECT c.adopted_at IS NOT NULL, c.adopted_by, c.note, COALESCE(r.platform_repo_id, '')
+		  FROM aveloxis_data.repo_forge_id_changes c JOIN aveloxis_data.repos r USING (repo_id)
+		 WHERE c.repo_id = $1`, winnerID).Scan(&adopted, &by, &note, &stored); err != nil {
+		t.Fatalf("the winner must hold the change: %v", err)
+	}
+	if !adopted || by != "admin@example.org" || note != "continuation" {
+		t.Errorf("the rename merge discarded the adoption: adopted=%v by=%q note=%q", adopted, by, note)
+	}
+	if stored != "" {
+		t.Errorf("a rename pair still never copies the loser's ID: %q", stored)
+	}
+}

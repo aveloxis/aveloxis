@@ -122,3 +122,38 @@ func TestQueueStatsCountsDrainParkedSeparately(t *testing.T) {
 		}
 	}
 }
+
+// TestGetQueueStatus — the single-repo heal explains a refused drain lock
+// from the queue row: its status when there is one, found=false when the
+// repo has no row (prelim dequeues gone repos and retained rename
+// duplicates). A lookup error is returned, never read as "no row" (SR-5).
+func TestGetQueueStatus(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	collecting := seedDrainQueueRow(t, ctx, store, "qs-c-"+suffix, "collecting", strptr("w-"+suffix))
+	if st, found, err := store.GetQueueStatus(ctx, collecting); err != nil || !found || st.Status != "collecting" || st.LockedBy != "w-"+suffix || st.Drain() {
+		t.Errorf("collecting row: %+v %v %v", st, found, err)
+	}
+	parked := seedDrainQueueRow(t, ctx, store, "qs-d-"+suffix, "collecting", strptr(drainLockedBy("w-"+suffix)))
+	if st, found, err := store.GetQueueStatus(ctx, parked); err != nil || !found || !st.Drain() {
+		t.Errorf("drain-parked row: %+v %v %v", st, found, err)
+	}
+	// A queued row has no owner (NULL locked_by): the state explainSkip's
+	// "became queued" arm reads (review round 10: dropping the COALESCE
+	// made it "status could not be read: cannot scan NULL").
+	queued := seedDrainQueueRow(t, ctx, store, "qs-q-"+suffix, "queued", nil)
+	if st, found, err := store.GetQueueStatus(ctx, queued); err != nil || !found || st.Status != "queued" || st.LockedBy != "" || st.Drain() {
+		t.Errorf("queued row with no owner: %+v %v %v", st, found, err)
+	}
+	gone := seedDrainQueueRow(t, ctx, store, "qs-g-"+suffix, "queued", nil)
+	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, gone)
+	if st, found, err := store.GetQueueStatus(ctx, gone); err != nil || found || st.Status != "" {
+		t.Errorf("no queue row: %+v %v %v", st, found, err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, err := store.GetQueueStatus(cctx, collecting); err == nil {
+		t.Error("a failed lookup must return its error, not read as 'no row'")
+	}
+}

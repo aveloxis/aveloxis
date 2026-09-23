@@ -1199,8 +1199,8 @@ Admin-only:
   Response: `{ok: true, changed: bool}` — `changed=false` means the
   request was already decided (idempotent double-click).
 - `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`:
-  `queued`, `collecting` (real jobs), `draining` (repos parked for the
-  startup staging drain, v0.29.64) and `total`.
+  `queued`, `collecting` (real jobs), `draining` (repos parked by the
+  startup staging drain or by heal-collection-gaps, v0.29.64) and `total`.
 - `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
   queue, 100 rows per page, optional search. Each job carries the
   repo label (`owner/name`), status, priority, due_at,

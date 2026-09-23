@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestSchedulerRunClosesStoreOnCtxCancel pins the v0.20.0 graceful
@@ -153,13 +155,26 @@ func TestShutdownReleasesDrainParkedLocks(t *testing.T) {
 	if !strings.Contains(helper, "s.logger.Warn(") {
 		t.Error("a failed drain-lock release must be logged")
 	}
-	// The drain goroutine is tracked, so the Wait above covers it.
-	launch := strings.Index(body, `"leftover-staging-drain"`)
-	if launch < 0 {
-		t.Fatal("cannot find the leftover-staging-drain launch")
+	// The drain goroutine is tracked, so the Wait above covers it: it is
+	// launched through goTracked, the one helper that registers on
+	// s.background (v0.29.64 review: the first version inlined Add/Done
+	// and this pin demanded that shape).
+	code := srctest.StripGoComments(src)
+	if !strings.Contains(srctest.StripGoComments(body), `s.goTracked("leftover-staging-drain",`) {
+		t.Error("the leftover-staging drain must be launched with s.goTracked so shutdown's background.Wait covers it")
 	}
-	pre := body[max(0, launch-400):launch]
-	if !strings.Contains(pre, "s.background.Add(1)") {
-		t.Error("the leftover-staging drain goroutine must be tracked by s.background (Add before launch, Done on exit)")
+	gt := strings.Index(code, "func (s *Scheduler) goTracked(")
+	if gt < 0 {
+		t.Fatal("goTracked not found — the drain's tracking cannot be checked")
+	}
+	tracked := code[gt:]
+	if end := strings.Index(tracked[1:], "\nfunc "); end > 0 {
+		tracked = tracked[:end+1]
+	}
+	add := strings.Index(tracked, "s.background.Add(1)")
+	launch := strings.Index(tracked, "safego.Go(")
+	done := strings.Index(tracked, "defer s.background.Done()")
+	if add < 0 || launch < 0 || done < 0 || !(add < launch && launch < done) {
+		t.Error("goTracked must Add(1) BEFORE launching the goroutine (an Add inside it races Wait) and Done inside it")
 	}
 }

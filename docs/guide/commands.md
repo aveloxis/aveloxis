@@ -1105,7 +1105,7 @@ Treats a repository that was deleted and re-created on its forge under the
 same URL as a continuation of the one Aveloxis already tracks (v0.29.62).
 
 ```bash
-aveloxis adopt-forge-id --list                         # recorded changes, pending first
+aveloxis adopt-forge-id --list                         # recorded changes: pending, superseded, adopted
 aveloxis adopt-forge-id --repo-id 126257 --repo-id 98226
 aveloxis adopt-forge-id --repo-id 126257 --note "upstream re-created by the org"
 ```
@@ -1130,9 +1130,12 @@ stops once the change is adopted.
 
 An admin can do the same from the web GUI (v0.29.63): the approvals page
 lists pending changes under "Re-created repositories", each with an Adopt
-button. The button adopts the change the org scan recorded, with the
-creation date the scan saw; it does not ask the forge again, because the api
+button, one per recorded change. The button adopts exactly that change, with
+the creation date the scan saw; it does not ask the forge again, because the api
 process holds no forge keys. The card is hidden when nothing is pending.
+When the scan recorded two changes for one repository and one is adopted,
+the other no longer starts from the stored ID: `--list` marks it
+superseded, it leaves the card, and adopting it is refused.
 
 ## `aveloxis backfill-repo-metadata`
 

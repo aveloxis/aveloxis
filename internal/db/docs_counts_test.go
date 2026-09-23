@@ -138,10 +138,12 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 	data, ops, scan, _ := schemaCounts(t)
 	total := data + ops + scan
 	valid := map[int]bool{data: true, ops: true, scan: true, total: true}
-	headingsSeen := 0
+	headingsSeen := map[string]bool{}
 	defer func() {
-		if headingsSeen < 3 {
-			t.Errorf("found %d per-schema headings (want the three in docs/architecture/overview.md) — schemaHeadingRe is not reading them", headingsSeen)
+		for _, schema := range []string{"aveloxis_data", "aveloxis_ops", "aveloxis_scan"} {
+			if !headingsSeen[schema] {
+				t.Errorf("no per-schema heading for %s was checked (docs/architecture/overview.md has one per schema) — schemaHeadingRe is not reading it", schema)
+			}
 		}
 	}()
 
@@ -166,7 +168,7 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 			if n != want {
 				t.Errorf("%s says %q but schema.sql defines %d tables in %s", path, m[0], want, m[1])
 			}
-			headingsSeen++
+			headingsSeen[m[1]] = true
 		}
 		for _, m := range tablePhraseRe.FindAllStringSubmatch(string(src), -1) {
 			n, _ := strconv.Atoi(m[1])

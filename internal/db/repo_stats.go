@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // RepoStats holds gathered (actual row counts) and metadata (from repo_info API snapshot)
@@ -185,19 +186,24 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		repoID).Scan(&st.ForkedFrom, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fork lineage: %w", err)
 	}
-	// Non-fatal (v0.29.62 review round 2): an api running before the
-	// migrate that creates repo_forge_id_changes (worklist 49's incident)
-	// must still serve the rest of the page. The failure is logged; the
-	// notice is simply absent.
-	// A cancelled request is the caller leaving, not a failure: return it.
-	if changes, err := s.repoForgeIDChangesAdopted(ctx, repoID); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, err
+	// The forge-ID notice degrades ONLY when its table does not exist yet
+	// (v0.29.62 review round 2: an api running before the migrate that
+	// creates repo_forge_id_changes, worklist 49's incident, must still
+	// serve the rest of the page). Any other failure fails the stats: a
+	// page that silently drops "this may affect statistics" is a wrong
+	// answer, not a degraded one (v0.29.63 review, SR-5). A caller leaving
+	// (cancelled or past its deadline) is not a failure.
+	changes, ferr := s.repoForgeIDChangesAdopted(ctx, repoID)
+	if ferr != nil {
+		if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+			return nil, ferr
 		}
-		s.logger.Error("repo stats: forge-ID changes lookup failed — the page renders without the notice", "repo_id", repoID, "error", err)
-	} else {
-		st.ForgeIDChanges = changes
+		if !forgeIDTableMissing(ferr) {
+			return nil, fmt.Errorf("forge-ID changes: %w", ferr)
+		}
+		s.logger.Error("repo stats: repo_forge_id_changes does not exist — run aveloxis migrate; the page renders without the forge-ID notice", "repo_id", repoID, "error", ferr)
 	}
+	st.ForgeIDChanges = changes
 
 	// v0.27.50: last observed activity — drives the chart last-active
 	// ceiling and the dormant/archived chip. Non-fatal: an error here
@@ -436,4 +442,12 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	}
 
 	return result, nil
+}
+
+// forgeIDTableMissing reports whether err is PostgreSQL's undefined_table
+// (42P01): the one failure GetRepoStats may degrade past, because the
+// schema is behind the binary rather than the data being unreadable.
+func forgeIDTableMissing(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }

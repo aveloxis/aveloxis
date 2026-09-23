@@ -98,17 +98,22 @@ POST /api/v1/admin/forge-id-changes/{repoID}/adopt
 
 A repository deleted and re-created upstream under the same URL gets a new
 forge ID. The org scan records the change as pending (it never changes the
-repository row itself). `GET` lists the recorded changes, pending first
-(`pending=1` lists only those): `repo_id`, `repo_git`, `old_forge_id`,
-`new_forge_id`, `forge_created_at` (the new repository's creation date, when
-the scan listed it), `first_observed_at`, `last_observed_at`, and for adopted
-ones `adopted_at`, `adopted_by`, `note`.
+repository row itself). `GET` lists the recorded changes: `repo_id`,
+`repo_git`, `old_forge_id`, `new_forge_id`, `forge_created_at` (the new
+repository's creation date, when the scan listed it), `first_observed_at`,
+`last_observed_at`, and for adopted ones `adopted_at`, `adopted_by`, `note`.
+A pending change whose old ID is no longer the one the repository stores
+(another change for it was adopted) is `superseded`: it stays in the full
+list as history and can no longer be adopted. `pending=1` lists only the
+adoptable changes; the full list orders adoptable, superseded, then adopted.
 
 `POST …/adopt` treats the new repository as a continuation: it moves the
 stored forge ID to the one the scan observed and records the admin's login.
-The optional JSON body `{"note": "…"}` (at most 1,000 bytes) is stored with
-it. Answers `404` when nothing is pending for the repository and `409` when
-the stored ID changed since the observation (nothing is written). The api
+The JSON body names the change, since a repository can have more than one:
+`{"old_forge_id": "…", "new_forge_id": "…", "note": "…"}` (the note is
+optional, at most 1,000 bytes). Answers `400` without both IDs, `404` when
+no unadopted change with that pair is recorded, and `409` when the change is
+superseded (nothing is written). The api
 process holds no forge API keys, so this adopts the recorded observation;
 `aveloxis adopt-forge-id` asks the forge live. Both require an admin Bearer
 session.

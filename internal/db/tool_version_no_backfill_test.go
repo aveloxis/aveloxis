@@ -63,38 +63,69 @@ func TestMigrateNeverBackfillsToolVersion(t *testing.T) {
 // run restamping its own row (renameRecoveryUpdateSQL does this). A
 // tool_version assignment without that refresh is a backfill.
 //
-// Every assignment whose value is a parameter, a quoted literal or a Go
-// concatenation (`'"+ToolVersion+"'`) is judged by ITS OWN SET list: the
-// text from the nearest SET before it to the next WHERE, RETURNING or end
-// of the literal after it. An upsert's `tool_version =
-// EXCLUDED.tool_version` is the refresh path and does not match. Judging
-// each site alone is the v0.29.62 round-2 fix: the old scan let one paired
-// statement anywhere in a file excuse an unpaired one elsewhere in it, and
-// saw only a first-item parameter.
+// Every assignment is judged by ITS OWN SET list: the text from the nearest
+// SET before it to the next WHERE, RETURNING, `;` or end of a string
+// literal (a backtick or a double quote) after it. Any value counts —
+// a parameter, a literal, a Go concatenation, a Sprintf verb, COALESCE —
+// except `EXCLUDED.tool_version`, the upsert refresh path. A `DO UPDATE SET`
+// list belongs to an upsert, which
+// TestUpsertsRefreshToolVersionWithDataCollectionDate owns. The tuple form
+// `SET (tool_version, …) = (…)` is an assignment too.
+//
+// History: v0.29.62 round 2 found one paired statement excusing another
+// anywhere in its file; the v0.29.63 review found a SET list running on
+// into the NEXT statement's WHERE when the SQL sat in double-quoted
+// literals (no backtick to stop it), and the Sprintf / backtick-concat /
+// COALESCE / tuple shapes unseen.
 var (
-	tvAssignRe = regexp.MustCompile(`(?i)\btool_version\s*=\s*(?:\$\d|'|"\s*\+)`)
+	tvAssignRe = regexp.MustCompile(`(?i)\btool_version\s*=\s*`)
+	tvTupleRe  = regexp.MustCompile(`(?i)\bSET\s*\(([^)]*)\)\s*=`)
 	tvSetRe    = regexp.MustCompile(`(?i)\bSET\b`)
-	tvEndRe    = regexp.MustCompile("(?i)\\bWHERE\\b|\\bRETURNING\\b|`")
+	tvDoUpdRe  = regexp.MustCompile(`(?i)\bDO\s+UPDATE\s*$`)
+	tvEndRe    = regexp.MustCompile("(?i)\\bWHERE\\b|\\bRETURNING\\b|;|`|\"")
+	// Between a SET and its assignment: a string boundary is allowed there
+	// (a SET list may be split across concatenated literals), a clause end
+	// is not.
+	tvClauseEndRe = regexp.MustCompile("(?i)\\bWHERE\\b|\\bRETURNING\\b|;|`")
 	// The refresh must be a real one: NOW() or a parameter, never the
 	// column assigned to itself (review round 1 on v0.29.62).
-	tvDCDRe = regexp.MustCompile(`(?i)\bdata_collection_date\s*=\s*(?:NOW\(\)|\$\d+)`)
+	tvDCDRe      = regexp.MustCompile(`(?i)\bdata_collection_date\s*=\s*(?:NOW\(\)|\$\d+)`)
+	tvExcludedRe = regexp.MustCompile(`(?i)^(?:EXCLUDED\.)?tool_version\b`)
+	tvColumnRe   = regexp.MustCompile(`(?i)\btool_version\b`)
 )
 
 // toolVersionAssignments returns the unpaired assignments (each with its
 // SET list) and how many paired ones it saw.
 func toolVersionAssignments(code string) (bad []string, paired int) {
+	var sites [][2]int // [start of the value or tuple, end of the match]
 	for _, loc := range tvAssignRe.FindAllStringIndex(code, -1) {
-		sets := tvSetRe.FindAllStringIndex(code[:loc[0]], -1)
+		if tvExcludedRe.MatchString(code[loc[1]:]) {
+			continue // EXCLUDED.tool_version (or itself): not a new value
+		}
+		sites = append(sites, [2]int{loc[0], loc[1]})
+	}
+	for _, m := range tvTupleRe.FindAllStringSubmatchIndex(code, -1) {
+		if tvColumnRe.MatchString(code[m[2]:m[3]]) {
+			sites = append(sites, [2]int{m[0] + len("SET"), m[1]})
+		}
+	}
+	for _, site := range sites {
+		sets := tvSetRe.FindAllStringIndex(code[:site[0]], -1)
 		if len(sets) == 0 {
-			continue // not an UPDATE's SET list
+			continue // not in an UPDATE's SET list
 		}
 		from := sets[len(sets)-1][0]
-		if tvEndRe.MatchString(code[from:loc[0]]) {
+		if tvClauseEndRe.MatchString(code[from:site[0]]) {
 			continue // past its SET list: a WHERE comparison, not an assignment
 		}
+		if tvDoUpdRe.MatchString(code[:from]) {
+			continue // an upsert's DO UPDATE SET: TestUpsertsRefreshToolVersionWithDataCollectionDate
+		}
 		to := len(code)
-		if e := tvEndRe.FindStringIndex(code[loc[1]:]); e != nil {
-			to = loc[1] + e[0]
+		if e := tvEndRe.FindStringIndex(code[site[1]:]); e != nil {
+			to = site[1] + e[0]
+			// A value that is itself a string boundary (`= '"+v+"'`, `= ` + v`)
+			// ends the literal at once: the list is what came before it.
 		}
 		list := code[from:to]
 		if tvDCDRe.MatchString(list) {
@@ -127,6 +158,15 @@ func TestToolVersionAssignmentsJudgesEachSetList(t *testing.T) {
 				"b := \"UPDATE \" + tbl + \" SET tool_version = $1\"", 1, 1},
 		{"a WHERE comparison is not an assignment", "`UPDATE t SET cntrb_login = $2 WHERE tool_version = $1`", 0, 0},
 		{"upsert refresh path", "`INSERT INTO t (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET tool_version = EXCLUDED.tool_version`", 0, 0},
+		// The v0.29.63 review's probes:
+		{"a later double-quoted paired statement does not excuse an earlier one",
+			"a := \"UPDATE \" + tbl + \" SET tool_version = $1\"\n" +
+				"b := \"UPDATE t2 SET data_collection_date = NOW() WHERE id = $1\"", 1, 0},
+		{"Sprintf verb", "q := fmt.Sprintf(\"UPDATE %s SET tool_version = %s\", tbl, v)", 1, 0},
+		{"backtick concatenation", "q := `UPDATE t SET tool_version = ` + v", 1, 0},
+		{"COALESCE value", "`UPDATE t SET tool_version = COALESCE($1, tool_version)`", 1, 0},
+		{"tuple assignment", "`UPDATE t SET (tool_version, x) = ($1, $2)`", 1, 0},
+		{"upsert DO UPDATE SET with a parameter belongs to the upsert test", "`INSERT INTO t (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET tool_version = $2`", 0, 0},
 	}
 	for _, c := range cases {
 		bad, paired := toolVersionAssignments(c.code)

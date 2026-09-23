@@ -426,15 +426,29 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		// repository both variants point at, and an adopted one is the
 		// operator's record — repoint it, then drop the duplicates. When
 		// the winner already holds the same change the two MERGE (v0.29.63,
-		// round-2 #12 on v0.29.62: DO NOTHING kept the winner's pending
-		// copy and deleted an adoption made on the loser): the span covers
-		// both observations and an adoption on either side is kept whole
-		// (adopted_at, adopted_by and note travel together).
+		// round-2 #12 on v0.29.62: DO NOTHING deleted an adoption made on
+		// the loser); the span covers both observations.
+		//
+		// An adoption travels (adopted_at, adopted_by and note together)
+		// only when the WINNER stores the change's new ID, because
+		// "adopted" means the stored ID moved, and dedup never writes
+		// platform_repo_id (the v0.29.63 review: carrying it onto a winner
+		// still at the old ID showed an adopted notice on a row that never
+		// moved, and the change could no longer be adopted there). Such a
+		// change arrives PENDING on the winner, one Adopt click away.
 		{"repoint repo_forge_id_changes", `
 			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
 				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note)
-			SELECT $2, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note
-			  FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1
+			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
+			       CASE WHEN carries THEN l.adopted_at END,
+			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
+			       CASE WHEN carries THEN l.note ELSE '' END
+			  FROM aveloxis_data.repo_forge_id_changes l
+			  CROSS JOIN LATERAL (
+			      SELECT l.adopted_at IS NOT NULL AND EXISTS (
+			          SELECT 1 FROM aveloxis_data.repos w
+			           WHERE w.repo_id = $2 AND w.platform_repo_id = l.new_forge_id) AS carries) k
+			 WHERE l.repo_id = $1
 			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
 				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
 				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),

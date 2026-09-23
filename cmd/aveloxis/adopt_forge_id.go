@@ -164,6 +164,9 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 				}
 				for _, c := range changes {
 					state := "PENDING"
+					if c.Superseded {
+						state = "superseded (the stored ID is no longer " + c.OldForgeID + ")"
+					}
 					if c.AdoptedAt != nil {
 						state = "adopted " + c.AdoptedAt.UTC().Format("2006-01-02")
 					}

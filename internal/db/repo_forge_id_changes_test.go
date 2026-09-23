@@ -120,14 +120,14 @@ func TestAdoptPendingForgeIDChange(t *testing.T) {
 	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-button")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '318353587' WHERE repo_id = $1`, repoID)
 
-	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "admin@example.org", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "318353587", "1373725939", "admin@example.org", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
 		t.Fatalf("nothing observed yet: want ErrNoPendingForgeIDChange, got %v", err)
 	}
 	created := time.Date(2026, 9, 16, 23, 25, 49, 0, time.UTC)
 	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373725939", created); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "admin@example.org", "from the admin page"); err != nil {
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "318353587", "1373725939", "admin@example.org", "from the admin page"); err != nil {
 		t.Fatalf("adopt the pending change: %v", err)
 	}
 	stats, err := store.GetRepoStats(ctx, repoID)
@@ -138,7 +138,59 @@ func TestAdoptPendingForgeIDChange(t *testing.T) {
 	if c.NewForgeID != "1373725939" || c.ForgeCreatedAt == nil || !c.ForgeCreatedAt.Equal(created) || c.AdoptedBy != "admin@example.org" {
 		t.Errorf("adopted from the observation: %+v", c)
 	}
-	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "admin@example.org", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "318353587", "1373725939", "admin@example.org", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
 		t.Errorf("a second click finds nothing pending: %v", err)
+	}
+}
+
+// TestAdoptPendingForgeIDChangeAdoptsTheClickedPair — review of v0.29.63
+// (finding 1): the scan saw A→B and later A→C. Adopt keyed by repository
+// took the NEWEST row (A→C) whichever the admin clicked, and the other row
+// then stayed pending forever, answering 409 on every click. Adopt now
+// names the pair; a pending row whose old ID is no longer the stored one is
+// SUPERSEDED — kept as history, marked in the full list, left out of the
+// pending list, and refused (not silently re-targeted) when adopted.
+func TestAdoptPendingForgeIDChangeAdoptsTheClickedPair(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-pair")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = 'A1' WHERE repo_id = $1`, repoID)
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "B2", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_forge_id_changes SET last_observed_at = NOW() - interval '1 hour' WHERE repo_id = $1`, repoID)
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "C3", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "A1", "Z9", "admin", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
+		t.Errorf("a pair nobody observed: want ErrNoPendingForgeIDChange, got %v", err)
+	}
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "A1", "B2", "admin", ""); err != nil {
+		t.Fatalf("adopt the clicked (older) pair: %v", err)
+	}
+	if got, _ := store.GetRepoForgeID(ctx, repoID); got != "B2" {
+		t.Fatalf("stored forge ID %q, want the clicked pair's B2", got)
+	}
+	if pending, err := store.ListForgeIDChanges(ctx, true); err != nil || len(filterRepo(pending, repoID)) != 0 {
+		t.Errorf("A1→C3 no longer starts from the stored ID — it must leave the pending list: %+v %v", filterRepo(pending, repoID), err)
+	}
+	all, err := store.ListForgeIDChanges(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawSuperseded bool
+	for _, c := range filterRepo(all, repoID) {
+		if c.NewForgeID == "C3" {
+			sawSuperseded = c.Superseded && c.AdoptedAt == nil
+		}
+		if c.NewForgeID == "B2" && c.Superseded {
+			t.Error("an adopted change is never superseded")
+		}
+	}
+	if !sawSuperseded {
+		t.Error("the full list keeps A1→C3 as history, marked superseded")
+	}
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "A1", "C3", "admin", ""); !errors.Is(err, ErrForgeIDNotAsExpected) {
+		t.Errorf("adopting a superseded pair: want ErrForgeIDNotAsExpected, got %v", err)
 	}
 }

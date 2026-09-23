@@ -27,8 +27,13 @@ type ForgeIDChange struct {
 	AdoptedAt       *time.Time `json:"adopted_at,omitempty"`
 	AdoptedBy       string     `json:"adopted_by,omitempty"`
 	Note            string     `json:"note,omitempty"`
-	// Listing fields (ListForgeIDChanges): the repository as stored.
-	RepoGit string `json:"repo_git,omitempty"`
+	// Listing fields (ListForgeIDChanges): the repository as stored, and
+	// whether a pending change is SUPERSEDED — its old ID is no longer the
+	// stored one (another change was adopted), so it can no longer be
+	// adopted. Derived from the current state on every read, never stored,
+	// so it cannot drift; the row stays as the scan's history.
+	RepoGit    string `json:"repo_git,omitempty"`
+	Superseded bool   `json:"superseded,omitempty"`
 }
 
 // ErrForgeIDNotAsExpected — AdoptForgeID's guard: the stored forge ID is
@@ -55,27 +60,27 @@ func (s *PostgresStore) recordForgeIDObservation(ctx context.Context, repoID int
 	return err
 }
 
-// ErrNoPendingForgeIDChange — AdoptPendingForgeIDChange found nothing the
-// scan observed and nobody has adopted for this repository.
-var ErrNoPendingForgeIDChange = errors.New("no pending forge-ID change for this repository")
+// ErrNoPendingForgeIDChange — AdoptPendingForgeIDChange found no
+// recorded, unadopted change with that (old, new) pair for the repository.
+var ErrNoPendingForgeIDChange = errors.New("no pending forge-ID change with that pair for this repository")
 
-// AdoptPendingForgeIDChange adopts the repository's most recently observed
-// pending change as recorded by the org scan — the new ID and the forge's
-// creation date it listed — through AdoptForgeID, so the same guard
-// applies (the stored ID must still be the change's old ID). The admin
-// page's Adopt button calls it; `aveloxis adopt-forge-id` instead asks the
-// forge live.
-func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID int64, adoptedBy, note string) error {
-	var oldID, newID string
+// AdoptPendingForgeIDChange adopts exactly the change the admin chose —
+// the (oldID, newID) pair the org scan recorded, with the forge's creation
+// date it listed — through AdoptForgeID, so the same guard applies: the
+// stored ID must still be oldID, or ErrForgeIDNotAsExpected (a superseded
+// change is refused, never re-targeted). Keyed by the pair, not by the
+// repository (review of v0.29.63: "the newest pending row" adopted a
+// change the admin had not clicked). The admin page's Adopt button calls
+// it; `aveloxis adopt-forge-id` instead asks the forge live.
+func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID int64, oldID, newID, adoptedBy, note string) error {
 	var created *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT old_forge_id, new_forge_id, forge_created_at
+		SELECT forge_created_at
 		  FROM aveloxis_data.repo_forge_id_changes
-		 WHERE repo_id = $1 AND adopted_at IS NULL
-		 ORDER BY last_observed_at DESC, change_id DESC
-		 LIMIT 1`, repoID).Scan(&oldID, &newID, &created)
+		 WHERE repo_id = $1 AND old_forge_id = $2 AND new_forge_id = $3 AND adopted_at IS NULL`,
+		repoID, oldID, newID).Scan(&created)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("repo %d: %w", repoID, ErrNoPendingForgeIDChange)
+		return fmt.Errorf("repo %d %s→%s: %w", repoID, oldID, newID, ErrNoPendingForgeIDChange)
 	}
 	if err != nil {
 		return fmt.Errorf("repo %d pending forge-ID change: %w", repoID, err)
@@ -120,17 +125,21 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 	return tx.Commit(ctx)
 }
 
-// ListForgeIDChanges lists the recorded changes, pending only (observed,
-// not adopted) or all — pending first, then newest observation first —
-// with each repository's stored URL.
+// ListForgeIDChanges lists the recorded changes with each repository's
+// stored URL. pendingOnly lists the ADOPTABLE ones: not adopted, and
+// starting from the ID the repository stores now. The full list orders
+// adoptable first, then superseded (marked), then adopted, newest
+// observation first within each.
 func (s *PostgresStore) ListForgeIDChanges(ctx context.Context, pendingOnly bool) ([]ForgeIDChange, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.repo_id, c.old_forge_id, c.new_forge_id, c.first_observed_at, c.last_observed_at,
-		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, COALESCE(r.repo_git, '')
+		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, COALESCE(r.repo_git, ''),
+		       (c.adopted_at IS NULL AND c.old_forge_id IS DISTINCT FROM r.platform_repo_id) AS superseded
 		  FROM aveloxis_data.repo_forge_id_changes c
 		  JOIN aveloxis_data.repos r USING (repo_id)
-		 WHERE NOT $1 OR c.adopted_at IS NULL
-		 ORDER BY (c.adopted_at IS NOT NULL), c.last_observed_at DESC, c.change_id DESC`, pendingOnly)
+		 WHERE NOT $1 OR (c.adopted_at IS NULL AND c.old_forge_id = r.platform_repo_id)
+		 ORDER BY (c.adopted_at IS NOT NULL), (c.old_forge_id IS DISTINCT FROM r.platform_repo_id),
+		          c.last_observed_at DESC, c.change_id DESC`, pendingOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +148,7 @@ func (s *PostgresStore) ListForgeIDChanges(ctx context.Context, pendingOnly bool
 	for rows.Next() {
 		var c ForgeIDChange
 		if err := rows.Scan(&c.RepoID, &c.OldForgeID, &c.NewForgeID, &c.FirstObservedAt, &c.LastObservedAt,
-			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.RepoGit); err != nil {
+			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.RepoGit, &c.Superseded); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

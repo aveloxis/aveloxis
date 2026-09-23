@@ -503,51 +503,76 @@ func TestDedupOnePairSurvivesMsgRefCollision(t *testing.T) {
 }
 
 // TestDedupOnePairKeepsAnAdoptedForgeIDChange — v0.29.62 review round 2
-// (#12): when both case variants recorded the SAME forge-ID change and only
-// the loser's copy was adopted, the merge must keep the adoption. The
-// repoint used DO NOTHING on the (repo_id, old, new) key, so the winner's
-// pending copy survived and the operator's adoption was deleted with the
-// loser.
+// (#12) and the v0.29.63 review (finding 3): both case variants recorded
+// the SAME forge-ID change and only the loser's copy was adopted.
+//
+//   - The winner already stores the new ID: the adoption is true of the
+//     winner, so it is kept whole (DO NOTHING used to delete it).
+//   - The winner still stores the OLD ID: carrying "adopted" would claim a
+//     move that never happened on this row (the page's notice, a GUI 404,
+//     and the mismatch ERROR every scan). The change stays PENDING and
+//     adoptable with one click; dedup never writes platform_repo_id.
+//
+// Either way the merged row spans both observations.
 func TestDedupOnePairKeepsAnAdoptedForgeIDChange(t *testing.T) {
-	ctx, store := caseConnect(t)
-	const slug = "_avdedup_forgeid"
-	cleanupDedupRepos(ctx, t, store, slug)
-	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	for _, tc := range []struct {
+		name          string
+		winnerStored  string
+		wantAdopted   bool
+		wantAdoptedBy string
+	}{
+		{"winner already stores the new ID", "22", true, "admin@example.org"},
+		{"winner still stores the old ID", "11", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, store := caseConnect(t)
+			const slug = "_avdedup_forgeid"
+			cleanupDedupRepos(ctx, t, store, slug)
+			t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
 
-	winnerURL := "https://github.com/" + slug + "_Org/Repo"
-	loserURL := strings.ToLower(winnerURL)
-	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, loserURL)
-	mustExecRetry(ctx, t, store, `
-		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at)
-		VALUES ($1, '11', '22', NOW() - interval '2 days', NOW() - interval '1 day')`, winnerID)
-	mustExecRetry(ctx, t, store, `
-		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note)
-		VALUES ($1, '11', '22', NOW() - interval '3 days', NOW(), NOW() - interval '4 days', NOW(), 'admin@example.org', 'continuation')`, loserID)
+			winnerURL := "https://github.com/" + slug + "_Org/Repo"
+			loserURL := strings.ToLower(winnerURL)
+			winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, loserURL)
+			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = $2 WHERE repo_id = $1`, winnerID, tc.winnerStored)
+			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '22' WHERE repo_id = $1`, loserID)
+			mustExecRetry(ctx, t, store, `
+				INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at)
+				VALUES ($1, '11', '22', NOW() - interval '2 days', NOW() - interval '1 day')`, winnerID)
+			mustExecRetry(ctx, t, store, `
+				INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note)
+				VALUES ($1, '11', '22', NOW() - interval '3 days', NOW(), NOW() - interval '4 days', NOW(), 'admin@example.org', 'continuation')`, loserID)
 
-	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
-	if pair == nil {
-		t.Fatal("candidate query did not surface the seeded pair")
-	}
-	if err := dedupOnePair(ctx, store, *pair); err != nil {
-		t.Fatalf("dedupOnePair: %v", err)
-	}
-	var (
-		n                      int
-		adoptedBy, note        string
-		adopted, created       bool
-		firstOldest, lastNewer bool
-	)
-	if err := store.pool.QueryRow(ctx, `
-		SELECT COUNT(*) OVER (), COALESCE(adopted_by, ''), COALESCE(note, ''), adopted_at IS NOT NULL, forge_created_at IS NOT NULL,
-		       first_observed_at < NOW() - interval '2 days 12 hours', last_observed_at > NOW() - interval '12 hours'
-		  FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, winnerID,
-	).Scan(&n, &adoptedBy, &note, &adopted, &created, &firstOldest, &lastNewer); err != nil {
-		t.Fatalf("the winner must hold the change: %v", err)
-	}
-	if n != 1 || !adopted || adoptedBy != "admin@example.org" || note != "continuation" || !created {
-		t.Errorf("the adoption was lost in the merge: rows=%d adopted=%v by=%q note=%q created=%v", n, adopted, adoptedBy, note, created)
-	}
-	if !firstOldest || !lastNewer {
-		t.Errorf("the merged row must span both observations: first is the older (%v), last the newer (%v)", firstOldest, lastNewer)
+			pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+			if pair == nil {
+				t.Fatal("candidate query did not surface the seeded pair")
+			}
+			if err := dedupOnePair(ctx, store, *pair); err != nil {
+				t.Fatalf("dedupOnePair: %v", err)
+			}
+			var (
+				n                      int
+				adoptedBy              string
+				adopted, created       bool
+				firstOldest, lastNewer bool
+				stored                 string
+			)
+			if err := store.pool.QueryRow(ctx, `
+				SELECT COUNT(*) OVER (), adopted_by, adopted_at IS NOT NULL, forge_created_at IS NOT NULL,
+				       first_observed_at < NOW() - interval '2 days 12 hours', last_observed_at > NOW() - interval '12 hours',
+				       (SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1)
+				  FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, winnerID,
+			).Scan(&n, &adoptedBy, &adopted, &created, &firstOldest, &lastNewer, &stored); err != nil {
+				t.Fatalf("the winner must hold the change: %v", err)
+			}
+			if n != 1 || adopted != tc.wantAdopted || adoptedBy != tc.wantAdoptedBy || !created {
+				t.Errorf("rows=%d adopted=%v by=%q created=%v; want adopted=%v by=%q", n, adopted, adoptedBy, created, tc.wantAdopted, tc.wantAdoptedBy)
+			}
+			if stored != tc.winnerStored {
+				t.Errorf("dedup must not move the winner's stored forge ID: %q, want %q", stored, tc.winnerStored)
+			}
+			if !firstOldest || !lastNewer {
+				t.Errorf("the merged row must span both observations: first is the older (%v), last the newer (%v)", firstOldest, lastNewer)
+			}
+		})
 	}
 }

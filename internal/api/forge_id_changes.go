@@ -48,6 +48,13 @@ func (s *Server) handleAdminForgeIDChanges(w http.ResponseWriter, r *http.Reques
 // operators, not rendered on the public page).
 const adoptNoteMaxBytes = 1000
 
+// adoptBodyMaxBytes bounds the raw request body. JSON may spell one byte
+// of the note as a six-byte \uXXXX escape, so a note at the limit can take
+// six times its size on the wire; the two forge IDs and the object's keys
+// fit in the fixed allowance (a forge ID is a decimal integer, at most 20
+// digits for an int64). The note's own limit is checked after decoding.
+const adoptBodyMaxBytes = 6*adoptNoteMaxBytes + 256
+
 func (s *Server) handleAdminForgeIDAdopt(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireAdmin(w, r)
 	if !ok {
@@ -58,28 +65,31 @@ func (s *Server) handleAdminForgeIDAdopt(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)
 		return
 	}
+	// The body names the change the admin chose (review of v0.29.63:
+	// adopting "the repository's newest pending change" adopted a pair the
+	// admin had not clicked).
 	var body struct {
-		Note string `json:"note"`
+		OldForgeID string `json:"old_forge_id"`
+		NewForgeID string `json:"new_forge_id"`
+		Note       string `json:"note"`
 	}
-	if r.Body != nil {
-		// Room for the JSON wrapper around a maximal note; a body past it
-		// is refused as too long rather than cut into invalid JSON.
-		const maxBody = adoptNoteMaxBytes + 64
-		raw, rerr := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
-		if rerr != nil {
-			http.Error(w, "could not read the request body", http.StatusBadRequest)
-			return
-		}
-		if len(raw) > maxBody {
-			http.Error(w, "note too long", http.StatusBadRequest)
-			return
-		}
-		if len(raw) > 0 {
-			if jerr := json.Unmarshal(raw, &body); jerr != nil {
-				http.Error(w, "invalid JSON body", http.StatusBadRequest)
-				return
-			}
-		}
+	raw, rerr := io.ReadAll(io.LimitReader(r.Body, adoptBodyMaxBytes+1))
+	if rerr != nil {
+		s.logger.Warn("admin forge-ID adopt: request body unreadable", "repo_id", repoID, "error", rerr)
+		http.Error(w, "could not read the request body", http.StatusBadRequest)
+		return
+	}
+	if len(raw) > adoptBodyMaxBytes {
+		http.Error(w, "request body too large", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		http.Error(w, `invalid JSON body: want {"old_forge_id", "new_forge_id", "note"}`, http.StatusBadRequest)
+		return
+	}
+	if body.OldForgeID == "" || body.NewForgeID == "" {
+		http.Error(w, "old_forge_id and new_forge_id are required: they name the change to adopt", http.StatusBadRequest)
+		return
 	}
 	if len(body.Note) > adoptNoteMaxBytes {
 		http.Error(w, "note too long", http.StatusBadRequest)
@@ -90,21 +100,24 @@ func (s *Server) handleAdminForgeIDAdopt(w http.ResponseWriter, r *http.Request)
 		s.logger.Warn("admin forge-ID adopt: admin label lookup failed — recording the user id", "user_id", info.UserID, "error", lerr)
 		adoptedBy = "user " + strconv.Itoa(info.UserID)
 	}
-	err = s.store.AdoptPendingForgeIDChange(r.Context(), repoID, adoptedBy, body.Note)
+	err = s.store.AdoptPendingForgeIDChange(r.Context(), repoID, body.OldForgeID, body.NewForgeID, adoptedBy, body.Note)
 	switch {
 	case errors.Is(err, db.ErrNoPendingForgeIDChange):
-		http.Error(w, "no pending forge-ID change for this repository", http.StatusNotFound)
+		s.logger.Warn("admin forge-ID adopt refused: no such pending change", "repo_id", repoID, "old", logSafe(body.OldForgeID), "new", logSafe(body.NewForgeID), "adopted_by", adoptedBy)
+		http.Error(w, "no pending forge-ID change with that pair for this repository (already adopted, or never observed)", http.StatusNotFound)
 		return
 	case errors.Is(err, db.ErrForgeIDNotAsExpected):
-		// The stored ID moved since the scan observed the change: nothing
-		// was written; the next scan records the current state.
-		http.Error(w, "the stored forge ID changed since this was observed — nothing adopted; the next org scan records the current state", http.StatusConflict)
+		// The stored ID is no longer this change's old ID: another change
+		// was adopted (a second admin, the CLI, or a sibling row). Nothing
+		// was written; the change is superseded and leaves the pending list.
+		s.logger.Warn("admin forge-ID adopt refused: superseded", "repo_id", repoID, "old", logSafe(body.OldForgeID), "new", logSafe(body.NewForgeID), "adopted_by", adoptedBy)
+		http.Error(w, "superseded: the repository no longer stores "+body.OldForgeID+" (another change was adopted) — nothing adopted", http.StatusConflict)
 		return
 	case err != nil:
 		s.logger.Error("admin forge-ID adopt failed", "repo_id", repoID, "error", err)
 		http.Error(w, "adoption failed", http.StatusInternalServerError)
 		return
 	}
-	s.logger.Info("forge-ID change adopted from the admin page", "repo_id", repoID, "adopted_by", adoptedBy)
+	s.logger.Info("forge-ID change adopted from the admin page", "repo_id", repoID, "old", logSafe(body.OldForgeID), "new", logSafe(body.NewForgeID), "adopted_by", adoptedBy)
 	jsonResponse(w, map[string]any{"adopted": true, "repo_id": repoID})
 }

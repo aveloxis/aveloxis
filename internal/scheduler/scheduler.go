@@ -2777,7 +2777,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 
 		// ForgeID (v0.27.102) is the forge's numeric repo ID from the
 		// listing JSON — the rename-proof identity UpsertRepo dedups on.
-		var repos []struct{ URL, Owner, Name, ForgeID string }
+		type orgRepo struct {
+			URL, Owner, Name, ForgeID string
+			CreatedAt                 time.Time // v0.29.63: dates a forge-ID change the scan records
+		}
+		var repos []orgRepo
 		switch g.platform {
 		case "github":
 			if s.ghKeys == nil {
@@ -2799,10 +2803,11 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 						break
 					}
 					var items []struct {
-						ID      int64  `json:"id"` // v0.27.102 — rename-proof numeric identity
-						HTMLURL string `json:"html_url"`
-						Name    string `json:"name"`
-						Owner   struct {
+						ID        int64     `json:"id"` // v0.27.102 — rename-proof numeric identity
+						HTMLURL   string    `json:"html_url"`
+						Name      string    `json:"name"`
+						CreatedAt time.Time `json:"created_at"`
+						Owner     struct {
 							Login string `json:"login"`
 						} `json:"owner"`
 					}
@@ -2819,7 +2824,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 					}
 					found = true
 					for _, item := range items {
-						repos = append(repos, struct{ URL, Owner, Name, ForgeID string }{item.HTMLURL, item.Owner.Login, item.Name, model.ForgeIDString(item.ID)})
+						repos = append(repos, orgRepo{item.HTMLURL, item.Owner.Login, item.Name, model.ForgeIDString(item.ID), item.CreatedAt})
 					}
 					page++
 				}
@@ -2880,7 +2885,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 				// its IDs on every scan pass closes the protection gap
 				// now instead of waiting for each repo's Phase 0 cycle.
 				// Fill-empty-only; best-effort.
-				idErr := s.store.SetPlatformRepoIDIfEmpty(ctx, repoID, repo.ForgeID)
+				idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, repo.ForgeID, repo.CreatedAt)
 				if errors.Is(idErr, context.Canceled) {
 					return // shutdown, not a failure
 				}

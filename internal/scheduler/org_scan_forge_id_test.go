@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestOrgScansCaptureForgeRepoID(t *testing.T) {
@@ -47,7 +49,17 @@ func TestOrgScansCaptureForgeRepoID(t *testing.T) {
 		}
 		// SetPlatformRepoIDIfEmptySeen (v0.29.63) is the same backfill that
 		// also records the listed repository's creation date.
-		if !strings.Contains(body, "SetPlatformRepoIDIfEmpty(") && !strings.Contains(body, "SetPlatformRepoIDIfEmptySeen(") {
+		// The review of v0.29.63 found refreshUserOrgs still on the plain
+		// form (no date), which this pin accepted: every scan must record
+		// the listed repository's created_at.
+		code := srctest.StripGoComments(body)
+		if strings.Contains(code, "SetPlatformRepoIDIfEmpty(") {
+			t.Errorf("%s calls the plain SetPlatformRepoIDIfEmpty — use SetPlatformRepoIDIfEmptySeen with the listing's created_at so a recorded forge-ID change is dated", fn)
+		}
+		if !strings.Contains(code, "`json:\"created_at\"`") {
+			t.Errorf("%s must decode the listing's created_at", fn)
+		}
+		if !strings.Contains(code, "SetPlatformRepoIDIfEmptySeen(") {
 			t.Errorf("%s must backfill the forge ID onto already-tracked rows (found branch)", fn)
 		}
 	}

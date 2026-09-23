@@ -79,6 +79,15 @@ Returns gathered (collected totals) vs metadata (API-reported totals) for a sing
   `(unknown upstream)` means the forge reports fork status but the
   upstream was deleted or is inaccessible. Drives the repo page's
   "Forked from X" chip.
+- **forge_id_changes** (v0.29.62, omitted when empty) lists the forge-ID
+  changes the operator adopted with `aveloxis adopt-forge-id`: the
+  upstream repository was deleted and re-created under the same URL, and
+  the new one was treated as a continuation, so this row holds data from
+  both. Each entry carries `old_forge_id`, `new_forge_id`,
+  `forge_created_at` (when the forge created the new repository; omitted
+  when unknown), `first_observed_at`, `adopted_at`, `adopted_by` and an
+  optional `note`. Pending (observed, not adopted) changes are not listed.
+  The repo page shows one notice per entry. Single-repo endpoint only.
 
 ### Batch Statistics
 

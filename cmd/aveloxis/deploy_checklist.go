@@ -443,6 +443,19 @@ var deployChecklists = map[string][]deployStep{
 	// 8Knot never rebuilds that batch again. Also 0.29.60's index and
 	// 0.29.59's column, both by the same migrate.
 	"0.29.61": v02961DeployChecklist,
+	// v0.29.62: the 2026-09-23 log review — the migrate no longer re-runs
+	// the tool_version backfill (about 1.5 h of full scans per run), plus
+	// one new table (repo_forge_id_changes, born empty) and the
+	// adopt-forge-id command. The plain ladder, and the two known
+	// re-created repositories can be adopted once serve is back.
+	"0.29.62": v02962DeployChecklist,
+}
+
+var v02962DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api before any schema change (never migrate under a live serve)"},
+	{"aveloxis migrate --skip-views", "schema + ledgered backfills; creates aveloxis_data.repo_forge_id_changes (born empty) and re-creates the two supply-chain views; no longer re-scans ~31 tables for tool_version, so it should finish in minutes, not ~1.5 h"},
+	{"aveloxis start all", "resume collection; web and api start only after the migrate has finished"},
+	{"aveloxis adopt-forge-id --list", "optional: the forge-ID changes the org scan recorded; adopt the re-created repositories you treat as continuations with --repo-id (the 2026-09-23 decision: 126257 intel/Enterprise-RAG and 98226 GNOME/gimp-macos-build)"},
 }
 
 var v02961DeployChecklist = []deployStep{

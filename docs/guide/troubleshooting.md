@@ -249,7 +249,7 @@ If only GitHub tokens are configured, GitLab repos will not be collected (and vi
 **Causes:**
 - No API keys loaded (see above) — the staged collection returns 0 items when the key pool is empty
 - Authentication failure (token not valid for this repo)
-- The repo is empty (no issues, PRs, or commits)
+- The repo has no issues, PRs or releases and its clone could not prove it empty (since v0.29.62 a repository whose default branch has no commits completes as collected, with zero data, instead of failing)
 - The repo is private and the token does not have access
 
 **Solution:**

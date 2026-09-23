@@ -134,7 +134,12 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmpty(ctx context.Context, repoID int
 		if stored != "" && stored != forgeID {
 			s.logger.Error("forge-ID mismatch on URL-matched repo — likely upstream delete-and-recreate under the same URL; unrelated histories may be merging on this row",
 				"repo_id", repoID, "stored_forge_id", stored, "observed_forge_id", forgeID,
-				"remediation", "inspect the row's data eras; a split needs operator action (reconcile-repos consolidates the INVERSE case only)")
+				"remediation", "recorded as a pending forge-ID change; `aveloxis adopt-forge-id --repo-id N` treats the new repository as a continuation (reconcile-repos consolidates the INVERSE case only)")
+			// v0.29.62: the observation is RECORDED, not only logged, so the
+			// operator has a list to act on. repos is still untouched.
+			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID); rerr != nil {
+				return fmt.Errorf("record forge-ID change for repo %d: %w", repoID, rerr)
+			}
 		}
 	}
 	return nil

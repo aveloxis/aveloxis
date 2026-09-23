@@ -127,6 +127,8 @@ func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 
 var tablePhraseRe = regexp.MustCompile(`(\d+) tables`)
 
+var schemaBreakdownRe = regexp.MustCompile("(\\d+) in `(aveloxis_data|aveloxis_ops|aveloxis_scan)`")
+
 func TestDocsTableCountsMatchSchema(t *testing.T) {
 	data, ops, scan, _ := schemaCounts(t)
 	total := data + ops + scan
@@ -136,6 +138,16 @@ func TestDocsTableCountsMatchSchema(t *testing.T) {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
+		}
+		// The per-schema breakdown ("102 in `aveloxis_data`") must match
+		// its OWN schema (v0.29.62 review: "101 in" survived a total that
+		// the pin above did check).
+		for _, m := range schemaBreakdownRe.FindAllStringSubmatch(string(src), -1) {
+			n, _ := strconv.Atoi(m[1])
+			want := map[string]int{"aveloxis_data": data, "aveloxis_ops": ops, "aveloxis_scan": scan}[m[2]]
+			if n != want {
+				t.Errorf("%s says %q but schema.sql defines %d tables in %s", path, m[0], want, m[2])
+			}
 		}
 		for _, m := range tablePhraseRe.FindAllStringSubmatch(string(src), -1) {
 			n, _ := strconv.Atoi(m[1])

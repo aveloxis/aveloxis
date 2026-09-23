@@ -306,18 +306,28 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 // maxDeadlockRetries and retry logic mirrors Augur's DatabaseSession.
 const maxDeadlockRetries = 10
 
-// withRetry executes fn, retrying on deadlock (40P01) with exponential backoff.
+// isRetryableTxError reports whether err is a transient whole-transaction
+// failure that retrying the transaction resolves: a deadlock (40P01) or a
+// serialization failure (40001). ONE classifier (SR-17) for withRetry and
+// for the contributor batch's savepoint handlers, which must let exactly
+// these escape rather than skip the contributor (2026-09-23 log review).
+func isRetryableTxError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "40001")
+}
+
+// withRetry executes fn, retrying a deadlock (40P01) or serialization
+// failure (40001) with exponential backoff.
 func (s *PostgresStore) withRetry(ctx context.Context, fn func(ctx context.Context) error) error {
 	for attempt := range maxDeadlockRetries {
 		err := fn(ctx)
 		if err == nil {
 			return nil
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "40P01" {
+		if isRetryableTxError(err) {
 			wait := time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
 			jitter := time.Duration(rand.IntN(100)) * time.Millisecond
-			s.logger.Warn("deadlock detected, retrying", "attempt", attempt+1, "wait", wait+jitter)
+			s.logger.Warn("deadlock or serialization failure, retrying the transaction", "attempt", attempt+1, "wait", wait+jitter, "error", err)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -2064,6 +2074,9 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 					return rbErr
 				}
 				captureErr("contributors_rename_preprobe_update", login, updErr)
+				if isRetryableTxError(updErr) {
+					return updErr // the batch rolls back and withRetry retries it
+				}
 			} else {
 				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
 					return relErr
@@ -2147,6 +2160,9 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 					return rbErr
 				}
 				captureErr("contributors_rename_update", login, updErr)
+				if isRetryableTxError(updErr) {
+					return updErr // the batch rolls back and withRetry retries it
+				}
 				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
 					return relErr
 				}
@@ -2169,6 +2185,9 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			// state, so the next contributor in the for loop
 			// can still commit.
 			captureErr("contributors_insert", login, err)
+			if isRetryableTxError(err) {
+				return err // the batch rolls back and withRetry retries it
+			}
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
 				return relErr
 			}
@@ -2233,6 +2252,9 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 				return rbErr
 			}
 			captureErr("contributor_identities_insert", login, identErr)
+			if isRetryableTxError(identErr) {
+				return identErr // the batch rolls back and withRetry retries it
+			}
 			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
 				return relErr
 			}

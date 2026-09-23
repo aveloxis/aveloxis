@@ -391,9 +391,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 147 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (101 tables + 22 materialized views) -- all collected data
+- **`aveloxis_data`** (102 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -1098,6 +1098,32 @@ Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
 in the aveloxis-gui repo's `deploy/` directory). Read-only on the
 schema; does not run migrations (v0.21.5 policy). Safe alongside an
 active `aveloxis serve`.
+
+## `aveloxis adopt-forge-id`
+
+Treats a repository that was deleted and re-created on its forge under the
+same URL as a continuation of the one Aveloxis already tracks (v0.29.62).
+
+```bash
+aveloxis adopt-forge-id --list                         # recorded changes, pending first
+aveloxis adopt-forge-id --repo-id 126257 --repo-id 98226
+aveloxis adopt-forge-id --repo-id 126257 --note "upstream re-created by the org"
+```
+
+A re-created repository gets a new numeric forge ID. The org scan notices
+the stored and the forge's ID differ, logs a `forge-ID mismatch` ERROR, and
+records the change as pending; it never changes the repository row itself.
+`--repo-id` asks GitHub or GitLab for the repository's current ID and
+creation date, replaces the stored ID, and records the change as adopted.
+It refuses, changing nothing, when the forge lookup fails, when the forge
+still reports the stored ID, or when the stored ID changed in the meantime.
+
+The repository page then shows: "Note: this repository changed forge
+identifiers on <date>, from <old id> to <new id>. This is unusual, and may
+affect statistics." The row holds data from both upstream repositories:
+commit history usually lines up (a re-push keeps the hashes), but issue and
+pull request numbers restart in the new repository. The mismatch ERROR
+stops once the change is adopted.
 
 ## `aveloxis backfill-repo-metadata`
 

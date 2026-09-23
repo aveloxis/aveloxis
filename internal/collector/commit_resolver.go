@@ -331,8 +331,19 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 	// it now yields the gh_user_id too (the old githubEmailSearch returned
 	// login only).
 	login, ghUserID, source, err := ResolveEmailViaAPI(ctx, r.searchClient, email)
-	if err != nil {
+	if err != nil && !platform.IsDefinitiveAnswer(err) {
 		return "", 0, err
+	}
+	if err != nil {
+		// The search REJECTED this email (a 422 on a malformed address,
+		// e.g. "m - @ - halle.us"): a definitive no-match, the answer the
+		// scheduler's search sweep already stamps. It falls through to
+		// the not-found path so the miss is cached for the run — it used
+		// to be an error per commit, re-searched every time, and fed
+		// Consecutive422, the stale-clone abort meant for commit SHAs
+		// (2026-09-23 log review).
+		r.logger.Debug("commit author email rejected by search — no match", "email", email, "error", err)
+		login = ""
 	}
 	if login != "" {
 		r.emailCache[email] = login

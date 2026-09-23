@@ -422,6 +422,17 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"repoint mailing_list_staging", `UPDATE aveloxis_ops.mailing_list_staging SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
+		// v0.29.62: a forge-ID change is a fact about the upstream
+		// repository both variants point at, and an adopted one is the
+		// operator's record — repoint it (skipping a change the winner
+		// already holds), then drop the duplicates.
+		{"repoint repo_forge_id_changes", `
+			INSERT INTO aveloxis_data.repo_forge_id_changes
+				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note)
+			SELECT $2, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note
+			  FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1
+			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
+		{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, []any{pair.LoserID}},
 
 		// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These
 		// tables are globally unique — the pair shares ONE row, owned by

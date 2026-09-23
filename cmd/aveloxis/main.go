@@ -116,6 +116,7 @@ func newRootCmd() *cobra.Command {
 		dataVerifyCmd(&cfgPath),
 		generateShowcaseCmd(&cfgPath),
 		backfillRepoMetadataCmd(&cfgPath),
+		adoptForgeIDCmd(&cfgPath),
 		rewalkWhitespaceCmd(&cfgPath),
 	)
 	return root

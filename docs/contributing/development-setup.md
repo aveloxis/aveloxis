@@ -97,7 +97,7 @@ The other blocks (`github`, `gitlab`, `web`, `collection`, `log_level`) can stay
 go run ./cmd/aveloxis migrate
 ```
 
-Expect a short stream of `migration step ok` log lines. The full schema (147 tables, 20 8Knot materialized views plus the two supply-chain views, 50+ indexes) lands in two passes — DDL then view creation; the 8Knot pass runs only with `collection.materialized_views` enabled (the default), and the per-package test databases skip both.
+Expect a short stream of `migration step ok` log lines. The full schema (148 tables, 20 8Knot materialized views plus the two supply-chain views, 50+ indexes) lands in two passes — DDL then view creation; the 8Knot pass runs only with `collection.materialized_views` enabled (the default), and the per-package test databases skip both.
 
 If you want to skip the matview build for faster iteration (you typically do during development):
 

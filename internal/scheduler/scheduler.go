@@ -2031,7 +2031,12 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	// wrongly flagged ~100 small-but-real repos like
 	// biocorecrg/ggplot2_functions (9 commits, 0 API data) as
 	// failures every cycle.
-	if result != nil && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
+	// v0.29.62: a repository the facade PROVED empty (the default branch
+	// resolves to no commit — FacadeResult.EmptyDefaultBranch, v0.29.58)
+	// is explained, not suspicious: 668 of 677 failed jobs on kate were
+	// these (2026-09-23 log review; worklist 33).
+	provenEmpty := facadeResult != nil && facadeResult.EmptyDefaultBranch
+	if result != nil && !provenEmpty && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
 		out.success = false
 		if out.errMsg == "" {
 			out.errMsg = "no data collected (possible API auth failure or empty repo)"

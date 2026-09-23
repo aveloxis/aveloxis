@@ -499,9 +499,13 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	setToolVersionDefaults(ctx, pg, logger)
 
-	// Backfill tool_version on rows that were inserted before defaults were set.
-	// After the first run this is a no-op (zero rows matched).
-	backfillToolVersion(ctx, pg, logger)
+	// No tool_version backfill (removed v0.29.62, worklist 32). The step
+	// that stood here scanned ~31 tables in full on every migrate — about
+	// 50 min for commits alone on kate, 1.5 h per run — and stamped the
+	// current binary on rows an older one gathered, which the v0.25.11
+	// provenance rule forbids. The column DEFAULTs above and
+	// `tool_version = EXCLUDED.tool_version` on refreshing upserts are the
+	// writers; TestMigrateNeverBackfillsToolVersion pins it.
 
 	// Add columns that may not exist on older schemas.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "license", "TEXT DEFAULT ''")
@@ -3497,61 +3501,6 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog
 	}
 	if err := rows.Err(); err != nil {
 		logger.Warn("tool_version default sweep: iteration failed", "error", err)
-	}
-}
-
-// backfillToolVersion sets tool_version on rows where it's empty.
-// After setToolVersionDefaults has run and collection uses the new defaults,
-// this becomes a no-op on subsequent startups.
-func backfillToolVersion(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
-	tables := []string{
-		"aveloxis_data.repo_groups",
-		"aveloxis_data.repos",
-		"aveloxis_data.contributors",
-		"aveloxis_data.contributors_aliases",
-		"aveloxis_data.issues",
-		"aveloxis_data.issue_labels",
-		"aveloxis_data.issue_assignees",
-		"aveloxis_data.issue_events",
-		"aveloxis_data.pull_requests",
-		"aveloxis_data.pull_request_labels",
-		"aveloxis_data.pull_request_assignees",
-		"aveloxis_data.pull_request_reviewers",
-		"aveloxis_data.pull_request_reviews",
-		"aveloxis_data.pull_request_commits",
-		"aveloxis_data.pull_request_files",
-		"aveloxis_data.pull_request_meta",
-		"aveloxis_data.pull_request_events",
-		"aveloxis_data.messages",
-		"aveloxis_data.issue_message_ref",
-		"aveloxis_data.pull_request_message_ref",
-		"aveloxis_data.releases",
-		"aveloxis_data.commits",
-		"aveloxis_data.commit_messages",
-		"aveloxis_data.commit_parents",
-		"aveloxis_data.repo_info",
-		"aveloxis_data.repo_clones",
-		"aveloxis_data.repo_labor",
-		"aveloxis_data.repo_dependencies",
-		"aveloxis_data.repo_deps_libyear",
-		"aveloxis_data.contributor_repo",
-		"aveloxis_data.unresolved_commit_emails",
-	}
-	totalFixed := 0
-	for _, table := range tables {
-		tag, err := pg.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %s SET tool_version = $1 WHERE tool_version IS NULL OR tool_version = ''`,
-			table), ToolVersion)
-		if err != nil {
-			continue
-		}
-		if n := tag.RowsAffected(); n > 0 {
-			totalFixed += int(n)
-			logger.Debug("backfilled tool_version", "table", table, "rows", n)
-		}
-	}
-	if totalFixed > 0 {
-		logger.Info("backfilled tool_version on rows missing it", "total_rows", totalFixed)
 	}
 }
 

@@ -1962,6 +1962,33 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_labor (
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- v0.29.62: forge-ID changes on a repository (2026-09-23 operator decision).
+-- A repository deleted and re-created upstream under the same URL gets a
+-- NEW forge ID. The org scan RECORDS what it observed (observation-only:
+-- repos.platform_repo_id is untouched); `aveloxis adopt-forge-id` is the
+-- operator's approval — it moves the stored ID and stamps adopted_at.
+-- Adopted rows are shown on the repository page: the row now carries data
+-- from two upstream repositories, which may affect statistics. Born empty
+-- on every fleet, so its unique index lives here (the SR-2 exception).
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_forge_id_changes (
+    change_id         BIGSERIAL PRIMARY KEY,
+    repo_id           BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    old_forge_id      TEXT NOT NULL,
+    new_forge_id      TEXT NOT NULL,
+    first_observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_observed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    forge_created_at  TIMESTAMPTZ,
+    adopted_at        TIMESTAMPTZ,
+    adopted_by        TEXT NOT NULL DEFAULT '',
+    note              TEXT NOT NULL DEFAULT '',
+    tool_source       TEXT DEFAULT 'aveloxis',
+    tool_version      TEXT,
+    data_source       TEXT DEFAULT 'forge',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_repo_forge_id_changes
+    ON aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id);
+
 -- ============================================================
 -- Repo labor history (all previous scc snapshots, rotated on each
 -- analysis run)

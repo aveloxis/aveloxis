@@ -57,6 +57,11 @@ type RepoStats struct {
 	// pre-disappearance snapshot; this field lets the GUI date it
 	// honestly ("metadata N (as of Jul 24, 2026)").
 	MetadataAsOf *time.Time `json:"metadata_as_of,omitempty"`
+	// ForgeIDChanges (v0.29.62) — adopted forge-ID changes: the upstream
+	// repository was deleted and re-created under the same URL and the
+	// operator adopted the new one as a continuation, so this row holds
+	// data from both. The GUI shows a notice; statistics may be affected.
+	ForgeIDChanges []ForgeIDChange `json:"forge_id_changes,omitempty"`
 	// HasMetadataSnapshot (v0.28.11, Copilot round 10) — TRUE when a
 	// repo_info ROW exists, independent of its (nullable)
 	// data_collection_date. MetadataAsOf presence is NOT a snapshot-
@@ -180,6 +185,11 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 		repoID).Scan(&st.ForkedFrom, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fork lineage: %w", err)
 	}
+	changes, err := s.repoForgeIDChangesAdopted(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("forge-ID changes: %w", err)
+	}
+	st.ForgeIDChanges = changes
 
 	// v0.27.50: last observed activity — drives the chart last-active
 	// ceiling and the dormant/archived chip. Non-fatal: an error here

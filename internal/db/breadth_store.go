@@ -159,10 +159,20 @@ func (s *PostgresStore) MarkBreadthAttemptedBatch(ctx context.Context, cntrbIDs 
 		if end > len(cntrbIDs) {
 			end = len(cntrbIDs)
 		}
-		if _, err := s.pool.Exec(ctx, `
+		// withRetry (2026-09-23 log review): this UPDATE is the other half
+		// of the contributor-upsert deadlock pair — it locks its rows in
+		// scan order (a bitmap heap scan for 500 ids: heap order), the
+		// batch upsert in login order, so no shared order exists — and
+		// when it is the victim it retries rather than leaving the chunk
+		// unstamped.
+		chunk := cntrbIDs[start:end]
+		if err := s.withRetry(ctx, func(ctx context.Context) error {
+			_, err := s.pool.Exec(ctx, `
 			UPDATE aveloxis_data.contributors
 			SET cntrb_last_breadth_at = NOW()
-			WHERE cntrb_id = ANY($1::uuid[])`, cntrbIDs[start:end]); err != nil {
+			WHERE cntrb_id = ANY($1::uuid[])`, chunk)
+			return err
+		}); err != nil {
 			return err
 		}
 	}

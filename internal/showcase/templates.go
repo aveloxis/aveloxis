@@ -354,7 +354,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
        only for formats that generated successfully. */}}
   {{if or .HasCycloneDX .HasSPDX}}
   <p class="note-line">Software bill of materials:
-    {{if .HasCycloneDX}}<a href="{{.Slug}}.cyclonedx.json" download>CycloneDX 1.5 (JSON)</a>{{end -}}
+    {{if .HasCycloneDX}}<a href="{{.Slug}}.cyclonedx.json" download>CycloneDX 1.7 (JSON)</a>{{end -}}
     {{if and .HasCycloneDX .HasSPDX}} · {{end -}}
     {{if .HasSPDX}}<a href="{{.Slug}}.spdx.json" download>SPDX 2.3 (JSON)</a>{{end}}
   </p>

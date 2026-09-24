@@ -608,7 +608,7 @@ Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. A
 
 ### `aveloxis sbom` — Generate Software Bill of Materials
 
-Generates a [CycloneDX](https://cyclonedx.org/) 1.5 or [SPDX](https://spdx.dev/) 2.3 SBOM from the dependency data collected for a repository. The repo must have been collected with dependency/libyear analysis (runs automatically during `aveloxis serve`).
+Generates a [CycloneDX](https://cyclonedx.org/) 1.7 or [SPDX](https://spdx.dev/) 2.3 SBOM from the dependency data collected for a repository. The repo must have been collected with dependency/libyear analysis (runs automatically during `aveloxis serve`).
 
 ```bash
 # Generate CycloneDX JSON to stdout
@@ -636,7 +636,7 @@ Flags:
 
 | Format | Contents |
 |---|---|
-| **CycloneDX 1.5** | bomFormat, specVersion, tool metadata (aveloxis), root component with `evidence.licenses` (concluded from ScanCode source analysis) and `evidence.copyright` (detected holders), all dependencies as library components with purl, version, license, and a scope that follows the dependency's real role (runtime → `required`, optional/peer → `optional`, dev/test/build → `excluded`) |
+| **CycloneDX 1.7** | bomFormat, specVersion, tool metadata (aveloxis), root component with `evidence.licenses` (concluded from ScanCode source analysis) and `evidence.copyright` (detected holders), all dependencies as library components with purl, version, license, and a scope that follows the dependency's real role (runtime → `required`, optional/peer → `optional`, dev/test/build → `excluded`) |
 | **SPDX 2.3** | CC0-1.0 data license, root package with `licenseConcluded` from ScanCode source analysis (vs. `licenseDeclared` from registry), `copyrightText` from detected holders, all dependencies as packages with purl external refs, and scope-typed relationships (`DEPENDS_ON` for runtime; `DEV_`/`TEST_`/`BUILD_`/`OPTIONAL_DEPENDENCY_OF` and `PROVIDED_DEPENDENCY_OF` for the rest) |
 
 Both formats support `?scope=runtime` (only the shipped surface) and `?vulns=1` (annotate with the repo's current unresolved findings — CycloneDX via its native vulnerabilities array, SPDX via SECURITY/advisory external references).
@@ -710,9 +710,9 @@ The web GUI includes built-in interactive visualizations powered by [Chart.js](h
 **Repository detail page** — clicking a repo name in a group opens `/groups/{gid}/repos/{rid}` with:
 - **4 weekly time-series charts:** Commits/week, PRs Opened/week, PRs Merged/week, Issues/week (last 2 years by default)
 - **Summary stat cards:** Issues, PRs, Commits, Vulnerabilities (critical count highlighted)
-- **Dependency license table:** All licenses in the project's dependency tree with counts and OSI compliance indicators (checkmark for [OSI-approved](https://opensource.org/licenses/) licenses)
+- **Dependency license table:** All licenses in the project's dependency tree with counts and OSI compliance indicators (checkmark for [OSI-approved](https://opensource.org/licenses/) licenses, per the SPDX license list's `isOsiApproved`). A dual license such as `MIT OR Apache-2.0` is approved when any of its options is; an `AND` needs every term. Every option must be a recognized license: a string with free text in it (`MIT OR proprietary`) is not read as an expression, so it is not approved. A `LicenseRef-` option counts as recognized (`MIT OR LicenseRef-Proprietary` is approved through MIT). `MIT/Apache-2.0`, `Apache-2.0 OR MIT` and `MIT OR Apache-2.0` are one row.
 - **Source code license table:** Per-file license detections from ScanCode with SPDX expressions, file counts, OSI compliance, and copyright holders list
-- **SBOM download buttons:** CycloneDX 1.5 and SPDX 2.3
+- **SBOM download buttons:** CycloneDX 1.7 and SPDX 2.3
 
 **Comparison page** (`/compare`) — accessible from the dashboard home page:
 - **Search any repo** in the database via autocomplete
@@ -819,7 +819,7 @@ For each resolved commit author:
 
 **Phase 6 — Canonical Email Enrichment:** For contributors that have `gh_login` but no `cntrb_canonical`, calls `GET /users/{login}` to get their profile email and sets `cntrb_canonical`.
 
-**Phase 7 — SBOM Generation:** Both CycloneDX 1.5 and SPDX 2.3 SBOMs are generated from the `repo_deps_libyear` data and stored in `repo_sbom_scans` with format metadata. SBOMs include dependency names, versions, licenses, and package URLs from all 12 registries. Available for download via the web GUI or REST API.
+**Phase 7 — SBOM Generation:** Both CycloneDX 1.7 and SPDX 2.3 SBOMs are generated from the `repo_deps_libyear` data and stored in `repo_sbom_scans` with format metadata. SBOMs include dependency names, versions, licenses, and package URLs from all 12 registries. Available for download via the web GUI or REST API.
 
 **Phase 8 — Vulnerability Scanning (OSV.dev):** All dependencies with package URLs (purls) are batch-queried against the [OSV.dev](https://osv.dev) API to identify known vulnerabilities. Findings carry three distinguishing labels: `dependency_kind` (a problem in the project's own releases, in a direct dependency, or anywhere in the transitive lockfile closure), `dependency_scope` (shipped runtime code vs dev/test/build tooling), and `version_resolution` (whether the exact affected version is known or only a declared range floor — a finding is never presented as more certain than the evidence supports). OSV aggregates data from NVD (CVEs), GitHub Advisory Database (GHSA), PyPI advisories, RustSec, Go Vulnerability Database, and OSS-Fuzz — providing comprehensive coverage across all supported ecosystems. Results are stored in `repo_deps_vulnerabilities` with:
 - Vulnerability ID (GHSA, PYSEC, RUSTSEC, GO, etc.) and CVE cross-reference
@@ -1071,7 +1071,7 @@ Both platforms collect the same data types. Most fields have full parity; known 
 | Code Complexity | `scc --by-file` (if installed) | Same | `repo_labor` |
 | OpenSSF Scorecard | remote-first `--repo` (18 checks), `--local` fallback | local mode (11 checks) | `repo_deps_scorecard` (latest) + `repo_deps_scorecard_history` |
 | ScanCode License/Copyright | `scancode -clpi` per file (decoupled worker, every 180 days) | Same | `aveloxis_scan.scancode_scans` + `scancode_file_results` + history |
-| SBOMs | Generated from libyear data | Same | `repo_sbom_scans` (CycloneDX 1.5 + SPDX 2.3) |
+| SBOMs | Generated from libyear data | Same | `repo_sbom_scans` (CycloneDX 1.7 + SPDX 2.3) |
 | Vulnerability Scan | OSV.dev batch API (purls; direct + transitive) | Same | `repo_deps_vulnerabilities` (CVE ID, severity, CVSS, fixed version, kind/scope/resolution labels, lifecycle stamps) |
 | Lockfiles / Transitive Closure | 19 lockfile formats + `go mod graph` | Same | `repo_lockfiles` + `repo_lockfile_packages` + `repo_lockfile_edges` (dependency graph for SBOMs + `introduced_by` chains) |
 | Package Distribution | deps.dev + ecosyste.ms + release assets + GitHub Packages + manifests | ecosyste.ms + manifests | `repo_distribution` (+ manifest + history tables) — "where is this repo published?" |
@@ -1129,7 +1129,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Libyear | npm + PyPI only | 12 registries: npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM |
 | Code complexity (scc) | Requires manual scc install + separate worker | `aveloxis install-tools` + automatic per-repo analysis |
 | OpenSSF Scorecard | Runs `scorecard` binary against GitHub repos. | Runs `scorecard` binary against GitHub AND GitLab repos. Results in `repo_deps_scorecard` with history. |
-| SBOM generation | Not supported | CycloneDX 1.5 + SPDX 2.3 with license capture from 12 registries. Download via web GUI or REST API. |
+| SBOM generation | Not supported | CycloneDX 1.7 + SPDX 2.3 with license capture from 12 registries. Download via web GUI or REST API. |
 | Review messages | Review bodies live only on the review row — no unified text store | Review body stored in `messages` with the `pull_request_review_message_ref` bridge (same pattern as issue/PR comments) — one table for ALL conversation text |
 | History tracking | Fills repo_info on each run, grows infinitely. | `repo_info_history` and `repo_deps_scorecard_history` preserve all previous snapshots |
 | Scheduling | Celery Beat + collection_status table (opaque) | Priority queue — fills ALL worker slots per tick (not one per tick) |

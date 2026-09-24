@@ -187,7 +187,7 @@ Returns a summary of dependency licenses with counts and OSI compliance status.
 ]
 ```
 
-OSI compliance is checked against a built-in list of 30+ known OSI-approved SPDX identifiers.
+`license` is the table's row key: the license normalized to canonical SPDX, with the operands of `OR` and `AND` in a fixed order, so `MIT OR Apache-2.0`, `Apache-2.0 OR MIT` and `MIT/Apache-2.0` are one row (since v0.29.67). `is_osi` follows the SPDX license list's `isOsiApproved` (the list is embedded; no network): an `OR` is approved when any option is, an `AND` when every term is, and `X WITH exception` follows `X`. `Unknown` and free text are never approved, including an `OR` with free text in one option (`MIT OR proprietary` is not an expression); a `LicenseRef-` option counts as recognized.
 
 | Parameter | Values | Default | Description |
 |---|---|---|---|
@@ -215,7 +215,7 @@ GET /api/v1/repos/{repoID}/sbom?format=cyclonedx
 GET /api/v1/repos/{repoID}/sbom?format=spdx
 ```
 
-Generates and downloads a Software Bill of Materials in CycloneDX 1.5 or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.
+Generates and downloads a Software Bill of Materials in CycloneDX 1.7 (1.5 until v0.29.67) or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.
 
 Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_transitive` enabled) get the **real dependency graph**: lockfile transitives join the component/package list, CycloneDX's `dependencies` array carries actual parent→child links from the stored edges (root → direct set; parents → their children; unreachable packages stay leaves), and SPDX gains the matching package→package `DEPENDS_ON` relationships. Repositories without C2 data keep the flat pre-v0.27.134 shape byte-identical.
 
@@ -223,7 +223,7 @@ Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_trans
 |---|---|---|---|
 | `format` | `cyclonedx`, `spdx` | `cyclonedx` | SBOM format |
 | `scope` | `all`, `runtime` | `all` | v0.27.46: `runtime` filters components to runtime-scope dependencies (the shipped surface). The default full document carries every scope, distinguished per-component — CycloneDX via the component `scope` field (required/optional/excluded), SPDX via typed dependency relationships (`DEV_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, `PROVIDED_DEPENDENCY_OF` for npm peers). Filtered downloads gain a `-runtime` filename marker. |
-| `vulns` | `1` | absent | Annotate with the repo's CURRENT (unresolved) findings. CycloneDX: native 1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX (v0.27.46 — previously a 400): package-level `externalRefs` with `referenceCategory: SECURITY`, `referenceType: advisory` linking each finding's OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain `-with-vulns`. |
+| `vulns` | `1` | absent | Annotate with the repo's CURRENT (unresolved) findings. CycloneDX: native `vulnerabilities` array (`affects.ref` = component purl). SPDX (v0.27.46 — previously a 400): package-level `externalRefs` with `referenceCategory: SECURITY`, `referenceType: advisory` linking each finding's OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain `-with-vulns`. |
 
 Returns JSON with `Content-Disposition: attachment` header for download.
 
@@ -923,7 +923,7 @@ Token semantics:
   floor, not necessarily the installed version.
 - `GET /api/v1/repos/{repoID}/sbom?vulns=1` — the CURRENT SBOM
   annotated with the repo's unresolved findings. CycloneDX: native
-  1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX
+  `vulnerabilities` array (`affects.ref` = component purl). SPDX
   (since v0.27.46): package-level SECURITY/advisory `externalRefs` —
   the 2.3-conformant vehicle (the old 400 is gone).
 - `GET /api/v1/repos/{repoID}/stats` — response gains (v0.27.50)
@@ -1041,6 +1041,29 @@ how many versions are in simultaneous use.
   list size, default 50, clamped at 500). A scoped npm name keeps its slash:
   `/supply-chain/packages/npm/@scope/name`. A package with no finding in the
   scope is `404`.
+
+**Exposed-repository fields.** Each `repos` entry carries `repo_id`,
+`repo_owner`, `repo_name`, `findings_unresolved` (its open findings on the
+package), `transitive` (every open finding is transitive), `versions` (the
+distinct scanned versions, in text order) and `version_detail` — the same
+versions with their weight, one object per version:
+
+```json
+{"version": "1.1.15", "findings_unresolved": 3, "lockfiles": 16}
+```
+
+`findings_unresolved` is that version's open findings; `lockfiles` is how
+many distinct lockfiles in the repository's current lockfile snapshot
+resolve the package to exactly that version (the package is matched with
+the same key the lockfile graph uses: ecosystem aliases such as
+`gem`/`rubygems` fold together, names compare case-insensitively, and PyPI
+names fold `_` and `.` to `-`). `lockfiles` can be `0`: a direct dependency
+scanned at its manifest version, or an ecosystem without lockfiles. The
+entries are ordered by open findings, most first, then by version compared
+segment by segment as numbers (`1.0.2` before `1.0.10`). A finding whose
+package URL carries no version counts in the repository's
+`findings_unresolved` but has no `version_detail` entry, so the entries can
+sum to less than the repository total.
 
 **Profile fields.** `cohort_repos` (repositories that have ever had a finding
 on the package) and `repos_unresolved` (have one now); `findings` /

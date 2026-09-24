@@ -19,9 +19,135 @@
 // conservative — only clear synonyms are mapped, not fuzzy matches.
 package db
 
-import "strings"
+import (
+	"sort"
+	"strings"
 
-// NormalizeLicenseToSPDX maps a license string to its canonical SPDX identifier.
+	"github.com/aveloxis/aveloxis/internal/spdx"
+)
+
+// NormalizeLicenseToSPDX maps a license string to its canonical SPDX form:
+// one identifier, or (worklist 53) a canonical license expression. It is the
+// one normalizer every reader uses: the license table, the scancode tables
+// and both SBOM exporters. A single license name goes through the synonym
+// rules below (normalizeLicenseTerm); a string that reads as an expression
+// ("MIT/Apache-2.0", "mit or apache-2.0", "MIT License AND Apache 2.0")
+// comes back with canonical IDs and operators when every operand resolves
+// (internal/spdx.NormalizeExpression), and through the synonym rules
+// otherwise.
+func NormalizeLicenseToSPDX(license string) string {
+	// Over fullTextMinLen the term rules also fingerprint full license TEXTS
+	// ("apache license" + "2.0" = Apache-2.0). An expression of that length
+	// ("GPL-3.0-only OR Apache License 2.0 OR ...") must be read as an
+	// expression first, or the fingerprint collapses it to one license and
+	// drops the others from the SBOM and the table (v0.29.67 review round 3).
+	if trimmed := strings.TrimSpace(license); len(trimmed) > fullTextMinLen {
+		if expr, ok := spdx.ParseExpression(trimmed, nameTerm, operatorBearingSynonyms...); ok {
+			return expr
+		}
+		// A list of license NAMES with a free-text operand is not an
+		// expression, but it is not a license text either: fingerprinting it
+		// collapsed "GPL-3.0-only AND Apache License 2.0 AND Proprietary ...
+		// AND MIT" to Apache-2.0 (review round 4). A name list stays the free
+		// text it is, unless all its parts agree on ONE license.
+		if one, isList := nameListVerdict(trimmed); isList {
+			if one != "" {
+				return one
+			}
+			return trimmed
+		}
+	}
+	return spdx.NormalizeExpression(license, normalizeLicenseTerm, operatorBearingSynonyms...)
+}
+
+// nameTerm is normalizeLicenseTerm for an operand that is a license NAME: an
+// operand over fullTextMinLen is prose and stays unresolved, so it cannot
+// fingerprint to the license its neighbour already names ("GPLv2 or later,
+// see the file COPYING ... version 2" read "GPL-2.0-only OR GPL-2.0-only",
+// review round 6).
+func nameTerm(op string) string {
+	if len(strings.TrimSpace(op)) > fullTextMinLen {
+		return strings.TrimSpace(op)
+	}
+	return normalizeLicenseTerm(op)
+}
+
+// nameListVerdict decides a string over fullTextMinLen that did not parse as
+// an expression. isList is true when its "and"/"or" split it into two or more
+// parts (spdx.OperandTexts) and at least one part of name length (at most
+// fullTextMinLen bytes) is a license by the synonym rules; the other parts may
+// be anything, including a long notice. For a list, one is the single license
+// every part resolves to (a short name, or a long notice through the
+// full-text fingerprint), and "" when the parts disagree or any part is free
+// text.
+//
+// The class decision behind it (v0.29.67 review round 7, applied to
+// worklist 58): never assert a license falsely; keep the text when unsure. A
+// list whose parts all name the same license asserts nothing its parts'
+// fingerprints do not already assert ("MPL-2.0 or <the MPL's own header
+// notice>" is MPL-2.0). The fingerprint's own limits carry through: it drops
+// "or later" and WITH exceptions from a notice (worklist 60), so a part it
+// misreads agrees with a name it should not. One whose parts name
+// different licenses, or include free text, keeps the text ("GPL-3.0-only AND
+// <an Apache notice>" used to fingerprint to Apache-2.0 and drop the GPL
+// term). A license text's short pieces never name a license on their own
+// (TestNormalizeLicense_FullApache2Text / _FullISCText and the notice table
+// hold that line), and version ranges and "with" never split (OperandTexts).
+func nameListVerdict(s string) (one string, isList bool) {
+	ops := spdx.OperandTexts(s)
+	if len(ops) < 2 {
+		return "", false
+	}
+	named, allResolved := false, true
+	licenses := map[string]bool{}
+	for _, op := range ops {
+		t := normalizeLicenseTerm(op)
+		if !spdx.Valid(t) && !spdx.FamilyLabels[t] {
+			allResolved = false
+			continue
+		}
+		licenses[t] = true
+		if len(op) <= fullTextMinLen {
+			named = true
+		}
+	}
+	if !named {
+		return "", false
+	}
+	if allResolved && len(licenses) == 1 {
+		for l := range licenses {
+			return l, true
+		}
+	}
+	return "", true
+}
+
+// fullTextMinLen is the length above which a license string may be a full
+// license TEXT rather than a name: normalizeLicenseTerm fingerprints such
+// strings (detectFullLicenseText) and truncates the unrecognized ones, and
+// NormalizeLicenseToSPDX reads them as an expression first. One constant, so
+// the two cannot drift.
+const fullTextMinLen = 80
+
+// operatorBearingSynonyms are the synonym keys that contain an operator word,
+// a slash or parentheses ("zlib/libpng", "common development and distribution
+// license", "gnu library or lesser general public license (lgpl)"). The
+// expression reader keeps each one whole wherever it appears (v0.29.67 review
+// round 2), so a synonym is never split into the licenses its words spell.
+var operatorBearingSynonyms = func() []string {
+	var out []string
+	for key := range licenseSynonyms {
+		padded := " " + key + " "
+		if strings.Contains(padded, " and ") || strings.Contains(padded, " or ") || strings.Contains(padded, " with ") ||
+			strings.ContainsAny(key, "/()") {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
+}()
+
+// normalizeLicenseTerm maps ONE license name to its canonical SPDX identifier.
 // Returns "Unknown" for empty/sentinel values, the canonical form for known
 // synonyms, or the trimmed input for unrecognized licenses.
 //
@@ -29,7 +155,7 @@ import "strings"
 // packages embed the entire BSD/MIT/Apache license body in the "license" field.
 // These are identified by content fingerprints (e.g., "Permission is hereby
 // granted" = MIT, "Redistribution and use in source and binary forms" = BSD).
-func NormalizeLicenseToSPDX(license string) string {
+func normalizeLicenseTerm(license string) string {
 	trimmed := strings.TrimSpace(license)
 
 	// Check for "no license" sentinels first.
@@ -48,7 +174,12 @@ func NormalizeLicenseToSPDX(license string) string {
 	// For long strings, try to identify full license texts by content fingerprints.
 	// Python packages (via PyPI/pip) frequently store the entire license body in
 	// the "license" metadata field instead of a short SPDX identifier.
-	if len(trimmed) > 80 {
+	if len(trimmed) > fullTextMinLen {
+		// An SPDX-License-Identifier line states the license exactly
+		// (worklist 60, review round 19; license_fulltext.go).
+		if id := spdxIdentifierLine(trimmed); id != "" {
+			return id
+		}
 		if id := detectFullLicenseText(lower); id != "" {
 			return id
 		}
@@ -92,17 +223,21 @@ func detectFullLicenseText(lower string) string {
 		!strings.Contains(lower, "neither the name") {
 		return "BSD-2-Clause"
 	}
-	// Apache 2.0: "apache license" + "version 2.0" or "2.0"
-	if strings.Contains(lower, "apache license") && strings.Contains(lower, "2.0") {
-		return "Apache-2.0"
+	// Apache 2.0 and the GPL: read by detectApacheText / detectGPLText
+	// (license_fulltext.go, worklist 60). Only a definite answer ends the
+	// search: a GPL notice may name Apache, and the MPL-2.0 body names the
+	// GNU GPL in its "Secondary License" definition and is still MPL-2.0.
+	// The gate only pre-filters; detectApacheText decides ("Apache 2.0
+	// license" names it too, review round 19).
+	if strings.Contains(lower, "apache") && strings.Contains(lower, "2.0") {
+		if id := detectApacheText(lower); id != "" {
+			return id
+		}
 	}
-	// GPL 3.0: "gnu general public license" + "version 3"
-	if strings.Contains(lower, "gnu general public license") && strings.Contains(lower, "version 3") {
-		return "GPL-3.0-only"
-	}
-	// GPL 2.0: "gnu general public license" + "version 2"
-	if strings.Contains(lower, "gnu general public license") && strings.Contains(lower, "version 2") {
-		return "GPL-2.0-only"
+	if strings.Contains(lower, "gnu general public license") {
+		if id := detectGPLText(lower); id != "" {
+			return id
+		}
 	}
 	// MPL 2.0: "mozilla public license" + "2.0"
 	if strings.Contains(lower, "mozilla public license") && strings.Contains(lower, "2.0") {
@@ -251,7 +386,10 @@ var licenseSynonyms = func() map[string]string {
 	add("0BSD", "0BSD", "Zero-Clause BSD", "Free Public License 1.0.0")
 
 	// --- Zlib ---
-	add("Zlib", "Zlib", "zlib License", "zlib/libpng License")
+	// v0.29.67 (review round 1): every spelling of the one zlib/libpng
+	// license is a synonym, so the expression reader never splits it into
+	// the choice "Libpng OR Zlib".
+	add("Zlib", "Zlib", "zlib License", "zlib/libpng License", "zlib/libpng", "libpng/zlib", "libpng/zlib License")
 
 	// --- BSL ---
 	add("BSL-1.0", "BSL-1.0", "Boost Software License 1.0", "BSL 1.0")

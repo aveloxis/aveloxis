@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/spdx"
 )
 
 // WeeklyDataPoint is a single week's aggregated count for a metric.
@@ -134,48 +136,15 @@ type LicenseCount struct {
 	IsOSI   bool   `json:"is_osi"`
 }
 
-// osiLicenses is the set of OSI-approved SPDX license identifiers.
-// Only canonical SPDX forms are listed here — synonym normalization happens
-// in NormalizeLicenseToSPDX() before this map is consulted.
-// Source: https://opensource.org/licenses/
-var osiLicenses = map[string]bool{
-	"MIT": true, "Apache-2.0": true, "GPL-2.0-only": true,
-	"GPL-3.0-only": true, "LGPL-2.1-only": true,
-	"LGPL-3.0-only": true, "BSD-2-Clause": true, "BSD-3-Clause": true,
-	"ISC": true, "MPL-2.0": true, "CDDL-1.0": true, "EPL-1.0": true, "EPL-2.0": true,
-	"AGPL-3.0-only": true, "Artistic-2.0": true, "Zlib": true,
-	"Unlicense": true, "0BSD": true, "BSL-1.0": true, "PostgreSQL": true,
-	"OFL-1.1": true, "NCSA": true, "MulanPSL-2.0": true, "EUPL-1.2": true,
-	"CC0-1.0": true, "BlueOak-1.0.0": true, "UPL-1.0": true, "PSF-2.0": true,
-	// v0.28.8 (operator correction, SPDX-verified): EVERY LGPL
-	// version is OSI-approved — the SPDX license list
-	// (https://spdx.org/licenses/) marks LGPL-2.0/2.1/3.0 in both
-	// -only and -or-later forms isOsiApproved=true (verified against
-	// spdx/license-list-data 2026-08-23; only the unrelated LGPLLR is
-	// not, and nothing here maps to it). That makes the bare "LGPL"
-	// family bucket approved with NO caveat: whichever version the
-	// unspecified metadata means, it is OSI-approved. An earlier
-	// comment claimed LGPL-2.0 wasn't on the OSI list — wrong, and
-	// the hedge invited a false compliance-gap review finding.
-	"LGPL":              true,
-	"LGPL-2.0-only":     true,
-	"LGPL-2.0-or-later": true, "LGPL-2.1-or-later": true,
-	"LGPL-3.0-or-later": true,
-	"GPL-2.0-or-later":  true, "GPL-3.0-or-later": true,
-	"AGPL-3.0-or-later": true,
-	// v0.28.1: unversioned family labels for families with NO SPDX
-	// "any version" expression (the or-later suffix exists only for
-	// the GNU family). Produced by version-less upstream
-	// declarations; safe to approve because every released version
-	// of these families is OSI-approved.
-	"EPL": true, "Artistic": true,
-}
-
-// normalizeLicense maps license strings to canonical SPDX identifiers.
-// Unifies common synonyms (e.g., "MIT License" → "MIT", "Apache 2.0" → "Apache-2.0")
-// and maps "no license" sentinels to "Unknown".
+// normalizeLicense is the license table's row key, shared by the aggregate
+// (GetRepoLicensesScoped), the scancode table and the drill-down
+// (DepsFiltered): NormalizeLicenseToSPDX, then internal/spdx.DisplayKey, so
+// every spelling of one license choice ("MIT OR Apache-2.0",
+// "Apache-2.0 OR MIT", "MIT/Apache-2.0") is one row (worklist 53, decision
+// 4: the table only; the stored value and the SBOMs keep the registry's
+// order).
 func normalizeLicense(license string) string {
-	return NormalizeLicenseToSPDX(license)
+	return spdx.DisplayKey(NormalizeLicenseToSPDX(license))
 }
 
 // GetRepoLicenses returns a summary of dependency licenses for a repo,
@@ -239,7 +208,7 @@ func (s *PostgresStore) GetRepoLicensesScoped(ctx context.Context, repoID int64,
 		result = append(result, LicenseCount{
 			License: lic,
 			Count:   cnt,
-			IsOSI:   isOSILicense(lic),
+			IsOSI:   licenseKeyIsOSI(lic),
 		})
 	}
 	// Sort by count descending for stable output.
@@ -252,27 +221,19 @@ func (s *PostgresStore) GetRepoLicensesScoped(ctx context.Context, repoID int64,
 	return result, nil
 }
 
-// isOSILicense checks if a license string matches a known OSI-approved license.
-// The input should already be normalized via NormalizeLicenseToSPDX.
-//
-// v0.28.1: multi-license declarations are stored joined with " AND "
-// (the v0.27.29 storage decision; the SBOM generator's
-// makeCDXLicenses splits on the same separator). A compound
-// expression is approved iff EVERY part — individually re-normalized,
-// since synonym forms can appear inside a compound — is approved; an
-// empty part never counts, so "MIT AND " can't slip through.
+// licenseKeyIsOSI is the OSI badge for a license-table ROW: key is already
+// the table's normalized key (normalizeLicense), so it is judged as it is.
+// Normalizing it again (isOSILicense) read an unidentified text's truncated
+// first line ("MIT License") as that license (mcp-gopls review, v0.29.67).
+func licenseKeyIsOSI(key string) bool { return spdx.OSIApproved(key) }
+
+// isOSILicense judges a RAW stored license (tests and ad-hoc callers; the
+// table badges judge their already-normalized key with licenseKeyIsOSI): the
+// license, normalized, judged against the
+// SPDX list's isOsiApproved by internal/spdx.OSIApproved (worklist 53). An OR
+// is approved when any option is, an AND when every term is, and X WITH an
+// exception follows X. The v0.28.1 " AND " split and the hand-kept allowlist
+// it read are gone: the allowlist disagreed with SPDX in both directions.
 func isOSILicense(license string) bool {
-	if osiLicenses[license] {
-		return true
-	}
-	if !strings.Contains(license, " AND ") {
-		return false
-	}
-	for _, part := range strings.Split(license, " AND ") {
-		part = strings.TrimSpace(part)
-		if part == "" || !osiLicenses[NormalizeLicenseToSPDX(part)] {
-			return false
-		}
-	}
-	return true
+	return spdx.OSIApproved(NormalizeLicenseToSPDX(license))
 }

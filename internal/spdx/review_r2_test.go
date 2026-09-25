@@ -4,8 +4,12 @@
 package spdx
 
 import (
+	"math/rand/v2"
+	"runtime/debug"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // v0.29.67 review round 2.
@@ -162,5 +166,279 @@ func TestLicenseRefPrefixIsCanonicalized(t *testing.T) {
 	// "LicenseRef--x". A non-ASCII prefix is not the SPDX prefix at all.
 	if got := NormalizeExpression("L\u0130CENSEREF-x", identity); strings.HasPrefix(got, "LicenseRef-") {
 		t.Errorf("a non-ASCII look-alike prefix = %q, want it left unresolved", got)
+	}
+}
+
+// TestValidCostIsLinear — review round 22 S2: Validate handed the whole
+// expression to go-spdx, whose validation is quadratic in the number of
+// terms, and registry license strings reach it (the SBOM exporters, the
+// fingerprint's SPDX tags). Four times the terms must cost well under
+// sixteen times the time (linear about four, quadratic sixteen; the
+// fastest of five runs).
+func TestValidCostIsLinear(t *testing.T) {
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
+	}
+	build := func(n int) string { return strings.Repeat("GPL-2.0-only OR ", n) + "MIT" }
+	fastest := func(s string) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for range 5 {
+			start := time.Now()
+			if !Valid(s) {
+				t.Fatalf("Valid rejects a valid OR chain of %d bytes", len(s))
+			}
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	small, large := build(2000), build(8000)
+	ts, tl := fastest(small), fastest(large)
+	if tl > 8*ts {
+		t.Errorf("Valid is superlinear: %v for %d bytes, %v for %d bytes", ts, len(small), tl, len(large))
+	}
+}
+
+// TestValidStillAsksTheLibraryPerLeaf — review round 22 moved go-spdx from
+// the whole expression to each leaf; expressions our grammar accepts but the
+// library rejects must stay invalid: a LicenseRef with an exception (round 1
+// s5) and an exception the library does not know (mcp-gopls review A2).
+func TestValidStillAsksTheLibraryPerLeaf(t *testing.T) {
+	for _, e := range []string{
+		"LicenseRef-X WITH Classpath-exception-2.0",
+		"MIT WITH Spelling-Provider-LGPL-exception",
+		"Apache-2.0 OR (LicenseRef-X WITH Classpath-exception-2.0)",
+	} {
+		if Valid(e) {
+			t.Errorf("Valid(%q) = true; the library rejects this leaf", e)
+		}
+	}
+	if !Valid("GPL-2.0-only WITH Classpath-exception-2.0 OR (MIT AND Apache-2.0)") {
+		t.Error("a valid compound expression is rejected")
+	}
+}
+
+// TestValidMatchesTheWholeExpressionVerdict — review round 23 S2: go-spdx
+// rejects "ID+ WITH exception" as a one-term expression but accepts it inside
+// a compound one (SPDX Annex D allows it), so asking the library about each
+// leaf alone turned valid compounds invalid. Validate must give the verdict
+// the library gives the whole expression (its v0.29.67 pre-round-22
+// behaviour), on generated expressions of every leaf shape.
+func TestValidMatchesTheWholeExpressionVerdict(t *testing.T) {
+	ids := []string{"MIT", "Apache-2.0", "GPL-2.0-only", "GPL-2.0", "GD", "UCAR", "ADSL", "LicenseRef-X", "EFL-1.0"}
+	excs := []string{"", "Classpath-exception-2.0", "LLVM-exception", "GStreamer-exception-2008", "LLGPL"}
+	var leaves []string
+	for _, id := range ids {
+		for _, plus := range []string{"", "+"} {
+			if plus != "" && strings.HasPrefix(id, "LicenseRef-") {
+				continue
+			}
+			for _, e := range excs {
+				l := id + plus
+				if e != "" {
+					l += " WITH " + e
+				}
+				leaves = append(leaves, l)
+			}
+		}
+	}
+	checked := 0
+	for i, a := range leaves {
+		for j, b := range leaves {
+			if (i*len(leaves)+j)%3 != 0 {
+				continue // a third of the pairs keeps the test fast
+			}
+			for _, e := range []string{a + " AND " + b, "(" + a + " OR " + b + ") AND MIT"} {
+				if _, err := parse(e, true, nil); err != nil {
+					continue
+				}
+				checked++
+				want := libraryValid(e) && !unofficialPlus(e)
+				if got := Valid(e); got != want {
+					t.Errorf("Valid(%q) = %v, want %v (the library's whole-expression verdict, and no unofficial \"+\")", e, got, want)
+				}
+			}
+		}
+	}
+	if checked < len(leaves) {
+		t.Fatalf("only %d expressions checked", checked)
+	}
+	// "ID+" where "ID+" is not itself a list ID is invalid everywhere: the
+	// official SPDX tools reject it (round 24; TestValidFollowsTheOfficialToolsOnPlus).
+}
+
+// TestNestedExpressionCostIsLinear — review round 23 C1: parsing flattened a
+// same-operator chain by copying at every nesting level, render built each
+// level's string, and DisplayKey's keys contained their subtrees', so deep
+// nesting was quadratic (0.48 s at 180 KB). Four times the depth must cost
+// well under sixteen times the time.
+//
+// The garbage collector is paused while measuring: the parser recurses once
+// per nesting level, and every collection scans the whole goroutine stack,
+// which adds a cost growing with depth times collections (measured about
+// 20 ms at 300 KB of nesting, against the 0.5 s quadratic this pins). The
+// test pins the algorithm; that runtime cost is recorded in the ledger.
+func TestNestedExpressionCostIsLinear(t *testing.T) {
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	nest := func(n int, ops ...string) string {
+		var b strings.Builder
+		for i := range n {
+			b.WriteString("(MIT " + ops[i%len(ops)] + " ")
+		}
+		b.WriteString("MIT")
+		b.WriteString(strings.Repeat(")", n))
+		return b.String()
+	}
+	for name, f := range map[string]func(string){
+		"Valid":           func(s string) { Valid(s) },
+		"ParseExpression": func(s string) { ParseExpression(s, strings.TrimSpace) },
+		"DisplayKey":      func(s string) { DisplayKey(s) },
+	} {
+		for _, ops := range [][]string{{"OR"}, {"OR", "AND"}} {
+			fastest := func(s string) time.Duration {
+				best := time.Duration(1<<63 - 1)
+				for range 5 {
+					start := time.Now()
+					f(s)
+					if d := time.Since(start); d < best {
+						best = d
+					}
+				}
+				return best
+			}
+			small, large := nest(8000, ops...), nest(32000, ops...)
+			ts, tl := fastest(small), fastest(large)
+			if tl > 8*ts {
+				t.Errorf("%s, nested %v: superlinear: %v for %d bytes, %v for %d bytes", name, ops, ts, len(small), tl, len(large))
+			}
+		}
+	}
+}
+
+// unofficialPlus reports whether an expression has "ID+" that the official
+// SPDX tools reject: they accept "ID+" exactly when "ID-or-later" is a list ID
+// (round 25, checked against license-expression for all 740 list IDs).
+func unofficialPlus(e string) bool {
+	for _, w := range strings.Fields(strings.NewReplacer("(", " ", ")", " ").Replace(e)) {
+		if strings.HasSuffix(w, "+") && !IsLicenseID(w) && !IsLicenseID(strings.TrimSuffix(w, "+")+"-or-later") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestValidFollowsTheOfficialToolsOnPlus — review rounds 24-25: SPDX Annex D
+// allows "ID+" on any ID, but the official SPDX tools (license-expression,
+// behind pyspdxtools) accept "ID+" exactly when "ID-or-later" is a list ID
+// ("GPL-2.0+", "AGPL-3.0+", "GFDL-1.3+" yes; "MIT+", "Apache-2.0+" no), alone
+// or in a compound; checked for all 740 list IDs on 2026-09-24. The SBOMs are
+// held to those tools, so Validate follows them; the SBOM then says
+// NOASSERTION.
+func TestValidFollowsTheOfficialToolsOnPlus(t *testing.T) {
+	for e, want := range map[string]bool{
+		"GPL-2.0+":                              true,
+		"LGPL-2.1+":                             true,
+		"GPL-3.0+":                              true,
+		"GPL-2.0+ WITH Classpath-exception-2.0": true,
+		// Round 25: the tools also accept "ID+" where "ID-or-later" is a list
+		// ID; these were NOASSERTION for one round.
+		"AGPL-3.0+":                              true,
+		"AGPL-1.0+":                              true,
+		"GFDL-1.3+":                              true,
+		"GFDL-1.3+ AND MIT":                      true,
+		"GPL-3.0+ AND AGPL-3.0+":                 true,
+		"MIT+":                                   false,
+		"Apache-2.0+":                            false,
+		"Apache-2.0+ WITH LLVM-exception":        false,
+		"(Apache-2.0+ WITH LLVM-exception)":      false,
+		"MIT+ OR Apache-2.0":                     false,
+		"Apache-2.0+ WITH LLVM-exception OR MIT": false,
+	} {
+		if got := Valid(e); got != want {
+			t.Errorf("Valid(%q) = %v, want %v", e, got, want)
+		}
+	}
+}
+
+// TestOperandTextsCostIsLinear — review round 24 C1: every "and"/"or" before
+// a parenthetical scanned forward for the word closing it, so a run of
+// "or (" was quadratic (0.47 s at 184 KB, reached through nameListVerdict).
+func TestOperandTextsCostIsLinear(t *testing.T) {
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
+	}
+	build := func(n int) string { return "MIT " + strings.Repeat("or ( ", n) }
+	fastest := func(s string) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for range 5 {
+			start := time.Now()
+			OperandTexts(s)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	small, large := build(9000), build(36000)
+	ts, tl := fastest(small), fastest(large)
+	if tl > 8*ts {
+		t.Errorf("OperandTexts is superlinear: %v for %d bytes, %v for %d bytes", ts, len(small), tl, len(large))
+	}
+}
+
+// refSortedKey is the pre-round-25 DisplayKey sort, kept as the reference:
+// each node's key built from its children's sorted keys, as strings.
+func refSortedKey(n *node) string {
+	if n.op == "" {
+		return plainLeaf(n)
+	}
+	keys := make([]string, len(n.kids))
+	for i, k := range n.kids {
+		keys[i] = refSortedKey(k)
+		if n.op == "AND" && k.op == "OR" {
+			keys[i] = "(" + keys[i] + ")"
+		}
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, " "+n.op+" ")
+}
+
+// TestDisplayKeyMatchesTheStringSort — review round 25 C1: DisplayKey's
+// round-23 bound fell back to an unsorted key on shallow real expressions (7
+// leaves, 4 levels). It now sorts through ropes; its output must equal the
+// string sort's on every expression, and merge operand orders at any depth.
+func TestDisplayKeyMatchesTheStringSort(t *testing.T) {
+	ids := []string{"MIT", "ISC", "Zlib", "0BSD", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "GPL-2.0-only WITH Classpath-exception-2.0"}
+	rng := rand.New(rand.NewPCG(25, 25))
+	var gen func(depth int) string
+	gen = func(depth int) string {
+		if depth == 0 || rng.IntN(3) == 0 {
+			return ids[rng.IntN(len(ids))]
+		}
+		op := []string{" AND ", " OR "}[rng.IntN(2)]
+		parts := make([]string, 2+rng.IntN(2))
+		for i := range parts {
+			parts[i] = "(" + gen(depth-1) + ")"
+		}
+		return strings.Join(parts, op)
+	}
+	for range 3000 {
+		e := gen(6)
+		n, err := parse(e, true, nil)
+		if err != nil {
+			t.Fatalf("generated %q does not parse: %v", e, err)
+		}
+		if got, want := DisplayKey(e), refSortedKey(n); got != want {
+			t.Fatalf("DisplayKey(%q) = %q, want the string sort's %q", e, got, want)
+		}
+	}
+	a := "(MIT AND ISC) OR ((Zlib AND 0BSD OR (BSD-2-Clause AND BSD-3-Clause)) AND Apache-2.0)"
+	b := "((BSD-3-Clause AND BSD-2-Clause OR 0BSD AND Zlib) AND Apache-2.0) OR (ISC AND MIT)"
+	if DisplayKey(a) != DisplayKey(b) {
+		t.Errorf("two orders of one expression key apart: %q vs %q", DisplayKey(a), DisplayKey(b))
 	}
 }

@@ -20,6 +20,7 @@
 package db
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 
@@ -56,6 +57,14 @@ func NormalizeLicenseToSPDX(license string) string {
 			}
 			return trimmed
 		}
+	}
+	// Long text that is neither an expression nor a name list is read only
+	// as a whole: splitting it on "/" or "or" fingerprinted prose operands
+	// into a false expression ("... version 2. Files in vendor/MIT" read
+	// "GPL-2.0-only OR MIT", review round 22; the round-6 class that nameTerm
+	// guards in the parse above).
+	if len(strings.TrimSpace(license)) > fullTextMinLen {
+		return normalizeLicenseTerm(license)
 	}
 	return spdx.NormalizeExpression(license, normalizeLicenseTerm, operatorBearingSynonyms...)
 }
@@ -240,7 +249,11 @@ func detectFullLicenseText(lower string) string {
 		}
 	}
 	// MPL 2.0: "mozilla public license" + "2.0"
-	if strings.Contains(lower, "mozilla public license") && strings.Contains(lower, "2.0") {
+	// The version must follow the name ("Mozilla Public License, v. 2.0", the
+	// body's "Mozilla Public License Version 2.0"): "2.0" anywhere read the
+	// MPL 1.1 tri-license block ("MPL 1.1/GPL 2.0/LGPL 2.1") as MPL-2.0 once
+	// the GPL reader stopped answering it (review round 29).
+	if mpl2Re.MatchString(lower) {
 		return "MPL-2.0"
 	}
 	// Unlicense: "this is free and unencumbered software"
@@ -253,6 +266,13 @@ func detectFullLicenseText(lower string) string {
 	}
 	return ""
 }
+
+// mpl2Re is the MPL 2.0 named with its version.
+// The words are matched on one line on purpose: round 30's \s+ between
+// them extended this fingerprint's known false answers (an MPL name inside
+// dual-license prose) to wrapped text (round 31); worklist 61 is the MPL
+// notice reader that would read those exactly.
+var mpl2Re = regexp.MustCompile(`mozilla public license,?\s+(?:v\.?\s*|version\s+)?2\.0`)
 
 // truncateLicenseText truncates a long license string for display purposes.
 // Tries to find the first recognizable license name in the first line, otherwise

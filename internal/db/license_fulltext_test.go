@@ -460,8 +460,8 @@ func TestPartialStatementsDoNotSpeakForTheWhole(t *testing.T) {
 // is compared, so a loaded machine or -race (which slows both alike) does
 // not decide it.
 func TestNoticeCostIsLinear(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing comparison")
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
 	}
 	build := func(n int) string {
 		return "gnu general public license " + strings.Repeat("gpl2 ", n)
@@ -482,6 +482,31 @@ func TestNoticeCostIsLinear(t *testing.T) {
 		build,
 		func(n int) string { return "gnu general public license " + strings.Repeat("the license ", n) },
 		func(n int) string { return "gnu general public license " + strings.Repeat("gplv2 or later ", n) },
+		func(n int) string { return "gnu general public license " + strings.Repeat("gplv2 or later of ", n) },
+		// One long clause of range and exception phrases: each span's rest
+		// of clause must not be rescanned (round 23).
+		func(n int) string { return "gnu general public license " + strings.Repeat("gplv2 or later, ", n) },
+		func(n int) string { return "gnu general public license " + strings.Repeat("gplv2 or later; ", n) },
+		// Negated mentions inside URLs: each looked its URL up by copying and
+		// sorting every URL span (round 31).
+		func(n int) string {
+			return "this program is free software under the gnu general public license. " + strings.Repeat("no http://a/gpl2 ", n)
+		},
+		// Many range phrases in one clause ending in a long punctuation run:
+		// the clause's end was trimmed again for every phrase (round 26).
+		func(n int) string {
+			return "gnu general public license " + strings.Repeat(", version 2 or later", n) + strings.Repeat(" ,", 10*n) + "."
+		},
+		// Many version mentions far from the name: the sentence check per
+		// mention rescanned back to the anchor (round 24 S1).
+		func(n int) string { return "gnu general public license " + strings.Repeat(" v2.x", n) },
+		func(n int) string { return "gnu general public license " + strings.Repeat("version 2.0 x.y ", n) },
+		func(n int) string {
+			return "gnu general public license " + strings.Repeat("gplv2 with the classpath exception, ", n)
+		},
+		func(n int) string {
+			return "gnu general public license version 2.\nspdx-license-identifier: " + strings.Repeat("gpl-2.0-only/", n) + "gpl-2.0-only\n"
+		},
 	} {
 		small, large := build(10000), build(40000)
 		ts, tl := fastest(small), fastest(large)
@@ -537,5 +562,494 @@ func TestEveryMentionSaysTheSameThing(t *testing.T) {
 	}
 	for label, text := range kept {
 		assertKeptAsText(t, label, text)
+	}
+}
+
+// TestRound22SecondVersionsNegationAndClauseEnds — review round 22: more ways
+// a notice names a second version ("2 and/or 3", "2 & 3", "version two"), a
+// "terms" that points forward to other terms, a negated exception, a
+// conditional range ("... any later version approved by the author"), and
+// long prose split on "/" into an expression.
+func TestRound22SecondVersionsNegationAndClauseEnds(t *testing.T) {
+	lead := "This program is free software; you can redistribute it under the terms of the GNU General Public License "
+	kept := map[string]string{
+		"2 and/or 3":       lead + "version 2 and/or 3.",
+		"2, 3":             lead + "version 2, 3.",
+		"2 & 3":            lead + "version 2 & 3.",
+		"2 or/and 3":       lead + "version 2 or/and 3.",
+		"2+3":              lead + "version 2+3.",
+		"version two":      lead + "version two. The GPL version 3 applies to the documentation.",
+		"such terms as":    lead + "version 2. Binary redistribution in app stores is permitted under such terms as the author grants in writing.",
+		"these terms:":     lead + "version 2. The firmware may be distributed under these terms: no modification permitted.",
+		"those terms plus": `Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. The logo may be used under those terms plus attribution in the About box.`,
+		"not subject to":   lead + "version 2 only, and this file is not subject to the Classpath exception.",
+		"not with":         lead + "version 2, not with the Classpath exception.",
+		"approved by":      lead + "version 2 or (at your option) any later version approved by the author.",
+		"GFDL manual":      lead + "version 2 or (at your option) any later version. The manual is GFDL.",
+		"SSPL":             `Licensed under the Apache License, Version 2.0 (the "License"). The server components are SSPL.`,
+		"vendor/MIT":       lead + "version 2. Files in vendor/MIT",
+		"lib/GPL-3.0":      lead + "version 2, except files in lib/GPL-3.0",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	// A spelled-out version on its own is that version.
+	if got := NormalizeLicenseToSPDX(lead + "version two, as published by the Free Software Foundation."); got != "GPL-2.0-only" {
+		t.Errorf("a notice for \"version two\" normalized to %q, want GPL-2.0-only", got)
+	}
+}
+
+// TestRound23NumberWordsConditionsAndNegations — review round 23: a
+// spelled-out second version ("version two or three"), a number word that is
+// not a version ("... License, two copies of which ..."), a condition after a
+// range phrase, a negation after an exception phrase, and "2 through 3".
+func TestRound23NumberWordsConditionsAndNegations(t *testing.T) {
+	lead := "This program is free software; you can redistribute it under the terms of the GNU General Public License "
+	kept := map[string]string{
+		"two or three":   lead + "version two or three.",
+		"two (or three)": lead + "version two (or three).",
+		"two and three":  lead + "version two and three.",
+		"two, three":     lead + "version two, three.",
+		"two/three":      lead + "version two/three.",
+		"three or two":   lead + "version three or two.",
+		"2 or three":     lead + "version 2 or three.",
+		"3 or two":       lead + "version 3 or two.",
+		"two copies":     "Licensed under the GNU General Public License, two copies of which are included in this repository for convenience.",
+		"if approved":    lead + "version 2 or any later version, if approved by the author.",
+		"(if approved)":  lead + "version 2 or any later version (if approved by the author).",
+		"- subject to":   lead + "version 2 or any later version - subject to the maintainer's approval.",
+		"as approved":    lead + "version 2 or any later version, as approved by the maintainer.",
+		"does not apply": lead + "version 2 with the Classpath exception, which does not apply to this file.",
+		"not applying":   lead + "version 2, with the classpath exception not applying.",
+		"2 through 3":    lead + "version 2 through 3.",
+		"2 to 3":         lead + "version 2 to 3.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	// "as published by the Free Software Foundation" after a range is the
+	// FSF's own wording, not a condition.
+	if got := NormalizeLicenseToSPDX(lead + "version 2 or (at your option) any later version, as published by the Free Software Foundation."); got != "GPL-2.0-or-later" {
+		t.Errorf("an FSF range followed by \"as published by\" = %q, want GPL-2.0-or-later", got)
+	}
+}
+
+// TestPositionLookupsAreLogarithmic — review round 23: the clause checks ask
+// "the next clause break after here" and "a condition word in this range" once
+// per span. Inside a whole notice read, a linear scan per lookup hides under
+// the regex passes, so the lookups are pinned on their own: four times the
+// positions must cost well under four times the time (a binary search grows
+// by about 1.1, a scan by 4; 2 separates them).
+func TestPositionLookupsAreLogarithmic(t *testing.T) {
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
+	}
+	build := func(n int) positions {
+		p := make(positions, n)
+		for i := range p {
+			p[i] = 2 * i
+		}
+		return p
+	}
+	fastest := func(p positions) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		end := 2 * len(p)
+		for range 5 {
+			start := time.Now()
+			for i := range 20000 {
+				from := end - 1 - i%64
+				p.next(from, end)
+				p.between(from, end)
+			}
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	small, large := build(100000), build(400000)
+	ts, tl := fastest(small), fastest(large)
+	if tl > 2*ts {
+		t.Errorf("position lookups grow with the positions: %v for %d, %v for %d", ts, len(small), tl, len(large))
+	}
+}
+
+// TestRound24ContractionsConditionsAndJoins — review round 24: a negation as a
+// contraction ("doesn't"), a negation before the exception in its clause,
+// conditions the list missed, "e.g." hiding a condition behind a false
+// sentence end, more second-version joins, "excluding", a version followed by
+// letters, and headers behind "%%" / "!!" comment markers.
+func TestRound24ContractionsConditionsAndJoins(t *testing.T) {
+	lead := "This program is free software; you can redistribute it under the terms of the GNU General Public License "
+	kept := map[string]string{
+		"doesn't":        lead + "version 2 with the Classpath exception, which doesn't apply to files in lib/.",
+		"won't":          lead + "version 2 with the Classpath exception, which won't apply to the tools.",
+		"isn't":          lead + "version 2 with the Classpath exception, which isn't granted for the tests.",
+		"cannot":         lead + "version 2 with the Classpath exception, which cannot be used for the daemon.",
+		"LLVM don't":     "Licensed under the Apache License v2.0 with LLVM Exceptions, which don't apply to files under test/.",
+		"no ... before":  "No file here is free software under the GNU General Public License version 2 with the Classpath exception.",
+		"as long as":     lead + "version 2 or any later version, as long as the author agrees.",
+		"conditional on": lead + "version 2 or any later version, conditional on the author's consent.",
+		"discretion":     lead + "version 2 or any later version, at the author's discretion.",
+		"e.g. if":        lead + "version 2 or any later version, e.g. if approved by the author.",
+		"thru":           lead + "version 2 thru 3.",
+		"until":          lead + "version 2 until 3.",
+		"up to":          lead + "version 2 up to 3.",
+		"[or 3]":         lead + "version 2 [or 3].",
+		"excluding":      lead + "version 2, excluding the files in lib/.",
+		"version 3a":     lead + "version two. Some parts under version 3a.",
+		"GPLv2x":         lead + "version 3 or GPLv2x.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	for _, marker := range []string{"%% ", "!! ", "% "} {
+		if got := NormalizeLicenseToSPDX(commented(fsfGPL3Notice, "", marker, "")); got != "GPL-3.0-or-later" {
+			t.Errorf("the FSF GPL-3 notice behind %q = %q, want GPL-3.0-or-later", marker, got)
+		}
+	}
+}
+
+// fsfGPL3PartOf is the FSF "This file is part of" GPL-3 header, whose line
+// break falls inside "any later version".
+const fsfGPL3PartOf = `This file is part of Foo.
+
+Foo is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later
+version.`
+
+// TestRound25MarkerCompanionsApostrophesAndClauseRest — review round 25:
+// comment markers with a companion character ("//!", "#'", "-- |", "#:",
+// "%!"), typographic apostrophes in contractions, a range followed by more of
+// its clause (decided as a class: only the FSF's "as published by the Free
+// Software Foundation" may follow), a "License, 2 copies" count, and versions
+// run into letters.
+func TestRound25MarkerCompanionsApostrophesAndClauseRest(t *testing.T) {
+	for _, marker := range []string{"//! ", "#' ", "-- | ", "#: ", "%! ", "!% ", "/// ", "## "} {
+		if got := NormalizeLicenseToSPDX(commented(fsfGPL3PartOf, "", marker, "")); got != "GPL-3.0-or-later" {
+			t.Errorf("the FSF part-of header behind %q = %q, want GPL-3.0-or-later", marker, got)
+		}
+	}
+	lead := "This program is free software; you can redistribute it under the terms of the GNU General Public License "
+	kept := map[string]string{
+		"doesn\u2019t":        lead + "version 2 with the Classpath exception, which doesn\u2019t apply to this file.",
+		"doesn\u02bct":        lead + "version 2 with the Classpath exception, which doesn\u02bct apply to this file.",
+		"pending approval":    lead + "either version 2 of the License, or (at your option) any later version, pending approval by the author.",
+		"holder's approval":   lead + "either version 2 of the License, or (at your option) any later version, with the copyright holder's approval.",
+		"with permission":     lead + "either version 2 of the License, or (at your option) any later version, with the author's permission.",
+		"once agrees":         lead + "either version 2 of the License, or (at your option) any later version, once the author agrees.",
+		"except contrib":      lead + "version 2 or any later version, except the files in contrib.",
+		"License, 2 copies":   "Licensed under the GNU General Public License, 2 copies of which are included in this repository for convenience.",
+		"version 3rd edition": lead + "version 3rd edition.",
+		"version 2x":          lead + "version 2x.",
+		"v2.0rc1":             lead + "v2.0rc1 as published.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	if got := NormalizeLicenseToSPDX(lead + "version 2 or (at your option) any later version, as published by the Free Software Foundation."); got != "GPL-2.0-or-later" {
+		t.Errorf("the FSF's own \"as published by\" after a range = %q, want GPL-2.0-or-later", got)
+	}
+}
+
+// TestRound26LicenseNumbersPointersAndMarkers — review round 26: an undotted
+// number after "License" hid a second version instead of keeping the text; a
+// "see ..." pointer let a condition follow it; and the FSF part-of header
+// behind the Fortran/Doxygen and batch markers.
+func TestRound26LicenseNumbersPointersAndMarkers(t *testing.T) {
+	lead := "This program is free software; you can redistribute it under the terms of the GNU General Public License "
+	fsf2 := lead + "as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version"
+	kept := map[string]string{
+		"also License 3":      lead + "version 2 as published by the Free Software Foundation. It may also be distributed under the GNU General Public License 3.",
+		"or License 3":        lead + "version 2 as published by the FSF, or the GNU General Public License 3 as published by the FSF.",
+		"License 3, see 2":    "This program is free software; you can redistribute it under the terms of the GNU General Public License 3 as published by the Free Software Foundation; see the GNU General Public License version 2 for details.",
+		"Apache or License 1": `Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License, or under the License 1 as you choose.`,
+		"see, but only":       fsf2 + ", see COPYING, but only with the written permission of the author.",
+		"see unless":          fsf2 + ", see COPYING unless the author revokes this grant.",
+		"(see) if approved":   fsf2 + " (see COPYING) if approved by the author.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	// A range phrase that ends in punctuation of its own: the clause's
+	// trimmed end falls before the phrase's end.
+	if got := NormalizeLicenseToSPDX(lead + "version 2 or any later version, (at your option)."); got != "GPL-2.0-or-later" {
+		t.Errorf("a range ending in its own parenthesis = %q, want GPL-2.0-or-later", got)
+	}
+	for _, text := range []string{fsf2 + ", see COPYING.", fsf2 + " (see the COPYING file).", fsf2 + ", see https://www.gnu.org/licenses/."} {
+		if got := NormalizeLicenseToSPDX(text); got != "GPL-2.0-or-later" {
+			t.Errorf("a pointer after the range: %.60q... = %q, want GPL-2.0-or-later", text[len(text)-40:], got)
+		}
+	}
+	for _, marker := range []string{"!> ", "!< ", ":: ", "//!< "} {
+		if got := NormalizeLicenseToSPDX(commented(fsfGPL3PartOf, "", marker, "")); got != "GPL-3.0-or-later" {
+			t.Errorf("the FSF part-of header behind %q = %q, want GPL-3.0-or-later", marker, got)
+		}
+	}
+}
+
+// TestRound27PointersAndVersionSpellings — review round 27 (observed, taken):
+// a "see" pointer to another license's URL or an unrelated token is not a
+// pointer to this license's text, and "version III", "the third version" and
+// "version-3" name a second version.
+func TestRound27PointersAndVersionSpellings(t *testing.T) {
+	lead := "This program is free software; you can redistribute it under the terms of the GNU General Public License "
+	fsf2 := lead + "as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version"
+	kept := map[string]string{
+		"see another license URL": fsf2 + ", see https://polyformproject.org/noncommercial/1.0.0.",
+		"see an unrelated token":  fsf2 + ", see NONCOMMERCIAL-USE-ONLY.",
+		"version III":             lead + "version 2, or version III.",
+		"the third version":       lead + "version 2, or the third version.",
+		"version-3":               lead + "version 2 or version-3.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	for _, text := range []string{fsf2 + ", see COPYING.", fsf2 + ", see LICENSE.txt.", fsf2 + ", see https://www.gnu.org/licenses/."} {
+		if got := NormalizeLicenseToSPDX(text); got != "GPL-2.0-or-later" {
+			t.Errorf("a pointer to this license's text = %q, want GPL-2.0-or-later", got)
+		}
+	}
+}
+
+// TestVersionsMustBeTiedToTheLicense — review round 28, decided as a class: a
+// version mention that belongs to something else in the same sentence ("the
+// second version of this file", "version iii is the stable branch", "the
+// version 3 branch") was read as the license's version. A mention now counts
+// only when it is tied to the license: part of the name ("GPLv2", "Apache
+// License 2.0"), right after a name with only spaces, commas, colons or
+// parentheses between ("GNU General Public License, version 2"), or followed
+// by "of the ... License" ("version 2 of the License").
+func TestVersionsMustBeTiedToTheLicense(t *testing.T) {
+	kept := map[string]string{
+		"second version of this file": "This program is licensed under the GNU General Public License; the second version of this file adds a GUI.",
+		"second version of codebase":  "Released under the GNU General Public License, second version of the codebase, released in the year 2004",
+		"third version of handbook":   "This program is licensed under the GNU General Public License (see the third version of the handbook).",
+		"version iii branch":          "This program is licensed under the GNU General Public License; version iii is the stable release branch.",
+		"version-3 branch":            "This program is licensed under the GNU General Public License; the version-3 branch is the stable release.",
+		"version 3 branch (digits)":   "This program is licensed under the GNU General Public License; the version 3 branch is the stable release.",
+		"version 3 of the tool":       "This program is free software under the GNU General Public License; this is version 3 of the tool.",
+		"version two of this tool":    "This program is free software under the GNU General Public License; version two of this tool adds plugins.",
+		"words in the gap":            "Released under the GNU General Public License by the maintainers, and version 3 is the stable release.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	exact := map[string]string{
+		"This program is free software under the GNU General Public License, version 2, as published by the Free Software Foundation.":                           "GPL-2.0-only",
+		"This program is free software under the terms of the GNU General Public License (GPL) version 3 as published by the FSF.":                               "GPL-3.0-only",
+		"This program is free software; you can redistribute it under version 2 of the GNU General Public License as published by the Free Software Foundation.": "GPL-2.0-only",
+		"This program is free software under the GNU General Public License: version 3, as published by the Free Software Foundation.":                           "GPL-3.0-only",
+		"This program is free software under the third version of the GNU General Public License, as published by the FSF.":                                      "GPL-3.0-only",
+	}
+	for text, want := range exact {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.80q...) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// fsfGPL2OldNotice is the older FSF GPL-2 header ("either version 2, or"),
+// which thousands of real files carry, GCC's with version 3.
+const fsfGPL2OldNotice = `This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2, or (at your option)
+any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.`
+
+// TestRound29FSFLeadSentenceAndNegation — review round 29: the round-28 tie
+// rule rejected the FSF's own "as published by the Free Software Foundation;
+// either version N" (the older header, GCC's), and it tied "version N of the
+// License" in any sentence, negations included.
+func TestRound29FSFLeadSentenceAndNegation(t *testing.T) {
+	for _, f := range []struct{ open, marker, close string }{{"", "", ""}, {"/*", " * ", " */"}, {"", "# ", ""}, {"", "// ", ""}} {
+		if got := NormalizeLicenseToSPDX(commented(fsfGPL2OldNotice, f.open, f.marker, f.close)); got != "GPL-2.0-or-later" {
+			t.Errorf("the older FSF GPL-2 header behind %q = %q, want GPL-2.0-or-later", f.marker, got)
+		}
+	}
+	lead := "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation"
+	exact := map[string]string{
+		lead + "; either version 3, or (at your option) any later version.": "GPL-3.0-or-later",
+		lead + ", version 3.": "GPL-3.0-only",
+		lead + "; version 2.": "GPL-2.0-only",
+	}
+	for text, want := range exact {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.60q...) = %q, want %q", text[len(text)-60:], got, want)
+		}
+	}
+	kept := map[string]string{
+		"another sentence":         lead + ". Releases before 2010 were distributed under version 2 of the License.",
+		"not covered":              "This program is free software under the terms of the GNU General Public License. This program is not covered by version 3 of the License.",
+		"not available":            lead + ". It is not available under version 3 of the License.",
+		"do not assume":            lead + ". Please do not assume version 2 of the License applies.",
+		"plan to move":             "Licensed under the GNU General Public License. We plan to move to version 3 of the GPL next year.",
+		"Apache, another sentence": "Licensed under the Apache License (see the NOTICE file). Do not use version 2.0 of the License for this file.",
+		"relicensed":               lead + ", and may not be relicensed under version 3 of the License.",
+		"relicensed, no negation":  lead + ", and was relicensed under version 3 of the License in 2010.",
+		"licensee's code":          lead + ", and version 3 of the licensee's own code is separate.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+}
+
+// TestRealHeaderVariantsFromTheCorpus — review round 29: shapes found by
+// running 1,610 real license comment blocks (from source files in the module
+// cache) through the reader against HEAD. Each read Apache-2.0 or GPL at HEAD
+// and was text or wrong here until round 29.
+func TestRealHeaderVariantsFromTheCorpus(t *testing.T) {
+	apacheTail := ` you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0`
+	exact := map[string]string{
+		// A colon where the standard header has a semicolon.
+		`Licensed under the Apache License, Version 2.0 (the "License"):` + apacheTail: "Apache-2.0",
+		// Quote variants around "License".
+		`Licensed under the Apache License, Version 2.0 (the 'License');` + apacheTail:           "Apache-2.0",
+		"Licensed under the Apache License, Version 2.0 (the \u201cLicense\u201d);" + apacheTail: "Apache-2.0",
+		`Licensed under the Apache License, Version 2.0 (the \"License\");` + apacheTail:         "Apache-2.0",
+		// A JSDoc @license tag that agrees.
+		commented(`Licensed under the Apache License, Version 2.0 (the "License");`+apacheTail+"\n\n@license Apache-2.0", "/*", " * ", " */"): "Apache-2.0",
+		// The ASF header behind m4's dnl, behind "REM *", and repeated.
+		commented(asfHeader, "", "dnl ", ""):                                                       "Apache-2.0",
+		commented(commented(asfHeader, "/*", " * ", " */"), "", "REM ", ""):                        "Apache-2.0",
+		commented(asfHeader, "/*", " * ", " */") + "\n" + commented(asfHeader, "/*", " * ", " */"): "Apache-2.0",
+		// The ASF template with another owner.
+		`Licensed to Elasticsearch B.V. under one or more contributor license agreements. See the NOTICE file distributed with this work for additional information regarding copyright ownership. Elasticsearch B.V. licenses this file to you under the Apache License, Version 2.0 (the "License");` + apacheTail: "Apache-2.0",
+		// MPL 2.0 named with a bare version.
+		"Mozilla Public License 2.0 (MPL 2.0) - see https://www.mozilla.org/en-US/MPL/2.0/ for details": "MPL-2.0",
+	}
+	for text, want := range exact {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.80q...) = %q, want %q", text, got, want)
+		}
+	}
+	// The MPL 1.1 tri-license block is not MPL-2.0 (it read so once the GPL
+	// reader stopped answering it, round 29).
+	assertKeptAsText(t, "MPL 1.1 tri-license", "***** BEGIN LICENSE BLOCK *****\nVersion: MPL 1.1/GPL 2.0/LGPL 2.1\n\nThe contents of this file are subject to the Mozilla Public License Version 1.1 (the \"License\"); you may not use this file except in compliance with the License.")
+}
+
+// TestRound30TagsURLsAndCommonVariants — review round 30: an @license tag's
+// expression was never read (only the word "license" was accounted), a
+// version inside the FSF's "If not, see <.../gpl-2.0.html>" URL fell in a
+// negation's clause, "DO NOT EDIT!" ran into the header after it, and common
+// headers the base also missed: Linux's "under the terms of version 2 of the
+// GNU General Public License", "Mozilla Public\nLicense" wrapped, and the
+// FSF's "Free Software Foundation, Inc.; either" / "(FSF); either".
+func TestRound30TagsURLsAndCommonVariants(t *testing.T) {
+	apache := `Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.`
+	// An @license tag heading the text is the author's statement, as an
+	// SPDX-License-Identifier tag is: the answer is its whole expression,
+	// never the one term the prose also names.
+	for tag, want := range map[string]string{
+		"@license Apache-2.0 OR Python-2.0":         "Apache-2.0 OR Python-2.0",
+		"@license Apache-2.0 AND OpenSSL":           "Apache-2.0 AND OpenSSL",
+		"@license (Apache-2.0 OR Unicode-DFS-2016)": "Apache-2.0 OR Unicode-DFS-2016",
+	} {
+		if got := NormalizeLicenseToSPDX(commented(tag+"\n"+apache, "/**", " * ", " */")); got != want {
+			t.Errorf("%s over an Apache header = %q, want %q", tag, got, want)
+		}
+	}
+	// "!" ends a sentence: a version tied only through "of the GPL" in the
+	// next one is not the license's.
+	assertKeptAsText(t, "next sentence after !", "Licensed under the GNU General Public License! We plan to move to version 3 of the GPL next year.")
+	// Lower in a notice, a tag must agree with the prose.
+	assertKeptAsText(t, "@license disagreeing, lower down", apache+"\n\n@license Apache-2.0 OR Python-2.0")
+	gpl2 := "This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License version 2 as published by the Free Software Foundation. You should have received a copy of the GNU General Public License version 2 along with this program; "
+	exact := map[string]string{
+		commented("@license Apache-2.0\n"+apache, "/**", " * ", " */"):                "Apache-2.0",
+		gpl2 + "If not, see http://www.gnu.org/licenses/gpl-2.0.html":                 "GPL-2.0-only",
+		gpl2 + "if not, see <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>.": "GPL-2.0-only",
+		"DO NOT EDIT!\n" + apache: "Apache-2.0",
+		"This program is free software; you can redistribute it and/or modify it under the terms of version 2 of the GNU General Public License as published by the Free Software Foundation.":                                                                  "GPL-2.0-only",
+		"This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, Inc.; either version 2, or (at your option) any later version.":                "GPL-2.0-or-later",
+		"This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation (FSF); either version 3 of the License, or (at your option) any later version.": "GPL-3.0-or-later",
+	}
+	for text, want := range exact {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.70q...) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// TestRound31TagValuesURLNegationsAndShebangs — review round 31: a
+// value-less or prose "@license" (JSDoc's marker, "@license Copyright 2017
+// Google Inc.") is not a tag; a negated grant whose only version is inside a
+// URL is withdrawn; and only a real shebang ("#!") may stand before a heading
+// tag on its line.
+func TestRound31TagValuesURLNegationsAndShebangs(t *testing.T) {
+	apache := `Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.`
+	exact := map[string]string{
+		commented("@license\nCopyright 2018 Google LLC. All Rights Reserved.\n"+apache, "/**", " * ", " */"): "Apache-2.0",
+		commented("@license Copyright 2017 Google Inc. All Rights Reserved.\n"+apache, "/**", " * ", " */"):  "Apache-2.0",
+	}
+	for text, want := range exact {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.70q...) = %q, want %q", text, got, want)
+		}
+	}
+	kept := map[string]string{
+		"not distributed, URL only": "This file is not distributed under the GNU General Public License https://www.gnu.org/licenses/gpl-2.0.html any more.",
+		"no longer, URL only":       "This file is no longer distributed under the GNU General Public License <https://www.gnu.org/licenses/gpl-2.0.html>.",
+		"/*! before @license":       "/*! Portions of this bundle are GPL-3.0-only; the loader alone is @license MIT */\nvar x = 1;",
+		"! before @license":         "! Most of this file is GPL-3.0-only. The helper below is @license MIT\n",
+		"MPL in a dual, wrapped":    "This library is dual licensed under the MIT license or the Mozilla Public\nLicense 2.0, at your option.",
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+}
+
+// TestRound32LicenseNoticesAndUnreadableTags — review round 32: "license
+// notice(s)" is not a reference to this license ("Third-party files keep
+// their own license notices" names other licenses), and an "@license" whose
+// value is neither an expression, empty (JSDoc's bare marker) nor a copyright
+// line states a license the reader cannot read, so the text is kept, as for
+// an unreadable SPDX tag.
+func TestRound32LicenseNoticesAndUnreadableTags(t *testing.T) {
+	apache := `Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.`
+	kept := map[string]string{
+		"own license notices": "This program is distributed under the GNU General Public License v2. Third-party files keep their own license notices.",
+		"a license notice":    "This program is distributed under the GNU General Public License v2. Some files carry a different license notice.",
+		"@license Kopimi":     apache + "\n@license Kopimi",
+		"@license OR Foo":     apache + "\n@license Apache-2.0 OR Foo-1.0",
+		"@license list":       apache + "\n@license Apache-2.0, Foo",
+		"@license WITH prose": commented("@license GPL-2.0-only WITH Classpath\nThis program is free software; you can redistribute it under the terms of the GNU General Public License version 2.", "/**", " * ", " */"),
+		"@license PHPDoc URL": commented("@license http://www.apache.org/licenses/LICENSE-2.0 Apache License 2.0\n"+apache, "/**", " * ", " */"),
+		// Round 33: an SPDX tag on an "@license Copyright ..." line is still
+		// read, and an empty SPDX tag keeps the text.
+		"SPDX tag on the @license line": commented("@license Copyright 2020 Foo SPDX-License-Identifier: Kopimi\n"+apache, "/**", " * ", " */"),
+		"empty SPDX tag":                "SPDX-License-Identifier:\n" + apache,
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+}
+
+// TestHeadingTagsFollowTheSameTagRule — review round 34: the heading-tag
+// reader (spdxIdentifierLine) still used the one-pass union of both tag
+// forms, so a bare "@license" or "@license Copyright ..." counted there as an
+// unreadable tag, and an SPDX tag on an "@license" line was swallowed. Both
+// readers now find tags the same way (SR-17).
+func TestHeadingTagsFollowTheSameTagRule(t *testing.T) {
+	for text, want := range map[string]string{
+		// The earliest tag heads the text: an @license at the top, an SPDX
+		// tag later in a bundle.
+		"/** @license Apache-2.0 */\nconst helpers = require('./helpers'); // bundled from helpers.js, SPDX-License-Identifier: Apache-2.0": "Apache-2.0",
+		// Heading the text (after markers, a bare @license and a copyright
+		// line), the tag is the author's statement: its whole expression.
+		"/**\n * @license Copyright 2020 Foo SPDX-License-Identifier: Apache-2.0 OR BlueOak-1.0.0\n * Licensed under the Apache License, Version 2.0 (the \"License\").\n */": "Apache-2.0 OR BlueOak-1.0.0",
+		"// SPDX-License-Identifier: Apache-2.0\n\n/**\n * @license\n * Copyright 2024 Google Inc.\n */":                                                                      "Apache-2.0",
+		"// SPDX-License-Identifier: Apache-2.0\n\n/**\n * @license Copyright 2024 Google Inc.\n */":                                                                          "Apache-2.0",
+		"/**\n * @license SPDX-License-Identifier: Apache-2.0 */\n/* The product text follows below, see the documentation. */":                                               "Apache-2.0",
+	} {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want %q", text, got, want)
+		}
 	}
 }

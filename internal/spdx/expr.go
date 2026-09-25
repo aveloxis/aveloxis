@@ -85,15 +85,34 @@ func (p *parser) parseChain(op string, next func() (*node, error)) (*node, error
 	if len(kids) == 1 {
 		return first, nil
 	}
-	flat := make([]*node, 0, len(kids))
-	for _, k := range kids {
-		if k.op == op {
-			flat = append(flat, k.kids...)
-		} else {
-			flat = append(flat, k)
-		}
+	// Same-operator chains are flattened once, after the parse (flatten):
+	// flattening here copied a nested chain's operands at every level, which
+	// was quadratic in the nesting depth (v0.29.67 review round 23).
+	return &node{op: op, kids: kids}, nil
+}
+
+// flatten merges each same-operator chain into one node ("A OR (B OR C)" is
+// one OR of three), top-down so every node is visited once and every operand
+// is appended once: linear in the tree.
+func flatten(n *node) *node {
+	if n.op == "" {
+		return n
 	}
-	return &node{op: op, kids: flat}, nil
+	var kids []*node
+	var collect func(k *node)
+	collect = func(k *node) {
+		if k.op == n.op {
+			for _, c := range k.kids {
+				collect(c)
+			}
+			return
+		}
+		kids = append(kids, flatten(k))
+	}
+	for _, k := range n.kids {
+		collect(k)
+	}
+	return &node{op: n.op, kids: kids}
 }
 
 func (p *parser) parseWith() (*node, error) {
@@ -255,24 +274,50 @@ func parseWithPhrases(s string, strict bool, term func(string) string, phrases m
 	if p.pos != len(p.toks) {
 		return nil, fmt.Errorf("unexpected %q", p.toks[p.pos])
 	}
-	return n, nil
+	return flatten(n), nil
 }
 
 // render spells a tree with the fewest parentheses precedence allows: only
 // an OR inside an AND needs them.
+// One builder for the whole tree: joining each level's string was quadratic in
+// the nesting depth (review round 23).
 func render(n *node, leafName func(*node) string) string {
+	var b strings.Builder
+	renderTo(&b, n, leafName)
+	return b.String()
+}
+
+func renderTo(b *strings.Builder, n *node, leafName func(*node) string) {
 	if n.op == "" {
-		return leafName(n)
+		b.WriteString(leafName(n))
+		return
 	}
-	parts := make([]string, len(n.kids))
 	for i, k := range n.kids {
-		s := render(k, leafName)
-		if n.op == "AND" && k.op == "OR" {
-			s = "(" + s + ")"
+		if i > 0 {
+			b.WriteString(" " + n.op + " ")
 		}
-		parts[i] = s
+		paren := n.op == "AND" && k.op == "OR"
+		if paren {
+			b.WriteByte('(')
+		}
+		renderTo(b, k, leafName)
+		if paren {
+			b.WriteByte(')')
+		}
 	}
-	return strings.Join(parts, " "+n.op+" ")
+}
+
+// eachLeaf calls f on every leaf of the tree, stopping when f returns false.
+func eachLeaf(n *node, f func(*node) bool) bool {
+	if n.op == "" {
+		return f(n)
+	}
+	for _, k := range n.kids {
+		if !eachLeaf(k, f) {
+			return false
+		}
+	}
+	return true
 }
 
 func plainLeaf(n *node) string {
@@ -395,20 +440,52 @@ func Validate(expr string) error {
 	if err != nil {
 		return err
 	}
+	// The grammar is checked by parse above; go-spdx judges each leaf on its
+	// own (its IDs and exceptions, "+", WITH). Validating the whole
+	// expression in go-spdx was quadratic in the number of terms, on
+	// registry-controlled strings (v0.29.67 review round 22: 0.4 s for a
+	// 200 KB OR chain). Each leaf is judged inside a minimal compound,
+	// because go-spdx rejects "ID+ WITH exception" as a one-term expression
+	// but accepts it in a compound one, as SPDX Annex D does (round 23).
+	// TestValidMatchesTheWholeExpressionVerdict holds the verdicts to the
+	// library's whole-expression ones.
 	var bad error
-	s := render(n, func(l *node) string {
-		if FamilyLabels[l.id] {
+	eachLeaf(n, func(l *node) bool {
+		switch {
+		case FamilyLabels[l.id]:
 			bad = fmt.Errorf("%q is not an SPDX license identifier", l.id)
+		case l.plus && !IsLicenseID(l.id+"-or-later"):
+			// Annex D allows "ID+" on any ID, but the official SPDX tools
+			// the SBOMs are held to accept it exactly when "ID-or-later" is
+			// a list ID (AGPL-3.0+, GFDL-1.3+; "GPL-2.0+" is itself a list
+			// ID and parses as that): checked against license-expression
+			// for all 740 list IDs (review rounds 24-25). Otherwise the SBOM
+			// says NOASSERTION.
+			bad = fmt.Errorf("%q: the SPDX tools accept \"ID+\" only where ID-or-later is a list ID", l.id+"+")
+		case !libraryLeafValid(libraryLeaf(l, true)):
+			bad = fmt.Errorf("invalid SPDX license expression %q", expr)
 		}
-		return libraryLeaf(l, true)
+		return bad == nil
 	})
-	if bad != nil {
-		return bad
+	return bad
+}
+
+// libraryLeafKnows caches go-spdx's verdict on one leaf spelled from list IDs
+// (a finite set); a LicenseRef leaf comes from the input, is not cached, and
+// is judged each time.
+var libraryLeafKnows sync.Map
+
+func libraryLeafValid(leaf string) bool {
+	in := leaf + " AND MIT" // judged in a compound (see Validate)
+	if strings.HasPrefix(leaf, "LicenseRef-") {
+		return libraryValid(in)
 	}
-	if !libraryValid(s) {
-		return fmt.Errorf("invalid SPDX license expression %q", expr)
+	if v, ok := libraryLeafKnows.Load(leaf); ok {
+		return v.(bool)
 	}
-	return nil
+	ok := libraryValid(in)
+	libraryLeafKnows.Store(leaf, ok)
+	return ok
 }
 
 // libraryValid asks go-spdx whether s is a valid expression. A panic inside
@@ -522,28 +599,135 @@ func DisplayKey(expr string) string {
 	if err != nil {
 		return expr
 	}
-	return sortedKey(n)
+	var b strings.Builder
+	c := newKeyCursor(buildSortKey(n), false)
+	for chunk, ok := c.next(); ok; chunk, ok = c.next() {
+		b.WriteString(chunk)
+	}
+	return b.String()
 }
 
 // sortKeyRenders is a test hook, called once per leaf rendered by sortedKey.
 var sortKeyRenders = func() {}
 
-// sortedKey renders n with the operands of every AND and OR in sorted order.
-// Each node's key is built once from its children's keys, bottom-up (v0.29.67
-// review round 2: sorting by re-rendering subtrees in every comparison was
-// quadratic in the nesting depth).
-func sortedKey(n *node) string {
+// sortKey is a node's DisplayKey as a rope: its operands in sorted order,
+// written out only once at the end. Building each node's key as a string from
+// its children's copied every subtree at every level, quadratic in the
+// nesting depth (review round 23), and round 23's bound on that work fell back
+// to an unsorted key on shallow real expressions (round 25). Siblings are
+// compared by streaming their text and stop at the first difference, which
+// costs at most the smaller one's size.
+type sortKey struct {
+	leaf  string     // a leaf's rendering
+	sep   string     // an operator node's " OP "
+	kids  []*sortKey // sorted
+	paren []bool     // kid i is an OR inside an AND
+}
+
+func buildSortKey(n *node) *sortKey {
 	if n.op == "" {
 		sortKeyRenders()
-		return plainLeaf(n)
+		return &sortKey{leaf: plainLeaf(n)}
 	}
-	keys := make([]string, len(n.kids))
-	for i, k := range n.kids {
-		keys[i] = sortedKey(k)
-		if n.op == "AND" && k.op == "OR" {
-			keys[i] = "(" + keys[i] + ")"
+	type item struct {
+		k     *sortKey
+		paren bool
+	}
+	items := make([]item, len(n.kids))
+	for i, c := range n.kids {
+		items[i] = item{buildSortKey(c), n.op == "AND" && c.op == "OR"}
+	}
+	sort.Slice(items, func(a, b int) bool {
+		return compareSortKeys(items[a].k, items[a].paren, items[b].k, items[b].paren) < 0
+	})
+	k := &sortKey{sep: " " + n.op + " ", kids: make([]*sortKey, len(items)), paren: make([]bool, len(items))}
+	for i, it := range items {
+		k.kids[i], k.paren[i] = it.k, it.paren
+	}
+	return k
+}
+
+// compareSortKeys compares two keys' rendered text (with its parentheses) as
+// strings.Compare would, reading only as far as their first difference.
+func compareSortKeys(a *sortKey, ap bool, b *sortKey, bp bool) int {
+	if a.sep == "" && b.sep == "" { // two leaves (a leaf is never parenthesized)
+		return strings.Compare(a.leaf, b.leaf)
+	}
+	ca, cb := newKeyCursor(a, ap), newKeyCursor(b, bp)
+	var sa, sb string
+	aok, bok := true, true
+	for {
+		if sa == "" && aok {
+			sa, aok = ca.next()
 		}
+		if sb == "" && bok {
+			sb, bok = cb.next()
+		}
+		switch {
+		case sa == "" && sb == "":
+			return 0
+		case sa == "":
+			return -1
+		case sb == "":
+			return 1
+		}
+		m := min(len(sa), len(sb))
+		if c := strings.Compare(sa[:m], sb[:m]); c != 0 {
+			return c
+		}
+		sa, sb = sa[m:], sb[m:]
 	}
-	sort.Strings(keys)
-	return strings.Join(keys, " "+n.op+" ")
+}
+
+// keyCursor yields a key's rendered text in chunks, with an explicit stack.
+type keyCursor struct{ st []keyFrame }
+
+type keyFrame struct {
+	k      *sortKey
+	paren  bool
+	opened bool
+	step   int // 2m: before kid m (its separator); 2m+1: kid m
+}
+
+func newKeyCursor(k *sortKey, paren bool) *keyCursor {
+	return &keyCursor{st: []keyFrame{{k: k, paren: paren}}}
+}
+
+// next returns the next non-empty chunk, and false when the text is done.
+func (c *keyCursor) next() (string, bool) {
+	for len(c.st) > 0 {
+		top := len(c.st) - 1
+		f := &c.st[top]
+		k := f.k
+		if k.sep == "" {
+			c.st = c.st[:top]
+			return k.leaf, true
+		}
+		if !f.opened {
+			f.opened = true
+			if f.paren {
+				return "(", true
+			}
+		}
+		if f.step%2 == 0 {
+			m := f.step / 2
+			if m == len(k.kids) {
+				paren := f.paren
+				c.st = c.st[:top]
+				if paren {
+					return ")", true
+				}
+				continue
+			}
+			f.step++
+			if m > 0 {
+				return k.sep, true
+			}
+			continue
+		}
+		m := (f.step - 1) / 2
+		f.step++
+		c.st = append(c.st, keyFrame{k: k.kids[m], paren: k.paren[m]})
+	}
+	return "", false
 }

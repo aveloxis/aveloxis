@@ -81,10 +81,22 @@ func OperandTexts(raw string) []string {
 		}
 	}
 	fields := strings.Fields(raw)
+	// closeAt[i] is the first word at or after i that closes a parenthetical
+	// (len(fields) when none does), found in one backward pass: scanning
+	// forward from every "and"/"or" was quadratic on a run of "or (" (review
+	// round 24: 0.47 s at 184 KB).
+	closeAt := make([]int, len(fields)+1)
+	closeAt[len(fields)] = len(fields)
+	for i := len(fields) - 1; i >= 0; i-- {
+		closeAt[i] = closeAt[i+1]
+		if strings.HasSuffix(fields[i], ")") {
+			closeAt[i] = i
+		}
+	}
 	for i, w := range fields {
 		switch strings.ToLower(w) {
 		case "and", "or":
-			if !opensVersionRange(fields[i+1:]) {
+			if !opensVersionRange(fields[i+1:], closeAt[i+1]-(i+1)) {
 				flush()
 				continue
 			}
@@ -128,13 +140,12 @@ func VersionRangeWords() []string {
 // version range: the next word, after skipping one leading parenthetical
 // ("(at your option)") and trimming punctuation, is a versionRangeWords
 // entry, or "any" followed by one.
-func opensVersionRange(rest []string) bool {
+// closeIdx is the index in rest of the first word ending in ")" (len(rest)
+// when none does), precomputed by the caller.
+func opensVersionRange(rest []string, closeIdx int) bool {
 	i := 0
 	if i < len(rest) && strings.HasPrefix(rest[i], "(") {
-		for i < len(rest) && !strings.HasSuffix(rest[i], ")") {
-			i++
-		}
-		i++ // past the word that closes the parenthetical
+		i = closeIdx + 1 // past the word that closes the parenthetical
 	}
 	word := func(j int) string {
 		if j >= len(rest) {

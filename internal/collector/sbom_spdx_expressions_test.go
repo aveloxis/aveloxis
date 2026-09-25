@@ -348,3 +348,21 @@ func TestRootEvidenceOnlyWhenThereIsSome(t *testing.T) {
 		t.Errorf("root evidence = %+v; want none for a no-license conclusion with no copyrights", ev)
 	}
 }
+
+// TestSPDXExporterWritesNoAssertionForAnUnofficialPlus — review round 24: the
+// official SPDX tools reject "ID+" unless "ID+" is itself a list ID, and the
+// fingerprint answers "Apache-2.0+" for an Apache notice with a range. The
+// SPDX document must say NOASSERTION for it, not a value the tools reject.
+func TestSPDXExporterWritesNoAssertionForAnUnofficialPlus(t *testing.T) {
+	for raw, want := range map[string]string{
+		"Apache-2.0+":        "NOASSERTION",
+		"MIT+ OR Apache-2.0": "NOASSERTION",
+		"GPL-2.0+":           "GPL-2.0+",
+		"AGPL-3.0+":          "AGPL-3.0+",
+		"GFDL-1.3+ AND MIT":  "GFDL-1.3+ AND MIT",
+	} {
+		if got := spdxDeclaredLicense(raw); got != want {
+			t.Errorf("spdxDeclaredLicense(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

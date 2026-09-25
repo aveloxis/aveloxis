@@ -1338,3 +1338,226 @@ func TestRound45(t *testing.T) {
 		}
 	}
 }
+
+// TestWorklist61ExactMPLCC0Unlicense — worklist 61: the MPL, CC0 and
+// Unlicense wordings are read exactly, as the GPL and Apache ones are: a
+// license body by its own title and wording with nothing else stated around
+// it, or a notice through the notice reader (every license word accounted
+// for, another license keeps the text, the version tied to the name). A
+// mention in prose keeps the text. The baseline (2026-09-25, scratchpad w61)
+// had six real CC-BY-4.0 texts reading CC0-1.0 ("creative commons" and
+// "public domain").
+func TestWorklist61ExactMPLCC0Unlicense(t *testing.T) {
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	notice := "This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/."
+	comment := func(prefix, s string) string {
+		lines := strings.Split(s, "\n")
+		for i := range lines {
+			lines[i] = prefix + lines[i]
+		}
+		return strings.Join(lines, "\n")
+	}
+	for name, c := range map[string]struct{ text, want string }{
+		"MPL body":                        {mpl, "MPL-2.0"},
+		"MPL body, HashiCorp title":       {strings.Replace(mpl, "Mozilla Public License Version 2.0", "Mozilla Public License, version 2.0", 1), "MPL-2.0"},
+		"MPL body under a copyright line": {"Copyright (c) 2015 Example, Inc.\n\n" + mpl, "MPL-2.0"},
+		"MPL notice":                      {notice, "MPL-2.0"},
+		"MPL notice in comments":          {comment("// ", "This Source Code Form is subject to the terms of the Mozilla Public\nLicense, v. 2.0. If a copy of the MPL was not distributed with this\nfile, You can obtain one at http://mozilla.org/MPL/2.0/."), "MPL-2.0"},
+		"MPL notice, no-copyleft exhibit": {notice + "\n\nThis Source Code Form is \"Incompatible With Secondary Licenses\", as defined by the Mozilla Public License, v. 2.0.", "MPL-2.0-no-copyleft-exception"},
+		"MPL 1.1 notice":                  {`The contents of this file are subject to the Mozilla Public License Version 1.1 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.mozilla.org/MPL/`, "MPL-1.1"},
+		"CC0 legal code":                  {cc0, "CC0-1.0"},
+		"CC0 waiver":                      {"To the extent possible under law, the author(s) have dedicated all copyright and related and neighboring rights to this software to the public domain worldwide. This software is distributed without any warranty.\n\nYou should have received a copy of the CC0 Public Domain Dedication along with this software. If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.", "CC0-1.0"},
+		"CC0 waiver, waived form":         {"To the extent possible under law, Jane Doe has waived all copyright and related or neighboring rights to this work. See https://creativecommons.org/publicdomain/zero/1.0/ for the CC0 dedication.", "CC0-1.0"},
+		"Unlicense body":                  {unl, "Unlicense"},
+		"Unlicense body with its heading": {"The Unlicense\n\n" + unl, "Unlicense"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	for name, text := range map[string]string{
+		"MIT or MPL prose":             "This library is dual licensed under the MIT license or the Mozilla Public License 2.0, at your choice.",
+		"MPL body with an MIT note":    mpl + "\n\nThe files under vendor/ are under the MIT license instead.",
+		"MPL notice with an MIT note":  notice + " The build scripts are MIT licensed.",
+		"MPL 1.1 tri-license":          "Version: MPL 1.1/GPL 2.0/LGPL 2.1\n\nThe contents of this file are subject to the Mozilla Public License Version 1.1 (the \"License\"); you may not use this file except in compliance with the License. Alternatively, the contents of this file may be used under the terms of either the GNU General Public License Version 2 or later (the \"GPL\"), or the GNU Lesser General Public License Version 2.1 or later (the \"LGPL\").",
+		"CC-BY-4.0 text":               "Creative Commons Attribution 4.0 International Public License\n\nBy exercising the Licensed Rights (defined below), You accept and agree to be bound by the terms and conditions of this Creative Commons Attribution 4.0 International Public License. Licensed Material in the public domain is not covered.",
+		"Creative Commons in prose":    "The code is under the MIT License; the documentation is under Creative Commons, and the logo is in the public domain.",
+		"CC0 waiver with LGPL":         "To the extent possible under law, Jane Doe has waived all copyright and related or neighboring rights to this work under CC0 1.0. Parts under the LGPL.",
+		"CC0 legal code with MIT note": cc0 + "\n\nThe examples/ directory is MIT licensed.",
+		"Unlicense with MIT choice":    unl + "\n\nAlternatively, you may use this software under the MIT license.",
+		"Unlicense named in prose":     "This is free and unencumbered software, but the parser is under the Apache License 2.0 and the data files are CC-BY.",
+		"MPL notice with a range":      "This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0 or (at your option) any later version.",
+		"Unlicense notice with MIT":    "This project is released into the public domain under the Unlicense, except the parser in lib/, which is MIT.",
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61TypographicQuotes — HashiCorp's MPL-2.0 LICENSE files write
+// Exhibit B with typographic quotes (U+201C Incompatible With
+// Secondary Licenses U+201D); about 93 real files lost their answer in the first
+// worklist-61 draft, which spelled the end of the body with ASCII quotes.
+func TestWorklist61TypographicQuotes(t *testing.T) {
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	curly := strings.ReplaceAll(strings.Replace(mpl, "Mozilla Public License Version 2.0", "Mozilla Public License, version 2.0", 1), `"Incompatible With Secondary Licenses"`, "\u201cIncompatible With Secondary Licenses\u201d")
+	if curly == mpl || !strings.Contains(curly, "\u201c") {
+		t.Fatal("the fixture no longer carries the ASCII-quoted Exhibit B")
+	}
+	if got := NormalizeLicenseToSPDX("Copyright (c) 2018 HashiCorp, Inc.\n\n" + curly); got != "MPL-2.0" {
+		t.Errorf("HashiCorp-style MPL body = %q, want MPL-2.0", got)
+	}
+}
+
+// TestWorklist61NoticeShapes — worklist-61 review round 1: a CC0 or
+// Unlicense notice is a notice's shape (CC0's waiver clause, the Unlicense's
+// opening dedication, "released under the Unlicense", or a field that is only
+// the license's name and URL), not any text that names the license and has
+// no license word. A negation in the grant's clause withdraws it.
+func TestWorklist61NoticeShapes(t *testing.T) {
+	for _, text := range []string{
+		"This package is NOT released under the Unlicense; all rights reserved by Acme Corp, 2024. Contact sales before any use.",
+		"These images are not CC0: do not redistribute the photographs in this directory without written permission from the photographer.",
+		"We considered CC0 but chose to keep all rights reserved; please email acme@example.com before reusing any of this material.",
+		"This file is not CC0; the images in this directory belong to the photographer, who retains all rights; ask before reuse.",
+		"The demo scenes in this repository use CC0 textures downloaded from ambientCG; the textures are not part of the package.",
+		"A C port of a hashing routine from a project released under the Unlicense, plus bindings written by Acme Corp; all rights reserved.",
+		`// test fixture: {"spdxVersion":"SPDX-2.3","dataLicense":"CC0-1.0","SPDXID":"SPDXRef-DOCUMENT","name":"example"}`,
+		"The code is under CC0, the documentation is under Creative Commons, and the logo belongs to Acme Corp with every right held.",
+		"To the extent possible under law, Jane Doe has not waived all copyright and related or neighboring rights to this work (CC0).",
+		"The Unlicense (Unlicense), https://unlicense.org/, https://opensource.org/licenses/MIT, https://spdx.org/licenses/",
+		"CC0 1.0 Universal (CC0 1.0) Public Domain Dedication, Creative Commons, https://creativecommons.org/licenses/by/4.0/",
+		"The Unlicense was considered for this project, but the maintainers have yet to pick a dedication for the parser code.",
+	} {
+		assertKeptAsText(t, text, text)
+	}
+	for text, want := range map[string]string{
+		"This project is released under the Unlicense. For more information, please refer to <https://unlicense.org>.":                                                                                                                                 "Unlicense",
+		"The Unlicense (Unlicense), https://unlicense.org/, https://spdx.org/licenses/Unlicense.html":                                                                                                                                                  "Unlicense",
+		"This work is dedicated to the public domain under CC0. Its authors are Jane Doe and John Roe, 2024.":                                                                                                                                          "CC0-1.0",
+		"To the extent possible under law, Pascal S. de Kloe has waived all copyright and related or neighboring rights to Go Enterprice. This work is published from The Netherlands.\n\nhttps://creativecommons.org/publicdomain/zero/1.0/legalcode": "CC0-1.0",
+	} {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.50q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// TestWorklist61Review2 — worklist-61 review round 2:
+//   - certifi's LICENSE (vendored in every pip) wraps the standard MPL notice
+//     in Mozilla's "***** BEGIN/END LICENSE BLOCK *****"; the wrapper refers
+//     to the notice, it is not another license;
+//   - a grant's license name must end its clause: "with CC0 assets",
+//     "under CC0-style terms" use the name as an adjective;
+//   - "nothing", "none", "neither ... nor" and "formerly" withdraw a grant;
+//   - a name-only field's URL must be the license's own host, not
+//     unlicense.org.example.com.
+func TestWorklist61Review2(t *testing.T) {
+	certifi := "This package contains a modified version of ca-bundle.crt:\n\nThis Source Code Form is subject to the terms of the Mozilla Public License,\nv. 2.0. If a copy of the MPL was not distributed with this file, You can obtain\none at http://mozilla.org/MPL/2.0/.\n\n***** END LICENSE BLOCK *****"
+	for name, text := range map[string]string{
+		"certifi":           "***** BEGIN LICENSE BLOCK *****\n" + certifi[strings.Index(certifi, "This Source"):],
+		"notice + END only": certifi[strings.Index(certifi, "This Source"):],
+	} {
+		if got := NormalizeLicenseToSPDX(text); got != "MPL-2.0" {
+			t.Errorf("%s = %q, want MPL-2.0", name, got)
+		}
+	}
+	// certifi's whole LICENSE (the ca-bundle description names an
+	// "Apache+mod_ssl webserver"): the block delimits the license statement.
+	realCertifi := "This package contains a modified version of ca-bundle.crt:\n\nca-bundle.crt -- Bundle of CA Root Certificates\n\nThis is a bundle of X.509 certificates of public Certificate Authorities\n(CA). These were automatically extracted from Mozilla's root certificates\nfile (certdata.txt).  This file can be found in the mozilla source tree:\nhttps://hg.mozilla.org/mozilla-central/file/tip/security/nss/lib/ckfw/builtins/certdata.txt\nIt contains the certificates in PEM format and therefore\ncan be directly used with curl / libcurl / php_curl, or with\nan Apache+mod_ssl webserver for SSL client authentication.\nJust configure this file as the SSLCACertificateFile.#\n\n***** BEGIN LICENSE BLOCK *****\n" + certifi[strings.Index(certifi, "This Source"):] + "\n@(#) $RCSfile: certdata.txt,v $ $Revision: 1.80 $ $Date: 2011/11/03 15:11:58 $\n"
+	if got := NormalizeLicenseToSPDX(realCertifi); got != "MPL-2.0" {
+		t.Errorf("certifi's LICENSE = %q, want MPL-2.0", got)
+	}
+	// A negation in an earlier sentence does not reach a grant's clause.
+	if got := NormalizeLicenseToSPDX("This software comes with no warranty whatsoever. It is released under the Unlicense, see https://unlicense.org."); got != "Unlicense" {
+		t.Errorf("grant after a negated sentence = %q, want Unlicense", got)
+	}
+	// Outside the block, a license statement still keeps the text.
+	assertKeptAsText(t, "block + GPL outside", "The tools/ directory is licensed under the GNU GPL version 2.\n\n***** BEGIN LICENSE BLOCK *****\n"+certifi[strings.Index(certifi, "This Source"):])
+	for _, text := range []string{
+		"The demo game is made available with CC0 assets from Kenney (https://kenney.nl), thanks to him.",
+		"This game is published with CC0 sprites and sounds from OpenGameArt; the code itself is ours to keep.",
+		"This dataset is released under CC0-style terms of our own devising; attribution is appreciated by the team.",
+		"This dataset is released under the Unlicense-style terms of our own devising; attribution appreciated by us.",
+		"Nothing in this repository is released under the Unlicense; ask the author before reuse of any file.",
+		"None of this code is released under the Unlicense, whatever the old README said, please ask first.",
+		"Neither the code nor the data here is released under the Unlicense; contact the authors for reuse permission.",
+		"This project was formerly released under the Unlicense. The current terms are in the TERMS file of the repo.",
+		"The Unlicense https://unlicense.org.example.com/ https://unlicense.org/ The Unlicense The Unlicense",
+	} {
+		assertKeptAsText(t, text, text)
+	}
+}
+
+// TestWorklist61Review3 — worklist-61 review round 3:
+//   - an abbreviation's period ("e.g.", "i.e.", "Jan.") does not end a
+//     grant's clause, so a negation before it still withdraws the grant.
+//     Decided as a class: a period ends the clause only after a word of five
+//     letters or more ("... no warranty. It is released under ...");
+//   - a title heading above a body ("The LibTom license", libtommath's
+//     LICENSE, the exact Unlicense body) is the body's own heading, as a
+//     bare heading is for the GPL body; a heading naming another license is
+//     still a second statement.
+func TestWorklist61Review3(t *testing.T) {
+	prefix := "Copyright (c) 2020-2024 Jane Q. Doe and the Example Project Contributors. "
+	for _, text := range []string{
+		prefix + "Nothing in this repository (e.g. the sprites) is released under CC0.",
+		prefix + "Nothing in this repository (e.g. the sprites) is released under the Unlicense.",
+		prefix + "None of this code (i.e. the engine) is released under the Unlicense.",
+		prefix + "This is not (e.g. per the FAQ) released under CC0.",
+		prefix + "Not (as of Jan. 2020) released under the Unlicense.",
+		prefix + "Nothing made by Acme Corp. is released under the Unlicense.",
+		"The MIT License\n\n" + readLicenseFixture(t, "Unlicense.txt"),
+	} {
+		assertKeptAsText(t, text, text)
+	}
+	if got := NormalizeLicenseToSPDX("The LibTom license\n\n" + readLicenseFixture(t, "Unlicense.txt")); got != "Unlicense" {
+		t.Errorf("libtommath's LICENSE = %q, want Unlicense", got)
+	}
+}
+
+// TestWorklist61Review4 — worklist-61 review round 4: the body's own heading
+// is a whole title line ("The LibTom license"), not the last words of a
+// sentence, and never a GPL name: stripping "license" from "... used under
+// the Lesser General Public License" hid the LGPL, which HEAD's GPL-name
+// guard had kept (CGAL, round 42).
+func TestWorklist61Review4(t *testing.T) {
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	for name, text := range map[string]string{
+		"LGPL sentence above Unlicense": "Alternatively, this code may be used under the Lesser General Public License\n\n" + unl,
+		"AGPL sentence above Unlicense": "Or, at your option, under the Affero General Public License\n" + unl,
+		"GPL sentence above CC0":        "This library may also be used under the General Public License\n\n" + cc0,
+		"GPL heading above CC0":         "The General Public License\n\n" + cc0,
+		"a different license":           "Some files in this repository use a different license\n\n" + unl,
+		"heading with an article":       "A different license\n\n" + unl,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review5 — worklist-61 review round 5:
+//   - a bare "License" heading (chakrit/gossip's and dret/webconcepts'
+//     LICENSE.md: "# LICENSE" above the exact Unlicense body) is the body's
+//     own heading; HEAD read them;
+//   - mozilla.org is the MPL's publisher, not a reference back for the GPL or
+//     Apache notice readers: their notices next to a mozilla.org licensing
+//     URL keep the text, as HEAD did.
+func TestWorklist61Review5(t *testing.T) {
+	for name, c := range map[string]struct{ text, want string }{
+		"# LICENSE above the Unlicense": {"# LICENSE\n\n" + readLicenseFixture(t, "Unlicense.txt"), "Unlicense"},
+		"License above CC0":             {"License\n\n" + readLicenseFixture(t, "CC0-1.0.txt"), "CC0-1.0"},
+		"Licence above MPL":             {"Licence\n\n" + readLicenseFixture(t, "MPL-2.0.txt"), "MPL-2.0"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	for _, text := range []string{
+		"This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License version 2 as published by the Free Software Foundation. The Firefox logo is used per https://www.mozilla.org/en-US/foundation/licensing/website-content/",
+		`Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. The icons are used per https://www.mozilla.org/en-US/foundation/licensing/website-content/`,
+	} {
+		assertKeptAsText(t, text, text)
+	}
+}

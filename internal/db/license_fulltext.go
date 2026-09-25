@@ -125,14 +125,14 @@ var (
 	termsWordRe = regexp.MustCompile(`\bterms\b`)
 	// Linux's "under the terms of version 2 of the GNU General Public
 	// License" is the same reference (round 30).
-	termsOfRe = regexp.MustCompile(`terms (?:and conditions )?of (?:the )?(?:version \d+(?:\.\d+)? of (?:the )?)?(?:gnu |apache )?(?:general public licen[cs]e|gpl|apache licen[cs]e|licen[cs]e|this licen[cs]e)|(?:for|see) (?:the )?(?:full |complete )?terms\b|under (?:those|these) terms(?:[.;]|$)`)
+	termsOfRe = regexp.MustCompile(`terms (?:and conditions )?of (?:the )?(?:version \d+(?:\.\d+)? of (?:the )?)?(?:gnu |apache )?(?:general public licen[cs]e|gpl|apache licen[cs]e|mozilla public licen[cs]e|licen[cs]e|this licen[cs]e)|(?:for|see) (?:the )?(?:full |complete )?terms\b|under (?:those|these) terms(?:[.;]|$)`)
 
 	// versionToken introduces a version number ("version 2", "v2.0" as a
 	// word of its own, "GPLv3", "GPL-2.0", "Apache 2.0", "Apache License
 	// 2.0"); versionTokenRe captures the number. The "v" form needs a space
 	// or "(" before it, so an import path ("gopkg.in/yaml.v3") is not a
 	// version (round 19 C2).
-	versionToken = `(?:\bversion[ -]?|(?:^|[ (])v\.? ?|\bgpl ?v?-?|\bapache[- ]|\blicen[cs]e,? )`
+	versionToken = `(?:\bversion[ -]?|(?:^|[ (])v\.? ?|\bgpl ?v?-?|\bmpl ?v?-?|\bapache[- ]|\blicen[cs]e,? )`
 	// versionTokenRe's groups: 1-2 a number after a version word and any
 	// letters run into it; 3-4 the same after "License"; 5 a spelled-out
 	// number after "version" ("two", "III"), or 6 an ordinal before it ("the
@@ -142,7 +142,7 @@ var (
 	// its text (round 26: round 25 skipped it, which hid a second version).
 	// Letters run into a number ("3rd", "2x", "2.0rc1") mean it is not a
 	// clean version (round 25).
-	versionTokenRe = regexp.MustCompile(`(?:(?:\bversion[ -]?|(?:^|[ (])v\.? ?|\bgpl ?v?-?|\bapache[- ])(\d+(?:\.\d+)*)([a-z]*)|\blicen[cs]e,? (\d+(?:\.\d+)*)([a-z]*)|\bversion (one|two|three|iv|i{1,3})\b|\b(first|second|third|fourth) version\b)`)
+	versionTokenRe = regexp.MustCompile(`(?:(?:\bversion[ -]?|(?:^|[ (])v\.? ?|\bgpl ?v?-?|\bmpl ?v?-?|\bapache[- ])(\d+(?:\.\d+)*)([a-z]*)|\blicen[cs]e,? (\d+(?:\.\d+)*)([a-z]*)|\bversion (one|two|three|iv|i{1,3})\b|\b(first|second|third|fourth) version\b)`)
 	// secondVersionRe, after a version number, is a second version joined
 	// to it: "2 or 3", "(version 2 or 3)", "3 (or 2)", "2 and 3", "2/3",
 	// "2-3" (rounds 18 S2, 19 C6), "2 and/or 3", "2 & 3", "2, 3", "2+3"
@@ -152,7 +152,7 @@ var (
 	// ofTheLicenseRe, after a version number that comes BEFORE the license
 	// name, ties it to the license ("version 2 of the GNU General Public
 	// License"); any other early version is a product's ("MyTool v3").
-	ofTheLicenseRe = regexp.MustCompile(`^\+? of (?:the )?(?:gnu |apache )?(?:general public licen[cs]e|gpl|apache licen[cs]e|licen[cs]e)\b`) // not "of the licensee" (round 29)
+	ofTheLicenseRe = regexp.MustCompile(`^\+? of (?:the )?(?:gnu |apache )?(?:general public licen[cs]e|gpl|apache licen[cs]e|mozilla public licen[cs]e|mpl|licen[cs]e)\b`) // not "of the licensee" (round 29)
 
 	// rangeWords is the shared version-range word list (SR-17, one list with
 	// spdx.OperandTexts; round 17 S2 found a narrower second spelling here);
@@ -205,6 +205,7 @@ type noticeFamily struct {
 	name      *regexp.Regexp // the license's own name
 	other     *regexp.Regexp // another license named without the word "license"
 	exception *regexp.Regexp // the one exception phrase the family can carry
+	refs      *regexp.Regexp // the family's own phrases that use "license" about it (nil: none)
 }
 
 var (
@@ -581,7 +582,7 @@ func noticeMentions(lower string, anchors, urls [][]int, first int, sentences, b
 		ofLicense := ofTheLicenseRe.MatchString(after) || ofTheLicenseRe.MatchString(lower[m[1]:])
 		ofOther := !ofLicense && (ofRe.MatchString(after) || ofRe.MatchString(lower[m[1]:]))
 		tok := strings.TrimLeft(lower[m[0]:num[0]], " (")
-		adjacent := strings.HasPrefix(tok, "gpl") || strings.HasPrefix(tok, "apache")
+		adjacent := strings.HasPrefix(tok, "gpl") || strings.HasPrefix(tok, "mpl") || strings.HasPrefix(tok, "apache")
 		if last := sort.Search(len(anchors), func(k int) bool { return anchors[k][0] > num[0] }) - 1; !adjacent && !ofOther && last >= 0 {
 			gap := anchors[last][1]
 			adjacent = gap >= m[0] || tieGapRe.MatchString(lower[gap:m[0]])
@@ -639,6 +640,9 @@ func readNotice(lower string, f noticeFamily) (v string, ranged, exc, ok bool) {
 		return "", false, false, false
 	}
 	refs := spans(licenseRefRe, lower)
+	if f.refs != nil {
+		refs = append(refs, spans(f.refs, lower)...)
+	}
 	for _, u := range spans(urlRe, lower) {
 		if licenseURLRe.MatchString(lower[u[0]:u[1]]) {
 			refs = append(refs, u)

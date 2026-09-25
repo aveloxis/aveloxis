@@ -214,8 +214,9 @@ func normalizeLicenseTerm(license string) string {
 // OSI-approved (2026-09-25) because only some spellings were listed ("MIT
 // License", "ISC License"). The rest must be a listed synonym or an SPDX list
 // ID; anything else is "" and the text stays ("Commercial License", "Boost
-// Software License"). Every synonym key means the same with "License"
-// appended (TestNormalizeLicense_TrailingLicenseWord).
+// Software License"). Every synonym key without the word "license" (as a
+// word: "unlicense" counts as without it) means the same with "License"
+// appended; TestNormalizeLicense_TrailingLicenseWord checks each one.
 func nameWithLicenseWord(lower string) string {
 	rest, ok := strings.CutSuffix(lower, " license")
 	if !ok {
@@ -271,21 +272,19 @@ func detectFullLicenseText(lower string) string {
 			return id
 		}
 	}
-	// MPL 2.0: "mozilla public license" + "2.0"
-	// The version must follow the name ("Mozilla Public License, v. 2.0", the
-	// body's "Mozilla Public License Version 2.0"): "2.0" anywhere read the
-	// MPL 1.1 tri-license block ("MPL 1.1/GPL 2.0/LGPL 2.1") as MPL-2.0 once
-	// the GPL reader stopped answering it (review round 29).
-	if mpl2Re.MatchString(lower) {
-		return "MPL-2.0"
+	// MPL, the Unlicense and CC0 are read exactly (worklist 61,
+	// license_fulltext_pd.go): a body with nothing else stated around it,
+	// or a notice (MPL 1.0/1.1/2.0 through readNotice; a CC0 or Unlicense
+	// notice in a notice's shape). The MPL 1.1 tri-license block keeps its
+	// text (the notice names the GPL and LGPL).
+	if id := detectMPLText(lower); id != "" {
+		return id
 	}
-	// Unlicense: "this is free and unencumbered software"
-	if strings.Contains(lower, unlicenseText) && !namesTheGPL(lower) {
-		return "Unlicense"
+	if id := detectUnlicenseText(lower); id != "" {
+		return id
 	}
-	// CC0: "creative commons" + "cc0" or "public domain"
-	if isCC0Text(lower) && !namesTheGPL(lower) {
-		return "CC0-1.0"
+	if id := detectCC0Text(lower); id != "" {
+		return id
 	}
 	return ""
 }
@@ -297,30 +296,17 @@ const (
 	unlicenseText = "this is free and unencumbered software"
 )
 
-// namesTheGPL reports a text that names the GNU GPL, spelled out or as
-// "GPL" (gplNameRe, the GPL reader's own spelling; round 43), read as the
-// GPL reader reads it (plainFolded: markers stripped, then folded), since
-// license prose wraps the name, commented or not (rounds 44 and 45). The GPL reader has
-// already declined it when the Unlicense and CC0 fingerprints run, so a text
-// naming it is a second license, not one of those texts (review round 42:
-// CGAL's LICENSE, GPL/LGPL prose with CC0 examples, read CC0-1.0; base read
-// GPL-3.0-only). The MPL fingerprint is exempt: the MPL-2.0 body names the
-// GPL in its "Secondary License" definition.
-func namesTheGPL(lower string) bool {
-	return gplNameRe.MatchString(plainFolded(lower))
-}
-
-// isCC0Text is the CC0 fingerprint: "creative commons" with "cc0" or
-// "public domain".
+// isCC0Text is CC0 wording ("creative commons" with "cc0" or "public
+// domain"). It only detects that CC0 text may be present, for the two-texts
+// gate, where a false hit keeps the text; CC0 is read by detectCC0Text
+// (worklist 61).
 func isCC0Text(lower string) bool {
 	return strings.Contains(lower, "creative commons") && (strings.Contains(lower, "cc0") || strings.Contains(lower, "public domain"))
 }
 
-// mpl2Re is the MPL 2.0 named with its version.
-// The words are matched on one line on purpose: round 30's \s+ between
-// them extended this fingerprint's known false answers (an MPL name inside
-// dual-license prose) to wrapped text (round 31); worklist 61 is the MPL
-// notice reader that would read those exactly.
+// mpl2Re is the MPL 2.0 named with its version. It only detects that an
+// MPL text may be present, for the two-texts gate, where a false hit keeps
+// the text; MPL is read by detectMPLText (worklist 61).
 var mpl2Re = regexp.MustCompile(`mozilla public license,?\s+(?:v\.?\s*|version\s+)?2\.0`)
 
 // permissiveTextID reads the MIT, ISC, PSF and BSD license texts by their

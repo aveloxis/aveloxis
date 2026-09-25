@@ -4,6 +4,7 @@
 package db
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/spdx"
@@ -205,8 +206,27 @@ func TestNormalizeLicense_TrailingLicenseWord(t *testing.T) {
 			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want it unchanged", in, got)
 		}
 	}
+	// Every synonym key that lacks the word means the same with "License"
+	// appended (the claim nameWithLicenseWord's comment makes).
+	checked := 0
+	for key, want := range licenseSynonyms {
+		if licenseWordAsWord.MatchString(key) {
+			continue
+		}
+		checked++
+		if got := NormalizeLicenseToSPDX(key + " License"); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want %q (the key's own answer)", key+" License", got, want)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no synonym key without the word \"license\"; the check above is vacuous")
+	}
 	// The OSI badge follows (computed when read).
 	if !spdx.OSIApproved(NormalizeLicenseToSPDX("Apache 2.0 License")) {
 		t.Error(`"Apache 2.0 License" does not read OSI approved`)
 	}
 }
+
+// licenseWordAsWord is "license" as a word, so "unlicense" keys are checked
+// too (worklist-61 review 3).
+var licenseWordAsWord = regexp.MustCompile(`\blicen[cs]e`)

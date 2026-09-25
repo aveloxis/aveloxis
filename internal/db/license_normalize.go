@@ -269,15 +269,16 @@ const (
 )
 
 // namesTheGPL reports a text that names the GNU GPL, spelled out or as
-// "GPL" (gplNameRe, the GPL reader's own spelling; round 43), read folded
-// as the GPL reader reads it, since license prose wraps the name (round 44). The GPL reader has
+// "GPL" (gplNameRe, the GPL reader's own spelling; round 43), read as the
+// GPL reader reads it (plainFolded: markers stripped, then folded), since
+// license prose wraps the name, commented or not (rounds 44 and 45). The GPL reader has
 // already declined it when the Unlicense and CC0 fingerprints run, so a text
 // naming it is a second license, not one of those texts (review round 42:
 // CGAL's LICENSE, GPL/LGPL prose with CC0 examples, read CC0-1.0; base read
 // GPL-3.0-only). The MPL fingerprint is exempt: the MPL-2.0 body names the
 // GPL in its "Secondary License" definition.
 func namesTheGPL(lower string) bool {
-	return gplNameRe.MatchString(foldSpace(lower))
+	return gplNameRe.MatchString(plainFolded(lower))
 }
 
 // isCC0Text is the CC0 fingerprint: "creative commons" with "cc0" or

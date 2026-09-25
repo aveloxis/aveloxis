@@ -746,7 +746,16 @@ var licenseMarkerRe = regexp.MustCompile(`@licen[cs]e\b`)
 // first, then words (review round 40: a title split over two commented lines
 // hid the body from the heading-tag and two-texts gates).
 func holdsGNUOrApacheBody(lower string) bool {
-	return bodyCount(foldSpace(stripCommentMarkers(apostrophes.Replace(lower)))) > 0
+	return bodyCount(plainFolded(lower)) > 0
+}
+
+// plainFolded is a lower-cased text read as the body readers read it: comment
+// markers stripped, apostrophes unified, whitespace folded. The questions
+// asked of a whole text (does it hold a body, does it name the GPL) read it
+// this way, so a name or title wrapped over commented lines is still seen
+// (review rounds 40 and 45).
+func plainFolded(lower string) string {
+	return foldSpace(stripCommentMarkers(apostrophes.Replace(lower)))
 }
 
 // statesALicense reports whether a line before a heading tag says anything
@@ -769,13 +778,14 @@ func statesALicense(line string) bool {
 // and "Rødual" read as names; see spacedLetters), except a version's "v" ("AGPLv3"): punctuation, a digit or a
 // space may follow ("CC-BY-SA-4.0", "Apache/2.0", "MPL version 2.0"), but
 // "Mitchell" is a holder, not "MIT" (see statesALicense).
-var headerLicenseNameRe = regexp.MustCompile(`(?:^|[^` + spacedLetters + `\p{N}_])(?:[al]?gpl|general public|apache|` + otherLicenseNames + `)(?:[^` + spacedLetters + `]|v\d|$)`)
+var headerLicenseNameRe = regexp.MustCompile(`(?:^|[^` + spacedLetters + `])(?:[al]?gpl|general public|apache|` + otherLicenseNames + `)(?:[^` + spacedLetters + `]|v\d|$)`)
 
 // spacedLetters are the letters of scripts that separate words with
 // spaces: next to one, a license name is part of a longer word ("Mitä",
 // "Rødual"). Chinese and Japanese do not, so a CJK neighbour is an edge:
 // "采用MIT许可证" names MIT (review round 44: all letters as word
-// characters, round 43's first draft, hid it).
+// characters, round 43's first draft, hid it). A digit or an underscore is
+// an edge too: "0BSD" names BSD (round 45).
 const spacedLetters = `\p{Latin}\p{Greek}\p{Cyrillic}`
 
 // bodyTail is what follows a body's terms (the first "end of terms and

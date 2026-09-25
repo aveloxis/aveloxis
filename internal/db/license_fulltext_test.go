@@ -1319,3 +1319,22 @@ func TestRound44(t *testing.T) {
 		}
 	}
 }
+
+// TestRound45 — review round 45:
+//   - a GPL name wrapped across commented lines is still named: namesTheGPL
+//     reads the text as the body readers do (markers stripped, then folded);
+//   - a digit or underscore before a name is an edge ("0BSD" names BSD):
+//     only a spaced-script letter joins a name to a longer word.
+func TestRound45(t *testing.T) {
+	for _, text := range []string{
+		"# To the extent possible under law, the author has dedicated all copyright and related rights to this software to the public domain worldwide under the Creative Commons CC0 1.0 Universal dedication.\n# Parts are covered by the GNU General Public\n# License version 2 instead.\n",
+		" * This is free and unencumbered software released into the public domain.\n * Parts are covered by the GNU General Public\n * License version 2 instead.\n",
+		"// This is free and unencumbered software released into the public domain.\n// Parts are covered by the GNU General Public\n// License version 2 instead.\n",
+		"// Copyright 2020 Foo, 0BSD\n// SPDX-License-Identifier: MIT\n\npackage foo\n// and some more text here to be long enough to be read as a header ok\n",
+		"// Copyright 2020 Foo, lib_mit\n// SPDX-License-Identifier: Apache-2.0\n\npackage foo\n// and some more text here to be long enough to be read as a header ok\n",
+	} {
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("NormalizeLicenseToSPDX(%.60q...) = %q, want the text kept", text, got)
+		}
+	}
+}

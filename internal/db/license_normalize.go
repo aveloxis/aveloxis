@@ -179,6 +179,9 @@ func normalizeLicenseTerm(license string) string {
 	if canonical, ok := licenseSynonyms[lower]; ok {
 		return canonical
 	}
+	if id := nameWithLicenseWord(lower); id != "" {
+		return id
+	}
 
 	// For long strings, try to identify full license texts by content fingerprints.
 	// Python packages (via PyPI/pip) frequently store the entire license body in
@@ -203,6 +206,32 @@ func normalizeLicenseTerm(license string) string {
 
 	// No match — return trimmed input unchanged.
 	return trimmed
+}
+
+// nameWithLicenseWord reads a license name followed by the word "License"
+// ("Apache 2.0 License", "The MPL 2.0 License", "0BSD Licence") as the name
+// it follows: pytorch's dependency "Apache 2.0 License" showed as not
+// OSI-approved (2026-09-25) because only some spellings were listed ("MIT
+// License", "ISC License"). The rest must be a listed synonym or an SPDX list
+// ID; anything else is "" and the text stays ("Commercial License", "Boost
+// Software License"). Every synonym key means the same with "License"
+// appended (TestNormalizeLicense_TrailingLicenseWord).
+func nameWithLicenseWord(lower string) string {
+	rest, ok := strings.CutSuffix(lower, " license")
+	if !ok {
+		rest, ok = strings.CutSuffix(lower, " licence")
+	}
+	if !ok {
+		return ""
+	}
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "the "))
+	if canonical, ok := licenseSynonyms[rest]; ok {
+		return canonical
+	}
+	if id, ok := spdx.CanonicalLicenseID(rest); ok {
+		return id
+	}
+	return ""
 }
 
 // detectFullLicenseText identifies full license text bodies by looking for

@@ -1025,6 +1025,9 @@ func TestRound32LicenseNoticesAndUnreadableTags(t *testing.T) {
 		// read, and an empty SPDX tag keeps the text.
 		"SPDX tag on the @license line": commented("@license Copyright 2020 Foo SPDX-License-Identifier: Kopimi\n"+apache, "/**", " * ", " */"),
 		"empty SPDX tag":                "SPDX-License-Identifier:\n" + apache,
+		// A copyright line starts the value; "copyright" later in an
+		// unreadable value does not make it prose (round 36).
+		"@license Kopimi, copyright ...": commented("@license Kopimi, copyright 2020 Foo\n"+apache, "/**", " * ", " */"),
 	}
 	for label, text := range kept {
 		assertKeptAsText(t, label, text)
@@ -1038,6 +1041,9 @@ func TestRound32LicenseNoticesAndUnreadableTags(t *testing.T) {
 // readers now find tags the same way (SR-17).
 func TestHeadingTagsFollowTheSameTagRule(t *testing.T) {
 	for text, want := range map[string]string{
+		// "(c)" and "\u00a9" lines are copyright lines for both rules (round 35).
+		"/**\n * @license (c) 2020 Foo Inc.\n * SPDX-License-Identifier: MIT\n * The helpers below are bundled from the foo package.\n */":    "MIT",
+		"/**\n * @license \u00a9 2020 Foo Inc.\n * SPDX-License-Identifier: MIT\n * The helpers below are bundled from the foo package.\n */": "MIT",
 		// The earliest tag heads the text: an @license at the top, an SPDX
 		// tag later in a bundle.
 		"/** @license Apache-2.0 */\nconst helpers = require('./helpers'); // bundled from helpers.js, SPDX-License-Identifier: Apache-2.0": "Apache-2.0",
@@ -1050,6 +1056,266 @@ func TestHeadingTagsFollowTheSameTagRule(t *testing.T) {
 	} {
 		if got := NormalizeLicenseToSPDX(text); got != want {
 			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// mitBody and bsd3Body are the MIT and BSD-3-Clause texts as registries and
+// LICENSE files carry them (the fingerprints read them by wording).
+const (
+	mitBody  = `Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.`
+	bsd3Body = `Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products.`
+)
+
+// TestEveryFingerprintHonoursTags — review round 38: the tag rules (a tag
+// must be readable and agree with the text) held only in the GPL and Apache
+// readers; the MIT, ISC, PSF, BSD, MPL, Unlicense and CC0 fingerprints never
+// looked at tags. Real files read BSD-3-Clause under a "BSD-3-Clause AND
+// MPL-2.0" tag (cyphar/filepath-securejoin) and under "Apache-2.0 OR
+// BSD-3-Clause" (dd-trace-go), dropping a term or a choice. One agreement
+// check now covers every fingerprint's answer.
+func TestEveryFingerprintHonoursTags(t *testing.T) {
+	kept := map[string]string{
+		"BSD body, tag AND MPL":   bsd3Body + "\n\nSPDX-License-Identifier: BSD-3-Clause AND MPL-2.0",
+		"BSD body, tag OR":        bsd3Body + "\n\nSPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause",
+		"MIT body, lower GPL tag": mitBody + "\n\nSPDX-License-Identifier: GPL-3.0-only",
+		"MIT body, unreadable":    "SPDX-License-Identifier: Acme-Custom\n\n" + mitBody,
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	if got := NormalizeLicenseToSPDX(mitBody + "\n\nSPDX-License-Identifier: MIT"); got != "MIT" {
+		t.Errorf("an MIT body with an agreeing tag = %q, want MIT", got)
+	}
+}
+
+// TestHeadingTagsBehindEveryCommentMarker — review round 38: the heading
+// check knew fewer comment markers than the marker stripper (Erlang "%%",
+// elisp ";;", Rust "///" and "//!", "REM", m4 "dnl"). Both now use one
+// marker spelling (SR-17).
+func TestHeadingTagsBehindEveryCommentMarker(t *testing.T) {
+	for _, m := range []string{"%% ", ";; ", "/// ", "//! ", "REM ", "dnl ", "# ", "// "} {
+		text := m + "SPDX-License-Identifier: Apache-2.0\n" + m + "Copyright 2024 Example Corp. The module below is part of the example project."
+		if got := NormalizeLicenseToSPDX(text); got != "Apache-2.0" {
+			t.Errorf("a heading tag behind %q = %q, want Apache-2.0", m, got)
+		}
+	}
+}
+
+// TestTwoLicenseTextsInOneFieldStayText — review round 39: an Apache-2.0 body
+// followed by a BSD or MIT text (go.opentelemetry.io/otel's LICENSE: Apache,
+// then the Go Authors' BSD) read BSD-3-Clause or MIT, dropping Apache: the
+// MIT/ISC/PSF/BSD fingerprints ran first and won. Two license texts in one
+// field are not one license.
+func TestTwoLicenseTextsInOneFieldStayText(t *testing.T) {
+	apacheBody := readLicenseFixture(t, "Apache-2.0.txt")
+	gpl2Body := readLicenseFixture(t, "GPL-2.0.txt")
+	kept := map[string]string{
+		"Apache + BSD-3": apacheBody + "\n\n" + bsd3Body,
+		"Apache + MIT":   apacheBody + "\n\n" + mitBody,
+		"BSD-3 + Apache": bsd3Body + "\n\n" + apacheBody,
+		"GPL-2.0 + MIT":  gpl2Body + "\n\n" + mitBody,
+	}
+	for label, text := range kept {
+		assertKeptAsText(t, label, text)
+	}
+	for text, want := range map[string]string{apacheBody: "Apache-2.0", mitBody + " Copyright 2020 Example Corp and its contributors, all of them.": "MIT"} {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("one license text alone = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestBSDClauseCount — the BSD fingerprint tells BSD-3-Clause from
+// BSD-2-Clause by the third clause ("Neither the name ..."); nothing pinned
+// the split until round 39 moved it into permissiveTextID.
+func TestBSDClauseCount(t *testing.T) {
+	bsd2 := "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: redistributions of source code must retain the above copyright notice."
+	for text, want := range map[string]string{bsd3Body: "BSD-3-Clause", bsd2: "BSD-2-Clause"} {
+		if got := NormalizeLicenseToSPDX(text); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%.50q...) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// TestCommentedLicenseBodiesCountAsBodies — review round 40: a GNU or Apache
+// body wrapped in comment markers is still a body. The two gates that ask
+// "does this text hold a GNU or Apache body" (a heading tag's, and the
+// two-license-texts gate of round 39) read the text with its markers, so a
+// title split over two commented lines hid the body: an MIT tag above a
+// commented Apache body read MIT, and a commented Apache body plus the MIT
+// grant read MIT, dropping Apache. Both keep the text, as their plain forms do.
+func TestCommentedLicenseBodiesCountAsBodies(t *testing.T) {
+	apacheBody := readLicenseFixture(t, "Apache-2.0.txt")
+	comment := func(prefix, s string) string {
+		lines := strings.Split(s, "\n")
+		for i, l := range lines {
+			lines[i] = prefix + l
+		}
+		return strings.Join(lines, "\n")
+	}
+	for name, text := range map[string]string{
+		"tag above a commented body": "# SPDX-License-Identifier: MIT\n#\n" + comment("# ", apacheBody),
+		"commented body and MIT":     comment("// ", apacheBody+"\n\n"+mitBody),
+	} {
+		plain := strings.NewReplacer("# ", "", "// ", "").Replace(text)
+		if got := NormalizeLicenseToSPDX(plain); spdx.Valid(got) {
+			t.Fatalf("%s: the plain form reads %q; the fixture no longer shows the gap", name, got)
+		}
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("%s: NormalizeLicenseToSPDX = %q, want the text kept", name, got)
+		}
+	}
+	// The commented body alone is still read.
+	if got := NormalizeLicenseToSPDX(comment("// ", apacheBody)); got != "Apache-2.0" {
+		t.Errorf("commented Apache body = %q, want Apache-2.0", got)
+	}
+}
+
+// TestLicenseStatementAboveHeadingTagKeepsText — review round 40: a copyright
+// line may stand above a heading tag, but not one that states a license; two
+// statements are not the tag's alone (no real file of 541 tagged headers has
+// one, so the class costs nothing).
+func TestLicenseStatementAboveHeadingTagKeepsText(t *testing.T) {
+	for _, text := range []string{
+		"// Copyright 2020 Foo Inc. Licensed under the GNU GPL v3 except the glue below\n// SPDX-License-Identifier: MIT\nint x;\n and some more text here to be long enough",
+		"// Copyright 2020 Foo Inc. Licensed under the Apache License, Version 2.0\n// SPDX-License-Identifier: MIT\nint x;\n and some more text here to be long enough",
+		"// Copyright 2020 Foo Inc., Apache 2.0\n// SPDX-License-Identifier: MIT\nint x;\n and some more text here to be long enough",
+	} {
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("NormalizeLicenseToSPDX(%.60q...) = %q, want the text kept", text, got)
+		}
+	}
+	// A plain copyright line still stands above the tag.
+	if got := NormalizeLicenseToSPDX("// Copyright 2020 Foo Inc. All rights reserved.\n// SPDX-License-Identifier: MIT\nint x;\n and some more text here to be long enough"); got != "MIT" {
+		t.Errorf("plain copyright line above the tag = %q, want MIT", got)
+	}
+}
+
+// TestRound41HeaderLinesAndSecondTexts — review round 41:
+//   - a license name glued to its version ("AGPLv3", "LGPLv2.1+", "Apache2",
+//     "MPLv2", "EUPLv1.2") on a copyright line is a license statement, while
+//     a holder named like a license ("Internet Systems Consortium, Inc.
+//     ("ISC")", BIND's header on every file; "The Apache Software
+//     Foundation"; "MIT CSAIL") is not one;
+//   - FreeBSD's style(9) license-comment opener "/*-" is a comment marker;
+//   - a GNU or Apache body next to an ISC, Unlicense or CC0 text is two
+//     license texts (the Apache and GPL readers answered first).
+func TestRound41HeaderLinesAndSecondTexts(t *testing.T) {
+	tail := "\nint x;\n and some more text here to be long enough to be read as a header\n"
+	for _, name := range []string{"AGPLv3", "LGPLv2.1+", "Apache2", "MPLv2", "EUPLv1.2"} {
+		text := "/*\n// Copyright (c) 2020 Example Corp, " + name + "\n//\n// SPDX-License-Identifier: MIT" + tail
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("copyright line stating %s above an MIT tag = %q, want the text kept", name, got)
+		}
+	}
+	// Decided as a class in round 42 (the third round on this boundary): a
+	// line above the tag that names any listed license, in any spelling,
+	// keeps the text. A holder named like a license keeps it too, as base
+	// did; a version-spelling list was never complete ("MPL version 2.0",
+	// "CC-BY-SA-4.0", "Apache/2.0").
+	for _, line := range []string{
+		`Copyright (C) Internet Systems Consortium, Inc. ("ISC")`,
+		"Copyright (c) 2020 The Apache Software Foundation",
+		"Copyright (c) 2020 Foo, MPL version 2.0",
+		"Copyright (c) 2020 Foo, Apache version 2.0",
+		"Copyright (c) 2020 Foo Corporation, EPL version 2.0",
+		"Copyright (c) 2020 Foo Corporation, CC-BY-SA-4.0",
+		"Copyright (c) 2020 Foo, CC BY-NC 4.0",
+		"Copyright (c) 2020 Foo, Apache/2.0",
+	} {
+		text := "/*-\n * " + line + "\n *\n * SPDX-License-Identifier: MIT" + tail
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("line %q above an MIT tag = %q, want the text kept", line, got)
+		}
+	}
+	// A plain holder still stands above the tag.
+	for _, holder := range []string{"Copyright (c) 2013 Mitchell Hashimoto", "Copyright (c) 2020 The Kubernetes Authors.", "Copyright (C) 2004-2020 Example Corp. All rights reserved."} {
+		if got := NormalizeLicenseToSPDX("/*\n * " + holder + "\n *\n * SPDX-License-Identifier: MIT" + tail); got != "MIT" {
+			t.Errorf("holder %q above an MIT tag = %q, want MIT", holder, got)
+		}
+	}
+	freebsd := "/*-\n * SPDX-License-Identifier: BSD-2-Clause-FreeBSD\n *\n * Copyright (c) 2002 Example Author\n * All rights reserved.\n *\n * Redistribution and use in source and binary forms, with or without\n * modification, are permitted provided that the following conditions\n * are met:\n */\n"
+	if got := NormalizeLicenseToSPDX(freebsd); got != "BSD-2-Clause-FreeBSD" {
+		t.Errorf("FreeBSD /*- header = %q, want BSD-2-Clause-FreeBSD", got)
+	}
+	apacheBody := readLicenseFixture(t, "Apache-2.0.txt")
+	gpl3Body := readLicenseFixture(t, "GPL-3.0.txt")
+	isc := "ISC License\n\nCopyright (c) 2012 Example\n\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.\n"
+	unlicense := "This is free and unencumbered software released into the public domain.\n\nAnyone is free to copy, modify, publish, use, compile, sell, or distribute this software.\n"
+	cc0 := "Creative Commons Legal Code\n\nCC0 1.0 Universal\n\nThe person who associated a work with this deed has dedicated the work to the public domain.\n"
+	for name, text := range map[string]string{
+		"Apache + ISC":       apacheBody + "\n\n" + isc,
+		"Apache + Unlicense": apacheBody + "\n\n" + unlicense,
+		"Apache + CC0":       apacheBody + "\n\n" + cc0,
+		"GPL-3.0 + ISC":      gpl3Body + "\n\n" + isc,
+		// Round 42: CGAL's LICENSE is prose naming the GPL and, for the
+		// examples, CC0; the GPL reader declines, and CC0 must not answer.
+		"GPL prose + CC0 examples": "The library is licensed under the GNU General Public License, version 3 or later. All examples and demos are licensed under the Creative Commons CC0 1.0 license.",
+		"GPL prose + Unlicense":    "The library is licensed under the GNU General Public License, version 3 or later, or the Unlicense. This is free and unencumbered software released into the public domain.",
+	} {
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("%s = %q, want the text kept (two license texts)", name, got)
+		}
+	}
+}
+
+// TestRound43 — review round 43:
+//   - ninja's COPYING is the Apache-2.0 text titled "January 2010"; base read
+//     it Apache-2.0, and the body marker's exact date kept it text;
+//   - "names the GNU GPL" includes "GNU GPL" and "GPLv3", not only the words
+//     spelled out;
+//   - a whole word is whole in any script: "Mitä Oy", "Émit Systèmes" and
+//     "Rødual AS" are holders, not MIT or "dual".
+func TestRound43(t *testing.T) {
+	apacheBody := readLicenseFixture(t, "Apache-2.0.txt")
+	ninja := strings.Replace(apacheBody, "January 2004", "January 2010", 1)
+	if ninja == apacheBody {
+		t.Fatal("the Apache fixture no longer carries the January 2004 title")
+	}
+	if got := NormalizeLicenseToSPDX(ninja); got != "Apache-2.0" {
+		t.Errorf("Apache text titled January 2010 = %q, want Apache-2.0", got)
+	}
+	for _, text := range []string{
+		"This is free and unencumbered software released into the public domain.\n\nAlternatively, this software may be used under the terms of the GNU GPL version 3.",
+		"Parts of this package are licensed under the GNU GPLv3; the example files are released under Creative Commons CC0 1.0 Universal (public domain dedication).",
+	} {
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("NormalizeLicenseToSPDX(%.50q...) = %q, want the text kept", text, got)
+		}
+	}
+	tail := "\n// SPDX-License-Identifier: MIT\n\npackage foo and some more text here to be long enough\n"
+	for _, holder := range []string{"// Copyright (c) 2020 Mitä Oy", "// Copyright (c) 2019 Émit Systèmes SARL", "// Copyright 2020 Rødual AS"} {
+		if got := NormalizeLicenseToSPDX(holder + tail); got != "MIT" {
+			t.Errorf("holder %q above an MIT tag = %q, want MIT", holder, got)
+		}
+	}
+}
+
+// TestRound44 — review round 44:
+//   - Chinese and Japanese put no spaces between words, so a license name
+//     touching CJK letters ("采用MIT许可证", "MITライセンス") is still a name
+//     on a line above the tag; only letters of spaced scripts (Latin,
+//     Greek, Cyrillic) make it part of a longer word ("Mitä", "Rødual");
+//   - a GPL name wrapped across lines ("GNU General Public\nLicense") is
+//     still named, as the GPL reader reads it (folded).
+func TestRound44(t *testing.T) {
+	for _, text := range []string{
+		"Copyright (c) 2021 某公司。本项目采用MIT许可证。\nSPDX-License-Identifier: Apache-2.0\n",
+		"/*\n * Copyright (c) 2021 Foo 株式会社 MITライセンスで公開\n * SPDX-License-Identifier: GPL-2.0-or-later\n */\n",
+		"// Copyright 2020 Foo, 本软件遵循GPL协议\n// SPDX-License-Identifier: MIT\n\npackage foo and some more text here\n",
+		"// Copyright 2020 Foo, 依據Apache授權\n// SPDX-License-Identifier: MIT\n\npackage foo and some more text here\n",
+		"The documentation is dedicated to the public domain under the Creative Commons CC0 1.0\ndedication. The code is licensed under the GNU General Public\nLicense, version 3.",
+		"This is free and unencumbered software released into the public domain, except the\nplugins, which are licensed under the GNU General Public\nLicense, version 3.",
+	} {
+		if got := NormalizeLicenseToSPDX(text); spdx.Valid(got) {
+			t.Errorf("NormalizeLicenseToSPDX(%.60q...) = %q, want the text kept", text, got)
+		}
+	}
+	// Greek and Cyrillic neighbours are part of the word, as Latin ones are.
+	for _, holder := range []string{"// Copyright 2020 Mitκο Α.Ε.", "// Copyright 2020 Mitя ООО"} {
+		if got := NormalizeLicenseToSPDX(holder + "\n// SPDX-License-Identifier: MIT\n\npackage foo and some more text here\n"); got != "MIT" {
+			t.Errorf("holder %q above an MIT tag = %q, want MIT", holder, got)
 		}
 	}
 }

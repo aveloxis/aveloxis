@@ -189,7 +189,12 @@ func normalizeLicenseTerm(license string) string {
 		if id := spdxIdentifierLine(trimmed); id != "" {
 			return id
 		}
-		if id := detectFullLicenseText(lower); id != "" {
+		// Every fingerprint's answer honours the text's tags: an unreadable
+		// tag, or one that states something else, keeps the text (review
+		// round 38: the MIT, ISC, PSF, BSD, MPL, Unlicense and CC0
+		// fingerprints never looked, and real LICENSE files read
+		// BSD-3-Clause under a "BSD-3-Clause AND MPL-2.0" tag).
+		if id := detectFullLicenseText(lower); id != "" && fingerprintAgreesWithTags(id, lower) {
 			return id
 		}
 		// Unrecognized long text — truncate to keep the UI usable.
@@ -204,33 +209,22 @@ func normalizeLicenseTerm(license string) string {
 // distinctive phrases. Checked in priority order — first match wins.
 // Only called for strings > 80 chars (short strings go through the synonym map).
 func detectFullLicenseText(lower string) string {
-	// Order matters: check most specific patterns first. BSD is checked before
-	// Apache because Python packages often concatenate multiple license texts,
-	// and BSD (the more specific match) should win when both appear.
-
-	// MIT: "permission is hereby granted, free of charge" + "as is" warranty
-	if strings.Contains(lower, "permission is hereby granted, free of charge") &&
-		strings.Contains(lower, "the software is provided \"as is\"") {
-		return "MIT"
+	// A GNU or Apache license body next to another license's text is two
+	// license texts, not one license (review round 39: an Apache body then the
+	// Go Authors' BSD text, go.opentelemetry.io's LICENSE, read BSD-3-Clause,
+	// dropping Apache; 167 real files). The GPL and Apache readers already
+	// refuse two bodies of their own; this covers every other fingerprint
+	// below, before the Apache and GPL readers can answer for the body alone
+	// (round 41: an ISC, Unlicense or CC0 text after an Apache body read
+	// Apache-2.0; ISC is read by its grant, since the Apache body says
+	// "redistribution").
+	if holdsGNUOrApacheBody(lower) && (permissiveTextID(lower) != "" ||
+		strings.Contains(lower, iscGrant) || mpl2Re.MatchString(lower) ||
+		strings.Contains(lower, unlicenseText) || isCC0Text(lower)) {
+		return ""
 	}
-	// ISC: "permission to use, copy, modify, and/or distribute" (no redistribution clause)
-	if strings.Contains(lower, "permission to use, copy, modify, and/or distribute") &&
-		!strings.Contains(lower, "redistribution") {
-		return "ISC"
-	}
-	// PSF: "python software foundation license" (check before BSD — PSF texts include BSD clauses)
-	if strings.Contains(lower, "python software foundation license") {
-		return "PSF-2.0"
-	}
-	// BSD 3-Clause: "redistribution and use" + "neither the name" (more specific than BSD-2)
-	if strings.Contains(lower, "redistribution and use in source and binary forms") &&
-		strings.Contains(lower, "neither the name") {
-		return "BSD-3-Clause"
-	}
-	// BSD 2-Clause: "redistribution and use" without the third clause
-	if strings.Contains(lower, "redistribution and use in source and binary forms") &&
-		!strings.Contains(lower, "neither the name") {
-		return "BSD-2-Clause"
+	if id := permissiveTextID(lower); id != "" {
+		return id
 	}
 	// Apache 2.0 and the GPL: read by detectApacheText / detectGPLText
 	// (license_fulltext.go, worklist 60). Only a definite answer ends the
@@ -257,14 +251,39 @@ func detectFullLicenseText(lower string) string {
 		return "MPL-2.0"
 	}
 	// Unlicense: "this is free and unencumbered software"
-	if strings.Contains(lower, "this is free and unencumbered software") {
+	if strings.Contains(lower, unlicenseText) && !namesTheGPL(lower) {
 		return "Unlicense"
 	}
 	// CC0: "creative commons" + "cc0" or "public domain"
-	if strings.Contains(lower, "creative commons") && (strings.Contains(lower, "cc0") || strings.Contains(lower, "public domain")) {
+	if isCC0Text(lower) && !namesTheGPL(lower) {
 		return "CC0-1.0"
 	}
 	return ""
+}
+
+// The ISC grant, the Unlicense's opening, and the CC0 text's wording, as
+// the fingerprints below read them.
+const (
+	iscGrant      = "permission to use, copy, modify, and/or distribute"
+	unlicenseText = "this is free and unencumbered software"
+)
+
+// namesTheGPL reports a text that names the GNU GPL, spelled out or as
+// "GPL" (gplNameRe, the GPL reader's own spelling; round 43), read folded
+// as the GPL reader reads it, since license prose wraps the name (round 44). The GPL reader has
+// already declined it when the Unlicense and CC0 fingerprints run, so a text
+// naming it is a second license, not one of those texts (review round 42:
+// CGAL's LICENSE, GPL/LGPL prose with CC0 examples, read CC0-1.0; base read
+// GPL-3.0-only). The MPL fingerprint is exempt: the MPL-2.0 body names the
+// GPL in its "Secondary License" definition.
+func namesTheGPL(lower string) bool {
+	return gplNameRe.MatchString(foldSpace(lower))
+}
+
+// isCC0Text is the CC0 fingerprint: "creative commons" with "cc0" or
+// "public domain".
+func isCC0Text(lower string) bool {
+	return strings.Contains(lower, "creative commons") && (strings.Contains(lower, "cc0") || strings.Contains(lower, "public domain"))
 }
 
 // mpl2Re is the MPL 2.0 named with its version.
@@ -273,6 +292,34 @@ func detectFullLicenseText(lower string) string {
 // dual-license prose) to wrapped text (round 31); worklist 61 is the MPL
 // notice reader that would read those exactly.
 var mpl2Re = regexp.MustCompile(`mozilla public license,?\s+(?:v\.?\s*|version\s+)?2\.0`)
+
+// permissiveTextID reads the MIT, ISC, PSF and BSD license texts by their
+// wording, in that order (PSF texts carry BSD clauses, BSD-3 is more specific
+// than BSD-2); "" when none matches.
+func permissiveTextID(lower string) string {
+	// MIT: "permission is hereby granted, free of charge" + "as is" warranty
+	if strings.Contains(lower, "permission is hereby granted, free of charge") &&
+		strings.Contains(lower, "the software is provided \"as is\"") {
+		return "MIT"
+	}
+	// ISC: "permission to use, copy, modify, and/or distribute" (no redistribution clause)
+	if strings.Contains(lower, iscGrant) &&
+		!strings.Contains(lower, "redistribution") {
+		return "ISC"
+	}
+	// PSF: "python software foundation license" (check before BSD - PSF texts include BSD clauses)
+	if strings.Contains(lower, "python software foundation license") {
+		return "PSF-2.0"
+	}
+	if strings.Contains(lower, "redistribution and use in source and binary forms") {
+		// BSD 3-Clause carries "neither the name"; BSD 2-Clause does not.
+		if strings.Contains(lower, "neither the name") {
+			return "BSD-3-Clause"
+		}
+		return "BSD-2-Clause"
+	}
+	return ""
+}
 
 // truncateLicenseText truncates a long license string for display purposes.
 // Tries to find the first recognizable license name in the first line, otherwise

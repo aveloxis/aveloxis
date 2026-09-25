@@ -55,10 +55,12 @@ const gplBodyMarker = "verbatim copies of this license document"
 // (the "How to Apply" appendix, then anything appended) is not the license.
 const licenseBodyEnd = "end of terms and conditions"
 
-// apacheBodyMarker is the Apache-2.0 body's own title, once per body (its
+// apacheBodyRe is the Apache-2.0 body's own title, once per body (its
 // terms heading occurs twice: as the heading and inside the definition of
-// "License", which a count of bodies would read as two).
-const apacheBodyMarker = "apache license version 2.0, january 2004"
+// "License", which a count of bodies would read as two). Any January year:
+// ninja's COPYING is the Apache-2.0 text titled "January 2010", which base
+// read as Apache-2.0 (review round 43).
+var apacheBodyRe = regexp.MustCompile(`apache license version 2\.0, january \d{4}`)
 
 var (
 	// gplTitleRe is a GPL body's own title and date; the version is the
@@ -73,7 +75,7 @@ var (
 	// ! version" (rounds 25-26). "::" opens a batch-file comment.
 	// Markers strip as a repeated group: "REM *", "# *", "// *" wrap a
 	// block comment in a line comment (round 29, a corpus of real headers).
-	commentMarkerRe = regexp.MustCompile(`(?m)^[ \t]*(?:(?:/\*+|\*+/?|//+|#+|--+|;+|%+|!+|::|<!--|rem\b|dnl\b|')[!'|:%<>]*[ \t]*(?:\|[ \t]?)?)+`)
+	commentMarkerRe = regexp.MustCompile(`(?m)^[ \t]*` + markerRun)
 	commentCloseRe  = regexp.MustCompile(`(?m)[ \t]*(?:\*+/|-->)[ \t]*$`)
 
 	// otherLicenseNames are other licenses named WITHOUT the word "license"
@@ -195,7 +197,7 @@ var (
 	// or "/*! ..." line stand before a heading tag (round 31).
 	// A bare "@license" marker (prose by licenseTagIsProse) may open the
 	// tag's line too: "@license SPDX-License-Identifier: ..." (round 34).
-	headerLineRe = regexp.MustCompile(`(?i)^\s*(?:#!.*|(?:(?://|#|/\*+|\*|<!--|--|;)\s*)?(?:@licen[cs]e\s*)?(?:(?:copyright|\(c\)|©).*)?\s*)$`)
+	headerLineRe = regexp.MustCompile(`(?i)^\s*(?:#!.*|(?:` + markerRun + `)?(?:@licen[cs]e\s*)?(?:` + copyrightLead + `.*)?\s*)$`)
 )
 
 // noticeFamily is what a notice reader needs to know about one license.
@@ -220,21 +222,25 @@ func stripCommentMarkers(s string) string {
 	return commentCloseRe.ReplaceAllString(commentMarkerRe.ReplaceAllString(s, ""), "")
 }
 
-// spdxIdentifierLine returns the expression an SPDX-License-Identifier line
-// states, canonically spelled, when the tag is the text's header and every
-// such line holds the same valid expression; "" otherwise. The tag is the
-// author's exact statement (round 19 C4: "GPL-2.0 WITH Linux-syscall-note",
-// the Linux uapi header), but only as the header: after it may come only
-// comment markers, a shebang or copyright lines, and a text holding a license
-// body is not a header (apache/arrow's LICENSE.txt tags a bundled LLVM
-// section at line 248).
+// spdxIdentifierLine returns the expression the text's tags state
+// (SPDX-License-Identifier and "@license", found by findTags), canonically
+// spelled, when the first tag heads the text and every tag holds the same
+// valid expression; "" otherwise. A heading tag is the author's exact
+// statement (round 19 C4: "GPL-2.0 WITH Linux-syscall-note", the Linux uapi
+// header). Before it may come only comment markers, a shebang, copyright
+// lines that state no license (statesALicense, round 40) and bare "@license"
+// markers (headerLineRe); a text holding a GNU or
+// Apache license body is not a header (bodyCount; apache/arrow's LICENSE.txt
+// tags a bundled LLVM section at line 248). A heading tag above another body
+// (MIT, BSD) is still the answer, so "Apache-2.0 OR MIT" above an MIT body
+// keeps its choice.
 func spdxIdentifierLine(text string) string {
 	hits := findTags(text)
-	if len(hits) == 0 || bodyCount(foldSpace(strings.ToLower(text))) > 0 {
+	if len(hits) == 0 || holdsGNUOrApacheBody(strings.ToLower(text)) {
 		return ""
 	}
 	for _, line := range strings.Split(text[:hits[0].at], "\n") {
-		if !headerLineRe.MatchString(line) {
+		if !headerLineRe.MatchString(line) || statesALicense(line) {
 			return ""
 		}
 	}
@@ -289,8 +295,15 @@ func findTags(text string) []tagHit {
 // a tag: empty (JSDoc's bare marker) or a copyright line, the shapes found
 // above real Apache and GPL headers (rounds 31-33).
 func licenseTagIsProse(raw string) bool {
-	return raw == "" || strings.HasPrefix(raw, "copyright")
+	return raw == "" || copyrightLeadRe.MatchString(raw)
 }
+
+// copyrightLead starts a copyright line, one spelling for headerLineRe and
+// licenseTagIsProse (round 35: "(c)" and "\u00a9" lines passed one and not
+// the other).
+const copyrightLead = `(?:copyright|\(c\)|\x{a9})`
+
+var copyrightLeadRe = regexp.MustCompile(`(?i)^` + copyrightLead)
 
 // cleanTag is an SPDX tag's value without a closing comment marker.
 func cleanTag(v string) string {
@@ -301,9 +314,9 @@ func cleanTag(v string) string {
 // splitTags takes the SPDX-License-Identifier and "@license" tags out of a
 // notice, so the prose is read on its own, and returns them; ok is false when
 // a tag is not a valid expression ("SSPL", "Acme-Custom"): the author stated
-// something the reader cannot read, so the text is kept (round 21). A bare
-// "@license" or "@license Copyright ..." is not a tag and stays prose (rounds
-// 31-32).
+// something the reader cannot read, so the text is kept (round 21). An
+// "@license" line that licenseTagIsProse calls prose is not a tag and stays
+// in the text (rounds 31-36).
 func splitTags(text string) (rest string, tags []string, ok bool) {
 	ok = true
 	// SPDX tags first, then "@license" lines, in two passes: one match per
@@ -327,9 +340,8 @@ func splitTags(text string) (rest string, tags []string, ok bool) {
 		}
 	}
 	rest = spdxTagRe.ReplaceAllStringFunc(text, take(spdxTagRe, func(string) bool { return false }))
-	// A bare "@license" (JSDoc's marker) or "@license Copyright ..." is not a
-	// tag, the shapes found above real Apache and GPL headers in the corpora
-	// (rounds 31-33); the line stays prose, the word accounted by
+	// An "@license" line that licenseTagIsProse calls prose (the bare marker,
+	// a copyright line) stays in the text, the word accounted by
 	// licenseRefRe. Any other non-expression value ("AllPermissive", "React
 	// v16", a magnet: link) states a license the reader cannot read, so the
 	// text is kept, as for an unreadable SPDX tag (round 32).
@@ -346,6 +358,14 @@ var (
 	spdxTagRe    = regexp.MustCompile(`(?im)spdx-license-identifier:[ \t]*([^\r\n]*)`)
 	licenseTagRe = regexp.MustCompile(`(?im)@licen[cs]e\b[ \t]*([^\r\n]*)`)
 )
+
+// fingerprintAgreesWithTags reports whether a full-text answer holds against
+// the text's tags, the rule the GPL and Apache readers apply to their own
+// answers (review round 38): every tag readable and stating id.
+func fingerprintAgreesWithTags(id, lower string) bool {
+	_, tags, ok := splitTags(stripCommentMarkers(apostrophes.Replace(lower)))
+	return ok && tagsAgree(id, tags)
+}
 
 // tagsAgree reports whether every tag states the license the prose was read
 // as (a tag lower in a notice may describe a bundled file, round 20 S3).
@@ -418,6 +438,13 @@ func isClausePunct(r rune) bool { return strings.ContainsRune(" ,;.()-", r) }
 // license publisher's URL (the hosts licenseURLRe knows); "see
 // https://polyformproject.org/..." points to another license (round 27).
 var pointerRe = regexp.MustCompile(`^see (?:the )?(?:(?:licen[cs]e|copying)[\w.-]*(?: file)?|(?:https?://)?(?:www\.)?(?:gnu|fsf|apache|llvm)\.org\S*)$`)
+
+// markerRun is one or more comment markers opening a line, the ONE spelling
+// the marker stripper (commentMarkerRe) and the heading check (headerLineRe)
+// share (round 38: the heading check knew fewer, so Erlang "%%", elisp ";;",
+// Rust "///" and "//!", "REM" and m4 "dnl" headers never headed the text).
+// Companion characters ("//!", "#'", "-- |") go with their marker.
+const markerRun = `(?:(?:/\*+-?|\*+/?|//+|#+|--+|;+|%+|!+|::|<!--|rem\b|dnl\b|')[!'|:%<>]*[ \t]*(?:\|[ \t]?)?)+`
 
 // clauseBreakRe ends a clause: a sentence end or a semicolon.
 var clauseBreakRe = regexp.MustCompile(`[.!?] |;`) // "DO NOT EDIT!" ends its sentence (round 30)
@@ -708,8 +735,48 @@ func saysSomething(prefix string, f noticeFamily) bool {
 // bodyCount is how many license bodies (GNU or Apache) a text holds; two
 // bodies in one text are not one license (review round 18 S3).
 func bodyCount(lower string) int {
-	return strings.Count(lower, gplBodyMarker) + strings.Count(lower, apacheBodyMarker)
+	return strings.Count(lower, gplBodyMarker) + len(apacheBodyRe.FindAllStringIndex(lower, -1))
 }
+
+// licenseMarkerRe is a bare "@license" marker (see headerLineRe).
+var licenseMarkerRe = regexp.MustCompile(`@licen[cs]e\b`)
+
+// holdsGNUOrApacheBody reports whether a lower-cased text holds a GNU or
+// Apache license body, read as the body readers read it: comment markers
+// first, then words (review round 40: a title split over two commented lines
+// hid the body from the heading-tag and two-texts gates).
+func holdsGNUOrApacheBody(lower string) bool {
+	return bodyCount(foldSpace(stripCommentMarkers(apostrophes.Replace(lower)))) > 0
+}
+
+// statesALicense reports whether a line before a heading tag says anything
+// about a license: a copyright line may stand above the tag, but one that
+// states a license is a second statement, not the tag's (review round 40).
+// A bare "@license" marker is the tag's own opener, not a statement.
+// Decided as a class in round 42, after rounds 40-42 each found a spelling
+// the last rule missed (glued "AGPLv3", "MPL version 2.0", "CC-BY-SA-4.0",
+// "Apache/2.0"): any listed license name, in any spelling, counts. A holder
+// named like a license ("Internet Systems Consortium, Inc. ("ISC")", "The
+// Apache Software Foundation") keeps the text too, as base did; that is the
+// safer error.
+func statesALicense(line string) bool {
+	l := licenseMarkerRe.ReplaceAllString(strings.ToLower(line), "")
+	return licenseWordRe.MatchString(l) || headerLicenseNameRe.MatchString(l)
+}
+
+// headerLicenseNameRe is a license name starting a word and not followed by
+// a letter of a spaced script (round 43: Go's \b is ASCII-only, so "Mitä"
+// and "Rødual" read as names; see spacedLetters), except a version's "v" ("AGPLv3"): punctuation, a digit or a
+// space may follow ("CC-BY-SA-4.0", "Apache/2.0", "MPL version 2.0"), but
+// "Mitchell" is a holder, not "MIT" (see statesALicense).
+var headerLicenseNameRe = regexp.MustCompile(`(?:^|[^` + spacedLetters + `\p{N}_])(?:[al]?gpl|general public|apache|` + otherLicenseNames + `)(?:[^` + spacedLetters + `]|v\d|$)`)
+
+// spacedLetters are the letters of scripts that separate words with
+// spaces: next to one, a license name is part of a longer word ("Mitä",
+// "Rødual"). Chinese and Japanese do not, so a CJK neighbour is an edge:
+// "采用MIT许可证" names MIT (review round 44: all letters as word
+// characters, round 43's first draft, hid it).
+const spacedLetters = `\p{Latin}\p{Greek}\p{Cyrillic}`
 
 // bodyTail is what follows a body's terms (the first "end of terms and
 // conditions" at or after from): an appended exception or notice.
@@ -803,10 +870,11 @@ func detectApacheText(lower string) string {
 
 // readApacheText reads a folded Apache body or notice.
 func readApacheText(lower string) string {
-	i := strings.Index(lower, apacheBodyMarker)
-	if i < 0 {
+	loc := apacheBodyRe.FindStringIndex(lower)
+	if loc == nil {
 		return detectApacheNotice(lower)
 	}
+	i := loc[0]
 	if bodyCount(lower) > 1 {
 		return ""
 	}

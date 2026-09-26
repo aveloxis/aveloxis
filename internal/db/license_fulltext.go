@@ -170,6 +170,10 @@ var (
 	exceptionWordRe = regexp.MustCompile(`\bexceptions?\b`)
 	// negationRe inside an exception phrase withdraws it ("not subject to
 	// the Classpath exception", round 22).
+	// Not "formerly", "none", "nothing", ...: a notice sits under copyright
+	// lines whose company histories use them ("Lightbend Inc. (formerly
+	// Typesafe Inc.)" above a real Apache header, worklist-61 review 14);
+	// grants carry those words (grantNegationRe).
 	negationRe = regexp.MustCompile(`\b(?:not|no|never|without|cannot)\b|n't\b`) // "doesn't", "won't" (round 24)
 	// clauseEndRe is what may follow a range phrase: the end of the clause.
 	clauseEndRe = regexp.MustCompile(`^(?:[.;,)]| -| \(|$)`)

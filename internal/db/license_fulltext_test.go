@@ -1561,3 +1561,461 @@ func TestWorklist61Review5(t *testing.T) {
 		assertKeptAsText(t, text, text)
 	}
 }
+
+// TestWorklist61Review6 — worklist-61 review round 6:
+//   - an MPL-2.0 body under an MPL-2.0 notice that agrees with it reads
+//     MPL-2.0, as a GPL or Apache body under its own notice does (real
+//     LICENSE.md files: JuMP.jl's "**[MPL]** version 2.0:", SDDP.jl's
+//     sentence, Tulip.jl's Markdown link and "## License" heading, the
+//     nanoporetech repos' standard notice and © line). A notice that states
+//     a range, the no-copyleft exhibit or another license keeps the text;
+//   - outside a Mozilla license block, any GPL-family name and any listed
+//     license named with its version are seen.
+func TestWorklist61Review6(t *testing.T) {
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	for name, prefix := range map[string]string{
+		"JuMP":     "The JuMP Julia module is licensed under the **[MPL]** version 2.0:\n\n[MPL]: https://www.mozilla.org/MPL/2.0/\n\n",
+		"SDDP":     "SDDP.jl is licensed under the Mozilla Public License, Version 2.0. Copyright (c) 2017-2026: Oscar Dowson and contributors.\n\n",
+		"Tulip":    "Copyright (c) 2018-2019: Mathieu Tanneau\n\nTulip.jl is licensed under the [MPL version 2.0](https://www.mozilla.org/MPL/2.0/).\n\n## License\n\n",
+		"nanopore": "This Source Code Form is subject to the terms of the Mozilla Public\nLicense, v. 2.0. If a copy of the MPL was not distributed with this\nfile, You can obtain one at http://mozilla.org/MPL/2.0/.\n\n(c) 2017 Oxford Nanopore Technologies Ltd.\n\n",
+	} {
+		if got := NormalizeLicenseToSPDX(prefix + mpl); got != "MPL-2.0" {
+			t.Errorf("%s: MPL body under its notice = %q, want MPL-2.0", name, got)
+		}
+	}
+	quote := func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i := range lines {
+			lines[i] = "> " + lines[i]
+		}
+		return strings.Join(lines, "\n")
+	}
+	for name, text := range map[string]string{
+		// Coluna.jl, Plasmo.jl: the body in a Markdown blockquote.
+		"blockquoted body": "The Coluna.jl package is licensed under the Mozilla Public License, Version 2.0:\n\n" + quote("Copyright (c) 2019: Atoptima.\n\n"+mpl),
+		// tbkeys: a Markdown link between the name and nothing else, then "Full license:".
+		"link and Full license:": "Copyright 2019 Will Shanks. tbkeys is licensed under a [Mozilla Public License, v. 2.0](http://mozilla.org/MPL/2.0/) (full text below).\n\nFull license:\n\n" + mpl,
+		// JuMP.jl with its real copyright line.
+		"JuMP with copyright": "Copyright (c) 2017: Iain Dunning, Joey Huchette, Miles Lubin, and contributors\n\nThe JuMP Julia module is licensed under the **[MPL](https://www.mozilla.org/MPL/2.0/)** version 2.0:\n\n" + mpl,
+		// Tab-Manager-Plus: a "Copyright & License Notice" heading.
+		"license notice heading": "Copyright & License Notice\n=========================\n\nThis Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.\n\n" + mpl,
+	} {
+		if got := NormalizeLicenseToSPDX(text); got != "MPL-2.0" {
+			t.Errorf("%s = %q, want MPL-2.0", name, got)
+		}
+	}
+	for name, prefix := range map[string]string{
+		"a range above":        "This library is licensed under the Mozilla Public License, Version 2.0 or (at your option) any later version.\n\n",
+		"MIT above":            "This library is licensed under the MIT license and the Mozilla Public License, Version 2.0.\n\n",
+		"no-copyleft above":    "This Source Code Form is \"Incompatible With Secondary Licenses\", as defined by the Mozilla Public License, v. 2.0.\n\n",
+		"MPL 1.1 notice above": "The contents of this file are subject to the Mozilla Public License Version 1.1.\n\n",
+	} {
+		assertKeptAsText(t, name, prefix+mpl)
+	}
+	block := "\n\n***** BEGIN LICENSE BLOCK *****\nThis Source Code Form is subject to the terms of the Mozilla Public License,\nv. 2.0. If a copy of the MPL was not distributed with this file, You can obtain\none at http://mozilla.org/MPL/2.0/.\n\n***** END LICENSE BLOCK *****"
+	for _, outside := range []string{
+		"The documentation in docs/ is CC-BY-4.0.",
+		"The helper scripts here are GNU LGPLv3.",
+		"The helper scripts here are under the GNU FDL 1.3.",
+		"The fixtures are EPL-2.0 and BSD-3-Clause.",
+	} {
+		assertKeptAsText(t, outside, outside+block)
+	}
+}
+
+// TestWorklist61Review6CC0 — real CC0 texts in the review-6 GitHub sample
+// that HEAD read: the legal code without its "CC0 1.0 Universal" title,
+// starting at its disclaimer (ValyriaTear's COPYING.CC0) or at "Statement of
+// Purpose" under a CC0 badge (woop/awesome-quantified-self,
+// greggman/better-unity-webgl-template), and a grant spelled with the
+// license word ("licensed under a Creative Commons CC0 license",
+// mercedes-benz's FOSS manifesto).
+func TestWorklist61Review6CC0(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	disclaimer := cc0[strings.Index(cc0, "CREATIVE COMMONS CORPORATION"):]
+	purpose := cc0[strings.Index(cc0, "Statement of Purpose"):]
+	for name, c := range map[string]struct{ text, want string }{
+		"legal code from its disclaimer": {disclaimer, "CC0-1.0"},
+		"legal code under a CC0 badge":   {"[![CC0](https://i.creativecommons.org/p/zero/1.0/88x31.png)](https://creativecommons.org/publicdomain/zero/1.0/)\n\n" + purpose, "CC0-1.0"},
+		// A Markdown copy: "### _Statement of Purpose_" (review 7).
+		"Markdown legal code":          {"# Creative Commons Legal Code\n\n## CC0 1.0 Universal\n\n### _Statement of Purpose_\n\n" + purpose[len("Statement of Purpose"):], "CC0-1.0"},
+		"licensed under a CC0 license": {"The Example Manifesto is licensed under a Creative Commons CC0 license. Thus, it is released into the public domain.", "CC0-1.0"},
+		"licensed under the Unlicense": {"This project, its code and its documentation, is licensed under the Unlicense. See the UNLICENSE file.", "Unlicense"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	for _, text := range []string{
+		"The Example Manifesto is licensed under a Creative Commons CC0 license, and the code is licensed under the MIT license.",
+		"This project is not licensed under the Unlicense; all of it is proprietary to Acme Corp and its licensors worldwide.",
+	} {
+		assertKeptAsText(t, text, text)
+	}
+}
+
+// TestWorklist61Review7 — worklist-61 review round 7:
+//   - the CC0 legal code starts at its own "Statement of Purpose" heading;
+//     a notice above it that names "CC0 1.0 Universal" is read as the prefix
+//     it is, not swallowed into the body;
+//   - "license notice" is an MPL reference only as the "Copyright & License
+//     Notice" heading, not "a different license notice";
+//   - only the MPL's own link target (mozilla.org) is dropped above an MPL
+//     body; another license's link stays a statement.
+func TestWorklist61Review7(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	for name, text := range map[string]string{
+		"CC0 notice + GPL above the legal code": "The artwork is CC0 1.0 Universal; the code is GPL-3.0-or-later.\n\n" + cc0,
+		"CC0 notice + MIT above the legal code": "The artwork is CC0 1.0 Universal; the source code is under the MIT license, see LICENSE-MIT.\n\n" + cc0,
+		"CC0 notice + proprietary above":        "The artwork is released under CC0 1.0 Universal (below). The source code is proprietary to Acme Corp and all rights reserved.\n\n" + cc0,
+		"a different license notice (MPL 1.1)":  "The contents of this file are subject to the Mozilla Public License Version 1.1. Some files in this directory carry a different license notice.",
+		"a separate license notice (MPL 2.0)":   "This project is under the MPL 2.0. The files under vendor/ carry a separate license notice from their authors.",
+		"CC-BY link above the MPL body":         "This project is licensed under the [MPL](https://www.mozilla.org/MPL/2.0/) version 2.0; the artwork, see [here](https://creativecommons.org/licenses/by-sa/4.0/).\n\n" + mpl,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review8 — worklist-61 review round 8:
+//   - the CC0 "Statement of Purpose" heading in its real layouts (kragen's
+//     "### Statement of Purpose ###", setext underlines, a colon, bold);
+//   - a URL naming the CC0 text between its title lines is the legal code's
+//     own source line (an AsciiDoc copy: "= Creative Commons Legal Code",
+//     "http://repository.jboss.org/licenses/cc0-1.0.txt", "CC0 1.0 Universal");
+//   - "copyright and license notice" is a reference only as the heading that
+//     opens the text, not "Files in vendor/ carry a different copyright and
+//     license notice";
+//   - only the disclaimer's exact wording is the legal code's own text: a
+//     statement between "not a law firm" and "provided hereunder" is read.
+func TestWorklist61Review8(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	for _, head := range []string{"### Statement of Purpose ###", "Statement of Purpose\n====================", "Statement of Purpose:", "**Statement of Purpose:**"} {
+		text := strings.Replace(cc0, "Statement of Purpose", head, 1)
+		if text == cc0 && head != "Statement of Purpose" {
+			t.Fatal("the fixture lost its Statement of Purpose heading")
+		}
+		if got := NormalizeLicenseToSPDX(text); got != "CC0-1.0" {
+			t.Errorf("heading %q: %q, want CC0-1.0", head, got)
+		}
+	}
+	adoc := strings.Replace(cc0, "Creative Commons Legal Code", "= Creative Commons Legal Code\n\nhttp://repository.jboss.org/licenses/cc0-1.0.txt", 1)
+	if got := NormalizeLicenseToSPDX(adoc); got != "CC0-1.0" {
+		t.Errorf("AsciiDoc copy with its source URL = %q, want CC0-1.0", got)
+	}
+	purpose := cc0[strings.Index(cc0, "Statement of Purpose"):]
+	for name, text := range map[string]string{
+		"copyright and license notice in a sentence": "Copyright 2020 Foo Inc. This file is subject to the terms of the Mozilla Public License, version 1.1. Files in vendor/ carry a different copyright and license notice.",
+		"GPL inside a disclaimer-shaped span":        "Creative Commons Corporation is not a law firm. The code is licensed under the GNU GPL v3, the artwork is provided hereunder.\n\n" + purpose,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review8Corpus — real CC0 layouts from 514 GitHub copies of the
+// legal code that 689acc7 read and the first round-8 fix kept as text:
+// setext headings above the body ("License\n=====", "Licensing\n====="),
+// copies without the "Statement of Purpose" heading (seven files), and an
+// agreeing grant above the body with a "## creative commons" heading between
+// (BlakeRMills/MetBrewer). A grant above that disagrees still keeps the text.
+func TestWorklist61Review8Corpus(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	noHead := strings.Replace(cc0, "Statement of Purpose", "", 1)
+	for name, text := range map[string]string{
+		"License setext above":         "License\n=======\n\n" + cc0,
+		"Licensing setext above":       "Licensing\n=========\n\n" + cc0,
+		"Documentation License setext": "Documentation License\n=====================\n\n" + cc0,
+		"no Statement of Purpose head": noHead,
+		"MetBrewer grant above":        "BlakeRMills/MetBrewer is licensed under the Creative Commons Zero v1.0 Universal\n\n## creative commons\n\n# " + cc0[strings.Index(cc0, "CC0 1.0 Universal"):],
+		"released under CC0 above":     "This dataset is released under CC0 1.0 Universal.\n\n" + cc0,
+		"US-government template above": "As a work of the United States Government, this package is in the public domain within the United States. Additionally, we waive copyright and related rights in the work worldwide through the CC0 1.0 Universal public domain dedication.\n\n" + cc0,
+		"CC mirrors badge above":       "[![CC0-1.0](http://mirrors.creativecommons.org/presskit/buttons/88x31/svg/cc-zero.svg)](http://creativecommons.org/publicdomain/zero/1.0/)\n\n### " + cc0[strings.Index(cc0, "CC0 1.0 Universal"):],
+		"AsciiDoc attribute line":      "= Creative Commons Legal Code\n\nhttp://repository.jboss.org/licenses/cc0-1.0.txt\n\n:sectnums!:\n\n" + cc0[strings.Index(cc0, "CC0 1.0 Universal"):],
+		"official translations line":   strings.Replace(cc0, "CC0 1.0 Universal", "CC0 1.0 Universal\n\nOfficial translations of this legal tool are available", 1),
+	} {
+		if got := NormalizeLicenseToSPDX(text); got != "CC0-1.0" {
+			t.Errorf("%s = %q, want CC0-1.0", name, got)
+		}
+	}
+	for name, text := range map[string]string{
+		"negated grant above":   "This dataset is not released under CC0 1.0 Universal.\n\n" + cc0,
+		"grant + MIT above":     "This dataset is released under CC0 1.0 Universal. The code is under the MIT license.\n\n" + cc0,
+		"US-gov waiver of part": "As a work of the United States Government, the font software modifications made by GSA are not subject to copyright within the United States. Additionally, GSA waives copyright and related rights in the font software modifications worldwide through the CC0 1.0 Universal public domain dedication.\n\n" + cc0,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review9 — worklist-61 review round 9: the CC0 opening block's
+// parts carry no statement. An AsciiDoc or reStructuredText field line with a
+// value (":License: GPL-3.0") is not a part (only a bare attribute such as
+// ":sectnums!:" is); a creativecommons.org URL is a part only when it is
+// CC0's own (not CC's hosted GPL); and the opening sentence is anchored with
+// its continuation, so a notice that happens to begin "The laws of most
+// jurisdictions throughout the world ..." is read as the prefix it is.
+func TestWorklist61Review9(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	for name, text := range map[string]string{
+		"rst license field":        ":license: GPL-3.0\n\n" + cc0,
+		"rst note field":           ":note: parts of this repository are covered by the GNU General Public License\n\n" + cc0,
+		"field inside the chain":   strings.Replace(cc0, "CC0 1.0 Universal", "CC0 1.0 Universal\n:note: the code is under the GNU GPL v3", 1),
+		"CC-GNU GPL URL":           "http://creativecommons.org/licenses/GPL/2.0/\n\n" + cc0,
+		"CC-BY-SA URL":             "<https://creativecommons.org/licenses/by-sa/4.0/>\n\n" + cc0,
+		"notice opening like body": "The laws of most jurisdictions throughout the world do not apply here: the code is GPL-3.0.\n\n" + cc0,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review10 — worklist-61 review round 10, real shapes:
+//   - "the MPL-2.0 license" / "the MPL 2.0 license" is the MPL's name, as
+//     "the Apache 2.0 license" is Apache's (publicsuffix2's shipped
+//     mpl-2.0.LICENSE, kanaka/miniMAL's LICENSE, CoCube's LICENSE);
+//   - an Unlicense body under an agreeing "X is licensed under the
+//     Unlicense:" line reads (TrackingHeaps.jl, tamper-api), as MPL and CC0
+//     bodies under their notices do;
+//   - a URL in the CC0 opening block is CC0's own only by its host path or
+//     its CC0 file name, not by "cc0" anywhere in it.
+func TestWorklist61Review10(t *testing.T) {
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	for name, c := range map[string]struct{ text, want string }{
+		"publicsuffix2":         {"This data file is licensed under the MPL-2.0 license.\n\n" + mpl, "MPL-2.0"},
+		"miniMAL":               {"miniMAL is licensed under the MPL 2.0 license. The text of the MPL 2.0 license is included below.\n\n" + mpl, "MPL-2.0"},
+		"MPL-2.0 license alone": {"This Android application and its build scripts are licensed under the MPL-2.0 license.", "MPL-2.0"},
+		"TrackingHeaps":         {"The TrackingHeap.jl package is licensed under the Unlicense:\n\n" + unl, "Unlicense"},
+		"tamper-api":            {"The Tamper-Api project is licensed under the Unlicense.\n\n" + unl, "Unlicense"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	for name, text := range map[string]string{
+		"GPL URL with a cc0 fragment":   strings.Replace(cc0, "Statement of Purpose", "https://www.gnu.org/licenses/gpl-3.0.html#cc0\n\nStatement of Purpose", 1),
+		"repo URL naming cc0":           "https://github.com/acme/gpl-3.0-code-with-cc0-assets\n\n" + cc0,
+		"negated Unlicense above":       "The Tamper-Api project is not licensed under the Unlicense.\n\n" + unl,
+		"Unlicense grant + CC-BY above": "The Tamper-Api project is licensed under the Unlicense; the icons are licensed under CC-BY-4.0.\n\n" + unl,
+		"MPL-2.0 license + MIT":         "This data file is licensed under the MPL-2.0 license, and the scripts under the MIT license.",
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review11 — worklist-61 review round 11, one rule for all three
+// body readers: a prefix that names the family's own license must be an
+// agreeing notice or a name-only heading. So a heading naming CC0 above the
+// legal code reads (jupyter/governance's "# Creative Commons CC0 License",
+// BartMassey/feed-icons' copyright line and heading, a quoted grant in
+// BartMassey/name-lists), and a negated or passing mention of the bare name
+// above an Unlicense or MPL body keeps the text, as it already did for CC0.
+func TestWorklist61Review11(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	purpose := cc0[strings.Index(cc0, "Statement of Purpose"):]
+	for name, c := range map[string]struct{ text, want string }{
+		"jupyter heading":                  {"# Creative Commons CC0 License\n\n## " + purpose, "CC0-1.0"},
+		"feed-icons":                       {"Copyright © 2022 Bart Massey\n\nCreative Commons CC0 License\n\n" + purpose, "CC0-1.0"},
+		"# CC0 License":                    {"# CC0 License\n\n" + cc0, "CC0-1.0"},
+		"CC0 GitHub name":                  {"Creative Commons Zero v1.0 Universal\n\n" + cc0, "CC0-1.0"},
+		"quoted grant":                     {"[This program is licensed under the \"Creative Commons CC0 License\"]\n\n" + cc0, "CC0-1.0"},
+		"The Unlicense heading":            {"# The Unlicense\n\n" + unl, "Unlicense"},
+		"Unlicense (Public Domain) setext": {"Unlicense (Public Domain)\n============================\n\n" + unl, "Unlicense"},
+		"linked grant":                     {"This code is released under [the Unlicense](http://unlicense.org)\n\n" + unl, "Unlicense"},
+		"MPL 2.0 License heading":          {"# MPL 2.0 License\n\n" + mpl, "MPL-2.0"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	for name, text := range map[string]string{
+		"not released under the Unlicense":  "This project is not released under the Unlicense.\n\n" + unl,
+		"the Unlicense does not apply":      "The Unlicense does not apply to this project.\n\n" + unl,
+		"considered the Unlicense":          "We considered the Unlicense for this project, but the author keeps copyright.\n\n" + unl,
+		"not released under the MPL":        "This project is not released under the MPL.\n\n" + mpl,
+		"heading, body, then CC-BY":         "# The Unlicense\n\n" + unl + "\n\nThe icons in this repository are licensed under CC-BY-4.0.",
+		"grant linked to another license":   "This code is released under [the Unlicense](https://opensource.org/licenses/MIT)\n\n" + unl,
+		"copyright line with GPL above CC0": "Copyright 2020 Foo Inc. Licensed under the GNU GPL v3.\n\nCreative Commons CC0 License\n\n" + purpose,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review12 — worklist-61 review round 12:
+//   - "n't" is a negation: a grant's quote marks are removed, but not the
+//     apostrophe ("aren't released under the Unlicense");
+//   - "All rights reserved." on a copyright line above the CC0 legal code is a
+//     second statement, not the holder's line;
+//   - a Markdown link wrapping a grant ("[Released under CC0 1.0 Universal](
+//     https://example.com/our-terms)") ends in a link, not a clause;
+//   - the family's own names in their other spellings ("Unlicence", "public
+//     domain", "Creative Commons", "CC-Zero") route a prefix to the grant
+//     check, so their negations are read.
+func TestWorklist61Review12(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	for name, text := range map[string]string{
+		"aren't released (notice)":  "The source code, documentation and examples in this repository aren't released under the Unlicense.",
+		"haven't been dedicated":    "The data files in this repository haven't been dedicated to the public domain under CC0 1.0 Universal.",
+		"isn't released above body": "The artwork isn't released under CC0 1.0 Universal.\n\n" + cc0,
+		"all rights reserved line":  "Copyright (c) 2020 Acme Corp. All rights reserved.\n\n" + cc0,
+		"link-wrapped grant":        "[Released under CC0 1.0 Universal](https://example.com/our-terms)\n\n" + cc0,
+		"not the Unlicence":         "This project is not released under the Unlicence.\n\n" + unl,
+		"not public domain":         "This software is not dedicated to the public domain.\n\n" + unl,
+		"not Creative Commons":      "This dataset is not Creative Commons.\n\n" + cc0,
+		"not CC-Zero":               "This dataset is not released under CC-Zero.\n\n" + cc0,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+	// The own-URL link and a plain quoted name still read.
+	if got := NormalizeLicenseToSPDX("[Released under CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/)\n\n" + cc0); got != "CC0-1.0" {
+		t.Errorf("own-link grant = %q, want CC0-1.0", got)
+	}
+}
+
+// TestWorklist61Review13 — worklist-61 reviews 13 and 14:
+//   - the MPL body ends at the first Exhibit B statement after Exhibit A, so
+//     text appended after the body, before another Exhibit B sentence, is
+//     read as the suffix it is;
+//   - a notice's negation words stay not/no/never/without/cannot/n't. Review
+//     13 added "none", "nothing", "neither", "nor", "formerly" and
+//     "previously" to them; review 14 found a real Apache header under
+//     "Copyright (c) 2016-2018 Lightbend Inc. (formerly Typesafe Inc.)"
+//     (ekrich/sconfig's LICENSE.md) that then kept its text. Those words
+//     withdraw grants only; "None of the files ... are licensed under the MPL
+//     2.0" reads MPL-2.0, a decided limit in the docs.
+func TestWorklist61Review13(t *testing.T) {
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	exB := "\n\nThis Source Code Form is \"Incompatible With Secondary Licenses\", as defined by the Mozilla Public License, v. 2.0."
+	assertKeptAsText(t, "appended MIT/GPL then ExB", mpl+"\n\nThe files in vendor/ are licensed under the MIT License, and the files in gpl/ under the GNU General Public License version 3."+exB)
+	assertKeptAsText(t, "once released (grant)", "This project was once released under the Unlicense; the current terms are in the TERMS file.")
+	assertKeptAsText(t, "formerly released (grant)", "This project was formerly released under the Unlicense. The current terms are in the TERMS file of the repo.")
+	for name, c := range map[string]struct{ text, want string }{
+		"sconfig": {"_Copyright (c) 2011-2016 Typesafe Inc._\\\n_Copyright (c) 2016-2018 Lightbend Inc. (formerly Typesafe Inc.)_\\\n_Copyright (c) 2018-2026 Eric K Richardson_\n\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		"Novell":  {"Copyright (C) 2008 Novell, Inc. (formerly Ximian, Inc.)\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.", "GPL-3.0-or-later"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+// TestWorklist61Review15 — worklist-61 review round 15: a badge's image is not
+// a statement. A shields.io badge above a body (KBPsystem777/JSexercises'
+// LICENSE.md: [![License: CC0-1.0](https://img.shields.io/...)](CC0 deed))
+// reads by its alt text and its link target; the image URL is ignored. The
+// link target must still be the license's own page (OSI's and SPDX's pages
+// count), and the alt text must still be the license's name.
+func TestWorklist61Review15(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	for name, c := range map[string]struct{ text, want string }{
+		"CC0 shields badge":       {"[![License: CC0-1.0](https://img.shields.io/badge/License-CC0%201.0-lightgrey.svg)](http://creativecommons.org/publicdomain/zero/1.0/)\n\n" + cc0, "CC0-1.0"},
+		"MPL shields badge":       {"[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)\n\n" + mpl, "MPL-2.0"},
+		"Unlicense shields badge": {"[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](http://unlicense.org/)\n\n" + unl, "Unlicense"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	for name, text := range map[string]string{
+		"badge alt names MIT":      "[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](http://creativecommons.org/publicdomain/zero/1.0/)\n\n" + cc0,
+		"badge links another page": "[![License: CC0-1.0](https://img.shields.io/badge/License-CC0%201.0-lightgrey.svg)](https://opensource.org/licenses/MIT)\n\n" + cc0,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+}
+
+// TestWorklist61Review16 — worklist-61 review round 16:
+//   - a shields.io badge renders its path, so a badge image URL that names
+//     another license ("/badge/License-GPL_3.0-blue.svg") is a statement,
+//     whatever its alt text; one that names only the license itself is not;
+//   - MPL's OSI and SPDX pages are MPL references in a notice and in a grant
+//     link above the body, as mozilla.org is (elkarte/themes' license notice).
+func TestWorklist61Review16(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	for name, text := range map[string]string{
+		"CC0 + GPL badge":                "The CC0 1.0 Universal ![License](https://img.shields.io/badge/License-GPL_v3-blue.svg) applies to the data in this repository.",
+		"Unlicense + Apache badge":       "The Unlicense ![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg) for this project and its examples here.",
+		"empty alt GPL badge":            "Unlicense ![](https://img.shields.io/badge/License-GPL_3.0-blue.svg?style=for-the-badge&logo=opensourceinitiative)",
+		"GPL badge linked to own":        "[![License](https://img.shields.io/badge/license-GPL-blue.svg?style=for-the-badge)](https://unlicense.org)\n\n" + unl,
+		"MIT badge alt CC0":              "[![CC0](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](https://creativecommons.org/publicdomain/zero/1.0/)\n\n" + cc0,
+		"Apache_2.0 badge linked to own": "[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://unlicense.org)\n\n" + unl,
+	} {
+		assertKeptAsText(t, name, text)
+	}
+	for name, c := range map[string]struct{ text, want string }{
+		"OSI URL in notice":       {"This project is licensed under the Mozilla Public License 2.0 (https://opensource.org/licenses/MPL-2.0).", "MPL-2.0"},
+		"SPDX URL in notice":      {"Licensed under the Mozilla Public License, Version 2.0 (https://spdx.org/licenses/MPL-2.0.html). See LICENSE.", "MPL-2.0"},
+		"elkarte":                 {"This ElkArte Addon is subject to the terms of the Mozilla Public License 2.0 (the \"License\"). You can obtain a copy of the License at https://opensource.org/licenses/MPL-2.0", "MPL-2.0"},
+		"OSI link above the body": {"Foo is licensed under the [MPL](https://opensource.org/licenses/MPL-2.0) version 2.0:\n\n" + mpl, "MPL-2.0"},
+		"own CC0 shields badge":   {"[![License: CC0-1.0](https://img.shields.io/badge/License-CC0_1.0-lightgrey.svg)](http://creativecommons.org/publicdomain/zero/1.0/)\n\n" + cc0, "CC0-1.0"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	// An OSI URL of another MPL version disagrees with the notice.
+	assertKeptAsText(t, "MPL 1.1 notice with the 2.0 OSI URL", "The contents of this file are subject to the Mozilla Public License Version 1.1; see https://opensource.org/licenses/MPL-2.0 for details.")
+}
+
+// TestWorklist61Review17 — worklist-61 review round 17: a badge path glues a
+// version to a name ("LGPLv3", "MPL2", "BSD3", "EUPLv1.2") and writes a
+// literal dash as "--" ("CC--BY--4.0"); the image check reads both.
+func TestWorklist61Review17(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	for _, name := range []string{"AGPLv3", "MPL2", "MPLv2", "BSD3", "EUPLv1.2"} {
+		text := "[![License](https://img.shields.io/badge/license-" + name + "-blue.svg)](https://unlicense.org)\n\n" + unl
+		assertKeptAsText(t, name+" badge over the Unlicense", text)
+	}
+	for _, name := range []string{"LGPLv3", "CC--BY--4.0", "CC--BY--SA--4.0"} {
+		text := "[![License](https://img.shields.io/badge/license-" + name + "-blue.svg)](http://creativecommons.org/publicdomain/zero/1.0/)\n\n" + cc0
+		assertKeptAsText(t, name+" badge over CC0", text)
+	}
+	assertKeptAsText(t, "CC0 badge over the Unlicense", "[![License](https://img.shields.io/badge/license-CC0-blue.svg)](https://unlicense.org)\n\n"+unl)
+}
+
+// TestWorklist61Review18 — worklist-61 review round 18: a badge on a line of
+// its own ("![License: Unlicense](https://img.shields.io/...)" above the
+// body) reads as the same badge mid-line does. The shared comment-marker
+// strip took a line-opening "!" for a Fortran comment and left a plain link.
+func TestWorklist61Review18(t *testing.T) {
+	cc0 := readLicenseFixture(t, "CC0-1.0.txt")
+	unl := readLicenseFixture(t, "Unlicense.txt")
+	mpl := readLicenseFixture(t, "MPL-2.0.txt")
+	for name, c := range map[string]struct{ text, want string }{
+		"Unlicense badge line": {"![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)\n\n" + unl, "Unlicense"},
+		"CC0 badge line":       {"![License: CC0-1.0](https://img.shields.io/badge/License-CC0_1.0-lightgrey.svg)\n\n" + cc0, "CC0-1.0"},
+		"MPL badge line":       {"![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)\n\n" + mpl, "MPL-2.0"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+	assertKeptAsText(t, "GPL badge line", "![License: Unlicense](https://img.shields.io/badge/license-GPL_3.0-blue.svg)\n\n"+unl)
+}
+
+// TestWorklist61Review19 — worklist-61 review round 19:
+//   - only the image guards are removed from the plain views; a U+200B the
+//     text already had still separates words ("MIT\u200blicensed");
+//   - another license written with its version glued on ("LGPLv3",
+//     "Apache2", "BSD3", "EPLv2") next to a grant is seen, as the spaced and
+//     dashed spellings already were: the other-license check reads the text
+//     with glued versions split too (the badge path's rule, review 17).
+func TestWorklist61Review19(t *testing.T) {
+	for name, text := range map[string]string{
+		"MIT zero-width licensed": "This project is released under the Unlicense. The bundled test fixtures are MIT\u200blicensed and stay that way.",
+		"OFL zero-width licensed": "Everything in this repository is dedicated to the public domain under CC0 1.0 Universal. Fonts are OFL\u200blicensed.",
+	} {
+		assertKeptAsText(t, name, text)
+	}
+	for _, name := range []string{"LGPLv3", "AGPLv3", "Apache2", "BSD3", "EPLv2"} {
+		assertKeptAsText(t, name+" beside an Unlicense grant", "Everything here is released under the Unlicense. Portions: "+name+" as the headers say in the tree.")
+		assertKeptAsText(t, name+" beside a CC0 grant", "Everything here is dedicated to the public domain under CC0 1.0 Universal. Portions: "+name+" as the headers say.")
+	}
+}

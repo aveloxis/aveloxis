@@ -11,6 +11,8 @@ package collector
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -31,16 +33,17 @@ func TestVulnSBOMDocSpecVersionsMatchCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cdx := regexp.MustCompile(`SpecVersion:\s*"([\d.]+)"`).FindSubmatch(src)
+	// v0.29.67: the CycloneDX version is the cdxSpecVersion constant
+	// (read directly); the SPDX version is still a literal.
 	spdx := regexp.MustCompile(`SPDXVersion:\s*"SPDX-([\d.]+)"`).FindSubmatch(src)
-	if cdx == nil || spdx == nil {
-		t.Fatal("cannot extract spec-version literals from sbom.go")
+	if spdx == nil {
+		t.Fatal("cannot extract the SPDX version literal from sbom.go")
 	}
 	doc, err := os.ReadFile(vulnSBOMDocPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCDX := fmt.Sprintf("| CycloneDX | **%s** |", cdx[1])
+	wantCDX := fmt.Sprintf("| CycloneDX | **%s** |", cdxSpecVersion)
 	wantSPDX := fmt.Sprintf("| SPDX | **%s** |", spdx[1])
 	for _, want := range []string{wantCDX, wantSPDX} {
 		if !strings.Contains(string(doc), want) {
@@ -75,5 +78,77 @@ func TestVulnSBOMDocInToctree(t *testing.T) {
 	}
 	if !strings.Contains(string(idx), "architecture/vulnerability-and-sbom") {
 		t.Error("docs/index.md toctree missing architecture/vulnerability-and-sbom — the page would build orphaned")
+	}
+}
+
+// TestNoStaleCycloneDXVersion — v0.29.67 review round 1: after the move to
+// CycloneDX 1.7, "1.5" survived in seven places (comments, a showcase
+// download label, docs). The version is cdxSpecVersion; prose that names
+// another version must be history ("1.5 until v0.29.67") or date a feature
+// ("CycloneDX 1.6+").
+func TestNoStaleCycloneDXVersion(t *testing.T) {
+	examined := 0
+	// Any whitespace (a Markdown line wrap) and an optional "v" (review
+	// round 2: "CycloneDX\n1.5" and "CycloneDX v1.5" escaped the first
+	// pattern).
+	stale := regexp.MustCompile(`CycloneDX\s+v?1\.[0-6]\b[^\n]{0,40}`)
+	roots := []string{"../../internal", "../../cmd", "../../docs"}
+	// Every TRACKED Markdown file at the repository root (review round 2:
+	// SECURITY.md still said 1.5 and was never examined). Tracked only
+	// (review round 3): private untracked notes there would turn the local
+	// suite red while CI, which never sees them, stayed green.
+	// Outside a git work tree (a `git archive` pristine copy, a source
+	// tarball) there is no tracked-file list: skip, visibly (review round 4).
+	if err := exec.Command("git", "-C", "../..", "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		t.Skip("not a git work tree; the tracked root Markdown files cannot be listed")
+	}
+	out, err := exec.Command("git", "-C", "../..", "ls-files", "--", "*.md").Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	var rootMD []string
+	for _, f := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if f != "" && !strings.Contains(f, "/") {
+			rootMD = append(rootMD, filepath.Join("../..", f))
+		}
+	}
+	if len(rootMD) < 3 {
+		t.Fatalf("found %d root Markdown files; the glob is wrong", len(rootMD))
+	}
+	roots = append(roots, rootMD...)
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "_build" || d.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, "_test.go") || !(strings.HasSuffix(path, ".go") || strings.HasSuffix(path, ".md")) {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			examined++
+			for _, m := range stale.FindAllString(string(data), -1) {
+				// "CycloneDX 1.6+" dates a feature ("since 1.6"), not the export.
+				ver := regexp.MustCompile(`1\.[0-6]`).FindStringIndex(m)
+				if !strings.Contains(m, "until v0.29.67") && !strings.HasPrefix(m[ver[1]:], "+") {
+					t.Errorf("%s: %q names an old CycloneDX version as current (the export is %s)", path, m, cdxSpecVersion)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if examined < 100 {
+		t.Fatalf("examined only %d files; the walk roots are wrong", examined)
 	}
 }

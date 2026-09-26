@@ -4,7 +4,10 @@
 package db
 
 import (
+	"regexp"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/spdx"
 )
 
 // ============================================================
@@ -170,3 +173,60 @@ func TestIsOSILicense_Unknown(t *testing.T) {
 		t.Error("Unknown should not be OSI")
 	}
 }
+
+// TestNormalizeLicense_TrailingLicenseWord — a license name followed by the
+// word "License" is the same name (pytorch's dependency "Apache 2.0 License"
+// showed as not OSI-approved, 2026-09-25). Only some spellings were listed
+// ("MIT License", "ISC License"), so "Apache 2.0 License", "MPL 2.0 License"
+// and "0BSD License" stayed text. The rest must be a listed synonym or an
+// SPDX list ID; anything else stays the text it was.
+func TestNormalizeLicense_TrailingLicenseWord(t *testing.T) {
+	for in, want := range map[string]string{
+		"Apache 2.0 License":        "Apache-2.0",
+		"Apache 2.0 license":        "Apache-2.0",
+		"The Apache 2.0 License":    "Apache-2.0",
+		"Apache-2.0 License":        "Apache-2.0",
+		"Apache 2 License":          "Apache-2.0",
+		"MPL 2.0 License":           "MPL-2.0",
+		"GPLv3 License":             "GPL-3.0-only",
+		"Unlicense License":         "Unlicense",
+		"0BSD License":              "0BSD",
+		"MIT-0 License":             "MIT-0",
+		"BSL-1.0 License":           "BSL-1.0",
+		"Apache 2.0 Licence":        "Apache-2.0",
+		"MIT OR Apache 2.0 License": "MIT OR Apache-2.0",
+	} {
+		if got := NormalizeLicenseToSPDX(in); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// The rest is not a license name: the text stays.
+	for _, in := range []string{"Public Domain License", "Commercial License", "Boost Software License", "Some Custom License", "License"} {
+		if got := NormalizeLicenseToSPDX(in); got != in {
+			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want it unchanged", in, got)
+		}
+	}
+	// Every synonym key that lacks the word means the same with "License"
+	// appended (the claim nameWithLicenseWord's comment makes).
+	checked := 0
+	for key, want := range licenseSynonyms {
+		if licenseWordAsWord.MatchString(key) {
+			continue
+		}
+		checked++
+		if got := NormalizeLicenseToSPDX(key + " License"); got != want {
+			t.Errorf("NormalizeLicenseToSPDX(%q) = %q, want %q (the key's own answer)", key+" License", got, want)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no synonym key without the word \"license\"; the check above is vacuous")
+	}
+	// The OSI badge follows (computed when read).
+	if !spdx.OSIApproved(NormalizeLicenseToSPDX("Apache 2.0 License")) {
+		t.Error(`"Apache 2.0 License" does not read OSI approved`)
+	}
+}
+
+// licenseWordAsWord is "license" as a word, so "unlicense" keys are checked
+// too (worklist-61 review 3).
+var licenseWordAsWord = regexp.MustCompile(`\blicen[cs]e`)

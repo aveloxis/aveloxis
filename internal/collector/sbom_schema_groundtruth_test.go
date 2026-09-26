@@ -4,9 +4,9 @@
 package collector
 
 // v0.27.31 (audit Phase 3, D1) — SBOM structural validation driven by
-// the OFFICIAL specification schemas (CycloneDX 1.5 bom-1.5.schema.json
-// + SPDX 2.3 spdx-schema.json, committed under testdata/sbom_schemas/,
-// fetched from the spec repos 2026-07-21). The pre-existing SBOM tests
+// the OFFICIAL specification schemas (CycloneDX bom-1.7.schema.json, which
+// replaced bom-1.5.schema.json in v0.29.67, and SPDX 2.3 spdx-schema.json),
+// committed under testdata/sbom_schemas/ and fetched from the spec repos. The pre-existing SBOM tests
 // asserted our output against our own struct definitions — if a struct
 // tag drifted from the spec, both sides agreed on the wrong answer.
 // This test reads the schemas' OWN required-field lists and enum
@@ -14,12 +14,14 @@ package collector
 // document against them, so refreshing the schema fixtures refreshes
 // the constraints with zero test edits.
 //
-// Not a full JSON Schema validator (stdlib has none and the
-// no-new-dependencies posture stands) — it enforces the normative
-// facts that actually bit us: required fields at every level, the
-// component-type enum, and the licenseChoice oneOf (an array is
-// EITHER all license-objects OR exactly ONE expression item — the
-// v0.27.29 restructure's contract, now pinned to the spec text).
+// Not a full JSON Schema validator; since v0.29.67 the full validation is
+// sbom_spdx_expressions_test.go's (santhosh-tekuri/jsonschema, test-only).
+// This one enforces the facts that actually bit us: required fields at every
+// level and the component-type enum, read from the schema, plus Aveloxis's
+// licenseChoice contract (all license-objects, or exactly ONE expression
+// item). That contract was CycloneDX 1.5's array-level oneOf; the 1.7 schema
+// allows mixing the two per item, so since v0.29.67 it is our own emission
+// rule (one entry per component, cdxLicenseFor), not the spec's.
 
 import (
 	"encoding/json"
@@ -101,7 +103,7 @@ func sbomSeedGraph() *sbomGraph {
 }
 
 func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
-	schema := loadSchema(t, "bom-1.5.schema.json")
+	schema := loadSchema(t, "bom-1.7.schema.json")
 	repo, deps, scan := sbomSeedInputs()
 	raw, err := generateCycloneDX(repo, deps, scan, sbomSeedGraph())
 	if err != nil {
@@ -153,10 +155,11 @@ func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 		}
 	}
 
-	// 3. licenseChoice oneOf — walk every "licenses" array anywhere in
-	// the document. Per the schema: EITHER every item is a
-	// license-object (required ["license"], no "expression") OR the
-	// array is EXACTLY ONE item with required ["expression"].
+	// 3. licenseChoice — walk every "licenses" array anywhere in the
+	// document. Aveloxis's emission contract (CycloneDX 1.5's oneOf; 1.7
+	// permits mixing): EITHER every item is a license-object (required
+	// ["license"], no "expression") OR the array is EXACTLY ONE item with
+	// required ["expression"].
 	var checkLicenses func(node any, path string)
 	checkLicenses = func(node any, path string) {
 		switch v := node.(type) {
@@ -185,7 +188,7 @@ func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 						}
 					}
 					if exprCount > 0 && (licCount > 0 || len(arr) != 1) {
-						t.Errorf("%s.licenses mixes an expression with other entries (expr=%d lic=%d len=%d) — the schema's expression branch is a tuple of EXACTLY ONE", path, exprCount, licCount, len(arr))
+						t.Errorf("%s.licenses mixes an expression with other entries (expr=%d lic=%d len=%d) — Aveloxis emits an expression as the ONLY entry", path, exprCount, licCount, len(arr))
 					}
 				}
 				checkLicenses(child, path+"."+k)

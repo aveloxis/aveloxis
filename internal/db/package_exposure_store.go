@@ -7,8 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -91,12 +94,31 @@ type PackageVersionUse struct {
 
 // PackageExposedRepo is one exposed repository, for the drill-down list.
 type PackageExposedRepo struct {
-	RepoID             int64    `json:"repo_id"`
-	Owner              string   `json:"repo_owner"`
-	Name               string   `json:"repo_name"`
-	FindingsUnresolved int      `json:"findings_unresolved"`
-	Transitive         bool     `json:"transitive"`
-	Versions           []string `json:"versions"`
+	RepoID             int64  `json:"repo_id"`
+	Owner              string `json:"repo_owner"`
+	Name               string `json:"repo_name"`
+	FindingsUnresolved int    `json:"findings_unresolved"`
+	Transitive         bool   `json:"transitive"`
+	// Versions is the distinct scanned versions in text order (the
+	// original field, kept for compatibility).
+	Versions []string `json:"versions"`
+	// VersionDetail is the same versions with their weight: open findings
+	// and lockfile count per version, most findings first, then
+	// CompareVersionish order. A versionless finding (a purl with no
+	// version) counts in FindingsUnresolved but has no entry here.
+	VersionDetail []PackageRepoVersion `json:"version_detail"`
+}
+
+// PackageRepoVersion is one scanned version in one exposed repository.
+type PackageRepoVersion struct {
+	Version            string `json:"version"`
+	FindingsUnresolved int    `json:"findings_unresolved"`
+	// Lockfiles is how many distinct lockfiles in the repository's
+	// CURRENT lockfile snapshot (repo_lockfile_packages) resolve the
+	// package to exactly this version. 0 is a real answer: a direct
+	// dependency scanned at its manifest floor, or a lockfile-less
+	// ecosystem.
+	Lockfiles int `json:"lockfiles"`
 }
 
 // PackageExposureQuery scopes and pages the leaderboard.
@@ -509,7 +531,7 @@ func (s *PostgresStore) GetPackageVersionsInUse(ctx context.Context, ecosystem, 
 }
 
 // GetPackageExposedRepos lists the repositories currently exposed to one
-// package, most findings first.
+// package, most findings first, each with its per-version detail.
 func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, name string, repoIDs []int64, limit int) ([]PackageExposedRepo, error) {
 	if limit <= 0 {
 		limit = packageExposureDefaultLimit
@@ -523,16 +545,33 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 		filter = " AND v.repo_id = ANY($4)"
 		args = append(args, repoIDs)
 	}
+	// f is one row per CURRENT finding with its scanned version; per_ver
+	// weighs each (repository, version). The versions array keeps its
+	// original text order; the per-version arrays ride in the same order
+	// and are re-sorted in Go (CompareVersionish is not SQL).
 	rows, err := s.pool.Query(ctx, `
-		SELECT v.repo_id, r.repo_owner, r.repo_name,
-		       COUNT(*) AS findings_unresolved,
-		       bool_and(v.dependency_kind = 'transitive') AS transitive,
-		       array_remove(array_agg(DISTINCT `+purlVersionSQL+`), NULL) AS versions
-		  FROM aveloxis_data.repo_deps_vulnerabilities v
+		WITH f AS (
+		    SELECT v.repo_id, v.dependency_kind, `+purlVersionSQL+` AS ver
+		      FROM aveloxis_data.repo_deps_vulnerabilities v
+		     WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
+		),
+		per_repo AS (
+		    SELECT repo_id, COUNT(*) AS findings_unresolved,
+		           bool_and(dependency_kind = 'transitive') AS transitive
+		      FROM f GROUP BY repo_id
+		),
+		per_ver AS (
+		    SELECT repo_id, ver, COUNT(*) AS findings
+		      FROM f WHERE ver IS NOT NULL GROUP BY repo_id, ver
+		)
+		SELECT p.repo_id, r.repo_owner, r.repo_name, p.findings_unresolved, p.transitive,
+		       COALESCE(array_agg(pv.ver ORDER BY pv.ver) FILTER (WHERE pv.ver IS NOT NULL), '{}') AS versions,
+		       COALESCE(array_agg(pv.findings ORDER BY pv.ver) FILTER (WHERE pv.ver IS NOT NULL), '{}') AS version_findings
+		  FROM per_repo p
 		  JOIN aveloxis_data.repos r USING (repo_id)
-		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
-		 GROUP BY v.repo_id, r.repo_owner, r.repo_name
-		 ORDER BY findings_unresolved DESC, r.repo_owner, r.repo_name
+		  LEFT JOIN per_ver pv USING (repo_id)
+		 GROUP BY p.repo_id, r.repo_owner, r.repo_name, p.findings_unresolved, p.transitive
+		 ORDER BY p.findings_unresolved DESC, r.repo_owner, r.repo_name
 		 LIMIT $3`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("package repos %s/%s: %w", ecosystem, name, err)
@@ -541,15 +580,150 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 	var out []PackageExposedRepo
 	for rows.Next() {
 		var e PackageExposedRepo
-		if err := rows.Scan(&e.RepoID, &e.Owner, &e.Name, &e.FindingsUnresolved, &e.Transitive, &e.Versions); err != nil {
-			return nil, err
+		var counts []int64
+		if err := rows.Scan(&e.RepoID, &e.Owner, &e.Name, &e.FindingsUnresolved, &e.Transitive, &e.Versions, &counts); err != nil {
+			return nil, fmt.Errorf("package repos %s/%s: scan: %w", ecosystem, name, err)
 		}
 		if e.Versions == nil {
 			e.Versions = []string{}
 		}
+		if len(counts) != len(e.Versions) {
+			return nil, fmt.Errorf("package repos %s/%s: repo %d has %d versions but %d finding counts", ecosystem, name, e.RepoID, len(e.Versions), len(counts))
+		}
+		e.VersionDetail = make([]PackageRepoVersion, len(e.Versions))
+		for i, v := range e.Versions {
+			e.VersionDetail[i] = PackageRepoVersion{Version: v, FindingsUnresolved: int(counts[i])}
+		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("package repos %s/%s: %w", ecosystem, name, err)
+	}
+	if err := s.attachLockfileCounts(ctx, ecosystem, name, out); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		d := out[i].VersionDetail
+		sort.SliceStable(d, func(a, b int) bool {
+			if d[a].FindingsUnresolved != d[b].FindingsUnresolved {
+				return d[a].FindingsUnresolved > d[b].FindingsUnresolved
+			}
+			if c := CompareVersionish(d[a].Version, d[b].Version); c != 0 {
+				return c < 0
+			}
+			return d[a].Version < d[b].Version // "1.0" and "1.0.0" compare equal; keep a total order
+		})
+	}
+	return out, nil
+}
+
+// attachLockfileCounts fills each version's Lockfiles from the listed
+// repositories' current lockfile snapshot. The match is the lockfile-graph
+// key (LockfileGraphKey: the ecosystem alias fold — a finding stored under
+// "gem" matches a Gemfile.lock row under "rubygems" — the lowercase name
+// and PyPI's PEP 503 fold), decided in Go. The SQL only narrows the rows
+// read to candidates and must never drop a row the key accepts: an ASCII
+// row is lowercased under the "C" collation (ASCII-only, the same mapping
+// as Go's for ASCII, whatever the database locale — a Turkish one maps
+// 'I' elsewhere) and matched as a substring built from the same fold
+// (lockfileGraphName; LIKE's metacharacters escaped, PyPI's folded '-' a
+// one-character wildcard for '-', '_' or '.'); a row with any non-ASCII
+// character is always a candidate (Go's ToLower maps the Kelvin sign to
+// 'k'), and a non-ASCII target narrows nothing.
+//
+// Versions are matched as text against the scanned version the purl
+// carries. A direct locked target's purl carries the lockfile's
+// resolved_version verbatim; a transitive's purl percent-escapes '%', '@',
+// '?', '#' and space (purlEscapeSegment), so the escaped spelling is also
+// tried decoded. Accepted residue (L10 review): a DIRECT version that
+// itself contains a valid %XX ("1.0%2B1") is also credited with the raw
+// spelling's lockfiles, and one version seen both verbatim and escaped
+// shows as two chips counting the same lockfile; both need versions no
+// ecosystem is known to publish, and the finding rows do not record which
+// spelling their purl used.
+//
+// Cost: the rows read are every lockfile row of the listed repositories
+// (the repo_id index; the substring cannot use the name index). The list
+// is capped at packageExposureMaxLimit and the GUI asks for 25; time a
+// fleet-scope ?repos=500 on a popular transitive before relying on it.
+func (s *PostgresStore) attachLockfileCounts(ctx context.Context, ecosystem, name string, repos []PackageExposedRepo) error {
+	if len(repos) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(repos))
+	for i, r := range repos {
+		ids[i] = r.RepoID
+	}
+	target := LockfileGraphKey(ecosystem, name)
+	folded := lockfileGraphName(lockfileEcoFold(ecosystem), name)
+	pattern := "%"
+	if isASCII(folded) {
+		lit := likeLiteral(folded)
+		if lockfileEcoFold(ecosystem) == "pypi" {
+			lit = strings.ReplaceAll(lit, "-", "_")
+		}
+		pattern = "%" + lit + "%"
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT repo_id, ecosystem, package_name, resolved_version, lockfile_path
+		  FROM aveloxis_data.repo_lockfile_packages
+		 WHERE repo_id = ANY($1)
+		   AND (lower(package_name COLLATE "C") LIKE $2 ESCAPE '\' OR package_name ~ '[^[:ascii:]]')`, ids, pattern)
+	if err != nil {
+		return fmt.Errorf("package repos %s/%s: lockfile counts: %w", ecosystem, name, err)
+	}
+	defer rows.Close()
+	// repo -> version -> set of lockfile paths
+	paths := map[int64]map[string]map[string]bool{}
+	for rows.Next() {
+		var repoID int64
+		var eco, pkg, version, path string
+		if err := rows.Scan(&repoID, &eco, &pkg, &version, &path); err != nil {
+			return fmt.Errorf("package repos %s/%s: lockfile counts: scan: %w", ecosystem, name, err)
+		}
+		if LockfileGraphKey(eco, pkg) != target {
+			continue
+		}
+		if paths[repoID] == nil {
+			paths[repoID] = map[string]map[string]bool{}
+		}
+		if paths[repoID][version] == nil {
+			paths[repoID][version] = map[string]bool{}
+		}
+		paths[repoID][version][path] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("package repos %s/%s: lockfile counts: %w", ecosystem, name, err)
+	}
+	for i := range repos {
+		for j := range repos[i].VersionDetail {
+			v := repos[i].VersionDetail[j].Version
+			found := paths[repos[i].RepoID][v]
+			if raw, err := url.PathUnescape(v); err == nil && raw != v {
+				// A transitive purl's escaped version: count the raw
+				// spelling's lockfiles too (a path holding both is one).
+				merged := map[string]bool{}
+				for p := range found {
+					merged[p] = true
+				}
+				for p := range paths[repos[i].RepoID][raw] {
+					merged[p] = true
+				}
+				found = merged
+			}
+			repos[i].VersionDetail[j].Lockfiles = len(found)
+		}
+	}
+	return nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // ErrGroupNotFound is the typed not-found for a cohort group: it does not

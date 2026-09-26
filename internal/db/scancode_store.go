@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/spdx"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -137,8 +138,12 @@ func (s *PostgresStore) GetScancodeForSBOM(ctx context.Context, repoID int64) (*
 		return result, err
 	}
 	if len(licenses) > 0 {
-		// Combine into a single SPDX expression with AND.
-		result.ConcludedLicenseSPDX = strings.Join(licenses, " AND ")
+		// Combine into one SPDX expression with AND. Each file's own
+		// expression may contain OR, so the join goes through
+		// spdx.JoinExpressions, which parenthesizes it (v0.29.67 review
+		// round 1: a bare " AND " join made "BSD-3-Clause AND MIT OR
+		// Apache-2.0", which parses as (BSD-3-Clause AND MIT) OR Apache-2.0).
+		result.ConcludedLicenseSPDX = spdx.JoinExpressions("AND", licenses)
 	}
 
 	// Get distinct copyright holders.
@@ -208,7 +213,7 @@ func (s *PostgresStore) GetScancodeSourceLicenses(ctx context.Context, repoID in
 		result = append(result, ScancodeSourceLicense{
 			License:   lic,
 			FileCount: cnt,
-			IsOSI:     isOSILicense(lic),
+			IsOSI:     licenseKeyIsOSI(lic),
 		})
 	}
 	slices.SortFunc(result, func(a, b ScancodeSourceLicense) int {

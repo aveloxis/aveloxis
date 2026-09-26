@@ -39,6 +39,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/spdx"
 )
 
 // AnalysisCollector runs file-content analysis on repos.
@@ -2577,6 +2578,19 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 	}, nil
 }
 
+// joinRegistryLicenseList stores a registry's license ARRAY (RubyGems
+// licenses, Composer license, Hex licenses) as one SPDX expression joined
+// with OR (worklist 53, decision 2; summary/39). Composer documents the
+// array as a choice; RubyGems and Hex leave the relationship unstated, and
+// dual-licensing is the common reading (the SPDX export says so in
+// licenseComments). Until v0.29.67 the join was " AND ", the operator for
+// "comply with every license", which inverted the obligation. Empty entries
+// are skipped, and a compound entry is parenthesized so the OR cannot change
+// its meaning (spdx.JoinExpressions, the one join).
+func joinRegistryLicenseList(list []string) string {
+	return spdx.JoinExpressions("OR", list)
+}
+
 // resolveRubyGemsLibyear checks rubygems.org for gem versions.
 func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
@@ -2602,14 +2616,14 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 		latestVersion = versions[0].Number
 		latestDate = versions[0].CreatedAt
 		if len(versions[0].Licenses) > 0 {
-			latestLicense = strings.Join(versions[0].Licenses, " AND ")
+			latestLicense = joinRegistryLicenseList(versions[0].Licenses)
 		}
 	}
 	for _, v := range versions {
 		if v.Number == dep.Version {
 			currentDate = v.CreatedAt
 			if len(v.Licenses) > 0 {
-				license = strings.Join(v.Licenses, " AND ")
+				license = joinRegistryLicenseList(v.Licenses)
 			}
 			break
 		}
@@ -4093,7 +4107,7 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 	}
 	license := ""
 	if len(latest.License) > 0 {
-		license = strings.Join(latest.License, " AND ")
+		license = joinRegistryLicenseList(latest.License)
 	}
 
 	return &db.LibyearRow{
@@ -4143,7 +4157,7 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 	}
 	license := ""
 	if len(info.Meta.Licenses) > 0 {
-		license = strings.Join(info.Meta.Licenses, " AND ")
+		license = joinRegistryLicenseList(info.Meta.Licenses)
 	}
 
 	return &db.LibyearRow{

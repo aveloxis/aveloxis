@@ -46,7 +46,7 @@ func TestEverySynonymCanonicalIsARealSPDXID(t *testing.T) {
 			continue
 		}
 		if !isSPDXLicense(id) {
-			t.Errorf("license_normalize.go maps synonyms to %q, which is NOT in the official SPDX list (spdx_license_ids.txt) — the normalizer is minting invalid ids", id)
+			t.Errorf("license_normalize.go maps synonyms to %q, which is NOT in the official SPDX list (internal/spdx/spdx_data.tsv) — the normalizer is minting invalid ids", id)
 		}
 	}
 }

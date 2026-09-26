@@ -2050,7 +2050,14 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 		"MPL inner www after an inner scheme":     mpl + "https://evil.example/https://www.opensource.org/licenses/MPL-2.0).",
 		"Apache host as a prefix of another host": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org.evil.example/licenses/LICENSE-2.0",
 		"Apache host as userinfo":                 "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org@evil.example/licenses/LICENSE-2.0",
-		"Apache inner www after an inner scheme":  "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/https://www.apache.org/licenses/LICENSE-2.0",
+		// Review round 3: the ":" host terminator meant a port; "host:password@"
+		// is userinfo, and only digits are a port.
+		"Apache host as userinfo with a password": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org:x@evil.example/licenses/LICENSE-2.0",
+		"GPL host as userinfo with a password":    "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see https://gnu.org:x@evil.example/licenses/",
+		// An entity inside a path is not a fresh start: only a delimiter that a URL
+		// cannot contain unencoded ends the URL before it.
+		"inner scheme after an entity in a path": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/&amp;https://www.apache.org/licenses/LICENSE-2.0",
+		"Apache inner www after an inner scheme": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/https://www.apache.org/licenses/LICENSE-2.0",
 	} {
 		assertKeptAsText(t, name, text)
 	}
@@ -2079,9 +2086,49 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 		"typo scheme http//":        {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http//www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
 		// A shell/Ruby header generator wrote the URL's "//" as its comment marker.
 		"scheme with # for //": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http:#www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		// Review round 3: HTML and LaTeX markup before a URL (real headers in the
+		// corpus). RFC 3986 keeps < > " ' { } out of a URL unencoded, so text
+		// after one of them starts fresh, and so does text after an HTML entity.
+		"entity indent":             {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at &#x20;http://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		"HTML paragraph":            {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at <p>http://www.apache.org/licenses/LICENSE-2.0 </p>", "Apache-2.0"},
+		"HTML anchor":               {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at <a href=\"http://www.apache.org/licenses/LICENSE-2.0\">http://www.apache.org/licenses/LICENSE-2.0</a>", "Apache-2.0"},
+		"GPL anchor with a class":   {"This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see <a href=\"http://www.gnu.org/licenses/\" class=\"uri\">http://www.gnu.org/licenses/</a>", "GPL-3.0-or-later"},
+		"escaped angle brackets":    {"This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see &lt;http://www.gnu.org/licenses/&gt;.", "GPL-3.0-or-later"},
+		"CC0 deed in a LaTeX url":   {waiver + "\\url{http://creativecommons.org/publicdomain/zero/1.0/}.", "CC0-1.0"},
+		"CC0 deed in an href":       {waiver + "<a href=\"http://creativecommons.org/publicdomain/zero/1.0/\">details</a>.", "CC0-1.0"},
+		"MPL OSI page in an anchor": {"This project is licensed under the <a href=\"https://opensource.org/licenses/MPL-2.0\">Mozilla Public License 2.0</a>.", "MPL-2.0"},
 	} {
 		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
 			t.Errorf("%s = %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+// TestURLReferenceCostIsLinear — PR #215 review round 3: readNotice checked
+// licenseURLRe, whose file-name arm is anchored only at the end, once per
+// fresh start of a URL match, so a token with many "](" link openers cost
+// starts times length (23.8 s at 200 KB). The file-name arm is now checked
+// once per match; four times the input must cost well under sixteen times
+// the time (see TestNoticeCostIsLinear for the rule).
+func TestURLReferenceCostIsLinear(t *testing.T) {
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
+	}
+	head := "licensed under the apache license, version 2.0 (the \"license\"); you may not use this file except in compliance with the license. you may obtain a copy of the license at "
+	build := func(n int) string { return head + strings.Repeat("x)](https://a/", n) }
+	fastest := func(s string) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			start := time.Now()
+			detectApacheText(s)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	small, large := fastest(build(2000)), fastest(build(8000))
+	if large > 8*small+20*time.Millisecond {
+		t.Errorf("4x the link openers cost %v vs %v: more than 8x, the work is not linear", large, small)
 	}
 }

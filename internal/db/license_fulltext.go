@@ -114,11 +114,15 @@ var (
 	// own publisher (gnu.org, fsf.org, apache.org, llvm.org) or a project's
 	// LICENSE file. Another license's URL ("polyformproject.org/licenses/")
 	// is not a reference back (round 20 C2). The host is anchored at the
-	// URL's start (subdomains allowed) and ends after ".org":
-	// "https://evil.example/fsf.org/..." and "https://apache.org.evil.example/"
-	// are not the publishers' (PR #215 review rounds 1-2).
+	// URL's start (subdomains allowed) and ends after ".org", a port of
+	// digits aside: "https://evil.example/fsf.org/...",
+	// "https://apache.org.evil.example/" and "https://apache.org:x@evil.example/"
+	// (userinfo) are not the publishers' (PR #215 review rounds 1-3).
 	urlRe        = regexp.MustCompile(`(?:https?://|www\.)\S+|\b[\w.-]+\.(?:org|com|net|io)/\S*`)
-	licenseURLRe = regexp.MustCompile(`^(?:https?://)?(?:[\w-]+\.)*(?:gnu|fsf|apache|llvm)\.org(?:[/:?#>),;"']|\.$|$)|/licen[cs]e(?:\.\w+)?[)>.,;"']*$`)
+	licenseURLRe = regexp.MustCompile(`^(?:https?://)?(?:[\w-]+\.)*(?:gnu|fsf|apache|llvm)\.org(?::\d+)?(?:[/?#>),;"']|\.$|$)`)
+	// licenseFileURLRe is a project's LICENSE file linked by URL, whatever the
+	// host; it is anchored at the URL's end, so it is checked once per URL.
+	licenseFileURLRe = regexp.MustCompile(`/licen[cs]e(?:\.\w+)?[)>.,;"']*$`)
 
 	// termsWordRe is "terms"; termsOfRe is the only place a notice may say
 	// it: the terms of the license itself ("under the terms of the GNU
@@ -222,9 +226,26 @@ var (
 // and runs are disjoint, so the scan is linear over the text.
 func urlStartsFresh(s string, i int) bool {
 	prefix := s[strings.LastIndexFunc(s[:i], unicode.IsSpace)+1 : i]
+	// Markup before a URL (review round 3, real headers: `<a href="http...`,
+	// `<p>http...`, `\url{http...`, `&#x20;http...`, `&lt;http...`): RFC 3986
+	// keeps < > " ' { } out of a URL unencoded, so a URL cannot run across
+	// one; the text after the last of them is what must be fresh. HTML
+	// entities are markup too, but "&amp;" sits inside paths, so only a
+	// prefix of entities alone counts.
+	if k := strings.LastIndexAny(prefix, urlDelimiters); k >= 0 {
+		prefix = prefix[k+1:]
+	}
 	return prefix == "" || strings.Trim(prefix, urlOpeners) == "" ||
-		strings.HasSuffix(prefix, "](") || prefix == "//" || schemeTokenRe.MatchString(prefix)
+		strings.HasSuffix(prefix, "](") || prefix == "//" || schemeTokenRe.MatchString(prefix) ||
+		entitiesRe.MatchString(prefix)
 }
+
+// urlDelimiters never appear unencoded in a URL (RFC 3986), so one ends the
+// URL before it.
+const urlDelimiters = "<>\"'{}"
+
+// entitiesRe is a run of HTML entities and nothing else ("&#x20;", "&lt;").
+var entitiesRe = regexp.MustCompile(`^(?:&#?\w+;)+$`)
 
 // urlOpeners may stand between a space and a URL: "(http://...", "<http://
 // ...>", a quoted URL, Markdown emphasis or a table cell.
@@ -699,7 +720,15 @@ func readNotice(lower string, f noticeFamily) (v string, ranged, exc, ok bool) {
 		refs = append(refs, spans(f.refs, lower)...)
 	}
 	for _, u := range spans(urlRe, lower) {
-		for _, st := range urlStarts(lower, u) {
+		starts := urlStarts(lower, u)
+		// The file-name arm is end-anchored, so its answer is the same for
+		// every start: once per URL (review round 3: per start it rescanned
+		// the URL, quadratic in a token of many link openers).
+		if len(starts) > 0 && licenseFileURLRe.MatchString(lower[u[0]:u[1]]) {
+			refs = append(refs, u)
+			continue
+		}
+		for _, st := range starts {
 			if licenseURLRe.MatchString(lower[st:u[1]]) || f.urls != nil && f.urls.MatchString(lower[st:u[1]]) {
 				refs = append(refs, u)
 				break

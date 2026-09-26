@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/aveloxis/aveloxis/internal/spdx"
 )
@@ -112,9 +113,12 @@ var (
 	// urlRe is a URL; licenseURLRe is one that refers back: the license's
 	// own publisher (gnu.org, fsf.org, apache.org, llvm.org) or a project's
 	// LICENSE file. Another license's URL ("polyformproject.org/licenses/")
-	// is not a reference back (round 20 C2).
+	// is not a reference back (round 20 C2). The host is anchored at the
+	// URL's start (subdomains allowed) and ends after ".org":
+	// "https://evil.example/fsf.org/..." and "https://apache.org.evil.example/"
+	// are not the publishers' (PR #215 review rounds 1-2).
 	urlRe        = regexp.MustCompile(`(?:https?://|www\.)\S+|\b[\w.-]+\.(?:org|com|net|io)/\S*`)
-	licenseURLRe = regexp.MustCompile(`(?:gnu|fsf|apache|llvm)\.org\b|/licen[cs]e(?:\.\w+)?[)>.,;"']*$`)
+	licenseURLRe = regexp.MustCompile(`^(?:https?://)?(?:[\w-]+\.)*(?:gnu|fsf|apache|llvm)\.org(?:[/:?#>),;"']|\.$|$)|/licen[cs]e(?:\.\w+)?[)>.,;"']*$`)
 
 	// termsWordRe is "terms"; termsOfRe is the only place a notice may say
 	// it: the terms of the license itself ("under the terms of the GNU
@@ -204,12 +208,59 @@ var (
 	headerLineRe = regexp.MustCompile(`(?i)^\s*(?:#!.*|(?:` + markerRun + `)?(?:@licen[cs]e\s*)?(?:` + copyrightLead + `.*)?\s*)$`)
 )
 
+// urlStartsFresh reports whether a URL that urlRe found at i in s is a URL of
+// its own. Decided as a class (PR #215 review rounds 1-2; a list of what may
+// NOT precede a start let every other character through): the run of
+// non-space text before i must be empty, be only openers (a parenthesis,
+// bracket, angle bracket, quote, Markdown emphasis or table bar), end in
+// Markdown's link opener "](", be "//" (a scheme-relative URL), or be a scheme
+// token with its punctuation, as real Apache headers typo it ("htmp://",
+// "http)://", "http:/", "http//", "http:#"). urlRe's host-only arm also matches inside
+// another URL's path ("evil.example/creativecommons.org/...",
+// "https://evil.example/?https://creativecommons.org/..."); such a fragment
+// is never a license's own URL. The run before i is scanned once per match,
+// and runs are disjoint, so the scan is linear over the text.
+func urlStartsFresh(s string, i int) bool {
+	prefix := s[strings.LastIndexFunc(s[:i], unicode.IsSpace)+1 : i]
+	return prefix == "" || strings.Trim(prefix, urlOpeners) == "" ||
+		strings.HasSuffix(prefix, "](") || prefix == "//" || schemeTokenRe.MatchString(prefix)
+}
+
+// urlOpeners may stand between a space and a URL: "(http://...", "<http://
+// ...>", a quoted URL, Markdown emphasis or a table cell.
+const urlOpeners = "([<\"'`*_|"
+
+// schemeTokenRe is a URL scheme with its punctuation, typos included, and
+// "http:#" (a shell or Ruby header generator wrote the "//" as its comment
+// marker; two real headers in the corpus).
+var schemeTokenRe = regexp.MustCompile(`^[a-z]+\)?[:;.]{0,2}(?://?|#)$`)
+
+// urlStarts are the fresh URL starts within one urlRe match u: its own start
+// (urlStartsFresh), and each inner "http(s)://" or "www." that directly
+// follows Markdown's link opener "](" (urlRe's \S+ runs adjacent links
+// together: "...svg)](https://www.apache.org/licenses/LICENSE-2.0)"). An
+// inner start after anything else is part of the outer URL's path. A
+// license's own URL is anchored at one of these starts.
+func urlStarts(s string, u []int) []int {
+	var out []int
+	if urlStartsFresh(s, u[0]) {
+		out = append(out, u[0])
+	}
+	for i := u[0] + 2; i < u[1]; i++ {
+		if s[i-2:i] == "](" && (strings.HasPrefix(s[i:], "http://") || strings.HasPrefix(s[i:], "https://") || strings.HasPrefix(s[i:], "www.")) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 // noticeFamily is what a notice reader needs to know about one license.
 type noticeFamily struct {
 	name      *regexp.Regexp // the license's own name
 	other     *regexp.Regexp // another license named without the word "license"
 	exception *regexp.Regexp // the one exception phrase the family can carry
 	refs      *regexp.Regexp // the family's own phrases that use "license" about it (nil: none)
+	urls      *regexp.Regexp // the family's own URLs, anchored (nil: none); a URL the text contains that matches is a reference back
 }
 
 var (
@@ -648,8 +699,11 @@ func readNotice(lower string, f noticeFamily) (v string, ranged, exc, ok bool) {
 		refs = append(refs, spans(f.refs, lower)...)
 	}
 	for _, u := range spans(urlRe, lower) {
-		if licenseURLRe.MatchString(lower[u[0]:u[1]]) {
-			refs = append(refs, u)
+		for _, st := range urlStarts(lower, u) {
+			if licenseURLRe.MatchString(lower[st:u[1]]) || f.urls != nil && f.urls.MatchString(lower[st:u[1]]) {
+				refs = append(refs, u)
+				break
+			}
 		}
 	}
 	anchors := append(append([][]int{}, names...), refs...)

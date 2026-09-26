@@ -2019,3 +2019,69 @@ func TestWorklist61Review19(t *testing.T) {
 		assertKeptAsText(t, name+" beside a CC0 grant", "Everything here is dedicated to the public domain under CC0 1.0 Universal. Portions: "+name+" as the headers say.")
 	}
 }
+
+// TestLicenseURLsAreAnchored — CodeQL go/regex/missing-regexp-anchor (alert
+// 200, PR #215): a license site's host matched unanchored inside free text,
+// so another host carrying the same path ("https://evil.example/
+// creativecommons.org/publicdomain/zero/1.0") counted as the license's own
+// URL. Every URL question now goes through the anchored own-URL regexes
+// (cc0URLRe, mplURLRe) applied to URLs the text contains.
+func TestLicenseURLsAreAnchored(t *testing.T) {
+	waiver := "To the extent possible under law, Jane Doe has waived all copyright and related or neighboring rights to this work. See "
+	mpl := "This project is licensed under the Mozilla Public License 2.0 ("
+	for name, text := range map[string]string{
+		"foreign host with the CC0 deed path":     waiver + "https://evil.example/creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"foreign host with the MPL OSI path":      mpl + "https://evil.example/opensource.org/licenses/MPL-2.0).",
+		"schemeless foreign host, CC0 path":       waiver + "evil.example/creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"ftp foreign host, CC0 path":              waiver + "ftp://evil.example/creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"schemeless foreign host, MPL OSI path":   mpl + "evil.example/opensource.org/licenses/MPL-2.0).",
+		"foreign host with an fsf.org path":       "This file is licensed under the Mozilla Public License 2.0; see https://evil.example/fsf.org/licensing/website-content/",
+		"inner https after a path slash":          "To the extent possible under law, Jane Doe has waived all copyright and related or neighboring rights to this work. See evil.example/https://creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"mozilla.org licensing page, not the MPL": "This file is licensed under the Mozilla Public License 2.0; see https://www.mozilla.org/en-US/foundation/licensing/website-content/",
+		// Review round 2: a fresh URL start is decided as a class, an allowlist
+		// of what may precede it, not a list of characters that may not.
+		"inner www after an inner scheme":         waiver + "evil.example/https://www.creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"inner scheme after a query mark":         waiver + "https://evil.example/?https://creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"inner www after a hash":                  waiver + "https://evil.example/#www.creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"inner scheme after a parenthesis":        waiver + "https://evil.example/(https://creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"inner www after a fake scheme":           waiver + "https://evil.example/x://www.creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"inner scheme after a non-ASCII letter":   waiver + "https://evil.example/\u00e9https://creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"schemeless host after a query mark":      waiver + "evil.example/?creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"MPL inner www after an inner scheme":     mpl + "https://evil.example/https://www.opensource.org/licenses/MPL-2.0).",
+		"Apache host as a prefix of another host": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org.evil.example/licenses/LICENSE-2.0",
+		"Apache host as userinfo":                 "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org@evil.example/licenses/LICENSE-2.0",
+		"Apache inner www after an inner scheme":  "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/https://www.apache.org/licenses/LICENSE-2.0",
+	} {
+		assertKeptAsText(t, name, text)
+	}
+	// The license's own URLs still read, every MPL version's OSI and SPDX
+	// pages included.
+	for name, c := range map[string]struct{ text, want string }{
+		"CC0 deed URL":     {waiver + "https://creativecommons.org/publicdomain/zero/1.0/ for details.", "CC0-1.0"},
+		"MPL OSI URL":      {mpl + "https://opensource.org/licenses/MPL-2.0).", "MPL-2.0"},
+		"MPL SPDX URL":     {"Licensed under the Mozilla Public License, Version 2.0 (https://spdx.org/licenses/MPL-2.0.html). See LICENSE.", "MPL-2.0"},
+		"MPL 1.1 OSI URL":  {"This project is licensed under the Mozilla Public License 1.1 (https://opensource.org/licenses/MPL-1.1).", "MPL-1.1"},
+		"MPL 1.1 SPDX URL": {"This project is licensed under the Mozilla Public License 1.1 (https://spdx.org/licenses/MPL-1.1.html).", "MPL-1.1"},
+		"MPL 1.0 OSI URL":  {"This project is licensed under the Mozilla Public License 1.0 (https://opensource.org/licenses/MPL-1.0).", "MPL-1.0"},
+		// Real headers (OpenTelemetry, GoGraphviz) typo the scheme; the host
+		// follows "://" and is the host.
+		"typo scheme htmp":  {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n     htmp://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		"typo scheme http)": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n     http)://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		// Adjacent Markdown links run together in one URL match; the second
+		// link's own start still counts (openshift/custom-resource-status).
+		"badge then Apache link": {"[![Licensed under Apache License version 2.0](https://img.shields.io/github/license/openshift/custom-resource-status.svg?maxAge=2592000)](https://www.apache.org/licenses/LICENSE-2.0)\n\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		// Openers before a URL, and the scheme-relative and typo'd forms.
+		"Markdown link in a notice": {"This project is licensed under the [Mozilla Public License 2.0](https://opensource.org/licenses/MPL-2.0).", "MPL-2.0"},
+		"angle-bracketed URL":       {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>", "Apache-2.0"},
+		"quoted URL":                {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at \"http://www.apache.org/licenses/LICENSE-2.0\"", "Apache-2.0"},
+		"scheme-relative URL":       {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at //www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		"typo scheme http:/":        {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http:/www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		"typo scheme http//":        {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http//www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		// A shell/Ruby header generator wrote the URL's "//" as its comment marker.
+		"scheme with # for //": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http:#www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+	} {
+		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
+			t.Errorf("%s = %q, want %q", name, got, c.want)
+		}
+	}
+}

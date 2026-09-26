@@ -43,7 +43,7 @@ var (
 	// Apache 2.0 license" names Apache (publicsuffix2's mpl-2.0.LICENSE,
 	// kanaka/miniMAL; worklist-61 review 10).
 	mplNameRe = regexp.MustCompile(`mozilla public licen[cs]e|\bmpl(?:[- ]?v?2\.0)? licen[cs]e|\bmpl`)
-	mplFamily = noticeFamily{name: mplNameRe, other: otherNamesExcept("gnu|lgpl|agpl|apache", "mpl", "mozilla public"), exception: neverRe, refs: mplRefsRe}
+	mplFamily = noticeFamily{name: mplNameRe, other: otherNamesExcept("gnu|lgpl|agpl|apache", "mpl", "mozilla public"), exception: neverRe, refs: mplRefsRe, urls: mplRefURLRe}
 	// A public-domain dedication next to "all rights reserved" is two
 	// statements (worklist-61 review 1); for the GPL and Apache readers the
 	// phrase is an ordinary copyright line's.
@@ -59,15 +59,18 @@ var (
 	// review 6; only that heading, opening the text: not "a different
 	// license notice" or "a different copyright and license notice",
 	// reviews 7 and 8).
-	mplRefsRe = regexp.MustCompile(mplNoCopyleftRe.String() + `|\b(?:begin|end) licen[cs]e block\b|^\s*copyright (?:&|and) licen[cs]e notices?\b|(?:https?://)?(?:www\.)?(?:opensource|spdx)\.org/licenses/mpl-\d\.\d(?:\.html)?`)
+	mplRefsRe = regexp.MustCompile(mplNoCopyleftRe.String() + `|\b(?:begin|end) licen[cs]e block\b|^\s*copyright (?:&|and) licen[cs]e notices?\b`)
 	// mplNoCopyleftRe is Exhibit B's statement; in a notice it makes the
 	// license MPL-2.0-no-copyleft-exception. Every MPL-2.0 body carries it
 	// as a template, and the body ends with it.
 	// Quotes may be typographic (HashiCorp's bodies write U+201C ... U+201D).
 	mplNoCopyleftRe = regexp.MustCompile(`this source code form is ` + quoteClass + `?incompatible with secondary licen[cs]es` + quoteClass + `?,? as defined by the mozilla public licen[cs]e,? v\. ?2\.0\.?`)
-	// cc0RefRe and unlRefRe name the license: CC0 (or its deed's URL), the
-	// Unlicense (or unlicense.org).
-	cc0RefRe = regexp.MustCompile(`\bcc0\b|creativecommons\.org/publicdomain/zero/1\.0`)
+	// cc0RefRe and unlRefRe name the license: CC0, the Unlicense. CC0's deed
+	// URL names it too (namesCC0), matched anchored through cc0URLRe on the
+	// URLs the text contains: an unanchored host here let
+	// "https://evil.example/creativecommons.org/publicdomain/zero/1.0" count
+	// (CodeQL alert 200, PR #215).
+	cc0RefRe = regexp.MustCompile(`\bcc0\b`)
 	unlRefRe = regexp.MustCompile(`\bunlicense\b`)
 	// unlOwnRe is the Unlicense's own names, in any spelling, for routing a
 	// prefix above its body (bodyPrefixOK): "Unlicence", and "public domain",
@@ -98,6 +101,12 @@ var (
 	cc0NameWord = map[string]bool{"cc0": true, "1.0": true, "universal": true, "public": true, "domain": true, "dedication": true, "creative": true, "commons": true, "the": true, "deed": true, "zero": true, "v1.0": true, "license": true, "licence": true}
 	unlNameWord = map[string]bool{"the": true, "unlicense": true, "license": true, "licence": true, "public": true, "domain": true}
 	mplNameWord = map[string]bool{"the": true, "mozilla": true, "public": true, "license": true, "licence": true, "mpl": true, "version": true, "v": true, "v.": true, "2.0": true, "2": true}
+	// mplRefURLRe is an MPL notice's own reference URL, anchored: the OSI or
+	// SPDX page of any MPL version ("licenses" in its path is about the
+	// MPL). mozilla.org is not one: an MPL notice's mozilla.org URL carries
+	// no license word, and other mozilla.org pages cover other licenses
+	// (review 5; PR #215 review).
+	mplRefURLRe = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:opensource|spdx)\.org/licenses/mpl-\d\.\d(?:\.html)?(?:[/?#>),.;]|$)`)
 	mplURLRe    = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:mozilla\.org/|opensource\.org/licenses/mpl-2\.0|spdx\.org/licenses/mpl-2\.0)`)
 	// cc0URLRe and unlURLRe are the license's own URLs, the only ones a
 	// name-only field may carry (another license's URL is a statement). The
@@ -238,7 +247,7 @@ func readMPLText(p string) string {
 			return ""
 		}
 		start, end := titles[title][0], endAt
-		if !bodyPrefixOK(p[:start], p[end:], mplFamily, mplNameRe, mplNoticeAbove, mplNameWord, mplURLRe) {
+		if !bodyPrefixOK(p[:start], p[end:], mplFamily, mplNameRe.MatchString, mplNoticeAbove, mplNameWord, mplURLRe) {
 			return ""
 		}
 		return "MPL-2.0"
@@ -262,7 +271,7 @@ func readMPLText(p string) string {
 // heading ("## License") is the body's. A range, an exception, the
 // no-copyleft exhibit or another license keeps the text.
 func mplNoticeAbove(prefix string) bool {
-	q := markdownDecorRe.ReplaceAllString(markdownLinkTargetRe.ReplaceAllString(prefix, "]"), "")
+	q := markdownDecorRe.ReplaceAllString(ownLinks(prefix, mplURLRe), "")
 	if m := bareHeadingEndRe.FindStringIndex(q); m != nil {
 		q = q[:m[0]]
 	}
@@ -274,13 +283,12 @@ func mplNoticeAbove(prefix string) bool {
 }
 
 var (
-	// markdownDecorRe is Markdown emphasis and link brackets, and
-	// markdownLinkTargetRe the MPL's own link target ("[MPL](https://www.
-	// mozilla.org/MPL/2.0/)"), which would otherwise stand between the name
-	// and its version (JuMP.jl). Another license's link target stays: it is
-	// a statement (review 7).
-	markdownDecorRe      = regexp.MustCompile(`[*_\[\]]+`)
-	markdownLinkTargetRe = regexp.MustCompile(`\]\((?:https?://)?(?:www\.)?(?:mozilla\.org/|(?:opensource|spdx)\.org/licenses/mpl-2\.0)[^)\s]*\)`)
+	// markdownDecorRe is Markdown emphasis and link brackets. A link to the
+	// MPL's own page is unwrapped first (ownLinks with the anchored mplURLRe,
+	// JuMP.jl's "[MPL](https://www.mozilla.org/MPL/2.0/)"), so its target does
+	// not stand between the name and the version; another license's link
+	// stays a statement (review 7).
+	markdownDecorRe = regexp.MustCompile(`[*_\[\]]+`)
 	// bareHeadingEndRe is a bare "License" heading ending a prefix, with its
 	// colon ("Full license:", tbkeys).
 	bareHeadingEndRe = regexp.MustCompile(`(?:^|[.:)\s])licen[cs]e:?\s*$`)
@@ -349,11 +357,11 @@ func detectCC0Text(lower string) string {
 			// "Copyright © 2022 Bart Massey" above "Creative Commons CC0
 			// License"; review 11); the lines are still here to drop them.
 			pre := strings.TrimSpace(foldSpace(dropCopyrightLines(lines[:m[0]], cc0Family)))
-			if bodyPrefixOK(pre, p[e+len(cc0BodyEnd):], cc0Family, cc0MentionRe, cc0NoticeAbove, cc0NameWord, cc0URLRe) {
+			if bodyPrefixOK(pre, p[e+len(cc0BodyEnd):], cc0Family, cc0Mentioned, cc0NoticeAbove, cc0NameWord, cc0URLRe) {
 				id = "CC0-1.0"
 			}
 		}
-	} else if q := licensedGrant(p); cc0RefRe.MatchString(p) && (!statesOther(q, cc0Family) && (grantedNotNegated(q, cc0WaiverRe) || grantedNotNegated(q, cc0GrantRe)) || nameOnly(p, cc0NameWord, cc0URLRe, cc0Family.other)) {
+	} else if q := licensedGrant(p); namesCC0(p) && (!statesOther(q, cc0Family) && (grantedNotNegated(q, cc0WaiverRe) || grantedNotNegated(q, cc0GrantRe)) || nameOnly(p, cc0NameWord, cc0URLRe, cc0Family.other)) {
 		id = "CC0-1.0"
 	}
 	if ok && id != "" && tagsAgree(id, tags) {
@@ -472,7 +480,7 @@ const cc0DisclaimerRe = `creative commons corporation is not a law firm and does
 // A title line begins a line; a mention in a
 // notice sits mid-sentence ("This dataset is not released under CC0 1.0
 // Universal."), so the notice stays in the prefix (worklist-61 reviews 7, 8).
-var cc0OpeningRe = regexp.MustCompile(`(?m)^[^a-z\n]*(?:(?:` + spaced(`creative commons(?: legal code)?|cc0 1\.0 universal`) + `|(?:https?://|www\.)(?:\S*creativecommons\.org/(?:publicdomain|choose)/zero\S*|[^\s#?]*/cc0[-_.]?1\.0(?:\.[a-z]+)?/?)|` + spaced(`official translations of this legal tool are available`) + `|` + spaced(cc0DisclaimerRe) + `|` + spaced(`statement of purpose`) + `|:[a-z0-9_-]+!?:)` + cc0Gap + `)*` + spaced(`the laws of most jurisdictions throughout the world automatically confer`))
+var cc0OpeningRe = regexp.MustCompile(`(?m)^[^a-z\n]*(?:(?:` + spaced(`creative commons(?: legal code)?|cc0 1\.0 universal`) + `|(?:https?://(?:www\.)?|www\.)(?:creativecommons\.org/(?:publicdomain|choose)/zero\S*|[^\s#?]*/cc0[-_.]?1\.0(?:\.[a-z]+)?/?)|` + spaced(`official translations of this legal tool are available`) + `|` + spaced(cc0DisclaimerRe) + `|` + spaced(`statement of purpose`) + `|:[a-z0-9_-]+!?:)` + cc0Gap + `)*` + spaced(`the laws of most jurisdictions throughout the world automatically confer`))
 
 // spaced lets the words of a pattern wrap across lines.
 func spaced(pattern string) string { return strings.ReplaceAll(pattern, " ", `\s+`) }
@@ -494,7 +502,27 @@ func plainLines(lower string) string {
 var cc0Gap = `[^a-z]{0,` + strconv.Itoa(2*len("creative commons legal code")) + `}`
 
 // cc0MentionRe is CC0 named in a prefix above the legal code.
-var cc0MentionRe = regexp.MustCompile(`\bcc0\b|creative commons|\bcc[- ]zero\b|creativecommons\.org/publicdomain/zero`)
+var cc0MentionRe = regexp.MustCompile(`\bcc0\b|creative commons|\bcc[- ]zero\b`)
+
+// cc0Mentioned is CC0 named in a prefix, by name or by its own URL (anchored,
+// hasOwnURL).
+func cc0Mentioned(s string) bool { return cc0MentionRe.MatchString(s) || hasOwnURL(s, cc0URLRe) }
+
+// namesCC0 is CC0 named in a notice, by name or by its own URL (anchored).
+func namesCC0(s string) bool { return cc0RefRe.MatchString(s) || hasOwnURL(s, cc0URLRe) }
+
+// hasOwnURL reports a URL in s that is the license's own (own is anchored at
+// the URL's start, so another host carrying the same path is not).
+func hasOwnURL(s string, own *regexp.Regexp) bool {
+	for _, loc := range urlRe.FindAllStringIndex(s, -1) {
+		for _, st := range urlStarts(s, loc) {
+			if own.MatchString(s[st:loc[1]]) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // cc0NoticeAbove reports a prefix above the CC0 legal code that is an
 // agreeing grant: "X is licensed under the Creative Commons Zero v1.0
@@ -566,8 +594,8 @@ var quoteRe = regexp.MustCompile(`["\x{201c}\x{201d}]`)
 // released under the Unlicense.") keeps the text: the family's own name is
 // not on its other-license list, so the plain check could not see it. Any
 // other prefix may state nothing a notice could, a title heading aside.
-func bodyPrefixOK(pre, suf string, f noticeFamily, own *regexp.Regexp, notice func(string) bool, words map[string]bool, ownURL *regexp.Regexp) bool {
-	if own.MatchString(pre) {
+func bodyPrefixOK(pre, suf string, f noticeFamily, own func(string) bool, notice func(string) bool, words map[string]bool, ownURL *regexp.Regexp) bool {
+	if own(pre) {
 		return (notice(pre) || nameOnly(pre, words, ownURL, f.other)) && !statesOther(suf, f)
 	}
 	return readAroundText(pre, suf, f)
@@ -620,7 +648,7 @@ func detectUnlicenseText(lower string) string {
 	if s := strings.Index(p, unlBodyStart); s >= 0 && strings.Contains(p, unlBodyMarker) {
 		end := unlEndRe.FindStringIndex(p[s:])
 		read = strings.Count(p, unlBodyStart) == 1 && end != nil &&
-			bodyPrefixOK(p[:s], p[s+end[1]:], unlFamily, unlOwnRe, unlNoticeAbove, unlNameWord, unlURLRe)
+			bodyPrefixOK(p[:s], p[s+end[1]:], unlFamily, unlOwnRe.MatchString, unlNoticeAbove, unlNameWord, unlURLRe)
 	} else {
 		q := licensedGrant(p)
 		read = unlRefRe.MatchString(p) && (!statesOther(q, unlFamily) && grantedNotNegated(q, unlGrantRe) || nameOnly(p, unlNameWord, unlURLRe, unlFamily.other))

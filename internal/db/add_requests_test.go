@@ -264,7 +264,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 	if req.UserEmail != "req@example.com" {
 		t.Errorf("decision must carry requester email for notification, got %q", req.UserEmail)
 	}
-	processed, err := store.ProcessApprovedAddRequest(ctx, out.RequestID)
+	processed, _, err := store.ProcessApprovedAddRequest(ctx, out.RequestID)
 	if err != nil || processed != 1 {
 		t.Fatalf("process: processed=%d err=%v", processed, err)
 	}
@@ -281,7 +281,7 @@ func TestPerAddApprovalEndToEnd(t *testing.T) {
 		t.Error("approved repo must be linked into the requesting group")
 	}
 	// Idempotent re-run processes nothing (items are stamped).
-	processed, err = store.ProcessApprovedAddRequest(ctx, out.RequestID)
+	processed, _, err = store.ProcessApprovedAddRequest(ctx, out.RequestID)
 	if err != nil || processed != 0 {
 		t.Errorf("re-processing must be a no-op, processed=%d err=%v", processed, err)
 	}

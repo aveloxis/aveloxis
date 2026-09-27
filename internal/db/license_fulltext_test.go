@@ -2025,7 +2025,8 @@ func TestWorklist61Review19(t *testing.T) {
 // so another host carrying the same path ("https://evil.example/
 // creativecommons.org/publicdomain/zero/1.0") counted as the license's own
 // URL. Every URL question now goes through the anchored own-URL regexes
-// (cc0URLRe, mplURLRe) applied to URLs the text contains.
+// (licenseURLRe, mplRefURLRe, cc0URLRe, unlURLRe) applied to the URLs the
+// text contains, at each start that is a URL of its own (urlStarts).
 func TestLicenseURLsAreAnchored(t *testing.T) {
 	waiver := "To the extent possible under law, Jane Doe has waived all copyright and related or neighboring rights to this work. See "
 	mpl := "This project is licensed under the Mozilla Public License 2.0 ("
@@ -2054,10 +2055,44 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 		// is userinfo, and only digits are a port.
 		"Apache host as userinfo with a password": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org:x@evil.example/licenses/LICENSE-2.0",
 		"GPL host as userinfo with a password":    "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see https://gnu.org:x@evil.example/licenses/",
+		// Review round 4: the other sub-delimiters are legal in userinfo too.
+		"Apache host then ; userinfo":   "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org;@evil.example/licenses/LICENSE-2.0",
+		"Apache host then ) userinfo":   "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org)@evil.example/licenses/LICENSE-2.0",
+		"Apache host then , userinfo":   "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org,@evil.example/licenses/LICENSE-2.0",
+		"Apache host then ' userinfo":   "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org'@evil.example/licenses/LICENSE-2.0",
+		"Apache host, port, ; userinfo": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org:443;@evil.example/licenses/LICENSE-2.0",
+		"GPL host then ; userinfo":      "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see https://gnu.org;@evil.example/licenses/",
+		// Review round 5: userinfo is any run of its alphabet before "@", not one
+		// character; after a host only a character outside that alphabet may
+		// follow.
+		"Apache host then ;x userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org;x@evil.example/licenses/LICENSE-2.0",
+		"Apache host then ,x userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org,x@evil.example/licenses/LICENSE-2.0",
+		"Apache host then 'x userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org'x@evil.example/licenses/LICENSE-2.0",
+		"Apache host then )x userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org)x@evil.example/licenses/LICENSE-2.0",
+		"Apache host then ;; userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org;;@evil.example/licenses/LICENSE-2.0",
+		"Apache host, port, ;x userinfo":      "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org:443;x@evil.example/licenses/LICENSE-2.0",
+		"Apache link with ;x userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at [the License](https://apache.org;x@evil.example/licenses/LICENSE-2.0)",
+		"GPL angle link with ;x userinfo":     "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see <http://www.gnu.org;x@evil.example/licenses/>.",
+		"Unlicense name with ;x userinfo URL": "Unlicense (Public Domain) (https://unlicense.org;x@evil.example/) (https://unlicense.org;x@evil.example/) Unlicense (Public Domain)",
+		// Review round 6: browsers accept userinfo characters the RFC excludes and
+		// keep reading to "@"; the host has ended only if no "@" follows before
+		// the authority ends at "/", "?" or "#".
+		"Apache host then ;[ userinfo": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org;[@evil.example/licenses/LICENSE-2.0",
+		"Apache host then \" userinfo": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org\"@evil.example/licenses/LICENSE-2.0",
+		"Apache host then > userinfo":  "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org>@evil.example/licenses/LICENSE-2.0",
+		// Review round 7: the tail rule is read from a table built once per URL
+		// token; a second token gets its own (a shorter token with an "@" where
+		// the first token had a path would otherwise inherit the first's answer).
+		"second URL token has its own tail":   "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://www.apache.org;x/licenses/LICENSE-2.0.html or https://www.apache.org;@evil.example/licenses/",
+		"Apache host then ;| userinfo":        "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org;|@evil.example/licenses/LICENSE-2.0",
+		"Apache host then non-ASCII userinfo": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://apache.org;\u00e9@evil.example/licenses/LICENSE-2.0",
+		"GPL angle link with ;[ userinfo":     "This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. If not, see <http://www.gnu.org;[@evil.example/licenses/>.",
+		"Unlicense name with ;[ userinfo URL": "Unlicense (Public Domain) (https://unlicense.org;[@evil.example/) (https://unlicense.org;[@evil.example/) Unlicense (Public Domain)",
 		// An entity inside a path is not a fresh start: only a delimiter that a URL
 		// cannot contain unencoded ends the URL before it.
-		"inner scheme after an entity in a path": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/&amp;https://www.apache.org/licenses/LICENSE-2.0",
-		"Apache inner www after an inner scheme": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/https://www.apache.org/licenses/LICENSE-2.0",
+		"inner scheme after an entity in a path":    "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/&amp;https://www.apache.org/licenses/LICENSE-2.0",
+		"schemeless host after an entity in a path": waiver + "evil.example/&amp;creativecommons.org/publicdomain/zero/1.0/ for details.",
+		"Apache inner www after an inner scheme":    "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://evil.example/https://www.apache.org/licenses/LICENSE-2.0",
 	} {
 		assertKeptAsText(t, name, text)
 	}
@@ -2074,6 +2109,9 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 		// follows "://" and is the host.
 		"typo scheme htmp":  {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n     htmp://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
 		"typo scheme http)": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n     http)://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
+		// The authority ends at "/", "?" or "#": an "@" after that is the path's
+		// or the query's, not userinfo (review round 7).
+		"@ after the authority ended": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at (https://www.apache.org)/licenses/LICENSE-2.0?ref=legal@apache.org", "Apache-2.0"},
 		// Adjacent Markdown links run together in one URL match; the second
 		// link's own start still counts (openshift/custom-resource-status).
 		"badge then Apache link": {"[![Licensed under Apache License version 2.0](https://img.shields.io/github/license/openshift/custom-resource-status.svg?maxAge=2592000)](https://www.apache.org/licenses/LICENSE-2.0)\n\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
@@ -2087,7 +2125,7 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 		// A shell/Ruby header generator wrote the URL's "//" as its comment marker.
 		"scheme with # for //": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http:#www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
 		// Review round 3: HTML and LaTeX markup before a URL (real headers in the
-		// corpus). RFC 3986 keeps < > " ' { } out of a URL unencoded, so text
+		// corpus). RFC 3986 keeps < > " { } out of a URL unencoded (the apostrophe is markup's other quote), so text
 		// after one of them starts fresh, and so does text after an HTML entity.
 		"entity indent":             {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at &#x20;http://www.apache.org/licenses/LICENSE-2.0", "Apache-2.0"},
 		"HTML paragraph":            {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at <p>http://www.apache.org/licenses/LICENSE-2.0 </p>", "Apache-2.0"},
@@ -2097,6 +2135,17 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 		"CC0 deed in a LaTeX url":   {waiver + "\\url{http://creativecommons.org/publicdomain/zero/1.0/}.", "CC0-1.0"},
 		"CC0 deed in an href":       {waiver + "<a href=\"http://creativecommons.org/publicdomain/zero/1.0/\">details</a>.", "CC0-1.0"},
 		"MPL OSI page in an anchor": {"This project is licensed under the <a href=\"https://opensource.org/licenses/MPL-2.0\">Mozilla Public License 2.0</a>.", "MPL-2.0"},
+		// A project's LICENSE file linked by URL is a reference back, whatever its host.
+		"LICENSE file URL": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at https://github.com/acme/tool/blob/main/LICENSE", "Apache-2.0"},
+		// Review round 4: a bare host closed by a parenthesis still reads, and a
+		// Markdown link whose target is scheme-relative composes "](" and "//".
+		"parenthesized bare host":  {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at (http://www.apache.org)", "Apache-2.0"},
+		"scheme-relative link":     {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at [the License](//www.apache.org/licenses/LICENSE-2.0)", "Apache-2.0"},
+		"badge then relative link": {"Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at [![b](https://img.shields.io/x.svg)](//www.apache.org/licenses/LICENSE-2.0)", "Apache-2.0"},
+		// A name-only field may close its own URL with a parenthesis.
+		"Unlicense name with parenthesized URLs": {"Unlicense (Public Domain) (https://unlicense.org) (https://spdx.org/licenses/Unlicense.html)", "Unlicense"},
+		"Unlicense name, sentence-final URL":     {"Unlicense (Public Domain) (https://unlicense.org). Public Domain (https://spdx.org/licenses/Unlicense.html).", "Unlicense"},
+		"Unlicense name, bare host then period":  {"Unlicense (Public Domain), https://unlicense.org. Public Domain (https://spdx.org/licenses/Unlicense.html).", "Unlicense"},
 	} {
 		if got := NormalizeLicenseToSPDX(c.text); got != c.want {
 			t.Errorf("%s = %q, want %q", name, got, c.want)
@@ -2115,7 +2164,6 @@ func TestURLReferenceCostIsLinear(t *testing.T) {
 		t.Skip("timing comparison (not under -short or the race detector)")
 	}
 	head := "licensed under the apache license, version 2.0 (the \"license\"); you may not use this file except in compliance with the license. you may obtain a copy of the license at "
-	build := func(n int) string { return head + strings.Repeat("x)](https://a/", n) }
 	fastest := func(s string) time.Duration {
 		best := time.Duration(1<<63 - 1)
 		for range 3 {
@@ -2127,8 +2175,18 @@ func TestURLReferenceCostIsLinear(t *testing.T) {
 		}
 		return best
 	}
-	small, large := fastest(build(2000)), fastest(build(8000))
-	if large > 8*small+20*time.Millisecond {
-		t.Errorf("4x the link openers cost %v vs %v: more than 8x, the work is not linear", large, small)
+	// Two token shapes, one per arm of the own-URL check. The link openers
+	// alone (review round 3) drove the file arm quadratic; a run of "www."
+	// starts ending in "@" (review round 7) drove the host arm quadratic,
+	// because every start failed only after scanning the tail for the "@".
+	for _, tc := range []struct{ name, unit, end string }{
+		{"link openers", "x)](https://a/", ""},
+		{"www starts before an @", "x)](www.apache.org;", "@"},
+	} {
+		build := func(n int) string { return head + strings.Repeat(tc.unit, n) + tc.end }
+		small, large := fastest(build(2000)), fastest(build(8000))
+		if large > 8*small+20*time.Millisecond {
+			t.Errorf("%s: 4x the token cost %v vs %v: more than 8x, the work is not linear", tc.name, large, small)
+		}
 	}
 }

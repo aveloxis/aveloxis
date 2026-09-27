@@ -25,6 +25,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,38 +64,57 @@ type cachedAuth struct {
 type authenticator struct {
 	store   sessionStore
 	require bool
+	logger  *slog.Logger
 
 	mu    sync.Mutex
 	cache map[string]cachedAuth
 }
 
-func newAuthenticator(store sessionStore, require bool) *authenticator {
-	return &authenticator{store: store, require: require, cache: map[string]cachedAuth{}}
+func newAuthenticator(store sessionStore, require bool, logger *slog.Logger) *authenticator {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &authenticator{store: store, require: require, logger: logger, cache: map[string]cachedAuth{}}
 }
 
+// errInvalidToken is a token the store says is unknown or expired: the one
+// answer a 401 stands for. Any other error from resolveToken is the STORE's
+// failure (worklist follow-up 6, review round 1: the GUI drops its token on
+// every 401, so a lost connection at any of the three lookups signed the user
+// out); the middleware answers it 503 and logs it.
+var errInvalidToken = errors.New("invalid or expired session token")
+
 // resolveToken validates a Bearer token, with a short cache. This is
-// the single seam future super tokens extend.
-func (a *authenticator) resolveToken(ctx context.Context, token string) (authInfo, bool) {
+// the single seam future super tokens extend. It returns errInvalidToken
+// for a token the store does not know, and the store's own error when a
+// lookup failed (nothing is cached then).
+func (a *authenticator) resolveToken(ctx context.Context, token string) (authInfo, error) {
 	now := time.Now()
 	a.mu.Lock()
 	if c, ok := a.cache[token]; ok && now.Before(c.expires) {
 		a.mu.Unlock()
-		return c.info, true
+		return c.info, nil
 	}
 	a.mu.Unlock()
 
 	userID, err := a.store.ValidateSessionToken(ctx, token)
+	if errors.Is(err, db.ErrInvalidSessionToken) {
+		return authInfo{}, errInvalidToken
+	}
 	if err != nil {
-		return authInfo{}, false
+		return authInfo{}, fmt.Errorf("validate token: %w", err)
 	}
 	info := authInfo{UserID: userID}
-	if admin, err := a.store.IsUserAdmin(ctx, userID); err == nil && admin {
-		info.IsAdmin = true
+	// A lookup error is not "not an admin" (SR-5; worklist follow-up 6).
+	admin, err := a.store.IsUserAdmin(ctx, userID)
+	if err != nil {
+		return authInfo{}, fmt.Errorf("admin flag: %w", err)
 	}
+	info.IsAdmin = admin
 	if !info.IsAdmin {
 		ids, err := a.store.GetUserRepoScope(ctx, userID)
 		if err != nil {
-			return authInfo{}, false
+			return authInfo{}, fmt.Errorf("repo scope: %w", err)
 		}
 		info.Scope = make(map[int64]bool, len(ids))
 		for _, id := range ids {
@@ -106,7 +127,22 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 	}
 	a.cache[token] = cachedAuth{info: info, expires: now.Add(authCacheTTL)}
 	a.mu.Unlock()
-	return info, true
+	return info, nil
+}
+
+// refuseStoreError answers a resolveToken store failure: logged at ERROR
+// (everything that errors is logged) and a 503 whose body says to retry,
+// never the 401 body — the GUI treats a 401 as "the token is gone". A
+// client that went away mid-lookup (r.Context() cancelled, the store's
+// error wraps context.Canceled) is neither: nothing to serve, nothing to
+// chase — no ERROR (batch-2 review round 2).
+func (a *authenticator) refuseStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, context.Canceled) {
+		a.logger.Debug("session lookup abandoned — the request was cancelled", "error", err)
+		return
+	}
+	a.logger.Error("session token could not be resolved — store failure, request refused (503)", "error", err)
+	writeAuthError(w, http.StatusServiceUnavailable, "session lookup failed; try again")
 }
 
 // invalidateAll drops every cached token validation so role and scope
@@ -140,8 +176,17 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			// Best-effort: attach auth info when a token IS presented,
 			// so scope checks apply even before require_auth flips on.
 			if tok := bearerToken(r); tok != "" {
-				if info, ok := a.resolveToken(r.Context(), tok); ok {
+				info, err := a.resolveToken(r.Context(), tok)
+				switch {
+				case err == nil:
 					r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info))
+				case errors.Is(err, errInvalidToken):
+					// Best-effort: an unknown token is no token.
+				default:
+					// A presented token the store could not resolve: refuse,
+					// rather than run the request unscoped.
+					a.refuseStoreError(w, err)
+					return
 				}
 			}
 			next.ServeHTTP(w, r)
@@ -152,9 +197,13 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			writeAuthError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		info, ok := a.resolveToken(r.Context(), tok)
-		if !ok {
-			writeAuthError(w, http.StatusUnauthorized, "invalid or expired session token")
+		info, err := a.resolveToken(r.Context(), tok)
+		if errors.Is(err, errInvalidToken) {
+			writeAuthError(w, http.StatusUnauthorized, errInvalidToken.Error())
+			return
+		}
+		if err != nil {
+			a.refuseStoreError(w, err)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info)))

@@ -51,8 +51,9 @@ func (c *Client) SearchUserByEmail(ctx context.Context, email string) (string, i
 	defer resp.Body.Close()
 
 	var data struct {
-		TotalCount int `json:"total_count"`
-		Items      []struct {
+		TotalCount        int  `json:"total_count"`
+		IncompleteResults bool `json:"incomplete_results"`
+		Items             []struct {
 			Login string `json:"login"`
 			ID    int64  `json:"id"`
 		} `json:"items"`
@@ -66,6 +67,12 @@ func (c *Client) SearchUserByEmail(ctx context.Context, email string) (string, i
 	}
 
 	if data.TotalCount == 0 || len(data.Items) == 0 {
+		// GitHub timed the search out (incomplete_results): zero items is
+		// then not "no such user" (SR-16; worklist item 16) — callers stamp
+		// a no-hit for 30 days. A hit with incomplete results is a hit.
+		if data.IncompleteResults {
+			return "", 0, fmt.Errorf("search/users timed out on GitHub's side (incomplete_results) with no items: %w", platform.ErrTransient)
+		}
 		return "", 0, nil
 	}
 	return data.Items[0].Login, data.Items[0].ID, nil

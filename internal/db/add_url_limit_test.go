@@ -137,7 +137,7 @@ func TestAddURLByteLimit(t *testing.T) {
 	if _, _, err := store.DecideAddRequest(ctx, out.RequestID, adminID, true, ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if n, err := store.ProcessApprovedAddRequest(ctx, out.RequestID); err != nil || n != 2 {
+	if n, _, err := store.ProcessApprovedAddRequest(ctx, out.RequestID); err != nil || n != 2 {
 		t.Errorf("processing the approved URLs at the limit = %d, %v; want 2, nil", n, err)
 	}
 	// Surrounding whitespace is trimmed before the limit applies.

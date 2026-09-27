@@ -184,6 +184,8 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 			// retried next tick; one WARN after the loop.
 			unanswered := 0
 			var firstUnanswered error
+			storeFailed := 0 // answered, but the contributor write failed (item 18)
+			var firstStoreFailure error
 			for _, c := range cands {
 				if ctx.Err() != nil {
 					return
@@ -233,8 +235,16 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 							return // shutdown, not a failure: no attempt stamped
 						}
 						if cerr != nil {
-							s.logger.Warn("mailing-list: email-only contributor create failed", "email", c.SenderEmail, "error", cerr)
-							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+							// A store failure saved nothing, so nothing is stamped
+							// (SR-5; worklist item 18): the 30-day cooldown would
+							// hide the sender with their messages unattributed. The
+							// next tick retries; a tick full of these is visible in
+							// the unanswered WARN below.
+							s.logger.Warn("mailing-list: email-only contributor create failed — not stamped, retried next tick", "email", c.SenderEmail, "error", cerr)
+							storeFailed++
+							if firstStoreFailure == nil {
+								firstStoreFailure = cerr
+							}
 							continue
 						}
 						// Code-review round 2026-09-06 (finding 7): ("", nil) is
@@ -260,8 +270,14 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 					return // shutdown, not a failure: no attempt stamped
 				}
 				if lerr != nil {
-					s.logger.Warn("mailing-list: sender link failed", "email", c.SenderEmail, "login", login, "error", lerr)
-					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+					// As above (worklist item 18): a failed link is not an
+					// attempt to record; the resolved identity is re-derived
+					// next tick from the DB hit.
+					s.logger.Warn("mailing-list: sender link failed — not stamped, retried next tick", "email", c.SenderEmail, "login", login, "error", lerr)
+					storeFailed++
+					if firstStoreFailure == nil {
+						firstStoreFailure = lerr
+					}
 					continue
 				}
 				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
@@ -270,6 +286,13 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 			if unanswered > 0 && ctx.Err() == nil {
 				s.logger.Warn("mailing-list: sender resolves failed without an answer — not stamped, retried next tick",
 					"failed", unanswered, "of", len(cands), "first_error", firstUnanswered)
+			}
+			if storeFailed > 0 && ctx.Err() == nil {
+				// Answered, but the contributor row or link could not be
+				// written (worklist item 18): counted apart from the
+				// unanswered resolves, since the fix is on the database side.
+				s.logger.Warn("mailing-list: sender writes failed after an answer — not stamped, retried next tick",
+					"failed", storeFailed, "of", len(cands), "first_error", firstStoreFailure)
 			}
 			if linked > 0 || created > 0 {
 				s.logger.Info("mailing-list: sender resolution pass",

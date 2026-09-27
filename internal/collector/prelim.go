@@ -382,9 +382,7 @@ func isTransientNetError(err error) bool {
 func normalizeRepoURL(u string) string {
 	u = strings.TrimPrefix(u, "https://")
 	u = strings.TrimPrefix(u, "http://")
-	u = strings.TrimSuffix(u, "/")
-	u = strings.TrimSuffix(u, ".git")
-	return strings.ToLower(u)
+	return strings.ToLower(model.NormalizeRepoGitURL(u)) // the stored spelling's suffix rule (follow-up 8)
 }
 
 // The inline parseOwnerName helper that used to live here was

@@ -24,8 +24,8 @@ import (
 // all passed the source pins that stood in for this test).
 type gapHealStore interface {
 	LockReposForDrain(ctx context.Context, repoIDs []int64, workerID string) ([]int64, error)
-	ReleaseDrainLock(ctx context.Context, repoID int64, workerID string) error
-	ReleaseDrainLocks(ctx context.Context, workerID string) (int64, error)
+	ReleaseDrainLock(ctx context.Context, repoID int64, workerID string, due db.DrainRelease) error
+	ReleaseDrainLocks(ctx context.Context, workerID string, due db.DrainRelease) (int64, error)
 	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
 	GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]db.GapHealCandidate, error)
 	GetRepoByID(ctx context.Context, repoID int64) (*model.Repo, error)
@@ -220,7 +220,8 @@ func (r *gapHealRun) run(ctx context.Context, repoID, afterRepoID int64) error {
 
 func (r *gapHealRun) releaseAll() {
 	// A context the interrupt did not cancel.
-	if n, err := r.store.ReleaseDrainLocks(context.Background(), r.workerID); err != nil {
+	// KeepDue: a heal is not a reason to recollect (worklist item 56).
+	if n, err := r.store.ReleaseDrainLocks(context.Background(), r.workerID, db.DrainReleaseKeepDue); err != nil {
 		r.logger.Warn("releasing this run's parked rows failed — stale-lock recovery or the next serve start reclaims them", "worker_id", r.workerID, "error", err)
 	} else if n > 0 {
 		r.logger.Info("released parked rows on exit", "count", n, "worker_id", r.workerID)
@@ -255,7 +256,7 @@ func (r *gapHealRun) healOne(ctx context.Context, c db.GapHealCandidate) {
 	defer func() {
 		// Not the run's context: an interrupt must not turn the release
 		// into a failure (the exit release covers it either way).
-		if err := r.store.ReleaseDrainLock(context.Background(), c.RepoID, r.workerID); err != nil {
+		if err := r.store.ReleaseDrainLock(context.Background(), c.RepoID, r.workerID, db.DrainReleaseKeepDue); err != nil {
 			r.logger.Warn("drain unlock failed — the exit release retries it", "repo_id", c.RepoID, "error", err)
 		}
 	}()

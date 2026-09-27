@@ -4493,8 +4493,9 @@ func extractSwiftPackageName(line string) string {
 	if ref, ok := parseSwiftPackageURL(url); ok {
 		return ref.Repo
 	}
-	// Extract repo name: last path component, strip .git suffix.
-	parts := strings.Split(strings.TrimSuffix(url, ".git"), "/")
+	// Extract repo name: last path component, without the URL's ".git" or
+	// trailing "/" (the shared suffix rule, follow-up 8).
+	parts := strings.Split(model.NormalizeRepoGitURL(url), "/")
 	if len(parts) > 0 {
 		return parts[len(parts)-1]
 	}

@@ -640,11 +640,11 @@ func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	}
 	first := make(chan pass, 1)
 	go func() {
-		n, err := store.ProcessApprovedAddRequest(ctx, reqID)
+		n, _, err := store.ProcessApprovedAddRequest(ctx, reqID)
 		first <- pass{n, err}
 	}()
 	time.Sleep(100 * time.Millisecond)
-	secondN, secondErr := store.ProcessApprovedAddRequest(ctx, reqID)
+	secondN, _, secondErr := store.ProcessApprovedAddRequest(ctx, reqID)
 	firstPass := <-first
 	if firstPass.err != nil {
 		t.Fatalf("the first pass returned %v", firstPass.err)
@@ -657,7 +657,7 @@ func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	}
 	// The guard is released when a pass ends: a later pass runs (and finds
 	// nothing left to do).
-	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 0 {
+	if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 0 {
 		t.Errorf("a pass after the first finished = %d, %v; want 0, nil", n, err)
 	}
 	var notDone, links int
@@ -742,7 +742,7 @@ func TestProcessApprovedAddRequestHoldsNoConnectionAcrossItems(t *testing.T) {
 		go func(p int) {
 			defer wg.Done()
 			<-start
-			_, errs[p] = store.ProcessApprovedAddRequest(deadline, requests[p])
+			_, _, errs[p] = store.ProcessApprovedAddRequest(deadline, requests[p])
 		}(p)
 	}
 	close(start)
@@ -854,14 +854,14 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		failLink("transient-"+code, code)
-		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
+		if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
 			t.Errorf("%s: a pass whose only item failed retryably = %d, %v; want 0 and the error", code, n, err)
 		}
 		if stamp := stampOf(reqID, transient); stamp != "NULL" {
 			t.Errorf("%s: a retryably failed item was stamped %s; want it left unprocessed so re-approving retries it", code, stamp)
 		}
 		dropTrigger()
-		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+		if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
 			t.Errorf("%s: the retry pass = %d, %v; want 1, nil", code, n, err)
 		}
 		if stamp := stampOf(reqID, transient); !positive(stamp) {
@@ -880,7 +880,7 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		failLink("bad-data-"+code, code)
-		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+		if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
 			t.Errorf("%s: a pass with one bad-data item and one good item = %d, %v; want 1, nil", code, n, err)
 		}
 		if stamp := stampOf(reqID, bad); stamp != "-1" {

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -28,7 +29,10 @@ type URLValidationResult struct {
 //     Commit authors will be resolved against both GitHub and GitLab Search APIs.
 //   - invalid URL → error with guidance
 func ValidateRepoURL(rawURL string) URLValidationResult {
-	rawURL = strings.TrimSpace(rawURL)
+	// The stored spelling (model.NormalizeRepoGitURL, worklist follow-up 8):
+	// a ".git" or trailing-"/" variant of a tracked repo must reach the add
+	// path as that repo's URL, so it links instead of pending as "new".
+	rawURL = model.NormalizeRepoGitURL(rawURL)
 	if rawURL == "" {
 		return URLValidationResult{Error: "URL is empty"}
 	}

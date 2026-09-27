@@ -62,9 +62,7 @@ func ParseRepoURL(rawURL string) (RepoURL, error) {
 // ParseRepoURLWithHints parses a repo URL, using gitlabHosts to identify
 // self-hosted GitLab instances that don't have "gitlab" in their hostname.
 func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	rawURL = strings.TrimSuffix(rawURL, "/")
-	rawURL = strings.TrimSuffix(rawURL, ".git")
+	rawURL = model.NormalizeRepoGitURL(rawURL) // the stored spelling (follow-up 8)
 
 	// Before url.Parse: its error quotes the input, credential included, and
 	// callers log that error (Copilot review 5267193512).
@@ -146,9 +144,7 @@ func ParseAnyRepoURL(rawURL string) (RepoURL, error) {
 
 	// Unknown host — generic git. Re-derive host/path with the same
 	// trimming rules as ParseRepoURLWithHints.
-	trimmed := strings.TrimSpace(rawURL)
-	trimmed = strings.TrimSuffix(trimmed, "/")
-	trimmed = strings.TrimSuffix(trimmed, ".git")
+	trimmed := model.NormalizeRepoGitURL(rawURL)
 	u, perr := url.Parse(trimmed)
 	if perr != nil {
 		return RepoURL{}, fmt.Errorf("%w: %v", ErrInvalidRepoURL, perr)

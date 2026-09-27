@@ -29,8 +29,8 @@ func testGHClient(t *testing.T, handler http.Handler) *Client {
 
 // TestEnrichContributorSetsCanonicalFromEmail verifies that EnrichContributor
 // populates the Canonical field from the user's public email when the email
-// is not a noreply address. This eliminates duplicate GET /users/{login} calls
-// from ResolveEmailsToCanonical.
+// is not a noreply address, so no second GET /users/{login} pass is needed
+// (the old ResolveEmailsToCanonical, removed in v0.29.68).
 func TestEnrichContributorSetsCanonicalFromEmail(t *testing.T) {
 	userResp := ghUser{
 		ID:        12345,
@@ -140,7 +140,7 @@ func TestEnrichContributorSourceSetsCanonical(t *testing.T) {
 	// Must set Canonical on the returned Contributor.
 	if !strings.Contains(fnBody, "Canonical") {
 		t.Error("EnrichContributor must set the Canonical field on the returned Contributor " +
-			"to eliminate duplicate GET /users/{login} calls from ResolveEmailsToCanonical")
+			"so no second GET /users/{login} pass is needed for the canonical email")
 	}
 
 	// Must filter noreply emails from being used as canonical.

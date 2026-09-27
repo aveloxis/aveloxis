@@ -6,6 +6,7 @@ package collector
 import (
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -62,7 +63,7 @@ func parseSwiftPackageURL(raw string) (ref swiftPackageRef, ok bool) {
 	if host == "" || !strings.Contains(host, ".") {
 		return swiftPackageRef{}, false
 	}
-	path = strings.TrimSuffix(strings.TrimSuffix(strings.Trim(path, "/"), ".git"), "/")
+	path = model.NormalizeRepoGitURL(strings.Trim(path, "/")) // one suffix rule (follow-up 8)
 	segs := strings.Split(path, "/")
 	if len(segs) < 2 {
 		return swiftPackageRef{}, false

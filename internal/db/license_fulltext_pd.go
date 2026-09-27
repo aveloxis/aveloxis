@@ -106,13 +106,13 @@ var (
 	// MPL). mozilla.org is not one: an MPL notice's mozilla.org URL carries
 	// no license word, and other mozilla.org pages cover other licenses
 	// (review 5; PR #215 review).
-	mplRefURLRe = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:opensource|spdx)\.org/licenses/mpl-\d\.\d(?:\.html)?(?:[/?#>),.;]|$)`)
+	mplRefURLRe = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:opensource|spdx)\.org/licenses/mpl-\d\.\d(?:\.html)?(?:[/?#>),.;"']|$)`)
 	mplURLRe    = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:mozilla\.org/|opensource\.org/licenses/mpl-2\.0|spdx\.org/licenses/mpl-2\.0)`)
 	// cc0URLRe and unlURLRe are the license's own URLs, the only ones a
 	// name-only field may carry (another license's URL is a statement). The
 	// host must end there (review 2: unlicense.org.example.com).
-	cc0URLRe = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:creativecommons\.org/publicdomain/zero/1\.0|i\.creativecommons\.org/p/zero/1\.0|mirrors\.creativecommons\.org/presskit/buttons/88x31/(?:svg|png)/cc-zero\.(?:svg|png)|spdx\.org/licenses/cc0-1\.0(?:\.html|\.json)?)(?:[/?#>),.]|$)`)
-	unlURLRe = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:unlicense\.org(?:[/?#>),]|$)|(?:spdx\.org|opensource\.org)/licenses/unlicense(?:\.html|\.json)?(?:[/?#>),.]|$))`)
+	cc0URLRe = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:creativecommons\.org/publicdomain/zero/1\.0|i\.creativecommons\.org/p/zero/1\.0|mirrors\.creativecommons\.org/presskit/buttons/88x31/(?:svg|png)/cc-zero\.(?:svg|png)|spdx\.org/licenses/cc0-1\.0(?:\.html|\.json)?)(?:[/?#>),."']|$)`)
+	unlURLRe = newHostURL(`^(?:https?://)?(?:www\.)?(?:unlicense\.org(?::\d+)?` + hostEnd + `|(?:spdx\.org|opensource\.org)/licenses/unlicense(?:\.html|\.json)?(?:[/?#>),."']|$))`)
 	unlEndRe = regexp.MustCompile(`other dealings in the software\.(?: for more information, please refer to <?https?://unlicense\.org/?>?)?`)
 )
 
@@ -431,7 +431,7 @@ var clauseMarkRe = regexp.MustCompile(`[.;:!?]`)
 // punctuation go is one of the name's words ("CC0 1.0 Universal (CC0 1.0)
 // Public Domain Dedication, Creative Commons,
 // https://creativecommons.org/publicdomain/zero/1.0/").
-func nameOnly(p string, words map[string]bool, ownURL *regexp.Regexp, other *regexp.Regexp) bool {
+func nameOnly(p string, words map[string]bool, ownURL urlMatcher, other *regexp.Regexp) bool {
 	// A badge is read by its alt text and its link; its image URL is set
 	// aside (review 15: the most copied CC0 badge is shields.io's), unless
 	// the image names another license: a shields.io badge renders its path,
@@ -547,10 +547,16 @@ func licensedGrant(p string) string {
 	return licensedGrantRe.ReplaceAllString(quoteRe.ReplaceAllString(p, ""), "released $1")
 }
 
+// urlMatcher answers whether one whole URL is a license's own: a plain
+// anchored regex, or a hostURL. It is for callers that ask once per URL;
+// a caller asking per URL start uses hostURL.matchAt, which shares the
+// token's tail table across the starts.
+type urlMatcher interface{ MatchString(string) bool }
+
 // ownLinks unwraps Markdown links whose target is the license's own URL
 // ("released under [the Unlicense](http://unlicense.org)", review 11), so
 // the grant reads as prose; a link to anything else stays as it is.
-func ownLinks(pre string, ownURL *regexp.Regexp) string {
+func ownLinks(pre string, ownURL urlMatcher) string {
 	return markdownLinkRe.ReplaceAllStringFunc(pre, func(m string) string {
 		sub := markdownLinkRe.FindStringSubmatch(m)
 		if ownURL.MatchString(sub[2]) {
@@ -594,7 +600,7 @@ var quoteRe = regexp.MustCompile(`["\x{201c}\x{201d}]`)
 // released under the Unlicense.") keeps the text: the family's own name is
 // not on its other-license list, so the plain check could not see it. Any
 // other prefix may state nothing a notice could, a title heading aside.
-func bodyPrefixOK(pre, suf string, f noticeFamily, own func(string) bool, notice func(string) bool, words map[string]bool, ownURL *regexp.Regexp) bool {
+func bodyPrefixOK(pre, suf string, f noticeFamily, own func(string) bool, notice func(string) bool, words map[string]bool, ownURL urlMatcher) bool {
 	if own(pre) {
 		return (notice(pre) || nameOnly(pre, words, ownURL, f.other)) && !statesOther(suf, f)
 	}

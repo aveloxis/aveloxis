@@ -253,9 +253,12 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	}
 
 	// Sources 3, 4, 5: GitHub (release assets, packages, manifests).
-	// Errors here keep WARN level — these are platform-of-record
-	// signals where 403/404/304 are common (private repos, missing
-	// OAuth scope, archived/empty repos) and routinely benign.
+	// Errors here keep WARN level. The client answers a 403/404/304 (a
+	// private repo, a missing OAuth scope, an archived or empty repo)
+	// with nil, nil — those never reach these arms (worklist item 26);
+	// what does is a rejected request or a NON-answer, and one non-answer
+	// fails the scan (below), so the later GitHub arms are skipped once
+	// one is recorded: their calls would be spent on a scan already lost.
 	if s.GitHub != nil {
 		// Release assets
 		enabledSources++
@@ -279,7 +282,11 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 
 		// GitHub Packages (best-effort)
 		enabledSources++
-		pkgs, err := s.GitHub.ListRepoPackages(ctx, owner, repo)
+		var pkgs []model.PackageDistribution
+		err = nil // the previous arm's error was recorded there; a skipped call has none
+		if len(githubNonAnswers) == 0 {
+			pkgs, err = s.GitHub.ListRepoPackages(ctx, owner, repo)
+		}
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
@@ -299,7 +306,11 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 
 		// Manifests + declared-name parsing
 		enabledSources++
-		rawManifests, err := s.GitHub.ListRootManifests(ctx, owner, repo)
+		var rawManifests []model.DistributionManifest
+		err = nil
+		if len(githubNonAnswers) == 0 {
+			rawManifests, err = s.GitHub.ListRootManifests(ctx, owner, repo)
+		}
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
@@ -315,6 +326,9 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 			}
 		} else {
 			for _, m := range rawManifests {
+				if len(githubNonAnswers) > 0 {
+					break // the scan is already lost (review round 1 of item 26)
+				}
 				// Best-effort: fetch content and parse declared
 				// name. Failure to fetch any one manifest does NOT
 				// drop the row — manifest_type alone is still

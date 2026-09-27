@@ -5,17 +5,19 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
 type fakeEmailDB struct {
 	login string
+	err   error // a STORE failure (worklist item 17): not "no login"
 	calls int
 }
 
 func (f *fakeEmailDB) FindLoginByEmail(_ context.Context, _ string) (string, error) {
 	f.calls++
-	return f.login, nil
+	return f.login, f.err
 }
 
 type fakeSearchClient struct {
@@ -119,5 +121,22 @@ func TestResolveEmailViaAPI_SearchBeforeCommit(t *testing.T) {
 	login, _, src, _ := ResolveEmailViaAPI(context.Background(), cl, "x@example.com")
 	if login != "s" || src != EmailSourceSearch || cl.commitCalls != 0 {
 		t.Errorf("API tail must try search first and short-circuit; got (%q,%q) commitCalls=%d", login, src, cl.commitCalls)
+	}
+}
+
+// TestResolveEmailToIdentity_DBErrorIsReturned pins worklist item 17 (the
+// key-pool v0.29.55 follow-ups): a FindLoginByEmail DB error fell through to
+// the API tail, so a DB error plus an API no-hit reached the sender
+// resolver's email-only create — a possible duplicate identity for an email
+// the store DID know (SR-5). The error is returned; the API is not asked.
+func TestResolveEmailToIdentity_DBErrorIsReturned(t *testing.T) {
+	db := &fakeEmailDB{err: errors.New("connection reset")}
+	cl := &fakeSearchClient{searchLogin: "would-be-wrong"}
+	login, _, src, err := ResolveEmailToIdentity(context.Background(), db, cl, "known@example.com")
+	if err == nil || login != "" || src != "" {
+		t.Errorf("a DB error must be returned; got (%q, %q, %v)", login, src, err)
+	}
+	if cl.searchCalls != 0 || cl.commitCalls != 0 {
+		t.Errorf("the API tail ran after a DB error (search %d, commit %d calls)", cl.searchCalls, cl.commitCalls)
 	}
 }

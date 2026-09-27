@@ -47,7 +47,7 @@ func (f *fakeSharedWithMe) EnsureRepoSharedWithUser(_ context.Context, userID in
 func autoAddServer(fake *fakeSharedWithMe) *Server {
 	return &Server{
 		sharedWithMe: fake,
-		auth:         newAuthenticator(nil, false),
+		auth:         newAuthenticator(nil, false, nil),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }

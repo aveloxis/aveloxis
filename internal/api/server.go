@@ -187,7 +187,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		return nil, err
 	}
 	s.limiter = rl
-	s.auth = newAuthenticator(store, opts.RequireAuth)
+	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.faCache = &firstActivityCache{m: map[string]time.Time{}}

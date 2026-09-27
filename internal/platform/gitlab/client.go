@@ -1196,7 +1196,7 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
 	}
 	// Set canonical email from the public email if it's a real address
 	// (not a noreply). This eliminates duplicate API calls from
-	// ResolveEmailsToCanonical.
+	// a second GET /users/{id} pass (the old ResolveEmailsToCanonical).
 	var canonical string
 	if raw.PublicEmail != "" && !strings.Contains(strings.ToLower(raw.PublicEmail), "noreply") {
 		canonical = raw.PublicEmail

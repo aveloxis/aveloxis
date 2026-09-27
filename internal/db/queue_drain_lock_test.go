@@ -204,7 +204,7 @@ func TestLockReposForDrainPreservesNullLastCollected(t *testing.T) {
 	}
 
 	// Release.
-	if err := store.ReleaseDrainLock(ctx, repoID, "test-worker"); err != nil {
+	if err := store.ReleaseDrainLock(ctx, repoID, "test-worker", DrainReleaseDueNow); err != nil {
 		t.Fatalf("ReleaseDrainLock: %v", err)
 	}
 

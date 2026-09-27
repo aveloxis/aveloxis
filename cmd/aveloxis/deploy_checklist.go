@@ -473,6 +473,18 @@ var deployChecklists = map[string][]deployStep{
 	// are stored as OR, and the SBOMs carry valid expressions (CycloneDX 1.7).
 	// No schema change.
 	"0.29.67": v02967DeployChecklist,
+	"0.29.68": v02968DeployChecklist,
+}
+
+// 0.29.68 (branch brewers1.0, the worklist batch) has no schema change and
+// carries 0.29.67's skipped-release notes (a fleet on 0.29.66 or older goes
+// straight here): the stop, migrate and view-count steps are 0.29.67's, and
+// the start step adds what this release changes.
+var v02968DeployChecklist = []deployStep{
+	v02967DeployChecklist[0],
+	v02967DeployChecklist[1],
+	v02967DeployChecklist[2],
+	{"aveloxis start all", "re-adding a collected repository no longer blanks its description, language and archived flag: the add-time writer leaves those three to Phase 0 (they were overwritten by every aveloxis add-repo, collect, prioritize, force-full-collect and import-augur of a tracked repository, and by a web paste of a '.git' or trailing-'/' variant); a '.git' or trailing-'/' variant now resolves to the tracked repository on every add path, and a non-administrator's paste of one links instead of pending as a new repository (worklist follow-up 8). Rows already blanked refill on each repository's next collection. The group page now says when a paste or an org is waiting for an administrator's approval, and when an org add failed (follow-ups 10, 11); a failed group-status lookup no longer reads as 'not rejected'; a failed admin-flag lookup fails the add or the API request (503, not 401) instead of reading as 'not an admin', and at login is logged while the session is created as non-admin (follow-ups 2, 6); the approved add-request log line reports items that could not be added (follow-up 9). A GitHub search that timed out on GitHub's side (incomplete_results) is no longer recorded as 'no such user' for 30 days, and a mailing-list sender whose contributor row could not be written is retried next tick instead of being hidden for 30 days (worklist items 16-18). A repository healed by heal-collection-gaps keeps its place in the recollection cycle instead of becoming due at once, a serve started mid-heal leaves the heal's parked rows alone, and a failed API-key read is now fatal to serve/collect instead of reading as 'no keys configured' (items 54-56). If 0.29.67 was skipped, its start-up notes apply as well: " + v02967DeployChecklist[3].desc},
 }
 
 // 0.29.67 carries 0.29.66's skipped-release notes (a fleet on 0.29.63 or

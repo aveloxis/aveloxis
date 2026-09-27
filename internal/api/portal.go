@@ -33,17 +33,24 @@ import (
 
 // requireUser demands a validated Bearer identity regardless of the
 // api.require_auth rollout flag (user-context endpoints are
-// meaningless without one). Writes the 401 itself on failure.
+// meaningless without one). Writes the 401 (or, on a store failure, the 503) itself on failure.
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
 	if info, ok := r.Context().Value(authCtxKey{}).(authInfo); ok {
 		return info, true
 	}
 	// The global middleware may not have resolved a token (auth off /
 	// exempt LAN without a header). Resolve here so LAN callers with a
-	// token still work, and everyone else gets a clean 401.
+	// token still work, and everyone else gets a clean 401 — or, when
+	// the store failed to resolve a presented token, the 503.
 	if tok := bearerToken(r); tok != "" {
-		if info, ok := s.auth.resolveToken(r.Context(), tok); ok {
+		info, err := s.auth.resolveToken(r.Context(), tok)
+		if err == nil {
 			return info, true
+		}
+		if !errors.Is(err, errInvalidToken) {
+			// The store failed: 503, not "sign in again" (follow-up 6).
+			s.auth.refuseStoreError(w, err)
+			return authInfo{}, false
 		}
 	}
 	writeAuthError(w, http.StatusUnauthorized, "this endpoint requires a signed-in session (Bearer token)")
@@ -505,14 +512,18 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 				// token cache again when it ends — a request resolved while it
 				// ran cached the old scope (Copilot review of PR #207).
 				defer s.auth.invalidateAll()
-				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				n, failed, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
 				if errors.Is(err, db.ErrAddRequestInProgress) {
 					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
 					return
 				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
-						"request_id", req.RequestID, "processed", n, "error", err)
+						"request_id", req.RequestID, "processed", n, "failed", failed, "error", err)
+					return
+				}
+				if failed > 0 {
+					s.logger.Warn("approved add-request processed with items that could not be added", "request_id", req.RequestID, "repos", n, "failed", failed)
 					return
 				}
 				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)

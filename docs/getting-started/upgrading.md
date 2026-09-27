@@ -65,6 +65,9 @@ plain `aveloxis migrate` in place of the `--skip-views` step above, then
 checks that the new definition is in place. That check matters because the
 migrate only logs a WARN (`materialized view creation had errors`) when the
 views fail to re-create, and still exits 0 with the old definitions in place.
+Since v0.29.68 the build enforces the rule: `matviews.sql` is pinned by
+digest, and a change to it fails the test suite until the release shipping
+it is named and that release's checklist carries the plain migrate.
 
 Run `aveloxis migrate` explicitly rather than letting `aveloxis serve`
 migrate at startup: `web` and `api` never migrate and log an ERROR on a

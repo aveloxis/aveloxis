@@ -398,6 +398,11 @@ func (s *PostgresStore) ResolveContributorIDByEmail(ctx context.Context, email s
 			WHERE (cntrb_email = $1 OR cntrb_canonical = $1)
 			  AND COALESCE(cntrb_deleted, 0) = 0
 		) t WHERE t.n = 1`, email).Scan(&id)
+	// Only "no row" is "no contributor" (SR-5; worklist item 17, review
+	// round 1): any other error is returned, as FindLoginByEmail's.
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", false, fmt.Errorf("resolve contributor by email: %w", err)
+	}
 	if err == nil && id != "" {
 		return id, true, nil
 	}
@@ -408,6 +413,9 @@ func (s *PostgresStore) ResolveContributorIDByEmail(ctx context.Context, email s
 		WHERE a.alias_email = $1
 		  AND COALESCE(c.cntrb_deleted, 0) = 0
 		LIMIT 1`, email).Scan(&id)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", false, fmt.Errorf("resolve contributor by alias email: %w", err)
+	}
 	if err == nil && id != "" {
 		return id, true, nil
 	}

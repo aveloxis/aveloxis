@@ -331,8 +331,10 @@ func TestUpdateRepoURLsNormalizesNewURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := extractFuncBody(t, string(src), "func (s *PostgresStore) UpdateRepoURLs(")
-	if !strings.Contains(body, `strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")`) {
-		t.Error("UpdateRepoURLs must normalize newURL (trim trailing / and .git) before writing repo_git — the singular UpdateRepoURL does, and prelim passes the raw redirect target")
+	// Worklist follow-up 8: the spelling is the shared model.NormalizeRepoGitURL
+	// (TestRepoGitURLNormalizerIsShared bans the inline form).
+	if !strings.Contains(body, `newURL = model.NormalizeRepoGitURL(newURL)`) {
+		t.Error("UpdateRepoURLs must normalize newURL through model.NormalizeRepoGitURL before writing repo_git — the singular UpdateRepoURL does, and prelim passes the raw redirect target")
 	}
 }
 

@@ -434,8 +434,9 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 
 	// Store repo_git without trailing "/" or ".git" (v0.25.32 hardening) —
 	// suffix variants would otherwise slip past both ON CONFLICT (repo_git)
-	// and the case-insensitive unique index and create duplicate rows.
-	r.GitURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(r.GitURL), "/"), ".git")
+	// and the case-insensitive unique index and create duplicate rows. The
+	// one normalizer FindRepoByURL applies too (worklist follow-up 8).
+	r.GitURL = model.NormalizeRepoGitURL(r.GitURL)
 
 	// Case-variant resolution (v0.25.32): GitHub and GitLab treat
 	// owner/repo paths case-insensitively, so a URL differing from a
@@ -550,8 +551,18 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 			ON CONFLICT (repo_git) DO UPDATE SET
 				repo_name = EXCLUDED.repo_name,
 				repo_owner = EXCLUDED.repo_owner,
-				repo_description = EXCLUDED.repo_description,
-				primary_language = EXCLUDED.primary_language,
+				-- v0.29.68 (worklist follow-up 8): repo_description,
+				-- primary_language and repo_archived are NOT written here —
+				-- InsertOnly for this statement in the SR-11 registry
+				-- (column_write_policy_test.go). Phase 0's UpdateRepoMetadata
+				-- is their collection writer; ArchiveRepo, MarkRepoGone and
+				-- the v0.27.50 backfill set repo_archived on their own paths.
+				-- No UpsertRepo caller carries them from the forge (org scans
+				-- pass the forge ID only), so the previous EXCLUDED writes
+				-- blanked a collected repository's description, language and
+				-- archived flag on every re-add (aveloxis add-repo, collect,
+				-- prioritize, force-full-collect, import-augur, a web paste of
+				-- a suffix variant). The INSERT arm still takes the values.
 				-- v0.27.78: prefer-nonempty — Phase 0 (UpdateRepoMetadata) is
 				-- the authoritative forked_from writer; UpsertRepo callers
 				-- (org scans, add-repo) carry a zero-valued model.Repo and a
@@ -567,7 +578,6 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- re-upsert still can't wipe a captured value, and the first
 				-- observed ID still fills an empty column.
 				platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), EXCLUDED.platform_repo_id),
-				repo_archived = EXCLUDED.repo_archived,
 				-- v0.27.122 (Copilot round 14, suppressed): GREATEST, not
 				-- prefer-incoming — overlapping refreshes can finish out of
 				-- order, and an older forge response landing last must not
@@ -760,6 +770,13 @@ func (s *PostgresStore) FindPRDBID(ctx context.Context, repoID, prNumber int64) 
 // Generic git (platform 3) stays byte-exact on purpose: unknown hosts may
 // legitimately be case-sensitive.
 func (s *PostgresStore) FindRepoByURL(ctx context.Context, gitURL string) (int64, error) {
+	// The lookup asks for the URL as UpsertRepo stores it (worklist
+	// follow-up 8): before this, a ".git" or trailing-"/" variant of a
+	// collected repo missed here, every add path then took the "new repo"
+	// branch into UpsertRepo, and its ON CONFLICT DO UPDATE overwrote the
+	// collected description, language and archived flag with the caller's
+	// zero-valued model.Repo.
+	gitURL = model.NormalizeRepoGitURL(gitURL)
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		SELECT repo_id FROM aveloxis_data.repos
@@ -825,7 +842,7 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 	// persist a noncanonical repo_git and undermine the URL-dedup
 	// invariant. extractRepoPath already trims internally, so only the
 	// direct repo_git write was exposed.
-	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
+	newURL = model.NormalizeRepoGitURL(newURL)
 
 	// Extract the path portions for find-and-replace.
 	// e.g., "https://github.com/old-org/old-repo" -> "old-org/old-repo"
@@ -904,8 +921,7 @@ func extractRepoPath(u string) string {
 	for _, prefix := range []string{"https://", "http://"} {
 		u = strings.TrimPrefix(u, prefix)
 	}
-	u = strings.TrimSuffix(u, "/")
-	u = strings.TrimSuffix(u, ".git")
+	u = model.NormalizeRepoGitURL(u)
 	// Remove host: "github.com/owner/repo" -> "owner/repo"
 	if _, after, ok := strings.Cut(u, "/"); ok {
 		return after
@@ -922,7 +938,7 @@ func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL 
 	// Parse owner/name from the new URL via the shared parser (v0.25.32
 	// consolidation; unparseable URLs keep empty owner/name — the URL
 	// column still updates, matching the historical permissiveness).
-	newURL = strings.TrimSuffix(strings.TrimSuffix(newURL, "/"), ".git")
+	newURL = model.NormalizeRepoGitURL(newURL)
 	owner, name := parseRepoURLOwnerName(newURL)
 
 	_, err := s.pool.Exec(ctx,

@@ -89,3 +89,22 @@ func TestValidateRepoURL_RefusesUserinfo(t *testing.T) {
 		t.Errorf("an @ in the path is not userinfo: %q", r.Error)
 	}
 }
+
+// TestValidateRepoURL_NormalizesSuffixes (worklist follow-up 8): the URL a
+// paste carries into the add path is the stored spelling — a ".git" or
+// trailing-"/" variant of a tracked repo links to it instead of pending on
+// an add-request for a "new" repo. One normalizer, model.NormalizeRepoGitURL.
+func TestValidateRepoURL_NormalizesSuffixes(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/o/r.git":   "https://github.com/o/r",
+		"https://github.com/o/r/":      "https://github.com/o/r",
+		"github.com/o/r.git/":          "https://github.com/o/r",
+		"https://gitlab.com/g/p.git":   "https://gitlab.com/g/p",
+		"https://git.example.org/o/r/": "https://git.example.org/o/r",
+	} {
+		v := ValidateRepoURL(in)
+		if !v.Valid || v.URL != want {
+			t.Errorf("ValidateRepoURL(%q) = {Valid:%v URL:%q}, want URL %q", in, v.Valid, v.URL, want)
+		}
+	}
+}

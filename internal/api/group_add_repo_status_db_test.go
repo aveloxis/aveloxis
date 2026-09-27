@@ -129,7 +129,7 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
-			s := &Server{store: tc.store, logger: slog.New(slog.NewTextHandler(logs, nil)), auth: newAuthenticator(tc.store, false), autoApproveAddLimit: 5}
+			s := &Server{store: tc.store, logger: slog.New(slog.NewTextHandler(logs, nil)), auth: newAuthenticator(tc.store, false, nil), autoApproveAddLimit: 5}
 			id := strconv.FormatInt(tc.groupID, 10)
 			r := httptest.NewRequest(http.MethodPost, "/api/v1/groups/"+id+"/repos", strings.NewReader(tc.body))
 			r.SetPathValue("groupID", id)
@@ -220,7 +220,7 @@ func TestGroupPendingAddsErrorStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}
-			s := &Server{store: tc.store, logger: slog.New(slog.NewTextHandler(logs, nil)), auth: newAuthenticator(tc.store, false)}
+			s := &Server{store: tc.store, logger: slog.New(slog.NewTextHandler(logs, nil)), auth: newAuthenticator(tc.store, false, nil)}
 			id := strconv.FormatInt(tc.groupID, 10)
 			r := httptest.NewRequest(http.MethodGet, "/api/v1/groups/"+id+"/pending-adds", nil)
 			r.SetPathValue("groupID", id)

@@ -33,7 +33,7 @@ func (raceFakeStore) GetUserRepoScope(ctx context.Context, userID int) ([]int64,
 }
 
 func TestAuthenticatorConcurrentAccess(t *testing.T) {
-	a := newAuthenticator(raceFakeStore{}, true)
+	a := newAuthenticator(raceFakeStore{}, true, nil)
 	ctx := context.Background()
 	var wg sync.WaitGroup
 	for g := range 32 {

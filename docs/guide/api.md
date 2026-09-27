@@ -790,7 +790,11 @@ Token semantics:
 
 - Tokens are DB-backed and live **30 days** — they survive server
   restarts. An expired or unknown token gets a structured 401; sign
-  in again and mint a new one.
+  in again and mint a new one. A token the server could not resolve
+  because the database failed (validating it, or reading its account
+  flags or scope) gets a structured **503** with a try-again body
+  (v0.29.68) — never the 401, which the GUI treats as "the token is
+  gone"; retry the request.
 - Each visit to `/auth/token` mints a **new** token; existing tokens
   keep working until they expire, so long-running scripts aren't cut
   off when you log in elsewhere.

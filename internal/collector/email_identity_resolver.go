@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -16,7 +17,8 @@ import (
 //  1. commit-author resolution (CommitResolver) — uses ResolveEmailViaAPI as
 //     its Strategy-4 tail, AFTER its commit-specific SHA lookup (Strategy 3);
 //  2. the mailing-list sender-resolve ticker — uses ResolveEmailToIdentity;
-//  3. the mailing-list batch Processor's contributor resolution.
+//  3. (not this chain) the mailing-list batch Processor resolves ingest-time
+//     senders through the store's ResolveContributorIDByEmail alone.
 //
 // The chain (cheapest first): noreply parse → bot/junk filter → DB lookup →
 // GitHub Search API by email → GitHub GLOBAL commit-search by author-email.
@@ -74,8 +76,10 @@ func ResolveEmailViaAPI(ctx context.Context, client emailSearchClient, email str
 
 // ResolveEmailToIdentity runs the full shared chain: noreply → bot filter →
 // DB lookup → API tail (Search → global commit-search). Used by the
-// mailing-list sender resolver and batch Processor. A nil store skips the DB
-// step; a nil client skips the API tail (so a DB-only resolve is valid).
+// mailing-list sender resolver (the batch Processor resolves ingest-time
+// senders through the store's ResolveContributorIDByEmail instead). A nil
+// store skips the DB step; a nil client skips the API tail (so a DB-only
+// resolve is valid).
 func ResolveEmailToIdentity(ctx context.Context, store emailDBLookup, client emailSearchClient, email string) (login string, ghUserID int64, source string, err error) {
 	email = strings.Trim(email, `"' `)
 
@@ -88,9 +92,16 @@ func ResolveEmailToIdentity(ctx context.Context, store emailDBLookup, client ema
 	if IsAutomationEmail(email) || email == "" || !strings.Contains(email, "@") {
 		return "", 0, "", nil
 	}
-	// Strategy 2: DB lookup (cntrb_email/canonical + aliases).
+	// Strategy 2: DB lookup (cntrb_email/canonical + aliases). A DB error is
+	// not "not in the DB" (SR-5; worklist item 17): falling through let a DB
+	// error plus an API no-hit create an email-only contributor for an
+	// email the store knew.
 	if store != nil {
-		if l, derr := store.FindLoginByEmail(ctx, email); derr == nil && l != "" {
+		l, derr := store.FindLoginByEmail(ctx, email)
+		if derr != nil {
+			return "", 0, "", fmt.Errorf("look up email in the store: %w", derr)
+		}
+		if l != "" {
 			return l, 0, EmailSourceDB, nil
 		}
 	}

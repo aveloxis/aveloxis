@@ -93,3 +93,25 @@ jobs:
           # skips if absent — the scancode + scc coverage is the
           # automatic-upgrade risk this job exists for.
           go test ./internal/collector/ -run TestLiveScorecardOutputShape -count=1 -v
+
+  # v0.29.67 (worklist 53): the SPDX project's validator (pyspdxtools) and
+  # CycloneDX's (cyclonedx-python-lib) check generated SBOMs independently of
+  # our own parser and schema reading. Dev/CI only: never a runtime component.
+  # A job of its own (review round 9): as steps after the tool-output canaries
+  # they were skipped whenever those canaries fired on a new tool version.
+  sbom-validators:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install the official SBOM validators (latest)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sbomtools"
+          "$RUNNER_TEMP/sbomtools/bin/pip" install -q spdx-tools 'cyclonedx-python-lib[json-validation]'
+      - name: Validate generated SBOMs with the official tools
+        env:
+          AVELOXIS_TEST_SBOM_TOOLS: ${{ runner.temp }}/sbomtools/bin/python
+        run: go test ./internal/collector/ -run TestSBOMsPassTheOfficialValidators -count=1 -v

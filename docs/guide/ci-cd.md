@@ -255,3 +255,8 @@ ClusterFuzzLite builds and runs the repo's 7 native Go fuzz targets (`func Fuzz*
 ## Network canary (`network-canary.yml`)
 
 A weekly scheduled job runs the `AVELOXIS_TEST_NETWORK=1`-gated tests against the real deps.dev, OSV.dev, crates.io, GitHub search, and Pony Mail APIs — the contract-drift class that mocks structurally cannot catch (the deps.dev URL-encoding bug and the OSV querybatch-stubs bug both lived in that blind spot).
+
+The same workflow has two more jobs:
+
+- **`tools`** installs the latest scancode and scc (what production's monthly updater installs) and runs their output through the real parse structs.
+- **`sbom-validators`** (since v0.29.67) installs the official SBOM validators, the SPDX project's `pyspdxtools` and CycloneDX's `cyclonedx-python-lib`, and runs `TestSBOMsPassTheOfficialValidators` on generated documents. It is its own job so a failing tool canary cannot skip it. Locally, set `AVELOXIS_TEST_SBOM_TOOLS` to a Python with both installed; the test skips without it.

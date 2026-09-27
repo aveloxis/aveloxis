@@ -382,15 +382,25 @@ func (s *PostgresStore) HeartbeatJob(ctx context.Context, repoID int64, workerID
 // left repos stuck in 'collecting' with a dead worker ID. The normal
 // RecoverStaleLocks (1-hour timeout) wouldn't fire because the lock was
 // too recent, and releaseOurLocks only matches the current worker ID.
-func (s *PostgresStore) RecoverOtherWorkerLocks(ctx context.Context, currentWorkerID string) (int64, error) {
+//
+// A drain owner (locked_by ending in the ":drain" suffix) whose lock is
+// fresher than drainStaleAfter is left alone (worklist item 54): a
+// heal-collection-gaps run parks its repositories that way and keeps them
+// fresh with its heartbeat, so a serve started mid-heal must not hand them
+// back to routine collection, which could purge the healer's staging. A
+// drain owner whose heartbeat stopped for longer than the window is dead
+// and reclaimed like any other; serve's own drain set from a previous
+// process is re-identified from staging and re-parked at startup either way.
+func (s *PostgresStore) RecoverOtherWorkerLocks(ctx context.Context, currentWorkerID string, drainStaleAfter time.Duration) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued', locked_by = NULL, locked_at = NULL,
 			due_at = NOW(), updated_at = NOW()
 		WHERE status = 'collecting'
 			AND locked_by IS NOT NULL
-			AND locked_by != $1`,
-		currentWorkerID)
+			AND locked_by != $1
+			AND NOT (locked_by LIKE '%' || $3 AND locked_at >= NOW() - $2::interval)`,
+		currentWorkerID, drainStaleAfter, drainLockSuffix)
 	if err != nil {
 		return 0, err
 	}

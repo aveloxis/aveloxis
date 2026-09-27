@@ -18,7 +18,7 @@ func TestSBOMCycloneDXHasEvidence(t *testing.T) {
 	}
 	code := string(src)
 
-	// CycloneDX 1.5 supports evidence.licenses for concluded (detected) licenses.
+	// CycloneDX (1.5 and later) supports evidence.licenses for concluded (detected) licenses.
 	if !strings.Contains(code, "Evidence") || !strings.Contains(code, "evidence") {
 		t.Error("CycloneDX SBOM must include evidence section for concluded licenses from ScanCode")
 	}

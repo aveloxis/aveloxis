@@ -84,10 +84,9 @@ func (s *PostgresStore) GetGroupStatus(ctx context.Context, groupID int64) (stri
 // ensureRepoCollectedInGroup is the single "make this URL exist,
 // collect, and belong to the group" helper — shared by the admin
 // direct-add path and the approval processor so both behave
-// identically. Resolves case-insensitively; creates the repos row
-// only when absent (never routes existing repos through UpsertRepo's
-// DO UPDATE, which would clobber collected metadata); always ensures
-// a queue row; always links user_repos.
+// identically. Resolves the URL by its stored spelling and case; creates
+// the repos row only when absent (an existing repo is linked, not
+// re-upserted); always ensures a queue row; always links user_repos.
 func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID int64, repoURL string) (int64, error) {
 	repoID, err := s.FindRepoByURL(ctx, repoURL)
 	if err != nil {
@@ -153,7 +152,12 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 			return out, err
 		}
 	}
-	isAdmin, _ := s.IsUserAdmin(ctx, userID)
+	// A lookup ERROR is not "not an admin" (SR-5; worklist follow-up 6): it
+	// sent an admin's paste to the approval queue, silently.
+	isAdmin, err := s.IsUserAdmin(ctx, userID)
+	if err != nil {
+		return out, fmt.Errorf("look up admin flag: %w", err)
+	}
 
 	var unknown []string
 	seen := make(map[string]bool, len(repoURLs))
@@ -537,9 +541,12 @@ var ErrAddRequestInProgress = errors.New("add request is already being processed
 // passes as the pool has connections deadlocked the pool (round-21 review).
 // Passes in two processes (web and api) can still overlap; each step is
 // idempotent and a stamp only fills an unstamped item.
-func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (int, error) {
-	processed, _, err := s.processAddRequest(ctx, requestID, false)
-	return processed, err
+// It returns the items processed and the items stamped processed-with-error
+// (-1: a permanent failure of the item's own values), so the caller's log
+// line reports both (worklist follow-up 9; v0.29.50 counted the failed
+// items on the auto-approve path only).
+func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (processed, failed int, err error) {
+	return s.processAddRequest(ctx, requestID, false)
 }
 
 // processAddRequest is the processing pass. With everyFailureFinal, used for

@@ -10,20 +10,12 @@ package collector
 // strings.
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 )
-
-// TestSPDXLicenseListFloor guards against a truncated or corrupted
-// refresh: the official list has 733 identifiers as of 2026-07-20 and
-// only ever grows. 700 is the tripwire floor.
-func TestSPDXLicenseListFloor(t *testing.T) {
-	if got := len(spdxLicenses); got < 700 {
-		t.Errorf("embedded SPDX license set has %d entries, want >= 700 — spdx_license_ids.txt looks truncated (refresh procedure is in its header)", got)
-	}
-}
 
 // TestSPDXListPromotesPreviouslyDemotedIDs — a sample of valid SPDX
 // identifiers the old hand map did NOT contain. Before v0.27.23 these
@@ -62,37 +54,83 @@ func TestSPDXListStillDemotesNonSPDXStrings(t *testing.T) {
 	}
 }
 
-// TestSPDXListSourceContract — the hand-maintained literal map must
-// not return, and the generated file must exist with its refresh
-// header.
+// TestSPDXListSourceContract — the collector keeps NO SPDX list of its
+// own: internal/spdx is the one list (worklist 53, SR-17), generated and
+// pinned there (internal/spdx/data_test.go). The v0.27.23 embedded copy
+// (spdx_license_ids.txt) was retired in v0.29.67. The CycloneDX enum file
+// is a different list (the schema's frozen enum) and stays here.
 func TestSPDXListSourceContract(t *testing.T) {
 	src, err := os.ReadFile("sbom.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(src), `"MIT": true`) {
-		t.Error("sbom.go declares a literal license map again — v0.27.23 embeds the official list (spdx_license_ids.txt); hand-maintained lists drift")
+	code := string(src)
+	if strings.Contains(code, `"MIT": true`) {
+		t.Error("sbom.go declares a literal license map again; hand-maintained lists drift")
 	}
-	if !strings.Contains(string(src), "go:embed spdx_license_ids.txt") {
-		t.Error("sbom.go must embed spdx_license_ids.txt")
+	if strings.Contains(code, "spdx_license_ids.txt") {
+		t.Error("sbom.go embeds its own SPDX list again; internal/spdx is the one list")
 	}
-	data, err := os.ReadFile("spdx_license_ids.txt")
+	if !strings.Contains(code, "spdx.IsLicenseID(license)") {
+		t.Error("isSPDXLicense must delegate to internal/spdx")
+	}
+	if _, err := os.Stat("spdx_license_ids.txt"); err == nil {
+		t.Error("spdx_license_ids.txt is back; internal/spdx/spdx_data.tsv replaced it")
+	}
+	data, err := os.ReadFile("cdx_license_ids_1_7.txt")
 	if err != nil {
-		t.Fatalf("spdx_license_ids.txt missing: %v", err)
+		t.Fatalf("cdx_license_ids_1_7.txt missing: %v", err)
 	}
-	if !strings.Contains(string(data), "# Refresh:") {
-		t.Error("spdx_license_ids.txt must carry its refresh procedure in the header")
+	if !strings.Contains(string(data), "# Refresh") {
+		t.Error("cdx_license_ids_1_7.txt must carry its refresh procedure in the header")
+	}
+	if len(cdxLicenseIDs) < 800 {
+		t.Errorf("CycloneDX 1.7 enum has %d IDs; the file looks truncated", len(cdxLicenseIDs))
 	}
 }
 
 // TestSPDXListFileIsNotGitignored — the v0.27.11 lesson: the repo-wide
-// *.json ignore rule silently excluded committed lockfile fixtures and
-// CI failed on missing testdata. Verify the embedded list is actually
-// trackable by git.
+// *.json ignore rule silently excluded committed fixtures and CI failed on
+// missing testdata. The embedded CycloneDX enum must be trackable.
 func TestSPDXListFileIsNotGitignored(t *testing.T) {
-	cmd := exec.Command("git", "check-ignore", "-q", "spdx_license_ids.txt")
+	cmd := exec.Command("git", "check-ignore", "-q", "cdx_license_ids_1_7.txt")
 	cmd.Dir = "."
 	if err := cmd.Run(); err == nil {
-		t.Error("spdx_license_ids.txt is gitignored — the binary would embed a file CI checkouts don't have; add a negation rule like the lockfile fixtures'")
+		t.Error("cdx_license_ids_1_7.txt is gitignored; the binary would embed a file CI checkouts don't have")
+	}
+}
+
+// TestCDXLicenseEnumMatchesItsSchema — v0.29.67 review round 1: the
+// embedded enum says it is generated from the committed CycloneDX 1.7
+// fixture, but nothing compared them. An ID added by hand outside the
+// schema's enum would be emitted as license.id and fail the schema, caught
+// only if a seed used that ID. The two must be the same set.
+func TestCDXLicenseEnumMatchesItsSchema(t *testing.T) {
+	raw, err := os.ReadFile("testdata/sbom_schemas/cyclonedx-1.7-spdx.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Enum []string `json:"enum"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, id := range schema.Enum {
+		want[id] = true
+	}
+	if len(want) == 0 {
+		t.Fatal("the fixture's enum is empty; the extraction path is wrong")
+	}
+	for id := range cdxLicenseIDs {
+		if !want[id] {
+			t.Errorf("cdx_license_ids_1_7.txt has %q, which the CycloneDX 1.7 schema's enum lacks", id)
+		}
+	}
+	for id := range want {
+		if !cdxLicenseIDs[id] {
+			t.Errorf("cdx_license_ids_1_7.txt lacks %q from the schema's enum", id)
+		}
 	}
 }

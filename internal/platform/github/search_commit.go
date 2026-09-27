@@ -58,8 +58,9 @@ func (c *Client) SearchCommitByAuthorEmail(ctx context.Context, email string) (s
 	defer resp.Body.Close()
 
 	var data struct {
-		TotalCount int `json:"total_count"`
-		Items      []struct {
+		TotalCount        int  `json:"total_count"`
+		IncompleteResults bool `json:"incomplete_results"`
+		Items             []struct {
 			// items[].author is the resolved GitHub USER object (login/id),
 			// null when GitHub can't map the commit to an account. (Distinct
 			// from items[].commit.author, which is the raw git name/email.)
@@ -78,6 +79,11 @@ func (c *Client) SearchCommitByAuthorEmail(ctx context.Context, email string) (s
 	}
 
 	if data.TotalCount == 0 || len(data.Items) == 0 || data.Items[0].Author == nil {
+		// As search_user.go (worklist item 16): a timed-out search with no
+		// items is not a no-hit.
+		if data.IncompleteResults && len(data.Items) == 0 {
+			return "", 0, fmt.Errorf("search/commits timed out on GitHub's side (incomplete_results) with no items: %w", platform.ErrTransient)
+		}
 		return "", 0, nil
 	}
 	return data.Items[0].Author.Login, data.Items[0].Author.ID, nil

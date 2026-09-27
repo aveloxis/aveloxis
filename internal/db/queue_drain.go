@@ -39,6 +39,18 @@ func drainLockedBy(workerID string) string {
 	return workerID + drainLockSuffix
 }
 
+// DrainRelease says what a drain release does to the row's due_at.
+type DrainRelease int
+
+const (
+	// DrainReleaseDueNow makes the repository due at once: serve's drain
+	// processed pre-staged data and a fresh fetch reconciles it.
+	DrainReleaseDueNow DrainRelease = iota
+	// DrainReleaseKeepDue leaves due_at as it was: a heal filled gaps in
+	// stored data and is not a reason to recollect (worklist item 56).
+	DrainReleaseKeepDue
+)
+
 // QueueRowStatus is a collection_queue row's status and lock owner.
 type QueueRowStatus struct {
 	Status   string
@@ -90,16 +102,16 @@ const drainLockSuffix = ":drain"
 // collected. Like the per-repo release it never touches last_collected;
 // the locked_by + status guards leave other processes' rows and this
 // worker's own job locks alone.
-func (s *PostgresStore) ReleaseDrainLocks(ctx context.Context, workerID string) (int64, error) {
+func (s *PostgresStore) ReleaseDrainLocks(ctx context.Context, workerID string, due DrainRelease) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued',
 		    locked_by = NULL,
 		    locked_at = NULL,
-		    due_at = NOW(),
+		    due_at = CASE WHEN $2 THEN NOW() ELSE due_at END,
 		    updated_at = NOW()
 		WHERE locked_by = $1 AND status = 'collecting'`,
-		drainLockedBy(workerID))
+		drainLockedBy(workerID), due == DrainReleaseDueNow)
 	if err != nil {
 		return 0, fmt.Errorf("release drain locks for %s: %w", workerID, err)
 	}
@@ -174,17 +186,23 @@ func (s *PostgresStore) LockReposForDrain(ctx context.Context, repoIDs []int64, 
 // The locked_by check ensures we only release locks we actually hold;
 // a repo whose drain was hijacked by a manual operator action (status
 // changed externally) won't be silently overwritten.
-func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, workerID string) error {
+//
+// due says what happens to due_at (worklist item 56): serve's drain passes
+// DrainReleaseDueNow (the re-fetch above); heal-collection-gaps passes
+// DrainReleaseKeepDue, because a heal is not a reason to recollect — every
+// repository it locked used to become due the moment it let go, whatever
+// its place in the recollection cycle.
+func (s *PostgresStore) ReleaseDrainLock(ctx context.Context, repoID int64, workerID string, due DrainRelease) error {
 	lockedBy := drainLockedBy(workerID)
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued',
 		    locked_by = NULL,
 		    locked_at = NULL,
-		    due_at = NOW(),
+		    due_at = CASE WHEN $3 THEN NOW() ELSE due_at END,
 		    updated_at = NOW()
 		WHERE repo_id = $1 AND locked_by = $2 AND status = 'collecting'`,
-		repoID, lockedBy)
+		repoID, lockedBy, due == DrainReleaseDueNow)
 	if err != nil {
 		return fmt.Errorf("release drain lock for repo %d: %w", repoID, err)
 	}

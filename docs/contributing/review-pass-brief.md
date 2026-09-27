@@ -36,6 +36,13 @@ Give a reviewer that has NOT seen the session this, with the blanks filled:
 > Verify specifically: `<numbered list of the things the author is least
 > sure of — each phrased as a question with the expected answer>`.
 >
+> If a gopls MCP server is connected (for example `mcp-gopls`), back
+> every claim about a changed function's callers with its
+> `find_references` and `get_hover_info` results, and cross-check each
+> references answer with grep. Use only its read-only tools, never
+> `run_go_mod_tidy`, `rename_symbol`, `format_document` or
+> `list_code_actions`.
+>
 > Output: a numbered list of VERIFIED findings only — file:line, lens,
 > one-sentence claim, concrete failure scenario, one-line suggested fix —
 > then a short "checked and sound" list and the test results you
@@ -86,6 +93,24 @@ shapes that dominated eight consecutive rounds of one release:
   a size or duration was measured on.
 - **Sweep**: the primitive of each fix has been grepped and the sibling
   sites fixed or explained.
+- **Callers, type-resolved** (since v0.29.67): for every changed or
+  exported function, list its callers with a gopls `find_references`
+  (through a gopls MCP server when one is connected, or the editor's
+  LSP), check at each caller with `get_hover_info` which value actually
+  reaches the function, and cross-check the list with grep. In the
+  first such pass this found a badge that normalized an already
+  normalized key, which grep alone had not shown. Two limits: pins that
+  read source as strings are invisible to gopls, so grep is still needed
+  for "who depends on this spelling"; and the MCP wrappers for `go test`
+  and `govulncheck` return only an exit status on failure, so run those
+  two directly.
+- **Heuristic boundaries**: when a second round moves the SAME boundary
+  (a threshold, a word list, a "text vs list" rule), stop tuning it.
+  Name the two error directions, keep the one whose failure is safer
+  (for compliance data: losing information, never a false assertion),
+  record the class decision at the site, in a pinning test and in the
+  ledger, and tell later briefs that its variants are decided. v0.29.67
+  spent five rounds on one such boundary before deciding it.
 
 ## Where the results go
 

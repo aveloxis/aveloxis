@@ -2176,15 +2176,23 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	glTokens := cfg.GitLab.APIKeys
 
 	// Load from database (aveloxis_ops first, augur_operations as fallback).
-	if dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys); err != nil {
-		logger.Error("failed to load GitHub API keys from database", "error", err)
-	} else if len(dbGH) > 0 {
+	// A failed read is fatal for every caller (worklist item 55): each of
+	// them is a collection or a one-shot that cannot run without keys, and
+	// "no keys configured" would send the operator to add-key instead of to
+	// the database. LoadAPIKeys already answers "none" for a missing table.
+	dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load GitHub API keys from the database: %w", err)
+	}
+	if len(dbGH) > 0 {
 		logger.Info("loaded GitHub keys from database", "count", len(dbGH))
 		ghTokens = append(ghTokens, dbGH...)
 	}
-	if dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys); err != nil {
-		logger.Error("failed to load GitLab API keys from database", "error", err)
-	} else if len(dbGL) > 0 {
+	dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load GitLab API keys from the database: %w", err)
+	}
+	if len(dbGL) > 0 {
 		logger.Info("loaded GitLab keys from database", "count", len(dbGL))
 		glTokens = append(glTokens, dbGL...)
 	}

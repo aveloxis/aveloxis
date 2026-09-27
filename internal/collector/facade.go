@@ -286,9 +286,7 @@ func normalizeCloneURL(u string) string {
 	u = strings.TrimPrefix(u, "http://")
 	u = strings.TrimPrefix(u, "git://")
 	u = strings.TrimPrefix(u, "ssh://")
-	u = strings.TrimSuffix(u, "/")
-	u = strings.TrimSuffix(u, ".git")
-	return strings.ToLower(u)
+	return strings.ToLower(model.NormalizeRepoGitURL(u)) // the stored spelling's suffix rule (follow-up 8)
 }
 
 func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) error {

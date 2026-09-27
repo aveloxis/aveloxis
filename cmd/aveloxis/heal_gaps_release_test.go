@@ -41,7 +41,8 @@ type fakeGapStore struct {
 	candidates []db.GapHealCandidate // ascending repo_id
 	events     []string
 	locked     map[int64]bool
-	releasedOn []bool // per ReleaseDrainLock: was its ctx live?
+	releasedOn []bool            // per ReleaseDrainLock: was its ctx live?
+	releaseDue []db.DrainRelease // per release call (single and bulk): what the heal asked for due_at
 	lockTries  []int64
 	// Interrupts that land INSIDE a store call, as a real Ctrl-C can:
 	// cancel is called and the call fails with the cancelled context.
@@ -138,7 +139,10 @@ func (f *fakeGapStore) LockReposForDrain(ctx context.Context, ids []int64, owner
 	return got, nil
 }
 
-func (f *fakeGapStore) ReleaseDrainLock(ctx context.Context, id int64, owner string) error {
+func (f *fakeGapStore) ReleaseDrainLock(ctx context.Context, id int64, owner string, due db.DrainRelease) error {
+	f.mu.Lock()
+	f.releaseDue = append(f.releaseDue, due)
+	f.mu.Unlock()
 	if owner != testWorkerID {
 		f.mu.Lock()
 		f.wrongOwner = append(f.wrongOwner, "release:"+owner)
@@ -163,8 +167,11 @@ func (f *fakeGapStore) ReleaseDrainLock(ctx context.Context, id int64, owner str
 	return nil
 }
 
-func (f *fakeGapStore) ReleaseDrainLocks(ctx context.Context, owner string) (int64, error) {
+func (f *fakeGapStore) ReleaseDrainLocks(ctx context.Context, owner string, due db.DrainRelease) (int64, error) {
 	f.log("release-all")
+	f.mu.Lock()
+	f.releaseDue = append(f.releaseDue, due)
+	f.mu.Unlock()
 	if owner != testWorkerID {
 		f.mu.Lock()
 		f.wrongOwner = append(f.wrongOwner, "release-all:"+owner)
@@ -464,6 +471,16 @@ func TestGapHealFleetCompletes(t *testing.T) {
 	noRestore(t, store)
 	if !strings.Contains(logs.String(), "gap heal complete") || len(store.locked) != 0 {
 		t.Errorf("completion logged and nothing parked: locked=%v\n%s", store.locked, logs.String())
+	}
+	// Worklist item 56: a heal is not a reason to recollect — every release
+	// (the three per-repo ones and the exit release) keeps due_at.
+	if len(store.releaseDue) != 4 {
+		t.Fatalf("%d release calls, want 4 (three repos + the exit release)", len(store.releaseDue))
+	}
+	for i, due := range store.releaseDue {
+		if due != db.DrainReleaseKeepDue {
+			t.Errorf("release %d asked for %v; the heal must keep due_at (DrainReleaseKeepDue)", i, due)
+		}
 	}
 }
 

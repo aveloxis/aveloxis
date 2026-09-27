@@ -385,7 +385,16 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	}
 	cntrbPtr, cached := cntrbCache[m.SenderEmail]
 	if !cached {
-		if id, ok, _ := p.store.ResolveContributorIDByEmail(ctx, m.SenderEmail); ok {
+		id, ok, err := p.store.ResolveContributorIDByEmail(ctx, m.SenderEmail)
+		if err != nil {
+			// A failed lookup is not "no contributor" (SR-5; worklist item
+			// 17): the row is deferred and replayed by the next drain.
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			return deferRetryOutcome(fmt.Errorf("resolve sender: %w", err))
+		}
+		if ok {
 			cp := id
 			cntrbPtr = &cp
 		}

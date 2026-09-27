@@ -103,6 +103,20 @@ Groups are named collections of repositories. After logging in:
 
 Platform is auto-detected from the URL, the same as `aveloxis add-repo`.
 
+A URL is stored without a trailing `/` or `.git`, and every add path
+resolves a URL to that spelling (v0.29.68): pasting
+`https://github.com/chaoss/augur.git` or `https://github.com/chaoss/augur/`
+for a repository that is already collected links that repository to the
+group, and for a non-administrator links it instead of pending as a new
+repository. Re-adding a collected repository by any path (a paste, the
+portal API, `aveloxis add-repo`) never changes its collected description,
+language or archived flag: those are written by collection only.
+
+When a paste from a non-administrator needs approval, the group page says
+how many repositories are waiting; an organization waiting for approval, one
+that could not be added, or one added to a group an administrator rejected,
+is announced the same way.
+
 ## Adding an Entire GitHub Org or GitLab Group
 
 1. Open a group from the dashboard.

@@ -528,11 +528,20 @@ func lockfileEcoFold(eco string) string {
 // mismatched folding between sides silently drops valid edges.
 func LockfileGraphKey(eco, name string) string {
 	e := lockfileEcoFold(eco)
+	return e + "|" + lockfileGraphName(e, name)
+}
+
+// lockfileGraphName is the name half of LockfileGraphKey for an
+// ALREADY-FOLDED ecosystem: lowercased, trimmed, and PEP 503-folded for
+// PyPI. Split out so a SQL prefilter can be built from the same fold
+// (the exposed-repositories lockfile count, package_exposure_store.go)
+// without re-spelling it.
+func lockfileGraphName(foldedEco, name string) string {
 	n := strings.ToLower(strings.TrimSpace(name))
-	if e == "pypi" {
+	if foldedEco == "pypi" {
 		n = strings.NewReplacer("_", "-", ".", "-").Replace(n)
 	}
-	return e + "|" + n
+	return n
 }
 
 // DirectPackageSets is the chain walk's root set with PROVENANCE

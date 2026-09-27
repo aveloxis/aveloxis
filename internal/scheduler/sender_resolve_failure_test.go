@@ -36,3 +36,27 @@ func TestSenderResolveStampsOnlyDefinitiveFailures(t *testing.T) {
 		t.Fatal("the non-definitive resolve failure does not end the iteration before MarkSenderResolveAttempt")
 	}
 }
+
+// TestSenderResolveDoesNotStampOnStoreFailure pins worklist item 18: the
+// sender resolver stamped its 30-day cooldown when CreateEmailOnlyContributor
+// or LinkMailingListSender failed with a DB error — nothing was saved, and
+// the sender was hidden for 30 days anyway (SR-5). A store failure ends the
+// iteration without a stamp (the next tick retries).
+func TestSenderResolveDoesNotStampOnStoreFailure(t *testing.T) {
+	src := srctest.Read(t, "internal/scheduler/mailinglist_wiring.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Scheduler) runMailingListSenderResolve("))
+	for _, arm := range []string{"if cerr != nil {", "if lerr != nil {"} {
+		i := strings.Index(body, arm)
+		if i < 0 {
+			t.Fatalf("%q not found", arm)
+		}
+		rest := body[i:]
+		end := strings.Index(rest, "continue")
+		if end < 0 {
+			t.Fatalf("%q does not end its iteration", arm)
+		}
+		if strings.Contains(rest[:end], "MarkSenderResolveAttempt(") {
+			t.Errorf("%s stamps the sender-resolve cooldown on a STORE failure; nothing was saved, so nothing may be stamped", arm)
+		}
+	}
+}

@@ -21,7 +21,7 @@ import (
 func portalServer(t *testing.T, store sessionStore) *Server {
 	t.Helper()
 	s := &Server{}
-	s.auth = newAuthenticator(store, false) // require_auth OFF — portal must gate anyway
+	s.auth = newAuthenticator(store, false, nil) // require_auth OFF — portal must gate anyway
 	return s
 }
 
@@ -87,11 +87,11 @@ func TestAdminSelfDemotionRefused(t *testing.T) {
 // up to authCacheTTL.
 func TestAdminMutationsBustAuthCache(t *testing.T) {
 	store := &fakeSessionStore{userID: 7, valid: map[string]bool{"tok": true}}
-	auth := newAuthenticator(store, false)
+	auth := newAuthenticator(store, false, nil)
 
 	// Prime the cache with the non-admin role.
-	if info, ok := auth.resolveToken(context.Background(), "tok"); !ok || info.IsAdmin {
-		t.Fatalf("prime: want cached non-admin, got ok=%v admin=%v", ok, info.IsAdmin)
+	if info, err := auth.resolveToken(context.Background(), "tok"); err != nil || info.IsAdmin {
+		t.Fatalf("prime: want cached non-admin, got err=%v admin=%v", err, info.IsAdmin)
 	}
 
 	// Role flips in the store; the cache still answers stale.
@@ -103,8 +103,8 @@ func TestAdminMutationsBustAuthCache(t *testing.T) {
 	// The admin-mutation handlers call invalidateAll — after it, the
 	// next resolve must see the new role immediately.
 	auth.invalidateAll()
-	if info, ok := auth.resolveToken(context.Background(), "tok"); !ok || !info.IsAdmin {
-		t.Errorf("after invalidateAll, resolveToken must re-validate and see admin=true, got ok=%v admin=%v", ok, info.IsAdmin)
+	if info, err := auth.resolveToken(context.Background(), "tok"); err != nil || !info.IsAdmin {
+		t.Errorf("after invalidateAll, resolveToken must re-validate and see admin=true, got err=%v admin=%v", err, info.IsAdmin)
 	}
 }
 

@@ -8,7 +8,7 @@ package collector
 import (
 	"context"
 	"crypto/sha256"
-	_ "embed" // spdx_license_ids.txt (v0.27.23)
+	_ "embed" // cdx_license_ids_1_7.txt
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/spdx"
 	"github.com/google/uuid"
 )
 
@@ -219,10 +220,18 @@ func (x *sbomGraphIndex) childRefs(e db.RepoLockfileEdge) []string {
 }
 
 // ============================================================
-// CycloneDX 1.5
+// CycloneDX 1.7 (worklist 53, decision 6: 1.5 until v0.29.67)
 // ============================================================
 
+// cdxSpecVersion and cdxSchemaURL name the one CycloneDX version the
+// export targets; cdx_license_ids_1_7.txt is that version's license-ID enum.
+const (
+	cdxSpecVersion = "1.7"
+	cdxSchemaURL   = "http://cyclonedx.org/schema/bom-1.7.schema.json"
+)
+
 type cycloneDX struct {
+	Schema       string          `json:"$schema"`
 	BOMFormat    string          `json:"bomFormat"`
 	SpecVersion  string          `json:"specVersion"`
 	SerialNumber string          `json:"serialNumber"`
@@ -238,8 +247,8 @@ type cdxMetadata struct {
 	Component *cdxComponent `json:"component,omitempty"`
 }
 
-// cdxTools uses the CycloneDX 1.5 object form (components + services)
-// instead of the deprecated pre-1.5 bare array.
+// cdxTools uses the CycloneDX object form (components + services),
+// introduced in 1.5, instead of the deprecated bare array.
 type cdxTools struct {
 	Components []cdxToolComponent `json:"components"`
 }
@@ -263,7 +272,7 @@ type cdxComponent struct {
 	Evidence  *cdxEvidence `json:"evidence,omitempty"`
 }
 
-// cdxLicense models CycloneDX 1.5's licenseChoice: EITHER a license
+// cdxLicense models CycloneDX's licenseChoice: EITHER a license
 // object (id or name) OR an expression — never both. v0.27.29 added
 // the expression arm: before it, ScanCode's compound expressions
 // ("MIT AND Apache-2.0") failed isSPDXLicense and fell into
@@ -272,14 +281,18 @@ type cdxComponent struct {
 type cdxLicense struct {
 	License    *cdxLicenseObj `json:"license,omitempty"`
 	Expression string         `json:"expression,omitempty"`
+	// Acknowledgement (CycloneDX 1.6+) on the expression arm: "declared"
+	// for a registry's license, "concluded" for ScanCode's.
+	Acknowledgement string `json:"acknowledgement,omitempty"`
 }
 
 type cdxLicenseObj struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
+	ID              string `json:"id,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Acknowledgement string `json:"acknowledgement,omitempty"`
 }
 
-// cdxEvidence holds CycloneDX 1.5 evidence for concluded (detected) data.
+// cdxEvidence holds CycloneDX evidence for concluded (detected) data.
 // Used to distinguish source-code-detected licenses from registry-declared ones.
 type cdxEvidence struct {
 	Licenses  []cdxLicense           `json:"licenses,omitempty"`
@@ -307,10 +320,10 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 
 	// Enrich root component with ScanCode data if available.
 	if scanData != nil {
-		if scanData.ConcludedLicenseSPDX != "" {
-			rootComp.Evidence = &cdxEvidence{
-				Licenses: makeCDXLicenses(scanData.ConcludedLicenseSPDX),
-			}
+		// Evidence only when there is some (review round 10: a no-license
+		// conclusion left an empty "evidence": {}).
+		if lics := makeCDXLicenses(scanData.ConcludedLicenseSPDX, "concluded"); lics != nil {
+			rootComp.Evidence = &cdxEvidence{Licenses: lics}
 		}
 		if len(scanData.Copyrights) > 0 {
 			if rootComp.Evidence == nil {
@@ -348,8 +361,9 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	}
 
 	bom := cycloneDX{
+		Schema:       cdxSchemaURL,
 		BOMFormat:    "CycloneDX",
-		SpecVersion:  "1.5",
+		SpecVersion:  cdxSpecVersion,
 		SerialNumber: "urn:uuid:" + uuid.New().String(),
 		Version:      1,
 		Metadata: cdxMetadata{
@@ -431,7 +445,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 		// optional for optional/peer, excluded for dev/test/build).
 		comp.Scope = model.CycloneDXScopeForScope(d.scope)
 		if d.license != "" {
-			comp.Licenses = makeCDXLicenses(d.license)
+			comp.Licenses = makeCDXLicenses(d.license, "declared")
 		}
 		bom.Components = append(bom.Components, comp)
 
@@ -541,104 +555,129 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	return json.MarshalIndent(bom, "", "  ")
 }
 
-// v0.27.29 — multi-license emission semantics (the wrong-answer-tests
-// audit's " AND " finding):
+// License emission (v0.27.29, rewritten in v0.29.67 for worklist 53; design
+// in summary/39):
 //
-//   - REGISTRY license lists arrive stored as "A AND B" (the
-//     analysis-phase joiner), but a registry listing two licenses
-//     almost always means DUAL-LICENSING — a choice. Asserting AND
-//     (the consumer must satisfy both) inverts the legal obligation.
-//   - CycloneDX: emitted as MULTIPLE licenses[] entries — the spec's
-//     honest "relationship unstated" form; each element still gets
-//     id-vs-name treatment individually.
-//   - SPDX licenseDeclared: each part normalized via
-//     db.NormalizeLicenseToSPDX ("Apache 2.0" → Apache-2.0), then
-//     validated against the embedded official id list; all-valid
-//     multi-license joins with OR (dual-licensing alternatives), any
-//     unmappable part → NOASSERTION (SPDX requires a parseable
-//     expression, NOASSERTION, or NONE — free text is grammar-invalid).
-//   - ScanCode's OWN expressions pass through untouched: the toolkit
-//     emits valid SPDX expressions by construction, and its
-//     whole-tree AND is semantically CORRECT (different files under
-//     different licenses = conjunction). CDX carries compounds in the
-//     expression field.
-//
-// Storage semantics (repo_deps_libyear.license keeping " AND " as the
-// list separator) are deliberately unchanged tonight — flagged in the
-// v0.27.29 changelog for operator review, since changing the stored
-// form touches the license table display fleet-wide.
+//   - The stored value is one SPDX expression. Registry license LISTS are
+//     joined with OR when they are written (joinRegistryLicenseList), so a
+//     stored AND is a real conjunction and is never rewritten.
+//   - SPDX: the normalized expression when it validates (internal/spdx),
+//     NOASSERTION otherwise; never free text. Every LicenseRef- used is
+//     declared in hasExtractedLicensingInfos.
+//   - CycloneDX: at most one licenseChoice entry (none for a no-license
+//     value), license.id / expression / license.name by cdxLicenseFor's
+//     rules.
+//   - ScanCode's per-file expressions are joined with AND through
+//     spdx.JoinExpressions (different files under different licenses is a
+//     conjunction), with each file's own expression parenthesized.
 
-// makeCDXLicenses expands a stored license string into CycloneDX
-// entries: one per " AND "-separated element (registry list), or a
-// single expression entry when the string is a genuine SPDX compound
-// from ScanCode (contains an operator and every token validates).
-func makeCDXLicenses(raw string) []cdxLicense {
+// makeCDXLicenses renders a stored license as a CycloneDX licenseChoice: at
+// most ONE entry (Aveloxis's contract; see cdxLicenseFor for which arm), and
+// none for an empty or no-license value.
+func makeCDXLicenses(raw, acknowledgement string) []cdxLicense {
 	raw = strings.TrimSpace(raw)
+	// A no-license sentinel (NOASSERTION, NONE, N/A) normalizes to
+	// "Unknown": no entry, as SPDX says NOASSERTION (review round 9; an
+	// entry named "Unknown" read as a license).
 	if raw == "" {
 		return nil
 	}
-	parts := strings.Split(raw, " AND ")
-	if len(parts) == 1 {
-		return []cdxLicense{makeCDXLicense(raw)}
+	n := db.NormalizeLicenseToSPDX(raw) // once (mcp-gopls review A6)
+	if n == "Unknown" {
+		return nil
 	}
-	if allValidSPDXIDs(parts) {
-		// A parseable compound — CDX's expression field is the
-		// machine-readable home for it.
-		return []cdxLicense{{Expression: raw}}
-	}
-	out := make([]cdxLicense, 0, len(parts))
-	for _, p := range parts {
-		out = append(out, makeCDXLicense(strings.TrimSpace(p)))
-	}
-	return out
+	return []cdxLicense{cdxLicenseForNormalized(n, acknowledgement, inCDXLicenseEnum)}
 }
 
-func allValidSPDXIDs(parts []string) bool {
-	for _, p := range parts {
-		if !isSPDXLicense(strings.TrimSpace(p)) {
-			return false
-		}
-	}
-	return len(parts) > 0
+// cdxLicenseFor picks the licenseChoice arm for one stored license, after
+// normalization (db.NormalizeLicenseToSPDX):
+//   - license.id for an SPDX ID the target schema's enum lists (inEnum);
+//   - expression for any other valid SPDX expression: a compound, or a
+//     single ID newer than the enum (a one-term expression is valid in every
+//     schema version, and the enum is frozen per version, decision 6);
+//   - license.name for anything else (free text, house family labels).
+func cdxLicenseFor(raw, acknowledgement string, inEnum func(string) bool) cdxLicense {
+	return cdxLicenseForNormalized(db.NormalizeLicenseToSPDX(raw), acknowledgement, inEnum)
 }
 
-// spdxDeclaredLicense renders a stored license string as a VALID SPDX
-// licenseDeclared value: a single id, an OR-joined expression of
-// normalized ids, or NOASSERTION. Never free text.
+// cdxLicenseForNormalized is the production path (makeCDXLicenses normalizes
+// once); it applies the arm rules documented on cdxLicenseFor, which remains
+// the raw-input convenience the tests use.
+func cdxLicenseForNormalized(n, acknowledgement string, inEnum func(string) bool) cdxLicense {
+	if spdx.IsLicenseID(n) && inEnum(n) {
+		return cdxLicense{License: &cdxLicenseObj{ID: n, Acknowledgement: acknowledgement}}
+	}
+	if spdx.Valid(n) {
+		return cdxLicense{Expression: n, Acknowledgement: acknowledgement}
+	}
+	return cdxLicense{License: &cdxLicenseObj{Name: n, Acknowledgement: acknowledgement}}
+}
+
+// spdxDeclaredLicense renders a stored license as a VALID SPDX license field
+// (licenseDeclared, and licenseConcluded from ScanCode): the normalized
+// expression when it validates, NOASSERTION otherwise, never free text.
+// Until v0.29.67 it split on " AND " and required bare IDs, which turned every
+// OR, WITH and parenthesized license into NOASSERTION and rewrote a real
+// AND as OR (worklist 53, D3). A DocumentRef- names a license in ANOTHER
+// document this one would have to reference, so it is NOASSERTION too.
 func spdxDeclaredLicense(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if strings.TrimSpace(raw) == "" {
 		return "NOASSERTION"
 	}
-	parts := strings.Split(raw, " AND ")
-	ids := make([]string, 0, len(parts))
-	for _, p := range parts {
-		n := db.NormalizeLicenseToSPDX(strings.TrimSpace(p))
-		if !isSPDXLicense(n) {
-			return "NOASSERTION"
-		}
-		ids = append(ids, n)
+	n := db.NormalizeLicenseToSPDX(raw)
+	if !spdx.Valid(n) || strings.Contains(strings.ToLower(n), "documentref-") {
+		return "NOASSERTION"
 	}
-	if len(ids) == 1 {
-		return ids[0]
-	}
-	return "(" + strings.Join(ids, " OR ") + ")"
+	return n
 }
 
-// makeCDXLicense creates a CycloneDX license entry, using the id field for
-// recognized SPDX identifiers and the name field for non-standard strings.
-func makeCDXLicense(license string) cdxLicense {
-	obj := &cdxLicenseObj{}
-	if isSPDXLicense(license) {
-		obj.ID = license
-	} else if n := db.NormalizeLicenseToSPDX(license); isSPDXLicense(n) {
-		// v0.27.29: registry synonyms ("Apache 2.0") normalize to
-		// their SPDX id instead of demoting to free-text name.
-		obj.ID = n
-	} else {
-		obj.Name = license
+// assumedChoiceComment is the SPDX licenseComments for a license list whose
+// registry does not state how the licenses combine (RubyGems, Hex): the
+// writer stored it as OR (joinRegistryLicenseList, decision 2), and the
+// document says that was an assumption. Composer documents its list as a
+// choice, so it needs no note.
+func assumedChoiceComment(packageManager, declared string) string {
+	if !strings.Contains(declared, " OR ") {
+		return ""
 	}
-	return cdxLicense{License: obj}
+	for eco, registry := range map[string]string{"rubygems": "RubyGems", "hex": "Hex"} {
+		if db.LockfileGraphKey(packageManager, "x") == db.LockfileGraphKey(eco, "x") {
+			return "The " + registry + " registry records a package's licenses as a list that does not state how they combine; " +
+				"Aveloxis reads such a list as a choice (OR), the common dual-licensing reading."
+		}
+	}
+	return ""
+}
+
+// extractedLicensesFor declares every LicenseRef- the document's packages
+// use (SPDX 2.3 section 10: a LicenseRef- without a hasExtractedLicensingInfos
+// entry makes the document invalid; ScanCode's LicenseRef-scancode-* were
+// emitted that way until v0.29.67). Aveloxis never captures the license text,
+// so extractedText says so and names the source.
+func extractedLicensesFor(pkgs []spdxPackage) []spdxExtractedLicense {
+	seen := map[string]bool{}
+	var out []spdxExtractedLicense
+	for _, p := range pkgs {
+		for _, field := range []string{p.LicenseDeclared, p.LicenseConcluded} {
+			for _, tok := range strings.FieldsFunc(field, func(r rune) bool { return r == ' ' || r == '(' || r == ')' }) {
+				if !strings.HasPrefix(tok, "LicenseRef-") || seen[tok] {
+					continue
+				}
+				seen[tok] = true
+				source := "the package registry"
+				if strings.HasPrefix(tok, "LicenseRef-scancode-") {
+					source = "ScanCode source analysis"
+				}
+				out = append(out, spdxExtractedLicense{
+					LicenseID:     tok,
+					Name:          strings.TrimPrefix(tok, "LicenseRef-"),
+					ExtractedText: "The license text was not captured. Aveloxis recorded this identifier from " + source + ".",
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LicenseID < out[j].LicenseID })
+	return out
 }
 
 // ============================================================
@@ -654,6 +693,14 @@ type spdxDoc struct {
 	CreationInfo      spdxCreation   `json:"creationInfo"`
 	Packages          []spdxPackage  `json:"packages"`
 	Relationships     []spdxRelation `json:"relationships"`
+	// ExtractedLicenses declares each LicenseRef- the packages use.
+	ExtractedLicenses []spdxExtractedLicense `json:"hasExtractedLicensingInfos,omitempty"`
+}
+
+type spdxExtractedLicense struct {
+	LicenseID     string `json:"licenseId"`
+	ExtractedText string `json:"extractedText"`
+	Name          string `json:"name"`
 }
 
 type spdxCreation struct {
@@ -675,6 +722,7 @@ type spdxPackage struct {
 	DownloadLocation string            `json:"downloadLocation"`
 	LicenseConcluded string            `json:"licenseConcluded"`
 	LicenseDeclared  string            `json:"licenseDeclared"`
+	LicenseComments  string            `json:"licenseComments,omitempty"`
 	CopyrightText    string            `json:"copyrightText,omitempty"`
 	ExternalRefs     []spdxExternalRef `json:"externalRefs,omitempty"`
 }
@@ -719,7 +767,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 	copyrightText := "NOASSERTION"
 	if scanData != nil {
 		if scanData.ConcludedLicenseSPDX != "" {
-			concludedLicense = scanData.ConcludedLicenseSPDX
+			concludedLicense = spdxDeclaredLicense(scanData.ConcludedLicenseSPDX)
 		}
 		if len(scanData.Copyrights) > 0 {
 			copyrightText = strings.Join(scanData.Copyrights, "\n")
@@ -788,6 +836,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 			// scancode data, we can only assert what the registry declares.
 			LicenseConcluded: "NOASSERTION",
 			LicenseDeclared:  declared,
+			LicenseComments:  assumedChoiceComment(dep.PackageManager, declared),
 		}
 		if dep.Purl != "" {
 			pkg.ExternalRefs = []spdxExternalRef{{
@@ -874,6 +923,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 		RelatedSpdxElement: "SPDXRef-RootPackage",
 	})
 
+	doc.ExtractedLicenses = extractedLicensesFor(doc.Packages)
 	return json.MarshalIndent(doc, "", "  ")
 }
 
@@ -900,31 +950,23 @@ func orNoAssertion(s string) string {
 	return s
 }
 
-// isSPDXLicense checks whether a license string is a recognized SPDX license
-// identifier. CycloneDX and SPDX tools require the exact SPDX ID for
-// machine-readable policy enforcement.
-func isSPDXLicense(license string) bool {
-	_, ok := spdxLicenses[license]
-	return ok
-}
+// isSPDXLicense reports whether a string is an SPDX license identifier, as
+// spelled by the official list. The list is internal/spdx's (worklist 53,
+// SR-17); the collector's own embedded copy (v0.27.23) was retired in
+// v0.29.67.
+func isSPDXLicense(license string) bool { return spdx.IsLicenseID(license) }
 
-// spdxLicenseIDsRaw is the official SPDX license identifier list,
-// embedded at compile time (v0.27.23). It replaces a hand-maintained
-// ~70-entry allowlist that drifted monotonically from the real list
-// (733 identifiers) — valid-but-unlisted ids were demoted from
-// license.id to license.name, which downstream policy engines don't
-// match on. Refresh procedure is in the file's header comment; the
-// //go:embed follows the v0.25.4 NumFocus-catalog precedent (data
-// ships inside the binary, no network at runtime).
+// cdxLicenseIDsRaw is the CycloneDX 1.7 schema's license-ID enum; see the
+// file's header for why it is not the SPDX list.
 //
-//go:embed spdx_license_ids.txt
-var spdxLicenseIDsRaw string
+//go:embed cdx_license_ids_1_7.txt
+var cdxLicenseIDsRaw string
 
-// spdxLicenses is the parsed identifier set. Lines starting with '#'
-// are header comments in the generated file.
-var spdxLicenses = func() map[string]bool {
-	set := make(map[string]bool, 800)
-	for line := range strings.SplitSeq(spdxLicenseIDsRaw, "\n") {
+// cdxLicenseIDs is the parsed enum. Lines starting with '#' are the
+// generated file's header.
+var cdxLicenseIDs = func() map[string]bool {
+	set := make(map[string]bool, 900)
+	for line := range strings.SplitSeq(cdxLicenseIDsRaw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -933,6 +975,8 @@ var spdxLicenses = func() map[string]bool {
 	}
 	return set
 }()
+
+func inCDXLicenseEnum(id string) bool { return cdxLicenseIDs[id] }
 
 // StoreSBOM saves the generated SBOM JSON to repo_sbom_scans.
 func StoreSBOM(ctx context.Context, store *db.PostgresStore, repoID int64, sbomJSON []byte) error {
@@ -948,7 +992,7 @@ func GenerateAndStoreSBOMs(ctx context.Context, store *db.PostgresStore, repoID 
 		name    string
 		version string
 	}{
-		{FormatCycloneDX, "cyclonedx", "1.5"},
+		{FormatCycloneDX, "cyclonedx", cdxSpecVersion},
 		{FormatSPDX, "spdx", "2.3"},
 	} {
 		data, err := GenerateSBOM(ctx, store, repoID, spec.format)

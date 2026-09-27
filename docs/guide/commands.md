@@ -601,7 +601,12 @@ the database, fetch ONLY the missing items (with children and
 comments), stage, process.
 
 Targeted by construction — only count-gap candidates are visited
-(~5% of a typical fleet), never a 100% rescan. The candidate query is
+(~5% of a typical fleet), never a 100% rescan. A healed repository keeps
+its place in the recollection cycle (v0.29.68: the heal's release leaves
+`due_at` alone; before, every healed repository became due at once), and a
+`serve` started while a heal runs leaves the heal's parked repositories to
+it (its heartbeat keeps them fresh; only a heal whose heartbeat stopped for
+longer than the stale-lock window is reclaimed). The candidate query is
 the resume state: healed repos drop out, so the workflow is re-running
 until "0 candidates". Safe beside a running serve: each repo is
 drain-locked for the duration of its heal, and repos mid-collection

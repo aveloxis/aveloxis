@@ -1,0 +1,840 @@
+# Official SPDX license and exception identifiers — GENERATED, do not hand-edit.
+#
+# Source: https://github.com/spdx/license-list-data (json/licenses.json and
+# json/exceptions.json), license list version 3.29.0 (released 2026-09-16).
+#
+# Columns (tab-separated):
+#   L <id> <osi> <deprecated>   a license; osi = isOsiApproved, 1 or 0
+#   X <id> <deprecated>         a license exception
+#
+# Deprecated identifiers are INCLUDED: registries still emit them
+# (GPL-2.0, LGPL-3.0, ...), and they are valid SPDX.
+#
+# Refresh (then check the diff of the osi column in review):
+#   go run ./scripts/gen_spdx_data > internal/spdx/spdx_data.tsv
+L	0BSD	1	0
+L	3D-Slicer-1.0	0	0
+L	AAL	1	0
+L	ADSL	0	0
+L	AFL-1.1	1	0
+L	AFL-1.2	1	0
+L	AFL-2.0	1	0
+L	AFL-2.1	1	0
+L	AFL-3.0	1	0
+L	AGPL-1.0	0	1
+L	AGPL-1.0-only	0	0
+L	AGPL-1.0-or-later	0	0
+L	AGPL-3.0	1	1
+L	AGPL-3.0-only	1	0
+L	AGPL-3.0-or-later	1	0
+L	ALGLIB-Documentation	1	0
+L	AMD-newlib	0	0
+L	AMDPLPA	0	0
+L	AML	0	0
+L	AML-glslang	0	0
+L	AMPAS	0	0
+L	ANTLR-PD	0	0
+L	ANTLR-PD-fallback	0	0
+L	APAFML	0	0
+L	APL-1.0	1	0
+L	APSL-1.0	1	0
+L	APSL-1.1	1	0
+L	APSL-1.2	1	0
+L	APSL-2.0	1	0
+L	ASWF-Digital-Assets-1.0	0	0
+L	ASWF-Digital-Assets-1.1	0	0
+L	Abstyles	0	0
+L	AdaCore-doc	0	0
+L	Adobe-2006	0	0
+L	Adobe-Display-PostScript	0	0
+L	Adobe-Glyph	0	0
+L	Adobe-Utopia	0	0
+L	Advanced-Cryptics-Dictionary	0	0
+L	Afmparse	0	0
+L	Aladdin	0	0
+L	Apache-1.0	0	0
+L	Apache-1.1	1	0
+L	Apache-2.0	1	0
+L	App-s2p	0	0
+L	Arphic-1999	0	0
+L	Artistic-1.0	1	0
+L	Artistic-1.0-Perl	1	0
+L	Artistic-1.0-cl8	1	0
+L	Artistic-2.0	1	0
+L	Artistic-dist	0	0
+L	Aspell-RU	0	0
+L	BOLA-1.1	0	0
+L	BSD-1-Clause	1	0
+L	BSD-2-Clause	1	0
+L	BSD-2-Clause-Darwin	0	0
+L	BSD-2-Clause-FreeBSD	0	1
+L	BSD-2-Clause-NetBSD	0	1
+L	BSD-2-Clause-Patent	1	0
+L	BSD-2-Clause-Views	0	0
+L	BSD-2-Clause-first-lines	0	0
+L	BSD-2-Clause-pkgconf-disclaimer	0	0
+L	BSD-2-Clause-pos-unchanged	0	0
+L	BSD-3-Clause	1	0
+L	BSD-3-Clause-Attribution	0	0
+L	BSD-3-Clause-Clear	0	0
+L	BSD-3-Clause-HP	0	0
+L	BSD-3-Clause-LBNL	1	0
+L	BSD-3-Clause-Modification	0	0
+L	BSD-3-Clause-No-Military-License	0	0
+L	BSD-3-Clause-No-Nuclear-License	0	0
+L	BSD-3-Clause-No-Nuclear-License-2014	0	0
+L	BSD-3-Clause-No-Nuclear-Warranty	0	0
+L	BSD-3-Clause-Open-MPI	1	0
+L	BSD-3-Clause-OpenWebUI	0	0
+L	BSD-3-Clause-Sun	0	0
+L	BSD-3-Clause-Tso	0	0
+L	BSD-3-Clause-acpica	0	0
+L	BSD-3-Clause-flex	0	0
+L	BSD-4-Clause	0	0
+L	BSD-4-Clause-Shortened	0	0
+L	BSD-4-Clause-UC	0	0
+L	BSD-4.3RENO	0	0
+L	BSD-4.3TAHOE	0	0
+L	BSD-Advertising-Acknowledgement	0	0
+L	BSD-Attribution-HPND-disclaimer	0	0
+L	BSD-Inferno-Nettverk	0	0
+L	BSD-Mark-Modifications	0	0
+L	BSD-Protection	0	0
+L	BSD-Source-Code	0	0
+L	BSD-Source-Code-no-disclaimer	0	0
+L	BSD-Source-alt-GPL	0	0
+L	BSD-Source-beginning-file	0	0
+L	BSD-Systemics	0	0
+L	BSD-Systemics-W3Works	0	0
+L	BSD-ask-to-endorse	1	0
+L	BSL-1.0	1	0
+L	BUSL-1.1	0	0
+L	Baekmuk	0	0
+L	Bahyph	0	0
+L	Barr	0	0
+L	Beerware	0	0
+L	BitTorrent-1.0	0	0
+L	BitTorrent-1.1	0	0
+L	Bitstream-Charter	0	0
+L	Bitstream-Vera	0	0
+L	BlueOak-1.0.0	1	0
+L	Boehm-GC	0	0
+L	Boehm-GC-without-fee	0	0
+L	Borceux	0	0
+L	Brian-Gladman-2-Clause	0	0
+L	Brian-Gladman-3-Clause	0	0
+L	Brian-Gladman-3-Clause-no-conversion	0	0
+L	Buddy	0	0
+L	Bugroff	0	0
+L	C-UDA-1.0	0	0
+L	CAL-1.0	1	0
+L	CAL-1.0-Combined-Work-Exception	1	0
+L	CAPEC-tou	0	0
+L	CATOSL-1.1	1	0
+L	CC-BY-1.0	0	0
+L	CC-BY-2.0	0	0
+L	CC-BY-2.5	0	0
+L	CC-BY-2.5-AU	0	0
+L	CC-BY-3.0	0	0
+L	CC-BY-3.0-AT	0	0
+L	CC-BY-3.0-AU	0	0
+L	CC-BY-3.0-DE	0	0
+L	CC-BY-3.0-IGO	0	0
+L	CC-BY-3.0-NL	0	0
+L	CC-BY-3.0-US	0	0
+L	CC-BY-4.0	0	0
+L	CC-BY-NC-1.0	0	0
+L	CC-BY-NC-2.0	0	0
+L	CC-BY-NC-2.5	0	0
+L	CC-BY-NC-3.0	0	0
+L	CC-BY-NC-3.0-DE	0	0
+L	CC-BY-NC-3.0-IGO	0	0
+L	CC-BY-NC-4.0	0	0
+L	CC-BY-NC-ND-1.0	0	0
+L	CC-BY-NC-ND-2.0	0	0
+L	CC-BY-NC-ND-2.5	0	0
+L	CC-BY-NC-ND-3.0	0	0
+L	CC-BY-NC-ND-3.0-DE	0	0
+L	CC-BY-NC-ND-3.0-IGO	0	0
+L	CC-BY-NC-ND-4.0	0	0
+L	CC-BY-NC-SA-1.0	0	0
+L	CC-BY-NC-SA-2.0	0	0
+L	CC-BY-NC-SA-2.0-DE	0	0
+L	CC-BY-NC-SA-2.0-FR	0	0
+L	CC-BY-NC-SA-2.0-UK	0	0
+L	CC-BY-NC-SA-2.5	0	0
+L	CC-BY-NC-SA-3.0	0	0
+L	CC-BY-NC-SA-3.0-DE	0	0
+L	CC-BY-NC-SA-3.0-IGO	0	0
+L	CC-BY-NC-SA-4.0	0	0
+L	CC-BY-ND-1.0	0	0
+L	CC-BY-ND-2.0	0	0
+L	CC-BY-ND-2.5	0	0
+L	CC-BY-ND-3.0	0	0
+L	CC-BY-ND-3.0-DE	0	0
+L	CC-BY-ND-4.0	0	0
+L	CC-BY-SA-1.0	0	0
+L	CC-BY-SA-2.0	0	0
+L	CC-BY-SA-2.0-UK	0	0
+L	CC-BY-SA-2.1-JP	0	0
+L	CC-BY-SA-2.5	0	0
+L	CC-BY-SA-3.0	0	0
+L	CC-BY-SA-3.0-AT	0	0
+L	CC-BY-SA-3.0-DE	0	0
+L	CC-BY-SA-3.0-IGO	0	0
+L	CC-BY-SA-4.0	0	0
+L	CC-PDDC	0	0
+L	CC-PDM-1.0	0	0
+L	CC-SA-1.0	0	0
+L	CC0-1.0	0	0
+L	CDDL-1.0	1	0
+L	CDDL-1.1	1	0
+L	CDL-1.0	0	0
+L	CDLA-Permissive-1.0	0	0
+L	CDLA-Permissive-2.0	0	0
+L	CDLA-Sharing-1.0	0	0
+L	CECILL-1.0	0	0
+L	CECILL-1.1	0	0
+L	CECILL-2.0	0	0
+L	CECILL-2.1	1	0
+L	CECILL-B	0	0
+L	CECILL-C	0	0
+L	CERN-OHL-1.1	0	0
+L	CERN-OHL-1.2	0	0
+L	CERN-OHL-P-2.0	1	0
+L	CERN-OHL-S-2.0	1	0
+L	CERN-OHL-W-2.0	1	0
+L	CFITSIO	0	0
+L	CMU-Mach	0	0
+L	CMU-Mach-nodoc	0	0
+L	CNRI-Jython	0	0
+L	CNRI-Python	1	0
+L	CNRI-Python-GPL-Compatible	1	0
+L	COIL-1.0	0	0
+L	CPAL-1.0	1	0
+L	CPL-1.0	1	0
+L	CPOL-1.02	0	0
+L	CUA-OPL-1.0	1	0
+L	Caldera	0	0
+L	Caldera-no-preamble	0	0
+L	Catharon	0	0
+L	ClArtistic	0	0
+L	Clips	0	0
+L	Community-Spec-1.0	0	0
+L	Condor-1.1	0	0
+L	Cornell-Lossless-JPEG	0	0
+L	Cronyx	0	0
+L	Crossword	0	0
+L	CryptoSwift	0	0
+L	CrystalStacker	0	0
+L	Cube	0	0
+L	D-FSL-1.0	0	0
+L	DEC-3-Clause	0	0
+L	DL-DE-BY-2.0	0	0
+L	DL-DE-ZERO-2.0	0	0
+L	DOC	0	0
+L	DRL-1.0	0	0
+L	DRL-1.1	0	0
+L	DSDP	0	0
+L	DocBook-DTD	0	0
+L	DocBook-Schema	0	0
+L	DocBook-Stylesheet	0	0
+L	DocBook-XML	0	0
+L	Dotseqn	0	0
+L	ECL-1.0	1	0
+L	ECL-2.0	1	0
+L	EFL-1.0	1	0
+L	EFL-2.0	1	0
+L	EPICS	0	0
+L	EPL-1.0	1	0
+L	EPL-2.0	1	0
+L	ESA-PL-permissive-2.4	0	0
+L	ESA-PL-strong-copyleft-2.4	0	0
+L	ESA-PL-weak-copyleft-2.4	0	0
+L	EUDatagrid	1	0
+L	EUPL-1.0	0	0
+L	EUPL-1.1	1	0
+L	EUPL-1.2	1	0
+L	Elastic-2.0	0	0
+L	Entessa	1	0
+L	ErlPL-1.1	0	0
+L	Eurosym	0	0
+L	FBM	0	0
+L	FDK-AAC	0	0
+L	FDK-MPEG-H	0	0
+L	FSFAP	0	0
+L	FSFAP-no-warranty-disclaimer	0	0
+L	FSFUL	0	0
+L	FSFULLR	0	0
+L	FSFULLRSD	0	0
+L	FSFULLRWD	0	0
+L	FSL-1.1-ALv2	0	0
+L	FSL-1.1-MIT	0	0
+L	FTL	0	0
+L	Fair	1	0
+L	Ferguson-Twofish	0	0
+L	Frameworx-1.0	1	0
+L	FreeBSD-DOC	0	0
+L	FreeImage	0	0
+L	Furuseth	0	0
+L	GCR-docs	0	0
+L	GD	0	0
+L	GFDL-1.1	0	1
+L	GFDL-1.1-invariants-only	0	0
+L	GFDL-1.1-invariants-or-later	0	0
+L	GFDL-1.1-no-invariants-only	0	0
+L	GFDL-1.1-no-invariants-or-later	0	0
+L	GFDL-1.1-only	0	0
+L	GFDL-1.1-or-later	0	0
+L	GFDL-1.2	0	1
+L	GFDL-1.2-invariants-only	0	0
+L	GFDL-1.2-invariants-or-later	0	0
+L	GFDL-1.2-no-invariants-only	0	0
+L	GFDL-1.2-no-invariants-or-later	0	0
+L	GFDL-1.2-only	0	0
+L	GFDL-1.2-or-later	0	0
+L	GFDL-1.3	0	1
+L	GFDL-1.3-invariants-only	0	0
+L	GFDL-1.3-invariants-or-later	0	0
+L	GFDL-1.3-no-invariants-only	0	0
+L	GFDL-1.3-no-invariants-or-later	0	0
+L	GFDL-1.3-only	0	0
+L	GFDL-1.3-or-later	0	0
+L	GL2PS	0	0
+L	GLWTPL	0	0
+L	GPL-1.0	0	1
+L	GPL-1.0+	0	1
+L	GPL-1.0-only	0	0
+L	GPL-1.0-or-later	0	0
+L	GPL-2.0	1	1
+L	GPL-2.0+	1	1
+L	GPL-2.0-only	1	0
+L	GPL-2.0-or-later	1	0
+L	GPL-2.0-with-GCC-exception	0	1
+L	GPL-2.0-with-autoconf-exception	0	1
+L	GPL-2.0-with-bison-exception	0	1
+L	GPL-2.0-with-classpath-exception	0	1
+L	GPL-2.0-with-font-exception	0	1
+L	GPL-3.0	1	1
+L	GPL-3.0+	1	1
+L	GPL-3.0-only	1	0
+L	GPL-3.0-or-later	1	0
+L	GPL-3.0-with-GCC-exception	1	1
+L	GPL-3.0-with-autoconf-exception	0	1
+L	Game-Programming-Gems	0	0
+L	Giftware	0	0
+L	Glide	0	0
+L	Glulxe	0	0
+L	Graphics-Gems	0	0
+L	Gutmann	0	0
+L	HDF5	0	0
+L	HIDAPI	0	0
+L	HP-1986	0	0
+L	HP-1989	0	0
+L	HPND	1	0
+L	HPND-DEC	0	0
+L	HPND-Fenneberg-Livingston	0	0
+L	HPND-INRIA-IMAG	0	0
+L	HPND-Intel	0	0
+L	HPND-Kevlin-Henney	0	0
+L	HPND-MIT-disclaimer	0	0
+L	HPND-Markus-Kuhn	0	0
+L	HPND-Netrek	0	0
+L	HPND-Pbmplus	0	0
+L	HPND-SMC	0	0
+L	HPND-UC	0	0
+L	HPND-UC-export-US	0	0
+L	HPND-doc	0	0
+L	HPND-doc-sell	0	0
+L	HPND-export-US	0	0
+L	HPND-export-US-acknowledgement	0	0
+L	HPND-export-US-modify	0	0
+L	HPND-export2-US	0	0
+L	HPND-merchantability-variant	0	0
+L	HPND-sell-MIT-disclaimer-xserver	0	0
+L	HPND-sell-regexpr	0	0
+L	HPND-sell-variant	0	0
+L	HPND-sell-variant-MIT-disclaimer	0	0
+L	HPND-sell-variant-MIT-disclaimer-rev	0	0
+L	HPND-sell-variant-critical-systems	0	0
+L	HTMLTIDY	0	0
+L	HaskellReport	0	0
+L	Hippocratic-2.1	0	0
+L	Hippocratic-3.0-core	0	0
+L	IBM-pibs	0	0
+L	ICU	1	0
+L	IEC-Code-Components-EULA	0	0
+L	IJG	0	0
+L	IJG-short	0	0
+L	IPA	1	0
+L	IPL-1.0	1	0
+L	ISC	1	0
+L	ISC-Veillard	0	0
+L	ISO-permission	0	0
+L	ImageMagick	0	0
+L	Imlib2	0	0
+L	Info-ZIP	0	0
+L	Informatica	0	0
+L	Inner-Net-2.0	0	0
+L	InnoSetup	0	0
+L	Intel	1	0
+L	Intel-ACPI	0	0
+L	Interbase-1.0	0	0
+L	JPL-image	0	0
+L	JPNIC	0	0
+L	JSON	0	0
+L	Jam	1	0
+L	JasPer-2.0	0	0
+L	Kastrup	0	0
+L	Kazlib	0	0
+L	Knuth-CTAN	0	0
+L	LAL-1.2	0	0
+L	LAL-1.3	0	0
+L	LGPL-2.0	1	1
+L	LGPL-2.0+	1	1
+L	LGPL-2.0-only	1	0
+L	LGPL-2.0-or-later	1	0
+L	LGPL-2.1	1	1
+L	LGPL-2.1+	1	1
+L	LGPL-2.1-only	1	0
+L	LGPL-2.1-or-later	1	0
+L	LGPL-3.0	1	1
+L	LGPL-3.0+	1	1
+L	LGPL-3.0-only	1	0
+L	LGPL-3.0-or-later	1	0
+L	LGPLLR	0	0
+L	LOOP	0	0
+L	LPD-document	0	0
+L	LPL-1.0	1	0
+L	LPL-1.02	1	0
+L	LPPL-1.0	0	0
+L	LPPL-1.1	0	0
+L	LPPL-1.2	0	0
+L	LPPL-1.3a	0	0
+L	LPPL-1.3c	1	0
+L	LZMA-SDK-9.11-to-9.20	0	0
+L	LZMA-SDK-9.22	0	0
+L	Latex2e	0	0
+L	Latex2e-translated-notice	0	0
+L	Leptonica	0	0
+L	LiLiQ-P-1.1	1	0
+L	LiLiQ-R-1.1	1	0
+L	LiLiQ-Rplus-1.1	1	0
+L	Libpng	0	0
+L	Linux-OpenIB	0	0
+L	Linux-man-pages-1-para	0	0
+L	Linux-man-pages-copyleft	0	0
+L	Linux-man-pages-copyleft-2-para	0	0
+L	Linux-man-pages-copyleft-var	0	0
+L	Lucida-Bitmap-Fonts	0	0
+L	MIPS	0	0
+L	MIT	1	0
+L	MIT-0	1	0
+L	MIT-CMU	0	0
+L	MIT-Click	0	0
+L	MIT-Festival	0	0
+L	MIT-Khronos-old	0	0
+L	MIT-Modern-Variant	1	0
+L	MIT-STK	0	0
+L	MIT-Wu	0	0
+L	MIT-advertising	0	0
+L	MIT-enna	0	0
+L	MIT-feh	0	0
+L	MIT-open-group	0	0
+L	MIT-testregex	0	0
+L	MITNFA	0	0
+L	MMIXware	0	0
+L	MMPL-1.0.1	0	0
+L	MPEG-SSG	0	0
+L	MPL-1.0	1	0
+L	MPL-1.1	1	0
+L	MPL-2.0	1	0
+L	MPL-2.0-no-copyleft-exception	1	0
+L	MS-LPL	0	0
+L	MS-PL	1	0
+L	MS-RL	1	0
+L	MTLL	0	0
+L	MVT-1.1	0	0
+L	Mackerras-3-Clause	0	0
+L	Mackerras-3-Clause-acknowledgment	0	0
+L	MakeIndex	0	0
+L	Martin-Birgmeier	0	0
+L	McPhee-slideshow	0	0
+L	Minpack	0	0
+L	MirOS	1	0
+L	Motosoto	1	0
+L	MulanPSL-1.0	0	0
+L	MulanPSL-2.0	1	0
+L	Multics	1	0
+L	Mup	0	0
+L	NAIST-2003	0	0
+L	NASA-1.3	1	0
+L	NBPL-1.0	0	0
+L	NCBI-PD	0	0
+L	NCGL-UK-2.0	0	0
+L	NCL	0	0
+L	NCSA	1	0
+L	NGPL	1	0
+L	NICTA-1.0	0	0
+L	NIST-PD	0	0
+L	NIST-PD-TNT	0	0
+L	NIST-PD-fallback	0	0
+L	NIST-Software	0	0
+L	NLOD-1.0	0	0
+L	NLOD-2.0	0	0
+L	NLPL	0	0
+L	NOSL	0	0
+L	NPL-1.0	0	0
+L	NPL-1.1	0	0
+L	NPOSL-3.0	1	0
+L	NRL	0	0
+L	NTIA-PD	0	0
+L	NTP	1	0
+L	NTP-0	0	0
+L	Naumen	1	0
+L	Net-SNMP	0	1
+L	NetCDF	0	0
+L	Newsletr	0	0
+L	Nokia	1	0
+L	Noweb	0	0
+L	Nunit	0	1
+L	O-UDA-1.0	0	0
+L	OAR	0	0
+L	OCCT-PL	0	0
+L	OCLC-2.0	1	0
+L	ODC-By-1.0	0	0
+L	ODbL-1.0	0	0
+L	OFFIS	0	0
+L	OFL-1.0	0	0
+L	OFL-1.0-RFN	0	0
+L	OFL-1.0-no-RFN	0	0
+L	OFL-1.1	1	0
+L	OFL-1.1-RFN	1	0
+L	OFL-1.1-no-RFN	1	0
+L	OGC-1.0	0	0
+L	OGDL-Taiwan-1.0	0	0
+L	OGL-Canada-2.0	0	0
+L	OGL-UK-1.0	0	0
+L	OGL-UK-2.0	0	0
+L	OGL-UK-3.0	0	0
+L	OGTSL	1	0
+L	OLDAP-1.1	0	0
+L	OLDAP-1.2	0	0
+L	OLDAP-1.3	0	0
+L	OLDAP-1.4	0	0
+L	OLDAP-2.0	0	0
+L	OLDAP-2.0.1	0	0
+L	OLDAP-2.1	0	0
+L	OLDAP-2.2	0	0
+L	OLDAP-2.2.1	0	0
+L	OLDAP-2.2.2	0	0
+L	OLDAP-2.3	0	0
+L	OLDAP-2.4	0	0
+L	OLDAP-2.5	0	0
+L	OLDAP-2.6	0	0
+L	OLDAP-2.7	0	0
+L	OLDAP-2.8	1	0
+L	OLFL-1.3	1	0
+L	OML	0	0
+L	OPL-1.0	0	0
+L	OPL-UK-3.0	0	0
+L	OPUBL-1.0	0	0
+L	OSC-1.0	1	0
+L	OSET-PL-2.1	1	0
+L	OSL-1.0	1	0
+L	OSL-1.1	0	0
+L	OSL-2.0	1	0
+L	OSL-2.1	1	0
+L	OSL-3.0	1	0
+L	OSSP	0	0
+L	OpenMDW-1.0	0	0
+L	OpenPBS-2.3	0	0
+L	OpenSSL	0	0
+L	OpenSSL-standalone	0	0
+L	OpenVision	0	0
+L	PADL	0	0
+L	PDDL-1.0	0	0
+L	PHP-3.0	1	0
+L	PHP-3.01	1	0
+L	PPL	0	0
+L	PSF-2.0	0	0
+L	ParaType-Free-Font-1.3	0	0
+L	Parity-6.0.0	0	0
+L	Parity-7.0.0	0	0
+L	Pixar	0	0
+L	Plexus	0	0
+L	PolyForm-Noncommercial-1.0.0	0	0
+L	PolyForm-Small-Business-1.0.0	0	0
+L	PostgreSQL	1	0
+L	Python-2.0	1	0
+L	Python-2.0.1	1	0
+L	QPL-1.0	1	0
+L	QPL-1.0-INRIA-2004	0	0
+L	Qhull	0	0
+L	RHeCos-1.1	0	0
+L	RPL-1.1	1	0
+L	RPL-1.5	1	0
+L	RPSL-1.0	1	0
+L	RSA-MD	0	0
+L	RSCPL	1	0
+L	Rdisc	0	0
+L	Ruby	0	0
+L	Ruby-pty	0	0
+L	SAX-PD	0	0
+L	SAX-PD-2.0	0	0
+L	SCEA	0	0
+L	SGI-B-1.0	0	0
+L	SGI-B-1.1	0	0
+L	SGI-B-2.0	0	0
+L	SGI-OpenGL	0	0
+L	SGMLUG-PM	0	0
+L	SGP4	0	0
+L	SHL-0.5	0	0
+L	SHL-0.51	0	0
+L	SISSL	1	0
+L	SISSL-1.2	0	0
+L	SL	0	0
+L	SMAIL-GPL	0	0
+L	SMLNJ	0	0
+L	SMPPL	0	0
+L	SNIA	0	0
+L	SOFA	0	0
+L	SPL-1.0	1	0
+L	SSH-OpenSSH	0	0
+L	SSH-short	0	0
+L	SSLeay-standalone	0	0
+L	SSPL-1.0	0	0
+L	SUL-1.0	0	0
+L	SWL	0	0
+L	Saxpath	0	0
+L	SchemeReport	0	0
+L	Sendmail	0	0
+L	Sendmail-8.23	0	0
+L	Sendmail-Open-Source-1.1	0	0
+L	SimPL-2.0	1	0
+L	Sleepycat	1	0
+L	Soundex	0	0
+L	Spencer-86	0	0
+L	Spencer-94	0	0
+L	Spencer-99	0	0
+L	StandardML-NJ	0	1
+L	SugarCRM-1.1.3	0	0
+L	Sun-PPP	0	0
+L	Sun-PPP-2000	0	0
+L	SunPro	0	0
+L	Symlinks	0	0
+L	TAPR-OHL-1.0	0	0
+L	TCL	0	0
+L	TCP-wrappers	0	0
+L	TGPPL-1.0	0	0
+L	TMate	0	0
+L	TORQUE-1.1	0	0
+L	TOSL	0	0
+L	TPDL	0	0
+L	TPL-1.0	0	0
+L	TTWL	0	0
+L	TTYP0	0	0
+L	TU-Berlin-1.0	0	0
+L	TU-Berlin-2.0	0	0
+L	TekHVC	0	0
+L	TermReadKey	0	0
+L	ThirdEye	0	0
+L	TrustedQSL	0	0
+L	UCAR	0	0
+L	UCL-1.0	1	0
+L	UMich-Merit	0	0
+L	UPL-1.0	1	0
+L	URT-RLE	0	0
+L	Ubuntu-font-1.0	0	0
+L	UnRAR	0	0
+L	Unicode-3.0	1	0
+L	Unicode-DFS-2015	0	0
+L	Unicode-DFS-2016	1	0
+L	Unicode-TOU	0	0
+L	UnixCrypt	0	0
+L	Unlicense	1	0
+L	Unlicense-libtelnet	0	0
+L	Unlicense-libwhirlpool	0	0
+L	VOSTROM	0	0
+L	VSL-1.0	1	0
+L	Vim	0	0
+L	Vixie-Cron	0	0
+L	W3C	1	0
+L	W3C-19980720	0	0
+L	W3C-20150513	1	0
+L	WTFNMFPL	0	0
+L	WTFPL	0	0
+L	Watcom-1.0	1	0
+L	Widget-Workshop	0	0
+L	WordNet	1	0
+L	Wsuipa	0	0
+L	X11	0	0
+L	X11-distribute-modifications-variant	0	0
+L	X11-no-permit-persons	0	0
+L	X11-swapped	0	0
+L	XFree86-1.1	0	0
+L	XSkat	0	0
+L	Xdebug-1.03	0	0
+L	Xerox	0	0
+L	Xfig	0	0
+L	Xnet	1	0
+L	YPL-1.0	0	0
+L	YPL-1.1	0	0
+L	ZPL-1.1	0	0
+L	ZPL-2.0	1	0
+L	ZPL-2.1	1	0
+L	Zed	0	0
+L	Zeeff	0	0
+L	Zend-2.0	0	0
+L	Zimbra-1.3	0	0
+L	Zimbra-1.4	0	0
+L	Zlib	1	0
+L	any-OSI	0	0
+L	any-OSI-perl-modules	0	0
+L	atc-game	0	0
+L	bcrypt-Solar-Designer	0	0
+L	blessing	0	0
+L	bzip2-1.0.5	0	1
+L	bzip2-1.0.6	0	0
+L	check-cvs	0	0
+L	checkmk	0	0
+L	copyleft-next-0.3.0	0	0
+L	copyleft-next-0.3.1	0	0
+L	curl	1	0
+L	cve-tou	0	0
+L	diffmark	0	0
+L	dtoa	0	0
+L	dvipdfm	0	0
+L	eCos-2.0	0	1
+L	eGenix	0	0
+L	etalab-2.0	0	0
+L	fwlw	0	0
+L	gSOAP-1.3b	0	0
+L	generic-xts	0	0
+L	gnuplot	0	0
+L	gtkbook	0	0
+L	hdparm	0	0
+L	hyphen-bulgarian	0	0
+L	iMatix	0	0
+L	jove	0	0
+L	libpng-1.6.35	0	0
+L	libpng-2.0	0	0
+L	libselinux-1.0	0	0
+L	libtiff	0	0
+L	libutil-David-Nugent	0	0
+L	lsof	0	0
+L	magaz	0	0
+L	mailprio	0	0
+L	man2html	0	0
+L	metamail	0	0
+L	mpi-permissive	0	0
+L	mpich2	0	0
+L	mplus	0	0
+L	ngrep	0	0
+L	pkgconf	0	0
+L	pnmstitch	0	0
+L	psfrag	0	0
+L	psutils	0	0
+L	python-ldap	0	0
+L	radvd	0	0
+L	snprintf	0	0
+L	softSurfer	0	0
+L	ssh-keyscan	0	0
+L	swrule	0	0
+L	threeparttable	0	0
+L	ulem	0	0
+L	w3m	0	0
+L	wwl	0	0
+L	wxWindows	1	1
+L	xinetd	0	0
+L	xkeyboard-config-Zinoviev	0	0
+L	xlock	0	0
+L	xpp	0	0
+L	xzoom	0	0
+L	zlib-acknowledgement	0	0
+X	389-exception	0
+X	Asterisk-exception	0
+X	Asterisk-linking-protocols-exception	0
+X	Autoconf-exception-2.0	0
+X	Autoconf-exception-3.0	0
+X	Autoconf-exception-generic	0
+X	Autoconf-exception-generic-3.0	0
+X	Autoconf-exception-macro	0
+X	Bison-exception-1.24	0
+X	Bison-exception-2.2	0
+X	Bootloader-exception	0
+X	CGAL-linking-exception	0
+X	CLISP-exception-2.0	0
+X	Classpath-exception-2.0	0
+X	Classpath-exception-2.0-short	0
+X	DigiRule-FOSS-exception	0
+X	Digia-Qt-LGPL-exception-1.1	0
+X	FLTK-exception	0
+X	Fawkes-Runtime-exception	0
+X	Font-exception-2.0	0
+X	GCC-exception-2.0	0
+X	GCC-exception-2.0-note	0
+X	GCC-exception-3.1	0
+X	GNAT-exception	0
+X	GNOME-examples-exception	0
+X	GNU-compiler-exception	0
+X	GPL-3.0-389-ds-base-exception	0
+X	GPL-3.0-interface-exception	0
+X	GPL-3.0-linking-exception	0
+X	GPL-3.0-linking-source-exception	0
+X	GPL-CC-1.0	0
+X	GStreamer-exception-2005	0
+X	GStreamer-exception-2008	0
+X	Gmsh-exception	0
+X	Google-Patent-WebM	0
+X	Independent-modules-exception	0
+X	KiCad-libraries-exception	0
+X	LGPL-3.0-linking-exception	0
+X	LLGPL	0
+X	LLVM-exception	0
+X	LZMA-exception	0
+X	Libtool-exception	0
+X	Linux-syscall-note	0
+X	Nokia-Qt-exception-1.1	1
+X	OCCT-exception-1.0	0
+X	OCaml-LGPL-linking-exception	0
+X	OpenJDK-assembly-exception-1.0	0
+X	PCRE2-exception	0
+X	PS-or-PDF-font-exception-20170817	0
+X	QPL-1.0-INRIA-2004-exception	0
+X	Qt-GPL-exception-1.0	0
+X	Qt-LGPL-exception-1.1	0
+X	Qwt-exception-1.0	0
+X	RRDtool-FLOSS-exception-2.0	0
+X	SANE-exception	0
+X	SHL-2.0	0
+X	SHL-2.1	0
+X	SWI-exception	0
+X	Simple-Library-Usage-exception	0
+X	Spelling-Provider-LGPL-exception	0
+X	Swift-exception	0
+X	Texinfo-exception	0
+X	UBDL-exception	0
+X	Universal-FOSS-exception-1.0	0
+X	WxWindows-exception-3.1	0
+X	cryptsetup-OpenSSL-exception	0
+X	eCos-exception-2.0	0
+X	erlang-otp-linking-exception	0
+X	fmt-exception	0
+X	freertos-exception-2.0	0
+X	gnu-javamail-exception	0
+X	harbour-exception	0
+X	i2p-gpl-java-exception	0
+X	kvirc-openssl-exception	0
+X	libpri-OpenH323-exception	0
+X	mif-exception	0
+X	mxml-exception	0
+X	openvpn-openssl-exception	0
+X	polyparse-exception	0
+X	romic-exception	0
+X	rsync-linking-exception	0
+X	sqlitestudio-OpenSSL-exception	0
+X	stunnel-exception	0
+X	u-boot-exception-2.0	0
+X	vsftpd-openssl-exception	0
+X	x11vnc-openssl-exception	0

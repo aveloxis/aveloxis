@@ -250,7 +250,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// annotateCycloneDXWithVulns appends a CycloneDX 1.5 `vulnerabilities`
+// annotateCycloneDXWithVulns appends a CycloneDX `vulnerabilities`
 // array to a generated SBOM, covering the repo's CURRENT (unresolved)
 // findings. Components with a purl carry it as bom-ref (purl-less ones
 // carry an aveloxis: ref and are never scanned, v0.29.58), so affects.ref

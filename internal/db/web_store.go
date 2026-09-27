@@ -538,7 +538,11 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 			return out, err
 		}
 	}
-	isAdmin, _ := s.IsUserAdmin(ctx, userID)
+	// A lookup ERROR is not "not an admin" (SR-5; worklist follow-up 6).
+	isAdmin, err := s.IsUserAdmin(ctx, userID)
+	if err != nil {
+		return out, fmt.Errorf("look up admin flag: %w", err)
+	}
 	if !isAdmin {
 		registered, regErr := s.IsOrgRegisteredAnywhere(ctx, orgURL)
 		if regErr != nil {

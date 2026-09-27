@@ -368,7 +368,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// cannot have any legitimate in-flight work, so all locks from other
 	// worker IDs are definitively stale — no need to wait for the 1-hour
 	// timeout. This fixes repos stuck in 'collecting' after a restart.
-	recovered, err := s.store.RecoverOtherWorkerLocks(ctx, s.workerID)
+	recovered, err := s.store.RecoverOtherWorkerLocks(ctx, s.workerID, s.cfg.StaleLockTimeout)
 	if errors.Is(err, context.Canceled) {
 		return // shutdown during startup
 	}
@@ -2160,7 +2160,7 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 			return
 		}
 		s.drainOneRepo(ctx, repoID)
-		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID)
+		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID, db.DrainReleaseDueNow)
 		if errors.Is(err, context.Canceled) {
 			return // shutdown: the shutdown arm releases the parked set (releaseOurDrainLocks)
 		}
@@ -2219,7 +2219,7 @@ func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 // 'queued' at shutdown (v0.29.64). A failure is logged; the next start's
 // RecoverOtherWorkerLocks still reclaims them.
 func (s *Scheduler) releaseOurDrainLocks(ctx context.Context) {
-	n, err := s.store.ReleaseDrainLocks(ctx, s.workerID)
+	n, err := s.store.ReleaseDrainLocks(ctx, s.workerID, db.DrainReleaseDueNow)
 	if err != nil {
 		s.logger.Warn("failed to release drain-parked locks on shutdown — the next start reclaims them", "error", err)
 		return
@@ -2710,7 +2710,16 @@ func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 // unscoped to keep discovering new repos in long-tracked orgs.
 func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) {
 	orgs, err := s.store.GetOrgRequests(ctx)
-	if err != nil || len(orgs) == 0 {
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
+	if err != nil {
+		// Logged (batch-2 review round 3: this was the one silent arm left
+		// in the function); the pass runs again next tick.
+		s.logger.Error("org refresh skipped — listing the org registrations failed", "error", err)
+		return
+	}
+	if len(orgs) == 0 {
 		return
 	}
 	if onlyNeverScanned {
@@ -2750,7 +2759,14 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 	grouped := map[string]*orgScan{}
 	for _, org := range orgs {
 		groupID, err := s.store.GetGroupIDForOrgRequest(ctx, org.OrgRequestID)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
 		if err != nil {
+			// Logged, and the org waits for the next tick (batch-2 review
+			// round 2: this was a silent continue beside the fixed gate).
+			s.logger.Error("org scan skipped — group lookup failed",
+				"org_request_id", org.OrgRequestID, "org", org.OrgName, "error", err)
 			continue
 		}
 
@@ -2759,7 +2775,18 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		// user_org_requests = approved), so this is the belt for the
 		// group-level abuse lever — RejectGroup must stop org-driven
 		// enqueue too, not just direct adds.
-		if status, serr := s.store.GetGroupStatus(ctx, groupID); serr == nil && status == "rejected" {
+		status, serr := s.store.GetGroupStatus(ctx, groupID)
+		if errors.Is(serr, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if serr != nil {
+			// A lookup error is not "not rejected" (SR-5; worklist follow-up
+			// 2): the org waits for the next tick.
+			s.logger.Error("org scan skipped — group status lookup failed",
+				"group_id", groupID, "org", org.OrgName, "error", serr)
+			continue
+		}
+		if status == "rejected" {
 			s.logger.Warn("org scan skipped — owning group is rejected",
 				"group_id", groupID, "org", org.OrgName)
 			continue

@@ -88,8 +88,11 @@ func TestUpsertRepoRetriesOnCaseUniqueIndexRace(t *testing.T) {
 func TestUpsertRepoTrimsGitURLSuffixes(t *testing.T) {
 	body := extractFunctionBody(t, "postgres.go", "UpsertRepo")
 
-	if !strings.Contains(body, `TrimSuffix`) || !strings.Contains(body, `".git"`) {
-		t.Error("UpsertRepo must trim trailing \"/\" and \".git\" from r.GitURL before " +
+	// Worklist follow-up 8: through the one shared normalizer, the same one
+	// FindRepoByURL applies (TestSuffixVariantURLResolvesToTheCollectedRepo
+	// drives the behaviour; TestRepoGitURLNormalizerIsShared bans a second spelling).
+	if !strings.Contains(body, `r.GitURL = model.NormalizeRepoGitURL(r.GitURL)`) {
+		t.Error("UpsertRepo must normalize r.GitURL through model.NormalizeRepoGitURL before " +
 			"the insert (suffix variants would bypass the case-insensitive unique index).")
 	}
 }

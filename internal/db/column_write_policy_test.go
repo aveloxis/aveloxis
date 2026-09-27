@@ -37,6 +37,19 @@ var columnWritePolicies = []sqlscan.Registered{
 		Reason: "fleet-entry timestamp — INSERT-only so it can never degrade into last-touched (v0.27.60)"},
 	{Table: "aveloxis_data.repos", Column: "forked_from", Policy: sqlscan.PreferNonemptyIncoming,
 		Reason: "an id-less re-upsert must not wipe captured lineage; empty incoming preserves stored (v0.27.78)"},
+	// v0.29.68 (worklist follow-up 8, review rounds 1-2): the three
+	// collection-side metadata columns are INSERT-only for the identity
+	// writer. UpsertRepo's conflict arm wrote them from its callers' zero
+	// values (no caller carries them from the forge), blanking a collected
+	// repository on every re-add; Phase 0's UpdateRepoMetadata is the
+	// collection writer and the lifecycle writers (ArchiveRepo, MarkRepoGone,
+	// the v0.27.50 migrate backfill) set repo_archived — each an Exception.
+	{Table: "aveloxis_data.repos", Column: "repo_description", Policy: sqlscan.InsertOnly,
+		Reason: "collected by Phase 0 (UpdateRepoMetadata) every cycle; the identity upsert never carries it, so its conflict arm must not touch it (v0.29.68, follow-up 8)"},
+	{Table: "aveloxis_data.repos", Column: "primary_language", Policy: sqlscan.InsertOnly,
+		Reason: "same as repo_description (v0.29.68, follow-up 8)"},
+	{Table: "aveloxis_data.repos", Column: "repo_archived", Policy: sqlscan.InsertOnly,
+		Reason: "collected by Phase 0 every cycle, both directions; set by the lifecycle writers on their own paths; the identity upsert never carries it (v0.29.68, follow-up 8)"},
 	{Table: "aveloxis_data.repos", Column: "vuln_scan_last_run", Policy: sqlscan.AlwaysRefresh,
 		Reason: "completed-scan stamp — every completed vulnerability scan re-stamps NOW(); never written on error paths (v0.28.1 A4)"},
 	{Table: "aveloxis_data.messages", Column: "msg_text_clean", Policy: sqlscan.AlwaysRefresh,
@@ -70,6 +83,26 @@ var columnWriteExceptions = []sqlscan.Exception{
 	{Table: "aveloxis_data.repos", Column: "added_at", File: "internal/db/migrate.go",
 		Match:  "SET added_at = COALESCE(data_collection_date, created_at, NOW())",
 		Reason: "the v0.27.60 one-shot backfill for pre-column rows — WHERE added_at IS NULL makes it self-disabling, so it can never degrade a real stamp"},
+	// v0.29.68 (follow-up 8): the three collection-side columns are
+	// InsertOnly for the identity upsert; these are their real writers.
+	{Table: "aveloxis_data.repos", Column: "repo_description", File: "internal/db/repo_metadata.go",
+		Match:  "SET repo_description = $2",
+		Reason: "Phase 0's UpdateRepoMetadata is the collection writer: the forge's current description every cycle, an emptied one included (v0.29.68, follow-up 8)"},
+	{Table: "aveloxis_data.repos", Column: "primary_language", File: "internal/db/repo_metadata.go",
+		Match:  "primary_language = $3",
+		Reason: "Phase 0's UpdateRepoMetadata, as repo_description (v0.29.68, follow-up 8)"},
+	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_metadata.go",
+		Match:  "repo_archived    = $5",
+		Reason: "Phase 0's UpdateRepoMetadata propagates the forge's archived status both directions (v0.27.50)"},
+	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/postgres.go",
+		Match:  "SET repo_archived = TRUE, data_collection_date = NOW()",
+		Reason: "ArchiveRepo — prelim's dead-repo sideline sets the flag on its own path (v0.29.68, follow-up 8: a lifecycle writer, not the identity upsert)"},
+	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_gone.go",
+		Match:  "SET repo_archived = TRUE, repo_gone_at = NOW()",
+		Reason: "MarkRepoGone — the gone lifecycle sets the flag with the gone stamp (v0.29.68, follow-up 8: a lifecycle writer)"},
+	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/migrate.go",
+		Match:  "SET repo_archived = (latest.status = 'Archived')",
+		Reason: "the v0.27.50 one-shot backfill from repo_info.status for rows collected before Phase 0 propagated the flag"},
 	{Table: "aveloxis_data.repos", Column: "forked_from", File: "internal/db/repo_metadata.go",
 		Match:  "forked_from = $6",
 		Reason: "Phase 0's FetchRepoInfo is AUTHORITATIVE for fork lineage — a repo detaching from its upstream honestly clears the column (v0.27.78); the prefer-nonempty policy protects the id-less org-scan re-upsert path only"},

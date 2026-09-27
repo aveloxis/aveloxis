@@ -91,7 +91,7 @@ Please include:
 ### Dependencies
 
 - Dependency vulnerability scanning via OSV.dev is built into the collection pipeline.
-- SBOM generation (CycloneDX 1.5 + SPDX 2.3) is available for all collected repositories.
+- SBOM generation (CycloneDX 1.7 + SPDX 2.3) is available for all collected repositories.
 
 ## Security Scanning
 

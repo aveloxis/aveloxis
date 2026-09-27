@@ -27,8 +27,8 @@ func TestGenerateCycloneDX_NoDeps(t *testing.T) {
 	if bom.BOMFormat != "CycloneDX" {
 		t.Errorf("BOMFormat = %q, want CycloneDX", bom.BOMFormat)
 	}
-	if bom.SpecVersion != "1.5" {
-		t.Errorf("SpecVersion = %q, want 1.5", bom.SpecVersion)
+	if bom.SpecVersion != "1.7" {
+		t.Errorf("SpecVersion = %q, want 1.7 (worklist 53, decision 6)", bom.SpecVersion)
 	}
 	if len(bom.Components) != 0 {
 		t.Errorf("expected 0 components, got %d", len(bom.Components))

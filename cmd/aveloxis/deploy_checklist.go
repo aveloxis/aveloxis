@@ -468,6 +468,32 @@ var deployChecklists = map[string][]deployStep{
 	// views leave out self advisories (every migrate rebuilds them), plus
 	// parser, dedup, Phase 0 and GUI fixes. No schema change.
 	"0.29.66": v02966DeployChecklist,
+	// v0.29.67: worklist 53 — SPDX license expressions: the OSI badge reads
+	// OR/AND/WITH through internal/spdx, RubyGems/Packagist/Hex license lists
+	// are stored as OR, and the SBOMs carry valid expressions (CycloneDX 1.7).
+	// No schema change.
+	"0.29.67": v02967DeployChecklist,
+	"0.29.68": v02968DeployChecklist,
+}
+
+// 0.29.68 (branch brewers1.0, the worklist batch) has no schema change and
+// carries 0.29.67's skipped-release notes (a fleet on 0.29.66 or older goes
+// straight here): the stop, migrate and view-count steps are 0.29.67's, and
+// the start step adds what this release changes.
+var v02968DeployChecklist = []deployStep{
+	v02967DeployChecklist[0],
+	v02967DeployChecklist[1],
+	v02967DeployChecklist[2],
+	{"aveloxis start all", "re-adding a collected repository no longer blanks its description, language and archived flag: the add-time writer leaves those three to Phase 0 (they were overwritten by every aveloxis add-repo, collect, prioritize, force-full-collect and import-augur of a tracked repository, and by a web paste of a '.git' or trailing-'/' variant); a '.git' or trailing-'/' variant now resolves to the tracked repository on every add path, and a non-administrator's paste of one links instead of pending as a new repository (worklist follow-up 8). Rows already blanked refill on each repository's next collection. The group page now says when a paste or an org is waiting for an administrator's approval, and when an org add failed (follow-ups 10, 11); a failed group-status lookup no longer reads as 'not rejected'; a failed admin-flag lookup fails the add or the API request (503, not 401) instead of reading as 'not an admin', and at login is logged while the session is created as non-admin (follow-ups 2, 6); the approved add-request log line reports items that could not be added (follow-up 9). A GitHub search that timed out on GitHub's side (incomplete_results) is no longer recorded as 'no such user' for 30 days, and a mailing-list sender whose contributor row could not be written is retried next tick instead of being hidden for 30 days (worklist items 16-18). A repository healed by heal-collection-gaps keeps its place in the recollection cycle instead of becoming due at once, a serve started mid-heal leaves the heal's parked rows alone, and a failed API-key read is now fatal to serve/collect instead of reading as 'no keys configured' (items 54-56). If 0.29.67 was skipped, its start-up notes apply as well: " + v02967DeployChecklist[3].desc},
+}
+
+// 0.29.67 carries 0.29.66's skipped-release notes (a fleet on 0.29.63 or
+// older goes straight here) plus what changes when for the license work.
+var v02967DeployChecklist = []deployStep{
+	{"aveloxis stop all", "stop serve/web/api. A stop by 0.29.64 or later releases serve's drain-parked rows; a stop by an older binary leaves them 'collecting' until the new serve starts and reclaims them — expected, not a failure of this release"},
+	{"aveloxis migrate --skip-views", "nothing new in this release's schema; creates aveloxis_data.repo_forge_id_changes if 0.29.62 was skipped, and re-creates the two supply-chain views from Go, which (since 0.29.66) leave out a repository's advisories against its own package (dependency_kind 'self') — --skip-views skips only the 8Knot batch"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname IN (` + db.SupplyChainViewNamesSQLList() + `)"`, "must print 2 AND the migrate must have exited 0 with no `supply-chain view` ERROR in its log (a failed re-create keeps the PREVIOUS definition, so the count alone cannot tell). Set PGHOST, PGPORT, PGUSER and PGDATABASE from the database block of aveloxis.json first"},
+	{"aveloxis start all", "the new serve reclaims any rows an older stop left parked; the monitors show Parked (drain / heal) apart from Collecting. The license table's OSI badge and grouping change at once (computed when read: MIT OR Apache-2.0 reads OSI approved; CC0-1.0 no longer does, per SPDX; a name followed by 'License', such as 'Apache 2.0 License', reads as that name and its OSI status). License notices and texts stored in full now read exactly: an FSF 'any later version' header is GPL-3.0-or-later / GPL-2.0-or-later, Classpath and LLVM exceptions stay as WITH terms, and an AGPL or LGPL text no longer reads GPL-3.0-only (it shows as text and exports NOASSERTION). A full license text whose SPDX tag says something else (a BSD text tagged 'BSD-3-Clause AND MPL-2.0') now shows as text instead of the text's one license. So does a LICENSE holding the Apache or GPL text together with a BSD, MIT, ISC, Unlicense or CC0 text (it read one of the two, dropping the other). A FreeBSD '/*-' header reads its own SPDX tag (BSD-2-Clause-FreeBSD). MPL, CC0 and Unlicense texts are read exactly (worklist 61): a prose mention ('dual licensed under MIT or the Mozilla Public License 2.0') and a Creative Commons Attribution text (it read CC0-1.0) show as text; MPL 1.0/1.1 notices and the no-copyleft exhibit now read as MPL-1.0, MPL-1.1 and MPL-2.0-no-copyleft-exception. Stored RubyGems/Packagist/Hex license lists turn from ' AND ' to ' OR ' as each repository is re-analysed (rows are rewritten every analysis; no heal); until then an on-demand SBOM or showcase for a repository not yet re-analysed exports such a list as the conjunction it was stored as (the pre-0.29.67 SPDX exporter rewrote it to OR). SBOMs are CycloneDX 1.7 from the next generation on"},
 }
 
 // 0.29.66 carries the same skipped-release notes as 0.29.65 (a fleet on

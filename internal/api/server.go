@@ -187,7 +187,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		return nil, err
 	}
 	s.limiter = rl
-	s.auth = newAuthenticator(store, opts.RequireAuth)
+	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.faCache = &firstActivityCache{m: map[string]time.Time{}}
@@ -324,7 +324,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// v0.27.4: annotate the CURRENT SBOM with the repo's unresolved
-	// findings. CycloneDX gets its native 1.5 vulnerabilities array
+	// findings. CycloneDX gets its native vulnerabilities array
 	// (affects.ref = component purl/bom-ref); SPDX (v0.27.46) gets
 	// package-level SECURITY/advisory externalRefs — the 2.3 spec's
 	// conformant vehicle, replacing the old 400.

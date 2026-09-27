@@ -71,7 +71,7 @@ func TestAdminGroupApprovalMailsTheRequesterOnce(t *testing.T) {
 		})
 	logs := &lockedBuffer{}
 	decide := func(st *db.PostgresStore, decision string) *httptest.ResponseRecorder {
-		s := &Server{store: st, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(st, false)}
+		s := &Server{store: st, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(st, false, nil)}
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/groups/"+strconv.FormatInt(gid, 10)+"/"+decision, nil)
 		r.SetPathValue("groupID", strconv.FormatInt(gid, 10))
 		r.SetPathValue("decision", decision)
@@ -178,7 +178,7 @@ func TestAdminAddRequestDecisionThroughTheHandler(t *testing.T) {
 			return nil
 		})
 	decide := func(st *db.PostgresStore, decision string) *httptest.ResponseRecorder {
-		s := &Server{store: st, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(st, false)}
+		s := &Server{store: st, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(st, false, nil)}
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/add-requests/"+reqID+"/"+decision, nil)
 		r.SetPathValue("requestID", reqID)
 		r.SetPathValue("decision", decision)
@@ -230,7 +230,7 @@ func TestAdminAddRequestDecisionThroughTheHandler(t *testing.T) {
 	if _, changed, err := store.DecideAddRequest(ctx, rejected.RequestID, uid, false, ""); err != nil || !changed {
 		t.Fatalf("reject: changed=%v err=%v", changed, err)
 	}
-	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(store, false)}
+	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(logs, nil)), mailer: m, auth: newAuthenticator(store, false, nil)}
 	rr := httptest.NewRequest(http.MethodPost, "/api/v1/admin/add-requests/x/approve", nil)
 	rr.SetPathValue("requestID", strconv.FormatInt(rejected.RequestID, 10))
 	rr.SetPathValue("decision", "approve")
@@ -325,7 +325,7 @@ func TestAdminOrgApprovalNotifiesWhenItRegisters(t *testing.T) {
 			sent <- strings.Join(to, ",")
 			return nil
 		})
-	s := &Server{store: store, logger: discard, mailer: m, auth: newAuthenticator(store, false)}
+	s := &Server{store: store, logger: discard, mailer: m, auth: newAuthenticator(store, false, nil)}
 	approve := func() *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/add-requests/x/approve", nil)
 		r.SetPathValue("requestID", strconv.FormatInt(out.RequestID, 10))
@@ -444,7 +444,7 @@ func TestAdminAddRequestProcessingInvalidatesTheAuthCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := &Server{store: store, logger: discard, auth: newAuthenticator(store, false)}
+	s := &Server{store: store, logger: discard, auth: newAuthenticator(store, false, nil)}
 	unprocessed := func(reqID int64) int {
 		t.Helper()
 		var n int

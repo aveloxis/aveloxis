@@ -104,7 +104,7 @@ func (s *PostgresStore) GetRepoLibyearDeps(ctx context.Context, repoID int64) ([
 // SBOMRecord tracks a generated SBOM with format metadata.
 type SBOMRecord struct {
 	Format  string // "cyclonedx" or "spdx"
-	Version string // spec version, e.g. "1.5" or "2.3"
+	Version string // spec version, e.g. "1.7" or "2.3"
 }
 
 // InsertSBOM stores a generated SBOM JSON document in repo_sbom_scans.

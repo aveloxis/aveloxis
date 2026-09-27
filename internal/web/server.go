@@ -645,7 +645,15 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	// Read fresh admin flag — set to TRUE for the first-ever user
 	// (auto-promotion in UpsertOAuthUser) and stays whatever the
 	// admin user-management page set it to thereafter.
-	isAdmin, _ := s.store.IsUserAdmin(r.Context(), userID)
+	// A failed lookup is logged and the session is a non-admin one: the
+	// user can sign in again once the store answers (worklist follow-up 6).
+	isAdmin, err := s.store.IsUserAdmin(r.Context(), userID)
+	if errors.Is(err, context.Canceled) {
+		return // the browser left mid-callback: nothing to serve, not a failure
+	}
+	if err != nil {
+		s.logger.Error("admin flag lookup failed at login — session created as non-admin", "user_id", userID, "error", err)
+	}
 
 	// Send welcome email on first signup. No-op if mailer
 	// unconfigured. Failures here don't block login — the email is a
@@ -1276,8 +1284,24 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"PageWindow": pageWindow,
 		"AddError":   r.URL.Query().Get("add_error"),
 		"OrgError":   r.URL.Query().Get("org_error"),
+		// A number the handler parsed, never the query string itself: the
+		// notice is styled as the site's own, so a reflected string would
+		// read as the site speaking (review round 1 of the batch). Not a
+		// number, zero or negative: no notice.
+		"Pending":    pendingCount(r.URL.Query().Get("pending")),
+		"OrgPending": r.URL.Query().Get("org_pending"),
 		"GitHubHost": platform.GitHubWebHost(s.ghAPIBase),
 	})
+}
+
+// pendingCount reads the ?pending= count the add redirect carries; anything
+// that is not a positive integer is 0 (no notice).
+func pendingCount(q string) int {
+	n, err := strconv.Atoi(q)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
@@ -1396,8 +1420,17 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("org not added — invalid URL", "group_id", groupID, "error", err)
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=invalid", groupID), http.StatusFound)
 			return
+		case errors.Is(err, db.ErrGroupRejected):
+			// Trying again cannot work: say why (the repo paste and the
+			// portal already do; review round 1 of the batch).
+			s.logger.Warn("org not added — the group is rejected", "group_id", groupID)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=rejected", groupID), http.StatusFound)
+			return
 		case err != nil:
-			s.logger.Warn("failed to add org to group", "error", err)
+			// Say so (worklist follow-up 11): this redirected as a success.
+			s.logger.Warn("failed to add org to group", "group_id", groupID, "error", err)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=1", groupID), http.StatusFound)
+			return
 		case out.Registered:
 			// Registered (an admin's add, or a non-admin's auto-approved add of
 			// an org already registered in a group that is not rejected —
@@ -1441,7 +1474,14 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 		return
 	}
 
-	if status, err := s.store.GetGroupStatus(ctx, groupID); err == nil && status == "rejected" {
+	status, err := s.store.GetGroupStatus(ctx, groupID)
+	if err != nil {
+		// A lookup error is not "not rejected" (SR-5; worklist follow-up 2):
+		// nothing scans until the status is known.
+		s.logger.Error("org scan skipped — group status lookup failed", "group_id", groupID, "org_url", platform.RedactURLUserinfo(orgURL), "error", err)
+		return
+	}
+	if status == "rejected" {
 		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org_url", platform.RedactURLUserinfo(orgURL))
 		return
 	}

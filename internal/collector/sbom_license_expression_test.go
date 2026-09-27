@@ -6,8 +6,10 @@ package collector
 // v0.27.29 — multi-license emission semantics (the audit's " AND "
 // finding). Ground truth: SPDX license-expression grammar (Annex D —
 // licenseDeclared must be a valid expression, NOASSERTION, or NONE)
-// and CycloneDX 1.5's licenseChoice oneOf (license object XOR
-// expression).
+// and CycloneDX's licenseChoice oneOf (license object XOR expression).
+// v0.29.67 (worklist 53): the registry-list reading moved to the WRITER
+// (joinRegistryLicenseList stores RubyGems/Packagist/Hex lists as OR), so the
+// exporters now carry a stored expression through as it is.
 
 import (
 	"encoding/json"
@@ -16,13 +18,17 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
-func TestRegistryLicenseListEmitsAsChoicesNotConjunction(t *testing.T) {
+// TestStoredConjunctionIsNeverInverted replaces v0.27.29's
+// TestRegistryLicenseListEmitsAsChoicesNotConjunction, which pinned the
+// inversion itself: it fed an npm dependency (npm stores the registry's own
+// SPDX expression, where AND means "comply with both") and demanded OR. A
+// registry LIST is now stored as OR at write time
+// (TestRegistryLicenseListsAreStoredAsOR); a stored AND is a real
+// conjunction and both exporters keep it.
+func TestStoredConjunctionIsNeverInverted(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "app", Owner: "org", GitURL: "https://github.com/org/app"}
-	deps := []db.SBOMDep{{Name: "dualpkg", CurrentVersion: "1.0",
+	deps := []db.SBOMDep{{Name: "dualpkg", CurrentVersion: "1.0", PackageManager: "npm",
 		Purl: "pkg:npm/dualpkg@1.0", License: "MIT AND Apache-2.0"}}
-
-	// CycloneDX: a stored registry list is a genuine SPDX compound
-	// here (both ids valid) → the expression field, machine-readable.
 	data, err := generateCycloneDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -31,13 +37,9 @@ func TestRegistryLicenseListEmitsAsChoicesNotConjunction(t *testing.T) {
 	if err := json.Unmarshal(data, &bom); err != nil {
 		t.Fatal(err)
 	}
-	lic := bom.Components[0].Licenses[0]
-	if lic.Expression == "" || lic.License != nil {
-		t.Errorf("valid compound must use the expression field (got %+v) — free-text name is invisible to policy engines", lic)
+	if lic := bom.Components[0].Licenses[0]; lic.Expression != "MIT AND Apache-2.0" || lic.License != nil {
+		t.Errorf("CycloneDX: %+v, want the expression MIT AND Apache-2.0", lic)
 	}
-
-	// SPDX: dual-licensing renders as an OR choice, never the
-	// AND-conjunction inversion.
 	sdata, err := generateSPDX(repo, deps, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -46,14 +48,10 @@ func TestRegistryLicenseListEmitsAsChoicesNotConjunction(t *testing.T) {
 	if err := json.Unmarshal(sdata, &doc); err != nil {
 		t.Fatal(err)
 	}
-	var depDeclared string
 	for _, p := range doc.Packages {
-		if p.Name == "dualpkg" {
-			depDeclared = p.LicenseDeclared
+		if p.Name == "dualpkg" && p.LicenseDeclared != "MIT AND Apache-2.0" {
+			t.Errorf("SPDX licenseDeclared = %q, want MIT AND Apache-2.0 (never inverted to OR)", p.LicenseDeclared)
 		}
-	}
-	if depDeclared != "(MIT OR Apache-2.0)" {
-		t.Errorf("licenseDeclared = %q, want (MIT OR Apache-2.0) — registry lists mean dual-licensing alternatives", depDeclared)
 	}
 }
 
@@ -77,9 +75,9 @@ func TestUnmappableLicenseGoesNoAssertionNeverFreeText(t *testing.T) {
 func TestSynonymNormalizesToSPDXID(t *testing.T) {
 	// "Apache 2.0" (registry spelling) must promote to the SPDX id via
 	// NormalizeLicenseToSPDX instead of demoting to license.name.
-	l := makeCDXLicense("Apache 2.0")
+	l := cdxLicenseFor("Apache 2.0", "declared", inCDXLicenseEnum)
 	if l.License == nil || l.License.ID != "Apache-2.0" {
-		t.Errorf("makeCDXLicense(\"Apache 2.0\") = %+v, want id Apache-2.0 (synonym promotion)", l)
+		t.Errorf("cdxLicenseFor(\"Apache 2.0\") = %+v, want id Apache-2.0 (synonym promotion)", l)
 	}
 }
 

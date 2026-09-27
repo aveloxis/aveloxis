@@ -947,8 +947,8 @@ func (c *Client) EnrichContributor(ctx context.Context, login string) (*model.Co
 		createdAt, _ = time.Parse(time.RFC3339, raw.CreatedAt)
 	}
 	// Set canonical email from the public email if it's a real address
-	// (not a GitHub noreply). This eliminates the need for a separate
-	// ResolveEmailsToCanonical pass to call GET /users/{login} again.
+	// (not a GitHub noreply), so no second GET /users/{login} pass is
+	// needed (the old ResolveEmailsToCanonical, removed in v0.29.68).
 	var canonical string
 	if raw.Email != "" && !strings.Contains(strings.ToLower(raw.Email), "noreply") {
 		canonical = raw.Email

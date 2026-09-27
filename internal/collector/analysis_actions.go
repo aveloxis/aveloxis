@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
@@ -206,38 +207,7 @@ func fixedWithinOrBeforeMajor(fixed string, major int) bool {
 	return fm <= major
 }
 
-// compareVersionish compares two dotted numeric versions segment-wise
-// (-1/0/1). Non-numeric segments compare lexically; missing segments
-// read as 0 ("4.1" == "4.1.0").
-func compareVersionish(a, b string) int {
-	as := strings.Split(strings.TrimPrefix(a, "v"), ".")
-	bs := strings.Split(strings.TrimPrefix(b, "v"), ".")
-	n := len(as)
-	if len(bs) > n {
-		n = len(bs)
-	}
-	for i := 0; i < n; i++ {
-		av, bv := "0", "0"
-		if i < len(as) {
-			av = as[i]
-		}
-		if i < len(bs) {
-			bv = bs[i]
-		}
-		ai, aerr := strconv.Atoi(av)
-		bi, berr := strconv.Atoi(bv)
-		if aerr == nil && berr == nil {
-			if ai != bi {
-				if ai < bi {
-					return -1
-				}
-				return 1
-			}
-			continue
-		}
-		if av != bv {
-			return strings.Compare(av, bv)
-		}
-	}
-	return 0
-}
+// compareVersionish is db.CompareVersionish, the one semantic-ish version
+// order (moved there so the store's exposed-repositories list can sort by
+// it too).
+func compareVersionish(a, b string) int { return db.CompareVersionish(a, b) }

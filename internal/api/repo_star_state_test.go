@@ -40,7 +40,7 @@ func TestRepoStarStateRouteAndHandler(t *testing.T) {
 func TestRepoStarStateRequiresIdentity(t *testing.T) {
 	store := &fakeSessionStore{userID: 7, scope: []int64{42}, valid: map[string]bool{"tok": true}}
 	s := &Server{}
-	s.auth = newAuthenticator(store, false)
+	s.auth = newAuthenticator(store, false, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/repos/42/star", nil)

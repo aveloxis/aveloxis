@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.68 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=6e3d71c5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -603,7 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +658,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +667,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +820,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +923,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1091,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1195,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1694,9 +1710,9 @@
 <ul class="simple">
 <li><p>Uses the <strong>staged collection pipeline</strong> (API -&gt; staging -&gt; processing -&gt; facade -&gt; commit resolution -&gt; analysis).</p></li>
 <li><p>The queue is Postgres-backed (<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.collection_queue</span></code>) and uses <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming.</p></li>
-<li><p>Safe to stop and restart at any time. On shutdown (<code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code> / <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>), active workers finish their current API call, queue locks are released, and staging data is preserved.</p></li>
-<li><p>On startup, automatically processes any leftover staged data from a previous interrupted run.</p></li>
-<li><p>Stale locks from crashed instances are recovered after 1 hour.</p></li>
+<li><p>Safe to stop and restart at any time. On shutdown (<code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code> / <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>), in-flight API calls and statements are cancelled at once; workers get up to <code class="docutils literal notranslate"><span class="pre">collection.shutdown_grace_seconds</span></code> (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released and staging data is preserved.</p></li>
+<li><p>On startup, reclaims a previous serve’s locks at once (except a running heal’s parked rows), resumes collection, and drains any leftover staged data from an interrupted run in the background.</p></li>
+<li><p>Stale locks from crashed instances are recovered after 1 hour by a running instance, or at once by the next serve start.</p></li>
 <li><p>Multiple instances can share the same queue for horizontal scaling.</p></li>
 </ul>
 </section>
@@ -1721,9 +1737,13 @@
 </tr>
 <tr class="row-even"><td><p>Materialized view rebuild</p></td>
 <td><p>Weekly (Saturday)</p></td>
-<td><p>Pauses collection, refreshes all 20 materialized views, resumes</p></td>
+<td><p>Pauses collection, refreshes the 20 8Knot materialized views, resumes</p></td>
 </tr>
-<tr class="row-odd"><td><p>Stale lock recovery</p></td>
+<tr class="row-odd"><td><p>Supply-chain view refresh</p></td>
+<td><p>Every <code class="docutils literal notranslate"><span class="pre">collection.supply_chain_refresh_hours</span></code> (default 24)</p></td>
+<td><p>Refreshes the two Aveloxis-owned supply-chain views CONCURRENTLY; seconds, collection never pauses</p></td>
+</tr>
+<tr class="row-even"><td><p>Stale lock recovery</p></td>
 <td><p>Every 5 minutes</p></td>
 <td><p>Re-queues jobs locked for more than 1 hour</p></td>
 </tr>
@@ -2175,9 +2195,9 @@ are left as they are.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 147 tables across three PostgreSQL schemas, plus 20 materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default):</p>
+<p>Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (101 tables + 20 materialized views) – all collected data</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (102 tables + 22 materialized views) – all collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (42 tables) – operational state</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> (4 tables) – scancode per-file license/copyright results</p></li>
 </ul>
@@ -2417,17 +2437,35 @@ fill on each: list every issue/PR number from the API, diff against
 the database, fetch ONLY the missing items (with children and
 comments), stage, process.</p>
 <p>Targeted by construction — only count-gap candidates are visited
-(~5% of a typical fleet), never a 100% rescan. The candidate query is
+(~5% of a typical fleet), never a 100% rescan. A healed repository keeps
+its place in the recollection cycle (v0.29.68: the heal’s release leaves
+<code class="docutils literal notranslate"><span class="pre">due_at</span></code> alone; before, every healed repository became due at once), and a
+<code class="docutils literal notranslate"><span class="pre">serve</span></code> started while a heal runs leaves the heal’s parked repositories to
+it (its heartbeat keeps them fresh; only a heal whose heartbeat stopped for
+longer than the stale-lock window is reclaimed). The candidate query is
 the resume state: healed repos drop out, so the workflow is re-running
 until “0 candidates”. Safe beside a running serve: each repo is
 drain-locked for the duration of its heal, and repos mid-collection
 are skipped (a rerun catches them). Neither the lock nor the heal
-touches <code class="docutils literal notranslate"><span class="pre">last_collected</span></code>.</p>
-<p>Flags: <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code>, <code class="docutils literal notranslate"><span class="pre">--limit</span> <span class="pre">N</span></code>, <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code> (default 4),
+touches <code class="docutils literal notranslate"><span class="pre">last_collected</span></code>. While a repo is locked the monitors count it
+under <strong>Parked (drain / heal)</strong>. Ctrl-C (or SIGTERM) stops the run
+cleanly, releases every repo it still holds, and exits nonzero
+(v0.29.65). The log line names the <code class="docutils literal notranslate"><span class="pre">after_repo_id</span></code> of the interrupted
+page’s start, so <code class="docutils literal notranslate"><span class="pre">--after-repo-id</span></code> revisits that page; a plain rerun
+works too.</p>
+<p>Flags: <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> (list the candidates and their gap sizes, healing
+nothing; with <code class="docutils literal notranslate"><span class="pre">--repo-id</span></code>, print that repo and whether a real run could
+lock it — before v0.29.65 that combination actually healed the repo),
+<code class="docutils literal notranslate"><span class="pre">--limit</span> <span class="pre">N</span></code>, <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code> (default 4),
 <code class="docutils literal notranslate"><span class="pre">--repo-id</span> <span class="pre">N</span></code>, <code class="docutils literal notranslate"><span class="pre">--after-repo-id</span> <span class="pre">N</span></code> (keyset resume), <code class="docutils literal notranslate"><span class="pre">--all</span></code> (sweep
 every collected repo — the completeness mode for repos whose
 stored-but-deleted rows numerically hide the gap; not recommended for
-routine use). Exits nonzero when any repo’s heal failed.</p>
+routine use). Exits nonzero when any repo’s heal failed, and with
+<code class="docutils literal notranslate"><span class="pre">--repo-id</span></code> also when the repo could not be locked: the message says
+whether it is being collected, is parked by a staging drain or another
+heal run, has no queue row (gone or dequeued, so nothing will heal it),
+became queued again in the meantime (rerun now), or whether its queue
+status could not be read.</p>
 <p>Sizing, measured on a ~140K-repo fleet (2026-08-23): 6,809 candidates /
 279,100 items took ~65 hours at <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">4</span></code> (the largest single repo
 filled 24,845 items); reruns then converged in minutes. Expect a small
@@ -2441,12 +2479,14 @@ this command, then <code class="docutils literal notranslate"><span class="pre">
 </section>
 <section id="aveloxis-refresh-views">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code><a class="headerlink" href="#aveloxis-refresh-views" title="Link to this heading"></a></h2>
-<p>Manually refreshes all 20 materialized views.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>refresh-views<span class="w">                </span><span class="c1"># the materialized views</span>
-aveloxis<span class="w"> </span>refresh-views<span class="w"> </span>--aggregates<span class="w">   </span><span class="c1"># + the dm_repo_* / dm_repo_group_* aggregate tables</span>
+<p>Manually refreshes the materialized views this database has — both sets, or one.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>refresh-views<span class="w">                     </span><span class="c1"># both sets (--set all)</span>
+aveloxis<span class="w"> </span>refresh-views<span class="w"> </span>--set<span class="w"> </span>8knot<span class="w">         </span><span class="c1"># the 20 views in matviews.sql (8Knot / analytics)</span>
+aveloxis<span class="w"> </span>refresh-views<span class="w"> </span>--set<span class="w"> </span>supply-chain<span class="w">  </span><span class="c1"># explorer_package_exposure + explorer_package_advisory (seconds)</span>
+aveloxis<span class="w"> </span>refresh-views<span class="w"> </span>--aggregates<span class="w">        </span><span class="c1"># + the dm_repo_* / dm_repo_group_* aggregate tables</span>
 </pre></div>
 </div>
-<p>Uses <code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">MATERIALIZED</span> <span class="pre">VIEW</span> <span class="pre">CONCURRENTLY</span></code> where unique indexes exist, so reads are not blocked during the refresh. Their data is also refreshed weekly by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (default Saturday; <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>, which can also disable it). A refresh keeps each view’s definition: a release that changes one needs a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>, which re-creates the views.</p>
+<p>Uses <code class="docutils literal notranslate"><span class="pre">REFRESH</span> <span class="pre">MATERIALIZED</span> <span class="pre">VIEW</span> <span class="pre">CONCURRENTLY</span></code> where unique indexes exist, so reads are not blocked during the refresh. A set the database does not have is reported and skipped. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> refreshes the 8Knot set weekly (default Saturday; <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>, which can also disable it) and the supply-chain pair every <code class="docutils literal notranslate"><span class="pre">collection.supply_chain_refresh_hours</span></code> (default 24; <code class="docutils literal notranslate"><span class="pre">0</span></code> disables the schedule). A refresh keeps each view’s definition: a release that changes an 8Knot view needs a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>, which re-creates that set; every migrate re-creates the supply-chain pair.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--aggregates</span></code> (v0.28.18) additionally runs the <code class="docutils literal notranslate"><span class="pre">dm_</span></code> aggregate pass after the views — the same per-repo loop the weekly rebuild runs unless <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_skip_dm_aggregates</span></code> is set. It is off by default because that pass runs for hours to days at fleet scale; with the skip knob on, this flag is the only way the <code class="docutils literal notranslate"><span class="pre">dm_</span></code> tables update. The pass holds a database advisory lock for its whole duration — if the weekly scheduler rebuild (or another <code class="docutils literal notranslate"><span class="pre">--aggregates</span></code> run) is already in it, the command exits nonzero with <code class="docutils literal notranslate"><span class="pre">another</span> <span class="pre">dm_</span> <span class="pre">aggregate</span> <span class="pre">rebuild</span> <span class="pre">is</span> <span class="pre">already</span> <span class="pre">running</span></code> instead of interleaving two DELETE+INSERT passes over tables that have no unique key.</p>
 <p>Both halves keep going past a failing view or repo but <strong>exit nonzero</strong> when any failed (v0.28.18): the error names the first ten failures with the full count, the rest of the pass’s work stands, and a view failure does not skip the aggregate pass. Scripts wrapping the command will see exits they never saw before — that is the point; re-run after fixing the named view or repo.</p>
 </section>
@@ -2525,8 +2565,20 @@ be started — a pidfile that cannot be read (the command refuses rather
 than risk a second scheduler on the host), a log file that cannot be
 opened, a failed exec — makes the command exit nonzero, naming each
 failure, after every requested component has been attempted. <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">all</span></code>
-therefore still brings up web and api beside a refused serve, and says
-so. An already-running component is a no-op and exits 0.</p>
+therefore still tries web and api beside a refused serve, and says so.
+Since v0.29.68 <code class="docutils literal notranslate"><span class="pre">start</span></code> writes the child’s pidfile at once (the
+“already running” guard reads that file, so a second <code class="docutils literal notranslate"><span class="pre">start</span></code> during the
+child’s startup is refused), then waits for the child’s readiness signal
+on an inherited pipe and reports a child that exited first. web and api
+signal readiness once the schema gate has passed AND the port is bound (a
+port in use is a refusal the process exits on); the scancode worker once
+the schema gate has passed; serve once its keys are loaded and its startup
+migration is done. web, api and the scancode worker refuse to start while
+the schema stamp is behind their binary, so a <code class="docutils literal notranslate"><span class="pre">--skip-deploy-check</span></code> start
+on an un-migrated fleet reports them as exited; start them again after the
+migrate. A child still starting after 30 seconds (a long migration for
+serve) is reported as started. An already-running component is a no-op
+and exits 0.</p>
 <p>Log files are opened in append mode — existing content is preserved across restarts.</p>
 <p>Note: <code class="docutils literal notranslate"><span class="pre">start</span></code> does NOT survive a reboot. For production hosts that should
 come back automatically after a restart, run the three processes under
@@ -2546,7 +2598,7 @@ aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w"> 
 aveloxis<span class="w"> </span>stop<span class="w">                  </span><span class="c1"># (no args) same as &#39;all&#39;</span>
 </pre></div>
 </div>
-<p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
+<p>Sends <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> to the specified component(s) using PID files in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>. For <code class="docutils literal notranslate"><span class="pre">serve</span></code>: in-flight API calls and statements are cancelled at once; workers get up to <code class="docutils literal notranslate"><span class="pre">collection.shutdown_grace_seconds</span></code> (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released; staging data is preserved. For <code class="docutils literal notranslate"><span class="pre">web</span></code> and <code class="docutils literal notranslate"><span class="pre">api</span></code>: the listener closes, in-flight requests get 10 s to finish, then the pool closes. The scancode worker has its own bounds (<code class="docutils literal notranslate"><span class="pre">collection.scancode_shutdown_grace_minutes</span></code>; see <a class="reference internal" href="../architecture/scancode.html#graceful-shutdown"><span class="std std-ref">Graceful shutdown</span></a>). PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">all</span></code> names a scancode worker it left running.</p>
 <p>Nothing to stop is exit 0 — <code class="docutils literal notranslate"><span class="pre">stop</span></code> is idempotent. A process that was
 found but could not be signaled (typically <code class="docutils literal notranslate"><span class="pre">operation</span> <span class="pre">not</span> <span class="pre">permitted</span></code> on a
 process another user started) is a failure: its pidfile is left in place,
@@ -2806,7 +2858,7 @@ duplicate skip+dequeue (which dequeues without archiving), plus a
 smaller lost-enqueue share. Each stranded repo is classified by a LIVE
 redirect check:</p>
 <ul class="simple">
-<li><p>dead upstream (404/410) → archived (the outcome prelim applies)</p></li>
+<li><p>dead upstream (404/410/451) → archived (the outcome prelim applies)</p></li>
 <li><p>redirects to a <strong>tracked</strong> repo → dataless duplicates heal onto the
 winner (<code class="docutils literal notranslate"><span class="pre">HealRenamedDuplicate</span></code>); data-bearing duplicates consolidate
 through the dedup-repos per-pair machinery (repoints + leaves-first
@@ -2894,6 +2946,40 @@ subsequent hourly runs benefit from warm buffers.</p>
 in the aveloxis-gui repo’s <code class="docutils literal notranslate"><span class="pre">deploy/</span></code> directory). Read-only on the
 schema; does not run migrations (v0.21.5 policy). Safe alongside an
 active <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>.</p>
+</section>
+<section id="aveloxis-adopt-forge-id">
+<h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code><a class="headerlink" href="#aveloxis-adopt-forge-id" title="Link to this heading"></a></h2>
+<p>Treats a repository that was deleted and re-created on its forge under the
+same URL as a continuation of the one Aveloxis already tracks (v0.29.62).</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--list<span class="w">                         </span><span class="c1"># recorded changes: pending, superseded, adopted</span>
+aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--repo-id<span class="w"> </span><span class="m">126257</span><span class="w"> </span>--repo-id<span class="w"> </span><span class="m">98226</span>
+aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--repo-id<span class="w"> </span><span class="m">126257</span><span class="w"> </span>--note<span class="w"> </span><span class="s2">&quot;upstream re-created by the org&quot;</span>
+</pre></div>
+</div>
+<p>A re-created repository gets a new numeric forge ID. The org scan notices
+the stored and the forge’s ID differ, logs a <code class="docutils literal notranslate"><span class="pre">forge-ID</span> <span class="pre">mismatch</span></code> ERROR, and
+records the change as pending; it never changes the repository row itself.
+<code class="docutils literal notranslate"><span class="pre">--repo-id</span></code> asks GitHub or GitLab for the repository’s current ID and
+creation date, replaces the stored ID, and records the change as adopted.
+It refuses, changing nothing, when the forge lookup fails, when the forge
+still reports the stored ID, or when the stored ID changed in the meantime.
+A GitLab repository is only looked up on the configured GitLab instance
+(project IDs are per instance, and the keys stay on that host); a generic
+git repository has no API to ask.</p>
+<p>The repository page then shows: “Note: this repository changed forge
+identifiers on <date>, from <old id> to <new id>. This is unusual, and may
+affect statistics.” The row holds data from both upstream repositories:
+commit history usually lines up (a re-push keeps the hashes), but issue and
+pull request numbers restart in the new repository. The mismatch ERROR
+stops once the change is adopted.</p>
+<p>An admin can do the same from the web GUI (v0.29.63): the approvals page
+lists pending changes under “Re-created repositories”, each with an Adopt
+button, one per recorded change. The button adopts exactly that change, with
+the creation date the scan saw; it does not ask the forge again, because the api
+process holds no forge keys. The card is hidden when nothing is pending.
+When the scan recorded two changes for one repository and one is adopted,
+the other no longer starts from the stored ID: <code class="docutils literal notranslate"><span class="pre">--list</span></code> marks it
+superseded, it leaves the card, and adopting it is refused.</p>
 </section>
 <section id="aveloxis-backfill-repo-metadata">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code><a class="headerlink" href="#aveloxis-backfill-repo-metadata" title="Link to this heading"></a></h2>
@@ -3089,7 +3175,7 @@ the GUI showed a false “queued for first collection” banner over
 real data.</p>
 <p>The probe is bidirectional and only DEFINITIVE answers decide:</p>
 <ul class="simple">
-<li><p><strong>404/410</strong> → stamp <code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code>. The repo page then shows
+<li><p><strong>404/410/451</strong> → stamp <code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code>. The repo page then shows
 “This repository is no longer publicly available or traceable on
 GitHub” over the data we hold.</p></li>
 <li><p><strong>200 on a previously-stamped repo</strong> → clear the stamp and
@@ -3109,13 +3195,19 @@ aveloxis<span class="w"> </span>mark-gone-repos<span class="w">              </s
 aveloxis<span class="w"> </span>mark-gone-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">100</span><span class="w">  </span><span class="c1"># bounded canary</span>
 </pre></div>
 </div>
-<p>Idempotent and re-runnable on any cadence. Dataless stranded rows
+<p>Idempotent and re-runnable on any cadence. Since v0.29.68 <code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code> or a
+SIGTERM (<code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">&lt;pid&gt;</span></code>; <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> knows only the four long-running
+components) cancels the in-flight probe or statement, ends the walk and
+prints an interruption summary (what was probed, stamped, cleared and
+skipped so far); every stamp is its own statement, so what landed stays,
+and a rerun walks the whole cohort again — every verdict is idempotent,
+so nothing is lost, only time. Dataless stranded rows
 (no queue row, no data, no archived flag) are not candidates — there
 is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
 exists for the historical cohort and for resurrection checks.</p>
 <p><strong>Since v0.29.7 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> re-checks gone repositories on its
-own.</strong> A 404/410 removes the repository’s queue row, and the scheduler
+own.</strong> A 404/410/451 removes the repository’s queue row, and the scheduler
 only ever visits queued repositories, so prelim never probes it again;
 before v0.29.7 a repository made private and later public again stayed
 “gone” until this command ran. The scheduler’s recheck ticker now
@@ -3361,8 +3453,12 @@ collection-ordering caveat.</p>
 Releases that heal data a plain restart does not touch — v0.29.0 is
 one — register a checklist here.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>deploy-checklist
+aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="m">0</span>.29.64<span class="w">   </span><span class="c1"># every release&#39;s steps after the one last deployed, oldest first</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> prints the same accumulated list when the last
+acknowledged deploy is behind the binary: the heals of a skipped release
+never ran (v0.29.68).</p>
 </section>
 <section id="aveloxis-ack-deploy">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code><a class="headerlink" href="#aveloxis-ack-deploy" title="Link to this heading"></a></h2>
@@ -3698,7 +3794,7 @@ aveloxis<span class="w"> </span>load-numfocus-orgs
 <h3>Signal handling<a class="headerlink" href="#signal-handling" title="Link to this heading"></a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> handles the following signals:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code></strong> / <strong><code class="docutils literal notranslate"><span class="pre">SIGINT</span></code></strong> (<code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code>) – graceful shutdown. Workers finish current API calls, locks are released, staging data is preserved.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code></strong> / <strong><code class="docutils literal notranslate"><span class="pre">SIGINT</span></code></strong> (<code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code>) – graceful shutdown. In-flight API calls and statements are cancelled at once; workers get up to <code class="docutils literal notranslate"><span class="pre">collection.shutdown_grace_seconds</span></code> to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then locks are released; staging data is preserved.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code></strong> sent by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> – same graceful shutdown.</p></li>
 </ul>
 </section>

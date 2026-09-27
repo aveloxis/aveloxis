@@ -474,8 +474,8 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 // workers × ~3-min average scan time, the dispatcher capped fleet
 // throughput at 40 claims/hour while runners had capacity for
 // ~140. On a 40K-repo fleet this produced ~42-day first-pass
-// estimates when actual capacity was ~12 days. See CLAUDE.md
-// v0.21.3 entry.
+// estimates when actual capacity was ~12 days. See
+// summary/changelog/v0.21.md, the v0.21.3 entry.
 //
 // Why an UNBUFFERED jobs channel keeps the design correct: the
 // dispatcher's send blocks until a runner is ready to receive.

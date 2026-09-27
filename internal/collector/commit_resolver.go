@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -50,7 +49,22 @@ type CommitResolver struct {
 	// Caches to avoid repeated lookups within a run.
 	emailCache map[string]string // email -> gh_login (or "" for not found)
 	hashCache  map[string]string // commit_hash -> gh_login
+	// transient records emails whose API SEARCH (Strategy 4) failed WITHOUT
+	// an answer this run (worklist item 16, review round 1): not a miss —
+	// nothing is cached or stamped — but the next commits by the same author
+	// skip the search instead of re-spending the budget and logging a WARN
+	// each. Decided as a class (review round 2): the memo covers exactly
+	// what failed, the search; the per-commit SHA lookup (Strategy 3) still
+	// runs, since it can answer for a commit the email search never could.
+	// Never persisted; the next run retries.
+	transient map[string]bool
 }
+
+// errTransientMemo is resolveOne's answer for a commit whose email is in
+// transient once the SHA lookup has missed: the loop counts it
+// (TransientSkipped) and moves on, without a WARN, without Errors++ and
+// without recording the email as unresolved.
+var errTransientMemo = errors.New("search for this email already failed without an answer this run")
 
 // NewCommitResolver creates a resolver using the GitHub API via the given key pool.
 // NewCommitResolver builds a resolver against the GitHub API at baseURL, or
@@ -68,6 +82,7 @@ func NewCommitResolver(store *db.PostgresStore, keys *platform.KeyPool, baseURL 
 		logger:       logger,
 		emailCache:   make(map[string]string),
 		hashCache:    make(map[string]string),
+		transient:    make(map[string]bool),
 	}
 }
 
@@ -87,6 +102,8 @@ type ResolveResult struct {
 	ResolvedCommitSearch int // resolved via global commit-search (shared resolver)
 	Unresolved           int
 	KeyExhausted         int // commits that failed because no API keys were available
+	TransientSkipped     int // commits skipped because an earlier commit's search for the same email failed without an answer this run
+	WriteFailed          int // commits resolved by a strategy whose write then failed (counted in Errors, not as resolved)
 	Consecutive422       int // consecutive 422 "No commit found" errors from GitHub API
 	ContribsCreated      int
 	ContribsUpdated      int
@@ -94,9 +111,30 @@ type ResolveResult struct {
 	Errors               int
 }
 
+// resolved is every commit a strategy resolved AND whose write landed: a
+// commit whose author was found but whose SetCommitAuthorLogin or
+// contributor upsert failed is an error, not a resolution (WriteFailed;
+// batch-3 review round 3 — counting it under both sent accounted() past
+// the commits visited and KeyExhausted negative).
+func (r *ResolveResult) resolved() int {
+	return r.ResolvedNoreply + r.ResolvedDBHit + r.ResolvedAPI + r.ResolvedSearch + r.ResolvedCommitSearch - r.WriteFailed
+}
+
+// accounted is every commit the run has an outcome for: resolved,
+// unresolved, errored, or skipped on a memoised search failure — each
+// commit once. The two "remaining" formulas (key exhaustion, the 422 abort)
+// subtract it from TotalCommits — one spelling (SR-17; batch-3 review round
+// 2: both omitted TransientSkipped and ResolvedCommitSearch, so a key
+// refusal after a memoised author counted the skipped commits as
+// key-exhausted and flipped the run to FAILED).
+func (r *ResolveResult) accounted() int {
+	return r.resolved() + r.Unresolved + r.Errors + r.TransientSkipped
+}
+
 // IsSuccess returns true if the resolution completed meaningfully —
 // i.e., most commits were resolved or legitimately unresolvable, not
-// failed due to key exhaustion or errors.
+// failed due to key exhaustion. It reads KeyExhausted alone; Errors and
+// TransientSkipped reach it only through accounted() at a refusal.
 //
 // v0.20.10 (Fix F) fixes an integer-division bug in the original
 // formulation `r.KeyExhausted < r.TotalCommits/2`. With TotalCommits=1,
@@ -161,15 +199,19 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		if errors.Is(err, context.Canceled) {
 			return result, err // shutdown, not a failure (pass 35)
 		}
+		if errors.Is(err, errTransientMemo) {
+			result.TransientSkipped++
+			continue
+		}
 		if err != nil {
 			// Distinguish key exhaustion from other errors — key exhaustion means
 			// we should stop trying (all subsequent calls will fail too).
 			errMsg := err.Error()
 			if strings.Contains(errMsg, "no API keys configured") || strings.Contains(errMsg, "invalidated") {
-				result.KeyExhausted = result.TotalCommits - (result.ResolvedNoreply + result.ResolvedDBHit + result.ResolvedAPI + result.ResolvedSearch + result.Unresolved + result.Errors)
+				result.KeyExhausted = result.TotalCommits - result.accounted()
 				r.logger.Error("commit resolution aborted: no API keys available",
 					"repo_id", repoID,
-					"resolved_so_far", result.ResolvedNoreply+result.ResolvedDBHit+result.ResolvedAPI,
+					"resolved_so_far", result.resolved(),
 					"remaining", result.KeyExhausted)
 				break
 			}
@@ -180,7 +222,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			if strings.Contains(errMsg, "unprocessable entity") {
 				result.Consecutive422++
 				if result.ShouldAbort422() {
-					remaining := result.TotalCommits - (result.ResolvedNoreply + result.ResolvedDBHit + result.ResolvedAPI + result.ResolvedSearch + result.Unresolved + result.Errors)
+					remaining := result.TotalCommits - result.accounted()
 					r.logger.Error("commit resolution aborted: commits do not belong to this repo",
 						"repo_id", repoID, "owner", owner, "repo", repo,
 						"consecutive_422", result.Consecutive422,
@@ -211,14 +253,15 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		// Update commit rows with the resolved login.
 		if err := r.store.SetCommitAuthorLogin(ctx, repoID, cmt.Hash, login); err != nil {
 			// Round-8 class sweep: warn-and-continue per commit, and
-			// result.Errors feeds IsSuccess() — so a shutdown both
-			// flooded the log and could report "commit resolution
-			// FAILED" for a clean stop.
+			// result.Errors reaches the key-exhaustion accounting — so a
+			// shutdown both flooded the log and could report "commit
+			// resolution FAILED" for a clean stop.
 			if errors.Is(err, context.Canceled) {
 				return result, err
 			}
 			r.logger.Warn("failed to set commit author login", "hash", cmt.Hash[:8], "error", err)
 			result.Errors++
+			result.WriteFailed++ // resolved, not recorded: counted once, as an error
 			continue
 		}
 
@@ -258,6 +301,8 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		"commit_search", result.ResolvedCommitSearch,
 		"unresolved", result.Unresolved,
 		"key_exhausted", result.KeyExhausted,
+		"transient_skipped", result.TransientSkipped,
+		"write_failed", result.WriteFailed,
 		"errors", result.Errors,
 		"contribs_created", result.ContribsCreated,
 		"contribs_updated", result.ContribsUpdated,
@@ -305,8 +350,14 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 		return "", 0, nil
 	}
 
-	// Strategy 2: DB lookup by email.
-	if login, err := r.store.FindLoginByEmail(ctx, email); err == nil && login != "" {
+	// Strategy 2: DB lookup by email. A DB error is returned, not read as
+	// "not in the DB" (SR-5; worklist item 17): the API strategies would
+	// otherwise spend calls, and resolve, for an email the store knew.
+	login, err := r.store.FindLoginByEmail(ctx, email)
+	if err != nil {
+		return "", 0, fmt.Errorf("look up email in the store: %w", err)
+	}
+	if login != "" {
 		r.emailCache[email] = login
 		r.hashCache[cmt.Hash] = login
 		result.ResolvedDBHit++
@@ -326,12 +377,20 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 	}
 
 	// Strategy 4: shared API tail — GitHub Search API, then global
-	// commit-search (the shared resolver, summary/12 §5g). commit-search
+	// commit-search (the shared resolver, summary/12 §5g). Skipped for an
+	// email whose search already failed without an answer this run (the
+	// memo; the SHA lookup above still had its chance). commit-search
 	// resolves private-profile-email authors that user-search misses, and
 	// it now yields the gh_user_id too (the old githubEmailSearch returned
 	// login only).
+	if r.transient[email] {
+		return "", 0, errTransientMemo
+	}
 	login, ghUserID, source, err := ResolveEmailViaAPI(ctx, r.searchClient, email)
 	if err != nil && !platform.IsDefinitiveAnswer(err) {
+		if !errors.Is(err, context.Canceled) {
+			r.transient[email] = true // the rest of the run skips this email's search
+		}
 		return "", 0, err
 	}
 	if err != nil {
@@ -491,13 +550,15 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 	created, actualID, err := r.store.UpsertContributorFull(ctx, desiredID, login, ghUserID, commitEmail)
 	if err != nil {
 		// Round-8 class sweep: a shutdown must not count as a resolve
-		// error — result.Errors feeds IsSuccess(). The caller's loop-top
-		// ctx guard ends the pass on the next iteration.
+		// error — result.Errors reaches the key-exhaustion accounting.
+		// The caller's loop-top ctx guard ends the pass on the next
+		// iteration.
 		if errors.Is(err, context.Canceled) {
 			return
 		}
 		r.logger.Warn("failed to upsert contributor", "login", login, "error", err)
 		result.Errors++
+		result.WriteFailed++ // resolved, not recorded: counted once, as an error
 		return
 	}
 	if created {
@@ -530,7 +591,15 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	}
 	// Look up the contributor by login to get their cntrb_id.
 	cntrbID, err := r.store.FindContributorIDByLogin(ctx, login)
-	if err != nil || cntrbID == "" {
+	if err != nil {
+		// Logged (everything that errors is): the login already landed on the
+		// commit, so nothing revisits it — the alias is what this run loses.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("failed to look the contributor up for its alias", "login", login, "error", err)
+		}
+		return
+	}
+	if cntrbID == "" {
 		return
 	}
 	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail, "aveloxis-commit-resolver", "GitHub API"); err != nil {
@@ -559,67 +628,4 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 			r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
 		}
 	}
-}
-
-// ResolveEmailsToCanonical enriches contributors that have gh_login but
-// no cntrb_canonical by calling the GitHub Users API to get their profile email.
-func (r *CommitResolver) ResolveEmailsToCanonical(ctx context.Context) (int, error) {
-	contribs, err := r.store.GetContributorsMissingCanonical(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if len(contribs) == 0 {
-		return 0, nil
-	}
-
-	r.logger.Info("enriching contributor canonical emails", "count", len(contribs))
-	updated := 0
-
-	for _, c := range contribs {
-		if err := ctx.Err(); err != nil {
-			return updated, err
-		}
-
-		path := fmt.Sprintf("/users/%s", c.Login)
-		// v0.28.18: ETag-free — a body-decoding reader cannot use a 304.
-		resp, err := r.http.Get(platform.WithoutETag(ctx), path)
-		if err != nil {
-			// Mark as enriched even on failure to avoid retrying on
-			// deleted/suspended users every pass. Marking itself
-			// can't fail in ways we'd act on — worst case the user
-			// gets re-queried on the next pass, which is a cost, not
-			// a correctness issue.
-			if mErr := r.store.MarkContributorEnriched(ctx, c.Login); mErr != nil {
-				r.logger.Debug("failed to mark contributor enriched", "login", c.Login, "error", mErr)
-			}
-			continue
-		}
-
-		var user struct {
-			Email string `json:"email"`
-		}
-		if decErr := json.NewDecoder(resp.Body).Decode(&user); decErr != nil {
-			r.logger.Warn("failed to decode user profile", "login", c.Login, "error", decErr)
-		}
-		resp.Body.Close()
-
-		if user.Email != "" && strings.Contains(user.Email, "@") &&
-			!strings.Contains(strings.ToLower(user.Email), "noreply") {
-			if err := r.store.SetContributorCanonical(ctx, c.ID, user.Email); err == nil {
-				updated++
-			}
-		}
-
-		// Mark enrichment timestamp to prevent re-querying users with
-		// private emails (where canonical will always stay null).
-		if mErr := r.store.MarkContributorEnriched(ctx, c.Login); mErr != nil {
-			r.logger.Debug("failed to mark contributor enriched", "login", c.Login, "error", mErr)
-		}
-
-		// Small delay to be respectful of rate limits on the Users API.
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	r.logger.Info("canonical email enrichment complete", "updated", updated)
-	return updated, nil
 }

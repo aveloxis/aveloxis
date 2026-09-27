@@ -439,6 +439,8 @@ flask = "^2.0.0"
 mypkg = { path = "../mypkg" }
 forked = { git = "https://github.com/org/forked.git", branch = "main" }
 tarball = { url = "https://example.org/pkg-1.0.tar.gz" }
+archive = { file = "../dist/archive-0.1.0.tar.gz" }
+"my.pkg".file = "./z.whl"
 pinned = { version = "^3.1.0", optional = true }
 `
 	assertDeps(t, "poetry", parsePoetryVersions(poetry), []string{"flask@2.0.0", "pinned@3.1.0"})
@@ -447,6 +449,7 @@ pinned = { version = "^3.1.0", optional = true }
 requests = "==2.31.0"
 local = {path = "../local"}
 forked = {git = "https://github.com/org/forked.git", ref = "main"}
+wheel = {file = "./dist/wheel-1.0.whl"}
 pinned = {version = "==2.0.0", extras = ["socks"]}
 `
 	assertDeps(t, "pipfile", parsePipfileVersions(pipfile), []string{"requests@2.31.0", "pinned@2.0.0"})
@@ -457,6 +460,7 @@ pinned = {version = "==2.0.0", extras = ["socks"]}
 pytest = "^7.0.0"
 mypkg = { path = "../mypkg" }
 forked = { git = "https://github.com/org/forked.git" }
+devfile = { file = "./x.whl" }
 
 [tool.poetry.dev-dependencies]
 legacy-local = { path = "../legacy" }
@@ -476,9 +480,10 @@ black = "^24.1.0"
 // the ordinary way to cap a major version — therefore invented a second
 // dependency named "<3.0.0" and sent it to PyPI as a package name. TOML
 // already has one quote- and nesting-aware splitter (splitTOMLTopLevel)
-// and one table-version reader (pythonTableVersion); a second inline
-// spelling of either is the defect (SR-17), which is why the Poetry arm
-// fixed in round 10 and the Pipfile arm beside it disagreed.
+// and, since v0.29.68, one table reader (pythonTOMLDeps over
+// scanTOMLDepTables); a second inline spelling of either is the defect
+// (SR-17), which is why the Poetry arm fixed in round 10 and the Pipfile
+// arm beside it disagreed.
 func TestInlineDeclarationsSplitOnStructuralCommasOnly(t *testing.T) {
 	// A single item carrying a bounded range: one dependency, not two.
 	const bounded = `dependencies = ["requests>=2.31.0,<3.0.0"]`
@@ -507,13 +512,14 @@ func TestInlineDeclarationsSplitOnStructuralCommasOnly(t *testing.T) {
 		t.Errorf("inline array names, extras: got %v, want [celery]", got)
 	}
 
-	// The Pipfile inline table reads its version with a second, hand-rolled
-	// spelling of pythonTableVersion instead of calling it. The two disagree
-	// whenever an EARLIER key's quoted value carries a comma: the hand-rolled
-	// one splits inside the string, then stops at the first fragment that
-	// merely STARTS with "version" and reports no version at all. The input
-	// below is contrived — a realistic key order passes by luck — but the
-	// divergence is the defect (SR-17), and luck is not a contract.
+	// The Pipfile inline table once read its version with a second,
+	// hand-rolled spelling of the table-version reader. The two disagreed
+	// whenever an EARLIER key's quoted value carried a comma: the hand-rolled
+	// one split inside the string, then stopped at the first fragment that
+	// merely STARTED with "version" and reported no version at all. The input
+	// below is contrived — a realistic key order passed by luck — but the
+	// divergence was the defect (SR-17), and luck is not a contract; both
+	// arms now read through pythonTOMLDeps.
 	pipfile := "[packages]\n" +
 		`requests = {markers = "extra == 'a', version needed", version = "==2.31.0"}` + "\n" +
 		`flask = {version = "==2.0.2", extras = ["async", "dotenv"]}` + "\n"
@@ -908,7 +914,8 @@ func TestMultilineInlineTableDoesNotNameItsKeys(t *testing.T) {
 // was taken as a new section: the table never closed, and every remaining
 // declaration in the FILE was skipped. Worse than what it replaced, because
 // the old code recovered at the next section header. Every reader that tracks
-// an open table checks that first now (v0.29.57): the four line readers here
+// an open table checks that first now (v0.29.57; since v0.29.68 the table
+// readers share scanTOMLDepTables): the line readers here
 // and in analysis_devbuild.go, plus scanTOMLDepTables, which carries the same
 // state for the NAME inventory and the Cargo tables. The [dev-packages]
 // reader has no such check to order — it delegates rather than splitting.
@@ -1016,7 +1023,8 @@ func TestVersionGateRejectsTheFragmentsTheReadersCanEmit(t *testing.T) {
 // [packages] reader, and that isolation was a SECOND section splitter with
 // the ordering this release fixed everywhere else: a continuation line
 // beginning with `[` ended the section, so the rest of [dev-packages] was
-// dropped before the delegate's own table tracking could see it.
+// dropped before the table tracking (the shared scanner's, since v0.29.68)
+// could see it.
 func TestPipfileDevPackagesSurviveAWrappedTable(t *testing.T) {
 	content := `[packages]
 flask = "*"
@@ -1132,7 +1140,7 @@ func TestSectionHeadersMayCarryAComment(t *testing.T) {
 
 // scanTOMLDepTables tracks inline-table depth too — it is the reader the
 // dependency NAME inventory uses for Poetry and for every Cargo table — so it
-// needs the same escape as the four line readers: a table that never closes
+// needs the same escape the line readers had: a table that never closes
 // ends at the next section header instead of swallowing the file.
 func TestScannerRecoversFromAnUnclosedTable(t *testing.T) {
 	cargo := "[dependencies]\nbroken = {version = \"1.0\"\n\n[dev-dependencies]\ntokio = \"1\"\n"

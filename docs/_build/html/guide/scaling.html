@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scaling &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Scaling &mdash; Aveloxis 0.29.68 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=6e3d71c5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -603,7 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +658,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +667,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +820,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +923,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1091,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1195,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1790,7 +1806,7 @@ first pass.</p>
 <hr class="docutils" />
 <section id="horizontal-scaling">
 <h2>Horizontal scaling<a class="headerlink" href="#horizontal-scaling" title="Link to this heading"></a></h2>
-<p>Multiple <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> instances can share the same queue for horizontal scaling. The Postgres-backed queue uses <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming, so no two instances will collect the same repo simultaneously.</p>
+<p>Multiple <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> instances can share the same queue for horizontal scaling. The Postgres-backed queue uses <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming, so no two instances claim the same repo. One caveat (worklist item 63): a serve START reclaims every other worker’s locked rows at once, whatever their age (except a running heal’s fresh parked rows) — a restarting instance takes a live peer’s in-flight rows, and the peer’s completion later resets that row. Restart instances one at a time, when the others are idle, until that reclaim is liveness-aware.</p>
 <section id="setup">
 <h3>Setup<a class="headerlink" href="#setup" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
@@ -1839,7 +1855,7 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <h3>Considerations<a class="headerlink" href="#considerations" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p><strong>API tokens are shared:</strong> All instances rotate through the same pool of tokens. The total throughput across all instances is still bounded by <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">tokens</span> <span class="pre">*</span> <span class="pre">4985</span> <span class="pre">req/hr</span></code>.</p></li>
-<li><p><strong>Stale lock recovery:</strong> If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance.</p></li>
+<li><p><strong>Stale lock recovery:</strong> If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance, or at once by the next instance that starts (see the caveat above).</p></li>
 <li><p><strong>Materialized view rebuild:</strong> The Saturday rebuild is triggered by each instance independently. The <code class="docutils literal notranslate"><span class="pre">CONCURRENTLY</span></code> option ensures this is safe, though the rebuild may run multiple times.</p></li>
 </ul>
 </section>
@@ -1847,26 +1863,83 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <hr class="docutils" />
 <section id="database-connection-pool">
 <h2>Database connection pool<a class="headerlink" href="#database-connection-pool" title="Link to this heading"></a></h2>
-<p>Aveloxis automatically scales the database connection pool based on the worker count. The formula is <code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">+</span> <span class="pre">15</span></code>, with a minimum of 20. For example, <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">30</span></code> uses a pool of 45 connections. Non-scheduler commands (web, api, migrate) use the default pool of 20.</p>
+<p>Since v0.29.58 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> sizes its pool from the scheduler’s connection
+<strong>demand</strong> — every goroutine class that can hold a pooled connection at once —
+capped by what the server can give it. Non-scheduler commands (web, api,
+migrate, the heals) use the default pool of 20.</p>
+<p>The demand is the sum of:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Consumer</p></th>
+<th class="head"><p>Connections</p></th>
+<th class="head"><p>Where the number comes from</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Collection slots</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">×</span> <span class="pre">5</span></code></p></td>
+<td><p>each slot runs the staged collector’s three concurrent phases (issues, PRs, messages), its heartbeat, and its long-jobs watchdog</p></td>
+</tr>
+<tr class="row-odd"><td><p>Distribution workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">distribution_tracking_workers</span> <span class="pre">+</span> <span class="pre">1</span></code></p></td>
+<td><p>the runners and their dispatcher, when <code class="docutils literal notranslate"><span class="pre">distribution_tracking_enabled</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Mailing-list workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(mailing_list_workers</span> <span class="pre">+</span> <span class="pre">mailing_list_processor_workers)</span> <span class="pre">×</span> <span class="pre">systems</span></code> (+ 2 when at least one system is loaded)</p></td>
+<td><p>one worker set and one drain set per mailing-list system in the catalog, plus the sender-resolve and sender-backfill loops once any system spawned; 0 unless <code class="docutils literal notranslate"><span class="pre">mailing_list_enabled</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Jira workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">jira_workers</span> <span class="pre">+</span> <span class="pre">1</span></code></p></td>
+<td><p>the workers and their drain loop, when <code class="docutils literal notranslate"><span class="pre">jira_enabled</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>ScanCode workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">scancode_workers</span> <span class="pre">+</span> <span class="pre">4</span></code></p></td>
+<td><p>the runners plus the dispatcher, orphan monitor, lock check and startup sweep; 0 when <code class="docutils literal notranslate"><span class="pre">scancode_workers</span></code> is 0 (a separate <code class="docutils literal notranslate"><span class="pre">scancode-worker</span></code> host)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Activity-history workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">activity_history_concurrency</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Breadth fetchers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">breadth_fetch_concurrency</span></code></p></td>
+<td><p>each renames contributors through the store</p></td>
+</tr>
+<tr class="row-odd"><td><p>Background loops</p></td>
+<td><p>one each</p></td>
+<td><p>among them the health probe, stall detector, org refresh, the leftover-staging drain and its heartbeat, the metadata backfill, staging cleanup, the digest, the matview rebuild, the run loop itself, a one-request allowance for the monitor, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans); the mailing-list, Jira and ScanCode singletons are charged in their own rows, only when enabled — the registry in <code class="docutils literal notranslate"><span class="pre">internal/scheduler/pool_demand.go</span></code>, tripwired against every goroutine label in the scheduler, collector, distribution and db packages</p></td>
+</tr>
+</tbody>
+</table>
+<p>Serve asks the server for <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>, <code class="docutils literal notranslate"><span class="pre">superuser_reserved_connections</span></code>
+and (PostgreSQL 16+) <code class="docutils literal notranslate"><span class="pre">reserved_connections</span></code> before opening the pool and caps
+the demand at:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>budget = max_connections - superuser_reserved_connections - reserved_connections (PostgreSQL 16+) - 2 × 20   (the web and api pools)
+</pre></div>
+</div>
+<p>The decision is logged once at startup with every term
+(<code class="docutils literal notranslate"><span class="pre">database</span> <span class="pre">connection</span> <span class="pre">pool</span> <span class="pre">sized</span> <span class="pre">…</span> <span class="pre">pool_size=…</span> <span class="pre">pool_demand=…</span> <span class="pre">server_budget=…</span></code>).
+When the pool ends up <strong>below</strong> the demand, serve says so in a WARN and the
+consequence is a throttle, not an outage: at peak, workers wait for a
+connection, and the health probe reports <code class="docutils literal notranslate"><span class="pre">connection</span> <span class="pre">pool</span> <span class="pre">exhausted</span></code> (it pings
+through the same pool) rather than <code class="docutils literal notranslate"><span class="pre">database</span> <span class="pre">unavailable</span></code>. Before v0.29.58 the
+pool was a fixed <code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">+</span> <span class="pre">15</span></code> and that wait was misreported as a database
+outage, repeatedly, in one production run.</p>
+<p><code class="docutils literal notranslate"><span class="pre">database.pool_max_conns</span></code> overrides the derivation. Set it when the throttle
+is the point: on a disk-bound server, fewer concurrent statements can serve
+the fleet better than more, and an explicit pool is the honest way to choose
+that (the WARN still names the demand it falls short of).</p>
 <section id="postgresql-configuration">
 <h3>PostgreSQL configuration<a class="headerlink" href="#postgresql-configuration" title="Link to this heading"></a></h3>
-<p>For multiple instances or high worker counts, ensure your PostgreSQL <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is sufficient:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">max_connections</span> <span class="o">=</span> <span class="p">(</span><span class="n">workers</span> <span class="o">+</span> <span class="mi">15</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="n">number</span> <span class="n">of</span> <span class="n">Aveloxis</span> <span class="n">instances</span><span class="p">)</span> <span class="o">+</span> <span class="n">connections</span> <span class="k">for</span> <span class="n">other</span> <span class="n">clients</span>
+<p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code> has to cover every instance’s pool plus the other clients:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections = Σ(pool_size per serve instance) + 20 × (web + api instances) + other clients + superuser_reserved_connections + reserved_connections
 </pre></div>
 </div>
-<p>For example, 3 Aveloxis instances plus psql and monitoring tools:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">max_connections</span> <span class="o">=</span> <span class="mi">20</span> <span class="o">*</span> <span class="mi">3</span> <span class="o">+</span> <span class="mi">10</span> <span class="o">=</span> <span class="mi">70</span>
-</pre></div>
-</div>
-<p>Adjust in <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>:</p>
-<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">100</span>
-</pre></div>
-</div>
-<p>That formula gives the <strong>floor</strong> — the number below which Aveloxis cannot
-open its pools. It is not a target: every connection you add above the floor
-is another <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier, so raise <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> and the
-<a class="reference internal" href="#why-work-mem-is-the-dangerous-one"><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> budget</a> together. A large
-fleet runs 300; the <code class="docutils literal notranslate"><span class="pre">100</span></code> above is a small-deployment example.</p>
+<p>Read each serve’s <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> and <code class="docutils literal notranslate"><span class="pre">pool_demand</span></code> from its startup log. A pool
+capped by the budget is fine as long as it is a deliberate choice; a demand far
+above the budget on a server that is not disk-bound is the signal to raise
+<code class="docutils literal notranslate"><span class="pre">max_connections</span></code>. Every connection you add is another <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier,
+so raise <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> and the <a class="reference internal" href="#why-work-mem-is-the-dangerous-one"><code class="docutils literal notranslate"><span class="pre">work_mem</span></code>
+budget</a> together.</p>
 </section>
 </section>
 <hr class="docutils" />

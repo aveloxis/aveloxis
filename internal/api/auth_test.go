@@ -12,26 +12,44 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 type fakeSessionStore struct {
-	userID    int
-	admin     bool
-	scope     []int64
-	valid     map[string]bool
-	validates atomic.Int64
+	userID int
+	admin  bool
+	// The store's three lookups can each fail as a STORE (a lost connection),
+	// which is not "invalid token" / "not an admin" / "no scope" (worklist
+	// follow-up 6, SR-5): the fake honours that boundary like the real store
+	// — an unknown token is db.ErrInvalidSessionToken, anything else an error.
+	validateErr error
+	adminErr    error
+	scopeErr    error
+	scope       []int64
+	valid       map[string]bool
+	validates   atomic.Int64
+	onValidate  func() // runs inside ValidateSessionToken (worklist follow-up 7: a bust racing a resolve)
 }
 
 func (f *fakeSessionStore) ValidateSessionToken(_ context.Context, token string) (int, error) {
 	f.validates.Add(1)
+	if f.onValidate != nil {
+		f.onValidate()
+	}
+	if f.validateErr != nil {
+		return 0, f.validateErr
+	}
 	if f.valid[token] {
 		return f.userID, nil
 	}
-	return 0, contextErr("invalid")
+	return 0, db.ErrInvalidSessionToken
 }
-func (f *fakeSessionStore) IsUserAdmin(context.Context, int) (bool, error) { return f.admin, nil }
+func (f *fakeSessionStore) IsUserAdmin(context.Context, int) (bool, error) {
+	return f.admin, f.adminErr
+}
 func (f *fakeSessionStore) GetUserRepoScope(context.Context, int) ([]int64, error) {
-	return f.scope, nil
+	return f.scope, f.scopeErr
 }
 
 type contextErr string
@@ -44,7 +62,7 @@ func authedChain(t *testing.T, store sessionStore, opts Options, next http.Handl
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := newAuthenticator(store, opts.RequireAuth)
+	a := newAuthenticator(store, opts.RequireAuth, nil)
 	return a.middleware(rl, next)
 }
 

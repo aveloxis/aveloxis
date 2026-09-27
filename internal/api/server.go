@@ -15,6 +15,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -187,16 +188,33 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		return nil, err
 	}
 	s.limiter = rl
-	s.auth = newAuthenticator(store, opts.RequireAuth)
+	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.faCache = &firstActivityCache{m: map[string]time.Time{}}
 	return s, nil
 }
 
+// serverError answers a server-side failure: the cause goes to the log at
+// ERROR with the handler's name, and the body is generic (worklist follow-up
+// 4: handlers wrote the store's error text into 500 bodies — schema and host
+// names a client cannot act on). Client-side refusals keep their own bodies.
+func (s *Server) serverError(w http.ResponseWriter, handler string, err error) {
+	if errors.Is(err, context.Canceled) {
+		// The client left mid-request (every handler passes r.Context()
+		// to the store): nobody is listening, and refuseStoreError
+		// classifies the same event as Debug.
+		s.logger.Debug("request abandoned by the client", "handler", handler, "error", err)
+		return
+	}
+	s.logger.Error("request failed", "handler", handler, "error", err)
+	http.Error(w, "internal error; try again", http.StatusInternalServerError)
+}
+
 // Handler returns the HTTP handler: CORS outermost (preflights are
 // never rate-limited), then the per-IP limiter, then Bearer auth +
 // scope, then the routes.
+
 func (s *Server) Handler() http.Handler {
 	return s.limiter.cors(s.limiter.middleware(s.auth.middleware(s.limiter, s.mux)))
 }
@@ -210,7 +228,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMailingListStats(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store.MailingListStats(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleMailingListStats", err)
 		return
 	}
 	jsonResponse(w, st)
@@ -227,7 +245,7 @@ func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats, err := s.store.GetRepoStats(r.Context(), repoID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleRepoStats", err)
 		return
 	}
 	jsonResponse(w, stats)
@@ -262,7 +280,7 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	stats, err := s.store.GetRepoStatsBatch(r.Context(), ids)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleRepoStatsBatch", err)
 		return
 	}
 	jsonResponse(w, stats)
@@ -318,8 +336,14 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data, err := collector.GenerateSBOMWithOptions(r.Context(), s.store, repoID, sbomFormat, sbomOpts)
+	if errors.Is(err, db.ErrRepoNotFound) {
+		// An admin's scope admits any id, so the generator is the first to
+		// learn the repository does not exist (batch 5b review round 1).
+		http.Error(w, "repo not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		http.Error(w, "SBOM generation failed: "+err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleSBOMDownload", err)
 		return
 	}
 
@@ -331,7 +355,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	if withVulns {
 		vulns, verr := s.store.GetRepoVulnerabilities(r.Context(), repoID)
 		if verr != nil {
-			http.Error(w, "vulnerability lookup failed", http.StatusInternalServerError)
+			s.serverError(w, "handleSBOMDownload", verr)
 			return
 		}
 		if sbomFormat == collector.FormatCycloneDX {
@@ -340,7 +364,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 			data, err = annotateSPDXWithVulns(data, vulns)
 		}
 		if err != nil {
-			http.Error(w, "SBOM annotation failed", http.StatusInternalServerError)
+			s.serverError(w, "handleSBOMDownload", err)
 			return
 		}
 		filename = strings.Replace(filename, ".cdx.json", "-with-vulns.cdx.json", 1)
@@ -383,7 +407,7 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleTimeSeries", err)
 		return
 	}
 	jsonResponse(w, ts)
@@ -397,7 +421,7 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	repos, err := s.store.SearchRepos(r.Context(), q, 20)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleRepoSearch", err)
 		return
 	}
 	// v0.27.4: annotate star state when the caller presented a Bearer
@@ -436,7 +460,7 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	}
 	licenses, err := s.store.GetRepoLicensesScoped(r.Context(), repoID, runtimeOnly)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleLicenses", err)
 		return
 	}
 	// v0.27.4: `scanned` lets the GUI distinguish "dependency analysis

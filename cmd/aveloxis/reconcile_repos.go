@@ -33,6 +33,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/spf13/cobra"
 
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -256,6 +257,5 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 // normalizeReconcileURL trims the pieces that don't affect identity
 // for the rename comparison (matches prelim's normalization intent).
 func normalizeReconcileURL(u string) string {
-	u = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(u), "/"), ".git")
-	return strings.ToLower(u)
+	return strings.ToLower(model.NormalizeRepoGitURL(u)) // the stored spelling's suffix rule (follow-up 8)
 }

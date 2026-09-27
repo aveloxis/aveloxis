@@ -48,6 +48,23 @@ For large instances (400K repos), bare clones can consume tens of terabytes.
 
 The facade phase runs `git log` with a custom format string to extract commit data.
 
+### Empty repositories and git failures (v0.29.58)
+
+Before `git log` runs, the facade probes the default branch with
+`git rev-parse --verify --quiet <ref>^{commit}`. Exit 1 means the ref
+names no commit — an empty repository, or a default branch that was never
+pushed — and the facade completes with zero commits and one INFO line
+(`repository has no commits on its default branch`). Any other probe
+failure is not an answer and falls through to `git log`, so a corrupt or
+missing clone is still reported as a failure.
+
+When `git log` (or the whitespace walker's `git log -p`) exits non-zero,
+the first 2 KiB of its stderr is kept and appended to the error
+(`... exit status 128 (stderr: fatal: ...)`). Before v0.29.58 stderr was
+discarded, and 585 empty repositories in one production run each logged a
+WARN that said nothing but `exit status 128`. The Go toolchain calls made
+during dependency analysis surface their stderr the same way.
+
 ### Format string
 
 The format uses custom field and record separators to reliably parse multi-line output:

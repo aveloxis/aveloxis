@@ -12,7 +12,7 @@
 //	aveloxis merge-cntrb-collisions --dry-run     # show the plan
 //	aveloxis merge-cntrb-collisions               # merge
 //
-// See CLAUDE.md v0.22.3 for the full rationale.
+// See summary/changelog/v0.22.md (the v0.22.3 entry) for the full rationale.
 
 package main
 

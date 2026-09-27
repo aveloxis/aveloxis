@@ -160,7 +160,7 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 		s.apiProxy = rp
 	} else {
 		logger.Warn("invalid api_internal_url; /api proxy disabled",
-			"api_internal_url", platform.RedactURLUserinfo(apiURL), "error", err)
+			"api_internal_url", logURL(apiURL), "error", err)
 	}
 
 	// Parse embedded templates.
@@ -287,6 +287,15 @@ func (s *Server) Handler() http.Handler {
 // sessionCookie builds a session cookie with security attributes set from config.
 // Secure is true in production (default), false when dev_mode is enabled.
 // HttpOnly is always true.
+
+// oauthCallbackTimeout bounds the OAuth callback's forge round trips (the
+// code exchange, /user, /user/emails): three sequential requests to one
+// forge, each normally under a second; 30 s matches the client-side bound
+// every other forge request in the tree carries (platform.HTTPClient's
+// dial and the scorecard probe), and a browser waiting on the callback is
+// better served by an error than by an unbounded spinner.
+const oauthCallbackTimeout = 30 * time.Second
+
 func (s *Server) sessionCookie(token string) *http.Cookie {
 	return &http.Cookie{
 		Name:     "aveloxis_session",
@@ -407,6 +416,15 @@ func truncateForLog(body []byte, max int) string {
 		return s
 	}
 	return s[:max] + "...(truncated)"
+}
+
+// logURL is the one spelling of a caller's URL in a log attribute: userinfo
+// redacted FIRST, then truncated (batch 5b review round 1: the other order
+// let a userinfo longer than the truncation window survive into the WARN
+// unredacted — 187 bytes of a credential). Every URL-keyed attribute in
+// this package goes through it.
+func logURL(u string) string {
+	return truncateForLog([]byte(platform.RedactURLUserinfo(u)), 200)
 }
 
 // ============================================================
@@ -552,16 +570,27 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Exchange code for token.
-	token, err := s.ghOAuth.Exchange(r.Context(), r.URL.Query().Get("code"))
+	// Exchange code for token. Bounded (batch 7c review round 3): oauth2
+	// builds on http.DefaultClient, which has no timeout, so a stalled forge
+	// held the callback for as long as the browser waited.
+	ctx, cancel := context.WithTimeout(r.Context(), oauthCallbackTimeout)
+	defer cancel()
+	token, err := s.ghOAuth.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
 		http.Error(w, "OAuth exchange failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Get user info from GitHub.
-	client := s.ghOAuth.Client(r.Context(), token)
-	resp, err := client.Get("https://api.github.com/user")
+	client := s.ghOAuth.Client(ctx, token)
+	userReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+	if err != nil {
+		s.logger.Error("building the GitHub user request failed", "error", err)
+		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		return
+	}
+	userReq.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion) // every GitHub REST request pins the version (worklist item 15)
+	resp, err := client.Do(userReq)
 	if err != nil {
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
@@ -603,7 +632,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// nothing, we fall through to the email-prompt flow at
 	// /account/email.
 	if ghUser.Email == "" {
-		if email := fetchGitHubPrimaryEmail(r.Context(), client, s.logger); email != "" {
+		if email := fetchGitHubPrimaryEmail(ctx, client, s.logger); email != "" {
 			ghUser.Email = email
 		}
 	}
@@ -624,7 +653,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 // completeOAuthLogin is the shared tail of both OAuth callbacks
 // (v0.27.42, summary/18 Phase 4 — the two callbacks previously
 // duplicated this sequence line for line): first-signup detection,
-// user upsert, fresh admin flag, welcome email, session creation, and
+// user upsert, welcome email, fresh admin flag, session creation, and
 // the post-login redirect.
 func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info db.OAuthUserInfo, providerLabel string) {
 	// First-signup probe. Best-effort tolerated (v0.27.36 review): a
@@ -636,24 +665,38 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	wasNewUser = preCount == 0
 
 	userID, err := s.store.UpsertOAuthUser(r.Context(), info)
+	if errors.Is(err, context.Canceled) {
+		return // the browser left mid-callback: nothing to serve, not a failure
+	}
 	if err != nil {
 		s.logger.Error("failed to upsert OAuth user", "error", err)
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
 	}
 
-	// Read fresh admin flag — set to TRUE for the first-ever user
-	// (auto-promotion in UpsertOAuthUser) and stays whatever the
-	// admin user-management page set it to thereafter.
-	isAdmin, _ := s.store.IsUserAdmin(r.Context(), userID)
-
 	// Send welcome email on first signup. No-op if mailer
 	// unconfigured. Failures here don't block login — the email is a
-	// nice-to-have, not a gate.
+	// nice-to-have, not a gate. Before the admin-flag lookup: the mail
+	// needs no client, and the user row is already committed, so a
+	// browser that leaves during the lookup below must not cost a first
+	// signup its welcome (batch-2 review round 4).
 	if wasNewUser && s.mailer != nil && info.Email != "" {
 		if err := s.mailer.SendWelcome(info.Email, info.Login, providerLabel); err != nil && !mailer.IsSkip(err) {
 			s.logger.Warn("failed to send welcome email", "login", truncateForLog([]byte(info.Login), 100), "error", err)
 		}
+	}
+
+	// Read fresh admin flag — set to TRUE for the first-ever user
+	// (auto-promotion in UpsertOAuthUser) and stays whatever the admin
+	// user-management page set it to thereafter. A failed lookup is logged
+	// and the session is a non-admin one: the user can sign in again once
+	// the store answers (worklist follow-up 6).
+	isAdmin, err := s.store.IsUserAdmin(r.Context(), userID)
+	if errors.Is(err, context.Canceled) {
+		return // the browser left mid-callback: nothing to serve, not a failure
+	}
+	if err != nil {
+		s.logger.Error("admin flag lookup failed at login — session created as non-admin", "user_id", userID, "error", err)
 	}
 
 	sessToken := s.createSession(userID, info.Login, info.AvatarURL, info.Provider, isAdmin)
@@ -675,8 +718,10 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 func fetchGitHubPrimaryEmail(ctx context.Context, client *http.Client, logger *slog.Logger) string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
 	if err != nil {
+		logger.Error("building the GitHub emails request failed", "error", err)
 		return ""
 	}
+	req.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Warn("failed to call /user/emails for OAuth fallback", "error", err)
@@ -734,7 +779,9 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.glOAuth.Exchange(r.Context(), r.URL.Query().Get("code"))
+	ctx, cancel := context.WithTimeout(r.Context(), oauthCallbackTimeout) // bounded, see the GitHub callback
+	defer cancel()
+	token, err := s.glOAuth.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
 		http.Error(w, "OAuth exchange failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -744,7 +791,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	if glBase == "" {
 		glBase = "https://gitlab.com"
 	}
-	client := s.glOAuth.Client(r.Context(), token)
+	client := s.glOAuth.Client(ctx, token)
 	resp, err := client.Get(glBase + "/api/v4/user")
 	if err != nil {
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
@@ -805,7 +852,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	groups, _ := s.store.GetUserGroups(r.Context(), sess.UserID)
+	groups, err := s.store.GetUserGroups(r.Context(), sess.UserID)
+	if err != nil {
+		// A failed lookup is not "no groups" (SR-5; batch 5b review round
+		// 1): it read as an empty dashboard, indistinguishable from a fresh
+		// login, and the pending-approval banner keyed off it.
+		s.serverError(w, "handleDashboard", err)
+		return
+	}
 
 	// v0.19.10 pending-approval banner: non-admin users whose groups
 	// are all status='pending' get a clear signal their account is
@@ -1217,8 +1271,12 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	group, totalRepos, err := s.store.GetGroupDetail(r.Context(), sess.UserID, groupID, page, perPage, query)
-	if err != nil {
+	if errors.Is(err, db.ErrGroupNotOwned) {
 		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, "handleGroup", err)
 		return
 	}
 
@@ -1276,8 +1334,24 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"PageWindow": pageWindow,
 		"AddError":   r.URL.Query().Get("add_error"),
 		"OrgError":   r.URL.Query().Get("org_error"),
+		// A number the handler parsed, never the query string itself: the
+		// notice is styled as the site's own, so a reflected string would
+		// read as the site speaking (review round 1 of the batch). Not a
+		// number, zero or negative: no notice.
+		"Pending":    pendingCount(r.URL.Query().Get("pending")),
+		"OrgPending": r.URL.Query().Get("org_pending"),
 		"GitHubHost": platform.GitHubWebHost(s.ghAPIBase),
 	})
+}
+
+// pendingCount reads the ?pending= count the add redirect carries; anything
+// that is not a positive integer is 0 (no notice).
+func pendingCount(q string) int {
+	n, err := strconv.Atoi(q)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
@@ -1322,19 +1396,20 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 				s.cfg.AutoApproveAddLimitValue())
 			if err != nil {
 				s.logger.Warn("failed to add repos to group", "group_id", groupID, "error", err)
+				if errors.Is(err, db.ErrURLTooLong) {
+					// Name the line (follow-up 14): the store refuses the
+					// whole paste and its error names none of them.
+					for _, u := range urls {
+						if u = strings.TrimSpace(u); len(u) > db.MaxAddURLBytes {
+							s.logger.Warn("repo not added — a URL is over-long", "group_id", groupID, "bytes", len(u), "url_prefix", logURL(u))
+							break
+						}
+					}
+				}
 				// Tell the user, who otherwise sees the page a success shows
 				// (Copilot review of PR #207); a rejected group gets its own
 				// notice, since trying again cannot work (round-24 review).
-				flag := "1"
-				switch {
-				case errors.Is(err, db.ErrGroupRejected):
-					flag = "rejected"
-				case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo):
-					// The user's input: "try again" cannot work, and the
-					// store refused the WHOLE paste (round 2).
-					flag = "invalid"
-				}
-				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, flag), http.StatusFound)
+				http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, addErrorFlag(err)), http.StatusFound)
 				return
 			}
 			s.logger.Info("repo add", "group_id", groupID,
@@ -1384,7 +1459,7 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrOrgOffGitHubHost):
 			s.logger.Warn("org not added — its host is not this deployment's GitHub host",
-				"group_id", groupID, "org_url", platform.RedactURLUserinfo(truncateForLog([]byte(orgURL), 200)), "github_host", platform.GitHubWebHost(s.ghAPIBase))
+				"group_id", groupID, "org_url", logURL(orgURL), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=host", groupID), http.StatusFound)
 			return
 		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong):
@@ -1392,12 +1467,23 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 			// the repo path (add_error=invalid) and the portal (400) do
 			// (fix-review round 1: the store's refusal fell through to a plain
 			// redirect, so a credentialed org URL was silently not added). The
-			// URL itself is not logged.
-			s.logger.Warn("org not added — invalid URL", "group_id", groupID, "error", err)
+			// URL is logged redacted and truncated, as the host arm logs it
+			// (follow-up 14: the over-long WARN named nothing).
+			s.logger.Warn("org not added — invalid URL", "group_id", groupID, "error", err,
+				"org_url", logURL(orgURL), "bytes", len(orgURL))
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=invalid", groupID), http.StatusFound)
 			return
+		case errors.Is(err, db.ErrGroupRejected):
+			// Trying again cannot work: say why (the repo paste and the
+			// portal already do; review round 1 of the batch).
+			s.logger.Warn("org not added — the group is rejected", "group_id", groupID)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=rejected", groupID), http.StatusFound)
+			return
 		case err != nil:
-			s.logger.Warn("failed to add org to group", "error", err)
+			// Say so (worklist follow-up 11): this redirected as a success.
+			s.logger.Warn("failed to add org to group", "group_id", groupID, "error", err)
+			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=1", groupID), http.StatusFound)
+			return
 		case out.Registered:
 			// Registered (an admin's add, or a non-admin's auto-approved add of
 			// an org already registered in a group that is not rejected —
@@ -1437,12 +1523,27 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	// unreachable for the only orgs it could serve).
 	isGitHub := platform.IsGitHubHost(host, s.ghAPIBase)
 
-	if !isGitHub || s.ghKeys == nil {
+	if !isGitHub {
 		return
 	}
 
-	if status, err := s.store.GetGroupStatus(ctx, groupID); err == nil && status == "rejected" {
-		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org_url", platform.RedactURLUserinfo(orgURL))
+	// The rejected-group gate first: it is the abuse lever, and its log line
+	// is the record of why an org did not scan, whatever the key pool holds.
+	status, err := s.store.GetGroupStatus(ctx, groupID)
+	if err != nil {
+		// A lookup error is not "not rejected" (SR-5; worklist follow-up 2):
+		// nothing scans until the status is known.
+		s.logger.Error("org scan skipped — group status lookup failed", "group_id", groupID, "org_url", logURL(orgURL), "error", err)
+		return
+	}
+	if status == "rejected" {
+		s.logger.Warn("org scan skipped — owning group is rejected", "group_id", groupID, "org_url", logURL(orgURL))
+		return
+	}
+	if !s.ghKeys.HasUsableKey() {
+		// web has its own log; the scheduler's startup WARN never reaches it
+		// (items 40/21, review round 1).
+		s.logger.Warn("org scan skipped — this web process has no usable GitHub API key", "group_id", groupID, "org_url", logURL(orgURL))
 		return
 	}
 
@@ -1507,7 +1608,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				// refresh retries it next scan.
 				repoID, err := s.store.FindRepoByURL(ctx, item.HTMLURL)
 				if err != nil {
-					s.logger.Warn("org scan: repo lookup failed", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
+					s.logger.Warn("org scan: repo lookup failed", "url", logURL(item.HTMLURL), "error", err)
 					continue
 				}
 				if repoID > 0 {
@@ -1533,14 +1634,14 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 						PlatformID: model.ForgeIDString(item.ID), // v0.27.102 — enables the rename-heal inside UpsertRepo
 					})
 					if err != nil {
-						s.logger.Warn("org scan: upserting new repo failed", "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
+						s.logger.Warn("org scan: upserting new repo failed", "url", logURL(item.HTMLURL), "error", err)
 						continue
 					}
 					// A silently failed enqueue strands a catalog row with no
 					// queue row — a suspected origin of the reconciliation
 					// gap found in the 2026-07-21 audit (summary/18 Phase 2).
 					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", platform.RedactURLUserinfo(item.HTMLURL), "error", err)
+						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", logURL(item.HTMLURL), "error", err)
 					}
 					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
 						s.logger.Warn("org scan: linking new repo failed", "repo_id", repoID, "error", err)
@@ -1582,7 +1683,11 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 
 	// Get the user's groups and their repos for the search dropdown.
-	groups, _ := s.store.GetUserGroups(r.Context(), sess.UserID)
+	groups, err := s.store.GetUserGroups(r.Context(), sess.UserID)
+	if err != nil {
+		s.serverError(w, "handleCompare", err)
+		return
+	}
 
 	s.render(w, "compare", map[string]any{
 		"Session": sess,
@@ -1600,9 +1705,14 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 
-	// Verify the user owns this group.
+	// Verify the user owns this group. Only "not yours" is a 403 (SR-5,
+	// follow-up 12): a store failure is the 500 it is.
 	if _, _, err := s.store.GetGroupDetail(r.Context(), sess.UserID, groupID, 1, 1, ""); err != nil {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		if errors.Is(err, db.ErrGroupNotOwned) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		s.serverError(w, "handleSBOMDownload", err)
 		return
 	}
 
@@ -1626,8 +1736,14 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request, sess
 	}
 
 	data, err := collector.GenerateSBOM(r.Context(), s.store, repoID, sbomFormat)
+	if errors.Is(err, db.ErrRepoNotFound) {
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
-		http.Error(w, "SBOM generation failed: "+err.Error(), http.StatusInternalServerError)
+		// The cause goes to the log, not the body (it carried the store's
+		// text through v0.29.67; follow-up 12).
+		s.serverError(w, "handleSBOMDownload", err)
 		return
 	}
 
@@ -1645,22 +1761,34 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 		return
 	}
 
-	// Verify group ownership.
+	// Verify group ownership: only "not yours" is a 403 (SR-5, follow-up 12).
 	group, _, err := s.store.GetGroupDetail(r.Context(), sess.UserID, groupID, 1, 1, "")
-	if err != nil {
+	if errors.Is(err, db.ErrGroupNotOwned) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-
-	// Get repo details.
-	repo, err := s.store.GetRepoByID(r.Context(), repoID)
 	if err != nil {
-		http.NotFound(w, r)
+		s.serverError(w, "handleRepoDetail", err)
 		return
 	}
 
-	// Get stats.
-	stats, _ := s.store.GetRepoStats(r.Context(), repoID)
+	// Get repo details: only "no such repository" is a 404.
+	repo, err := s.store.GetRepoByID(r.Context(), repoID)
+	if errors.Is(err, db.ErrRepoNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, "handleRepoDetail", err)
+		return
+	}
+
+	// Get stats: an enrichment the page renders without, so a failure is
+	// logged, not a 500 (the template handles a nil Stats).
+	stats, err := s.store.GetRepoStats(r.Context(), repoID)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Warn("repo page: stats unavailable", "repo_id", repoID, "error", err)
+	}
 
 	s.render(w, "repo_detail", map[string]any{
 		"Session": sess,
@@ -1691,8 +1819,16 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	offset := (page - 1) * monitorPageSize
 
-	stats, _ := s.store.QueueStats(r.Context())
-	jobs, total, _ := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query, "", "")
+	stats, err := s.store.QueueStats(r.Context())
+	if err != nil {
+		s.serverError(w, "handleMonitor", err)
+		return
+	}
+	jobs, total, err := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query, "", "")
+	if err != nil {
+		s.serverError(w, "handleMonitor", err)
+		return
+	}
 
 	totalPages := (total + monitorPageSize - 1) / monitorPageSize
 	if totalPages < 1 {
@@ -1731,8 +1867,16 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	for _, j := range jobs {
 		repoIDs = append(repoIDs, j.RepoID)
 	}
-	repos, _ := s.store.GetReposBatch(r.Context(), repoIDs)
-	repoStats, _ := s.store.GetRepoStatsBatch(r.Context(), repoIDs)
+	// Enrichment of the rows: the page renders without it, so a failure is
+	// logged, not a 500.
+	repos, err := s.store.GetReposBatch(r.Context(), repoIDs)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Warn("monitor page: repository details unavailable", "rows", len(repoIDs), "error", err)
+	}
+	repoStats, err := s.store.GetRepoStatsBatch(r.Context(), repoIDs)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Warn("monitor page: repository stats unavailable", "rows", len(repoIDs), "error", err)
+	}
 
 	type monitorRow struct {
 		RowNum          int
@@ -1817,7 +1961,11 @@ func (s *Server) handleMonitorPrioritize(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, db.ErrRepoNotInQueue) {
+			http.Error(w, "repo not found in queue", http.StatusNotFound)
+			return
+		}
+		s.serverError(w, "handleMonitorPrioritize", err)
 		return
 	}
 	// Redirect back to the monitor page.
@@ -1847,4 +1995,35 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 		"user_id":    sess.UserID,
 		"login":      sess.LoginName,
 	})
+}
+
+// serverError answers a store or generation failure on a page: the cause
+// goes to the log at ERROR with the handler's name and the body is generic
+// (worklist follow-up 12: the group, repository and SBOM pages turned every
+// lookup error into a 404 or 403, and the SBOM download wrote the error's
+// text into its body). A client that left mid-request (context.Canceled) is
+// Debug, as in the API's serverError.
+func (s *Server) serverError(w http.ResponseWriter, handler string, err error) {
+	if errors.Is(err, context.Canceled) {
+		s.logger.Debug("request abandoned by the client", "handler", handler, "error", err)
+		return
+	}
+	s.logger.Error("request failed", "handler", handler, "error", err)
+	http.Error(w, "internal error; try again", http.StatusInternalServerError)
+}
+
+// addErrorFlag names the notice the group page shows for a failed repository
+// add: "rejected" for a group an administrator rejected (trying again cannot
+// work), "invalid" for the caller's own input — a URL over-long, carrying
+// credentials, or refused by the database as a value (a data exception such
+// as a NUL byte; follow-up 12: it said "try adding them again") — and "1",
+// the retryable failure, for everything else.
+func addErrorFlag(err error) string {
+	switch {
+	case errors.Is(err, db.ErrGroupRejected):
+		return "rejected"
+	case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo), db.IsRejectedValue(err):
+		return "invalid"
+	}
+	return "1"
 }

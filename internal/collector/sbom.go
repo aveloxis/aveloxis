@@ -55,7 +55,7 @@ type SBOMOptions struct {
 func GenerateSBOMWithOptions(ctx context.Context, store *db.PostgresStore, repoID int64, format SBOMFormat, opts SBOMOptions) ([]byte, error) {
 	repo, err := store.GetRepoForSBOM(ctx, repoID)
 	if err != nil {
-		return nil, fmt.Errorf("repo %d not found: %w", repoID, err)
+		return nil, err // the store names the repository
 	}
 
 	deps, err := store.GetRepoLibyearDeps(ctx, repoID)

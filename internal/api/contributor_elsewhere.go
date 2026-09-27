@@ -69,7 +69,7 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 
 	rows, err := s.store.ContributorsElsewhere(r.Context(), repoID, since, limit, 10, excludeBots)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleContributorsElsewhere", err)
 		return
 	}
 	body, err := json.Marshal(map[string]any{
@@ -78,7 +78,7 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 		"contributors": rows,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleContributorsElsewhere", err)
 		return
 	}
 	s.respCache.put(key, body)
@@ -133,7 +133,7 @@ func (s *Server) handleContributorActivity(w http.ResponseWriter, r *http.Reques
 	}
 	body, err := json.Marshal(view)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleContributorActivity", err)
 		return
 	}
 	s.respCache.put(key, body)

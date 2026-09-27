@@ -164,15 +164,15 @@ The staged pipeline is designed for safe restart at any point:
 
 ### On shutdown
 
-- Active API calls finish (graceful shutdown)
+- In-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind; then the tracked background pools, bounded too
 - Queue locks are released (repos go back to `queued` status)
 - Any data already in the staging table is preserved
 
 ### On startup
 
-- Leftover staging data from the previous run is processed first
+- The locks a previous serve left behind are reclaimed first, whatever their age (a fresh serve has no in-flight work), except a live `heal-collection-gaps` run's drain-parked rows; then stale locks, then the serve's own; then `due_at` is realigned
+- Leftover staging data from the previous run is drained LAST, in a background goroutine, while normal queue polling starts at once (v0.18.29; the reclaim-before-drain order is pinned by `TestLockRecoveryRunsBeforeLeftoverStaging`)
 - This means data already fetched from the API is not lost
-- After staging is drained, normal queue polling resumes
 
 ### Idempotent processing
 

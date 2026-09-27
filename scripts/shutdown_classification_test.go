@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // The cross-package shutdown-classification RATCHET — the P0 item from
@@ -189,7 +191,9 @@ func parseFuncs(t *testing.T, dir string) []shutdownFunc {
 			if lo < 0 || hi > len(src) || lo >= hi {
 				continue
 			}
-			fns = append(fns, shutdownFunc{name: fd.Name.Name, file: filepath.Base(p), body: string(src[lo:hi])})
+			// Comment-stripped (worklist §4): the audit read raw bodies, so a
+			// `// return` comment in place of the real one passed.
+			fns = append(fns, shutdownFunc{name: fd.Name.Name, file: filepath.Base(p), body: srctest.StripGoComments(string(src[lo:hi]))})
 		}
 		return nil
 	})
@@ -234,7 +238,12 @@ func reachableFrom(fns []shutdownFunc, seed string) map[string]bool {
 	return reach
 }
 
-var shutdownLogRe = regexp.MustCompile(`\.(?:Warn|Error)\(\s*"([^"]*)"[^)]*"error",\s*(\w+)`)
+// shutdownLogRe finds a WARN/ERROR carrying an "error" attribute. Between the
+// message and the attribute it allows quoted strings and one level of
+// parentheses (`len(chunk)`, `class.String()`): the old `[^)]*` stopped at
+// the first `)` and never examined such a log (worklist §4; three real
+// shutdown-as-failure sites hid that way).
+var shutdownLogRe = regexp.MustCompile(`\.(?:Warn|Error)\(\s*"([^"]*)"(?:[^()"]|"[^"]*"|\([^()]*\))*?"error",\s*(\w+)`)
 
 func auditFuncs(fns []shutdownFunc, exclude map[string]bool) (violations []string, examined int) {
 	var out []string
@@ -259,7 +268,7 @@ func auditFuncs(fns []shutdownFunc, exclude map[string]bool) (violations []strin
 			// `if errors.Is(err, context.Canceled) {` and replacing its
 			// `return` with a bare `continue` (or a Debug log) escapes a
 			// presence check while restoring the exact defect.
-			if logUnreachableOnCancel(f.body, prodAt, loc[0]) {
+			if logUnreachableOnCancel(f.body, prodAt, loc[0], errVar) {
 				continue
 			}
 			out = append(out, fmt.Sprintf("%s::%s::%s", f.file, f.name, msg))
@@ -290,7 +299,10 @@ func auditFuncs(fns []shutdownFunc, exclude map[string]bool) (violations []strin
 // The second is "record the abort, then drain" (breadth.go sets
 // aborted/abortErr and cancels the remaining fetches), so a
 // continue/break counts only when the block also ASSIGNS.
-func logUnreachableOnCancel(body string, prodAt, logAt int) bool {
+func logUnreachableOnCancel(body string, prodAt, logAt int, errVar string) bool {
+	if guardedByAnotherErrorClass(body, prodAt, logAt, errVar) {
+		return true
+	}
 	for _, at := range classifyRe.FindAllStringIndex(body[prodAt:logAt], -1) {
 		abs := prodAt + at[0]
 		negated := abs > 0 && strings.TrimSpace(body[max(0, abs-1):abs]) == "!"
@@ -325,7 +337,183 @@ func logUnreachableOnCancel(body string, prodAt, logAt int) bool {
 	return false
 }
 
+// guardedByAnotherErrorClass reports a log that a cancellation cannot reach
+// because it sits inside an arm keyed on ANOTHER error class (worklist §4,
+// v0.29.68: the wider shutdownLogRe made three such logs visible): the
+// enclosing `if errors.Is(<err>, <sentinel>) {` with a sentinel that is not
+// context.Canceled — a cancellation is never that sentinel — or a preceding
+// `if <err> == nil || !<isPredicate>(<err>) { return … }`, after which the
+// log runs only when the predicate held (a predicate on the error names a
+// failure class, which a cancellation is not). Either way the arm itself
+// is the classification. Both tests bind to the LOG's error variable, and
+// a NEGATED sentinel arm (`!errors.Is(err, X)`) is no guard — a cancelled
+// error is not X, so the negation holds and the log is reached (batch 7b
+// review round 1: the first cut accepted a negated arm, a sentinel tested
+// on another variable and a predicate on another variable; fixtures in
+// TestShutdownExemptionShapes).
+//
+// Round 2 of the same review: the match must sit in an `if` HEADER (a
+// `case` clause is not one), and the header's boolean structure decides —
+// a sentinel arm widened by a top-level `||` (`errors.Is(err, X) || err !=
+// nil`) is reached by a cancellation, and an early return narrowed by a
+// top-level `&&` (`!isX(err) && retries > 3`) may not return at all.
+func guardedByAnotherErrorClass(body string, prodAt, logAt int, errVar string) bool {
+	span := body[prodAt:logAt]
+	for _, m := range sentinelArmRe.FindAllStringSubmatchIndex(span, -1) {
+		negated, v, sentinel := span[m[2]:m[3]] != "", span[m[4]:m[5]], span[m[6]:m[7]]
+		if negated || v != errVar || sentinel == "context.Canceled" {
+			continue
+		}
+		header, brace, ok := ifHeader(body, prodAt+m[0])
+		if !ok || !isConjunct(header, "errors.Is("+v+", "+sentinel+")") {
+			continue
+		}
+		start, end, ok := enclosingBlock(body, brace)
+		if ok && logAt > start && logAt < end {
+			return true
+		}
+	}
+	for _, m := range negatedPredicateRe.FindAllStringSubmatchIndex(span, -1) {
+		if span[m[2]:m[3]] != errVar {
+			continue
+		}
+		header, brace, ok := ifHeader(body, prodAt+m[0])
+		if !ok || hasTopLevelOp(header, "&&") {
+			continue
+		}
+		start, end, ok := enclosingBlock(body, brace)
+		if ok && end < logAt && strings.Contains(body[start:end+1], "return") {
+			return true
+		}
+	}
+	return false
+}
+
+// ifHeader returns the `if` header that contains offset at — from the `if`
+// (or `} else if`) that opens its line to the `{` that closes it — and the
+// offset of that brace. A match on a line that does not start an if
+// statement (a `case` clause, a plain expression) is not a header.
+func ifHeader(body string, at int) (header string, brace int, ok bool) {
+	lineStart := strings.LastIndex(body[:at], "\n") + 1
+	// at may sit on the whitespace before the condition (the sentinel regex
+	// admits leading spaces), so the lead is compared trimmed.
+	lead := strings.TrimSpace(body[lineStart:at])
+	if lead != "if" && !strings.HasPrefix(lead, "if ") && lead != "} else if" && !strings.HasPrefix(lead, "} else if ") {
+		return "", 0, false
+	}
+	depth := 0
+	for i := at; i < len(body); i++ {
+		switch body[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '{':
+			if depth == 0 {
+				return body[lineStart:i], i, true
+			}
+		case '\n':
+			return "", 0, false
+		}
+	}
+	return "", 0, false
+}
+
+// isConjunct reports whether want is, byte for byte, one of the top-level
+// `&&`-joined conjuncts of the if header's condition (the text after the
+// last top-level `;`, before the brace). Exactness is the guard (batch 7b
+// review round 3): `errors.Is(err, X) == false`, `!= true`, `x := errors.Is(
+// err, X); !x` and `!(errors.Is(err, X))` are all reached by a cancellation,
+// and none is the bare call as a conjunct; a top-level `||` makes the whole
+// condition one disjunction, in which the call is not a conjunct either.
+// DECIDED (round 4): the shapes this refuses although they DO guard —
+// `if (errors.Is(err, X)) {`, a no-space `errors.Is(err,X)` (gofmt forbids
+// it), a multi-line header, a `;` inside a string outside parentheses — are
+// reported as violations, the safe direction; none is in the corpus, and a
+// later round must not widen the exemption to admit them.
+func isConjunct(header, want string) bool {
+	cond := header
+	if i := strings.Index(cond, "if "); i >= 0 {
+		cond = cond[i+3:]
+	}
+	if i := lastTopLevel(cond, ";"); i >= 0 {
+		cond = cond[i+1:]
+	}
+	if hasTopLevelOp(cond, "||") {
+		return false
+	}
+	for _, part := range splitTopLevel(cond, "&&") {
+		if strings.TrimSpace(part) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// lastTopLevel returns the offset of the last occurrence of op outside every
+// parenthesis, or -1.
+func lastTopLevel(s, op string) int {
+	depth, last := 0, -1
+	for i := 0; i+len(op) <= len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && s[i:i+len(op)] == op {
+			last = i
+		}
+	}
+	return last
+}
+
+// splitTopLevel splits s on op outside every parenthesis.
+func splitTopLevel(s, op string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i := 0; i+len(op) <= len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && s[i:i+len(op)] == op {
+			parts = append(parts, s[start:i])
+			start = i + len(op)
+			i += len(op) - 1
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// hasTopLevelOp reports whether the boolean operator op appears in header
+// outside every parenthesis.
+func hasTopLevelOp(header, op string) bool {
+	depth := 0
+	for i := 0; i+len(op) <= len(header); i++ {
+		switch header[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 && header[i:i+len(op)] == op {
+			return true
+		}
+	}
+	return false
+}
+
 var (
+	// `[!]errors.Is(<err>, <sentinel>)`: the negation, the error variable
+	// and the sentinel are the submatches.
+	sentinelArmRe = regexp.MustCompile(`(!?)\s*errors\.Is\((\w+),\s*([\w.]+)\)`)
+	// `!isSomething(<err>)` or `!IsSomething(<err>)`: a negated predicate on the
+	// error (the submatch), whose enclosing block returns (the early-return shape).
+	negatedPredicateRe = regexp.MustCompile(`!\s*(?:\w+\.)?[iI]s\w*\((\w+)\)`)
+
 	// Two spellings make a log unreachable on cancel, and BOTH are in
 	// the tree. `errors.Is(err, context.Canceled)` classifies the error;
 	// `ctx.Err() != nil` asks the context directly — which a worker loop
@@ -383,4 +571,162 @@ func producerOffset(body string, upto int, v string) (int, bool) {
 		return 0, false
 	}
 	return last[0], true
+}
+
+// TestShutdownExemptionShapes drives guardedByAnotherErrorClass through the
+// shapes batch 7b review round 1 found it accepting, and the two it is for.
+// Each body has one failure log; the verdict is whether a cancellation can
+// reach it.
+func TestShutdownExemptionShapes(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		unreachable bool
+	}{
+		{"sentinel arm on the log's error", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("no row", "error", err)
+	}
+`, true},
+		{"negated sentinel arm: a cancelled error is not ErrNoRows, so the log is reached", `
+	err := s.store.Ping(ctx)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel tested on another variable", `
+	err := s.store.Ping(ctx)
+	if errors.Is(other, pgx.ErrNoRows) {
+		if err != nil {
+			logger.Warn("ping failed", "error", err)
+		}
+	}
+`, false},
+		{"early return on a negated predicate of the log's error", `
+	err := sendBatch(ctx, b)
+	if err == nil || !isStalePreparedStatement(err) {
+		return err
+	}
+	logger.Warn("stale prepared statement — retrying", "error", err)
+`, true},
+		{"negated predicate on another variable", `
+	err := sendBatch(ctx, b)
+	if !isSPDXLicense(id) {
+		return err
+	}
+	if err != nil {
+		logger.Warn("send failed", "error", err)
+	}
+`, false},
+		// Round 2: the header's structure, not the token.
+		{"sentinel arm widened by || with the canceled sentinel", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, context.Canceled) {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel arm widened by || err != nil", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) || err != nil {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel arm widened by || another predicate", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) || isTransient(err) {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"a case clause is not an if header", `
+	err := s.store.Ping(ctx)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	default:
+		if err != nil {
+			logger.Warn("ping failed", "error", err)
+		}
+	}
+`, false},
+		{"early return narrowed by &&", `
+	err := sendBatch(ctx, b)
+	if !isStalePreparedStatement(err) && retries > 3 {
+		return err
+	}
+	logger.Warn("stale prepared statement — retrying", "error", err)
+`, false},
+		{"a switch on the sentinel test is not an if header", `
+	err := s.store.Ping(ctx)
+	switch errors.Is(err, pgx.ErrNoRows) {
+	case false:
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		// Round 3: negations of the call itself, and an init-clause alias.
+		{"sentinel compared == false", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) == false {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel compared != true", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) != true {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel through an init-clause alias, negated", `
+	err := s.store.Ping(ctx)
+	if x := errors.Is(err, pgx.ErrNoRows); !x {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel negated in parentheses", `
+	err := s.store.Ping(ctx)
+	if !(errors.Is(err, pgx.ErrNoRows)) {
+		logger.Warn("ping failed", "error", err)
+	}
+`, false},
+		{"sentinel through an init-clause alias, plain", `
+	err := s.store.Ping(ctx)
+	if x := errors.Is(err, pgx.ErrNoRows); x {
+		logger.Warn("no row", "error", err)
+	}
+`, false},
+		{"parenthesised whole sentinel test (decided: refused, the safe direction)", `
+	err := s.store.Ping(ctx)
+	if (errors.Is(err, pgx.ErrNoRows)) {
+		logger.Warn("no row", "error", err)
+	}
+`, false},
+		{"sentinel arm narrowed by && is still a guard", `
+	err := s.store.Ping(ctx)
+	if errors.Is(err, pgx.ErrNoRows) && strict {
+		logger.Warn("no row", "error", err)
+	}
+`, true},
+		{"early return widened by || is still a return", `
+	err := sendBatch(ctx, b)
+	if err == nil || !isStalePreparedStatement(err) || tooMany(err) {
+		return err
+	}
+	logger.Warn("stale prepared statement — retrying", "error", err)
+`, true},
+	}
+	for _, tc := range cases {
+		body := tc.body
+		loc := shutdownLogRe.FindStringSubmatchIndex(body)
+		if loc == nil {
+			t.Fatalf("%s: fixture has no failure log", tc.name)
+		}
+		errVar := body[loc[4]:loc[5]]
+		prodAt, ok := producerOffset(body, loc[0], errVar)
+		if !ok {
+			t.Fatalf("%s: fixture's producer not found", tc.name)
+		}
+		if got := logUnreachableOnCancel(body, prodAt, loc[0], errVar); got != tc.unreachable {
+			t.Errorf("%s: unreachable on cancel = %v; want %v", tc.name, got, tc.unreachable)
+		}
+	}
 }

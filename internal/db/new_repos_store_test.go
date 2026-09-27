@@ -53,8 +53,8 @@ func TestGetNewReposFleetArmGating(t *testing.T) {
 }
 
 // Owner matching is case-insensitive: GitHub org logins are
-// case-preserving but case-insensitive, and org_url casing is
-// whatever the registrant typed.
+// case-preserving but case-insensitive, and org_url rows written before
+// v0.29.68 keep the registrant's case.
 func TestGetNewReposOwnerMatchCaseInsensitive(t *testing.T) {
 	src := newReposSQL(t)
 	if !strings.Contains(src, "LOWER(r.repo_owner)") {

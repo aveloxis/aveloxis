@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.68 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=6e3d71c5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -603,7 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +658,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +667,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +820,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +923,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1091,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1195,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1872,7 +1888,7 @@ grep<span class="w"> </span><span class="s2">&quot;loaded.*keys&quot;</span><spa
 <ul class="simple">
 <li><p>No API keys loaded (see above) — the staged collection returns 0 items when the key pool is empty</p></li>
 <li><p>Authentication failure (token not valid for this repo)</p></li>
-<li><p>The repo is empty (no issues, PRs, or commits)</p></li>
+<li><p>The repo has no issues, PRs or releases and its clone could not prove it empty (since v0.29.62 a repository whose default branch has no commits completes as collected, with zero data, instead of failing)</p></li>
 <li><p>The repo is private and the token does not have access</p></li>
 </ul>
 <p><strong>Solution:</strong></p>
@@ -2217,10 +2233,12 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <p>The <code class="docutils literal notranslate"><span class="pre">migrate</span></code> command includes a data cleanup pass that detects and nullifies garbage timestamps (year &lt; 1970) across all tables. This is idempotent and safe to run on an existing database.</p>
 </section>
 <hr class="docutils" />
-<section id="schema-version-mismatch-warning">
-<h2>Schema version mismatch warning<a class="headerlink" href="#schema-version-mismatch-warning" title="Link to this heading"></a></h2>
+<section id="schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">
+<h2>Schema version mismatch: web, api and the scancode worker refuse to start<a class="headerlink" href="#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start" title="Link to this heading"></a></h2>
 <p><strong>Symptom:</strong> <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> or <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">scancode-worker</span></code>
-logs an ERROR at startup (v0.20.15 raised it from WARN):</p>
+logs an ERROR at startup (v0.20.15 raised it from WARN) and, since
+v0.29.68, exits with <code class="docutils literal notranslate"><span class="pre">refusing</span> <span class="pre">to</span> <span class="pre">start</span> <span class="pre">…:</span> <span class="pre">the</span> <span class="pre">database</span> <span class="pre">schema</span> <span class="pre">is</span> <span class="pre">behind</span> <span class="pre">this</span> <span class="pre">binary</span></code> instead of serving queries against columns the schema does
+not have yet (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code> reports the child as exited):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ...&quot;</span> <span class="n">db_schema_version</span><span class="o">=</span><span class="mf">0.29.55</span> <span class="n">binary_version</span><span class="o">=</span><span class="mf">0.29.57</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)&quot;</span>
 </pre></div>
 </div>
@@ -2229,7 +2247,7 @@ could not query <code class="docutils literal notranslate"><span class="pre">ave
 role without access to it). That is not evidence the schema is behind: check
 the connection and grants first. (Before v0.29.57 a failed read was logged as
 <code class="docutils literal notranslate"><span class="pre">schema</span> <span class="pre">version</span> <span class="pre">unknown</span> <span class="pre">—</span> <span class="pre">…</span> <span class="pre">has</span> <span class="pre">not</span> <span class="pre">run</span> <span class="pre">against</span> <span class="pre">this</span> <span class="pre">database</span></code>.)</p>
-<p><strong>Cause:</strong> The binary was updated but the database schema hasn’t been migrated yet. This happens when you update the <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> binary and restart <code class="docutils literal notranslate"><span class="pre">web</span></code> or <code class="docutils literal notranslate"><span class="pre">api</span></code> without running <code class="docutils literal notranslate"><span class="pre">migrate</span></code> (or a foreground <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>, which migrates at startup).</p>
+<p><strong>Cause:</strong> The binary was updated but the database schema hasn’t been migrated yet. This happens when you update the <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> binary and start <code class="docutils literal notranslate"><span class="pre">web</span></code> or <code class="docutils literal notranslate"><span class="pre">api</span></code> before running <code class="docutils literal notranslate"><span class="pre">migrate</span></code> (or before a foreground <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>, which migrates at startup, has finished).</p>
 <p><strong>Solution:</strong></p>
 <p>Run the release’s upgrade ladder. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">deploy-checklist</span></code> prints it; a
 release with no checklist needs only:</p>
@@ -2381,6 +2399,22 @@ systemctl<span class="w"> </span>list-timers<span class="w"> </span>--all<span c
 <span class="n">level</span><span class="o">=</span><span class="n">INFO</span>  <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;database back — resuming collection&quot;</span> <span class="n">unavailable_for</span><span class="o">=...</span>
 </pre></div>
 </div>
+<p>Since v0.29.58 the probe names the cause itself. When every pooled connection
+is acquired and none is idle, the ping never reached the server and the line
+reads:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;connection pool exhausted — every pooled connection is in use, so the probe could not get one; the database is NOT known to be down; pausing new collection until the pool drains (see the pool_demand line at startup)&quot;</span> <span class="n">cause</span><span class="o">=</span><span class="s2">&quot;connection pool exhausted&quot;</span>
+<span class="n">level</span><span class="o">=</span><span class="n">WARN</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;collection still paused — connection pool exhausted&quot;</span> <span class="o">...</span>
+</pre></div>
+</div>
+<p>That is a throttle, not an outage: the pool is smaller than the scheduler’s
+demand (the <code class="docutils literal notranslate"><span class="pre">database</span> <span class="pre">connection</span> <span class="pre">pool</span> <span class="pre">sized</span></code> line at startup carries both
+numbers and the server budget that capped it — see <a class="reference internal" href="scaling.html#database-connection-pool"><span class="std std-ref">Database connection
+pool</span></a>). Either raise <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>
+so the derivation can size the pool to the demand, lower <code class="docutils literal notranslate"><span class="pre">--workers</span></code>, or set
+<code class="docutils literal notranslate"><span class="pre">database.pool_max_conns</span></code> deliberately. On a disk-bound server the throttle
+may be the right choice; what changes is only that the log now says which
+one it is. The 2026-09-22 production log had thirteen of these misreported
+as database outages while Postgres was up the whole time.</p>
 <p>Since v0.29.56 both WARN lines also carry the connection pool’s state. Read the
 two halves differently:</p>
 <ul class="simple">
@@ -2474,9 +2508,9 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </div>
 <p>On startup, Aveloxis automatically:</p>
 <ul class="simple">
-<li><p>Processes any leftover staged data</p></li>
-<li><p>Releases stale queue locks</p></li>
-<li><p>Resumes collection from the queue</p></li>
+<li><p>Reclaims the locks a previous serve left behind, whatever their age (except a running <code class="docutils literal notranslate"><span class="pre">heal-collection-gaps</span></code>’ fresh <code class="docutils literal notranslate"><span class="pre">gap-heal:</span></code> rows), then any stale lock, then its own</p></li>
+<li><p>Resumes collection from the queue at once</p></li>
+<li><p>Drains any leftover staged data in the background while collecting</p></li>
 </ul>
 </section>
 <hr class="docutils" />
@@ -2571,6 +2605,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </pre></div>
 </div>
 <p>If the current <code class="docutils literal notranslate"><span class="pre">serve</span></code> process has a different worker ID than the one on the stuck row, that row’s worker is dead.</p>
+<p>One exception (v0.29.68): a row whose <code class="docutils literal notranslate"><span class="pre">locked_by</span></code> is <code class="docutils literal notranslate"><span class="pre">gap-heal:&lt;host&gt;-&lt;pid&gt;-&lt;nanos&gt;:drain</span></code> belongs to a <code class="docutils literal notranslate"><span class="pre">heal-collection-gaps</span></code> run, which parks the repositories it heals and refreshes <code class="docutils literal notranslate"><span class="pre">locked_at</span></code> every 30 seconds. Check <code class="docutils literal notranslate"><span class="pre">locked_at</span></code> first: fresh means the heal is alive and must be left alone (a serve start leaves it alone too); older than the stale-lock window (1 hour) means the heal died and stale-lock recovery returns the row. Never release a fresh <code class="docutils literal notranslate"><span class="pre">gap-heal:</span></code> row by hand.</p>
 </section>
 <section id="check-locked-at-freshness">
 <h4>Check <code class="docutils literal notranslate"><span class="pre">locked_at</span></code> freshness<a class="headerlink" href="#check-locked-at-freshness" title="Link to this heading"></a></h4>
@@ -2593,7 +2628,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">application_name</span><span class="p">,</span><span class="w"> </span><span class="n">query_start</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>If you see zero <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> rows, no scheduler is running and ALL <code class="docutils literal notranslate"><span class="pre">collecting</span></code>-status rows are orphaned. If you see one, that’s your active scheduler — compare its PID against your <code class="docutils literal notranslate"><span class="pre">ps</span></code> output to confirm.</p>
+<p>If you see zero <code class="docutils literal notranslate"><span class="pre">aveloxis-serve</span></code> rows, no scheduler is running and every <code class="docutils literal notranslate"><span class="pre">collecting</span></code>-status row is orphaned — except rows a running <code class="docutils literal notranslate"><span class="pre">heal-collection-gaps</span></code> (<code class="docutils literal notranslate"><span class="pre">aveloxis-heal-gaps</span></code> in the same listing) parked, whose <code class="docutils literal notranslate"><span class="pre">locked_by</span></code> starts with <code class="docutils literal notranslate"><span class="pre">gap-heal:</span></code> and whose <code class="docutils literal notranslate"><span class="pre">locked_at</span></code> is fresh (the exception described in Step 5). If you see one, that’s your active scheduler — compare its PID against your <code class="docutils literal notranslate"><span class="pre">ps</span></code> output to confirm.</p>
 </section>
 </section>
 <section id="step-6-recover-stuck-locks">
@@ -2740,7 +2775,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <h2>Dead repo sidelining and un-sidelining<a class="headerlink" href="#dead-repo-sidelining-and-un-sidelining" title="Link to this heading"></a></h2>
 <section id="how-sidelining-works">
 <h3>How sidelining works<a class="headerlink" href="#how-sidelining-works" title="Link to this heading"></a></h3>
-<p>When the prelim phase detects a 404/410 response:</p>
+<p>When the prelim phase detects a 404/410/451 response:</p>
 <ul class="simple">
 <li><p>The repo is marked <code class="docutils literal notranslate"><span class="pre">repo_archived</span> <span class="pre">=</span> <span class="pre">TRUE</span></code></p></li>
 <li><p>It is removed from the collection queue</p></li>
@@ -2812,6 +2847,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <p><strong>Symptom:</strong> After <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> restarts on a large fleet (10K+ repos), the monitor dashboard shows zero active workers for hours or days, even though the queue has thousands of due repos. New collection traffic doesn’t begin until what looks like a multi-day “warm-up” finishes.</p>
 <p><strong>Cause:</strong> Before v0.18.29, <code class="docutils literal notranslate"><span class="pre">processLeftoverStaging</span></code> ran synchronously on the scheduler’s main goroutine before <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> could claim any new jobs. Each repo with backlogged staging from a prior interrupted run could take 30+ hours to process; with 23 backlogged repos, the worker pool sat idle for ~3 days while staging drained.</p>
 <p><strong>Solution (v0.18.29):</strong> The drain now runs in a background goroutine. Repos with leftover staging are atomically lock-parked (<code class="docutils literal notranslate"><span class="pre">status='collecting'</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_by='&lt;workerID&gt;:drain'</span></code>) before the goroutine launches, so <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> skips them naturally and immediately starts claiming the rest of the fleet’s queued repos. Each drained repo rejoins the queue as draining completes.</p>
+<p>Parked repos hold no worker slot. Since v0.29.64 the monitors count them apart from Collecting, and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> releases them to <code class="docutils literal notranslate"><span class="pre">queued</span></code>. Before v0.29.64 the Collecting count could exceed the worker count (for example 200+ with 120 workers), and parked repos stayed <code class="docutils literal notranslate"><span class="pre">collecting</span></code> while serve was down until the next start reclaimed them. The count is labelled <strong>Draining staging</strong> in v0.29.64 and <strong>Parked (drain / heal)</strong> from v0.29.65. The next start re-parks whatever still has staging before any worker claims a job.</p>
 <p><strong>Confirm the fix is active:</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span><span class="s2">&quot;launching background leftover-staging drain&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log
 <span class="c1"># v0.18.29: this line appears within seconds of restart with the count</span>
@@ -3100,7 +3136,7 @@ with.
 <ul class="simple">
 <li><p>Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (and any schema-changing operation) only when serve is fully stopped, not while it’s processing repos. Use <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">all</span></code> first; resume with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code> after migrate completes.</p></li>
 <li><p>For large-fleet operators, schedule serve restarts during quiet periods rather than mid-collection. Restarting while a 20+ minute commits UPDATE is in flight guarantees an orphan.</p></li>
-<li><p>Filed for v0.20.x: graceful pgx-pool shutdown in the scheduler’s ctx-cancel path so backends disconnect cleanly on stop, eliminating the TCP-keepalive-wait window. Tracked alongside two related improvements: a post-stop verification that no aveloxis backends remain in <code class="docutils literal notranslate"><span class="pre">pg_stat_activity</span></code>, and surfacing blocked-startup-DDL with the holder PID in serve’s startup log.</p></li>
+<li><p>History: the graceful pool close on stop, the shutdown grace, the post-stop backend verification (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> reports backends that outlived the process) and the blocked-startup-DDL watcher naming the holder PID all shipped in v0.20.0; v0.27.25 made <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> — what <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code> and systemd send — reach that path (the callout above). The window this section describes is now the statement in flight when the grace expires.</p></li>
 </ul>
 </section>
 <hr class="docutils" />
@@ -3208,6 +3244,27 @@ quiet. Gap fill did not fire below its 5% threshold.</p>
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-collection-gaps</span></code> — it visits only the count-gap
 candidates and fetches exactly the missing items. See the command’s
 section in commands.md.</p>
+</section>
+<section id="gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">
+<h2>GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”<a class="headerlink" href="#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle" title="Link to this heading"></a></h2>
+<p>Since v0.29.68 a <code class="docutils literal notranslate"><span class="pre">serve</span></code> configured with GitLab keys only logs this WARN
+once at startup. It is not an error: contributor breadth and enrichment,
+the activity sweeps, search-resolve, the mailing-list sender resolver’s API
+tail, org scans and the repository-metadata backfill’s GitHub candidates
+(counted as <code class="docutils literal notranslate"><span class="pre">skipped_no_github_key</span></code> on its progress lines) need a GitHub
+key and stay idle. The sender resolver
+still runs the stages that need no forge (a noreply address parses to its
+login; a sender the database already knows is attributed by the sender-ID
+backfill) — and, with no forge to ask, a human sender it cannot resolve
+becomes an email-only contributor without the API ever being asked (if a GitHub key is added later, search-resolve
+converges those rows by email). The distribution scanner is GitHub-only, so
+the distribution worker produces nothing: a GitHub repository’s scan fails
+and strikes toward the sideline with its stored snapshot kept (the v0.29.55
+decision — a scan that never asked GitHub must not replace the
+GitHub-sourced rows), and other repositories complete with no evidence, as
+always. Before v0.29.68 the idle tasks ran against the empty
+pool — breadth recorded whole batches as attempted and three tickers logged
+an unanswered WARN each tick. Add a GitHub key (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span> <span class="pre">&lt;token&gt;</span> <span class="pre">--platform</span> <span class="pre">github</span></code>) and restart to enable them.</p>
 </section>
 </section>
 

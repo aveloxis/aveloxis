@@ -33,17 +33,24 @@ import (
 
 // requireUser demands a validated Bearer identity regardless of the
 // api.require_auth rollout flag (user-context endpoints are
-// meaningless without one). Writes the 401 itself on failure.
+// meaningless without one). Writes the 401 (or, on a store failure, the 503) itself on failure.
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
 	if info, ok := r.Context().Value(authCtxKey{}).(authInfo); ok {
 		return info, true
 	}
 	// The global middleware may not have resolved a token (auth off /
 	// exempt LAN without a header). Resolve here so LAN callers with a
-	// token still work, and everyone else gets a clean 401.
+	// token still work, and everyone else gets a clean 401 — or, when
+	// the store failed to resolve a presented token, the 503.
 	if tok := bearerToken(r); tok != "" {
-		if info, ok := s.auth.resolveToken(r.Context(), tok); ok {
+		info, err := s.auth.resolveToken(r.Context(), tok)
+		if err == nil {
 			return info, true
+		}
+		if !errors.Is(err, errInvalidToken) {
+			// The store failed: 503, not "sign in again" (follow-up 6).
+			s.auth.refuseStoreError(w, err)
+			return authInfo{}, false
 		}
 	}
 	writeAuthError(w, http.StatusUnauthorized, "this endpoint requires a signed-in session (Bearer token)")
@@ -112,7 +119,7 @@ func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
 	}
 	groups, err := s.store.GetUserGroups(r.Context(), info.UserID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleGroupsList", err)
 		return
 	}
 	out := make([]groupJSON, 0, len(groups))
@@ -140,7 +147,7 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.store.CreateUserGroup(r.Context(), info.UserID, strings.TrimSpace(req.Name))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleGroupCreate", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"group_id": id})
@@ -183,8 +190,14 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	// collections table grammar, shared allowlist). No per-page
 	// annotation loop remains here.
 	repos, total, err := s.store.GetPortalGroupReposForUser(r.Context(), info.UserID, groupID, info.IsAdmin, page, pageSize, sortKey, sortDir)
+	if errors.Is(err, db.ErrGroupNotOwned) {
+		http.Error(w, db.ErrGroupNotOwned.Error(), http.StatusForbidden)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
+		// The store returns every failure but "not yours" since v0.29.68
+		// (follow-up 12): a 403 with the store's text misfiled it.
+		s.serverError(w, "handleGroupRepos", err)
 		return
 	}
 	if repos == nil {
@@ -222,9 +235,12 @@ func (s *Server) handleGroupOrgs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgs, err := s.store.GetPortalGroupOrgsForUser(r.Context(), info.UserID, groupID, info.IsAdmin)
+	if errors.Is(err, db.ErrGroupNotOwned) {
+		http.Error(w, db.ErrGroupNotOwned.Error(), http.StatusForbidden)
+		return
+	}
 	if err != nil {
-		// Ownership refusal (the dominant case) — mirror handleGroupRepos.
-		http.Error(w, err.Error(), http.StatusForbidden)
+		s.serverError(w, "handleGroupOrgs", err)
 		return
 	}
 	type orgJSON struct {
@@ -308,6 +324,7 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			// v0.27.84: lets the GUI say "tracked now" (admin add OR
 			// the already-registered-org auto-approve) vs "pending".
 			resp["registered"] = 1
+			s.auth.invalidateAll() // the org's repositories join the caller's scope as they link
 		}
 	} else {
 		out, aerr := s.store.AddReposToGroup(r.Context(), info.UserID, groupID,
@@ -316,6 +333,12 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			resp["linked"] = out.Linked
 			resp["enqueued"] = out.Enqueued
+			if out.Linked+out.Enqueued > 0 {
+				// The caller's scope changed (worklist follow-up 7): a cached
+				// token would answer 403 for the repository it just added
+				// until the TTL. Admin mutations already bust here.
+				s.auth.invalidateAll()
+			}
 			if out.Pending > 0 {
 				resp["pending_approval"] = out.Pending
 				resp["request_id"] = out.RequestID
@@ -429,7 +452,7 @@ func (s *Server) handleAdminAddRequests(w http.ResponseWriter, r *http.Request) 
 	}
 	pending, err := s.store.ListPendingAddRequests(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminAddRequests", err)
 		return
 	}
 	type reqJSON struct {
@@ -492,7 +515,7 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 	}
 	if err != nil {
 		s.logger.Warn("admin add-request decision failed", "request_id", requestID, "decision", r.PathValue("decision"), "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminAddRequestDecision", err)
 		return
 	}
 	// Re-approving an approved repos request resumes its processing pass.
@@ -505,14 +528,18 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 				// token cache again when it ends — a request resolved while it
 				// ran cached the old scope (Copilot review of PR #207).
 				defer s.auth.invalidateAll()
-				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				n, failed, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
 				if errors.Is(err, db.ErrAddRequestInProgress) {
 					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
 					return
 				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
-						"request_id", req.RequestID, "processed", n, "error", err)
+						"request_id", req.RequestID, "processed", n, "failed", failed, "error", err)
+					return
+				}
+				if failed > 0 {
+					s.logger.Warn("approved add-request processed with items that could not be added", "request_id", req.RequestID, "repos", n, "failed", failed)
 					return
 				}
 				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)
@@ -546,7 +573,7 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminUsers", err)
 		return
 	}
 	type userJSON struct {
@@ -590,7 +617,7 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.store.SetUserAdmin(r.Context(), targetID, req.Admin); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminSetUserAdmin", err)
 		return
 	}
 	// Role changed — drop the token-validation cache so the target's
@@ -605,7 +632,7 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
 	}
 	pending, err := s.store.ListPendingGroups(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminPendingGroups", err)
 		return
 	}
 	type pendingJSON struct {
@@ -649,7 +676,7 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 	}
 	if err != nil {
 		s.logger.Warn("admin group decision failed", "group_id", groupID, "decision", decision, "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminGroupDecision", err)
 		return
 	}
 	// v0.27.20 parity fix: the web handler has emailed the requester
@@ -676,7 +703,7 @@ func (s *Server) handleAdminMonitorStats(w http.ResponseWriter, r *http.Request)
 	}
 	stats, err := s.store.QueueStats(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminMonitorStats", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"queue": stats})
@@ -711,7 +738,7 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		sortDir = "asc"
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminMonitorQueue", err)
 		return
 	}
 	// Attach repo names — ids alone mean nothing to users (operator) —
@@ -772,11 +799,11 @@ func (s *Server) handleAdminPrioritizeRepo(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, db.ErrRepoNotInQueue) {
 			http.Error(w, "repo not found in queue", http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleAdminPrioritizeRepo", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true, "repo_id": repoID})
@@ -810,7 +837,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 			_, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
 		}
 		if gerr != nil {
-			http.Error(w, "could not add repository to your Starred group", http.StatusInternalServerError)
+			s.serverError(w, "handleStarRepo", gerr)
 			return
 		}
 		addedToGroup = db.StarredGroupName
@@ -824,7 +851,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		err = s.store.StarRepo(r.Context(), info.UserID, repoID)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleStarRepo", err)
 		return
 	}
 	s.homeCache.invalidate(info.UserID)
@@ -883,7 +910,7 @@ func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, 
 		// Fail CLOSED like the sharedWithMeStore precedent — a bare
 		// Server without the seam must never nil-panic (review
 		// 2026-08-31 #7).
-		http.Error(w, "home loader unavailable", http.StatusInternalServerError)
+		s.serverError(w, "serveHomeRepos", errors.New("home loader not configured"))
 		return
 	}
 	if limit <= 0 {
@@ -917,7 +944,7 @@ func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, 
 	gen := s.homeCache.generation(userID)
 	repos, err := s.homeLoader(r.Context(), userID, limit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "serveHomeRepos", err)
 		return
 	}
 	body, _ = json.Marshal(map[string]any{"repos": repos})

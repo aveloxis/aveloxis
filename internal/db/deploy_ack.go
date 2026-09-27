@@ -57,6 +57,42 @@ func (s *PostgresStore) DeployAckExists(ctx context.Context, version string) (bo
 	return exists, nil
 }
 
+// LatestDeployAck is the highest acknowledged version at or below upTo
+// (compared as versions, not text: 0.29.9 < 0.29.10), or "" when none —
+// a missing table is "" (a fresh database). The start gate prints every
+// release's steps between it and the binary (worklist §1 item 2): the
+// heals of a skipped release never ran. Acknowledgements above upTo (a
+// rollback) are ignored.
+func (s *PostgresStore) LatestDeployAck(ctx context.Context, upTo string) (string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT tool_version FROM aveloxis_ops.deploy_ack`)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "3F000") {
+			return "", nil
+		}
+		return "", fmt.Errorf("deploy ack listing: %w", err)
+	}
+	defer rows.Close()
+	best := ""
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return "", fmt.Errorf("deploy ack listing: %w", err)
+		}
+		// An unparseable version fails the comparison either way.
+		if !SchemaVersionAtLeast(upTo, v) {
+			continue
+		}
+		if best == "" || SchemaVersionAtLeast(v, best) {
+			best = v
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("deploy ack listing: %w", err)
+	}
+	return best, nil
+}
+
 // RecordDeployAck stamps the acknowledgement for a version (idempotent).
 func (s *PostgresStore) RecordDeployAck(ctx context.Context, version, note string) error {
 	if err := s.ensureDeployAckTable(ctx); err != nil {

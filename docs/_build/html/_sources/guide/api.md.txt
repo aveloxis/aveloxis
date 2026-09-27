@@ -79,6 +79,45 @@ Returns gathered (collected totals) vs metadata (API-reported totals) for a sing
   `(unknown upstream)` means the forge reports fork status but the
   upstream was deleted or is inaccessible. Drives the repo page's
   "Forked from X" chip.
+- **forge_id_changes** (v0.29.62, omitted when empty) lists the forge-ID
+  changes the operator adopted with `aveloxis adopt-forge-id` or the admin
+  approvals page's Adopt button: the
+  upstream repository was deleted and re-created under the same URL, and
+  the new one was treated as a continuation, so this row holds data from
+  both. Each entry carries `old_forge_id`, `new_forge_id`,
+  `forge_created_at` (when the forge created the new repository; omitted
+  when unknown), `first_observed_at`, `adopted_at`, `adopted_by` and an
+  optional `note`. Pending (observed, not adopted) changes are not listed.
+  The repo page shows one notice per entry. Single-repo endpoint only.
+
+### Forge-ID changes (admin, v0.29.63)
+
+```
+GET  /api/v1/admin/forge-id-changes?pending=1
+POST /api/v1/admin/forge-id-changes/{repoID}/adopt
+```
+
+A repository deleted and re-created upstream under the same URL gets a new
+forge ID. The org scan records the change as pending (it never changes the
+repository row itself). `GET` lists the recorded changes: `repo_id`,
+`repo_git`, `old_forge_id`, `new_forge_id`, `forge_created_at` (the new
+repository's creation date, when the scan listed it), `first_observed_at`,
+`last_observed_at`, and for adopted ones `adopted_at`, `adopted_by`, `note`.
+A pending change whose old ID is no longer the one the repository stores
+is `superseded`: it stays in the full list as history and can no longer be
+adopted. `pending=1` lists only the
+adoptable changes; the full list orders adoptable, superseded, then adopted.
+
+`POST …/adopt` treats the new repository as a continuation: it moves the
+stored forge ID to the one the scan observed and records the admin's login.
+The JSON body names the change, since a repository can have more than one:
+`{"old_forge_id": "…", "new_forge_id": "…", "note": "…"}` (the note is
+optional, at most 1,000 bytes). Answers `400` without both IDs, `404` when
+no unadopted change with that pair is recorded, and `409` when the change is
+superseded (nothing is written). The api
+process holds no forge API keys, so this adopts the recorded observation;
+`aveloxis adopt-forge-id` asks the forge live. Both require an admin Bearer
+session.
 
 ### Batch Statistics
 
@@ -148,7 +187,7 @@ Returns a summary of dependency licenses with counts and OSI compliance status.
 ]
 ```
 
-OSI compliance is checked against a built-in list of 30+ known OSI-approved SPDX identifiers.
+`license` is the table's row key: the license normalized to canonical SPDX, with the operands of `OR` and `AND` in a fixed order, so `MIT OR Apache-2.0`, `Apache-2.0 OR MIT` and `MIT/Apache-2.0` are one row (since v0.29.67). `is_osi` follows the SPDX license list's `isOsiApproved` (the list is embedded; no network): an `OR` is approved when any option is, an `AND` when every term is, and `X WITH exception` follows `X`. `Unknown` and free text are never approved, including an `OR` with free text in one option (`MIT OR proprietary` is not an expression); a `LicenseRef-` option counts as recognized.
 
 | Parameter | Values | Default | Description |
 |---|---|---|---|
@@ -176,7 +215,7 @@ GET /api/v1/repos/{repoID}/sbom?format=cyclonedx
 GET /api/v1/repos/{repoID}/sbom?format=spdx
 ```
 
-Generates and downloads a Software Bill of Materials in CycloneDX 1.5 or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.
+Generates and downloads a Software Bill of Materials in CycloneDX 1.7 (1.5 until v0.29.67) or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.
 
 Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_transitive` enabled) get the **real dependency graph**: lockfile transitives join the component/package list, CycloneDX's `dependencies` array carries actual parent→child links from the stored edges (root → direct set; parents → their children; unreachable packages stay leaves), and SPDX gains the matching package→package `DEPENDS_ON` relationships. Repositories without C2 data keep the flat pre-v0.27.134 shape byte-identical.
 
@@ -184,7 +223,7 @@ Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_trans
 |---|---|---|---|
 | `format` | `cyclonedx`, `spdx` | `cyclonedx` | SBOM format |
 | `scope` | `all`, `runtime` | `all` | v0.27.46: `runtime` filters components to runtime-scope dependencies (the shipped surface). The default full document carries every scope, distinguished per-component — CycloneDX via the component `scope` field (required/optional/excluded), SPDX via typed dependency relationships (`DEV_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, `PROVIDED_DEPENDENCY_OF` for npm peers). Filtered downloads gain a `-runtime` filename marker. |
-| `vulns` | `1` | absent | Annotate with the repo's CURRENT (unresolved) findings. CycloneDX: native 1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX (v0.27.46 — previously a 400): package-level `externalRefs` with `referenceCategory: SECURITY`, `referenceType: advisory` linking each finding's OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain `-with-vulns`. |
+| `vulns` | `1` | absent | Annotate with the repo's CURRENT (unresolved) findings. CycloneDX: native `vulnerabilities` array (`affects.ref` = component purl). SPDX (v0.27.46 — previously a 400): package-level `externalRefs` with `referenceCategory: SECURITY`, `referenceType: advisory` linking each finding's OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain `-with-vulns`. |
 
 Returns JSON with `Content-Disposition: attachment` header for download.
 
@@ -751,10 +790,24 @@ Token semantics:
 
 - Tokens are DB-backed and live **30 days** — they survive server
   restarts. An expired or unknown token gets a structured 401; sign
-  in again and mint a new one.
+  in again and mint a new one. A token the server could not resolve
+  because the database failed (validating it, or reading its account
+  flags or scope) gets a structured **503** with a try-again body
+  (v0.29.68) — never the 401, which the GUI treats as "the token is
+  gone"; retry the request.
 - Each visit to `/auth/token` mints a **new** token; existing tokens
   keep working until they expire, so long-running scripts aren't cut
   off when you log in elsewhere.
+- A token's role and repository scope are cached for 60 seconds per
+  process. An admin mutation, and (v0.29.68) an add through
+  `POST /api/v1/groups/{id}/repos` that linked or queued repositories,
+  drop the cache in the process that served them. An approval decided in
+  the **web** process reaches the **api** process only when its cache
+  entry expires — up to 60 seconds; the two processes share no memory.
+- A server-side failure is a **500** whose body never carries the cause
+  (`internal error; try again`, or a fixed phrase such as `package list
+  failed`, v0.29.68); the cause is in the api log. Client-side refusals
+  (400/403/404) keep their own messages.
 - Your token carries **your** repository scope — every repo in any
   of your groups (pending included; approval gates new collection,
   not visibility of collected data). Administrators are unscoped.
@@ -884,7 +937,7 @@ Token semantics:
   floor, not necessarily the installed version.
 - `GET /api/v1/repos/{repoID}/sbom?vulns=1` — the CURRENT SBOM
   annotated with the repo's unresolved findings. CycloneDX: native
-  1.5 `vulnerabilities` array (`affects.ref` = component purl). SPDX
+  `vulnerabilities` array (`affects.ref` = component purl). SPDX
   (since v0.27.46): package-level SECURITY/advisory `externalRefs` —
   the 2.3-conformant vehicle (the old 400 is gone).
 - `GET /api/v1/repos/{repoID}/stats` — response gains (v0.27.50)
@@ -898,7 +951,7 @@ Token semantics:
   collection pass) — the GUI's signal to render the "queued for
   first collection" banner instead of misleading zeros. v0.28.1
   adds `gone_at` (omitted unless prelim's probe got a definitive
-  404/410 — the repo no longer resolves on its forge; the GUI must
+  404/410/451 — the repo no longer resolves on its forge; the GUI must
   suppress the queued banner and render the no-longer-available
   notice, with gone taking precedence over the archived chip) and
   `metadata_as_of` (the repo_info snapshot date behind the
@@ -980,6 +1033,79 @@ Token semantics:
   written before v0.27.5. A local run never replaces a stored remote
   set (the partial-never-replaces-complete rule), so a repo's `mode`
   only moves from `local` to `remote`, never back.
+
+## Supply-chain package view (v0.29.60)
+
+The findings turned around: keyed by **package** instead of by repository,
+so a reader can see what a Dependabot pull request for one library cannot
+show — how many repositories in a cohort are exposed, how much of that
+exposure is transitive, how long it has been open, which advisory leads, and
+how many versions are in simultaneous use.
+
+- `GET /api/v1/supply-chain/packages?ecosystem=npm&q=minimatch&sort=repos&limit=50&offset=0&group=12`
+  — the leaderboard: one row per `(ecosystem, package_name)` in the cohort,
+  `total` for paging, `sort` one of `repos` (default), `unresolved`, `cvss`,
+  `transitive`, `versions`, `days`, `name`. Every row carries the profile
+  fields below.
+- `GET /api/v1/supply-chain/packages/{ecosystem}/{name}` — one package's
+  profile plus `advisories` (most widespread first, each with `advisory_url`
+  and `cve_url`), `versions` (each scanned version among CURRENT exposures
+  with how many repositories run it — the version-agreement panel) and
+  `repos` (the exposed repositories, most findings first; `?repos=` sets the
+  list size, default 50, clamped at 500). A scoped npm name keeps its slash:
+  `/supply-chain/packages/npm/@scope/name`. A package with no finding in the
+  scope is `404`.
+
+**Exposed-repository fields.** Each `repos` entry carries `repo_id`,
+`repo_owner`, `repo_name`, `findings_unresolved` (its open findings on the
+package), `transitive` (every open finding is transitive), `versions` (the
+distinct scanned versions, in text order) and `version_detail` — the same
+versions with their weight, one object per version:
+
+```json
+{"version": "1.1.15", "findings_unresolved": 3, "lockfiles": 16}
+```
+
+`findings_unresolved` is that version's open findings; `lockfiles` is how
+many distinct lockfiles in the repository's current lockfile snapshot
+resolve the package to exactly that version (the package is matched with
+the same key the lockfile graph uses: ecosystem aliases such as
+`gem`/`rubygems` fold together, names compare case-insensitively, and PyPI
+names fold `_` and `.` to `-`). `lockfiles` can be `0`: a direct dependency
+scanned at its manifest version, or an ecosystem without lockfiles. The
+entries are ordered by open findings, most first, then by version compared
+segment by segment as numbers (`1.0.2` before `1.0.10`). A finding whose
+package URL carries no version counts in the repository's
+`findings_unresolved` but has no `version_detail` entry, so the entries can
+sum to less than the repository total.
+
+**Profile fields.** `cohort_repos` (repositories that have ever had a finding
+on the package) and `repos_unresolved` (have one now); `findings` /
+`findings_unresolved` (rows: one per repository × advisory × version);
+`pct_unresolved`, `pct_transitive` (share of rows whose dependency is
+transitive — the exposure a manifest reader cannot see); `median_days_open`
+(median age of the current findings); `worst_severity`, `max_cvss`,
+`n_advisories`; `distinct_versions_in_use`, `modal_version` and
+`modal_version_share_pct` (over `repos_with_known_versions`); and the lead
+advisory — the one on the most repositories — as `lead_advisory`,
+`lead_cve`, `lead_severity`, `lead_fixed_version`, `lead_advisory_repos`.
+
+**Scope.** The envelope's `scope` says which cohort answered (`kind`,
+`group_id`, `repos`) and what answered it: `source` is `matview` when the
+fleet views served the request and `live` when the cohort was aggregated on
+request (or the fleet was, on a deployment without the views). An admin
+without `?group` reads the **fleet** from the materialized views
+`explorer_package_exposure` and `explorer_package_advisory` (Aveloxis-owned:
+refreshed every `collection.supply_chain_refresh_hours`, default 24, apart
+from the weekly 8Knot rebuild — see [Materialized views](../architecture/materialized-views.md)); a signed-in user without `?group` reads their own scope — every
+repository their groups hold — computed live; `?group=<id>` reads that
+group's repositories live (a non-admin must own the group, and its
+repositories are intersected with the caller's scope; an unknown or
+unowned group is `404`). The live path aggregates the cohort's findings on
+request through the repository index, milliseconds for hundreds of
+repositories and about three seconds for a 62,000-repository scope on the
+production fleet; responses are cached for 60 seconds per caller and query.
+Both endpoints require a Bearer session.
 
 ## Portal and admin endpoints (v0.27.3)
 
@@ -1110,7 +1236,9 @@ Admin-only:
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
   request was already decided (idempotent double-click).
-- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`.
+- `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`:
+  `queued`, `collecting` (real jobs), `draining` (repos parked by the
+  startup staging drain or by heal-collection-gaps, v0.29.64) and `total`.
 - `GET /api/v1/admin/monitor/queue?page=1&q=augur` — the collection
   queue, 100 rows per page, optional search. Each job carries the
   repo label (`owner/name`), status, priority, due_at,

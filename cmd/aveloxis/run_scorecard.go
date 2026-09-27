@@ -167,7 +167,7 @@ func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {
 	// workers concentrate on the same keys; least-lent ordering spreads
 	// per-worker loans instead. The preflight here only asks whether
 	// there is anything to lend.
-	if ghKeys == nil || ghKeys.AliveCount() == 0 {
+	if !ghKeys.HasUsableKey() {
 		return fmt.Errorf("no GitHub API keys loaded — remote scorecard needs GITHUB_TOKEN; add keys via `aveloxis add-key <token> --platform github`")
 	}
 

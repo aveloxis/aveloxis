@@ -34,16 +34,22 @@ func TestAPIAddrFlagDefaultsEmptySoConfigCanWin(t *testing.T) {
 }
 
 // The address actually bound is logged, not the requested one — they
-// differ whenever the config supplies it (SR-10's logging half).
+// differ whenever the config supplies it (SR-10's logging half). Since
+// v0.29.68 runAPI binds with net.Listen after resolving the fallback, and
+// the shared serveUntilDone logs the LISTENER's address — the bound one.
 func TestAPIListenLogReportsTheEffectiveAddr(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/main.go"), "func runAPI("))
-	listen := strings.Index(body, "API server listening")
+	listen := strings.Index(body, `net.Listen("tcp", addr)`)
 	fallback := strings.Index(body, "cfg.API.AddrOrDefault()")
 	if listen < 0 || fallback < 0 {
-		t.Fatal("re-anchor this pin: runAPI no longer logs the listen address or no longer resolves the config fallback")
+		t.Fatal("re-anchor this pin: runAPI no longer binds addr with net.Listen or no longer resolves the config fallback")
 	}
 	if fallback > listen {
-		t.Error("runAPI logs the listen address BEFORE resolving the config fallback, so the log would report an empty addr while the server binds the configured one — log the effective value, at the point of use")
+		t.Error("runAPI binds BEFORE resolving the config fallback, so the server would bind an empty addr — resolve the effective value first")
+	}
+	serve := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/ready_signal.go"), "func serveUntilDone("))
+	if !strings.Contains(serve, `logger.Info(component+" listening", "addr", ln.Addr().String())`) {
+		t.Error("serveUntilDone must log the listener's own address — the bound one, not the requested string")
 	}
 }
 

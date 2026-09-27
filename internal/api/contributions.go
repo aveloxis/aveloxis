@@ -69,7 +69,7 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 
 	contribs, err := s.store.GetRepoContributors(r.Context(), repoID, since, until)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleRepoContributors", err)
 		return
 	}
 
@@ -101,7 +101,7 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 
 	cov, err := s.store.GetRepoContributionsCoverage(r.Context(), repoID, since, until)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleRepoContributionsCoverage", err)
 		return
 	}
 
@@ -128,7 +128,7 @@ func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) 
 
 	counts, err := s.store.GetRepoAffiliationCounts(r.Context(), repoID, since, until)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleRepoAffiliations", err)
 		return
 	}
 

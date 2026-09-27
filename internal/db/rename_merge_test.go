@@ -91,11 +91,6 @@ func TestLookupReadPathsFilterDeletedContributors(t *testing.T) {
 			hint:    "FindContributorIDByLogin must skip deleted contributors when matching by gh_login.",
 		},
 		{
-			file:    "commit_resolver_store.go",
-			funcSig: "func (s *PostgresStore) GetContributorsMissingCanonical(",
-			hint:    "GetContributorsMissingCanonical must skip deleted rows so we don't re-enrich them.",
-		},
-		{
 			file:    "contributors.go",
 			funcSig: "func (r *ContributorResolver) GetThinContributorLogins(",
 			hint:    "GetThinContributorLogins must skip deleted rows so the periodic enrichment ticker doesn't waste API calls on merged-loser rows.",

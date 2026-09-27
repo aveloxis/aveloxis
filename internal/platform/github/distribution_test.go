@@ -108,8 +108,9 @@ func TestListReleaseAssetExtensionsHandlesEmptyReleases(t *testing.T) {
 	}
 }
 
-// TestListReleaseAssetExtensionsHandles404Gracefully covers the
-// "this repo has releases disabled or is GitHub Generic Git" case.
+// TestListReleaseAssetExtensionsHandles404Gracefully covers the "this repo
+// has releases disabled, or was deleted or made private" case (a generic-git
+// repository never reaches this client: the scanner is GitHub-only).
 // 404 must surface as empty result, not error — matches the rest of
 // the optional-endpoint contract.
 func TestListReleaseAssetExtensionsHandles404Gracefully(t *testing.T) {
@@ -407,8 +408,9 @@ func TestDistributionCallsBypassETagConditionals(t *testing.T) {
 	}
 }
 
-// TestListRootManifestsHandles404 confirms the empty-repo / Generic
-// Git case is graceful.
+// TestListRootManifestsHandles404 confirms a 404 on contents (a repository
+// deleted or made private since its last collection; an empty repository is
+// observed to answer it too) is graceful: empty result, nil error.
 func TestListRootManifestsHandles404(t *testing.T) {
 	client := testGHClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)

@@ -252,7 +252,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		var err error
 		ids, err = s.store.ResolveOrgRepos(r.Context(), e.Host, e.Login)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.serverError(w, "resolveEntityRepos", err)
 			return nil, "", false
 		}
 	}
@@ -272,7 +272,15 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		// come straight from the repos table and always exist).
 		if e.Kind == "repo" {
 			repos, err := s.store.GetReposBatch(r.Context(), collected)
-			if err != nil || repos[collected[0]] == nil {
+			if err != nil {
+				// A failed lookup is not "not a collected repository"
+				// (SR-5; batch 5b review round 2): it read as an unlogged
+				// 403 telling an entitled user their repository is out of
+				// scope.
+				s.serverError(w, "resolveEntityRepos", err)
+				return nil, "", false
+			}
+			if repos[collected[0]] == nil {
 				collected = nil
 			}
 		}
@@ -286,7 +294,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 				}
 			}
 			if err != nil {
-				http.Error(w, "could not add the selection to your Comparisons group", http.StatusInternalServerError)
+				s.serverError(w, "resolveEntityRepos", err)
 				return nil, "", false
 			}
 			// Scope changed — the cached token validation must re-resolve
@@ -789,7 +797,7 @@ func (s *Server) handleEntitiesSearch(w http.ResponseWriter, r *http.Request) {
 
 	repos, err := s.store.SearchRepos(r.Context(), q, 20)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleEntitiesSearch", err)
 		return
 	}
 	type repoResult struct {
@@ -808,7 +816,7 @@ func (s *Server) handleEntitiesSearch(w http.ResponseWriter, r *http.Request) {
 
 	orgs, err := s.store.SearchOrgs(r.Context(), q, 10)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleEntitiesSearch", err)
 		return
 	}
 	type orgResult struct {

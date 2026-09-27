@@ -704,6 +704,7 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 		return rateLimitSnapshot{}
 	}
 	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion) // every GitHub REST request pins the version (worklist item 15)
 	// v0.29.12: the probe carries a pool token and never follows a redirect
 	// — Go's default policy re-sends Authorization to the same domain AND its
 	// subdomains, including on an https→http downgrade, and the probe only

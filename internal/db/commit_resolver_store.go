@@ -6,6 +6,8 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -56,6 +58,10 @@ func (s *PostgresStore) SetCommitAuthorLogin(ctx context.Context, repoID int64, 
 
 // FindLoginByEmail looks up a GitHub login from a commit email.
 // Checks contributors table (cntrb_email, cntrb_canonical) and aliases.
+// Only "no row" is "not in the DB": any other error is returned (SR-5;
+// worklist item 17, review round 1 — both lookups collapsed every error
+// into "", nil, so the callers' error arms could never fire and a DB blip
+// still sent an email the store knew to the API).
 func (s *PostgresStore) FindLoginByEmail(ctx context.Context, email string) (string, error) {
 	var login string
 
@@ -68,6 +74,9 @@ func (s *PostgresStore) FindLoginByEmail(ctx context.Context, email string) (str
 		  AND (gh_login IS NOT NULL AND gh_login != '')
 		  AND COALESCE(cntrb_deleted, 0) = 0
 		LIMIT 1`, email).Scan(&login)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("find login by email: %w", err)
+	}
 	if err == nil && login != "" {
 		return login, nil
 	}
@@ -84,6 +93,9 @@ func (s *PostgresStore) FindLoginByEmail(ctx context.Context, email string) (str
 		  AND (c.gh_login IS NOT NULL AND c.gh_login != '')
 		  AND COALESCE(c.cntrb_deleted, 0) = 0
 		LIMIT 1`, email).Scan(&login)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("find login by alias email: %w", err)
+	}
 	if err == nil && login != "" {
 		return login, nil
 	}
@@ -407,8 +419,13 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 		 WHERE gh_login = $1 AND COALESCE(cntrb_deleted, 0) = 0
 		 LIMIT 1`,
 		login).Scan(&id)
-	if err != nil {
+	// Only "no row" is "no contributor" (SR-5; batch-3 review round 4: the
+	// third sibling of FindLoginByEmail's shape in this file).
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find contributor by login: %w", err)
 	}
 	return id, nil
 }
@@ -462,51 +479,6 @@ func (s *PostgresStore) BackfillCommitAuthorIDs(ctx context.Context, repoID int6
 	return tag.RowsAffected(), nil
 }
 
-// ContributorMissingCanonical is a contributor needing email enrichment.
-type ContributorMissingCanonical struct {
-	ID    string // cntrb_id
-	Login string // gh_login
-}
-
-// CanonicalBatchSize limits how many contributors are processed per
-// ResolveEmailsToCanonical pass. Without this, every contributor with
-// gh_login but no canonical email is queried — unbounded API calls per pass,
-// many for users with private emails that will never return data.
-const CanonicalBatchSize = 500
-
-// GetContributorsMissingCanonical returns contributors that have gh_login
-// but no cntrb_canonical email and haven't been recently enriched.
-// The cntrb_last_enriched_at filter skips contributors already processed by
-// EnrichThinContributors (which now sets canonical from email). Users with
-// private emails get their enrichment timestamp set, so they won't be
-// re-queried until the cooldown expires.
-func (s *PostgresStore) GetContributorsMissingCanonical(ctx context.Context) ([]ContributorMissingCanonical, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT cntrb_id::text, gh_login
-		FROM aveloxis_data.contributors
-		WHERE COALESCE(cntrb_deleted, 0) = 0
-		  AND gh_login IS NOT NULL AND gh_login != ''
-		  AND (cntrb_canonical IS NULL OR length(cntrb_canonical) < 2)
-		  AND (cntrb_last_enriched_at IS NULL
-		       OR cntrb_last_enriched_at < NOW() - INTERVAL '30 days')
-		ORDER BY gh_login
-		LIMIT $1`, CanonicalBatchSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []ContributorMissingCanonical
-	for rows.Next() {
-		var c ContributorMissingCanonical
-		if err := rows.Scan(&c.ID, &c.Login); err != nil {
-			return nil, err
-		}
-		result = append(result, c)
-	}
-	return result, rows.Err()
-}
-
 // SetContributorCanonical sets cntrb_canonical on a contributor.
 func (s *PostgresStore) SetContributorCanonical(ctx context.Context, cntrbID, email string) error {
 	_, err := s.pool.Exec(ctx, `
@@ -519,9 +491,10 @@ func (s *PostgresStore) SetContributorCanonical(ctx context.Context, cntrbID, em
 }
 
 // MarkContributorEnriched sets cntrb_last_enriched_at to NOW() for the given
-// login, recording that enrichment was attempted. Called after both
-// EnrichThinContributors and ResolveEmailsToCanonical to prevent wasteful
-// re-querying of users with genuinely empty profiles or private emails.
+// login, recording that enrichment was attempted, so EnrichThinContributors
+// does not re-query users with genuinely empty profiles or private emails
+// before the cooldown. (Its other caller, ResolveEmailsToCanonical, was dead
+// since v0.19.7 and is gone: worklist item 19, v0.29.68.)
 func (s *PostgresStore) MarkContributorEnriched(ctx context.Context, login string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.contributors

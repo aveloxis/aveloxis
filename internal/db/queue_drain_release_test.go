@@ -58,7 +58,7 @@ func TestReleaseDrainLocksReleasesOnlyThisWorkersParkedSet(t *testing.T) {
 	theirs := seedDrainQueueRow(t, ctx, store, "theirs-"+suffix, "collecting", strptr(drainLockedBy(other)))
 	myJob := seedDrainQueueRow(t, ctx, store, "myjob-"+suffix, "collecting", strptr(me))
 
-	n, err := store.ReleaseDrainLocks(ctx, me)
+	n, err := store.ReleaseDrainLocks(ctx, me, DrainReleaseDueNow)
 	if err != nil {
 		t.Fatalf("ReleaseDrainLocks: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestReleaseDrainLocksReleasesOnlyThisWorkersParkedSet(t *testing.T) {
 			t.Errorf("repo %d: a released parked repo is due now (its staging still needs the next start's drain)", c.id)
 		}
 	}
-	if n, err := store.ReleaseDrainLocks(ctx, me); err != nil || n != 0 {
+	if n, err := store.ReleaseDrainLocks(ctx, me, DrainReleaseDueNow); err != nil || n != 0 {
 		t.Errorf("a second release is a no-op: %d %v", n, err)
 	}
 }

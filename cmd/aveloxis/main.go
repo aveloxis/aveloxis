@@ -181,7 +181,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
 		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
 	}
-	defer pidfile.Remove(pidPath)
+	defer pidfile.RemoveIfOwn(pidPath, os.Getpid()) // never another serve's file (round 5)
 
 	// v0.22.4 item 8 — register SIGUSR1 handler so operators can
 	// snapshot the goroutine state of a running serve without killing
@@ -266,6 +266,12 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	// scheduler's own drain → releaseOurLocks → Close sequence —
 	// silently undoing the v0.20.0/v0.27.25 graceful-shutdown work
 	// (the residual "stuck in 'collecting' after stop" source).
+	// Past every startup gate (keys loaded, migration done): tell
+	// `aveloxis start` so (worklist item 49, review round 2). serve's
+	// pidfile is written before its migration on purpose — it is the
+	// double-start guard for the whole startup — so it cannot be the
+	// readiness signal.
+	signalReady(logger)
 	schedDone := make(chan struct{})
 	go func() {
 		defer close(schedDone)
@@ -279,11 +285,16 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	mon := monitor.NewWithOptions(store, logger, monitor.Options{
 		RefreshSeconds: cfg.Monitor.MonitorRefreshSecondsOrDefault(),
 	})
+	// The monitor binds INSIDE its goroutine and a failed bind is logged
+	// and survived, unlike web and api (serveUntilDone): serve must not
+	// refuse to collect because :5555 is taken, and the monitor is
+	// auxiliary — so its bind is not part of serve's readiness signal
+	// above. Recorded exemption (review round 3 of items 2/37/49).
 	srv := &http.Server{Addr: monitorAddr, Handler: mon.Handler()}
 	go func() {
 		logger.Info("monitor listening", "addr", monitorAddr)
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			logger.Error("monitor server error", "error", err)
+			logger.Error("monitor server error — serve runs on without the monitor", "addr", monitorAddr, "error", err)
 		}
 	}()
 
@@ -385,11 +396,10 @@ func runAPI(cfgPath, addr string) error {
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
+	// The pidfile is written after the schema gate and the bind below
+	// (worklist item 49); `aveloxis start` reads readiness from
+	// signalReady, not from the pidfile.
 	pidPath := pidfile.Path("api")
-	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
-		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
-	}
-	defer pidfile.Remove(pidPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -407,29 +417,36 @@ func runAPI(cfgPath, addr string) error {
 	}
 	defer store.Close()
 
-	// api does not run migrations — check if schema is current.
+	// api does not run migrations — check if schema is current, and refuse
+	// a schema behind this binary (worklist item 49: it served queries
+	// against columns the schema lacked for the ~80 minutes a migrate ran).
 	store.CheckSchemaVersion(ctx, logger)
+	if err := store.RequireSchemaCurrent(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil // a stop during startup, not a refusal
+		}
+		return fmt.Errorf("refusing to start api: %w", err)
+	}
 
 	apiServer, err := api.NewWithOptions(store, logger, apiOptions(cfg, logger))
 	if err != nil {
 		return fmt.Errorf("api middleware config: %w", err)
 	}
-	srv := &http.Server{Addr: addr, Handler: apiServer.Handler()}
-
-	go func() {
-		logger.Info("API server listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			logger.Error("API server error", "error", err)
-		}
-	}()
-
-	<-ctx.Done()
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelShutdown()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("server shutdown", "error", err)
+	// Bind before the pidfile and the readiness signal: a port in use is
+	// a startup refusal, not a running api (review round 2).
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("API server cannot listen", "addr", addr, "error", err)
+		return fmt.Errorf("api: listen on %s: %w", addr, err)
 	}
-	return nil
+	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
+		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
+	}
+	defer pidfile.RemoveIfOwn(pidPath, os.Getpid())
+	signalReady(logger)
+
+	srv := &http.Server{Addr: addr, Handler: apiServer.Handler()}
+	return serveUntilDone(ctx, srv, ln, logger, "API server")
 }
 
 // --- collect: one-shot collection ---
@@ -635,6 +652,10 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			if plat == model.PlatformGitLab {
 				rgType = "gitlab_group"
 			}
+			// Stored trimmed (batch 5 review round 5): a typed trailing "/"
+			// made rg_website miss every user-group registration on each
+			// refresh.
+			repoURL = strings.TrimSuffix(strings.TrimSpace(repoURL), "/")
 			groupID, err := store.UpsertRepoGroup(ctx, orgName, rgType, repoURL)
 			if errors.Is(err, platform.ErrURLUserinfo) {
 				// The store refuses a URL carrying credentials (round 6);
@@ -1464,7 +1485,7 @@ Tools installed:
 
 				fmt.Printf("Installing %s — %s...\n", tool.Name, tool.Description)
 
-				if err := collector.RunToolInstall(tool); err != nil {
+				if err := collector.RunToolInstall(cmd.Context(), tool); err != nil {
 					fmt.Printf("✗ Failed to install %s: %v\n  Manual install: %s\n", tool.Name, err, tool.InstallCmd)
 					failed++
 					continue
@@ -1506,11 +1527,9 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
 
+			// Written after the schema gate and the bind below (worklist
+			// item 49); `aveloxis start` reads readiness from signalReady.
 			webPidPath := pidfile.Path("web")
-			if err := pidfile.Write(webPidPath, os.Getpid()); err != nil {
-				logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", webPidPath, "error", err)
-			}
-			defer pidfile.Remove(webPidPath)
 
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
@@ -1523,32 +1542,46 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			// NOTE: web does NOT run migrations. Use `aveloxis migrate` or
 			// `aveloxis serve` for that. Running migrations from both serve
 			// and web simultaneously causes conflicts.
-			// Instead, CheckSchemaVersion warns if the DB is behind the binary.
+			// CheckSchemaVersion logs the verdict; RequireSchemaCurrent
+			// refuses a schema behind the binary (worklist item 49).
 			store.CheckSchemaVersion(ctx, logger)
+			if err := store.RequireSchemaCurrent(ctx); err != nil {
+				if ctx.Err() != nil {
+					return nil // a stop during startup, not a refusal
+				}
+				return fmt.Errorf("refusing to start web: %w", err)
+			}
 
 			// Load GitHub keys for immediate org scanning (non-fatal for web — it
-			// can still serve the GUI without keys, just can't scan orgs).
-			ghKeys, _, _ := loadKeys(ctx, cfg, store, false, logger)
+			// can still serve the GUI without keys, just can't scan orgs). A
+			// failed read is logged (worklist item 55, review round 1): it is
+			// not "no keys", and org scans stay off until the next start.
+			ghKeys, _, kerr := loadKeys(ctx, cfg, store, false, logger)
+			if kerr != nil && ctx.Err() != nil {
+				return nil // a stop during startup, not a failure
+			}
+			if kerr != nil {
+				logger.Error("API keys could not be loaded — web serves without them (no org scans)", "error", kerr)
+			}
 
 			warnAPIPortMismatch(cfg, logger)
 
 			webServer := newWebServer(store, cfg, ghKeys, logger)
-			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
-
-			go func() {
-				logger.Info("web GUI listening", "addr", cfg.Web.Addr)
-				if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-					logger.Error("web server error", "error", err)
-				}
-			}()
-
-			<-ctx.Done()
-			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancelShutdown()
-			if err := srv.Shutdown(shutdownCtx); err != nil {
-				logger.Warn("web server shutdown", "error", err)
+			// Bind before the pidfile and the readiness signal: a port in
+			// use is a startup refusal, not a running web (review round 2).
+			ln, err := net.Listen("tcp", cfg.Web.Addr)
+			if err != nil {
+				logger.Error("web GUI cannot listen", "addr", cfg.Web.Addr, "error", err)
+				return fmt.Errorf("web: listen on %s: %w", cfg.Web.Addr, err)
 			}
-			return nil
+			if err := pidfile.Write(webPidPath, os.Getpid()); err != nil {
+				logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", webPidPath, "error", err)
+			}
+			defer pidfile.RemoveIfOwn(webPidPath, os.Getpid())
+			signalReady(logger)
+
+			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
+			return serveUntilDone(ctx, srv, ln, logger, "web GUI")
 		},
 	}
 }
@@ -1729,29 +1762,120 @@ func startComponent(component, cfgPath string) error {
 		return fmt.Errorf("finding executable: %w", err)
 	}
 
+	// The readiness pipe (readyFDEnv): the child writes on its end once
+	// it is past its startup gates; an exit closes it unwritten.
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		logFile.Close()
+		return fmt.Errorf("readiness pipe for %s: %w", component, err)
+	}
+	defer readyR.Close()
+
 	cmdArgs := []string{component, "--config", cfgPath}
 	proc := exec.Command(execPath, cmdArgs...)
 	proc.Stdout = logFile
 	proc.Stderr = logFile
+	proc.ExtraFiles = []*os.File{readyW} // the child's descriptor readyFD
+	proc.Env = append(os.Environ(), readyFDEnv+"="+strconv.Itoa(readyFD))
 	// Detach from the parent process group so it survives terminal close.
 	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := proc.Start(); err != nil {
 		logFile.Close()
+		readyW.Close()
 		return fmt.Errorf("starting %s: %w", component, err)
 	}
 
 	pid = proc.Process.Pid
+	logFile.Close()
+	readyW.Close() // the child holds the only other write end
+
+	// Provisional pidfile, written at once: it is the double-start guard
+	// (componentAlreadyRunning reads only this file), so it cannot wait
+	// for the child (review round 2). web, api and the scancode worker
+	// write the same PID once past their gates (a refused one never does);
+	// serve writes it at once and removes it itself when it refuses; below,
+	// this child's provisional file is removed only while it still holds
+	// this PID (round 5).
 	if err := pidfile.Write(pidPath, pid); err != nil {
 		fmt.Printf("Warning: started %s (PID %d) but failed to write PID file: %v\n", component, pid, err)
 	}
 
-	// Release the child — we don't wait for it.
-	_ = proc.Process.Release()
-	logFile.Close()
+	// Readiness is the child's own word on the pipe (signalReady, past
+	// its gates and, for web and api, its bind); an exit before it is a
+	// refusal. Wait for one or the other up to deployGateDialTimeout —
+	// the gate's dial bound reused as the parent's patience, not a bound
+	// on the child's own dial (its pool ping runs on its signal ctx). A
+	// child still starting after that (a long startup migration for
+	// serve, a stalled primary) is reported as started; if a web, api or
+	// scancode worker then refuses, its provisional pidfile is stale until
+	// the next start or stop cleans it (they never wrote it, so nothing
+	// removes it); serve removes its own.
+	exited := make(chan error, 1)
+	go func() { exited <- proc.Wait() }()
+	switch awaitChildStartup(exited, awaitReadyLine(readyR), deployGateDialTimeout) {
+	case childUp:
+		fmt.Printf("Started %s (PID %d), logging to %s\n", component, pid, logPath)
+		return nil
+	case childExited:
+		// Only THIS child's provisional pidfile: two `start`s inside the
+		// guard's read→write window both spawn, the loser's bind fails,
+		// and a plain Remove here would take the winner's file with it
+		// (review round 3; the children's own deferred removes share the
+		// rule since round 5).
+		pidfile.RemoveIfOwn(pidPath, pid)
+		return fmt.Errorf("%s exited during startup (it refused to start or failed) — see %s", component, logPath)
+	default:
+		fmt.Printf("Started %s (PID %d, still starting after %s), logging to %s\n", component, pid, deployGateDialTimeout, logPath)
+		return nil
+	}
+}
 
-	fmt.Printf("Started %s (PID %d), logging to %s\n", component, pid, logPath)
-	return nil
+// childStartOutcome is awaitChildStartup's verdict.
+type childStartOutcome int
+
+const (
+	childUp      childStartOutcome = iota // the child signalled readiness
+	childExited                           // the child exited (ready or not: it is gone)
+	childUnknown                          // neither within the bound
+)
+
+// awaitReadyLine returns a channel closed when at least one byte arrives on
+// the child's readiness pipe. EOF with NOTHING read — the kernel closing the
+// child's descriptors at exit — is not readiness (review round 3: a mutant
+// that closed the channel on EOF reported "Started" over a refusal whenever
+// the EOF beat proc.Wait), so the channel then never closes and the exit
+// arm decides.
+func awaitReadyLine(r io.Reader) <-chan struct{} {
+	ready := make(chan struct{})
+	go func() {
+		buf := make([]byte, 1)
+		if n, _ := r.Read(buf); n > 0 {
+			close(ready)
+		}
+	}()
+	return ready
+}
+
+// awaitChildStartup waits for the child's readiness signal, its exit, or
+// the bound. An exit wins over a readiness signal that arrived with it
+// (review round 2 removed the "ready then exited = up" arm: the process
+// is gone, and the only way its pidfile could look alive is PID reuse).
+// Split out so the decision is testable without spawning a process.
+func awaitChildStartup(exited <-chan error, ready <-chan struct{}, bound time.Duration) childStartOutcome {
+	select {
+	case <-exited:
+		return childExited
+	default:
+	}
+	select {
+	case <-exited:
+		return childExited
+	case <-ready:
+		return childUp
+	case <-time.After(bound):
+		return childUnknown
+	}
 }
 
 // backendVerifier owns the ONE database connection `aveloxis stop` uses
@@ -1882,8 +2006,14 @@ func stopCmd(cfgPath *string) *cobra.Command {
   aveloxis stop all              — stop serve + web + api (never the scancode worker)
   aveloxis stop                  — (no args) same as 'all'
 
-Active workers finish their current API call, queue locks are released,
-and any unprocessed staging data is preserved for the next startup.
+For serve: in-flight API calls and statements are cancelled at once;
+workers get up to collection.shutdown_grace_seconds (default 10) to unwind
+(a completion reached at the cancel is stamped on a retry bounded by half
+the grace, at most 5 s), then queue locks are released and any unprocessed
+staging data is preserved for the next startup. For web and api: the listener closes,
+in-flight requests get 10 s to finish, then the pool closes. The scancode
+worker has its own bounds (collection.scancode_shutdown_grace_minutes; see
+docs/architecture/scancode.md §6).
 PID files are removed after a successful stop or when they are stale; a
 file the command could not read, or whose process it could not signal,
 is left in place for you to inspect. After SIGTERM, the command
@@ -2176,15 +2306,23 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	glTokens := cfg.GitLab.APIKeys
 
 	// Load from database (aveloxis_ops first, augur_operations as fallback).
-	if dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys); err != nil {
-		logger.Error("failed to load GitHub API keys from database", "error", err)
-	} else if len(dbGH) > 0 {
+	// A failed read is fatal for every caller (worklist item 55): each of
+	// them is a collection or a one-shot that cannot run without keys, and
+	// "no keys configured" would send the operator to add-key instead of to
+	// the database. LoadAPIKeys already answers "none" for a missing table.
+	dbGH, err := db.LoadAPIKeys(ctx, store.Pool(), "github", useAugurKeys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load GitHub API keys from the database: %w", err)
+	}
+	if len(dbGH) > 0 {
 		logger.Info("loaded GitHub keys from database", "count", len(dbGH))
 		ghTokens = append(ghTokens, dbGH...)
 	}
-	if dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys); err != nil {
-		logger.Error("failed to load GitLab API keys from database", "error", err)
-	} else if len(dbGL) > 0 {
+	dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load GitLab API keys from the database: %w", err)
+	}
+	if len(dbGL) > 0 {
 		logger.Info("loaded GitLab keys from database", "count", len(dbGL))
 		glTokens = append(glTokens, dbGL...)
 	}

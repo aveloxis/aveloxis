@@ -6,6 +6,8 @@ package db
 import (
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // Copilot finding on PR #179 (2026-08-18), verified real as a LATENT
@@ -23,32 +25,30 @@ import (
 // four callers route through — no migration.
 
 // TestAddOrgToGroupCanonicalizesScheme pins the normalization shape: the
-// scheme-prepend must happen alongside the existing trim, BEFORE the
-// registered-anywhere check, the add-request write, and the
-// user_org_requests INSERT all see the value.
+// scheme-prepend lives in CanonicalOrgURL, the ONE spelling of an org URL
+// (v0.29.68, worklist follow-up 3 added the lowercase there), and
+// AddOrgToGroup applies it BEFORE the registered-anywhere check, the
+// add-request write and the user_org_requests INSERT see the value.
 func TestAddOrgToGroupCanonicalizesScheme(t *testing.T) {
 	// NOTE: cannot comment-strip here — stripLineComments is naive and
 	// would truncate the needle line at the "//" INSIDE the "https://"
-	// string literal. Instead the ordering anchor below uses the CALL-site
-	// form (`s.IsOrgRegisteredAnywhere(`), which prose comments at the fix
-	// site never contain.
-	body := extractFunctionBody(t, "web_store.go", "AddOrgToGroup")
-
-	schemeIdx := strings.Index(body, `"https://" + orgURL`)
-	if schemeIdx < 0 {
-		t.Fatal("AddOrgToGroup must canonicalize schemeless org URLs " +
-			"(prepend https:// when no :// present) — a schemeless org_url " +
-			"row registers and scans fine but silently defeats " +
-			"ReconcileOrgRepoLinks, GetUserGroupIDsForOrgURL, and " +
-			"IsOrgRegisteredAnywhere")
+	// string literal. The ordering anchor uses the CALL-site forms, which
+	// prose comments never contain.
+	src := srctest.Read(t, "internal/db/web_store.go")
+	canon := srctest.FuncBody(t, src, "func CanonicalOrgURL(")
+	pre := srctest.FuncBody(t, src, "func orgURLTrimmedSchemed(")
+	if !strings.Contains(pre, `"https://" + orgURL`) || !strings.Contains(canon, "strings.ToLower(orgURLTrimmedSchemed(") {
+		t.Fatal("CanonicalOrgURL must prepend https:// to a schemeless org URL and lowercase it — a schemeless " +
+			"or differently-cased org_url row registers and scans fine but silently defeats ReconcileOrgRepoLinks, " +
+			"GetUserGroupIDsForOrgURL and the (group_id, org_url) unique key")
 	}
-	// Ordering: normalization must precede the IsOrgRegisteredAnywhere
-	// consult so schemed/schemeless registrations of the same org dedup.
+	body := extractFunctionBody(t, "web_store.go", "AddOrgToGroup")
+	canonIdx := strings.Index(body, "CanonicalOrgURL(orgURL)")
 	regIdx := strings.Index(body, "s.IsOrgRegisteredAnywhere(")
-	if regIdx >= 0 && regIdx < schemeIdx {
-		t.Error("scheme canonicalization must happen BEFORE the " +
-			"s.IsOrgRegisteredAnywhere( consult — otherwise github.com/foo " +
-			"and https://github.com/foo register as different orgs")
+	if canonIdx < 0 || regIdx < 0 || regIdx < canonIdx {
+		t.Error("AddOrgToGroup must canonicalize the org URL (CanonicalOrgURL) BEFORE the " +
+			"s.IsOrgRegisteredAnywhere( consult — otherwise github.com/foo and https://github.com/foo " +
+			"register as different orgs")
 	}
 }
 

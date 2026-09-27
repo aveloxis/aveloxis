@@ -177,10 +177,12 @@ type WebConfig struct {
 	// size is at or under this limit is added and enqueued
 	// immediately (with an auto-approved audit request row) instead
 	// of waiting on an admin decision. 0 (the default) means every
-	// non-admin addition of new repos requires approval. Org
-	// registrations ALWAYS require approval regardless of this knob —
-	// an org is an unbounded mass add by definition. Already-tracked
-	// repos never need approval (they link instantly for everyone).
+	// non-admin addition of new repos requires approval. A NEW org
+	// registration always requires approval regardless of this knob —
+	// an org is an unbounded mass add by definition; an org already
+	// registered in another group auto-approves (v0.27.84: a duplicate
+	// registration adds no collection). Already-tracked repos never need
+	// approval (they link instantly for everyone).
 	AutoApproveAddLimit int `json:"auto_approve_add_limit"`
 }
 
@@ -492,12 +494,14 @@ type CollectionConfig struct {
 	BreadthFetchConcurrency int `json:"breadth_fetch_concurrency"`
 
 	// ShutdownGraceSeconds caps how long Scheduler.Run's ctx-cancel
-	// branch waits for in-flight workers to finish before closing the
+	// branch waits for in-flight workers to unwind before closing the
 	// pgx pool. Default 10 (seconds) when unset. Pre-v0.20.0 the wait
 	// was unbounded — a 26-minute commits UPDATE blocked shutdown for
-	// the full duration. Setting this too low means workers' transactions
-	// abort mid-flight (Postgres rolls them back; safe but log-noisy);
-	// too high means a slow shutdown. 10 seconds matches the pollInterval.
+	// the full duration. Statements are cancelled at once whatever the
+	// value; too low shrinks the completion-stamp retry (half the grace,
+	// at most 5 s — stampRetryBound) and closes the pool under workers
+	// still unwinding; too high means a slow shutdown. 10 seconds matches
+	// the pollInterval.
 	ShutdownGraceSeconds int `json:"shutdown_grace_seconds"`
 
 	// v0.21.0 — Scancode is now run by a dedicated ScancodeWorker pool

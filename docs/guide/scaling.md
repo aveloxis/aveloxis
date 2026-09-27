@@ -100,7 +100,7 @@ first pass.
 
 ## Horizontal scaling
 
-Multiple `aveloxis serve` instances can share the same queue for horizontal scaling. The Postgres-backed queue uses `SELECT ... FOR UPDATE SKIP LOCKED` for atomic job claiming, so no two instances will collect the same repo simultaneously.
+Multiple `aveloxis serve` instances can share the same queue for horizontal scaling. The Postgres-backed queue uses `SELECT ... FOR UPDATE SKIP LOCKED` for atomic job claiming, so no two instances claim the same repo. One caveat (worklist item 63): a serve START reclaims every other worker's locked rows at once, whatever their age (except a running heal's fresh parked rows) — a restarting instance takes a live peer's in-flight rows, and the peer's completion later resets that row. Restart instances one at a time, when the others are idle, until that reclaim is liveness-aware.
 
 ### Setup
 
@@ -128,7 +128,7 @@ aveloxis serve --workers 4 --monitor :5556
 ### Considerations
 
 - **API tokens are shared:** All instances rotate through the same pool of tokens. The total throughput across all instances is still bounded by `N tokens * 4985 req/hr`.
-- **Stale lock recovery:** If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance.
+- **Stale lock recovery:** If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance, or at once by the next instance that starts (see the caveat above).
 - **Materialized view rebuild:** The Saturday rebuild is triggered by each instance independently. The `CONCURRENTLY` option ensures this is safe, though the rebuild may run multiple times.
 
 ---

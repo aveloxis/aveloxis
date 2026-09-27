@@ -233,7 +233,9 @@ func TestBackfillCLIStopsOnKeyedErrorBeforeFinalMark(t *testing.T) {
 		t.Fatal("expected BackfillKeyedIssueProjection to be driven before BackfillMarkRemainingProjected")
 	}
 	between := src[keyed:mark]
-	if !strings.Contains(between, "if err != nil {") || !strings.Contains(between, "return err") {
-		t.Error("the CLI must `return err` from the keyed loop before the final mark — round 25 (finding #4)")
+	// Since v0.29.68 the return goes through backfillProjectionReport, which
+	// classifies an interrupt and returns any other error as itself.
+	if !strings.Contains(between, "if err != nil {") || !(strings.Contains(between, "return err") || strings.Contains(between, "return backfillProjectionReport(keyed, threaded, marked, err)")) {
+		t.Error("the CLI must return the keyed loop's error (itself, or through backfillProjectionReport) before the final mark — round 25 (finding #4)")
 	}
 }

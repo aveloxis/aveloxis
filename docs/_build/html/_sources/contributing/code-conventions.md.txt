@@ -22,17 +22,26 @@ A tripwire test (`scripts/spdx_coverage_test.go`) walks the repo and fails CI if
 
 Build-tag-prefixed files (`//go:build ...`) — currently only the SIGUSR1 dump pair (`cmd/aveloxis/sigusr1_dump*.go`, `!windows`) — would need special handling; ask before adding one.
 
-## Embedded SPDX license identifier list
+## Embedded SPDX license data
 
-`internal/collector/spdx_license_ids.txt` is the official SPDX license
-identifier list (spdx/license-list-data), embedded into the binary via
-`//go:embed` and consulted by SBOM generation to decide `license.id` vs
-`license.name`. It is a **generated file — never hand-edit it**. The refresh
-one-liner lives in the file's own header comment; after refreshing, re-prepend
-the header, update its fetch date, and run
-`go test ./internal/collector/ -run TestSPDXList` — a ≥700-entry floor tripwire
-catches truncated downloads. Deprecated identifiers are deliberately included
-(registries still emit `GPL-2.0`-style ids).
+`internal/spdx/spdx_data.tsv` is the official SPDX license and exception list
+(spdx/license-list-data), with each license's `isOsiApproved` and deprecation
+flags. It is embedded into the binary via `//go:embed`. Every license question
+goes through `internal/spdx`: whether a string is an ID, whether an expression
+is valid, whether it is OSI-approved, and its canonical spelling. That covers
+the OSI badge, the license table and both SBOM exporters (since v0.29.67;
+`internal/collector/spdx_license_ids.txt` and a hand-kept OSI allowlist were
+retired then).
+
+It is a **generated file — never hand-edit it**. Refresh with
+`go run ./scripts/gen_spdx_data > internal/spdx/spdx_data.tsv`, review the
+`osi` column's diff, and run `go test ./internal/spdx/`. Floor tripwires there
+catch a truncated download. Deprecated identifiers are deliberately included
+(registries still emit `GPL-2.0`-style IDs).
+
+`internal/collector/cdx_license_ids_1_7.txt` is a different list: the license
+IDs the CycloneDX 1.7 schema's enum accepts in `license.id`. It is also
+generated; the refresh command is in its header.
 
 ## Package layout
 

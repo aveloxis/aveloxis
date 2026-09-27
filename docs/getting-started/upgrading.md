@@ -4,6 +4,32 @@ How to move an existing deployment from any earlier release to the
 current one — and, just as important, which repairs `aveloxis migrate`
 does **not** do for you.
 
+## The four steps
+
+Every upgrade is these four steps, in this order, on the primary host:
+
+```bash
+aveloxis stop all                 # 1. nothing runs against the schema while it changes
+FROM=0.29.64                      #    the version you are coming from: SELECT schema_version FROM aveloxis_ops.schema_meta — read it NOW, step 3 moves it
+cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version   # 2. the new binary
+aveloxis migrate --skip-views     # 3. the schema (a plain `aveloxis migrate` when the release changed a view definition — the checklist says which)
+aveloxis deploy-checklist --since "$FROM"   #    …then that list's verification steps and heals, oldest first
+aveloxis start all                # 4. serve, web and api
+```
+
+`--skip-views` skips only the 8Knot materialized-view batch (hours at
+fleet scale); everything else — the schema, the ledgered backfills, the
+two supply-chain views — runs either way (v0.29.61). `aveloxis
+refresh-views` is not one of the four steps: a release whose heals fed a
+materialized view lists it in its own checklist (the "standard ladder"
+below shows where it sits when a release asks for it). Since v0.29.68 `web`,
+`api` and the scancode worker **refuse to start** while the schema stamp
+is behind their binary, naming the migrate, instead of serving queries
+against columns the schema does not have yet; and `aveloxis start serve`
+prints the deploy steps of every release since the last acknowledged one,
+not only the current version's. Neither web nor api ever migrates. The
+sections below are the detail behind step 3.
+
 ## The two halves of an upgrade
 
 1. **`aveloxis migrate`** applies every schema change and every one-shot
@@ -65,10 +91,13 @@ plain `aveloxis migrate` in place of the `--skip-views` step above, then
 checks that the new definition is in place. That check matters because the
 migrate only logs a WARN (`materialized view creation had errors`) when the
 views fail to re-create, and still exits 0 with the old definitions in place.
+Since v0.29.68 the build enforces the rule: `matviews.sql` is pinned by
+digest, and a change to it fails the test suite until the release shipping
+it is named and that release's checklist carries the plain migrate.
 
 Run `aveloxis migrate` explicitly rather than letting `aveloxis serve`
-migrate at startup: `web` and `api` never migrate and log an ERROR on a
-schema-version mismatch, and (since v0.27.131) `serve` trusts the
+migrate at startup: `web` and `api` never migrate and (since v0.29.68)
+refuse to start while the schema stamp is behind their binary, and (since v0.27.131) `serve` trusts the
 schema-version stamp and skips the migration walk entirely once it
 matches — so after any *hand* edit to the schema, run `aveloxis migrate`
 once. Verify the stamp matches the binary afterwards:

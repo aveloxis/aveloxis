@@ -104,7 +104,9 @@ func TestDecideAddRequestReapproveFinishesAnOrgApproval(t *testing.T) {
 		t.Errorf("approving a rejected request: changed=%v err=%v, want false, nil", changed, err)
 	}
 	var n int
-	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1 AND org_url = $2`, gid, orgURL+"-rejected").Scan(&n)
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1 AND org_url = $2`, gid, orgURL+"-rejected").Scan(&n); err != nil {
+		t.Fatal(err) // a broken query is not a zero (worklist §4)
+	}
 	if n != 0 {
 		t.Errorf("approving a rejected org request registered it")
 	}
@@ -374,8 +376,12 @@ func TestAddOrgToGroupAutoApproveIsAtomic(t *testing.T) {
 	}
 	counts := func() (approved, registered int) {
 		t.Helper()
-		_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_requests WHERE group_id = $1 AND kind = 'org' AND status = 'approved'`, target).Scan(&approved)
-		_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, target).Scan(&registered)
+		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.collection_add_requests WHERE group_id = $1 AND kind = 'org' AND status = 'approved'`, target).Scan(&approved); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, target).Scan(&registered); err != nil {
+			t.Fatal(err)
+		}
 		return approved, registered
 	}
 
@@ -508,9 +514,12 @@ func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
 	const login = "_avrepos_autoapprove_cancel_probe"
 	const repoURL = "https://github.com/_avrepos-cancel-owner/_avrepos-cancel-repo"
 	const trigger = "_avtest_slow_user_repos"
+	const queueTrigger = "_avtest_slow_queue"
 	clean := func() {
 		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+trigger+` ON aveloxis_ops.user_repos`)
 		_, _ = store.pool.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+trigger+`()`)
+		_, _ = store.pool.Exec(ctx, `DROP TRIGGER IF EXISTS `+queueTrigger+` ON aveloxis_ops.collection_queue`)
+		_, _ = store.pool.Exec(ctx, `DROP FUNCTION IF EXISTS aveloxis_ops.`+queueTrigger+`()`)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1))`, login)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1)`, repoURL)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git = $1`, repoURL)
@@ -539,6 +548,16 @@ func TestAddReposToGroupAutoApproveSurvivesACancelledRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+trigger+` BEFORE INSERT ON aveloxis_ops.user_repos FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+trigger+`()`); err != nil {
+		t.Fatal(err)
+	}
+	// The EARLIER step (the enqueue) sleeps too (worklist §4): slowing the
+	// link alone let a change that made only the earlier steps cancellable
+	// pass.
+	if _, err := store.pool.Exec(ctx, `CREATE FUNCTION aveloxis_ops.`+queueTrigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
+		BEGIN IF (SELECT repo_git FROM aveloxis_data.repos WHERE repo_id = NEW.repo_id) = '`+repoURL+`' THEN PERFORM pg_sleep(2); END IF; RETURN NEW; END $f$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER `+queueTrigger+` BEFORE INSERT ON aveloxis_ops.collection_queue FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+queueTrigger+`()`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -640,11 +659,11 @@ func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	}
 	first := make(chan pass, 1)
 	go func() {
-		n, err := store.ProcessApprovedAddRequest(ctx, reqID)
+		n, _, err := store.ProcessApprovedAddRequest(ctx, reqID)
 		first <- pass{n, err}
 	}()
 	time.Sleep(100 * time.Millisecond)
-	secondN, secondErr := store.ProcessApprovedAddRequest(ctx, reqID)
+	secondN, _, secondErr := store.ProcessApprovedAddRequest(ctx, reqID)
 	firstPass := <-first
 	if firstPass.err != nil {
 		t.Fatalf("the first pass returned %v", firstPass.err)
@@ -657,7 +676,7 @@ func TestProcessApprovedAddRequestPassesDoNotRepeatWork(t *testing.T) {
 	}
 	// The guard is released when a pass ends: a later pass runs (and finds
 	// nothing left to do).
-	if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 0 {
+	if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 0 {
 		t.Errorf("a pass after the first finished = %d, %v; want 0, nil", n, err)
 	}
 	var notDone, links int
@@ -742,7 +761,7 @@ func TestProcessApprovedAddRequestHoldsNoConnectionAcrossItems(t *testing.T) {
 		go func(p int) {
 			defer wg.Done()
 			<-start
-			_, errs[p] = store.ProcessApprovedAddRequest(deadline, requests[p])
+			_, _, errs[p] = store.ProcessApprovedAddRequest(deadline, requests[p])
 		}(p)
 	}
 	close(start)
@@ -854,14 +873,14 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		failLink("transient-"+code, code)
-		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
+		if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err == nil || n != 0 {
 			t.Errorf("%s: a pass whose only item failed retryably = %d, %v; want 0 and the error", code, n, err)
 		}
 		if stamp := stampOf(reqID, transient); stamp != "NULL" {
 			t.Errorf("%s: a retryably failed item was stamped %s; want it left unprocessed so re-approving retries it", code, stamp)
 		}
 		dropTrigger()
-		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+		if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
 			t.Errorf("%s: the retry pass = %d, %v; want 1, nil", code, n, err)
 		}
 		if stamp := stampOf(reqID, transient); !positive(stamp) {
@@ -880,7 +899,7 @@ func TestProcessApprovedAddRequestRetriesTransientFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		failLink("bad-data-"+code, code)
-		if n, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
+		if n, _, err := store.ProcessApprovedAddRequest(ctx, reqID); err != nil || n != 1 {
 			t.Errorf("%s: a pass with one bad-data item and one good item = %d, %v; want 1, nil", code, n, err)
 		}
 		if stamp := stampOf(reqID, bad); stamp != "-1" {

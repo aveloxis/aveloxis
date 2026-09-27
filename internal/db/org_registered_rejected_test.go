@@ -74,8 +74,12 @@ func TestOrgRegistrationInARejectedGroupAutoApprovesNothing(t *testing.T) {
 	}
 	var status string
 	var inFresh int
-	_ = store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, out.RequestID).Scan(&status)
-	_ = store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, fresh).Scan(&inFresh)
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`, out.RequestID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_org_requests WHERE group_id = $1`, fresh).Scan(&inFresh); err != nil {
+		t.Fatal(err) // a broken query is not a zero (worklist §4)
+	}
 	if status != "pending" || inFresh != 0 {
 		t.Errorf("re-adding an org whose only registration is in a rejected group: request %q, %d registrations in the fresh group; want pending, 0", status, inFresh)
 	}

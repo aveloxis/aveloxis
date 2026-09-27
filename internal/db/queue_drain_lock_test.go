@@ -120,9 +120,10 @@ func firstRawLiteral(body string) string {
 // TestDrainLockSuffixUsesWorkerID enforces that the synthetic worker ID
 // used for the drain park encodes the real worker ID. This matters for
 // crash recovery: on restart, RecoverOtherWorkerLocks releases all locks
-// not held by the current worker. A drain lock from a prior crashed
-// process gets cleaned up automatically because its locked_by suffix
-// references the dead worker ID.
+// not held by the current worker. A drain lock from a prior crashed serve
+// gets cleaned up automatically because its locked_by suffix references
+// the dead worker ID (a live heal's — HealWorkerIDPrefix, fresh heartbeat
+// — is the one exception, worklist item 54).
 func TestDrainLockSuffixUsesWorkerID(t *testing.T) {
 	src := mustReadStoreSource(t, "queue_drain.go")
 	body := extractDrainFunc(src, "LockReposForDrain")
@@ -204,7 +205,7 @@ func TestLockReposForDrainPreservesNullLastCollected(t *testing.T) {
 	}
 
 	// Release.
-	if err := store.ReleaseDrainLock(ctx, repoID, "test-worker"); err != nil {
+	if err := store.ReleaseDrainLock(ctx, repoID, "test-worker", DrainReleaseDueNow); err != nil {
 		t.Fatalf("ReleaseDrainLock: %v", err)
 	}
 

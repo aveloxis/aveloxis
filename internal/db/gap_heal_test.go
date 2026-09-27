@@ -235,7 +235,7 @@ func TestGetGapHealCandidatesEndToEnd(t *testing.T) {
 		`UPDATE aveloxis_ops.collection_queue SET status = 'collecting' WHERE repo_id = $1`, base+1); err != nil {
 		t.Fatal(err)
 	}
-	locked, err := store.LockReposForDrain(ctx, []int64{base + 1}, "gap-heal-test")
+	locked, err := store.LockReposForDrain(ctx, []int64{base + 1}, HealWorkerIDPrefix+"test")
 	if err != nil {
 		t.Fatal(err)
 	}

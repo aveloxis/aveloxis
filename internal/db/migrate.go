@@ -2645,25 +2645,30 @@ func quoteIdent(ident string) string {
 }
 
 func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, indexName, sql string) {
-	var isInvalid bool
-	err := pg.pool.QueryRow(ctx, `
-		SELECT NOT i.indisvalid
-		FROM pg_index i
-		JOIN pg_class c ON c.oid = i.indexrelid
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = $1 AND c.relname = $2`,
-		schema, indexName).Scan(&isInvalid)
-	if err == nil && isInvalid {
-		logger.Warn("dropping invalid index from prior interrupted CONCURRENT build",
-			"index", schema+"."+indexName)
-		if _, derr := pg.pool.Exec(ctx, fmt.Sprintf(`DROP INDEX IF EXISTS %s.%s`, schema, indexName)); derr != nil {
-			logger.Error("schema migration error", "step", "drop invalid "+indexName, "error", derr)
-			*errs = append(*errs, fmt.Errorf("drop invalid %s: %w", indexName, derr))
-			return
+	label := "create index " + indexName
+	// The invalid-index drop runs inside the retried unit (worklist item
+	// 37): a CONCURRENTLY build that lost a deadlock leaves an INVALID
+	// index behind, and the next attempt must drop it first.
+	err := retryOnDeadlock(ctx, logger, label, func() error {
+		var isInvalid bool
+		err := pg.pool.QueryRow(ctx, `
+			SELECT NOT i.indisvalid
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = $1 AND c.relname = $2`,
+			schema, indexName).Scan(&isInvalid)
+		if err == nil && isInvalid {
+			logger.Warn("dropping invalid index from prior interrupted CONCURRENT build",
+				"index", schema+"."+indexName)
+			if _, derr := pg.pool.Exec(ctx, fmt.Sprintf(`DROP INDEX IF EXISTS %s.%s`, schema, indexName)); derr != nil {
+				return fmt.Errorf("drop invalid %s: %w", indexName, derr)
+			}
 		}
-	}
-	if _, err := pg.pool.Exec(ctx, sql); err != nil {
-		label := "create index " + indexName
+		_, err = pg.pool.Exec(ctx, sql)
+		return err
+	})
+	if err != nil {
 		logger.Error("schema migration error", "step", label, "error", err)
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 	}
@@ -2938,40 +2943,54 @@ func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 // by RunMigrations for ALTER TABLE / CREATE INDEX / etc. statements
 // where pre-v0.19.4 the err was discarded entirely.
 func execMigrationStep(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, label, sql string) {
-	// v0.27.18: bounded retry on deadlock (SQLSTATE 40P01). Migration
-	// DDL/DML can deadlock against ordinary concurrent statements —
-	// observed as the TestRunJobLifecycleEndToEnd flake when parallel
-	// test packages ran RunMigrations against the shared scratch DB
-	// (the v0.25.1 DROP CONSTRAINT step vs another package's in-flight
-	// queries), and equally possible in production when `aveloxis
-	// migrate` runs alongside a live serve. Postgres resolves a
-	// deadlock by killing ONE victim, so a retry of an idempotent step
-	// (every step's contract, v0.19.4) is safe and almost always
-	// succeeds. Non-deadlock errors still fail closed immediately.
-	const deadlockRetries = 3
+	err := retryOnDeadlock(ctx, logger, label, func() error {
+		_, err := pg.pool.Exec(ctx, sql)
+		return err
+	})
+	if err == nil {
+		return
+	}
+	logger.Error("schema migration error", "step", label, "error", err)
+	*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+}
+
+// deadlockRetries bounds retryOnDeadlock.
+const deadlockRetries = 3
+
+// retryOnDeadlock runs fn, retrying a deadlock (SQLSTATE 40P01) up to
+// deadlockRetries times with a growing pause, and returns fn's last error.
+// v0.27.18 introduced the retry for execMigrationStep: migration DDL/DML can
+// deadlock against ordinary concurrent statements — observed as the
+// TestRunJobLifecycleEndToEnd flake when parallel test packages migrated
+// one scratch database, and equally possible in production when `aveloxis
+// migrate` runs beside a live serve. Postgres kills ONE victim, so a retry
+// of an idempotent step (every step's contract, v0.19.4) is safe and almost
+// always succeeds; any other error returns at once. Worklist item 37
+// (v0.29.68) made it the one retry the three step helpers share —
+// execMigrationStep, the CONCURRENTLY index builds and the ADD COLUMN
+// steps, which ran a bare Exec (the 2026-09-18 flake class was theirs).
+// The one-shot dedup and cleanup functions still run their own statements
+// directly (recorded at worklist item 37). A cancelled context abandons the
+// pause and returns the deadlock.
+func retryOnDeadlock(ctx context.Context, logger *slog.Logger, label string, fn func() error) error {
 	var err error
-retry:
 	for attempt := 0; attempt <= deadlockRetries; attempt++ {
-		if _, err = pg.pool.Exec(ctx, sql); err == nil {
-			return
+		if err = fn(); err == nil {
+			return nil
 		}
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.Code != "40P01" || attempt == deadlockRetries {
-			break
+			return err
 		}
 		logger.Warn("schema migration step deadlocked — retrying (idempotent step, deadlock victim is safe to re-run)",
 			"step", label, "attempt", attempt+1)
 		select {
 		case <-ctx.Done():
-			// Abandon the backoff AND the retry loop (a bare break here
-			// would only exit the select — staticcheck SA4011); the
-			// deadlock error is recorded below.
-			break retry
+			return err
 		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
 		}
 	}
-	logger.Error("schema migration error", "step", label, "error", err)
-	*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+	return err
 }
 
 // stampSchemaVersion writes the current ToolVersion into schema_meta.
@@ -3459,6 +3478,14 @@ func logSchemaVersionCheck(logger *slog.Logger, dbVersion string, readErr error)
 		// not have. The recovery action is in the message so
 		// operators reading the log don't have to dig through
 		// docs.
+		if SchemaVersionAtLeast(dbVersion, ToolVersion) {
+			// An older binary against a newer schema (a rollback): it
+			// proceeds — the schema has every column it knows.
+			logger.Warn("schema version ahead of this binary — an older binary is running against a newer schema (a rollback?); it proceeds",
+				"db_schema_version", dbVersion,
+				"binary_version", ToolVersion)
+			return
+		}
 		logger.Error("schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run "+DeployStepsAdvice+", then restart. Until then, queries against columns added by intervening migrations will fail at runtime (e.g. `column \"email_pending\" does not exist` was the 2026-05-13 production symptom).",
 			"db_schema_version", dbVersion,
 			"binary_version", ToolVersion,
@@ -3797,8 +3824,14 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 // surfaces every failure, and so RunMigrations can fail closed.
 func addColumnIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, table, column, colType string) {
 	stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, column, colType)
-	if _, err := pg.pool.Exec(ctx, stmt); err != nil {
-		label := fmt.Sprintf("add column %s.%s (%s)", table, column, colType)
+	label := fmt.Sprintf("add column %s.%s (%s)", table, column, colType)
+	// An ALTER TABLE takes ACCESS EXCLUSIVE and deadlocks like any other
+	// step; through the one retry (worklist item 37).
+	err := retryOnDeadlock(ctx, logger, label, func() error {
+		_, err := pg.pool.Exec(ctx, stmt)
+		return err
+	})
+	if err != nil {
 		logger.Error("schema migration error", "step", label, "error", err)
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 	}

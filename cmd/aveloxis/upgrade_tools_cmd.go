@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 
@@ -71,7 +72,7 @@ not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
 				}
 				fmt.Printf("Upgrading %s (currently at %s)...\n", tool.Name, path)
 
-				if upgradeErr := upgradeOne(tool); upgradeErr != nil {
+				if upgradeErr := upgradeOne(cmd.Context(), tool); upgradeErr != nil {
 					fmt.Printf("x %s upgrade failed: %v\n", tool.Name, upgradeErr)
 					failed++
 					continue
@@ -98,14 +99,14 @@ not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
 // upgradeOne dispatches per-tool upgrade logic. scancode uses pipx upgrade
 // + libmagic re-inject; everything else just re-runs the install pipeline
 // (which uses @latest / fetches the newest tarball).
-func upgradeOne(tool collector.ExternalTool) error {
+func upgradeOne(ctx context.Context, tool collector.ExternalTool) error {
 	if tool.Name == "scancode" {
-		return upgradeScancode()
+		return upgradeScancode(ctx)
 	}
 	// scc, scorecard, and any future tools: re-run the install. The
 	// install functions / commands already use @latest or fetch the
 	// newest release, so a fresh install IS the upgrade.
-	return collector.RunToolInstall(tool)
+	return collector.RunToolInstall(ctx, tool)
 }
 
 // upgradeScancode delegates to the unified install/upgrade/inject
@@ -122,6 +123,6 @@ func upgradeOne(tool collector.ExternalTool) error {
 // `pip install --user`. The three paths (install-tools, monthly
 // updater, this CLI) now share ONE implementation so they can never
 // diverge again.
-func upgradeScancode() error {
-	return collector.EnsureScancodeCurrent(true)
+func upgradeScancode(ctx context.Context) error {
+	return collector.EnsureScancodeCurrent(ctx, true)
 }

@@ -85,14 +85,18 @@ func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID 
 			})
 		} else {
 			safego.Go(s.logger, "approved-add-request", func() {
-				n, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
+				n, failed, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
 				if errors.Is(err, db.ErrAddRequestInProgress) {
 					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
 					return
 				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
-						"request_id", req.RequestID, "processed", n, "error", err)
+						"request_id", req.RequestID, "processed", n, "failed", failed, "error", err)
+					return
+				}
+				if failed > 0 {
+					s.logger.Warn("approved add-request processed with items that could not be added", "request_id", req.RequestID, "repos", n, "failed", failed)
 					return
 				}
 				s.logger.Info("approved add-request processed", "request_id", req.RequestID, "repos", n)

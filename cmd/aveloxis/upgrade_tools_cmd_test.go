@@ -36,7 +36,7 @@ func TestUpgradeToolsCmdFileExists(t *testing.T) {
 	_, err := os.Stat("upgrade_tools_cmd.go")
 	if err != nil {
 		t.Fatal("v0.23.6 introduces cmd/aveloxis/upgrade_tools_cmd.go. " +
-			"See CLAUDE.md `Changes in v0.23.6`.")
+			"See summary/changelog/v0.23.md, the v0.23.6 entry.")
 	}
 }
 

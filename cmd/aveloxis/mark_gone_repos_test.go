@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -68,7 +69,7 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 		t.Error("gone requires a definitive answer through platform.IsRepoGoneStatus (404/410/451)")
 	}
 	// The error arm must skip, not decide.
-	i := strings.Index(src, "perr != nil")
+	i := strings.Index(src, "if perr != nil {") // the plain error arm (the cancel arm precedes it)
 	if i < 0 {
 		t.Fatal("probe error arm missing")
 	}
@@ -78,6 +79,45 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	}
 	if !strings.Contains(errArm, "skipped++") || !strings.Contains(errArm, "continue") {
 		t.Error("a probe ERROR must skip the repo (SR-16), never stamp gone or clear it")
+	}
+	// A probe the cancel cut short is the interruption, not a probe
+	// failure (batch 7b review round 1): the cancel arm sits between the
+	// probe and every error arm, and the stamp closure skips a dead ctx.
+	probe := strings.Index(src, "collector.ResolveRedirectTarget(ctx, c.GitURL)")
+	cancelArm := strings.Index(src, "if perr != nil && ctx.Err() != nil {\n\t\t\treturn interrupted()")
+	if probe < 0 || cancelArm < probe || cancelArm > i {
+		t.Errorf("the probe's cancel arm `if perr != nil && ctx.Err() != nil { return interrupted() }` must follow the probe (%d) and precede the error arms (%d); at %d", probe, i, cancelArm)
+	}
+	if !strings.Contains(src, "if dryRun || !c.GoneStamped || ctx.Err() != nil {\n\t\t\treturn") {
+		t.Error("stampChecked must skip a cancelled ctx: the stamp would fail, and that is not a stamp failure")
+	}
+	// Round 2: the check-then-act precheck covers only a cancel that
+	// arrived before the call; a cancel landing mid-statement returns
+	// `context canceled` from the store, so every store write's error arm
+	// classifies it FIRST — before the WARN and the counter.
+	// Comment-stripped, and the return must be a STATEMENT (round 3: a
+	// `// return to the loop top` comment beside a counter passed a raw
+	// substring check — the very defect this batch fixed in the ratchet).
+	// The ctx block is the arm's FIRST statement and the return is INSIDE
+	// it, as one prefix (round 4: a counter ahead of the check, or a return
+	// elsewhere before the WARN, passed a contains-anywhere check).
+	stripped := srctest.StripGoComments(src)
+	armPrefix := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return\b`)
+	for _, write := range []string{"store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {", "store.MarkRepoGone(ctx, c.RepoID); err != nil {", "store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {"} {
+		at := strings.Index(stripped, write)
+		if at < 0 {
+			t.Fatalf("store write %q missing", write)
+		}
+		if !armPrefix.MatchString(stripped[at+len(write):]) {
+			t.Errorf("%s: the error arm must BEGIN `if ctx.Err() != nil { return … }` before its WARN and counter — a cancel mid-UPDATE is the interruption, not a failure", write)
+		}
+	}
+	// A cancel on the LAST candidate's check stamp has no next loop top
+	// (round 4: the run logged "complete" and exited 0): the post-loop check
+	// sits between the loop and the completion line.
+	loopEnd, complete := strings.Index(stripped, "\n\tif ctx.Err() != nil {\n\t\treturn interrupted()"), strings.Index(stripped, `"mark-gone-repos complete"`)
+	if loopEnd < 0 || complete < 0 || loopEnd > complete || loopEnd < strings.Index(stripped, "if perr != nil {") {
+		t.Errorf("a top-level `if ctx.Err() != nil { return interrupted() }` must follow the candidate loop and precede the completion log (post-loop check at %d, completion at %d)", loopEnd, complete)
 	}
 	// Resurrection is bidirectional AND atomic (v0.28.6, Copilot
 	// round 2): 200 on a gone-stamped repo clears + re-enqueues via

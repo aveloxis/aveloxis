@@ -648,10 +648,13 @@ The `migrate` command includes a data cleanup pass that detects and nullifies ga
 
 ---
 
-## Schema version mismatch warning
+## Schema version mismatch: web, api and the scancode worker refuse to start
 
 **Symptom:** `aveloxis web`, `aveloxis api` or `aveloxis scancode-worker`
-logs an ERROR at startup (v0.20.15 raised it from WARN):
+logs an ERROR at startup (v0.20.15 raised it from WARN) and, since
+v0.29.68, exits with `refusing to start …: the database schema is behind
+this binary` instead of serving queries against columns the schema does
+not have yet (`aveloxis start` reports the child as exited):
 
 ```
 level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
@@ -663,7 +666,7 @@ role without access to it). That is not evidence the schema is behind: check
 the connection and grants first. (Before v0.29.57 a failed read was logged as
 `schema version unknown — … has not run against this database`.)
 
-**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without running `migrate` (or a foreground `aveloxis serve`, which migrates at startup).
+**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and start `web` or `api` before running `migrate` (or before a foreground `aveloxis serve`, which migrates at startup, has finished).
 
 **Solution:**
 
@@ -960,9 +963,9 @@ aveloxis start all
 
 On startup, Aveloxis automatically:
 
-- Processes any leftover staged data
-- Releases stale queue locks
-- Resumes collection from the queue
+- Reclaims the locks a previous serve left behind, whatever their age (except a running `heal-collection-gaps`' fresh `gap-heal:` rows), then any stale lock, then its own
+- Resumes collection from the queue at once
+- Drains any leftover staged data in the background while collecting
 
 ---
 
@@ -1069,6 +1072,8 @@ grep -a "worker_id\|scheduler started" ~/.aveloxis/aveloxis.log | tail -3
 
 If the current `serve` process has a different worker ID than the one on the stuck row, that row's worker is dead.
 
+One exception (v0.29.68): a row whose `locked_by` is `gap-heal:<host>-<pid>-<nanos>:drain` belongs to a `heal-collection-gaps` run, which parks the repositories it heals and refreshes `locked_at` every 30 seconds. Check `locked_at` first: fresh means the heal is alive and must be left alone (a serve start leaves it alone too); older than the stale-lock window (1 hour) means the heal died and stale-lock recovery returns the row. Never release a fresh `gap-heal:` row by hand.
+
 #### Check `locked_at` freshness
 
 Workers heartbeat every 30 seconds (`HeartbeatJob` in `queue.go`). Anything older than ~1 minute isn't heartbeating:
@@ -1093,7 +1098,7 @@ WHERE application_name LIKE 'aveloxis-%'
 ORDER BY application_name, query_start;
 ```
 
-If you see zero `aveloxis-serve` rows, no scheduler is running and ALL `collecting`-status rows are orphaned. If you see one, that's your active scheduler — compare its PID against your `ps` output to confirm.
+If you see zero `aveloxis-serve` rows, no scheduler is running and every `collecting`-status row is orphaned — except rows a running `heal-collection-gaps` (`aveloxis-heal-gaps` in the same listing) parked, whose `locked_by` starts with `gap-heal:` and whose `locked_at` is fresh (the exception described in Step 5). If you see one, that's your active scheduler — compare its PID against your `ps` output to confirm.
 
 ### Step 6 — recover stuck locks
 
@@ -1695,7 +1700,7 @@ WHERE datname = 'aveloxis_large'
 
 - Run `aveloxis migrate` (and any schema-changing operation) only when serve is fully stopped, not while it's processing repos. Use `aveloxis stop all` first; resume with `aveloxis start all` after migrate completes.
 - For large-fleet operators, schedule serve restarts during quiet periods rather than mid-collection. Restarting while a 20+ minute commits UPDATE is in flight guarantees an orphan.
-- Filed for v0.20.x: graceful pgx-pool shutdown in the scheduler's ctx-cancel path so backends disconnect cleanly on stop, eliminating the TCP-keepalive-wait window. Tracked alongside two related improvements: a post-stop verification that no aveloxis backends remain in `pg_stat_activity`, and surfacing blocked-startup-DDL with the holder PID in serve's startup log.
+- History: the graceful pool close on stop, the shutdown grace, the post-stop backend verification (`aveloxis stop` reports backends that outlived the process) and the blocked-startup-DDL watcher naming the holder PID all shipped in v0.20.0; v0.27.25 made `SIGTERM` — what `aveloxis stop` and systemd send — reach that path (the callout above). The window this section describes is now the statement in flight when the grace expires.
 
 ---
 
@@ -1808,3 +1813,24 @@ Recovery: upgrade to ≥ v0.27.139 (stops new gaps forming), then run
 candidates and fetches exactly the missing items. See the command's
 section in commands.md.
 
+## GitLab-only deployment: "GitHub key pool has no usable key — GitHub-only background tasks stay idle"
+
+Since v0.29.68 a `serve` configured with GitLab keys only logs this WARN
+once at startup. It is not an error: contributor breadth and enrichment,
+the activity sweeps, search-resolve, the mailing-list sender resolver's API
+tail, org scans and the repository-metadata backfill's GitHub candidates
+(counted as `skipped_no_github_key` on its progress lines) need a GitHub
+key and stay idle. The sender resolver
+still runs the stages that need no forge (a noreply address parses to its
+login; a sender the database already knows is attributed by the sender-ID
+backfill) — and, with no forge to ask, a human sender it cannot resolve
+becomes an email-only contributor without the API ever being asked (if a GitHub key is added later, search-resolve
+converges those rows by email). The distribution scanner is GitHub-only, so
+the distribution worker produces nothing: a GitHub repository's scan fails
+and strikes toward the sideline with its stored snapshot kept (the v0.29.55
+decision — a scan that never asked GitHub must not replace the
+GitHub-sourced rows), and other repositories complete with no evidence, as
+always. Before v0.29.68 the idle tasks ran against the empty
+pool — breadth recorded whole batches as attempted and three tickers logged
+an unanswered WARN each tick. Add a GitHub key (`aveloxis add-key <token>
+--platform github`) and restart to enable them.

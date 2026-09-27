@@ -14,9 +14,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -34,7 +37,12 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
-			ctx := context.Background()
+			// Ctrl-C and a SIGTERM (`kill <pid>`; `aveloxis stop` signals
+			// only the four components) end the walk between repositories
+			// instead of killing the process mid-statement (worklist §4;
+			// the orphaned-backend class).
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
 			// v0.21.5: store.Migrate(ctx) intentionally NOT called here —
 			// schema currency is serve/migrate's job.
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
@@ -85,7 +93,13 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 			cache := collector.NewOSVCache()
 			healed, failed := 0, 0
 			for i, id := range ids {
+				if ctx.Err() != nil {
+					break
+				}
 				if _, err := collector.ScanVulnerabilities(ctx, store, id, logger, cache, cfg.Collection.VulnScanTransitiveValue()); err != nil {
+					if errors.Is(err, context.Canceled) {
+						break // the interrupted repository is neither healed nor failed
+					}
 					failed++
 					fmt.Printf("repo %d FAILED: %v\n", id, err)
 				} else {
@@ -95,11 +109,11 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 					fmt.Printf("  %d/%d done\n", i+1, len(ids))
 				}
 			}
-			fmt.Printf("heal-vulnerabilities: healed=%d failed=%d\n", healed, failed)
-			if failed > 0 {
-				return fmt.Errorf("%d repos failed — re-run to retry (idempotent)", failed)
+			msg, err := healVulnerabilitiesReport(healed, failed, len(ids), ctx.Err())
+			if msg != "" {
+				fmt.Println(msg)
 			}
-			return nil
+			return err
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 0, "cap repos healed this run (0 = all)")
@@ -108,4 +122,18 @@ func healVulnerabilitiesCmd(cfgPath *string) *cobra.Command {
 	cmd.Flags().BoolVar(&scanAll, "all", false,
 		"scan EVERY collected repo, including repos with zero findings — required to backfill v0.27.29 self-advisories for publisher repos (numpy-class) that heal's default cohort can never reach")
 	return cmd
+}
+
+// healVulnerabilitiesReport is the command's closing line: on an interrupt
+// it says how far the walk got and that a rerun resumes (every scan is
+// idempotent), instead of a zeroed summary and exit 0.
+func healVulnerabilitiesReport(healed, failed, total int, interrupted error) (string, error) {
+	if interrupted != nil {
+		return "", fmt.Errorf("heal-vulnerabilities interrupted after %d of %d repositories (healed=%d failed=%d) — rerun to finish; the repositories already scanned keep their findings: %w", healed+failed, total, healed, failed, interrupted)
+	}
+	msg := fmt.Sprintf("heal-vulnerabilities: healed=%d failed=%d", healed, failed)
+	if failed > 0 {
+		return msg, fmt.Errorf("%d repos failed — re-run to retry (idempotent)", failed)
+	}
+	return msg, nil
 }

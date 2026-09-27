@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -76,6 +77,9 @@ func (s *PostgresStore) GetRepoForSBOM(ctx context.Context, repoID int64) (*Repo
 			WHERE repo_id = $1 ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC LIMIT 1
 		) ri ON ri.repo_id = r.repo_id
 		WHERE r.repo_id = $1`, repoID).Scan(&r.Name, &r.Owner, &r.GitURL, &r.License)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("repo %d: %w", repoID, ErrRepoNotFound)
+	}
 	return r, err
 }
 

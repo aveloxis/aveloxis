@@ -33,6 +33,7 @@ type fakeGate struct {
 	hasData, acked bool
 	recorded       bool
 	stamp          string // "" = unstamped (the pre-v0.29.4 fixtures)
+	latestAck      string // "" = no acknowledgement recorded
 	stampErr       error
 	otherServe     bool
 	otherErr       error
@@ -42,7 +43,10 @@ type fakeGate struct {
 
 func (f *fakeGate) FleetHasCollectedData(context.Context) (bool, error)   { return f.hasData, nil }
 func (f *fakeGate) DeployAckExists(context.Context, string) (bool, error) { return f.acked, nil }
-func (f *fakeGate) SchemaVersion(context.Context) (string, error)         { return f.stamp, f.stampErr }
+func (f *fakeGate) LatestDeployAck(context.Context, string) (string, error) {
+	return f.latestAck, nil
+}
+func (f *fakeGate) SchemaVersion(context.Context) (string, error) { return f.stamp, f.stampErr }
 func (f *fakeGate) OtherServeConnected(context.Context) (db.OtherServe, error) {
 	f.otherProbed = true
 	if f.otherErr != nil {

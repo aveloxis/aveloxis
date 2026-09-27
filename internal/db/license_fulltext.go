@@ -117,9 +117,25 @@ var (
 	// URL's start (subdomains allowed) and ends after ".org", a port of
 	// digits aside: "https://evil.example/fsf.org/...",
 	// "https://apache.org.evil.example/" and "https://apache.org:x@evil.example/"
-	// (userinfo) are not the publishers' (PR #215 review rounds 1-3).
+	// (userinfo) are not the publishers' (PR #215 review rounds 1-4; hostEnd).
 	urlRe        = regexp.MustCompile(`(?:https?://|www\.)\S+|\b[\w.-]+\.(?:org|com|net|io)/\S*`)
-	licenseURLRe = regexp.MustCompile(`^(?:https?://)?(?:[\w-]+\.)*(?:gnu|fsf|apache|llvm)\.org(?::\d+)?(?:[/?#>),;"']|\.$|$)`)
+	licenseURLRe = newHostURL(`^(?:https?://)?(?:[\w-]+\.)*(?:gnu|fsf|apache|llvm)\.org(?::\d+)?` + hostEnd)
+	// hostEnd is what may follow a host in a URL of its own (PR #215 review
+	// rounds 3-6, decided as a class): the path, query or fragment; the end;
+	// a sentence's period; or a character no host holds (> " , ; ) '),
+	// provided no "@" follows before the authority ends at "/", "?" or "#"
+	// (or the text's end).
+	// Userinfo ends at the first "@" whatever alphabet a parser allows in it
+	// (RFC 3986 is strict, browsers percent-encode what it excludes), so
+	// "https://apache.org;x@evil.example/" and "https://apache.org;[@evil.
+	// example/" are evil.example's, while "(https://unlicense.org)." is the
+	// Unlicense's. No alphabet to extend: the rule is the "@" itself.
+	// The regex reads the host and the one character after it; the "no @
+	// before the authority ends" part is hostURL's, answered from a table
+	// built once per URL token (urlTail), because a regex scanning the tail
+	// from every start of a token was quadratic (review round 7: 15 s at
+	// 152 KB on a run of "www." starts ending in "@").
+	hostEnd = `(?:[/?#]|\.$|$|(?P<term>[>",;)']))`
 	// licenseFileURLRe is a project's LICENSE file linked by URL, whatever the
 	// host; it is anchored at the URL's end, so it is checked once per URL.
 	licenseFileURLRe = regexp.MustCompile(`/licen[cs]e(?:\.\w+)?[)>.,;"']*$`)
@@ -217,31 +233,36 @@ var (
 // NOT precede a start let every other character through): the run of
 // non-space text before i must be empty, be only openers (a parenthesis,
 // bracket, angle bracket, quote, Markdown emphasis or table bar), end in
-// Markdown's link opener "](", be "//" (a scheme-relative URL), or be a scheme
-// token with its punctuation, as real Apache headers typo it ("htmp://",
-// "http)://", "http:/", "http//", "http:#"). urlRe's host-only arm also matches inside
-// another URL's path ("evil.example/creativecommons.org/...",
-// "https://evil.example/?https://creativecommons.org/..."); such a fragment
-// is never a license's own URL. The run before i is scanned once per match,
-// and runs are disjoint, so the scan is linear over the text.
+// Markdown's link opener "](" (or "](//", a scheme-relative target), be "//"
+// (a scheme-relative URL), or be a scheme token with its punctuation, as
+// real Apache headers typo it ("htmp://", "http)://", "http:/", "http//",
+// "http:#"). urlRe's host-only arm also matches inside another URL's path
+// ("evil.example/creativecommons.org/..."); such a fragment is never a
+// license's own URL. (An inner URL inside a scheme-led match, such as
+// "https://evil.example/?https://creativecommons.org/...", is urlStarts's
+// question: one match, no "](" before the inner start.) The run before i is
+// scanned once per match, and runs are disjoint, so the scan is linear over
+// the text.
 func urlStartsFresh(s string, i int) bool {
 	prefix := s[strings.LastIndexFunc(s[:i], unicode.IsSpace)+1 : i]
 	// Markup before a URL (review round 3, real headers: `<a href="http...`,
 	// `<p>http...`, `\url{http...`, `&#x20;http...`, `&lt;http...`): RFC 3986
-	// keeps < > " ' { } out of a URL unencoded, so a URL cannot run across
-	// one; the text after the last of them is what must be fresh. HTML
-	// entities are markup too, but "&amp;" sits inside paths, so only a
-	// prefix of entities alone counts.
+	// keeps < > " { } out of a URL unencoded, so a URL cannot run across
+	// one, and the text after the last of them is what must be fresh. The
+	// apostrophe is a sub-delimiter the RFC allows, kept here as the other
+	// quote mark markup uses (review round 4). HTML entities are markup
+	// too, but "&amp;" sits inside paths, so only a prefix of entities alone
+	// counts.
 	if k := strings.LastIndexAny(prefix, urlDelimiters); k >= 0 {
 		prefix = prefix[k+1:]
 	}
 	return prefix == "" || strings.Trim(prefix, urlOpeners) == "" ||
-		strings.HasSuffix(prefix, "](") || prefix == "//" || schemeTokenRe.MatchString(prefix) ||
-		entitiesRe.MatchString(prefix)
+		strings.HasSuffix(prefix, "](") || prefix == "//" || strings.HasSuffix(prefix, "](//") ||
+		schemeTokenRe.MatchString(prefix) || entitiesRe.MatchString(prefix)
 }
 
-// urlDelimiters never appear unencoded in a URL (RFC 3986), so one ends the
-// URL before it.
+// urlDelimiters end the URL before them: < > " { } never appear unencoded in
+// a URL (RFC 3986), and ' is markup's other quote mark.
 const urlDelimiters = "<>\"'{}"
 
 // entitiesRe is a run of HTML entities and nothing else ("&#x20;", "&lt;").
@@ -253,26 +274,97 @@ const urlOpeners = "([<\"'`*_|"
 
 // schemeTokenRe is a URL scheme with its punctuation, typos included, and
 // "http:#" (a shell or Ruby header generator wrote the "//" as its comment
-// marker; two real headers in the corpus).
+// marker; real headers in the corpus carry it).
 var schemeTokenRe = regexp.MustCompile(`^[a-z]+\)?[:;.]{0,2}(?://?|#)$`)
 
 // urlStarts are the fresh URL starts within one urlRe match u: its own start
-// (urlStartsFresh), and each inner "http(s)://" or "www." that directly
-// follows Markdown's link opener "](" (urlRe's \S+ runs adjacent links
-// together: "...svg)](https://www.apache.org/licenses/LICENSE-2.0)"). An
-// inner start after anything else is part of the outer URL's path. A
-// license's own URL is anchored at one of these starts.
+// (urlStartsFresh), and each inner "http(s)://", "www." or scheme-relative
+// "//" that directly follows Markdown's link opener "](" (urlRe's \S+ runs
+// adjacent links together: "...svg)](https://www.apache.org/licenses/
+// LICENSE-2.0)"; "](//www.apache.org/...", review round 4). An inner start
+// after anything else is part of the outer URL's path. A license's own URL
+// is anchored at one of these starts.
 func urlStarts(s string, u []int) []int {
 	var out []int
 	if urlStartsFresh(s, u[0]) {
 		out = append(out, u[0])
 	}
 	for i := u[0] + 2; i < u[1]; i++ {
-		if s[i-2:i] == "](" && (strings.HasPrefix(s[i:], "http://") || strings.HasPrefix(s[i:], "https://") || strings.HasPrefix(s[i:], "www.")) {
+		if s[i-2:i] != "](" {
+			continue
+		}
+		if strings.HasPrefix(s[i:], "http://") || strings.HasPrefix(s[i:], "https://") || strings.HasPrefix(s[i:], "www.") {
 			out = append(out, i)
+		} else if strings.HasPrefix(s[i:], "//") {
+			out = append(out, i+2)
 		}
 	}
 	return out
+}
+
+// hostURL is a license publisher's own URL, anchored at a URL start: the
+// regex (a hostEnd pattern) reads the host and what directly follows it;
+// when that is a non-host character (hostEnd's "term" group), the rest of
+// the rule — no "@" before the authority ends — is read from the token's
+// urlTail table, so a token with many starts is scanned once, not once per
+// start. The per-start caller (readNotice) uses matchAt with one table per
+// token; MatchString is the whole-URL form for the once-per-URL callers
+// (ownLinks, nameOnly). hasOwnURL asks per start too, but of cc0URLRe, a
+// plain regex whose every arm carries its own path, so it needs no tail.
+type hostURL struct {
+	re   *regexp.Regexp
+	term int
+}
+
+func newHostURL(pattern string) hostURL {
+	re := regexp.MustCompile(pattern)
+	term := re.SubexpIndex("term")
+	if term < 0 {
+		panic("hostURL pattern carries no hostEnd: " + pattern)
+	}
+	return hostURL{re: re, term: term}
+}
+
+// matchAt reports whether tok[st:] is the publisher's own URL. tail is the
+// token's urlTail, built at first need and shared by every start of tok.
+func (h hostURL) matchAt(tok string, st int, tail *[]bool) bool {
+	m := h.re.FindStringSubmatchIndex(tok[st:])
+	if m == nil {
+		return false
+	}
+	if m[2*h.term] < 0 {
+		return true // the path, a sentence's period, or the text's end
+	}
+	if *tail == nil {
+		*tail = urlTail(tok)
+	}
+	return (*tail)[st+m[2*h.term+1]]
+}
+
+// MatchString reports whether s, whole, is the publisher's own URL.
+func (h hostURL) MatchString(s string) bool {
+	var tail []bool
+	return h.matchAt(s, 0, &tail)
+}
+
+// urlTail answers, for every position of tok, whether the authority ends
+// (at "/", "?", "#" or the text's end) before any "@" is met from there: the
+// tail of the hostEnd rule. One backward pass; the answer at a position is
+// the same for every URL start that reaches it.
+func urlTail(tok string) []bool {
+	tail := make([]bool, len(tok)+1)
+	tail[len(tok)] = true
+	for i := len(tok) - 1; i >= 0; i-- {
+		switch tok[i] {
+		case '/', '?', '#':
+			tail[i] = true
+		case '@':
+			tail[i] = false
+		default:
+			tail[i] = tail[i+1]
+		}
+	}
+	return tail
 }
 
 // noticeFamily is what a notice reader needs to know about one license.
@@ -720,16 +812,24 @@ func readNotice(lower string, f noticeFamily) (v string, ranged, exc, ok bool) {
 		refs = append(refs, spans(f.refs, lower)...)
 	}
 	for _, u := range spans(urlRe, lower) {
+		tok := lower[u[0]:u[1]]
 		starts := urlStarts(lower, u)
 		// The file-name arm is end-anchored, so its answer is the same for
-		// every start: once per URL (review round 3: per start it rescanned
-		// the URL, quadratic in a token of many link openers).
-		if len(starts) > 0 && licenseFileURLRe.MatchString(lower[u[0]:u[1]]) {
+		// every start: once per URL. Review round 3 found the one combined
+		// regex (host arm | file arm) rescanning the URL per start, quadratic
+		// in a token of many link openers (23.8 s at 200 KB); splitting the
+		// two anchored regexes made that linear (the file arm's literal
+		// "/licen" is found by a byte search), and this once-per-URL check
+		// keeps the file arm's answer exact per URL. The host arm's tail scan
+		// was the same shape (review round 7); hostURL reads it from one
+		// table per token.
+		if len(starts) > 0 && licenseFileURLRe.MatchString(tok) {
 			refs = append(refs, u)
 			continue
 		}
+		var tail []bool
 		for _, st := range starts {
-			if licenseURLRe.MatchString(lower[st:u[1]]) || f.urls != nil && f.urls.MatchString(lower[st:u[1]]) {
+			if licenseURLRe.matchAt(tok, st-u[0], &tail) || f.urls != nil && f.urls.MatchString(tok[st-u[0]:]) {
 				refs = append(refs, u)
 				break
 			}

@@ -439,9 +439,9 @@ Flags:
 
 The scheduler uses a **Postgres-backed priority queue** (`aveloxis_ops.collection_queue`). Jobs are claimed atomically with `SELECT ... FOR UPDATE SKIP LOCKED`, so multiple Aveloxis instances can share the same queue for horizontal scaling. No Redis, no RabbitMQ, no Celery.
 
-**Restart/resume:** Aveloxis is safe to stop and restart at any time. On shutdown (`Ctrl-C` / `SIGTERM` / `pkill aveloxis`), it waits for active API calls to finish, then releases all queue locks so repos go back to `queued` immediately. On startup, it automatically:
-- Processes any leftover staged data from the interrupted run into relational tables (so you don't lose what was already fetched from the API)
-- Releases any stale locks from a previous instance
+**Restart/resume:** Aveloxis is safe to stop and restart at any time. On shutdown (`Ctrl-C` / `SIGTERM` / `pkill aveloxis`), in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then all queue locks are released so repos go back to `queued` immediately. On startup, it automatically:
+- Reclaims the locks a previous serve left behind, whatever their age (except a still-running `heal-collection-gaps`' parked rows), then any stale lock
+- Drains any leftover staged data from the interrupted run into relational tables in the background (so you don't lose what was already fetched from the API) while collection resumes at once
 - Repos that were mid-collection resume from the beginning of their current collection cycle, but data already in the relational tables is upserted (duplicates are harmless)
 
 ### `aveloxis web` — Start the web GUI
@@ -604,7 +604,7 @@ aveloxis stop all              # stop serve + web + api (never the scancode work
 aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect.
+Sends SIGTERM to the specified component(s) using PID files in `~/.aveloxis/`. For `serve`: in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released; staging data is preserved. For `web` and `api`: the listener closes, in-flight requests get 10 s to finish, then the pool closes. The scancode worker has its own bounds (`collection.scancode_shutdown_grace_minutes`; see [docs/architecture/scancode.md §6](./docs/architecture/scancode.md#6-graceful-shutdown)). PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect.
 
 ### `aveloxis sbom` — Generate Software Bill of Materials
 

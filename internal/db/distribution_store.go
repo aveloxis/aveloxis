@@ -101,8 +101,11 @@ func (s *PostgresStore) ReleaseDistributionClaim(ctx context.Context, job *Distr
 // the operator config accessor) controls whether
 // `distribution_scan_complete = FALSE` rows are also immediately
 // eligible regardless of cadence. When true, the WHERE clause
-// includes `OR COALESCE(scan_complete, TRUE) = FALSE` — the
-// v0.25.0 behavior, useful during a v0.24.x → v0.25.x transition
+// includes `OR (COALESCE(r.distribution_scan_complete, TRUE) = FALSE AND
+// COALESCE(r.distribution_failed_attempts, 0) < DistributionMaxFailures)` — the
+// v0.25.0 behavior bounded by the strike limit (v0.29.68, worklist item
+// 22: the tenth failure's last_run stamp is the sideline's cadence gate,
+// and the unbounded branch bypassed it), useful during a v0.24.x → v0.25.x transition
 // when partial-scan repos need urgent re-collection. When false,
 // partial scans wait for normal cadence; the ORDER BY tiebreaker
 // still prioritizes them among cadence-elapsed rows. Operators on
@@ -130,9 +133,13 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 	// front. So when the knob is off and a partial repo eventually
 	// becomes cadence-eligible naturally, it still gets priority over
 	// a cleanly-complete repo whose cadence also just elapsed.
+	// Worklist item 22: the partial-reclaim branch applies only below the
+	// strike limit. The tenth failure stamps distribution_last_run (the
+	// sideline's cadence gate), and this branch bypassed that gate, so a
+	// sidelined partial scan came back every time its backoff elapsed.
 	partialReclaimClause := ""
 	if immediatePartialReclaim {
-		partialReclaimClause = "OR COALESCE(r.distribution_scan_complete, TRUE) = FALSE\n			           "
+		partialReclaimClause = fmt.Sprintf("OR (COALESCE(r.distribution_scan_complete, TRUE) = FALSE AND COALESCE(r.distribution_failed_attempts, 0) < %d)\n			           ", DistributionMaxFailures)
 	}
 
 	// Backoff base is sourced from the named constant so the schedule

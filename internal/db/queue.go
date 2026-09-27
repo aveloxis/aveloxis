@@ -64,6 +64,11 @@ func (s *PostgresStore) EnqueueRepo(ctx context.Context, repoID int64, priority 
 	})
 }
 
+// ErrRepoNotInQueue is PrioritizeRepo's answer for a repository with no
+// queue row: the typed not-found (SR-5), so the handlers answer 404 for it
+// and a store failure as the 500 it is (worklist follow-up 12).
+var ErrRepoNotInQueue = errors.New("repo not found in queue")
+
 // PrioritizeRepo pushes a repo to priority 0 (top of queue) and makes it
 // immediately due. This is the "push to top of stack" operation.
 func (s *PostgresStore) PrioritizeRepo(ctx context.Context, repoID int64) error {
@@ -77,7 +82,7 @@ func (s *PostgresStore) PrioritizeRepo(ctx context.Context, repoID int64) error 
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return errors.New("repo not found in queue")
+			return ErrRepoNotInQueue
 		}
 		return nil
 	})
@@ -373,24 +378,36 @@ func (s *PostgresStore) HeartbeatJob(ctx context.Context, repoID int64, workerID
 	return err
 }
 
-// RecoverOtherWorkerLocks reclaims all queue locks held by worker IDs other
-// than the current one. Called on startup: a fresh process cannot have any
-// legitimate in-flight work, so all locks from other worker IDs are
-// definitively stale regardless of age.
+// RecoverOtherWorkerLocks reclaims the queue locks held by worker IDs other
+// than the current one. Called on startup: a fresh serve has no in-flight
+// work of its own, so a previous serve's locks are stale whatever their age.
+// The one exception is a live heal's parked rows (third paragraph).
 //
 // This fixes the bug where stopping and restarting aveloxis mid-collection
 // left repos stuck in 'collecting' with a dead worker ID. The normal
 // RecoverStaleLocks (1-hour timeout) wouldn't fire because the lock was
 // too recent, and releaseOurLocks only matches the current worker ID.
-func (s *PostgresStore) RecoverOtherWorkerLocks(ctx context.Context, currentWorkerID string) (int64, error) {
+//
+// A HEAL's drain-parked rows (locked_by "gap-heal:…:drain", HealWorkerIDPrefix
+// + the drain suffix) whose lock is fresher than drainStaleAfter are left
+// alone (worklist item 54): heal-collection-gaps keeps them fresh with its
+// heartbeat, so a serve started mid-heal must not hand them back to routine
+// collection, which could purge the healer's staging. A heal whose heartbeat
+// stopped for longer than the window is dead and reclaimed like any other.
+// Another SERVE's drain rows — a process that crashed or whose stop could
+// not release — are reclaimed here as before, fresh or not, so the startup
+// drain pass can re-park from staging what still needs draining (review
+// round 1: an exemption on any fresh drain owner stranded those).
+func (s *PostgresStore) RecoverOtherWorkerLocks(ctx context.Context, currentWorkerID string, drainStaleAfter time.Duration) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
 		SET status = 'queued', locked_by = NULL, locked_at = NULL,
 			due_at = NOW(), updated_at = NOW()
 		WHERE status = 'collecting'
 			AND locked_by IS NOT NULL
-			AND locked_by != $1`,
-		currentWorkerID)
+			AND locked_by != $1
+			AND NOT (locked_by LIKE $3 || '%' || $4 AND locked_at >= NOW() - $2::interval)`,
+		currentWorkerID, drainStaleAfter, HealWorkerIDPrefix, drainLockSuffix)
 	if err != nil {
 		return 0, err
 	}

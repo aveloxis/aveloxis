@@ -5,9 +5,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/spf13/cobra"
@@ -30,7 +33,11 @@ func backfillMailingListProjectionCmd(cfgPath *string) *cobra.Command {
 			bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, bootLog)
 			logger := newLogger(cfg)
-			ctx := context.Background()
+			// A signal ends the walk between batches (worklist §4): each
+			// batch is idempotent and the next run resumes where this one
+			// stopped.
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
 
 			store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger)
 			if err != nil {
@@ -54,11 +61,12 @@ func backfillMailingListProjectionCmd(cfgPath *string) *cobra.Command {
 
 			// Step 1: keyed issue_event projection (runs to completion first so
 			// every thread with a keyed message has its issue before step 2).
-			keyed := 0
+			keyed, threaded := 0, 0
+			var marked int64
 			for {
 				n, err := store.BackfillKeyedIssueProjection(ctx, batch)
 				if err != nil {
-					return err
+					return backfillProjectionReport(keyed, threaded, marked, err)
 				}
 				keyed += n
 				if n > 0 {
@@ -70,11 +78,10 @@ func backfillMailingListProjectionCmd(cfgPath *string) *cobra.Command {
 			}
 
 			// Step 2: thread-inheritance over the remaining threaded rows.
-			threaded := 0
 			for {
 				n, err := store.BackfillThreadInheritance(ctx, batch)
 				if err != nil {
-					return err
+					return backfillProjectionReport(keyed, threaded, marked, err)
 				}
 				threaded += n
 				if n > 0 {
@@ -86,9 +93,9 @@ func backfillMailingListProjectionCmd(cfgPath *string) *cobra.Command {
 			}
 
 			// Step 3: mark everything still unprojected mailing_list_only.
-			marked, err := store.BackfillMarkRemainingProjected(ctx)
+			marked, err = store.BackfillMarkRemainingProjected(ctx)
 			if err != nil {
-				return err
+				return backfillProjectionReport(keyed, threaded, marked, err)
 			}
 
 			fmt.Printf("backfill-mailing-list-projection complete: %d keyed issue projections, %d thread-inherited, %d marked mailing_list_only\n",
@@ -98,4 +105,14 @@ func backfillMailingListProjectionCmd(cfgPath *string) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&batch, "batch", 500, "rows per batch")
 	return cmd
+}
+
+// backfillProjectionReport classifies a step's failure: an interrupt names
+// the work that landed (every batch commits on its own) and that a rerun
+// resumes; anything else is the error itself.
+func backfillProjectionReport(keyed, threaded int, marked int64, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("backfill-mailing-list-projection interrupted after %d keyed issue projections, %d thread-inherited, %d marked — the batches already written stay written; rerun to finish: %w", keyed, threaded, marked, err)
+	}
+	return err
 }

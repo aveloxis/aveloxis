@@ -87,10 +87,10 @@ func TestQueueJobStruct(t *testing.T) {
 }
 
 // TestRecoverOtherWorkerLocksExists verifies the store has a method to
-// immediately reclaim all locks held by other (dead) worker IDs on startup.
-// This is distinct from RecoverStaleLocks which uses a timeout: on startup,
-// no other worker can possibly be alive in this process, so all locks from
-// other worker IDs are definitively stale regardless of age.
+// reclaim, at startup, the locks a previous serve left behind whatever their
+// age. This is distinct from RecoverStaleLocks, which uses a timeout. The
+// one exception (v0.29.68, worklist item 54) is a live heal's drain-parked
+// rows — a HealWorkerIDPrefix owner whose heartbeat is inside the window.
 func TestRecoverOtherWorkerLocksExists(t *testing.T) {
 	data, err := os.ReadFile("queue.go")
 	if err != nil {
@@ -103,7 +103,8 @@ func TestRecoverOtherWorkerLocksExists(t *testing.T) {
 }
 
 // TestRecoverOtherWorkerLocksUsesWorkerID verifies the method filters by
-// worker ID (not by time), so it only reclaims locks from OTHER workers.
+// worker ID, so it only reclaims locks from OTHER workers (the time window
+// applies only to the live-heal exemption).
 func TestRecoverOtherWorkerLocksUsesWorkerID(t *testing.T) {
 	data, err := os.ReadFile("queue.go")
 	if err != nil {
@@ -117,7 +118,8 @@ func TestRecoverOtherWorkerLocksUsesWorkerID(t *testing.T) {
 	}
 	fnBody := src[idx : idx+500]
 
-	// Must filter by locked_by != workerID (not by locked_at timeout).
+	// Must filter by locked_by != workerID (the locked_at window is the
+	// heal exemption's, not the reclaim's).
 	if !strings.Contains(fnBody, "locked_by") {
 		t.Error("RecoverOtherWorkerLocks must filter by locked_by to target other workers")
 	}

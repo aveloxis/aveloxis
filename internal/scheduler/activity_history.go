@@ -68,6 +68,9 @@ const (
 // ErrNotFound class) is mark-only stamped; any OTHER error stamps
 // nothing so the contributor retries on the next claim.
 func (s *Scheduler) runActivityHistory(ctx context.Context) {
+	if !s.githubKeysAvailable() {
+		return // GitLab-only keys: nothing to ask GitHub with
+	}
 	fetcher, ok := s.ghClient.(contributorHistoryFetcher)
 	if !ok {
 		return // no GitHub GraphQL client (GitLab-only deployment or test fake)
@@ -171,7 +174,12 @@ func (s *Scheduler) processHistoryContributor(ctx context.Context, fetcher contr
 		return historyCanceled // shutdown, not a failure
 	}
 	if err != nil {
-		if errors.Is(err, platform.ErrNotFound) || platform.ClassifyError(err) == platform.ClassSkip {
+		// Only the forge's own answer about the account (deleted, renamed,
+		// a rejected query) is "done"; ClassSkip alone also covered our own
+		// off-host refusal (platform.ErrOffHostRefused), which says nothing
+		// about the contributor (worklist item 26; PR #209's rule,
+		// platform.IsDefinitiveAnswer, keeps ErrNotFound and excludes it).
+		if platform.IsDefinitiveAnswer(err) {
 			// Deleted/renamed account: stamp so the claim head drains.
 			// A failed stamp leaves the contributor at the claim head
 			// for a pointless re-fetch every tick — log it and count

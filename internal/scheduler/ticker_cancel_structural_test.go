@@ -106,12 +106,26 @@ func TestEveryTickerTaskClassifiesCancellation(t *testing.T) {
 	// ctx-bound failure logs (pass 37: the five startup steps were
 	// classified and nothing enforced it) — check its body too.
 	bodies["Run"] = run
+	// A producer that names no `ctx` but calls a Scheduler method whose
+	// signature takes a context is ctx-bound too — `s.pin(context.Background())`
+	// or a context under another name. No site in today's corpus needs
+	// the rule (every such call spells ctx; batch 7b review round 1 showed
+	// the WARN the first comment blamed has a ctx-free producer), so it is
+	// kept for the next helper and driven by its fixture in
+	// TestTickerCancelAnalyzerCatchesTheProbedShapes.
+	ctxMethods := map[string]bool{}
+	sigRe := regexp.MustCompile(`func \(s \*Scheduler\) (\w+)\([^)]*\bctx context\.Context`)
+	for _, src := range files {
+		for _, m := range sigRe.FindAllStringSubmatch(src, -1) {
+			ctxMethods[m[1]] = true
+		}
+	}
 	for _, name := range sortedKeys(boolKeys(bodies)) {
 		body := bodies[name]
 		if body == "" {
 			continue
 		}
-		violations, exempt := cancelViolations(body)
+		violations, exempt := cancelViolationsWith(body, ctxMethods)
 		for _, e := range exempt {
 			t.Logf("%s: exempt (producer is not ctx-bound): %s", name, e)
 		}
@@ -132,6 +146,25 @@ var failureLogRe = regexp.MustCompile(`s\.logger\.(Warn|Error|Info)\(`)
 // `errors.Is(X, context.Canceled)` followed by a return. Returns the
 // violations and the exempted (non-ctx-bound) sites.
 func cancelViolations(body string) (violations, exempt []string) {
+	return cancelViolationsWith(body, nil)
+}
+
+// cancelViolationsWith is cancelViolations with the set of Scheduler methods
+// whose signature takes a context: a producer calling one is ctx-bound even
+// when its text names no ctx.
+func cancelViolationsWith(body string, ctxMethods map[string]bool) (violations, exempt []string) {
+	calleeRe := regexp.MustCompile(`\bs\.(\w+)\(`)
+	ctxBound := func(producer string) bool {
+		if strings.Contains(strings.ToLower(producer), "ctx") || strings.Contains(producer, "resp.Body") {
+			return true
+		}
+		for _, m := range calleeRe.FindAllStringSubmatch(producer, -1) {
+			if ctxMethods[m[1]] {
+				return true
+			}
+		}
+		return false
+	}
 	for _, m := range failureLogRe.FindAllStringIndex(body, -1) {
 		args := callArgs(body, m[1]-1)
 		errIdent := errorAttr(args)
@@ -154,7 +187,7 @@ func cancelViolations(body string) (violations, exempt []string) {
 			violations = append(violations, "failure log "+strconv.Quote(snippet(body, logAt))+" — no assignment of "+errIdent+" found before its arm")
 			continue
 		}
-		if !strings.Contains(strings.ToLower(producer), "ctx") && !strings.Contains(producer, "resp.Body") {
+		if !ctxBound(producer) {
 			exempt = append(exempt, strconv.Quote(snippet(body, logAt))+" ← "+strconv.Quote(strings.TrimSpace(producer)))
 			continue
 		}
@@ -189,7 +222,20 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 		body       string
 		violations int
 		exempt     int
+		ctxMethods map[string]bool
 	}{
+		{"a ctx-taking Scheduler method called without the word ctx is ctx-bound", `
+	x, err := s.pinSomething(a, b)
+	if err != nil {
+		s.logger.Warn("pin failed", "n", x, "error", err)
+	}
+`, 1, 0, map[string]bool{"pinSomething": true}},
+		{"the same producer with no such method is exempt", `
+	x, err := s.pinSomething(a, b)
+	if err != nil {
+		s.logger.Warn("pin failed", "n", x, "error", err)
+	}
+`, 0, 1, nil},
 		{"classified before the arm", `
 	err := s.store.A(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -198,7 +244,7 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if err != nil {
 		s.logger.Warn("a failed", "error", err)
 	}
-`, 0, 0},
+`, 0, 0, nil},
 		{"classified as the arm's first statement", `
 	x, err := s.store.A(ctx, 1)
 	if err != nil {
@@ -207,7 +253,7 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 		}
 		s.logger.Error("a failed", "n", x, "error", err)
 	}
-`, 0, 0},
+`, 0, 0, nil},
 		{"M6: a neighbour's classification does not cover a later arm", `
 	err := s.store.A(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -220,7 +266,7 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if err != nil {
 		s.logger.Warn("b failed", "error", err)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"M5: err == nil is not a producer", `
 	n, err := s.store.Count(ctx)
 	if err == nil {
@@ -229,7 +275,7 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if err != nil {
 		s.logger.Warn("count failed", "error", err)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"decorative: classification that falls through", `
 	err := s.store.A(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -238,7 +284,7 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if err != nil {
 		s.logger.Warn("a failed", "error", err)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"alias chain: the source error's classification counts for the alias", `
 	err := s.store.Ping(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -252,7 +298,7 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if down {
 		s.logger.Warn("database unavailable", "error", lastErr)
 	}
-`, 0, 0},
+`, 0, 0, nil},
 		{"alias chain: an unclassified source is a violation, never exempt", `
 	err := s.store.Ping(ctx)
 	if err != nil {
@@ -263,28 +309,28 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if down {
 		s.logger.Warn("database unavailable", "error", lastErr)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"alias chain through := is followed", `
 	err := s.store.Ping(ctx)
 	aerr := err
 	if aerr != nil {
 		s.logger.Warn("ping failed", "error", aerr)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"alias chain through a %w wrap is followed", `
 	err := s.store.Ping(ctx)
 	werr := fmt.Errorf("ping: %w", err)
 	if werr != nil {
 		s.logger.Warn("ping failed", "error", werr)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"alias chain through a %w wrap with a trailing non-error arg", `
 	err := s.store.Ping(ctx)
 	werr := fmt.Errorf("ping: %w: %s", err, detail.String())
 	if werr != nil {
 		s.logger.Warn("ping failed", "error", werr)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"decorative: classification without a return, unrelated return later", `
 	err := s.store.A(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -296,14 +342,14 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if err != nil {
 		s.logger.Warn("a failed", "error", err)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"alias chain through an indexed %[1]w wrap is followed", `
 	err := s.store.Ping(ctx)
 	werr := fmt.Errorf("ping: %[1]w (%[1]v)", err)
 	if werr != nil {
 		s.logger.Warn("ping failed", "error", werr)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"decorative: the classification's return is nested in an inner if", `
 	err := s.store.A(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -314,40 +360,40 @@ func TestTickerCancelAnalyzerCatchesTheProbedShapes(t *testing.T) {
 	if err != nil {
 		s.logger.Warn("a failed", "error", err)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"an Info-level failure log counts", `
 	info, err := client.FetchRepoInfo(ctx, o, r)
 	if err != nil {
 		s.logger.Info("backfill: FetchRepoInfo failed (will retry)", "error", err)
 		failed++
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"a derived context is still ctx-bound (heartbeatCtx)", `
 	err := s.store.HeartbeatJob(heartbeatCtx, id)
 	if err != nil {
 		s.logger.Warn("heartbeat failed", "error", err)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"exempt: producer is not ctx-bound", `
 	home, err := os.UserHomeDir()
 	if err != nil {
 		s.logger.Warn("no home", "error", err)
 	}
-`, 0, 1},
+`, 0, 1, nil},
 		{"body-read producer counts as ctx-bound", `
 	decErr := json.NewDecoder(resp.Body).Decode(&items)
 	if decErr != nil {
 		s.logger.Warn("decode failed", "error", decErr)
 	}
-`, 1, 0},
+`, 1, 0, nil},
 		{"a message field is not an error value", `
 	if !outcome.success {
 		s.logger.Warn("job failed", "error", outcome.errMsg)
 	}
-`, 0, 0},
+`, 0, 0, nil},
 	}
 	for _, tc := range cases {
-		v, e := cancelViolations(tc.body)
+		v, e := cancelViolationsWith(tc.body, tc.ctxMethods)
 		if len(v) != tc.violations || len(e) != tc.exempt {
 			t.Errorf("%s: got %d violation(s) %v and %d exempt %v, want %d / %d", tc.name, len(v), v, len(e), e, tc.violations, tc.exempt)
 		}

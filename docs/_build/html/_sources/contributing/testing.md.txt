@@ -331,7 +331,7 @@ The 2026-07-21 audit (`summary/17-wrong-answer-tests-audit.md`) found a recurrin
 
 The rule: **every expected value in a test must trace to an authority that is not the code under test.** In descending order of strength:
 
-1. **The specification itself** — committed as a fixture the test reads at run time, so refreshing the fixture refreshes the constraints. Examples: `internal/collector/testdata/purl_spec_cases.json` (purl-spec canonical cases), `testdata/sbom_schemas/` (official CycloneDX 1.5 + SPDX 2.3 JSON schemas — the SBOM test reads the schemas' own `required` lists and enums), `spdx_license_ids.txt` (the official SPDX id list).
+1. **The specification itself** — committed as a fixture the test reads at run time, so refreshing the fixture refreshes the constraints. Examples: `internal/collector/testdata/purl_spec_cases.json` (purl-spec canonical cases), `testdata/sbom_schemas/` (the official CycloneDX 1.7 and SPDX 2.3 JSON schemas; since v0.29.67 generated documents are validated against the whole schemas, not only their `required` lists and enums), `internal/spdx/spdx_data.tsv` (the official SPDX license and exception lists, with each license's OSI status).
 2. **The reference implementation's source** — when compatibility with another system is the claim, fetch that system's actual code and hand-derive vectors from it. Example: `augur_uuid_groundtruth_test.go` derives its UUID strings from chaoss/augur's `AugurUUID.py` byte rules, with one vector corroborated by a real production row.
 3. **Hand computation from published formulas** — work the arithmetic in the test's comment so a reviewer can check it. Example: the COCOMO test's `ln(100)·1.0997 → e^x → ×2.94 ≈ 465.3` derivation.
 4. **Real Postgres** — for SQL semantics (`date_trunc` bucketing, `ON CONFLICT` arbiters, FK behavior), the database is the ground truth; seed known rows and assert exact values. Never assert what a query "should" return by reading its SQL.
@@ -573,7 +573,7 @@ GitHub Actions runs:
 - `lint.yml`: `go vet` → `staticcheck` → `golangci-lint` (pinned version), all blocking.
 - `codeql.yml`: security scanning.
 - `cifuzz.yml`: ClusterFuzzLite over the 7 native Go fuzz targets.
-- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`).
+- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`), and real-tool checks: the latest scancode and scc, and the official SBOM validators (`pyspdxtools` and `cyclonedx-python-lib`, via `AVELOXIS_TEST_SBOM_TOOLS`, which names a Python with both installed; the test skips when it is unset). To run the SBOM check locally, see the comment on `TestSBOMsPassTheOfficialValidators`.
 - `docs.yml`: `sphinx-build -W --keep-going` over `docs/` — every Sphinx/MyST warning (unknown fence language, block that does not lex, dead cross-reference) is an error.
 
 The first four plus `docs.yml` must pass for a PR to merge — a Sphinx warning fails the docs job the same way a lint finding fails `lint.yml`. The maintainers can override but rarely do.

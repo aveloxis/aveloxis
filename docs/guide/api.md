@@ -790,10 +790,24 @@ Token semantics:
 
 - Tokens are DB-backed and live **30 days** — they survive server
   restarts. An expired or unknown token gets a structured 401; sign
-  in again and mint a new one.
+  in again and mint a new one. A token the server could not resolve
+  because the database failed (validating it, or reading its account
+  flags or scope) gets a structured **503** with a try-again body
+  (v0.29.68) — never the 401, which the GUI treats as "the token is
+  gone"; retry the request.
 - Each visit to `/auth/token` mints a **new** token; existing tokens
   keep working until they expire, so long-running scripts aren't cut
   off when you log in elsewhere.
+- A token's role and repository scope are cached for 60 seconds per
+  process. An admin mutation, and (v0.29.68) an add through
+  `POST /api/v1/groups/{id}/repos` that linked or queued repositories,
+  drop the cache in the process that served them. An approval decided in
+  the **web** process reaches the **api** process only when its cache
+  entry expires — up to 60 seconds; the two processes share no memory.
+- A server-side failure is a **500** whose body never carries the cause
+  (`internal error; try again`, or a fixed phrase such as `package list
+  failed`, v0.29.68); the cause is in the api log. Client-side refusals
+  (400/403/404) keep their own messages.
 - Your token carries **your** repository scope — every repo in any
   of your groups (pending included; approval gates new collection,
   not visibility of collected data). Administrators are unscoped.

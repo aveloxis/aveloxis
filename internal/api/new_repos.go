@@ -49,7 +49,7 @@ func (s *Server) handleNewRepos(w http.ResponseWriter, r *http.Request) {
 	since := time.Now().AddDate(0, 0, -days)
 	fleet, mine, err := s.store.GetNewRepos(r.Context(), info.UserID, since, 200)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleNewRepos", err)
 		return
 	}
 
@@ -59,7 +59,7 @@ func (s *Server) handleNewRepos(w http.ResponseWriter, r *http.Request) {
 		"mine":  mine,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, "handleNewRepos", err)
 		return
 	}
 	s.respCache.put(key, body)

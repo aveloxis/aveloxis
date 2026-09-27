@@ -35,7 +35,8 @@ The top of the dashboard shows aggregate queue statistics:
 |---|---|
 | **Total** | Total number of repos in the queue |
 | **Queued** | Repos waiting to be collected |
-| **Collecting** | Repos currently being collected by a worker |
+| **Collecting** | Repos currently being collected by a worker (never more than the worker count) |
+| **Parked (drain / heal)** | Repos parked while serve processes leftover staging data from the previous run, or while `aveloxis heal-collection-gaps` heals them (v0.29.64). They hold no worker slot, so they are counted here rather than as Collecting. Serve releases its parked set when it stops, and the heal command releases its own when it exits or is interrupted (v0.29.65) |
 
 ---
 
@@ -128,11 +129,20 @@ Response:
 
 ```json
 {
-  "queued": 150,
-  "collecting": 4,
-  "total": 200
+  "stats": {
+    "queued": 150,
+    "collecting": 4,
+    "draining": 3,
+    "total": 200
+  },
+  "last_refreshed": "2026-09-23T13:04:05Z",
+  "next_refresh": "2026-09-23T13:05:05Z"
 }
 ```
+
+`draining` counts the parked repos shown as **Parked (drain / heal)**. The
+stats are cached for 60 seconds, and the two timestamps say when they were
+read and when they are read next.
 
 ### `POST /api/prioritize/{repoID}`
 

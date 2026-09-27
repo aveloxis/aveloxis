@@ -260,9 +260,11 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 					return processed, err // not a drop: the row stays staged
 				}
 				if errors.Is(err, errMailingListRowRetry) {
-					// The row's OWN writes landed; only a projection-side
-					// write (issue link/create, tracker action) failed
-					// transiently. Leave it UNPROCESSED — the next drain
+					// Nothing the row needs is lost: either its own writes
+					// landed and only a projection-side write (issue
+					// link/create, tracker action) failed transiently, or a
+					// pre-write lookup (the sender's contributor) failed
+					// before anything was written. Leave it UNPROCESSED — the next drain
 					// replays the row and every write converges
 					// idempotently. Never routed to drop-for-progress:
 					// dropping would permanently lose a state transition
@@ -290,7 +292,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 		if deferred > 0 {
 			// One aggregate line (the v0.27.91 flood rule); the per-row
 			// WARNs above carry the individual causes.
-			p.logger.Warn("mailing-list processor: rows deferred for retry (projection-side failures)",
+			p.logger.Warn("mailing-list processor: rows deferred for retry (a projection-side write or a sender lookup failed)",
 				"rgls_id", rglsID, "deferred", deferred, "batch", len(batch))
 		}
 		if counters.nodeResolveFailures > 0 {
@@ -329,7 +331,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 // state transition — the ledgered historical backfill only repairs
 // rows that existed when it ran. Distinct from the drop-for-progress
 // path, which is for rows whose OWN writes fail.
-var errMailingListRowRetry = errors.New("mailing-list row deferred for retry (projection-side write failed)")
+var errMailingListRowRetry = errors.New("mailing-list row deferred for retry (a projection-side write or a pre-write lookup failed)")
 
 // drainCounters accumulates per-batch diagnostics for one DrainList call so a
 // systemic failure is reported ONCE per batch instead of once per message.
@@ -385,7 +387,19 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	}
 	cntrbPtr, cached := cntrbCache[m.SenderEmail]
 	if !cached {
-		if id, ok, _ := p.store.ResolveContributorIDByEmail(ctx, m.SenderEmail); ok {
+		id, ok, err := p.store.ResolveContributorIDByEmail(ctx, m.SenderEmail)
+		if err != nil {
+			// A failed lookup is not "no contributor" (SR-5; worklist item
+			// 17): the row is deferred and replayed by the next drain, and
+			// the cause is logged like the other deferral sites' (the
+			// aggregate WARN says the per-row WARNs carry the causes).
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			p.logger.Warn("mailing-list: sender lookup failed — row deferred for the next drain", "email", m.SenderEmail, "error", err)
+			return deferRetryOutcome(fmt.Errorf("resolve sender: %w", err))
+		}
+		if ok {
 			cp := id
 			cntrbPtr = &cp
 		}
@@ -615,8 +629,8 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	return deferRetryOutcome(deferRetry)
 }
 
-// deferRetryOutcome wraps a collected projection-side failure in the
-// retry sentinel (nil-safe).
+// deferRetryOutcome wraps a deferral's cause — a projection-side write, or
+// the pre-write sender lookup — in the retry sentinel (nil-safe).
 func deferRetryOutcome(cause error) error {
 	if cause == nil {
 		return nil

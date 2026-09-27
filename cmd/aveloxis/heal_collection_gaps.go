@@ -101,7 +101,7 @@ recommended for routine use; prefer --repo-id for a specific suspect.`,
 				logger.Warn("hostname unavailable — the heal worker ID falls back to PID and start time", "error", herr)
 				host = "unknown-host"
 			}
-			workerID := fmt.Sprintf("gap-heal-%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
+			workerID := fmt.Sprintf("%s%s-%d-%d", db.HealWorkerIDPrefix, host, os.Getpid(), time.Now().UnixNano())
 			// v0.27.147 (round 26)/v0.27.150 (round 29): the run keeps ONE
 			// set-wide heartbeat for every drain lock this worker holds —
 			// a large repo's listing, fetch and processing can outlive a

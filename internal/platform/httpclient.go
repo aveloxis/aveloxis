@@ -57,12 +57,32 @@ var ErrGone = errors.New("gone")
 // unique repos = ~5.3h of wasted wall-clock per cycle.
 var ErrNoContent = errors.New("no content (204)")
 
+// GitHubAPIVersion is the REST API version every GitHub request names
+// (X-GitHub-Api-Version; worklist item 15). GitHub supports 2022-11-28 until
+// 2028-03-10 and its pull-request shape still carries merge_commit_sha; the
+// 2026-03-10 version drops that field, which the `rest` collection escape
+// hatch and the per-PR REST rescue read (internal/platform/github). Moving
+// this pin past 2026-03-10 needs those two paths to take mergeCommit from
+// GraphQL first (TestGitHubAPIVersionPredatesTheMergeCommitSHADrop).
+const GitHubAPIVersion = "2022-11-28"
+
 // ErrRequestRejected wraps a 400 or a non-pagination-cap 422: the forge
 // rejected the request itself (malformed query, validation failure). It is
 // still ClassFatal; the sentinel exists so IsDefinitiveAnswer can tell this
 // ANSWER apart from the Fatal-class failures that say nothing about the
 // item, such as an empty key pool (v0.29.55 review round 1).
 var ErrRequestRejected = errors.New("request rejected")
+
+// ErrConflict wraps a 409 on a read: GitHub's documented answer on the Git
+// Database and Commits endpoints (the trees fallback, /commits/{sha}) for a
+// repository that is "empty or unavailable". It is definitive (ClassSkip)
+// and never retried; through v0.29.67 it took the "unexpected status" arm —
+// about 110 s of retries, then ErrTransient, which the distribution scanner
+// counted as a non-answer and struck toward the sideline (worklist item 23;
+// 451 was the same class, v0.29.58). Whether it says "no files" is the
+// CALLER's question: the trees fallback, which runs after a listing proved
+// the repository populated, treats it as a non-answer.
+var ErrConflict = errors.New("conflict (409)")
 
 // ErrTransient marks transient-class errors that should route
 // to ClassTransient via platform.ClassifyError. Originally added
@@ -489,6 +509,12 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			req.Header.Set("PRIVATE-TOKEN", key.Token)
 		default: // AuthGitHub
 			req.Header.Set("Authorization", "token "+key.Token)
+			// Pinned (worklist item 15): GitHub documents that unversioned
+			// requests default to 2022-11-28 today; pinning it makes the
+			// version ours to move. On 2026-03-10 the REST pull-request
+			// shape drops merge_commit_sha, which the `rest` escape hatch
+			// and the per-PR rescue read.
+			req.Header.Set("X-GitHub-Api-Version", GitHubAPIVersion)
 		}
 		req.Header.Set("Accept", "application/json")
 
@@ -647,6 +673,10 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			reason = "unspecified"
 		}
 		return respDone, nil, fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, url, reason)
+	case resp.StatusCode == http.StatusConflict:
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return respDone, nil, fmt.Errorf("%w: %s: %s", ErrConflict, url, truncateBody(string(body), 200))
 	case resp.StatusCode == http.StatusGone:
 		// 410 — the resource existed but was deliberately removed (e.g.,
 		// a deleted GitHub issue). Never retryable; distinct from 404 so
@@ -973,7 +1003,8 @@ func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, ur
 //
 // v0.28.17: ALWAYS ETag-free. A body-decoding reader can never use a
 // 304 (there is no body to decode), and no GetJSON caller handles
-// ErrNotModified — so every repeat single-object read in one process
+// ErrNotModified (the distribution readers, since v0.29.68, do handle an
+// UNSOLICITED one, as a non-answer) — so every repeat single-object read in one process
 // (GitHub's FetchPRMeta/FetchPRRepos after FetchPRByNumber on the same
 // /pulls/N; GitLab's labels/assignees/reviewers/meta/repos readers on
 // the same /merge_requests/N; both forges' issue readers) either

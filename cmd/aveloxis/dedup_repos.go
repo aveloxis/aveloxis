@@ -29,7 +29,7 @@
 //	aveloxis migrate --skip-views       # then: builds uq_repos_repo_git_ci (the views are current after the deploy)
 //	aveloxis refresh-views              # analytics stop double-counting
 //
-// See CLAUDE.md v0.25.32 for the full rationale.
+// See summary/changelog/v0.25.md (the v0.25.32 entry) for the full rationale.
 
 package main
 

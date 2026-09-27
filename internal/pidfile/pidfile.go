@@ -88,6 +88,22 @@ func Remove(path string) {
 	_ = os.Remove(path)
 }
 
+// RemoveIfOwn removes the PID file only while it still holds pid. Two
+// `start`s inside the "already running" guard's read→write window both
+// spawn; the loser's unconditional Remove — the parent's on childExited,
+// or a refused serve's own deferred one — took the WINNER's file with it,
+// leaving a live process with no pidfile (review rounds 3 and 5 of the
+// deploy-path batch). A file holding another PID, or an unreadable one,
+// is left in place. Reports whether the file was removed.
+func RemoveIfOwn(path string, pid int) bool {
+	p, err := Read(path)
+	if err != nil || p != pid {
+		return false
+	}
+	_ = os.Remove(path)
+	return true
+}
+
 // IsRunning checks if the process with the given PID is still alive.
 //
 // v0.27.5 bug fix: the previous implementation called proc.Signal(nil),

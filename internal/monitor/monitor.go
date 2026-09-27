@@ -8,6 +8,7 @@ package monitor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -159,6 +160,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	if refresh <= 0 {
 		refresh = DefaultDashboardRefreshSeconds
 	}
+	if logger == nil {
+		logger = slog.Default() // one default layer: the handlers use s.logger unguarded
+	}
 	s := &Server{
 		store:           store,
 		logger:          logger,
@@ -297,7 +301,13 @@ func (s *Server) handlePrioritize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, db.ErrRepoNotInQueue) {
+			http.Error(w, "repo not found in queue", http.StatusNotFound)
+			return
+		}
+		// A store failure is not "not found" (SR-5, follow-up 12).
+		s.logger.Error("prioritize failed", "repo_id", repoID, "error", err)
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

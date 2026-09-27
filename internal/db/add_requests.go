@@ -37,7 +37,7 @@ type AddOutcome struct {
 
 // OrgAddOutcome reports what AddOrgToGroup did.
 type OrgAddOutcome struct {
-	Registered bool  // true = org tracking registered (admin path)
+	Registered bool  // true = org tracking registered: an admin's add, or a non-admin's add of an org already registered elsewhere (v0.27.84) — including a re-add that inserted nothing
 	RequestID  int64 // non-zero when a pending request was created instead
 }
 
@@ -84,10 +84,9 @@ func (s *PostgresStore) GetGroupStatus(ctx context.Context, groupID int64) (stri
 // ensureRepoCollectedInGroup is the single "make this URL exist,
 // collect, and belong to the group" helper — shared by the admin
 // direct-add path and the approval processor so both behave
-// identically. Resolves case-insensitively; creates the repos row
-// only when absent (never routes existing repos through UpsertRepo's
-// DO UPDATE, which would clobber collected metadata); always ensures
-// a queue row; always links user_repos.
+// identically. Resolves the URL by its stored spelling and case; creates
+// the repos row only when absent (an existing repo is linked, not
+// re-upserted); always ensures a queue row; always links user_repos.
 func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID int64, repoURL string) (int64, error) {
 	repoID, err := s.FindRepoByURL(ctx, repoURL)
 	if err != nil {
@@ -153,7 +152,12 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 			return out, err
 		}
 	}
-	isAdmin, _ := s.IsUserAdmin(ctx, userID)
+	// A lookup ERROR is not "not an admin" (SR-5; worklist follow-up 6): it
+	// sent an admin's paste to the approval queue, silently.
+	isAdmin, err := s.IsUserAdmin(ctx, userID)
+	if err != nil {
+		return out, fmt.Errorf("look up admin flag: %w", err)
+	}
 
 	var unknown []string
 	seen := make(map[string]bool, len(repoURLs))
@@ -480,9 +484,33 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBa
 	if err := platform.RefuseURLUserinfo(req.OrgURL); err != nil {
 		return false, fmt.Errorf("register approved org: %w", err)
 	}
+	// A request created before v0.29.54's limit can carry a URL the
+	// registration's unique index refuses (SQLSTATE 54000, forever, at every
+	// approval): refuse it here so the admin is told to reject the request
+	// (worklist follow-up 14). The bound is the index's own — the stored
+	// form — so the 1,343–2,684-byte requests that always approved still do.
+	if len(req.OrgURL) > maxIndexedURLBytes {
+		return false, fmt.Errorf("register approved org: %w", ErrURLTooLong)
+	}
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
 	if err := orgRegistrable(platformName, req.OrgURL, ghAPIBase); err != nil {
 		return false, err
+	}
+	// The arbiter below is the exact key, and rows written before v0.29.68
+	// keep their case (SR-1: a LOWER() unique needs a dedup migration
+	// first), so the "already registered in this group" question is asked
+	// here case-insensitively (batch 5 review round 1: a legacy mixed-case
+	// row plus an identical re-paste made a second, lowercase row where
+	// the exact-key conflict used to insert nothing).
+	var registered bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM aveloxis_ops.user_org_requests
+			WHERE group_id = $1 AND LOWER(org_url) = LOWER($2))`,
+		req.GroupID, req.OrgURL).Scan(&registered); err != nil {
+		return false, fmt.Errorf("register approved org: %w", err)
+	}
+	if registered {
+		return false, nil
 	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_org_requests
@@ -505,7 +533,15 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBa
 // URLs reached the database, which refused them with SQLSTATE 54000 — also the
 // code for a server-wide stop, so the API could not tell the caller's mistake
 // from an outage (round-27 review).
-const MaxAddURLBytes = (2704 - 20) / 2
+const MaxAddURLBytes = maxIndexedURLBytes / 2
+
+// maxIndexedURLBytes is the bytes a btree index row can hold for a URL after
+// the tuple header, a bigint key and the text length: the bound on a STORED
+// value. MaxAddURLBytes halves it for the entry checks because the stored
+// or indexed form may be lower() of the input; a value already in that form
+// (a stored org URL — in CanonicalOrgURL's form when pasted since v0.29.68,
+// in the registrant's case when pended before) is bounded by this.
+const maxIndexedURLBytes = 2704 - 20
 
 // ErrURLTooLong means a URL in an add is longer than MaxAddURLBytes.
 var ErrURLTooLong = fmt.Errorf("a URL is longer than %d bytes", MaxAddURLBytes)
@@ -537,9 +573,12 @@ var ErrAddRequestInProgress = errors.New("add request is already being processed
 // passes as the pool has connections deadlocked the pool (round-21 review).
 // Passes in two processes (web and api) can still overlap; each step is
 // idempotent and a stamp only fills an unstamped item.
-func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (int, error) {
-	processed, _, err := s.processAddRequest(ctx, requestID, false)
-	return processed, err
+// It returns the items processed and the items stamped processed-with-error
+// (-1: a permanent failure of the item's own values), so the caller's log
+// line reports both (worklist follow-up 9; v0.29.50 counted the failed
+// items on the auto-approve path only).
+func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID int64) (processed, failed int, err error) {
+	return s.processAddRequest(ctx, requestID, false)
 }
 
 // processAddRequest is the processing pass. With everyFailureFinal, used for

@@ -362,13 +362,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// immediately — monitor shows accurate "collecting" counts,
 	// orphaned jobs from a crashed prior process stop appearing as
 	// in-flight, and the next fillWorkerSlots tick sees reality.
-	collector.CheckAndUpdateTools(s.logger)
 
-	// Immediately reclaim all locks held by dead worker IDs. A fresh process
-	// cannot have any legitimate in-flight work, so all locks from other
-	// worker IDs are definitively stale — no need to wait for the 1-hour
-	// timeout. This fixes repos stuck in 'collecting' after a restart.
-	recovered, err := s.store.RecoverOtherWorkerLocks(ctx, s.workerID)
+	// Immediately reclaim the locks held by other worker IDs — a fresh
+	// process has no legitimate in-flight work of its own, so a previous
+	// serve's locks are stale without waiting for the 1-hour timeout. This
+	// fixes repos stuck in 'collecting' after a restart. The one exception
+	// is a live heal-collection-gaps run's parked rows (HealWorkerIDPrefix
+	// owner with a heartbeat inside StaleLockTimeout), left to it (item 54).
+	recovered, err := s.store.RecoverOtherWorkerLocks(ctx, s.workerID, s.cfg.StaleLockTimeout)
 	if errors.Is(err, context.Canceled) {
 		return // shutdown during startup
 	}
@@ -381,6 +382,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 	s.recoverStale(ctx)
 	s.releaseOurLocks(ctx)
+
+	// The monthly tool-update check runs AFTER the queue is corrected (batch
+	// 4a review round 12: it ran first, unbounded and ctx-less, so a
+	// module-proxy or PyPI stall held lock recovery and a `stop serve`
+	// orphaned the subprocess); every leg is bounded and cancels with ctx.
+	collector.CheckAndUpdateTools(ctx, s.logger)
 
 	// Recompute due_at = last_collected + recollectAfter for already-queued
 	// rows so a changed days_until_recollect takes effect immediately. Without
@@ -396,9 +403,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// due_at values, and operators reasonably concluded "config change
 	// didn't take effect." Realignment is a single UPDATE; it has no data
 	// dependency on staging being drained, so it goes first and is visible
-	// within seconds of restart. The fillWorkerSlots invariant (no new
-	// claims until staging is drained) is still enforced by the explicit
-	// call order below.
+	// within seconds of restart. The drain set is lock-parked before the
+	// background drain launches (below), so fillWorkerSlots never claims a
+	// repository mid-drain; everything else is claimable at once.
 	realigned, err := s.store.RealignDueDates(ctx, s.cfg.Collection.RecollectAfterDuration(),
 		s.cfg.Collection.ArchivedRecollectMultiplierValue())
 	if errors.Is(err, context.Canceled) {
@@ -504,6 +511,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// the same whether load is even or 96% on one key.
 	keyPoolTicker := time.NewTicker(keyPoolSummaryInterval)
 	defer keyPoolTicker.Stop()
+	s.logIdleGitHubTasks() // once, before the tickers (items 40/21)
 	// v0.27.18: construct the breadth worker ONCE, here (not lazily in
 	// runBreadth, which runs in a per-tick goroutine — lazy init would
 	// race). The circuit-breaker pause lives on this struct and now
@@ -883,6 +891,18 @@ func (s *Scheduler) singleFlight(active *atomic.Bool, name string, task func()) 
 	})
 }
 
+// githubKeysAvailable reports whether a GitHub API call can be made at all:
+// a key pool with at least one non-invalidated key. loadKeys builds a
+// non-nil, EMPTY GitHub pool when only GitLab keys are configured, so a nil
+// check is not this question (worklist items 40 and 21: breadth stamped
+// whole batches on the empty pool's error, three tickers logged an
+// unanswered WARN each tick, the distribution worker struck GitHub repos).
+// Every GitHub-only entry point gates on this
+// (TestGitHubOnlyTasksGateOnUsableKeys).
+func (s *Scheduler) githubKeysAvailable() bool {
+	return s.ghKeys.HasUsableKey() // nil-safe
+}
+
 // runSearchResolve runs the v0.19.2 search-resolve background task.
 // Takes a batch of contributors with email but no gh_user_id and
 // calls /search/users?q=email for each — on hit, backfills the
@@ -897,9 +917,10 @@ func (s *Scheduler) singleFlight(active *atomic.Bool, name string, task func()) 
 // At default 100 candidates per hour, the task uses ~1.7 search
 // requests per minute — comfortable headroom against the 30/min
 // per-token budget.
+
 func (s *Scheduler) runSearchResolve(ctx context.Context) {
-	if s.ghClient == nil {
-		return
+	if !s.githubKeysAvailable() {
+		return // GitLab-only keys, or every key invalidated
 	}
 	candidates, err := s.store.GetContributorsNeedingSearch(ctx, SearchResolveBatchSize)
 	if err != nil {
@@ -991,14 +1012,16 @@ const SearchResolveBatchSize = 100
 // future iteration could split the enrichment queue per platform if a
 // deployment needs symmetric coverage.
 func (s *Scheduler) runEnrichment(ctx context.Context) {
-	var client platform.Client
-	if s.ghClient != nil {
-		client = s.ghClient
-	} else if s.glClient != nil {
-		client = s.glClient
-	} else {
+	// GitHub-only: GetThinContributorLogins picks logins without a platform
+	// filter, so a GitLab client here would look GitHub logins up on GitLab
+	// and, on a same-named GitLab user, merge that person's profile onto the
+	// GitHub contributor (SR-6; review round 1 of items 40/21 — the
+	// fall-through was dead before and is not taken). Platform-aware
+	// enrichment for GitLab contributors is worklist item 62.
+	if !s.githubKeysAvailable() {
 		return
 	}
+	client := s.ghClient
 	resolver := db.NewContributorResolver(s.store)
 	collector.EnrichThinContributors(ctx, s.store, resolver, client, s.logger)
 }
@@ -2160,7 +2183,7 @@ func (s *Scheduler) processLeftoverStagingBackground(ctx context.Context, drainS
 			return
 		}
 		s.drainOneRepo(ctx, repoID)
-		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID)
+		err := s.store.ReleaseDrainLock(ctx, repoID, s.workerID, db.DrainReleaseDueNow)
 		if errors.Is(err, context.Canceled) {
 			return // shutdown: the shutdown arm releases the parked set (releaseOurDrainLocks)
 		}
@@ -2219,7 +2242,7 @@ func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 // 'queued' at shutdown (v0.29.64). A failure is logged; the next start's
 // RecoverOtherWorkerLocks still reclaims them.
 func (s *Scheduler) releaseOurDrainLocks(ctx context.Context) {
-	n, err := s.store.ReleaseDrainLocks(ctx, s.workerID)
+	n, err := s.store.ReleaseDrainLocks(ctx, s.workerID, db.DrainReleaseDueNow)
 	if err != nil {
 		s.logger.Warn("failed to release drain-parked locks on shutdown — the next start reclaims them", "error", err)
 		return
@@ -2268,7 +2291,7 @@ func (s *Scheduler) refreshOrgs(ctx context.Context) {
 }
 
 func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
-	if s.ghKeys == nil {
+	if !s.githubKeysAvailable() {
 		return 0
 	}
 	// Host gate — see refreshUserOrgs: the group's website names the org,
@@ -2664,8 +2687,12 @@ func (s *Scheduler) rebuildMatviews(ctx context.Context) {
 // admin approves (v0.27.20). A non-admin's auto-approved add (v0.27.84) and
 // an admin's add fire it only when registerApprovedOrg inserts a row:
 // re-adding the same org_url to a group that registers it inserts nothing.
-// The unique key on (group_id, org_url) is case-sensitive, so a re-add that
-// differs only in letter case does insert a row and does fire this. Rejected-group orgs are excluded by
+// Since v0.29.68 a re-add that differs only in letter case inserts nothing
+// either (a URL pasted since then is stored in CanonicalOrgURL's form, and
+// registerApprovedOrg asks the group case-insensitively before its INSERT —
+// which also covers a request pended earlier in another case), so it does
+// not fire this; an approval that inserts nothing fires nothing either.
+// Rejected-group orgs are excluded by
 // the probe itself — the scan's rejected gate deliberately never
 // stamps them, so counting them would re-fire the probe every tick.
 // A failed enumeration is also safe: MarkOrgRequestScanned stamps
@@ -2710,7 +2737,16 @@ func (s *Scheduler) maybeScanNewOrgs(ctx context.Context) {
 // unscoped to keep discovering new repos in long-tracked orgs.
 func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) {
 	orgs, err := s.store.GetOrgRequests(ctx)
-	if err != nil || len(orgs) == 0 {
+	if errors.Is(err, context.Canceled) {
+		return // shutdown, not a failure
+	}
+	if err != nil {
+		// Logged (batch-2 review round 3: this was the one silent arm left
+		// in the function); the pass runs again next tick.
+		s.logger.Error("org refresh skipped — listing the org registrations failed", "error", err)
+		return
+	}
+	if len(orgs) == 0 {
 		return
 	}
 	if onlyNeverScanned {
@@ -2750,7 +2786,14 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 	grouped := map[string]*orgScan{}
 	for _, org := range orgs {
 		groupID, err := s.store.GetGroupIDForOrgRequest(ctx, org.OrgRequestID)
+		if errors.Is(err, context.Canceled) {
+			return // shutdown, not a failure
+		}
 		if err != nil {
+			// Logged, and the org waits for the next tick (batch-2 review
+			// round 2: this was a silent continue beside the fixed gate).
+			s.logger.Error("org scan skipped — group lookup failed",
+				"org_request_id", org.OrgRequestID, "org", org.OrgName, "error", err)
 			continue
 		}
 
@@ -2759,7 +2802,18 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		// user_org_requests = approved), so this is the belt for the
 		// group-level abuse lever — RejectGroup must stop org-driven
 		// enqueue too, not just direct adds.
-		if status, serr := s.store.GetGroupStatus(ctx, groupID); serr == nil && status == "rejected" {
+		status, serr := s.store.GetGroupStatus(ctx, groupID)
+		if errors.Is(serr, context.Canceled) {
+			return // shutdown, not a failure
+		}
+		if serr != nil {
+			// A lookup error is not "not rejected" (SR-5; worklist follow-up
+			// 2): the org waits for the next tick.
+			s.logger.Error("org scan skipped — group status lookup failed",
+				"group_id", groupID, "org", org.OrgName, "error", serr)
+			continue
+		}
+		if status == "rejected" {
 			s.logger.Warn("org scan skipped — owning group is rejected",
 				"group_id", groupID, "org", org.OrgName)
 			continue
@@ -2808,7 +2862,7 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 		var repos []orgRepo
 		switch g.platform {
 		case "github":
-			if s.ghKeys == nil {
+			if !s.githubKeysAvailable() {
 				continue // rows stay unstamped — retried when keys exist
 			}
 			httpC := platform.NewHTTPClient(s.ghAPIBase, s.ghKeys, s.logger, platform.AuthGitHub)
@@ -2982,7 +3036,9 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 
 // runBreadth discovers cross-repo activity for contributors via the GitHub Events API.
 func (s *Scheduler) runBreadth(ctx context.Context) {
-	if s.ghKeys == nil {
+	if !s.githubKeysAvailable() {
+		// Item 40: an empty pool's "no API keys" error is a per-contributor
+		// fetch error to the coordinator, which stamps it; never run on one.
 		return
 	}
 	if s.breadthWorker == nil {

@@ -45,7 +45,7 @@ func requirementsFileScope(base, path string) (string, bool) {
 		return "", false
 	}
 	if lower == "requirements.txt" {
-		return "", false // the walk's exact-name case owns this
+		return "", false // the walks' requirements.txt case owns this, in any letter case (canonicalManifestName)
 	}
 	stem := strings.TrimSuffix(lower, ".txt")
 	inRequirementsDir := filepath.Base(filepath.Dir(path)) == "requirements"
@@ -97,9 +97,15 @@ func parseRequirementsTxtVersionsScoped(path, scope string) []libyearDep {
 // runtime set; the caller appends both.
 func parsePyprojectDevBuildVersions(content string) []libyearDep {
 	var deps []libyearDep
+	// Poetry's group tables (`[tool.poetry.group.<g>.dependencies]`,
+	// `[tool.poetry.dev-dependencies]`) go through the shared table reader
+	// (pythonTOMLDeps; worklist items 42 and 43 — the line reader below
+	// lost a multi-line table's version); the PEP 508 arrays stay with the
+	// line reader, since an array is not a table.
+	deps = append(deps, pythonTOMLDeps(content, poetryGroupSections(content))...)
 	// arrayScope: non-empty while inside a section whose values are
 	// PEP 508 requirement arrays. kvScope: non-empty while inside a
-	// poetry-style key = "version" section.
+	// poetry-style key = "version" section — read above, skipped here.
 	arrayScope := ""
 	kvScope := ""
 	inArray := false
@@ -107,7 +113,8 @@ func parsePyprojectDevBuildVersions(content string) []libyearDep {
 	// item lines inside it (they carry no key of their own).
 	arrayItemScope := ""
 	// tableDepth: >0 while a multi-line inline table is open. Its
-	// continuation lines are the TABLE's keys — see parsePoetryVersions.
+	// continuation lines are the TABLE's keys, read by pythonTOMLDeps over
+	// scanTOMLDepTables; this branch only skips them.
 	tableDepth := 0
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -202,43 +209,41 @@ func parsePyprojectDevBuildVersions(content string) []libyearDep {
 				inArray = false
 			}
 		case kvScope != "" && strings.Contains(trimmed, "=") && !strings.HasPrefix(trimmed, "#"):
-			// A trailing comment is not part of the value: without this the
-			// version kept the closing quote (`25.0"`) and reached the purl
-			// (Copilot round on PR #210). Same stripper as the TOML reader.
-			code := strings.TrimSpace(stripHashComment(trimmed))
-			// An unclosed inline table opens here, before any of the
-			// continues below: a declaration this reader skips still has to
-			// close, or the rest of the section is read as its keys.
-			if d := bracketDelta(code); d > 0 {
+			// Read by pythonTOMLDeps above; only the inline-table depth is
+			// tracked here so a table's continuation lines are not mistaken
+			// for array items or headers.
+			if d := bracketDelta(strings.TrimSpace(stripHashComment(trimmed))); d > 0 {
 				tableDepth = d
 			}
-			parts := strings.SplitN(code, "=", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			name, sub := tomlDepKeyName(parts[0])
-			raw := strings.TrimSpace(parts[1])
-			if name == "" || name == "python" || !tomlDepKeyVersionable(sub) {
-				continue
-			}
-			version := ""
-			if strings.HasPrefix(raw, "{") {
-				// Poetry's group tables build deps the same way its runtime
-				// table does, so they take the same rule through the same
-				// helpers (SR-17): a path/git/url source is not the PyPI
-				// package of that name, and the version lives under the
-				// version key, not in the table body.
-				if pythonTableIsNonRegistry(raw) {
-					continue
-				}
-				version = cleanVersion(pythonTableVersion(raw))
-			} else {
-				version = cleanVersion(strings.Trim(raw, "\"'^~>="))
-			}
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: kvScope, Manager: "pypi"})
 		}
 	}
 	return deps
+}
+
+// poetryGroupSections maps every Poetry group table header in content to
+// the scope its dependencies take: a group named like a test group is test,
+// every other group and the legacy dev-dependencies table is dev.
+func poetryGroupSections(content string) map[string]string {
+	out := map[string]string{}
+	for _, raw := range strings.Split(content, "\n") {
+		if !tomlSectionHeader(raw) {
+			continue
+		}
+		header := strings.TrimSpace(stripHashComment(raw))
+		section := strings.Trim(header, "[]")
+		switch {
+		case strings.HasPrefix(section, "tool.poetry.group.") && strings.HasSuffix(section, ".dependencies"):
+			group := strings.TrimSuffix(strings.TrimPrefix(section, "tool.poetry.group."), ".dependencies")
+			if strings.Contains(group, "test") {
+				out[header] = model.ScopeTest
+			} else {
+				out[header] = model.ScopeDev
+			}
+		case section == "tool.poetry.dev-dependencies":
+			out[header] = model.ScopeDev
+		}
+	}
+	return out
 }
 
 // parsePipfileDevPackages extracts the [dev-packages] section the

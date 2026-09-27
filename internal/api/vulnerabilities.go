@@ -126,7 +126,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	}
 	rows, err := s.store.GetRepoVulnerabilities(r.Context(), repoID)
 	if err != nil {
-		http.Error(w, "vulnerability lookup failed", http.StatusInternalServerError)
+		s.serverError(w, "handleRepoVulnerabilities", err)
 		return
 	}
 	// v0.27.133 C2: attribution index, built ONCE per request and only
@@ -393,7 +393,7 @@ func (s *Server) handleRepoScorecard(w http.ResponseWriter, r *http.Request) {
 	}
 	checks, overall, asOf, mode, err := s.store.GetRepoScorecard(r.Context(), repoID)
 	if err != nil {
-		http.Error(w, "scorecard lookup failed", http.StatusInternalServerError)
+		s.serverError(w, "handleRepoScorecard", err)
 		return
 	}
 	resp := map[string]any{"repo_id": repoID, "checks": checks, "scanned": len(checks) > 0}

@@ -271,7 +271,9 @@ func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 			return nil
 		})
 	logs := &lockedBuffer{}
-	// A key pool (empty) so scanOrgRepos gets as far as its group gate.
+	// An empty key pool: the rejected-group gate runs before the key gate
+	// (v0.29.68), so the scan is refused for the rejection and logged as such;
+	// a nil pool would reach the same gate.
 	s := New(store, config.WebConfig{}, platform.NewKeyPool(nil, discard), "", slog.New(slog.NewTextHandler(logs, nil))).WithMailer(m)
 	s.sessions["admin"] = &Session{UserID: uid, LoginName: login, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
 	approve := func() {

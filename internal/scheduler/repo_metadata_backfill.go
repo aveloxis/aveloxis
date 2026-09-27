@@ -31,10 +31,12 @@ import (
 //
 // Per-repo failures (network, 404, rate limit) are logged and
 // skipped; the repo stays in the candidate set and the next restart
-// retries it. Permanent 404s (renamed/deleted repos) cycle until
+// retries it. A GitHub candidate met with no usable GitHub key is not
+// a failure: it is counted apart (skipped_no_github_key) and left for a
+// restart with a key. Permanent 404s (renamed/deleted repos) cycle until
 // prelim's rename-detect or the operator removes the repo.
 //
-// v0.23.0 — see CLAUDE.md "Capture description and primary languages"
+// v0.23.0 — see summary/changelog/v0.23.md, "Capture description and primary languages"
 // rationale.
 const (
 	metadataBackfillPageSize     = 500
@@ -45,6 +47,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 	s.logger.Info("repo metadata backfill starting (v0.23.0)")
 	totalProcessed := 0
 	totalFailed := 0
+	skippedNoKey := 0 // GitHub candidates met with no usable GitHub key
 	// Keyset cursor: pages advance past every repo seen, including the ones
 	// whose fetch failed (nothing is stamped on failure, so a plain LIMIT
 	// re-served them on every later page).
@@ -53,7 +56,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			s.logger.Info("repo metadata backfill stopping (ctx cancelled)",
-				"processed", totalProcessed, "failed", totalFailed)
+				"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey)
 			return
 		}
 
@@ -68,7 +71,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 		}
 		if len(targets) == 0 {
 			s.logger.Info("repo metadata backfill complete",
-				"processed", totalProcessed, "failed", totalFailed)
+				"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey)
 			return
 		}
 
@@ -81,6 +84,16 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			var client platform.Client
 			switch model.Platform(t.PlatformID) {
 			case model.PlatformGitHub:
+				if !s.githubKeysAvailable() {
+					// GitLab-only keys (items 40/21, review round 2): the
+					// fetch would fail on the pool's "no API keys", one
+					// Info line and the pacing sleep per repository, every
+					// restart. GitLab candidates still run. Counted apart
+					// from failures (review round 3): "failed=N" with no
+					// line explaining it sent the operator looking.
+					skippedNoKey++
+					continue
+				}
 				client = s.ghClient
 			case model.PlatformGitLab:
 				client = s.glClient
@@ -136,7 +149,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 
 		// Log progress every page so operators can monitor.
 		s.logger.Info("repo metadata backfill progress",
-			"processed", totalProcessed, "failed", totalFailed, "after_repo_id", afterRepoID)
+			"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey, "after_repo_id", afterRepoID)
 	}
 }
 

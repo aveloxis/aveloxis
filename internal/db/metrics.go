@@ -111,7 +111,8 @@ func (s *PostgresStore) GetReposByGroup(ctx context.Context, groupID int64) ([]R
 	return result, rows.Err()
 }
 
-// GetRepoByOwnerName finds a repo by owner and name (case-insensitive).
+// GetRepoByOwnerName finds a repo by owner and name (case-insensitive). No
+// such repository is ErrRepoNotFound; every other failure is the store's.
 func (s *PostgresStore) GetRepoByOwnerName(ctx context.Context, owner, name string) (*RepoResult, error) {
 	var r RepoResult
 	err := s.pool.QueryRow(ctx, `
@@ -119,13 +120,22 @@ func (s *PostgresStore) GetRepoByOwnerName(ctx context.Context, owner, name stri
 		FROM aveloxis_data.repos
 		WHERE LOWER(repo_owner) = LOWER($1) AND LOWER(repo_name) = LOWER($2)
 		LIMIT 1`, owner, name).Scan(&r.ID, &r.GroupID, &r.GitURL, &r.Name, &r.Owner, &r.Platform, &r.Archived)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("repo %s/%s: %w", owner, name, ErrRepoNotFound)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &r, nil
 }
 
-// GetRepoGroupByName finds a repo group by name (case-insensitive).
+// ErrRepoGroupNotFound is GetRepoGroupByName's answer for a name no repo
+// group has: the typed not-found (SR-5), so a handler can tell it from a
+// store failure.
+var ErrRepoGroupNotFound = errors.New("repo group not found")
+
+// GetRepoGroupByName finds a repo group by name (case-insensitive). A name
+// no group has is ErrRepoGroupNotFound; every other failure is the store's.
 func (s *PostgresStore) GetRepoGroupByName(ctx context.Context, name string) (*RepoGroupResult, error) {
 	var r RepoGroupResult
 	err := s.pool.QueryRow(ctx, `
@@ -133,6 +143,9 @@ func (s *PostgresStore) GetRepoGroupByName(ctx context.Context, name string) (*R
 		FROM aveloxis_data.repo_groups
 		WHERE LOWER(rg_name) = LOWER($1)
 		LIMIT 1`, name).Scan(&r.ID, &r.Name, &r.Description, &r.Type)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("repo group %q: %w", name, ErrRepoGroupNotFound)
+	}
 	if err != nil {
 		return nil, err
 	}

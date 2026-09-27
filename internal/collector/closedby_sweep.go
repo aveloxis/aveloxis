@@ -76,6 +76,12 @@ func (s *ClosedBySweep) Run(ctx context.Context, limit int64, dryRun bool) (int6
 		}
 		closers, err := s.client.FetchIssueClosers(ctx, chunk[0].Owner, chunk[0].Repo, numbers)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				// A stop, not a failure (worklist §4): through v0.29.67 a
+				// Ctrl-C mid-sweep WARNed once per remaining chunk, then
+				// reported the sweep complete and exited 0.
+				return filled, err
+			}
 			// One bad repo (deleted, renamed, access lost) must not sink
 			// the sweep — log and continue with the next chunk.
 			s.logger.Warn("closed_by sweep batch failed",

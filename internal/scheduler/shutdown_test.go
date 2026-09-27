@@ -150,7 +150,7 @@ func TestShutdownReleasesDrainParkedLocks(t *testing.T) {
 	}
 	helper := src[strings.Index(src, "func (s *Scheduler) releaseOurDrainLocks("):]
 	helper = helper[:strings.Index(helper[1:], "\nfunc ")+1]
-	if !strings.Contains(helper, "s.store.ReleaseDrainLocks(ctx, s.workerID)") {
+	if !strings.Contains(helper, "s.store.ReleaseDrainLocks(ctx, s.workerID, db.DrainReleaseDueNow)") {
 		t.Error("releaseOurDrainLocks must go through store.ReleaseDrainLocks (the one drain-owner spelling, SR-17)")
 	}
 	if !strings.Contains(helper, "s.logger.Warn(") {

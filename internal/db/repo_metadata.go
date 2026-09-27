@@ -12,11 +12,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// UpdateRepoMetadata writes description + primary_language + languages
-// to the repos table for a single repo. Distinct from UpsertRepo so the
-// staged collector's Phase 0 and the startup backfill task don't
-// accidentally overwrite owner/name/archived (which UpsertRepo handles
-// via the prelim path).
+// UpdateRepoMetadata writes description, primary_language, languages,
+// the archived flag and fork lineage to the repos table for a single
+// repo: the COLLECTION writer of those columns (Phase 0 and the startup
+// backfill). It is distinct from UpsertRepo, the identity writer, whose
+// conflict arm leaves description, primary_language and the archived flag
+// alone since v0.29.68 (worklist follow-up 8) and only fills an empty
+// forked_from (v0.27.78); owner and name are UpsertRepo's and the rename
+// path's.
 //
 // languages is serialized to JSONB. nil/empty map writes '{}' so the
 // row column never holds NULL — analytics queries can rely on

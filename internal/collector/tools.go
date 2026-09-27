@@ -10,6 +10,7 @@ package collector
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // ToolUpdateInterval is how often we check for updated tool versions.
@@ -30,12 +33,12 @@ const ToolUpdateInterval = 30 * 24 * time.Hour
 
 // ExternalTool describes an optional third-party tool used by Aveloxis.
 type ExternalTool struct {
-	Name        string       // display name
-	CheckBinary string       // binary name to look up on PATH (exec.LookPath)
-	InstallCmd  string       // go install or other install command (also used for manual install display)
-	InstallFunc func() error // custom install function; takes priority over InstallCmd when set
-	Description string       // what the tool does
-	Purpose     string       // which collection phase uses it
+	Name        string                          // display name
+	CheckBinary string                          // binary name to look up on PATH (exec.LookPath)
+	InstallCmd  string                          // go install or other install command (also used for manual install display)
+	InstallFunc func(ctx context.Context) error // custom install function; takes priority over InstallCmd when set; every subprocess and request it runs is bound to ctx
+	Description string                          // what the tool does
+	Purpose     string                          // which collection phase uses it
 }
 
 // ExternalTools returns the list of all optional tools that Aveloxis can use.
@@ -78,9 +81,38 @@ func scorecardDownloadURL(version, goos, goarch string) string {
 	return fmt.Sprintf("https://github.com/ossf/scorecard/releases/download/%s/%s", version, filename)
 }
 
+// toolFetchClient bounds each of the tool-update check's two GitHub requests
+// (the release lookup and the binary download — the bound is PER request,
+// so the serial pair is at most twice it). Through v0.29.67 both went
+// through http.DefaultClient, which has no timeout, so a stalled connection
+// at serve startup hung the check forever (batch 4a review round 11, an
+// aside). The bound is the download's: scorecard_5.4.0_linux_amd64.tar.gz
+// was 25,318,282 bytes on 2026-09-26 (Content-Length after the release
+// redirect), and 5 minutes covers that on a 1 MB/s link with about 12×
+// headroom; the lookup shares it rather than carrying a second constant.
+var toolFetchClient = &http.Client{Timeout: 5 * time.Minute}
+
+// toolInstallBound bounds one tool's whole install or upgrade — its
+// subprocesses (`go install`, pipx, pip, brew) and its requests together.
+// Derived from toolFetchClient: the scorecard path is two serial bounded
+// requests, so twice that bound; a module-proxy or PyPI stall inside a
+// subprocess (batch 4a review round 12: those legs were unbounded and
+// ctx-less, and a `stop serve` during the check orphaned the child) is
+// held to the same budget.
+var toolInstallBound = 2 * toolFetchClient.Timeout
+
+// scorecardLatestReleaseURL is the release lookup's URL; a variable so the
+// bounded-fetch test can point it at a fixture.
+var scorecardLatestReleaseURL = "https://api.github.com/repos/ossf/scorecard/releases/latest"
+
 // scorecardLatestVersion fetches the latest release tag from the GitHub API.
-func scorecardLatestVersion() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/ossf/scorecard/releases/latest")
+func scorecardLatestVersion(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scorecardLatestReleaseURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("building the scorecard release request: %w", err)
+	}
+	req.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion) // every GitHub REST request pins the version (worklist item 15)
+	resp, err := toolFetchClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching latest scorecard release: %w", err)
 	}
@@ -102,14 +134,18 @@ func scorecardLatestVersion() (string, error) {
 
 // installScorecardBinary downloads the pre-built scorecard tarball from GitHub
 // releases, extracts the binary, and places it in $GOPATH/bin (or ~/go/bin).
-func installScorecardBinary() error {
-	version, err := scorecardLatestVersion()
+func installScorecardBinary(ctx context.Context) error {
+	version, err := scorecardLatestVersion(ctx)
 	if err != nil {
 		return err
 	}
 
 	url := scorecardDownloadURL(version, runtime.GOOS, runtime.GOARCH)
-	resp, err := http.Get(url)
+	dl, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("building the scorecard download request: %w", err)
+	}
+	resp, err := toolFetchClient.Do(dl)
 	if err != nil {
 		return fmt.Errorf("downloading scorecard: %w", err)
 	}
@@ -188,7 +224,7 @@ func IsToolUpdateCheckDue(lastCheck time.Time) bool {
 // Called on scheduler startup when the last check was > 30 days ago.
 //
 // The timestamp file is stored at ~/.aveloxis-tool-check to track when we last ran.
-func CheckAndUpdateTools(logger *slog.Logger) {
+func CheckAndUpdateTools(ctx context.Context, logger *slog.Logger) {
 	lastCheck := readToolCheckTimestamp()
 	if !IsToolUpdateCheckDue(lastCheck) {
 		return
@@ -198,13 +234,27 @@ func CheckAndUpdateTools(logger *slog.Logger) {
 	updated := 0
 
 	for _, tool := range ExternalTools() {
+		if ctx.Err() != nil {
+			logger.Info("tool update check interrupted — the next start resumes it", "updated", updated)
+			return // the timestamp is not written: the check is still due
+		}
 		// Only update tools that are already installed.
 		if _, err := exec.LookPath(tool.CheckBinary); err != nil {
 			continue
 		}
 
 		logger.Info("updating tool", "name", tool.Name)
-		if err := runToolInstall(tool); err != nil {
+		// Each tool's install is bounded (toolInstallBound) and cancelled
+		// with the caller's ctx, so a stop during the check ends the
+		// subprocess instead of orphaning it (batch 4a review round 12).
+		tctx, cancel := context.WithTimeout(ctx, toolInstallBound)
+		err := runToolInstall(tctx, tool)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				logger.Info("tool update check interrupted — the next start resumes it", "name", tool.Name, "updated", updated)
+				return
+			}
 			logger.Warn("failed to update tool", "name", tool.Name, "error", err)
 			continue
 		}
@@ -218,16 +268,16 @@ func CheckAndUpdateTools(logger *slog.Logger) {
 }
 
 // RunToolInstall executes the install for a tool, preferring InstallFunc when set.
-func RunToolInstall(tool ExternalTool) error {
-	return runToolInstall(tool)
+func RunToolInstall(ctx context.Context, tool ExternalTool) error {
+	return runToolInstall(ctx, tool)
 }
 
-func runToolInstall(tool ExternalTool) error {
+func runToolInstall(ctx context.Context, tool ExternalTool) error {
 	if tool.InstallFunc != nil {
-		return tool.InstallFunc()
+		return tool.InstallFunc(ctx)
 	}
 	parts := strings.Fields(tool.InstallCmd)
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -266,13 +316,13 @@ func writeToolCheckTimestamp(logger *slog.Logger) {
 // CheckAndUpdateTools, and the upgrade-tools CLI) share one
 // install/upgrade/inject implementation. v0.27.6 — see
 // ensureScancodeCurrent for the divergence this unification fixes.
-func installScancode() error {
+func installScancode(ctx context.Context) error {
 	// Scancode depends on libmagic (native C library for file type detection).
 	// Install it if missing.
-	installLibmagicIfNeeded()
+	installLibmagicIfNeeded(ctx)
 
 	_, lookErr := exec.LookPath("scancode")
-	return ensureScancodeCurrent(lookErr == nil)
+	return ensureScancodeCurrent(ctx, lookErr == nil)
 }
 
 // EnsureScancodeCurrent is the ONE scancode install/upgrade/inject
@@ -297,11 +347,11 @@ func installScancode() error {
 // re-inject); the monthly path had silently diverged. Both now call
 // this helper, and a negative tripwire pins that the installed branch
 // never regrows a bare install.
-func EnsureScancodeCurrent(alreadyInstalled bool) error {
-	return ensureScancodeCurrent(alreadyInstalled)
+func EnsureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
+	return ensureScancodeCurrent(ctx, alreadyInstalled)
 }
 
-func ensureScancodeCurrent(alreadyInstalled bool) error {
+func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 	pipxPath, pipxErr := exec.LookPath("pipx")
 
 	if alreadyInstalled {
@@ -310,17 +360,17 @@ func ensureScancodeCurrent(alreadyInstalled bool) error {
 				"Install pipx, or upgrade manually: pipx upgrade %s && pipx inject %s typecode-libmagic",
 				scancodePipxPackage, scancodePipxPackage)
 		}
-		return pipxUpgradeScancode(pipxPath)
+		return pipxUpgradeScancode(ctx, pipxPath)
 	}
 
 	if pipxErr == nil {
-		if err := pipxFreshInstallScancode(pipxPath); err == nil {
+		if err := pipxFreshInstallScancode(ctx, pipxPath); err == nil {
 			return nil
 		}
 		// pipx failed on a FRESH install — fall through to pip.
 		fmt.Println("pipx install failed, trying pip...")
 	}
-	return pipInstallScancodeFresh()
+	return pipInstallScancodeFresh(ctx)
 }
 
 // pipxUpgradeScancode is the installed-branch implementation:
@@ -328,9 +378,9 @@ func ensureScancodeCurrent(alreadyInstalled bool) error {
 // package) followed by an UNCONDITIONAL typecode-libmagic re-inject
 // — pipx upgrade may have rebuilt the venv, losing a prior injection.
 // The re-inject failure is non-fatal (degraded-but-functional).
-func pipxUpgradeScancode(pipxPath string) error {
+func pipxUpgradeScancode(ctx context.Context, pipxPath string) error {
 	fmt.Printf("Upgrading %s via pipx...\n", scancodePipxPackage)
-	cmd := exec.Command(pipxPath, "upgrade", scancodePipxPackage)
+	cmd := exec.CommandContext(ctx, pipxPath, "upgrade", scancodePipxPackage)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -338,7 +388,7 @@ func pipxUpgradeScancode(pipxPath string) error {
 			"uninstall it and run `aveloxis install-tools` to move it into a pipx venv)",
 			scancodePipxPackage, err)
 	}
-	if err := injectTypecodeLibmagic(pipxPath, scancodePipxPackage); err != nil {
+	if err := injectTypecodeLibmagic(ctx, pipxPath, scancodePipxPackage); err != nil {
 		fmt.Printf("warning: typecode-libmagic re-injection failed: %v\n", err)
 		fmt.Println("  scancode upgrade succeeded; the libmagic UserWarning may continue to print.")
 		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
@@ -355,9 +405,9 @@ func pipxUpgradeScancode(pipxPath string) error {
 // has full license/copyright/package detection — it only omits advanced archive
 // extraction and Unicode normalization features we don't need (we scan
 // already-extracted code checkouts).
-func pipxFreshInstallScancode(pipxPath string) error {
+func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 	fmt.Printf("Installing %s via pipx...\n", scancodePipxPackage)
-	cmd := exec.Command(pipxPath, "install", scancodePipxPackage)
+	cmd := exec.CommandContext(ctx, pipxPath, "install", scancodePipxPackage)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -370,7 +420,7 @@ func pipxFreshInstallScancode(pipxPath string) error {
 	// configuration, network blocked, etc.) the install still
 	// succeeds — the warning continues to print but scancode
 	// still works.
-	if err := injectTypecodeLibmagic(pipxPath, scancodePipxPackage); err != nil {
+	if err := injectTypecodeLibmagic(ctx, pipxPath, scancodePipxPackage); err != nil {
 		fmt.Printf("warning: typecode-libmagic injection failed: %v\n", err)
 		fmt.Println("  scancode still works; the libmagic UserWarning will continue to print.")
 		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
@@ -383,21 +433,21 @@ func pipxFreshInstallScancode(pipxPath string) error {
 // branch (v0.27.6): running it against a host that already has
 // scancode creates a second, uninjected copy that can shadow the pipx
 // venv's binary — the exact regression vector the monthly updater had.
-func pipInstallScancodeFresh() error {
+func pipInstallScancodeFresh(ctx context.Context) error {
 	for _, pip := range []string{"pip3", "pip"} {
 		pipPath, err := exec.LookPath(pip)
 		if err != nil {
 			continue
 		}
 		fmt.Printf("Installing %s via %s --user...\n", scancodePipxPackage, pip)
-		cmd := exec.Command(pipPath, "install", "--user", scancodePipxPackage)
+		cmd := exec.CommandContext(ctx, pipPath, "install", "--user", scancodePipxPackage)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
 			// pip --user installs to a platform-specific bin dir that
 			// may not be on PATH. Detect it and add to shell profile.
 			if _, lookErr := exec.LookPath("scancode"); lookErr != nil {
-				ensurePythonUserBinOnPath()
+				ensurePythonUserBinOnPath(ctx)
 			}
 			return nil
 		}
@@ -432,9 +482,9 @@ func pipInstallScancodeFresh() error {
 //
 // Exported as InjectTypecodeLibmagic for the v0.23.6 `aveloxis
 // upgrade-tools` command in cmd/aveloxis/upgrade_tools_cmd.go.
-func injectTypecodeLibmagic(pipxPath, scancodePkg string) error {
+func injectTypecodeLibmagic(ctx context.Context, pipxPath, scancodePkg string) error {
 	fmt.Printf("Injecting typecode-libmagic into %s venv...\n", scancodePkg)
-	cmd := exec.Command(pipxPath, "inject", scancodePkg, "typecode-libmagic")
+	cmd := exec.CommandContext(ctx, pipxPath, "inject", scancodePkg, "typecode-libmagic")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -442,8 +492,8 @@ func injectTypecodeLibmagic(pipxPath, scancodePkg string) error {
 
 // InjectTypecodeLibmagic is the public alias for injectTypecodeLibmagic.
 // Used by cmd/aveloxis/upgrade_tools_cmd.go's RunE handler.
-func InjectTypecodeLibmagic(pipxPath, scancodePkg string) error {
-	return injectTypecodeLibmagic(pipxPath, scancodePkg)
+func InjectTypecodeLibmagic(ctx context.Context, pipxPath, scancodePkg string) error {
+	return injectTypecodeLibmagic(ctx, pipxPath, scancodePkg)
 }
 
 // installLibmagicIfNeeded installs the libmagic native library if it's not
@@ -451,17 +501,17 @@ func InjectTypecodeLibmagic(pipxPath, scancodePkg string) error {
 //   - macOS: brew install libmagic
 //   - Debian/Ubuntu: apt-get install libmagic1
 //   - RHEL/CentOS: yum install file-libs
-func installLibmagicIfNeeded() {
+func installLibmagicIfNeeded(ctx context.Context) {
 	// Quick check: if libmagic is loadable, we're good.
 	// The file command uses libmagic, so checking for it is a reasonable proxy.
 	// On macOS, Homebrew installs to /opt/homebrew/lib or /usr/local/lib.
 	if runtime.GOOS == "darwin" {
 		if _, err := exec.LookPath("brew"); err == nil {
 			// Check if already installed via brew.
-			check := exec.Command("brew", "list", "libmagic")
+			check := exec.CommandContext(ctx, "brew", "list", "libmagic")
 			if check.Run() != nil {
 				fmt.Println("Installing libmagic via Homebrew (required by scancode)...")
-				cmd := exec.Command("brew", "install", "libmagic")
+				cmd := exec.CommandContext(ctx, "brew", "install", "libmagic")
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
 				if err := cmd.Run(); err != nil {
@@ -481,7 +531,7 @@ func installLibmagicIfNeeded() {
 
 // ensurePythonUserBinOnPath detects the Python user bin directory and appends
 // a PATH export to the user's shell profile if it's not already there.
-func ensurePythonUserBinOnPath() {
+func ensurePythonUserBinOnPath(ctx context.Context) {
 	// Determine the Python user bin directory.
 	var binDir string
 	for _, py := range []string{"python3", "python"} {
@@ -489,7 +539,7 @@ func ensurePythonUserBinOnPath() {
 		if err != nil {
 			continue
 		}
-		out, err := exec.Command(pyPath, "-m", "site", "--user-base").Output()
+		out, err := exec.CommandContext(ctx, pyPath, "-m", "site", "--user-base").Output()
 		if err == nil {
 			binDir = filepath.Join(strings.TrimSpace(string(out)), "bin")
 			break

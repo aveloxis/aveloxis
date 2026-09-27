@@ -285,7 +285,7 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `collection.shutdown_grace_seconds` | integer | `10` | v0.20.0: ctx-cancel grace window for in-flight workers before `Scheduler.Run` closes the pgx pool. Pre-v0.20.0 the wait was unbounded — a 26-minute `commits` UPDATE blocked shutdown for the full duration. Setting this too low means worker transactions abort mid-flight (Postgres rolls them back safely but logs are noisy); too high means slow shutdown. |
+| `collection.shutdown_grace_seconds` | integer | `10` | v0.20.0: ctx-cancel grace window for in-flight workers before `Scheduler.Run` closes the pgx pool. Pre-v0.20.0 the wait was unbounded — a 26-minute `commits` UPDATE blocked shutdown for the full duration. Statements are cancelled at once whatever the value; too low shrinks the completion-stamp retry (half the grace, at most 5 s) and closes the pool under workers still unwinding; too high means a slow shutdown. |
 
 #### Scancode worker (v0.21.0)
 

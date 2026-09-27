@@ -455,8 +455,10 @@ func splitOAuthName(name string) (first, last string) {
 }
 
 // IsOrgRegisteredAnywhere reports whether an org URL is already
-// registered for scanning in ANY group (case-insensitive — org URLs
-// are stored case-preserved and GitHub logins are case-insensitive).
+// registered for scanning in ANY group (case-insensitive — org URL rows
+// written before v0.29.68, and any request pended before it, keep the
+// registrant's case; a URL pasted since is stored in CanonicalOrgURL's
+// form; and GitHub logins are case-insensitive).
 // This is the v0.27.84 auto-approve criterion: a duplicate
 // registration of an already-registered org adds ZERO new collection
 // (the v0.27.83 scan dedup enumerates each distinct org once, and the
@@ -474,6 +476,34 @@ func (s *PostgresStore) IsOrgRegisteredAnywhere(ctx context.Context, orgURL stri
 		JOIN aveloxis_ops.user_groups g ON g.group_id = o.group_id
 		WHERE LOWER(org_url) = LOWER($1) AND g.status IS DISTINCT FROM 'rejected')`, orgURL).Scan(&exists)
 	return exists, err
+}
+
+// CanonicalOrgURL is the ONE stored spelling of an org URL: trimmed, no
+// trailing "/", https:// added to schemeless input, and lowercased. The
+// lowercase is worklist follow-up 3: GitHub and GitLab paths are
+// case-insensitive, but the registration's unique key (group_id, org_url) is
+// not, so `github.com/CHAOSS` beside `github.com/chaoss` made a second
+// registration (and a second audit row) while IsOrgRegisteredAnywhere's
+// LOWER() said it was already there. Rows written before v0.29.68 keep
+// their case; the LOWER() checks still find them. The https:// step is
+// v0.27.94 (Copilot finding on PR #179): platform.ParseOrgURL tolerates a
+// schemeless URL, so such a registration WORKED while the raw stored
+// org_url defeated every exact/prefix matcher (ReconcileOrgRepoLinks,
+// GetUserGroupIDsForOrgURL, the dedup). AddOrgToGroup is the choke point
+// every caller routes through, so this runs there.
+func CanonicalOrgURL(orgURL string) string {
+	return strings.ToLower(orgURLTrimmedSchemed(orgURL))
+}
+
+// orgURLTrimmedSchemed is CanonicalOrgURL before the lowercase: the form the
+// entry limit measures (MaxAddURLBytes budgets for lower() lengthening some
+// characters, so the check runs on the input, not on the grown form).
+func orgURLTrimmedSchemed(orgURL string) string {
+	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
+	if orgURL != "" && !strings.Contains(orgURL, "://") {
+		orgURL = "https://" + orgURL
+	}
+	return orgURL
 }
 
 // AddOrgToGroup registers an org for tracking under the v0.27.20
@@ -508,23 +538,10 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 		return out, ErrGroupRejected
 	}
 
-	orgURL = strings.TrimSuffix(strings.TrimSpace(orgURL), "/")
-	// v0.27.94 (Copilot finding on PR #179): canonicalize schemeless input
-	// ("github.com/foo") to https:// form BEFORE anything reads or stores
-	// it. platform.ParseOrgURL tolerates schemeless URLs, so such a
-	// registration WORKS (org_name/platform parse, enumeration scans it)
-	// while the raw stored org_url silently defeats every exact/prefix
-	// matcher: ReconcileOrgRepoLinks, GetUserGroupIDsForOrgURL, and the
-	// IsOrgRegisteredAnywhere dedup below (schemed + schemeless rows of
-	// the same org would count as different orgs). This store method is
-	// the choke point all four callers route through; production had zero
-	// schemeless rows on 2026-08-18, so no migration is needed.
-	if orgURL != "" && !strings.Contains(orgURL, "://") {
-		orgURL = "https://" + orgURL
-	}
-	if len(orgURL) > MaxAddURLBytes {
+	if len(orgURLTrimmedSchemed(orgURL)) > MaxAddURLBytes {
 		return out, ErrURLTooLong
 	}
+	orgURL = CanonicalOrgURL(orgURL)
 	// An org URL is stored, shown and enumerated; credentials in it are
 	// refused like a repo URL's (v0.29.57, review 5261384568).
 	if err := platform.RefuseURLUserinfo(orgURL); err != nil {
@@ -538,7 +555,11 @@ func (s *PostgresStore) AddOrgToGroup(ctx context.Context, userID int, groupID i
 			return out, err
 		}
 	}
-	isAdmin, _ := s.IsUserAdmin(ctx, userID)
+	// A lookup ERROR is not "not an admin" (SR-5; worklist follow-up 6).
+	isAdmin, err := s.IsUserAdmin(ctx, userID)
+	if err != nil {
+		return out, fmt.Errorf("look up admin flag: %w", err)
+	}
 	if !isAdmin {
 		registered, regErr := s.IsOrgRegisteredAnywhere(ctx, orgURL)
 		if regErr != nil {
@@ -637,7 +658,8 @@ func (s *PostgresStore) GetOrgRequests(ctx context.Context) ([]GroupOrg, error) 
 // already-registered org (both AddOrgToGroup), and an admin approving a
 // pending org request (DecideAddRequest) — inserts the user_org_requests row
 // with a NULL last_scanned, so the row itself carries "scan me now" across
-// processes with no RPC.
+// processes with no RPC. A re-add of an org the group already registers (in
+// any letter case since v0.29.68) inserts nothing and so fires nothing.
 //
 // Orgs whose owning group is 'rejected' are EXCLUDED: the scan's
 // rejected gate skips them without ever stamping last_scanned, so

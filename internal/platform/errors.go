@@ -190,6 +190,7 @@ func ClassifyError(err error) ErrorClass {
 		errors.Is(err, ErrGone),
 		errors.Is(err, ErrOffHostRefused),
 		errors.Is(err, ErrNoContent),
+		errors.Is(err, ErrConflict),
 		errors.Is(err, ErrPaginationLimitExceeded),
 		errors.Is(err, ErrWrongEntityKind):
 		return ClassSkip

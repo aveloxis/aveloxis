@@ -36,16 +36,19 @@ func TestEveryNotifyContextHandlesSIGTERM(t *testing.T) {
 	// first close-paren and never see the signal list.
 	call := regexp.MustCompile(`signal\.NotifyContext\(.*`)
 	found := 0
+	var examined, matched []string // named on failure: one run counted 7 of 24 sites and could not be explained
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
+		examined = append(examined, f)
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, m := range call.FindAllString(string(src), -1) {
 			found++
+			matched = append(matched, f)
 			if !strings.Contains(m, "syscall.SIGTERM") {
 				t.Errorf("%s: %s must register syscall.SIGTERM — `aveloxis stop` sends SIGTERM, and an unhandled SIGTERM kills the process instantly, orphaning any in-flight postgres statement (see the v0.27.25 changelog)", f, m)
 			}
@@ -54,7 +57,7 @@ func TestEveryNotifyContextHandlesSIGTERM(t *testing.T) {
 	// Self-check: the sweep found the known call sites (10 at
 	// v0.27.25). If extraction finds none, the regex rotted.
 	if found < 8 {
-		t.Fatalf("found only %d NotifyContext calls — regex rot? (10 existed at v0.27.25)", found)
+		t.Fatalf("found only %d NotifyContext calls — regex rot? (10 existed at v0.27.25; 24 on 2026-09-26)\nexamined %d files: %v\nmatched: %v", found, len(examined), examined, matched)
 	}
 }
 

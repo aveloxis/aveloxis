@@ -186,3 +186,34 @@ func TestIsRunning_NonPositiveIsNeverRunning(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoveIfOwnLeavesAnotherProcessesFile pins the shared compare-and-remove
+// (review round 5 of the deploy-path batch): a file holding another PID
+// survives, an unreadable file survives, the caller's own file goes.
+func TestRemoveIfOwnLeavesAnotherProcessesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aveloxis-x.pid")
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if RemoveIfOwn(path, 4243) {
+		t.Fatal("removed a file holding another PID")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the other process's file is gone: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if RemoveIfOwn(path, 4242) {
+		t.Fatal("removed an unreadable file")
+	}
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if !RemoveIfOwn(path, 4242) {
+		t.Fatal("did not remove the caller's own file")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the caller's own file survived: %v", err)
+	}
+}

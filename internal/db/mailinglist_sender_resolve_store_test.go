@@ -184,3 +184,50 @@ func TestCreateEmailOnlyContributor(t *testing.T) {
 		t.Errorf("expected an alias row for convergence, got %d", aliases)
 	}
 }
+
+// TestMarkSenderResolveAttemptCooldownKeepsTheEarlierOutcome pins the stamp's
+// per-column contract at the store (batch 3 review round 12: it was pinned
+// only inside the audit test, and resolved_source's ELSE arm nowhere): a
+// terminal stamp takes source and login; a cooldown flips resolved off,
+// advances last_attempt_at and KEEPS the earlier source and login (the DO
+// UPDATE's ELSE arms); a later terminal stamp with no login takes its source
+// and empties the login.
+func TestMarkSenderResolveAttemptCooldownKeepsTheEarlierOutcome(t *testing.T) {
+	store, ctx := emConnect(t)
+	t.Cleanup(store.Close)
+	const email = "_av_srkeep@example.org"
+	clean := func() {
+		if _, err := store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.mailing_list_sender_resolve WHERE sender_email = $1`, email); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+	}
+	clean()
+	t.Cleanup(clean)
+	row := func() (resolved bool, source, login string, at time.Time) {
+		t.Helper()
+		if err := store.pool.QueryRow(ctx, `SELECT resolved, resolved_source, resolved_login, last_attempt_at FROM aveloxis_ops.mailing_list_sender_resolve WHERE sender_email = $1`, email).Scan(&resolved, &source, &login, &at); err != nil {
+			t.Fatalf("reading the resolve row: %v", err)
+		}
+		return
+	}
+	if err := store.MarkSenderResolveAttempt(ctx, email, true, "noreply", "srkeep"); err != nil {
+		t.Fatal(err)
+	}
+	resolved, source, login, first := row()
+	if !resolved || source != "noreply" || login != "srkeep" {
+		t.Fatalf("after a terminal stamp: (%v, %q, %q); want (true, noreply, srkeep)", resolved, source, login)
+	}
+	if err := store.MarkSenderResolveAttempt(ctx, email, false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	resolved, source, login, second := row()
+	if resolved || source != "noreply" || login != "srkeep" || !second.After(first) {
+		t.Errorf("after a cooldown stamp: (%v, %q, %q, advanced=%v); want (false, noreply kept, srkeep kept, true) — the DO UPDATE's ELSE arms keep the earlier outcome", resolved, source, login, second.After(first))
+	}
+	if err := store.MarkSenderResolveAttempt(ctx, email, true, "bot", ""); err != nil {
+		t.Fatal(err)
+	}
+	if resolved, source, login, _ := row(); !resolved || source != "bot" || login != "" {
+		t.Errorf("after a terminal stamp with no login: (%v, %q, %q); want (true, bot, \"\") — the THEN arms take the stamp's values", resolved, source, login)
+	}
+}

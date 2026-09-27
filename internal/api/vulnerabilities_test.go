@@ -77,7 +77,7 @@ func TestAnnotateCycloneDXWithVulns(t *testing.T) {
 func TestStarRequiresIdentityAndScope(t *testing.T) {
 	store := &fakeSessionStore{userID: 7, scope: []int64{42}, valid: map[string]bool{"tok": true}}
 	s := &Server{}
-	s.auth = newAuthenticator(store, false)
+	s.auth = newAuthenticator(store, false, nil)
 
 	// No token → 401 even though require_auth is off.
 	rec := httptest.NewRecorder()

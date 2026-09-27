@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Materialized Views &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Materialized Views &mdash; Aveloxis 0.29.68 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=6e3d71c5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -603,7 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +658,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +667,7 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +820,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +923,7 @@
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1091,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1195,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1652,12 +1668,18 @@
              
   <section id="materialized-views">
 <h1>Materialized Views<a class="headerlink" href="#materialized-views" title="Link to this heading"></a></h1>
-<p>When <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default), Aveloxis creates <strong>20 materialized views + 2 alias views</strong> under the <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> schema; a deployment with it disabled has none of these relations (v0.29.57 — they are derived data, and a deployment that never queries them can skip building them). v0.25.5 first reduced the count from 22 by dropping the byte-for-byte duplicate <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> matview and converting <code class="docutils literal notranslate"><span class="pre">explorer_libyear_all</span></code> to an alias VIEW. v0.25.6 then restored <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> as a plain VIEW alias (operators query it to identify new contributors), so today’s count is 20 matviews + 2 alias views. The matviews pre-compute analytical queries that are too expensive to run live every time an analyst (or a tool like <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a>) opens a dashboard. Their data is refreshed on a weekly cadence (default Saturday — configurable via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>) and on demand via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code>. A refresh keeps each view’s definition; a release that changes a definition applies it with a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (without <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>), which drops and re-creates the views. Alias views read live from their underlying matview and need no separate refresh.</p>
+<p>Aveloxis keeps two sets of materialized views under the <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> schema, with different owners, different economics and, since v0.29.61, different lifecycles:</p>
+<ul class="simple">
+<li><p><strong>The 8Knot set — 20 materialized views + 2 alias views</strong>, defined in <code class="docutils literal notranslate"><span class="pre">matviews.sql</span></code>, built when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and absent otherwise (v0.29.57 — they are derived data for <a class="reference external" href="https://github.com/oss-aspen/8Knot">8Knot</a> and other Augur analytics tools; a deployment that never queries them can skip building them). One statement batch, hours at fleet scale. Their data is refreshed on a weekly cadence (default Saturday — <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code>) while collection is paused, and on demand via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--set</span> <span class="pre">8knot</span></code>. A refresh keeps each view’s definition; a release that changes one applies it with a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> (without <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>), which drops and re-creates the whole set. Since v0.29.68 that is enforced in the build: <code class="docutils literal notranslate"><span class="pre">matviews.sql</span></code> is pinned by digest, and a change to it fails the tests until the release that ships it is named and its deploy checklist carries the plain migrate. Alias views read live from their underlying matview and need no refresh. (History: v0.25.5 dropped the duplicate <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> matview and made <code class="docutils literal notranslate"><span class="pre">explorer_libyear_all</span></code> an alias; v0.25.6 restored <code class="docutils literal notranslate"><span class="pre">augur_new_contributors</span></code> as a plain VIEW alias.)</p></li>
+<li><p><strong>The supply-chain set — two materialized views</strong>, <code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code> and <code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code>, defined in Go (<code class="docutils literal notranslate"><span class="pre">internal/db/supply_chain_views.go</span></code>) and read by Aveloxis’s own GUI through the API; nothing in 8Knot uses them. Seconds at fleet scale. Every <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> re-creates them (with or without <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>), <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> builds them when missing, and the scheduler refreshes them every <code class="docutils literal notranslate"><span class="pre">collection.supply_chain_refresh_hours</span></code> (default 24) without pausing anything — all of it regardless of <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code>. Documented in full under <a class="reference internal" href="#supply-chain-package-views-aveloxis-owned">Supply-chain package views</a> below.</p></li>
+</ul>
+<p>Nothing else in Aveloxis reads a materialized view: the API’s retention, labor, time-series and repository statistics compute live from base tables scoped to the caller.</p>
 <p>This page explains, for each view, <strong>what a row means</strong>, <strong>what the complete table tells you</strong>, and <strong>how an open source health and sustainability analyst would actually use it</strong>. The audience is operators and analysts, not SQL authors — the goal is to make the catalog useful without requiring a read of the underlying query.</p>
 <hr class="docutils" />
 <section id="refresh-schedule">
 <h2>Refresh schedule<a class="headerlink" href="#refresh-schedule" title="Link to this heading"></a></h2>
-<p>The full set rebuilds weekly. Operators tune the day via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code> (default <code class="docutils literal notranslate"><span class="pre">saturday</span></code>) and can force an out-of-band refresh with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code>. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.</p>
+<p><strong>8Knot set:</strong> the full set rebuilds weekly. Operators tune the day via <code class="docutils literal notranslate"><span class="pre">collection.matview_rebuild_day</span></code> (default <code class="docutils literal notranslate"><span class="pre">saturday</span></code>, or <code class="docutils literal notranslate"><span class="pre">disabled</span></code>) and can force an out-of-band refresh with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--set</span> <span class="pre">8knot</span></code>. During a rebuild the scheduler pauses collection workers, refreshes each view sequentially (CONCURRENTLY where possible), then resumes collection.</p>
+<p><strong>Supply-chain set:</strong> refreshed every <code class="docutils literal notranslate"><span class="pre">collection.supply_chain_refresh_hours</span></code> (default 24; <code class="docutils literal notranslate"><span class="pre">0</span></code> turns the schedule off) off the scheduler’s own ticker, once at startup (unless that start built the whole pair, which is fresh by construction) and then on the cadence, CONCURRENTLY, in seconds; collection never pauses. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--set</span> <span class="pre">supply-chain</span></code> refreshes on demand. <code class="docutils literal notranslate"><span class="pre">serve</span></code> logs the effective cadence at startup.</p>
 <p>If the underlying data has changed only modestly since the last rebuild, the most-recent view contents continue to be query-able with stale-but-consistent data; consumers don’t see partial state.</p>
 </section>
 <hr class="docutils" />
@@ -1693,6 +1715,9 @@
 </tr>
 <tr class="row-odd"><td><p><strong>Dependencies</strong></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">explorer_libyear_all</span></code>, <code class="docutils literal notranslate"><span class="pre">explorer_libyear_summary</span></code>, <code class="docutils literal notranslate"><span class="pre">explorer_libyear_detail</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Supply chain</strong> (Aveloxis-owned; its own lifecycle, see below)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code>, <code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -2067,6 +2092,201 @@ aveloxis<span class="w"> </span>refresh-views
 <li><p><a class="reference internal" href="../guide/scaling.html"><span class="std std-doc">Scaling</span></a> — database tuning for the rebuild window.</p></li>
 <li><p><a class="reference internal" href="overview.html"><span class="std std-doc">Overview</span></a> — system architecture.</p></li>
 </ul>
+</section>
+<section id="supply-chain-package-views-aveloxis-owned">
+<h2>Supply-chain package views (Aveloxis-owned)<a class="headerlink" href="#supply-chain-package-views-aveloxis-owned" title="Link to this heading"></a></h2>
+<p>These two views (v0.29.60; their own lifecycle since v0.29.61) turn the vulnerability findings around. The raw table, <code class="docutils literal notranslate"><span class="pre">repo_deps_vulnerabilities</span></code>, is repository-centred: one row per repository × package × scanned version × advisory, written by each repository’s vulnerability scan (see <a class="reference internal" href="vulnerability-and-sbom.html"><span class="std std-doc">Vulnerability scanning</span></a>). It answers “what is wrong in this repository”. The views are package-centred: one row per package across every repository in the fleet, so they answer the question a single Dependabot pull request cannot — <em>how many projects does this one library reach, how much of that reach is invisible in their manifests, how long has it been open, and are the projects even running the same version?</em> That is the figure the GUI’s dependencies page draws: the pull request’s view on the left (one library, one advisory, one bump), the cohort profile on the right.</p>
+<section id="what-is-new-here-and-what-is-only-regrouped">
+<h3>What is new here, and what is only regrouped<a class="headerlink" href="#what-is-new-here-and-what-is-only-regrouped" title="Link to this heading"></a></h3>
+<p>Every column is derived from <code class="docutils literal notranslate"><span class="pre">repo_deps_vulnerabilities</span></code> alone; nothing is fetched. What the views add is the cross-repository aggregation the raw rows cannot express, and four decisions baked into it:</p>
+<ul class="simple">
+<li><p><strong>Currency.</strong> A finding whose <code class="docutils literal notranslate"><span class="pre">resolved_at</span></code> is NULL is <em>current</em>; the scan stamps <code class="docutils literal notranslate"><span class="pre">resolved_at</span></code> instead of deleting, so the raw table carries history and the views separate “has ever been exposed” from “is exposed now” (<code class="docutils literal notranslate"><span class="pre">cohort_repos</span></code> vs <code class="docutils literal notranslate"><span class="pre">repos_unresolved</span></code>, <code class="docutils literal notranslate"><span class="pre">findings</span></code> vs <code class="docutils literal notranslate"><span class="pre">findings_unresolved</span></code>).</p></li>
+<li><p><strong>The scanned version</strong> is not a column of the raw table; it is read out of the finding’s purl (<code class="docutils literal notranslate"><span class="pre">package_purl</span></code>), as the text after the last <code class="docutils literal notranslate"><span class="pre">&#64;</span></code> that contains no <code class="docutils literal notranslate"><span class="pre">/</span></code> — a scoped npm purl minted before v0.27.29 (<code class="docutils literal notranslate"><span class="pre">pkg:npm/&#64;scope/name&#64;1.0.0</span></code>) keeps its first <code class="docutils literal notranslate"><span class="pre">&#64;</span></code> as the scope marker, and a versionless purl yields no version rather than a wrong one.</p></li>
+<li><p><strong>Direct vs transitive</strong> comes from the finding’s <code class="docutils literal notranslate"><span class="pre">dependency_kind</span></code>, which the scan sets from the manifest and lockfile parse: a transitive finding is one a manifest reader cannot see.</p></li>
+<li><p><strong>One label per advisory.</strong> The raw rows for one advisory can disagree: a failed detail fetch stores a stub (severity <code class="docutils literal notranslate"><span class="pre">UNKNOWN</span></code> or empty, no fixed version). The views prefer the known value — severity is the highest-ranked label across the rows (<code class="docutils literal notranslate"><span class="pre">CRITICAL</span></code> &gt; <code class="docutils literal notranslate"><span class="pre">HIGH</span></code> &gt; <code class="docutils literal notranslate"><span class="pre">MEDIUM</span></code>/<code class="docutils literal notranslate"><span class="pre">MODERATE</span></code> &gt; <code class="docutils literal notranslate"><span class="pre">LOW</span></code>), the fixed version the most common non-empty one — the same preference the scan’s own upsert applies.</p></li>
+</ul>
+</section>
+<section id="explorer-package-exposure">
+<h3><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code><a class="headerlink" href="#explorer-package-exposure" title="Link to this heading"></a></h3>
+<p><strong>One row per <code class="docutils literal notranslate"><span class="pre">(ecosystem,</span> <span class="pre">package_name)</span></code>: the package’s exposure profile across the fleet.</strong> Unique index on that pair (the refresh runs CONCURRENTLY).</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Meaning</p></th>
+<th class="head"><p>Derived how</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ecosystem</span></code>, <code class="docutils literal notranslate"><span class="pre">package_name</span></code></p></td>
+<td><p>the package, as the scan names it (<code class="docutils literal notranslate"><span class="pre">npm</span></code>, <code class="docutils literal notranslate"><span class="pre">pypi</span></code>, <code class="docutils literal notranslate"><span class="pre">go</span></code>, <code class="docutils literal notranslate"><span class="pre">maven</span></code>, <code class="docutils literal notranslate"><span class="pre">cargo</span></code>, <code class="docutils literal notranslate"><span class="pre">rubygems</span></code>, <code class="docutils literal notranslate"><span class="pre">packagist</span></code>, <code class="docutils literal notranslate"><span class="pre">nuget</span></code>, <code class="docutils literal notranslate"><span class="pre">hex</span></code>, <code class="docutils literal notranslate"><span class="pre">pub</span></code>, <code class="docutils literal notranslate"><span class="pre">swiftpm</span></code>, <code class="docutils literal notranslate"><span class="pre">hackage</span></code>, <code class="docutils literal notranslate"><span class="pre">githubactions</span></code>)</p></td>
+<td><p>group key; rows with an empty ecosystem or name are excluded</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cohort_repos</span></code></p></td>
+<td><p>repositories that have EVER had a finding on the package</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">COUNT(DISTINCT</span> <span class="pre">repo_id)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repos_unresolved</span></code></p></td>
+<td><p>repositories with a current finding</p></td>
+<td><p>the same over current rows</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">findings</span></code>, <code class="docutils literal notranslate"><span class="pre">findings_unresolved</span></code></p></td>
+<td><p>finding rows (repository × advisory × scanned version), all and current</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">COUNT(*)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pct_unresolved</span></code></p></td>
+<td><p>share of finding rows still open</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">findings_unresolved</span> <span class="pre">/</span> <span class="pre">findings</span></code>, one decimal</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pct_transitive</span></code></p></td>
+<td><p>share of finding rows that are transitive — the exposure a manifest reader cannot see</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dependency_kind</span> <span class="pre">=</span> <span class="pre">'transitive'</span></code> over all rows</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">median_days_open</span></code></p></td>
+<td><p>median age, in days, of the current findings</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">percentile_cont(0.5)</span></code> over <code class="docutils literal notranslate"><span class="pre">now()</span> <span class="pre">-</span> <span class="pre">first_detected_at</span></code>, current rows only; NULL when nothing is open</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_cvss</span></code></p></td>
+<td><p>the highest CVSS score among the package’s findings</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MAX(cvss_score)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">worst_severity</span></code></p></td>
+<td><p>the worst severity label, ranked not alphabetical</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CRITICAL</span></code> &gt; <code class="docutils literal notranslate"><span class="pre">HIGH</span></code> &gt; <code class="docutils literal notranslate"><span class="pre">MEDIUM</span></code> &gt; <code class="docutils literal notranslate"><span class="pre">LOW</span></code>; empty when every label is unknown</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">n_advisories</span></code></p></td>
+<td><p>distinct advisories (OSV ids) on the package</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">COUNT(DISTINCT</span> <span class="pre">vuln_id)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">distinct_versions_in_use</span></code></p></td>
+<td><p>distinct scanned versions among the CURRENT findings</p></td>
+<td><p>from the purl; unknown versions do not count</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repos_with_known_versions</span></code></p></td>
+<td><p>current-exposed repositories whose finding carries a version</p></td>
+<td><p>the denominator of the modal share</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">modal_version</span></code></p></td>
+<td><p>the version the most repositories are on</p></td>
+<td><p>ties broken by version text</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">modal_version_share_pct</span></code></p></td>
+<td><p>that version’s share of <code class="docutils literal notranslate"><span class="pre">repos_with_known_versions</span></code></p></td>
+<td><p>NULL when no version is known</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">lead_advisory</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_cve</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_severity</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_fixed_version</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_advisory_repos</span></code></p></td>
+<td><p>the advisory on the most repositories (ties broken by id), its CVE alias, its one label and fixed version, and its repository count</p></td>
+<td><p>the top row of <code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code> for the package</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>What the complete table tells you:</strong> which libraries the fleet is exposed through, and the shape of that exposure. Sort by <code class="docutils literal notranslate"><span class="pre">cohort_repos</span></code> for reach, by <code class="docutils literal notranslate"><span class="pre">pct_transitive</span></code> for invisibility, by <code class="docutils literal notranslate"><span class="pre">median_days_open</span></code> for neglect, by <code class="docutils literal notranslate"><span class="pre">distinct_versions_in_use</span></code> and a low <code class="docutils literal notranslate"><span class="pre">modal_version_share_pct</span></code> for fragmentation — a package with high transitive share and low modal share is an upgrade nobody owns. The API’s leaderboard sorts are exactly these columns.</p>
+</section>
+<section id="explorer-package-advisory">
+<h3><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code><a class="headerlink" href="#explorer-package-advisory" title="Link to this heading"></a></h3>
+<p><strong>One row per <code class="docutils literal notranslate"><span class="pre">(ecosystem,</span> <span class="pre">package_name,</span> <span class="pre">vuln_id)</span></code>: one advisory’s footprint on one package.</strong> Unique index on the triple.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Meaning</p></th>
+<th class="head"><p>Derived how</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vuln_id</span></code></p></td>
+<td><p>the OSV advisory id (<code class="docutils literal notranslate"><span class="pre">GHSA-…</span></code>, <code class="docutils literal notranslate"><span class="pre">PYSEC-…</span></code>, <code class="docutils literal notranslate"><span class="pre">GO-…</span></code>, …)</p></td>
+<td><p>group key</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cve_id</span></code></p></td>
+<td><p>its CVE alias when OSV carries one</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MAX(cve_id)</span></code> across the rows</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">severity</span></code></p></td>
+<td><p>the one label for the advisory</p></td>
+<td><p>highest-ranked across its rows (stubs never outvote known labels)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_cvss</span></code></p></td>
+<td><p>the highest score stored for it</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MAX(cvss_score)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fixed_version</span></code></p></td>
+<td><p>the version that closes it</p></td>
+<td><p>most common non-empty value across its rows</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repos</span></code>, <code class="docutils literal notranslate"><span class="pre">repos_unresolved</span></code></p></td>
+<td><p>repositories it has ever touched, and touches now</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">COUNT(DISTINCT</span> <span class="pre">repo_id)</span></code>, all and current</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">first_seen</span></code></p></td>
+<td><p>when the fleet first recorded it</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MIN(first_detected_at)</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>The profile’s lead advisory is this table’s top row for the package (most repositories first); the API’s package page lists them all with their OSV and CVE links.</p>
+</section>
+<section id="live-cohorts-and-a-deployment-without-the-views">
+<h3>Live cohorts, and a deployment without the views<a class="headerlink" href="#live-cohorts-and-a-deployment-without-the-views" title="Link to this heading"></a></h3>
+<p>The views hold the FLEET. The API serves an admin’s fleet request from them and marks the answer <code class="docutils literal notranslate"><span class="pre">scope.source</span> <span class="pre">=</span> <span class="pre">&quot;matview&quot;</span></code>; a signed-in user’s own scope, or a <code class="docutils literal notranslate"><span class="pre">?group=</span></code> request, is aggregated live with the same SQL plus a repository filter (<code class="docutils literal notranslate"><span class="pre">scope.source</span> <span class="pre">=</span> <span class="pre">&quot;live&quot;</span></code>) — milliseconds for hundreds of repositories, about three seconds for a 62,000-repository group on the production fleet. When a view is missing (a fresh deployment before its first migrate, or a build failure logged as <code class="docutils literal notranslate"><span class="pre">supply-chain</span> <span class="pre">view</span> <span class="pre">creation</span> <span class="pre">failed</span></code>), the fleet request falls back to the live aggregate over the whole table instead of an error. The views’ body and the live SQL are one function in <code class="docutils literal notranslate"><span class="pre">internal/db/package_exposure_store.go</span></code>, so they cannot drift.</p>
+</section>
+<section id="lifecycle">
+<h3>Lifecycle<a class="headerlink" href="#lifecycle" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>8Knot set</p></th>
+<th class="head"><p>Supply-chain set</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Definition</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">internal/db/matviews.sql</span></code> (one batch)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">internal/db/supply_chain_views.go</span></code> (Go SQL, one statement per view)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Governed by</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code></p></td>
+<td><p>nothing — every deployment has them</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code></p></td>
+<td><p>re-creates the set; <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code> skips it</p></td>
+<td><p>re-creates both, always (seconds)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> start</p></td>
+<td><p>builds an empty set, reports a partial one</p></td>
+<td><p>builds whichever view is missing</p></td>
+</tr>
+<tr class="row-even"><td><p>Scheduled refresh</p></td>
+<td><p>weekly on <code class="docutils literal notranslate"><span class="pre">matview_rebuild_day</span></code>, collection paused</p></td>
+<td><p>every <code class="docutils literal notranslate"><span class="pre">supply_chain_refresh_hours</span></code> (default 24), nothing paused</p></td>
+</tr>
+<tr class="row-odd"><td><p>On demand</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--set</span> <span class="pre">8knot</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--set</span> <span class="pre">supply-chain</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Changed definition</p></td>
+<td><p>needs a plain <code class="docutils literal notranslate"><span class="pre">migrate</span></code></p></td>
+<td><p>lands on the next <code class="docutils literal notranslate"><span class="pre">migrate</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">
+<h3>Dropping the 8Knot set on a deployment that does not use it<a class="headerlink" href="#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it" title="Link to this heading"></a></h3>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> stops <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code> from creating or rebuilding the 8Knot set, and <code class="docutils literal notranslate"><span class="pre">matview_rebuild_day:</span> <span class="pre">&quot;disabled&quot;</span></code> stops the weekly refresh; neither drops views that already exist (dropping collected objects is an operator decision, not a config one), and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code> without <code class="docutils literal notranslate"><span class="pre">--set</span></code> will still refresh whatever exists. To reclaim the space, drop the set by hand while <code class="docutils literal notranslate"><span class="pre">serve</span></code> is stopped — the two alias views first, then the matviews:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">DROP</span><span class="w"> </span><span class="k">VIEW</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">augur_new_contributors</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_libyear_all</span><span class="p">;</span>
+<span class="k">DROP</span><span class="w"> </span><span class="k">MATERIALIZED</span><span class="w"> </span><span class="k">VIEW</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">EXISTS</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">api_get_all_repo_prs</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">api_get_all_repos_commits</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">api_get_all_repos_issues</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_entry_list</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_commits_and_committers_daily_count</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_contributor_actions</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_new_contributors</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_user_repos</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_pr_response_times</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_pr_assignments</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_issue_assignments</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_pr_response</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_repo_languages</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_libyear_summary</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_libyear_detail</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">issue_reporter_created_at</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_contributor_recent_actions</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_pr_files</span><span class="p">,</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_cntrb_per_file</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">explorer_repo_files</span>
+<span class="w">  </span><span class="k">CASCADE</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The supply-chain views are untouched by this, and the <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> compatibility views (plain views over base tables) are a separate schema.</p>
+</section>
 </section>
 </section>
 

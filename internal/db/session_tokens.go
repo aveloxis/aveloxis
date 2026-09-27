@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ErrInvalidSessionToken is returned for unknown or expired tokens.
@@ -62,7 +64,13 @@ func (s *PostgresStore) ValidateSessionToken(ctx context.Context, token string) 
 		SELECT user_id FROM aveloxis_ops.user_session_tokens
 		WHERE token = $1 AND expiration > $2`, token, time.Now().Unix()).Scan(&userID)
 	if err != nil {
-		return 0, ErrInvalidSessionToken
+		// Only "no such row" is the sentinel (SR-5; worklist follow-up 6,
+		// review round 1): a lost connection or a cancelled context is the
+		// store's failure, and the API answers it 503, not "sign in again".
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrInvalidSessionToken
+		}
+		return 0, fmt.Errorf("validate session token: %w", err)
 	}
 	return userID, nil
 }

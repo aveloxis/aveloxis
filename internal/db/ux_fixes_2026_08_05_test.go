@@ -39,7 +39,7 @@ func TestOrgAutoApproveSourceContract(t *testing.T) {
 		t.Fatal("IsOrgRegisteredAnywhere helper missing")
 	}
 	if !strings.Contains(src, "LOWER(org_url)") {
-		t.Error("IsOrgRegisteredAnywhere must match case-insensitively (org URLs are stored case-preserved)")
+		t.Error("IsOrgRegisteredAnywhere must match case-insensitively (org URL rows written before v0.29.68 keep the registrant's case)")
 	}
 }
 

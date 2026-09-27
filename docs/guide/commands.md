@@ -24,9 +24,9 @@ aveloxis serve [flags]
 
 - Uses the **staged collection pipeline** (API -> staging -> processing -> facade -> commit resolution -> analysis).
 - The queue is Postgres-backed (`aveloxis_ops.collection_queue`) and uses `SELECT ... FOR UPDATE SKIP LOCKED` for atomic job claiming.
-- Safe to stop and restart at any time. On shutdown (`Ctrl-C` / `SIGTERM`), active workers finish their current API call, queue locks are released, and staging data is preserved.
-- On startup, automatically processes any leftover staged data from a previous interrupted run.
-- Stale locks from crashed instances are recovered after 1 hour.
+- Safe to stop and restart at any time. On shutdown (`Ctrl-C` / `SIGTERM`), in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released and staging data is preserved.
+- On startup, reclaims a previous serve's locks at once (except a running heal's parked rows), resumes collection, and drains any leftover staged data from an interrupted run in the background.
+- Stale locks from crashed instances are recovered after 1 hour by a running instance, or at once by the next serve start.
 - Multiple instances can share the same queue for horizontal scaling.
 
 ### Periodic tasks
@@ -601,7 +601,12 @@ the database, fetch ONLY the missing items (with children and
 comments), stage, process.
 
 Targeted by construction — only count-gap candidates are visited
-(~5% of a typical fleet), never a 100% rescan. The candidate query is
+(~5% of a typical fleet), never a 100% rescan. A healed repository keeps
+its place in the recollection cycle (v0.29.68: the heal's release leaves
+`due_at` alone; before, every healed repository became due at once), and a
+`serve` started while a heal runs leaves the heal's parked repositories to
+it (its heartbeat keeps them fresh; only a heal whose heartbeat stopped for
+longer than the stale-lock window is reclaimed). The candidate query is
 the resume state: healed repos drop out, so the workflow is re-running
 until "0 candidates". Safe beside a running serve: each repo is
 drain-locked for the duration of its heal, and repos mid-collection
@@ -729,8 +734,20 @@ be started — a pidfile that cannot be read (the command refuses rather
 than risk a second scheduler on the host), a log file that cannot be
 opened, a failed exec — makes the command exit nonzero, naming each
 failure, after every requested component has been attempted. `start all`
-therefore still brings up web and api beside a refused serve, and says
-so. An already-running component is a no-op and exits 0.
+therefore still tries web and api beside a refused serve, and says so.
+Since v0.29.68 `start` writes the child's pidfile at once (the
+"already running" guard reads that file, so a second `start` during the
+child's startup is refused), then waits for the child's readiness signal
+on an inherited pipe and reports a child that exited first. web and api
+signal readiness once the schema gate has passed AND the port is bound (a
+port in use is a refusal the process exits on); the scancode worker once
+the schema gate has passed; serve once its keys are loaded and its startup
+migration is done. web, api and the scancode worker refuse to start while
+the schema stamp is behind their binary, so a `--skip-deploy-check` start
+on an un-migrated fleet reports them as exited; start them again after the
+migrate. A child still starting after 30 seconds (a long migration for
+serve) is reported as started. An already-running component is a no-op
+and exits 0.
 
 Log files are opened in append mode — existing content is preserved across restarts.
 
@@ -755,7 +772,7 @@ aveloxis stop all              # stop serve + web + api (never the scancode work
 aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. For `serve`: in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released; staging data is preserved. For `web` and `api`: the listener closes, in-flight requests get 10 s to finish, then the pool closes. The scancode worker has its own bounds (`collection.scancode_shutdown_grace_minutes`; see [Graceful shutdown](../architecture/scancode.md#6-graceful-shutdown)). PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
 
 Nothing to stop is exit 0 — `stop` is idempotent. A process that was
 found but could not be signaled (typically `operation not permitted` on a
@@ -1383,7 +1400,13 @@ aveloxis mark-gone-repos              # stamp / clear / re-enqueue
 aveloxis mark-gone-repos --limit 100  # bounded canary
 ```
 
-Idempotent and re-runnable on any cadence. Dataless stranded rows
+Idempotent and re-runnable on any cadence. Since v0.29.68 `Ctrl-C` or a
+SIGTERM (`kill <pid>`; `aveloxis stop` knows only the four long-running
+components) cancels the in-flight probe or statement, ends the walk and
+prints an interruption summary (what was probed, stamped, cleared and
+skipped so far); every stamp is its own statement, so what landed stays,
+and a rerun walks the whole cohort again — every verdict is idempotent,
+so nothing is lost, only time. Dataless stranded rows
 (no queue row, no data, no archived flag) are not candidates — there
 is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
@@ -1623,7 +1646,12 @@ one — register a checklist here.
 
 ```bash
 aveloxis deploy-checklist
+aveloxis deploy-checklist --since 0.29.64   # every release's steps after the one last deployed, oldest first
 ```
+
+`aveloxis start serve` prints the same accumulated list when the last
+acknowledged deploy is behind the binary: the heals of a skipped release
+never ran (v0.29.68).
 
 ## `aveloxis ack-deploy`
 
@@ -1882,5 +1910,5 @@ All commands look for `aveloxis.json` in the current working directory. The conf
 
 `aveloxis serve` handles the following signals:
 
-- **`SIGTERM`** / **`SIGINT`** (`Ctrl-C`) -- graceful shutdown. Workers finish current API calls, locks are released, staging data is preserved.
+- **`SIGTERM`** / **`SIGINT`** (`Ctrl-C`) -- graceful shutdown. In-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then locks are released; staging data is preserved.
 - **`SIGTERM`** sent by `aveloxis stop` -- same graceful shutdown.

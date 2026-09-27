@@ -1,0 +1,3 @@
+# Embedded SQL is hashed (internal/db/matviews_version.go pins matviews.sql
+# by digest): keep it LF on every checkout.
+*.sql text eol=lf

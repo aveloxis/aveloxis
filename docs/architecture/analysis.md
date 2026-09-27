@@ -43,7 +43,7 @@ The dependency scanner walks the full checkout looking for manifest files across
 | Manifest File | Ecosystem | Parser |
 |---|---|---|
 | `package.json` | npm (JavaScript/TypeScript) | JSON parser extracts `dependencies` + `devDependencies` |
-| `requirements.txt` | Python (pip) | Line parser (byte-exact filename), handles `==`, `>=` and comments; pip's option lines (`-e`, `-r`) are skipped, so an `-r` include is never followed |
+| `requirements.txt` | Python (pip) | Line parser (the name matched in any letter case — `Requirements.txt` too — since v0.29.68), handles `==`, `>=` and comments; pip's option lines (`-e`, `-r`) are skipped, so an `-r` include is never followed |
 | `go.mod` | Go | Parses `require` block |
 | `Cargo.toml` | Rust (Cargo) | TOML parser extracts `[dependencies]` + `[dev-dependencies]` |
 | `Gemfile` | Ruby (Bundler) | Parses `gem` declarations |
@@ -151,9 +151,12 @@ How requests are made (since v0.29.56):
   directly inside a directory named `requirements` (that directory name
   byte-exact),
   and never `requirements.txt` itself in any casing. Both walks match
-  `requirements.txt` byte for byte, so `requirements/requirements.txt` is the
-  ordinary manifest, gate or no gate, and a differently cased
-  `Requirements.txt` matches no arm at all — nothing collects it. The Poetry and Pipfile tables key on the
+  `requirements.txt` in any letter case (one normalizer, `canonicalManifestName`,
+  v0.29.68 — through v0.29.67 they matched it byte for byte and a
+  `Requirements.txt` was collected by nothing), so `requirements/requirements.txt`
+  and `Requirements.txt` are the ordinary manifest, gate or no gate. Every other
+  manifest name stays byte-exact: the mixed-case keys (`Gemfile`, `Cargo.toml`,
+  `Package.swift`, …) are the real names. The Poetry and Pipfile tables key on the
   dependency's name, so those rows keep the clean name too.
   The other ecosystems (RubyGems, Packagist, Maven, …) do not yet make this
   distinction: a `path:`- or `git:`-sourced gem is still looked up by name.

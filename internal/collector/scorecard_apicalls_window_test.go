@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 func TestRateLimitDeltaIsUnknownAcrossAWindowReset(t *testing.T) {
@@ -71,6 +73,12 @@ func TestScorecardInstrumentationWindowResetIsUnknown(t *testing.T) {
 
 	var hits atomic.Int64
 	rl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every GitHub REST request pins the version (worklist item 15); the
+		// probe builds its URL from the configured base, so no source sweep
+		// sees it — this is its pin (batch 7c review round 2).
+		if got := r.Header.Get("X-GitHub-Api-Version"); got != platform.GitHubAPIVersion {
+			t.Errorf("the /rate_limit probe carried X-GitHub-Api-Version %q; want %q", got, platform.GitHubAPIVersion)
+		}
 		if hits.Add(1) == 1 {
 			fmt.Fprint(w, `{"resources":{"core":{"used":4990,"reset":1800000000},"graphql":{"used":10,"reset":1800000000}}}`)
 		} else {
@@ -119,5 +127,21 @@ func TestRateLimitProbeDoesNotFollowRedirects(t *testing.T) {
 	}
 	if n := foreignHits.Load(); n != 0 {
 		t.Errorf("the redirect target received %d probe request(s) carrying the token", n)
+	}
+}
+
+// TestScorecardRateLimitProbePinsTheAPIVersion drives fetchRateLimitSnapshot
+// against a fixture and asserts the header the source sweep in
+// internal/platform cannot see (the URL comes from the configured base).
+func TestScorecardRateLimitProbePinsTheAPIVersion(t *testing.T) {
+	var got string
+	rl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-GitHub-Api-Version")
+		fmt.Fprint(w, `{"resources":{"core":{"used":1,"reset":1800000000},"graphql":{"used":1,"reset":1800000000}}}`)
+	}))
+	defer rl.Close()
+	fetchRateLimitSnapshot(context.Background(), rl.URL+"/rate_limit", "tok1", quietLogger())
+	if got != platform.GitHubAPIVersion {
+		t.Errorf("the /rate_limit probe carried X-GitHub-Api-Version %q; want %q", got, platform.GitHubAPIVersion)
 	}
 }

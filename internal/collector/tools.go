@@ -34,12 +34,13 @@ const ToolUpdateInterval = 30 * 24 * time.Hour
 
 // ExternalTool describes an optional third-party tool used by Aveloxis.
 type ExternalTool struct {
-	Name        string                          // display name
-	CheckBinary string                          // binary name to look up on PATH (exec.LookPath)
-	InstallCmd  string                          // go install or other install command (also used for manual install display)
-	InstallFunc func(ctx context.Context) error // custom install function; takes priority over InstallCmd when set; every subprocess and request it runs is bound to ctx
-	Description string                          // what the tool does
-	Purpose     string                          // which collection phase uses it
+	Name        string                                    // display name
+	CheckBinary string                                    // binary name to look up on PATH (exec.LookPath)
+	InstallCmd  string                                    // go install or other install command (also used for manual install display)
+	InstallFunc func(ctx context.Context) error           // custom install function; takes priority over InstallCmd when set; every subprocess and request it runs is bound to ctx
+	BinDir      func(ctx context.Context) (string, error) // where the install puts the binary, when Go's rule decides it (nil when the installer — pipx — chooses and says so itself)
+	Description string                                    // what the tool does
+	Purpose     string                                    // which collection phase uses it
 }
 
 // ExternalTools returns the list of all optional tools that Aveloxis can use.
@@ -50,6 +51,7 @@ func ExternalTools() []ExternalTool {
 			Name:        "scc",
 			CheckBinary: "scc",
 			InstallCmd:  "go install github.com/boyter/scc/v3@latest",
+			BinDir:      GoBinDir,
 			Description: "Sloc Cloc and Code — counts lines of code, comments, blanks, and complexity per file per language",
 			Purpose:     "Phase 4 (Analysis): populates the repo_labor table with per-file code metrics",
 		},
@@ -58,6 +60,7 @@ func ExternalTools() []ExternalTool {
 			CheckBinary: "scorecard",
 			InstallCmd:  "see https://github.com/ossf/scorecard/releases",
 			InstallFunc: installScorecardBinary,
+			BinDir:      GoBinDir,
 			Description: "OpenSSF Scorecard — evaluates open source project security practices across 18+ checks",
 			Purpose:     "Phase 4b (Analysis): populates repo_deps_scorecard with security check results (Code-Review, Maintained, Vulnerabilities, etc.)",
 		},
@@ -165,7 +168,7 @@ func scorecardLatestVersion(ctx context.Context) (string, error) {
 }
 
 // installScorecardBinary downloads the pre-built scorecard tarball from GitHub
-// releases, extracts the binary, and places it in $GOPATH/bin (or ~/go/bin).
+// releases, extracts the binary, and places it in GoBinDir().
 func installScorecardBinary(ctx context.Context) error {
 	version, err := scorecardLatestVersion(ctx)
 	if err != nil {
@@ -186,16 +189,12 @@ func installScorecardBinary(ctx context.Context) error {
 		return fmt.Errorf("download returned %d for %s", resp.StatusCode, url)
 	}
 
-	// Determine destination: $GOPATH/bin or ~/go/bin.
-	destDir := os.Getenv("GOPATH")
-	if destDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		destDir = home + "/go"
+	// Destination: where `go install` would put it (GoBinDir), the
+	// directory install-tools names when the tool lands off PATH.
+	destDir, err := GoBinDir(ctx)
+	if err != nil {
+		return err
 	}
-	destDir = destDir + "/bin"
 	dest := filepath.Join(destDir, "scorecard")
 
 	// Extract the scorecard binary from the .tar.gz archive.
@@ -237,6 +236,9 @@ func installScorecardBinary(ctx context.Context) error {
 			}
 
 			fmt.Printf("scorecard %s installed to %s\n", version, dest)
+			if w := shadowWarning("scorecard", dest); w != "" {
+				fmt.Println(w)
+			}
 			return nil
 		}
 	}
@@ -647,4 +649,77 @@ func ensurePythonUserBinOnPath(ctx context.Context) {
 
 	fmt.Printf("  Added Python user bin to %s\n", profile)
 	fmt.Printf("  Run: source %s\n", profile)
+}
+
+// GoBinDir is where `go install` puts binaries (batch 4a review rounds
+// 16–17). cmd/go reads GOBIN and GOPATH from its env file (`go env -w`) as
+// well as the process environment, so when go is on PATH the answer is `go
+// env GOBIN GOPATH`'s; without go (scorecard's installer needs none) the
+// environment rule stands in: GOBIN, else the first GOPATH entry's bin,
+// else ~/go/bin. A directory that is not absolute is an error — `go
+// install` refuses it, and a relative PATH entry cannot be exported
+// usefully (exec.LookPath rejects binaries found through one).
+func GoBinDir(ctx context.Context) (string, error) {
+	gobin, gopath := os.Getenv("GOBIN"), os.Getenv("GOPATH")
+	if goPath, err := exec.LookPath("go"); err == nil {
+		probe := exec.CommandContext(ctx, goPath, "env", "GOBIN", "GOPATH")
+		groupKilled(probe)
+		// The installed toolchain answers, whatever module the process sits
+		// in (round 18: under GOTOOLCHAIN=auto a newer go line in the cwd's
+		// go.mod made this probe download a toolchain, or fail offline).
+		probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+		out, err := probe.Output()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+				return "", fmt.Errorf("go env GOBIN GOPATH: %w: %s", execErr(ctx, err), strings.TrimSpace(string(exitErr.Stderr)))
+			}
+			return "", fmt.Errorf("go env GOBIN GOPATH: %w", execErr(ctx, err))
+		}
+		// Exactly two lines, either possibly empty (round 18: trimming every
+		// trailing newline made "GOBIN\n\n" — an empty GOPATH — one line).
+		lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+		if len(lines) != 2 {
+			return "", fmt.Errorf("go env GOBIN GOPATH answered %q; want two lines", out)
+		}
+		gobin, gopath = lines[0], lines[1]
+	}
+	dir := gobin
+	if dir == "" && gopath != "" {
+		dir = filepath.Join(filepath.SplitList(gopath)[0], "bin")
+	}
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		dir = filepath.Join(home, "go", "bin")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("the Go binary directory %q is not absolute (GOBIN or the first GOPATH entry) — go install refuses it", dir)
+	}
+	return dir, nil
+}
+
+// shadowWarning says when PATH resolves name to a copy other than the one
+// just written (round 17: before v0.29.68 scorecard went to GOPATH/bin
+// whatever GOBIN said, so an upgrade into GoBinDir can leave the old copy
+// first on PATH — serve would keep running it while the upgrade reported
+// success). Empty when the written copy is the one PATH finds, or none is.
+func shadowWarning(name, written string) string {
+	found, err := exec.LookPath(name)
+	if err != nil {
+		return ""
+	}
+	if a, errA := filepath.EvalSymlinks(found); errA == nil {
+		found = a
+	}
+	w := written
+	if b, errB := filepath.EvalSymlinks(written); errB == nil {
+		w = b
+	}
+	if found == w {
+		return ""
+	}
+	return fmt.Sprintf("warning: %s was written to %s, but %s is first on PATH — remove the older copy or reorder PATH, or serve keeps running it", name, written, found)
 }

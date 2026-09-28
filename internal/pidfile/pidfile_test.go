@@ -4,9 +4,11 @@
 package pidfile
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -178,7 +180,7 @@ func TestRemoveIfOwnLeavesAnotherProcessesFile(t *testing.T) {
 	if err := Write(path, 4242); err != nil {
 		t.Fatal(err)
 	}
-	if RemoveIfOwn(path, 4243).Removed {
+	if r := RemoveIfOwn(path, 4243); r.Removed || r.Err != nil { // another pid is "not own", never a refusal (round 13)
 		t.Fatal("removed a file holding another PID")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -228,5 +230,30 @@ func TestRemoveIfOwnReportsARefusedUnlink(t *testing.T) {
 	}
 	if p, err := Read(path); err != nil || p != 4242 {
 		t.Fatalf("the file should still hold 4242: %d, %v", p, err)
+	}
+}
+
+// TestRemoveIfOwnReadsAVanishedFileAsNotOwn (deploy-path review round 9):
+// two `stop`s over one dead-pid file both read the pid; the loser's unlink
+// answers ENOENT. That is "removed concurrently" — the file is gone, the
+// caller did nothing wrong — not a refused unlink the operator must delete
+// by hand. The race cannot be driven in-process, so the unlink is seamed
+// (removeFile; its production default is os.Remove, pinned below).
+func TestRemoveIfOwnReadsAVanishedFileAsNotOwn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "serve.pid")
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	saved := removeFile
+	t.Cleanup(func() { removeFile = saved })
+	removeFile = func(p string) error {
+		_ = os.Remove(p) // the other stop won
+		return &os.PathError{Op: "remove", Path: p, Err: fs.ErrNotExist}
+	}
+	if r := RemoveIfOwn(path, 4242); r.Removed || r.Err != nil {
+		t.Fatalf("a file another party removed between the read and the unlink = %+v; want not own (removed concurrently), no refusal", r)
+	}
+	if reflect.ValueOf(saved).Pointer() != reflect.ValueOf(os.Remove).Pointer() {
+		t.Fatal("removeFile's production default must be os.Remove")
 	}
 }

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -50,10 +51,12 @@ func TestProbeCLIsReportARefusedURLAsItsOwnVerdict(t *testing.T) {
 		if !strings.Contains(tail[:cont], "refused++") {
 			t.Errorf("%s: the refusal arm must count refused++ before continuing", tc.file)
 		}
-		if !strings.Contains(body, `"refused", refused`) && !strings.Contains(body, "refused=%d") {
+		// The counters live in each walk's tally struct since batch 7b
+		// review round 8 (c.refused, tally.refused); a bare local is fine too.
+		if !regexp.MustCompile(`"refused", (\w+\.)?refused\b`).MatchString(body) && !strings.Contains(body, "refused=%d") {
 			t.Errorf("%s: the summary must report the refused count", tc.file)
 		}
-		if !strings.Contains(body, "if refused > 0 {\n\t\treturn fmt.Errorf(") {
+		if !regexp.MustCompile(`if (\w+\.)?refused > 0 \{\n\t\treturn fmt\.Errorf\(`).MatchString(body) {
 			t.Errorf("%s: a run with refused rows must exit nonzero", tc.file)
 		}
 		if !strings.Contains(tail[:cont], "logger.Error(") {

@@ -99,7 +99,10 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	}
 	logger.Info("mark-gone-repos starting", "candidates", len(cands), "dry_run", dryRun)
 
-	var stamped, cleared, alreadyGone, alive, skipped, stampFailed, refused int
+	// The tally IS the report's struct (batch 7b review round 8): a
+	// positional literal built from seven locals at the interrupt was one
+	// swapped pair from logging a counter under another's key.
+	var tally markGoneCounts
 	// v0.29.7: a manual run is a verification too. On every gone-stamped
 	// row it probes — definitive-gone OR not definitive — stamp the
 	// check so the scheduler's recheck ticker (the same rule, see
@@ -118,7 +121,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				return // the cancel landed mid-statement: the loop top, or the post-loop check, reports it
 			}
 			logger.Warn("failed to stamp gone check — rerun retries", "repo_id", c.RepoID, "error", err)
-			stampFailed++
+			tally.stampFailed++
 		}
 	}
 	// Interrupted: what landed stays (every stamp is its own statement),
@@ -130,7 +133,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	// or from an UPDATE fell into that arm's failure WARN and counter — one
 	// row counted as skipped, a second WARN for the stamp on the dead ctx).
 	interrupted := func() error {
-		return markGoneInterruptedReport(logger, markGoneCounts{stamped, cleared, alreadyGone, alive, skipped, refused, stampFailed}, len(cands), dryRun, ctx.Err())
+		return markGoneInterruptedReport(logger, tally, len(cands), dryRun, ctx.Err())
 	}
 	for _, c := range cands {
 		if ctx.Err() != nil {
@@ -149,7 +152,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// skipped like an indeterminate probe, check stamped.
 			logger.Warn("redirect target carries credentials — not followed; the stored URL is clean, skipping",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
-			skipped++
+			tally.skipped++
 			stampChecked(c)
 			continue
 		}
@@ -159,7 +162,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// corrected, so it has its own counter and fails the run.
 			logger.Error("repo URL carries credentials — not probed; correct repo_git",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
-			refused++
+			tally.refused++
 			stampChecked(c)
 			continue
 		}
@@ -169,20 +172,20 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// a gone row (the ticker's rule).
 			logger.Warn("probe failed — skipping (rerun retries)",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
-			skipped++
+			tally.skipped++
 			stampChecked(c)
 			continue
 		}
 		switch {
 		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			if c.GoneStamped {
-				alreadyGone++
+				tally.alreadyGone++
 				stampChecked(c)
 				continue
 			}
 			if dryRun {
 				logger.Info("would stamp gone", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
-				stamped++
+				tally.stamped++
 				continue
 			}
 			if err := store.MarkRepoGone(ctx, c.RepoID); err != nil {
@@ -190,19 +193,19 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 					return interrupted()
 				}
 				logger.Warn("failed to stamp gone", "repo_id", c.RepoID, "error", err)
-				skipped++
+				tally.skipped++
 				continue
 			}
-			stamped++
+			tally.stamped++
 		case status >= 200 && status < 300:
 			if !c.GoneStamped {
-				alive++
+				tally.alive++
 				continue
 			}
 			// Resurrection: the forge serves the repo again.
 			if dryRun {
 				logger.Info("would clear gone + re-enqueue", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
-				cleared++
+				tally.cleared++
 				continue
 			}
 			// v0.28.6 (Copilot round): clear + re-enqueue are ONE
@@ -220,15 +223,15 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				// completion line's alive_unstamped stays accurate.
 				logger.Warn("failed to resurrect repo — nothing committed, rerun retries",
 					"repo_id", c.RepoID, "error", err)
-				skipped++
+				tally.skipped++
 				continue
 			}
-			cleared++
+			tally.cleared++
 		default:
 			// 3xx that didn't resolve, 403/429/5xx — indeterminate.
 			logger.Warn("indeterminate probe status — skipping (rerun retries)",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
-			skipped++
+			tally.skipped++
 			stampChecked(c)
 		}
 	}
@@ -237,14 +240,14 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	}
 
 	logger.Info("mark-gone-repos complete",
-		"candidates", len(cands), "stamped_gone", stamped, "already_gone", alreadyGone,
-		"resurrected", cleared, "alive_unstamped", alive, "skipped", skipped,
-		"refused", refused, "check_stamp_failed", stampFailed, "dry_run", dryRun)
-	if skipped > 0 || stampFailed > 0 {
+		"candidates", len(cands), "stamped_gone", tally.stamped, "already_gone", tally.alreadyGone,
+		"resurrected", tally.cleared, "alive_unstamped", tally.alive, "skipped", tally.skipped,
+		"refused", tally.refused, "check_stamp_failed", tally.stampFailed, "dry_run", dryRun)
+	if tally.skipped > 0 || tally.stampFailed > 0 {
 		logger.Info("some candidates were skipped on indeterminate probes or could not be stamped — re-run to retry them")
 	}
-	if refused > 0 {
-		return fmt.Errorf("%d candidate(s) have a repo_git carrying credentials — correct them, then rerun", refused)
+	if tally.refused > 0 {
+		return fmt.Errorf("%d candidate(s) have a repo_git carrying credentials — correct them, then rerun", tally.refused)
 	}
 	return nil
 }

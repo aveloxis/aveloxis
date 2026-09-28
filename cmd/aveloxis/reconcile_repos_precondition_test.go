@@ -32,15 +32,15 @@ func TestReconcileExitsNonzeroOnUnmetPrecondition(t *testing.T) {
 	if sites < 3 {
 		t.Fatalf("expected at least the three consolidation call sites (heal, fallback consolidation, consolidation), found %d", sites)
 	}
-	wired := strings.Count(ws, "errors.Is(herr, db.ErrEmailMessageIndexesNotReady) { preconditionUnmet++ }") +
-		strings.Count(ws, "errors.Is(derr, db.ErrEmailMessageIndexesNotReady) { preconditionUnmet++ }")
+	wired := strings.Count(ws, "errors.Is(herr, db.ErrEmailMessageIndexesNotReady) { c.preconditionUnmet++ }") +
+		strings.Count(ws, "errors.Is(derr, db.ErrEmailMessageIndexesNotReady) { c.preconditionUnmet++ }")
 	if wired != sites {
 		t.Errorf("every consolidation call site must classify the sentinel INTO preconditionUnmet: %d sites, %d wired", sites, wired)
 	}
-	if !strings.Contains(ws, "if preconditionUnmet > 0 {") || !strings.Contains(s, "return fmt.Errorf(\"%d stranded repos refused for the email_message index precondition") {
+	if !strings.Contains(ws, "if c.preconditionUnmet > 0 {") || !strings.Contains(s, "return fmt.Errorf(\"%d stranded repos refused for the email_message index precondition") {
 		t.Error("the summary must return an error (nonzero exit) when any consolidation was refused for the precondition")
 	}
-	counts, advice, check := strings.Index(s, "reconcile-repos%s: dead="), strings.Index(s, "re-run to retry skipped repos"), strings.Index(s, "if preconditionUnmet > 0 {")
+	counts, advice, check := strings.Index(s, "reconcile-repos%s: dead="), strings.Index(s, "re-run to retry skipped repos"), strings.Index(s, "if c.preconditionUnmet > 0 {")
 	if counts < 0 || advice < 0 || check < 0 || !(counts < advice && advice < check) {
 		t.Errorf("the counts line, then the skip advice, must print before the precondition error (the operator sees what did run): counts=%d advice=%d check=%d", counts, advice, check)
 	}

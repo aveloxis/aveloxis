@@ -92,12 +92,14 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		return fmt.Errorf("listing stranded repos: %w", err)
 	}
 
-	var dead, healedDataless, consolidated, enqueued, skipped, refused int
+	// The tally IS the report's struct (batch 7b review round 8): a
+	// positional literal built from six locals at the interrupt was one
+	// swapped pair from printing a counter under another's label.
+	var c reconcileCounts
 	// v0.28.18: consolidation arms refused by the email_message index
 	// precondition. The loop keeps going (dead / re-enqueue arms need no
 	// index) but the run exits nonzero so a script cannot read a fully
 	// refused reconcile as success.
-	preconditionUnmet := 0
 	// Interrupted (batch 7b review round 5, the mark-gone shape): what landed
 	// stays — every store write is its own statement or transaction — and a
 	// rerun walks the whole cohort again (idempotent; no resume marker).
@@ -109,7 +111,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		mode = " (dry run — nothing written)"
 	}
 	interrupted := func() error {
-		return reconcileInterruptedReport(os.Stdout, mode, reconcileCounts{dead, healedDataless, consolidated, enqueued, skipped, refused, preconditionUnmet}, total, ctx.Err())
+		return reconcileInterruptedReport(os.Stdout, mode, c, total, ctx.Err())
 	}
 	for _, sr := range stranded {
 		if ctx.Err() != nil {
@@ -124,7 +126,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			// skipped, not refused.
 			logger.Warn("reconcile: redirect target carries credentials — not followed; the stored URL is clean, skipping",
 				"repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
-			skipped++
+			c.skipped++
 			continue
 		}
 		if errors.Is(rerr, platform.ErrURLUserinfo) {
@@ -132,12 +134,12 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			// credentials until repo_git is corrected (v0.29.57).
 			logger.Error("reconcile: repo URL carries credentials — not probed; correct repo_git",
 				"repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
-			refused++
+			c.refused++
 			continue
 		}
 		if rerr != nil {
 			logger.Warn("reconcile: redirect check failed — skipping this pass", "repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
-			skipped++
+			c.skipped++
 			continue
 		}
 		switch {
@@ -150,11 +152,11 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						return interrupted()
 					}
 					logger.Warn("reconcile: archive failed", "repo_id", sr.RepoID, "error", err)
-					skipped++
+					c.skipped++
 					continue
 				}
 			}
-			dead++
+			c.dead++
 		case !strings.EqualFold(normalizeReconcileURL(finalURL), normalizeReconcileURL(sr.GitURL)):
 			// Renamed upstream. Tracked winner → heal/consolidate;
 			// untracked target → re-enqueue and let prelim rename it
@@ -165,7 +167,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 					return interrupted()
 				}
 				logger.Warn("reconcile: winner lookup failed — skipping", "repo_id", sr.RepoID, "error", ferr)
-				skipped++
+				c.skipped++
 				continue
 			}
 			switch {
@@ -179,9 +181,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						}
 						logger.Warn("reconcile: heal failed — skipping", "repo_id", sr.RepoID, "error", herr)
 						if errors.Is(herr, db.ErrEmailMessageIndexesNotReady) {
-							preconditionUnmet++
+							c.preconditionUnmet++
 						}
-						skipped++
+						c.skipped++
 						continue
 					}
 					if !healed {
@@ -203,16 +205,16 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 							}
 							logger.Warn("reconcile: fallback consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
 							if errors.Is(derr, db.ErrEmailMessageIndexesNotReady) {
-								preconditionUnmet++
+								c.preconditionUnmet++
 							}
-							skipped++
+							c.skipped++
 							continue
 						}
-						consolidated++
+						c.consolidated++
 						continue
 					}
 				}
-				healedDataless++
+				c.healedDataless++
 			case winnerID > 0 && winnerID != sr.RepoID:
 				fmt.Printf("  consolidate (data-bearing dup): %s -> repo %d (dup %d)\n", sr.GitURL, winnerID, sr.RepoID)
 				if !dryRun {
@@ -226,13 +228,13 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						}
 						logger.Warn("reconcile: consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
 						if errors.Is(derr, db.ErrEmailMessageIndexesNotReady) {
-							preconditionUnmet++
+							c.preconditionUnmet++
 						}
-						skipped++
+						c.skipped++
 						continue
 					}
 				}
-				consolidated++
+				c.consolidated++
 			default:
 				fmt.Printf("  enqueue (renamed, target untracked): %s (repo %d)\n", sr.GitURL, sr.RepoID)
 				if !dryRun {
@@ -241,11 +243,11 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 							return interrupted()
 						}
 						logger.Warn("reconcile: enqueue failed", "repo_id", sr.RepoID, "error", err)
-						skipped++
+						c.skipped++
 						continue
 					}
 				}
-				enqueued++
+				c.enqueued++
 			}
 		default:
 			// Alive at its own URL — a lost queue row. Restore
@@ -257,11 +259,11 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						return interrupted()
 					}
 					logger.Warn("reconcile: enqueue failed", "repo_id", sr.RepoID, "error", err)
-					skipped++
+					c.skipped++
 					continue
 				}
 			}
-			enqueued++
+			c.enqueued++
 		}
 	}
 	if ctx.Err() != nil {
@@ -269,23 +271,23 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 	}
 
 	fmt.Printf("reconcile-repos%s: dead=%d healed_dataless=%d consolidated=%d enqueued=%d skipped=%d refused=%d of %d stranded\n",
-		mode, dead, healedDataless, consolidated, enqueued, skipped, refused, total)
-	if skipped > 0 {
+		mode, c.dead, c.healedDataless, c.consolidated, c.enqueued, c.skipped, c.refused, total)
+	if c.skipped > 0 {
 		fmt.Println("re-run to retry skipped repos")
 	}
-	if refused > 0 {
-		fmt.Printf("%d repos have a repo_git carrying credentials — correct them, then rerun\n", refused)
+	if c.refused > 0 {
+		fmt.Printf("%d repos have a repo_git carrying credentials — correct them, then rerun\n", c.refused)
 	}
-	if preconditionUnmet > 0 {
+	if c.preconditionUnmet > 0 {
 		// db.DeployStepsAdvice, not a literal migrate: on a release whose
 		// checklist migrates without --skip-views (v0.29.57), the literal
 		// stamped the binary around its view definitions (L10 round 3).
 		logger.Error("precondition unmet — consolidations refused: run "+db.DeployStepsAdvice+" on this binary first, then re-run",
-			"repos_refused", preconditionUnmet)
-		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run %s first", preconditionUnmet, db.DeployStepsAdvice)
+			"repos_refused", c.preconditionUnmet)
+		return fmt.Errorf("%d stranded repos refused for the email_message index precondition — run %s first", c.preconditionUnmet, db.DeployStepsAdvice)
 	}
-	if refused > 0 {
-		return fmt.Errorf("%d stranded repos have a repo_git carrying credentials — correct them, then rerun", refused)
+	if c.refused > 0 {
+		return fmt.Errorf("%d stranded repos have a repo_git carrying credentials — correct them, then rerun", c.refused)
 	}
 	return nil
 }

@@ -2338,7 +2338,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.distribution_tracking_start_interval_s</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code></p></td>
-<td><p>v0.24.0. Minimum gap between successful scan STARTS, enforced by the one dispatcher whatever the worker count: at most 120 starts/hour (2,880/day) at the default, comfortably under any known external rate limit. The same minimum-gap primitive as scancode (post-v0.21.3), where a 90 s gap never binds because scans run minutes; here scans take seconds, so it is the binding start-rate cap.</p></td>
+<td><p>v0.24.0. Minimum gap between successful scan STARTS, enforced by the one dispatcher whatever the worker count: at most 120 starts/hour (2,880/day) at the default, comfortably under any known external rate limit. The same minimum-gap primitive as scancode (post-v0.21.3); a gap binds while the average scan is shorter than gap × workers (3 min at scancode’s defaults of 90 s and 2 workers) — here scans take seconds, so it is always the binding start-rate cap.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.distribution_tracking_polite_email</span></code></p></td>
 <td><p>string</p></td>

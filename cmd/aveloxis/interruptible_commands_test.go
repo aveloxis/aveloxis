@@ -94,6 +94,25 @@ func TestToolCommandsReportFailures(t *testing.T) {
 	if got := toolFailureText(errors.New("exit status 1")); got != "exit status 1" {
 		t.Errorf("another error = %q; want it unchanged", got)
 	}
+	// The off-PATH line names the directory to export when this code chose
+	// it (round 16: scc's `go install` prints nothing, and the line said only
+	// "export its directory").
+	t.Setenv("GOBIN", "/opt/probe-gobin")
+	for _, tool := range collector.ExternalTools() {
+		msg := offPathMessage(context.Background(), tool)
+		if tool.BinDir != nil && !strings.Contains(msg, `export PATH="/opt/probe-gobin:$PATH"`) {
+			t.Errorf("%s off PATH: %q; want the directory the install used", tool.Name, msg)
+		}
+	}
+	if scc := offPathMessage(context.Background(), collector.ExternalTools()[0]); !strings.Contains(scc, "scc installed in /opt/probe-gobin") {
+		t.Errorf("scc off PATH: %q; want GoBinDir named", scc)
+	}
+	// When the directory cannot be determined the line names the error and
+	// how to find it (round 19: this branch was untested).
+	failing := collector.ExternalTool{Name: "x", BinDir: func(context.Context) (string, error) { return "", errors.New("probe-err") }}
+	if msg := offPathMessage(context.Background(), failing); !strings.Contains(msg, "probe-err") || !strings.Contains(msg, "go env GOBIN GOPATH") {
+		t.Errorf("an undeterminable directory: %q; want the error and the go env hint", msg)
+	}
 	for _, f := range []string{"install_tools_cmd.go", "upgrade_tools_cmd.go"} {
 		code := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/"+f))
 		if !strings.Contains(code, "toolFailureText(") {

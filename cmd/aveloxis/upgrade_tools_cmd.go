@@ -28,8 +28,9 @@ import (
 //
 //   - scc / scorecard — re-run their install function. scc uses
 //     `go install ...@latest` so the install IS the upgrade. scorecard
-//     re-downloads the latest tarball and overwrites the existing
-//     binary in $GOPATH/bin.
+//     re-downloads the latest tarball into collector.GoBinDir (where
+//     `go install` would put it), and warns when an older copy
+//     elsewhere is first on PATH.
 //
 //   - scancode — `pipx upgrade scancode-toolkit-mini` rather than
 //     uninstall + reinstall, to preserve any operator customizations

@@ -59,7 +59,11 @@ func TestMarkGoneReposDoesNotMigrate(t *testing.T) {
 // And the probe must be the SHARED resolver (SR-17), not a private
 // HTTP client.
 func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
-	src := markGoneSrc(t)
+	// Every needle reads code, not prose (batch 7b review round 8: the
+	// probe's cancel arm and the stamp closure were matched on the raw
+	// source, so a comment line inside an arm was a false red and a
+	// commented-out arm a false green).
+	src := srctest.StripGoComments(markGoneSrc(t))
 	if !strings.Contains(src, "collector.ResolveRedirectTarget(") {
 		t.Error("the probe must reuse collector.ResolveRedirectTarget — one probe for prelim, reconcile-repos, and this command")
 	}
@@ -88,7 +92,7 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	if probe < 0 || cancelArm < probe || cancelArm > i {
 		t.Errorf("the probe's cancel arm `if perr != nil && ctx.Err() != nil { return interrupted() }` must follow the probe (%d) and precede the error arms (%d); at %d", probe, i, cancelArm)
 	}
-	if !strings.Contains(src, "if dryRun || !c.GoneStamped || ctx.Err() != nil {\n\t\t\treturn") {
+	if regexIndex(src, `if dryRun \|\| !c\.GoneStamped \|\| ctx\.Err\(\) != nil \{\s*return\s*\n`) < 0 {
 		t.Error("stampChecked must skip a cancelled ctx: the stamp would fail, and that is not a stamp failure")
 	}
 	// Round 2: the check-then-act precheck covers only a cancel that

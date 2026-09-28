@@ -44,7 +44,7 @@ func TestGitLabCallbackUserReadIsBounded(t *testing.T) {
 			select {
 			case <-r.Context().Done(): // the bounded request gave up
 			case <-time.After(5 * time.Second):
-				fmt.Fprint(w, `{"id":1,"username":"x"}`)
+				fmt.Fprint(w, `{"id":1}`) // no username: refused before the store (round 7)
 			}
 		default:
 			w.WriteHeader(http.StatusNotFound)

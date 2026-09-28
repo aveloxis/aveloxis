@@ -63,8 +63,7 @@ func runInstallTools(parent context.Context) error {
 		if path, err := exec.LookPath(tool.CheckBinary); err == nil {
 			fmt.Printf("✓ %s installed: %s\n", tool.Name, path)
 		} else {
-			// The InstallFunc already printed tool-specific PATH guidance.
-			fmt.Printf("⚠ %s installed but not found on PATH — export its directory before `aveloxis start`.\n", tool.Name)
+			fmt.Println(offPathMessage(ctx, tool))
 			offPath++
 		}
 		installed++
@@ -94,6 +93,26 @@ func installToolsReport(failed, offPath, total int) error {
 		return fmt.Errorf("%d of %d tools installed but not on PATH — export the directory before `aveloxis start`", offPath, total)
 	}
 	return nil
+}
+
+// offPathMessage tells the operator what to export when a tool installed
+// but exec.LookPath cannot see it — the outcome that now exits non-zero
+// (review round 15). For scc (`go install`) and scorecard the directory is
+// Go's binary directory as the go tool reports it (collector.GoBinDir,
+// rounds 16–17: `go install` prints nothing on success); pipx chooses its
+// own and prints it, so the scancode line points there.
+func offPathMessage(ctx context.Context, tool collector.ExternalTool) string {
+	if tool.BinDir != nil {
+		dir, err := tool.BinDir(ctx)
+		if err == nil {
+			return fmt.Sprintf("⚠ %s installed in %s, which is not on PATH — export PATH=\"%s:$PATH\" before `aveloxis start`.", tool.Name, dir, dir)
+		}
+		// `go install` prints nothing, and scorecard's installer printed a
+		// destination this second lookup could not confirm: say what could
+		// not be determined (round 18).
+		return fmt.Sprintf("⚠ %s installed but not found on PATH, and its install directory could not be determined (%v) — find it with `go env GOBIN GOPATH` and export it before `aveloxis start`.", tool.Name, err)
+	}
+	return fmt.Sprintf("⚠ %s installed but not found on PATH — export the directory its installer printed above before `aveloxis start`.", tool.Name)
 }
 
 // toolFailureText names a per-tool timeout as one (review round 14): both

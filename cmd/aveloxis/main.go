@@ -2108,7 +2108,7 @@ func stopComponent(component string) (bool, error) {
 		errs = append(errs, fmt.Errorf("pidfile left in place — inspect and delete it by hand before the next start: %w", err))
 	case !found:
 		// no pidfile — fall through to pgrep
-	case !pidfile.IsRunning(pid):
+	case !stopIsRunning(pid):
 		// Only the file read as pid is removed: between the read above and
 		// this call a concurrent `start` may have written its own child's
 		// pid (or a second `stop` removed the file), and the message
@@ -2129,7 +2129,12 @@ func stopComponent(component string) (bool, error) {
 		if serr := signalProcess(component, pid); serr != nil {
 			errs = append(errs, serr)
 		} else {
-			pidfile.RemoveIfOwn(pidPath, pid)
+			// The process is stopping; a refused unlink leaves its file
+			// behind, and the operator hears why (round 9 — the docs say
+			// a file stop could not remove carries the error).
+			if r := pidfile.RemoveIfOwn(pidPath, pid); r.Err != nil {
+				fmt.Printf("%s: stopped (PID %d); its PID file could not be removed: %v — left in place; delete it by hand\n", component, pid, r.Err)
+			}
 			return true, nil
 		}
 	}
@@ -2163,6 +2168,13 @@ func stopComponent(component string) (bool, error) {
 	}
 	return stopped, errors.Join(errs...)
 }
+
+// stopIsRunning is stop's liveness check on the pidfile's PID — a seam so
+// a test can drive the race between stop's read and its removal (a
+// concurrent start rewriting the file) that reaches the stale arm's
+// default case (deploy-path review round 13). Production default
+// pidfile.IsRunning, pinned by TestStopLeavesAConcurrentlyReplacedPidfile.
+var stopIsRunning = pidfile.IsRunning
 
 // sendSignal delivers one signal to one PID. It is a seam so the
 // kernel's refusal (EPERM on another user's process) can be driven in

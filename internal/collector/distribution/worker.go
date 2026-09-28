@@ -26,10 +26,10 @@ import (
 //   - HTTP-only work → much shorter per-job duration (seconds
 //     instead of minutes-to-hours), so the default cadence is 6
 //     months instead of subprocess-tuned numbers.
-//   - Dispatcher uses v0.21.3 minimum-gap pacing (deadline-
-//     based) rather than the pre-v0.21.3 ticker throttle, so
-//     when all workers are idle they pick up new work as fast as
-//     the StartInterval allows.
+//   - Dispatcher uses v0.21.3 minimum-gap pacing: a deadline
+//     stamped after each successful start, so every two starts
+//     are at least StartInterval apart (the ticker it replaced:
+//     summary/changelog/v0.21.md, the v0.21.3 entry).
 
 // Store is the slice of PostgresStore the worker depends on.
 // Interface (not a *db.PostgresStore directly) so tests can

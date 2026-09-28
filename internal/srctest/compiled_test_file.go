@@ -19,10 +19,13 @@ import (
 // every platform CI runs. go/build leaves a file out SILENTLY — the package
 // still reports ok, and `-run` says "no tests to run" — when its name
 // starts with `_` or `.`, when it carries a GOOS or GOARCH suffix for
-// another platform, or when a `//go:build` line excludes it; and the go
-// tool never compiles anything under a `testdata` directory, a `_`- or
-// `.`-prefixed directory, or a directory with its own go.mod (a nested
-// module). A registry that proves "the named test exists" by walking
+// another platform, or when a `//go:build` line excludes it; and the
+// `./...` pattern never matches a `testdata` directory, a `_`- or
+// `.`-prefixed directory, a directory with its own go.mod (a nested
+// module), or a package below a `vendor` directory (the vendor directory
+// itself is matched). A symlinked directory is also never matched; the walks
+// that call this (WalkDir, ReadDir with IsDir) never follow one, so the
+// predicate does not check for it. A registry that proves "the named test exists" by walking
 // _test.go files must walk only the files that compile, or a test moved
 // into `_zz_test.go` — or declared under scripts/testdata — still "exists"
 // while never running (url-log redaction review rounds 9–10; the
@@ -50,9 +53,13 @@ func CompiledTestFile(t testing.TB, root, path string) bool {
 	}
 	if rel != "." {
 		probe := root
-		for _, el := range strings.Split(rel, string(filepath.Separator)) {
+		els := strings.Split(rel, string(filepath.Separator))
+		for i, el := range els {
 			if el == "testdata" || strings.HasPrefix(el, "_") || strings.HasPrefix(el, ".") {
 				return false // the go tool never looks inside
+			}
+			if el == "vendor" && i < len(els)-1 {
+				return false // `./...` lists a vendor directory but no package below it (round 13)
 			}
 			probe = filepath.Join(probe, el)
 			if _, err := os.Stat(filepath.Join(probe, "go.mod")); err == nil {

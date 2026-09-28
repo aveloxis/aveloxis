@@ -20,9 +20,9 @@ import (
 // literal and a Background ctx escaped this list); this pin holds the
 // structural facts — the WithTimeout wrap is present and r.Context() is
 // never handed on — and bans the spellings rounds 4–5 met. The
-// /user/emails read (fetchGitHubPrimaryEmail) receives the handler's ctx
-// and has no runtime twin: reaching it lands in completeOAuthLogin, which
-// needs a store; recorded boundary.
+// /user/emails read (fetchGitHubPrimaryEmail) has its DB-tier twin,
+// TestGitHubCallbackEmailsReadIsBounded (round 7: reaching it completes the
+// login, which needs a store).
 func TestOAuthCallbacksAreBounded(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/web/server.go"))
 	for _, fn := range []struct {

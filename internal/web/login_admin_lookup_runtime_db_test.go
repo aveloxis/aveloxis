@@ -22,8 +22,9 @@ import (
 // round-11 record "a runtime version needs a store-side fault the fixtures
 // cannot inject" was wrong). The fault is an AFTER INSERT OR UPDATE trigger
 // on aveloxis_ops.users that sets the probe's own row's admin to NULL (the
-// column is made nullable for the test) and records every write's admin
-// value: UpsertOAuthUser's write succeeds, then IsUserAdmin's Scan of the
+// column is made nullable for the test) and records every INSERT and
+// UPDATE with its admin value (DELETE and TRUNCATE are the statement
+// trigger's): UpsertOAuthUser's write succeeds, then IsUserAdmin's Scan of the
 // NULL fails — the ERROR arm's input — while the row PERSISTS. Round 13's
 // trigger deleted the row instead, and a store write keyed by the user's id
 // (round 17: `s.store.SetUserAdmin(…, true)` in the arm; round 18: the same
@@ -82,6 +83,13 @@ func loginWithFailedAdminLookup(t *testing.T, dsn, provider string, returning bo
 			`DROP TRIGGER IF EXISTS ` + trigger + ` ON aveloxis_ops.users`,
 			`DROP FUNCTION IF EXISTS aveloxis_ops.` + trigger + `()`,
 			`DROP TABLE IF EXISTS aveloxis_ops.` + trigger + `_ids`,
+			`DO $d$ DECLARE r record; BEGIN
+				FOR r IN SELECT tgrelid::regclass AS rel FROM pg_trigger WHERE tgname = '` + trigger + `_all' LOOP
+					EXECUTE format('DROP TRIGGER IF EXISTS ` + trigger + `_all ON %s', r.rel);
+				END LOOP;
+			END $d$`,
+			`DROP FUNCTION IF EXISTS aveloxis_ops.` + trigger + `_all()`,
+			`DROP TABLE IF EXISTS aveloxis_ops.` + trigger + `_writes`,
 		} {
 			if _, err := pool.Exec(ctx, q); err != nil {
 				t.Logf("cleanup %q: %v", q, err)
@@ -107,25 +115,55 @@ func loginWithFailedAdminLookup(t *testing.T, dsn, provider string, returning bo
 	if _, err := pool.Exec(ctx, `ALTER TABLE aveloxis_ops.users ALTER COLUMN admin DROP NOT NULL`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `CREATE TABLE aveloxis_ops.`+trigger+`_ids (user_id int, admin boolean)`); err != nil {
+	if _, err := pool.Exec(ctx, `CREATE TABLE aveloxis_ops.`+trigger+`_ids (user_id int, login_name text, admin boolean)`); err != nil {
 		t.Fatal(err)
 	}
-	// Every write to the probe row is recorded with the admin value it
-	// carried; at depth 1 the row's flag is then set to NULL (the nested
+	// EVERY insert or update of a users row is recorded with its login and
+	// the admin value it carried (round 19: recording only the probe's row
+	// let an arm mint or promote ANOTHER account's admin row unseen); only
+	// the probe row's flag is then set to NULL, at depth 1 (the nested
 	// UPDATE fires the trigger at depth 2, which only records).
 	if _, err := pool.Exec(ctx, `CREATE FUNCTION aveloxis_ops.`+trigger+`() RETURNS trigger LANGUAGE plpgsql AS $f$
 		BEGIN
-			IF NEW.login_name = '`+login+`' THEN
-				INSERT INTO aveloxis_ops.`+trigger+`_ids VALUES (NEW.user_id, NEW.admin);
-				IF pg_trigger_depth() = 1 THEN
-					UPDATE aveloxis_ops.users SET admin = NULL WHERE user_id = NEW.user_id;
-				END IF;
+			INSERT INTO aveloxis_ops.`+trigger+`_ids VALUES (NEW.user_id, NEW.login_name, NEW.admin);
+			IF NEW.login_name = '`+login+`' AND pg_trigger_depth() = 1 THEN
+				UPDATE aveloxis_ops.users SET admin = NULL WHERE user_id = NEW.user_id;
 			END IF;
 			RETURN NULL;
 		END $f$`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `CREATE TRIGGER `+trigger+` AFTER INSERT OR UPDATE ON aveloxis_ops.users FOR EACH ROW EXECUTE FUNCTION aveloxis_ops.`+trigger+`()`); err != nil {
+		t.Fatal(err)
+	}
+	// Every OTHER table: the login writes users and nothing else (sessions
+	// live in memory, no mail is configured), so a statement-level trigger
+	// on every existing table of the three data schemas records any
+	// INSERT, UPDATE, DELETE or TRUNCATE there, and on users any DELETE or
+	// TRUNCATE (rounds 20–22: a session token, a group takeover and an
+	// approval each reached a table the fixture did not watch; one table at
+	// a time was the wrong level). What this cannot see — DDL, and a write
+	// a Go-side existence check keeps this empty fixture from provoking —
+	// the structural pin's two allowlists (receiver members, package-level
+	// names) refuse.
+	if _, err := pool.Exec(ctx, `CREATE TABLE aveloxis_ops.`+trigger+`_writes (tbl text)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION aveloxis_ops.`+trigger+`_all() RETURNS trigger LANGUAGE plpgsql AS $f$
+		BEGIN
+			INSERT INTO aveloxis_ops.`+trigger+`_writes VALUES (TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME || ' ' || TG_OP);
+			RETURN NULL;
+		END $f$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DO $d$ DECLARE r record; BEGIN
+		FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname IN ('aveloxis_ops', 'aveloxis_data', 'aveloxis_scan') AND c.relkind IN ('r', 'p')
+			AND c.relname <> 'users' AND c.relname NOT LIKE '`+trigger+`%' LOOP
+			EXECUTE format('CREATE TRIGGER `+trigger+`_all AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON %I.%I FOR EACH STATEMENT EXECUTE FUNCTION aveloxis_ops.`+trigger+`_all()', r.nspname, r.relname);
+		END LOOP;
+		EXECUTE 'CREATE TRIGGER `+trigger+`_all AFTER DELETE OR TRUNCATE ON aveloxis_ops.users FOR EACH STATEMENT EXECUTE FUNCTION aveloxis_ops.`+trigger+`_all()';
+	END $d$`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,17 +238,24 @@ func loginWithFailedAdminLookup(t *testing.T, dsn, provider string, returning bo
 	}
 	var seen int
 	var promoted bool
-	if err := pool.QueryRow(ctx, `SELECT min(user_id), bool_or(admin IS TRUE) FROM aveloxis_ops.`+trigger+`_ids`).Scan(&seen, &promoted); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (SELECT min(user_id) FROM aveloxis_ops.`+trigger+`_ids WHERE login_name = $1), COALESCE(bool_or(admin IS TRUE), FALSE) FROM aveloxis_ops.`+trigger+`_ids`, login).Scan(&seen, &promoted); err != nil {
 		t.Fatal(err)
 	}
 	if sess.UserID != seen {
 		t.Errorf("session user_id = %d, want the signed-in user's %d (the id the trigger saw)", sess.UserID, seen)
 	}
-	// The escalation the deleting fixture could not see (rounds 17–18): a
-	// write that sets admin = TRUE on the user's row promotes the NEXT
-	// login, whatever the session says now.
+	// The escalation the deleting fixture could not see (rounds 17–19): a
+	// write that sets admin = TRUE on any users row promotes a NEXT login —
+	// this user's or another account's — whatever the session says now.
 	if promoted {
-		t.Error("a write set admin = TRUE on the user's row during the login: the failed lookup promoted the user's next login")
+		t.Error("a write set admin = TRUE on a users row during the login: the failed lookup promoted the user's next login, or another account's")
+	}
+	var elsewhere []string
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(DISTINCT tbl), '{}') FROM aveloxis_ops.`+trigger+`_writes`).Scan(&elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if len(elsewhere) != 0 {
+		t.Errorf("the login wrote %v: it writes aveloxis_ops.users and nothing else — a session token, a group or an approval written here is an escalation (rounds 20–21)", elsewhere)
 	}
 	var adminNow *bool
 	if err := pool.QueryRow(ctx, `SELECT admin FROM aveloxis_ops.users WHERE user_id = $1`, seen).Scan(&adminNow); err != nil {

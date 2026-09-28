@@ -143,11 +143,13 @@ func TestInterruptedReportsExitNonZero(t *testing.T) {
 		}
 	}
 	for _, f := range []struct{ file, call string }{
-		{"cmd/aveloxis/reconcile_repos.go", "return reconcileInterruptedReport(os.Stdout, mode, "},
-		{"cmd/aveloxis/mark_gone_repos.go", "return markGoneInterruptedReport(logger, "},
+		// The tally itself, never a literal rebuilt from locals (round 8:
+		// a swapped positional pair printed a counter under another label).
+		{"cmd/aveloxis/reconcile_repos.go", "return reconcileInterruptedReport(os.Stdout, mode, c, total, ctx.Err())"},
+		{"cmd/aveloxis/mark_gone_repos.go", "return markGoneInterruptedReport(logger, tally, len(cands), dryRun, ctx.Err())"},
 	} {
 		if !strings.Contains(srctest.StripGoComments(srctest.Read(t, f.file)), f.call) {
-			t.Errorf("%s: the interrupted closure must return the report function's error (%s…), the shape this test drives", f.file, f.call)
+			t.Errorf("%s: the interrupted closure must return the report function's error over the walk's own tally (%s), the shape this test drives", f.file, f.call)
 		}
 	}
 }

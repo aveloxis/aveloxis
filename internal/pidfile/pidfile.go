@@ -12,6 +12,7 @@ package pidfile
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -85,10 +86,12 @@ func Read(path string) (int, error) {
 // is left in place. The report says what happened: Removed when the file
 // held pid and is gone; neither Removed nor Err when the file was not the
 // caller's — gone already (the parent's childExited arm and the child's own
-// defer both remove the same file), another pid, or unreadable; Err when
-// the file held pid but the unlink was refused (EACCES, EROFS — a
-// ~/.aveloxis another uid created), which round 8 of the deploy-path
-// review found stop reporting as "replaced or removed concurrently".
+// defer both remove the same file — including between this read and the
+// unlink, round 9), another pid, or unreadable; Err when the file held pid
+// but the unlink was refused (EACCES, EPERM, EROFS, EIO — a ~/.aveloxis
+// another uid created, a read-only mount), which round 8 of the
+// deploy-path review found stop reporting as "replaced or removed
+// concurrently".
 //
 // This is the package's ONLY removal (deploy-path review round 7): the
 // unconditional Remove had no production caller left and its doc still
@@ -106,20 +109,30 @@ func RemoveIfOwn(path string, pid int) Removal {
 	if err != nil || p != pid {
 		return Removal{}
 	}
-	if err := os.Remove(path); err != nil {
+	if err := removeFile(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Gone between the read and the unlink: another stop, or the
+			// parent's childExited arm, removed it — not a refusal (round 9).
+			return Removal{}
+		}
 		return Removal{Err: err}
 	}
 	return Removal{Removed: true}
 }
 
+// removeFile is the unlink RemoveIfOwn issues; a variable only so a test
+// can drive the file vanishing between the read and the unlink (production
+// default os.Remove, pinned by TestRemoveIfOwnReadsAVanishedFileAsNotOwn).
+var removeFile = os.Remove
+
 // Removal is RemoveIfOwn's report. A struct rather than (bool, error) so
 // the callers that only release their own file on the way out — every
 // component's defer, the parent's childExited arm — can discard it in
-// statement position; the one caller that tells the operator what
-// happened (stop's stale arm) reads both fields.
+// statement position; the callers that tell the operator what happened —
+// stop's stale arm (both fields) and its post-signal arm (Err) — read it.
 type Removal struct {
 	Removed bool  // the file held pid and is gone
-	Err     error // the file held pid but os.Remove refused; nil when it was not the caller's file
+	Err     error // the file held pid but the unlink was refused (never ENOENT); nil when it was not the caller's file
 }
 
 // IsRunning checks if the process with the given PID is still alive.

@@ -277,10 +277,36 @@ func TestChildrenRemoveOnlyTheirOwnPidfile(t *testing.T) {
 		}
 	}
 	stop := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/main.go"), "func stopComponent("))
-	if !strings.Contains(stop, ":= pidfile.RemoveIfOwn(pidPath, pid);") {
+	// Arm-specific (round 10: the post-signal line carries the same call
+	// and "could not be removed", so whole-body needles let the stale arm
+	// lose its refused-unlink case; TestStopReportsAStalePidfileItCannotRemove
+	// drives that case at runtime).
+	if !strings.Contains(stop, "switch r := pidfile.RemoveIfOwn(pidPath, pid); {") {
 		t.Error("stopComponent's stale arm must bind RemoveIfOwn's report and say what happened — \"cleaned up\" was printed while the file could have been left in place (round 7)")
 	}
-	for _, msg := range []string{"cleaned up", "could not be removed: %v", "replaced or removed concurrently"} {
+	if !strings.Contains(stop, "if r := pidfile.RemoveIfOwn(pidPath, pid); r.Err != nil {") {
+		t.Error("stopComponent's post-signal removal must read the report and name a refused unlink — the docs promise the error for a file stop could not remove (round 9)")
+	}
+	// The whole stale-arm switch as ONE block — each condition with its own
+	// message (rounds 11–12: swapping two messages, then rerouting a
+	// condition with `case r.Removed, r.Err == nil:`, each passed every
+	// piecewise pin and reproduced the round-7 incident). All three cases
+	// are driven at runtime (stop_stale_refused_test.go; round 13 made the
+	// default case's race drivable through the stopIsRunning seam, after
+	// code placed before this block took it over with every pin green). A
+	// reformatted switch is a loud false red here, the direction chosen.
+	const staleSwitch = "switch r := pidfile.RemoveIfOwn(pidPath, pid); {\n" +
+		"\t\tcase r.Removed:\n" +
+		"\t\t\tfmt.Printf(\"%s: stale PID file (PID %d not running), cleaned up\\n\", component, pid)\n" +
+		"\t\tcase r.Err != nil:\n" +
+		"\t\t\tfmt.Printf(\"%s: stale PID file (PID %d not running) could not be removed: %v — left in place; delete it by hand\\n\", component, pid, r.Err)\n" +
+		"\t\tdefault:\n" +
+		"\t\t\tfmt.Printf(\"%s: stale PID file (PID %d not running) was replaced or removed concurrently — left in place\\n\", component, pid)\n" +
+		"\t\t}"
+	if !strings.Contains(stop, staleSwitch) {
+		t.Error("stopComponent's stale arm must be exactly the three-case switch — Removed → \"cleaned up\", Err → \"could not be removed\", default → \"replaced or removed concurrently\" (rounds 7–12)")
+	}
+	for _, msg := range []string{"stale PID file (PID %d not running), cleaned up", "stale PID file (PID %d not running) could not be removed: %v", "stale PID file (PID %d not running) was replaced or removed concurrently"} {
 		if !strings.Contains(stop, msg) {
 			t.Errorf("stopComponent's stale arm must print %q for its case of the report — a refused unlink read as a concurrent replacement (round 8)", msg)
 		}

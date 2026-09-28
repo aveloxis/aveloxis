@@ -64,6 +64,9 @@ func TestCompiledTestFile(t *testing.T) {
 		{".hid", false},
 		{"nested", false},
 		{"nested/inner", false},
+		{"vendor", true},
+		{"vendor/v", false},
+		{"ok/vendor/v", false},
 	} {
 		d := filepath.Join(dir, filepath.FromSlash(tc.sub))
 		if err := os.MkdirAll(d, 0o755); err != nil {

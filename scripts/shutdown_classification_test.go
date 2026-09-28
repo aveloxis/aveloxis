@@ -80,7 +80,8 @@ func TestShutdownClassificationRatchet(t *testing.T) {
 		b.WriteString("# change; a new site is a build failure.\n")
 		b.WriteString("# Regenerate: AVELOXIS_UPDATE_BASELINE=1 go test ./scripts/ -run ShutdownClassification\n")
 		for _, v := range violations {
-			b.WriteString(v + "\n")
+			b.WriteString(v)
+			b.WriteByte('\n')
 		}
 		if err := os.WriteFile(baselineFile, []byte(b.String()), 0o644); err != nil {
 			t.Fatalf("write baseline: %v", err)

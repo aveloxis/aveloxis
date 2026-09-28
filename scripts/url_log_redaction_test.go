@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -357,7 +358,7 @@ func checkTrustedNamesInFile(rel string, fset *token.FileSet, f *ast.File, isTes
 		default: // logURL with a body
 			out.helper = true
 			if !helperRedactsInReturn(fd) {
-				add("%s:%d: logURL must RETURN platform.RedactURLUserinfo(...) (redact, then truncate) — TestEveryURLLogAttributeIsRedacted trusts that name; a helper also needs a runtime redaction test like internal/web's TestLogURLRedactsBeforeTruncating", rel, line)
+				add("%s:%d: logURL must RETURN platform.RedactURLUserinfo(...) (redact, then truncate) — TestEveryURLLogAttributeIsRedacted trusts that name; the helper's package also registers its runtime redaction test in logURLRuntimeTests", rel, line)
 			}
 		}
 	}
@@ -470,12 +471,17 @@ func TestBareRedactionsInLogCallsFixtures(t *testing.T) {
 }
 
 // logURLRuntimeTests names, per package defining a logURL helper, the
-// runtime test that drives the helper with a real credentialed URL and
-// asserts the redaction (review round 7: the source rule "the return
-// contains the redaction call" is an approximation — `RedactURLUserinfo(u)
-// [:0] + u` satisfies it — so the runtime test is the contract, and this
-// registry is what makes it required). A new helper's package adds its
-// entry; the named test must exist in a _test.go of that directory.
+// runtime test that drives the helper (review round 7: the source rule
+// "the return contains the redaction call" is an approximation —
+// `RedactURLUserinfo(u)[:0] + u` satisfies it — so the runtime test is the
+// contract, and this registry is what makes it required). What is CHECKED
+// (rounds 8–9): the named function is a top-level `func Test…(t *testing.T)`
+// in a _test.go of that directory that go test compiles on every platform
+// (srctest.CompiledTestFile: no `_`/`.` prefix, no GOOS/GOARCH suffix, no
+// build constraint at all), and its body contains a call expression
+// `logURL(` anywhere, closures included (a t.Run subtest counts). What it
+// asserts, and whether the call is REACHED — a skip or early return before
+// it, a dead branch, a closure never invoked — is the recorded boundary.
 var logURLRuntimeTests = map[string]string{
 	"internal/web": "TestLogURLRedactsBeforeTruncating",
 }
@@ -501,8 +507,8 @@ func TestLogURLHelpersRedact(t *testing.T) {
 			t.Errorf("%s defines a logURL helper but registers no runtime redaction test in logURLRuntimeTests — the source rule is an approximation; the runtime test is the contract", pkg)
 			continue
 		}
-		if !packageDeclaresTest(t, filepath.Join(root, pkg), name) {
-			t.Errorf("%s registers %s as its logURL runtime test, but no _test.go in that directory declares it", pkg, name)
+		if !packageRunsTestCallingHelper(t, root, filepath.Join(root, pkg), name, "logURL") {
+			t.Errorf("%s registers %s as its logURL runtime test, but no _test.go in that directory that go test compiles on every platform (srctest.CompiledTestFile) declares `func %s(t *testing.T)` with a body that calls logURL(", pkg, name, name)
 		}
 	}
 	for pkg := range logURLRuntimeTests {
@@ -512,9 +518,15 @@ func TestLogURLHelpersRedact(t *testing.T) {
 	}
 }
 
-// packageDeclaresTest reports whether a _test.go file in dir declares
-// `func <name>(`.
-func packageDeclaresTest(t testing.TB, dir, name string) bool {
+// packageRunsTestCallingHelper reports whether a _test.go file in dir that
+// go test compiles on every platform declares a top-level
+// `func <name>(t *testing.T)` whose body calls `<helper>(` (round 8: a text
+// match on `func <name>(` accepted an empty body, a helper that go test
+// never runs, and a file behind `//go:build never`; round 9: the header
+// scan alone accepted `_zz_test.go` and `zz_windows_test.go`, which
+// go/build leaves out by NAME — srctest.CompiledTestFile owns both rules
+// now, for this registry and its three siblings).
+func packageRunsTestCallingHelper(t testing.TB, root, dir, name, helper string) bool {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -524,15 +536,107 @@ func packageDeclaresTest(t testing.TB, dir, name string) bool {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		src, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		path := filepath.Join(dir, e.Name())
+		if !srctest.CompiledTestFile(t, root, path) {
+			continue
+		}
+		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(srctest.StripGoComments(string(src)), "func "+name+"(") {
+		if testFileRunsTestCallingHelper(t, path, string(src), name, helper) {
 			return true
 		}
 	}
 	return false
+}
+
+// testFileRunsTestCallingHelper is packageRunsTestCallingHelper's per-file
+// predicate on one file's source — the declaration and body rules only;
+// whether go test compiles the file is srctest.CompiledTestFile's, applied
+// by the directory walk. Split out so fixtures can drive it.
+func testFileRunsTestCallingHelper(t testing.TB, path, src, name, helper string) bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Recv != nil || fd.Name.Name != name || fd.Body == nil || !strings.HasPrefix(name, "Test") {
+			continue
+		}
+		if fd.Type.Params == nil || len(fd.Type.Params.List) != 1 {
+			continue
+		}
+		star, ok := fd.Type.Params.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		sel, ok := star.X.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "T" {
+			continue
+		}
+		calls := false
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				if id, ok := c.Fun.(*ast.Ident); ok && id.Name == helper {
+					calls = true
+				}
+			}
+			return !calls
+		})
+		if calls {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRegisteredRuntimeTestFixtures drives the registry's check (rounds
+// 8–9): an empty body, a body with no call to the helper, a helper function
+// that is not a Test, and a selector call are refused by the file
+// predicate; a Test that calls the helper is accepted (a t.Run closure
+// counts). The directory walk then refuses the files go test never
+// compiles — `_`-prefixed, a platform suffix, a build constraint — which
+// the file predicate cannot see (round 9: the name is not in the source).
+func TestRegisteredRuntimeTestFixtures(t *testing.T) {
+	for _, tc := range []struct {
+		name, fn, src string
+		want          bool
+	}{
+		{"calls the helper", "TestX", "package p\nimport \"testing\"\nfunc TestX(t *testing.T) { if logURL(\"u\") == \"\" { t.Fatal() } }\n", true},
+		{"calls the helper in a subtest closure", "TestX", "package p\nimport \"testing\"\nfunc TestX(t *testing.T) { t.Run(\"a\", func(t *testing.T) { _ = logURL(\"u\") }) }\n", true},
+		{"empty body", "TestX", "package p\nimport \"testing\"\nfunc TestX(t *testing.T) {}\n", false},
+		{"no call to the helper", "TestX", "package p\nimport \"testing\"\nfunc TestX(t *testing.T) { t.Skip() }\n", false},
+		{"not a Test", "newTestServer", "package p\nimport \"testing\"\nfunc newTestServer(t *testing.T) { _ = logURL(\"u\") }\n", false},
+		{"wrong parameter", "TestX", "package p\nimport \"testing\"\nfunc TestX(b *testing.B) { _ = logURL(\"u\") }\n", false},
+		{"helper through a selector is not the package helper", "TestX", "package p\nimport \"testing\"\nfunc TestX(t *testing.T) { _ = x.logURL(\"u\") }\n", false},
+	} {
+		if got := testFileRunsTestCallingHelper(t, "x_test.go", tc.src, tc.fn, "logURL"); got != tc.want {
+			t.Errorf("%s: runnable test calling the helper = %v; want %v", tc.name, got, tc.want)
+		}
+	}
+	calls := "package p\nimport \"testing\"\nfunc TestX(t *testing.T) { _ = logURL(\"u\") }\n"
+	for _, tc := range []struct {
+		name, file, src string
+		want            bool
+	}{
+		{"a plain file", "zz_test.go", calls, true},
+		{"an underscore-prefixed file go/build ignores", "_zz_test.go", calls, false},
+		{"another platform's suffix", "zz_windows_test.go", calls, false},
+		{"this platform's suffix is not a CI test either", "zz_" + runtime.GOOS + "_test.go", calls, false},
+		{"a build constraint", "zz_test.go", "//go:build never\n\n" + calls, false},
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, tc.file), []byte(tc.src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := packageRunsTestCallingHelper(t, dir, dir, "TestX", "logURL"); got != tc.want {
+			t.Errorf("%s: directory declares a compiled TestX calling the helper = %v; want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // TestTrustedNameFileFixtures drives the per-file arms that declarationsOfName

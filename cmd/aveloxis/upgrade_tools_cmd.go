@@ -6,7 +6,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -56,14 +59,28 @@ place. Without this, scancode emits a UserWarning on every scan that
 dominates stderr capture for diagnostics.
 
 Idempotent: re-running is safe. Tools not yet installed are reported but
-not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
+not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.
+
+Non-interactive: each tool runs in its own process group with pip and git
+prompts disabled (a Homebrew formula install never prompts), so credentials
+must come from configuration or a keyring; a tool that would have prompted
+fails at once. Each tool is bounded (the same bound as the monthly check);
+Ctrl-C ends the walk.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Ctrl-C or a SIGTERM ends the walk and kills the subprocess in
+			// flight; each tool shares the monthly check's bound (batch 4a
+			// review round 13 — see runInstallTools).
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
 			tools := collector.ExternalTools()
 			upgraded := 0
 			skipped := 0
 			failed := 0
 
 			for _, tool := range tools {
+				if ctx.Err() != nil {
+					return fmt.Errorf("upgrade-tools interrupted after %d of %d tools (upgrades are idempotent; rerun to continue): %w", upgraded+skipped+failed, len(tools), ctx.Err())
+				}
 				path, err := exec.LookPath(tool.CheckBinary)
 				if err != nil {
 					fmt.Printf("- %s not installed; run `aveloxis install-tools` first\n", tool.Name)
@@ -72,8 +89,14 @@ not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
 				}
 				fmt.Printf("Upgrading %s (currently at %s)...\n", tool.Name, path)
 
-				if upgradeErr := upgradeOne(cmd.Context(), tool); upgradeErr != nil {
-					fmt.Printf("x %s upgrade failed: %v\n", tool.Name, upgradeErr)
+				tctx, tcancel := context.WithTimeout(ctx, collector.ToolInstallBound())
+				upgradeErr := upgradeOne(tctx, tool)
+				tcancel()
+				if upgradeErr != nil {
+					if ctx.Err() != nil {
+						return fmt.Errorf("upgrade-tools interrupted while upgrading %s (%d of %d done; upgrades are idempotent, rerun to continue): %w", tool.Name, upgraded, len(tools), ctx.Err())
+					}
+					fmt.Printf("x %s upgrade failed: %s\n", tool.Name, toolFailureText(upgradeErr))
 					failed++
 					continue
 				}

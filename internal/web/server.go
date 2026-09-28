@@ -288,13 +288,13 @@ func (s *Server) Handler() http.Handler {
 // Secure is true in production (default), false when dev_mode is enabled.
 // HttpOnly is always true.
 
-// oauthCallbackTimeout bounds the OAuth callback's forge round trips (the
-// code exchange, /user, /user/emails): three sequential requests to one
-// forge, each normally under a second; 30 s matches the client-side bound
-// every other forge request in the tree carries (platform.HTTPClient's
-// dial and the scorecard probe), and a browser waiting on the callback is
-// better served by an error than by an unbounded spinner.
-const oauthCallbackTimeout = 30 * time.Second
+// oauthCallbackTimeout bounds the OAuth callback's forge round trips AS A
+// WHOLE (the code exchange, /user and, on GitHub, /user/emails share one
+// context): three sequential requests to one forge × the 10 s the scorecard
+// rate-limit probe grants one GitHub request (scorecard.go's client). A
+// browser waiting on the callback is better served by an error than by an
+// unbounded spinner. A var so the runtime test can shorten it.
+var oauthCallbackTimeout = 30 * time.Second
 
 func (s *Server) sessionCookie(token string) *http.Cookie {
 	return &http.Cookie{
@@ -792,7 +792,18 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		glBase = "https://gitlab.com"
 	}
 	client := s.glOAuth.Client(ctx, token)
-	resp, err := client.Get(glBase + "/api/v4/user")
+	// The bound must travel on the REQUEST: oauth2's client copies
+	// http.DefaultClient's zero Timeout and uses ctx to refresh a token
+	// and to select the base client (oauth2.HTTPClient), never as a
+	// per-request deadline, so a plain client.Get ran unbounded (batch 7c
+	// review round 4).
+	userReq, err := http.NewRequestWithContext(ctx, http.MethodGet, glBase+"/api/v4/user", nil)
+	if err != nil {
+		s.logger.Error("building the GitLab user request failed", "error", err)
+		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		return
+	}
+	resp, err := client.Do(userReq)
 	if err != nil {
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return

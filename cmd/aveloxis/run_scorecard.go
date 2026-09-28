@@ -117,7 +117,7 @@ func acquireRunScorecardPidfile() (func(), error) {
 	if err := pidfile.Write(path, os.Getpid()); err != nil {
 		return nil, fmt.Errorf("writing pidfile %s: %w", path, err)
 	}
-	return func() { pidfile.Remove(path) }, nil
+	return func() { pidfile.RemoveIfOwn(path, os.Getpid()) }, nil // never a survivor's file (round 6)
 }
 
 func runRunScorecard(cfgPath string, workers, olderThanDays, limit int) error {

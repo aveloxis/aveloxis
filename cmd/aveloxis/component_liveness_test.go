@@ -152,16 +152,28 @@ func TestComponentLivenessCallersFailClosed(t *testing.T) {
 	}
 }
 
-// pidfile.Remove's contract comment claimed "a stale PID file is handled
-// by the liveness check on the next start". A CORRUPT file is neither
-// stale nor live — the liveness check cannot reach it — so the comment
-// described a guarantee the code does not make.
+// pidfile.Remove's contract comment once claimed "a stale PID file is
+// handled by the liveness check on the next start". A CORRUPT file is
+// neither stale nor live — the liveness check cannot reach it — so the
+// comment described a guarantee the code does not make. Remove itself is
+// gone (deploy-path review round 7: no production caller, and a doc that
+// presented the unconditional removal as the normal one); RemoveIfOwn
+// carries the contract now, and the plain primitive must not come back —
+// its absence is what makes every removal in cmd/aveloxis a
+// compare-and-remove (TestChildrenRemoveOnlyTheirOwnPidfile).
 func TestPidfileRemoveContractDoesNotOverclaim(t *testing.T) {
 	src := srctest.Read(t, "internal/pidfile/pidfile.go")
-	doc := src[:strings.Index(src, "func Remove(")]
+	if strings.Contains(srctest.StripGoComments(src), "func Remove(") {
+		t.Fatal("internal/pidfile exports an unconditional Remove again — RemoveIfOwn(path, pid) is the one removal primitive (deploy-path round 7)")
+	}
+	at := strings.Index(src, "func RemoveIfOwn(")
+	if at < 0 {
+		t.Fatal("internal/pidfile: RemoveIfOwn not found")
+	}
+	doc := src[:at]
 	tail := srctest.NormalizeWS(strings.ReplaceAll(doc[strings.LastIndex(doc, "\n\n"):], "//", " "))
 	if strings.Contains(tail, "stale PID file is handled by the liveness check") {
-		t.Error("pidfile.Remove's contract must not claim the liveness check handles every leftover\n" +
+		t.Error("pidfile.RemoveIfOwn's contract must not claim the liveness check handles every leftover\n" +
 			"pidfile: a CORRUPT or UNREADABLE file never reaches IsRunning, and since round-11\n" +
 			"finding 2 that state is reported as UNKNOWN and refuses the start (round-11 finding 2).")
 	}

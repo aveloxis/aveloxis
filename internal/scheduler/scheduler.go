@@ -354,8 +354,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.logger.Info("supply-chain view refresh DISABLED by collection.supply_chain_refresh_hours = 0 — `aveloxis refresh-views --set supply-chain` refreshes them by hand")
 	}
 
-	// On startup: check for tool updates (monthly), then release any
-	// stale locks BEFORE processing leftover staging. Lock recovery
+	// On startup: release any stale locks BEFORE processing leftover
+	// staging (the monthly tool-update check follows them). Lock recovery
 	// is a single UPDATE that takes milliseconds; leftover staging
 	// can block for many minutes on a realistic backlog. Running
 	// lock recovery first gets the queue into a correct state

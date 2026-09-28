@@ -169,6 +169,9 @@ func TestConvergenceContractsHaveDrivingTests(t *testing.T) {
 			relSlash := filepath.ToSlash(rel)
 			if strings.HasSuffix(path, "_test.go") {
 				scannedTests++
+				if !srctest.CompiledTestFile(t, root, path) {
+					return nil // go test never compiles it (name, header, testdata/_/. dir, nested module): a driving test declared there does not exist
+				}
 				af, perr := parser.ParseFile(token.NewFileSet(), path, b, parser.SkipObjectResolution)
 				if perr != nil {
 					return fmt.Errorf("parse %s: %w", path, perr)

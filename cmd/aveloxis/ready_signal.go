@@ -54,9 +54,9 @@ func signalReady(logger *slog.Logger) {
 	if v == "" {
 		return
 	}
-	if err := os.Unsetenv(readyFDEnv); err != nil {
-		logger.Warn("readiness descriptor variable could not be unset — a grandchild would inherit it", "env", readyFDEnv, "error", err)
-	}
+	// Unsetenv cannot fail on Unix (syscall.Unsetenv returns nil), and this
+	// program is Unix-only (Setsid at the spawn); the result is not read.
+	_ = os.Unsetenv(readyFDEnv)
 	fd, err := strconv.Atoi(v)
 	if err != nil || fd < 0 {
 		logger.Warn("readiness descriptor is not a number — `aveloxis start` will report this process as still starting", "env", readyFDEnv, "value", v)

@@ -261,13 +261,16 @@ func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email st
 }
 
 // MarkSenderResolveAttempt records the outcome of one resolution attempt.
-// resolved=true is terminal (the sender drops out of the candidate set
-// permanently); resolved=false stamps last_attempt_at so the sender exits the
+// resolved=true is terminal (the candidate query's `COALESCE(r.resolved,
+// FALSE) = FALSE` excludes it; the operator reset, the v0.29.2 re-open
+// heal and — two processes only — a cooldown stamp racing a terminal one
+// write it back); resolved=false stamps last_attempt_at so the sender exits the
 // candidate pool until the cooldown elapses. On a terminal stamp source and
 // login are taken from the stamp, empty or not (a bot, an invalid address
-// and an email-only contributor are terminal too); a cooldown stamp only
-// advances last_attempt_at and KEEPS the earlier source and login (the DO
-// UPDATE's ELSE arms; TestMarkSenderResolveAttemptCooldownKeepsTheEarlierOutcome).
+// and an email-only contributor are terminal too); a cooldown stamp writes
+// resolved = false, advances last_attempt_at and KEEPS the earlier source
+// and login (the DO UPDATE's ELSE arms;
+// TestMarkSenderResolveAttemptCooldownKeepsTheEarlierOutcome).
 func (s *PostgresStore) MarkSenderResolveAttempt(ctx context.Context, email string, resolved bool, source, login string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.mailing_list_sender_resolve

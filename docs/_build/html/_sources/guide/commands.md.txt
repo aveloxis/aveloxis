@@ -696,6 +696,8 @@ Installs three external analysis tools: [scc](https://github.com/boyter/scc) (pe
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
+Exits non-zero if any tool fails to install, so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip, git and Homebrew prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`, `NONINTERACTIVE`), so credentials must come from configuration or a keyring and a tool that would have prompted fails at once; each tool is bounded by the same limit as the monthly update check, and Ctrl-C ends the walk between tools.
+
 ---
 
 ## `aveloxis upgrade-tools`
@@ -1049,7 +1051,12 @@ aveloxis reconcile-repos             # everything
 
 The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
-Re-run until stranded = 0; healed repos drop out of the set.
+Re-run until stranded = 0; healed repos drop out of the set. Since
+v0.29.68 `Ctrl-C` or a SIGTERM (`kill <pid>`) cancels the in-flight probe
+or statement, ends the walk and prints an interruption summary (what was
+archived, healed, consolidated and enqueued so far, with the dry-run marker
+when set); the exit is nonzero, every outcome is idempotent, and a rerun
+walks the whole cohort again (there is no resume marker).
 
 Both consolidation arms (the dataless heal and the per-pair merge)
 share `dedup-repos`' precondition: the v0.28.18 migrate must have built

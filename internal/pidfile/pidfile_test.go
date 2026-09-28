@@ -93,23 +93,6 @@ func TestRead_InvalidContent(t *testing.T) {
 	}
 }
 
-func TestRemove(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.pid")
-	os.WriteFile(path, []byte("12345"), 0o644)
-
-	Remove(path)
-
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("file should be removed")
-	}
-}
-
-func TestRemove_NonexistentIsNoOp(t *testing.T) {
-	// Should not panic or error.
-	Remove("/tmp/nonexistent-aveloxis-test.pid")
-}
-
 func TestPath_DefaultDir(t *testing.T) {
 	p := Path("serve")
 	if p == "" {
@@ -195,7 +178,7 @@ func TestRemoveIfOwnLeavesAnotherProcessesFile(t *testing.T) {
 	if err := Write(path, 4242); err != nil {
 		t.Fatal(err)
 	}
-	if RemoveIfOwn(path, 4243) {
+	if RemoveIfOwn(path, 4243).Removed {
 		t.Fatal("removed a file holding another PID")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -204,16 +187,46 @@ func TestRemoveIfOwnLeavesAnotherProcessesFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if RemoveIfOwn(path, 4242) {
-		t.Fatal("removed an unreadable file")
+	if r := RemoveIfOwn(path, 4242); r.Removed || r.Err != nil {
+		t.Fatalf("an unreadable file = %+v; want not own, no refusal", r)
 	}
 	if err := Write(path, 4242); err != nil {
 		t.Fatal(err)
 	}
-	if !RemoveIfOwn(path, 4242) {
-		t.Fatal("did not remove the caller's own file")
+	if r := RemoveIfOwn(path, 4242); !r.Removed || r.Err != nil {
+		t.Fatalf("the caller's own file = %+v; want removed", r)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("the caller's own file survived: %v", err)
+	}
+	if r := RemoveIfOwn(path, 4242); r.Removed || r.Err != nil {
+		t.Fatalf("a file already gone = %+v; want not own (removed concurrently), no refusal", r)
+	}
+}
+
+// TestRemoveIfOwnReportsARefusedUnlink (deploy-path review round 8): a file
+// that still holds the caller's pid but cannot be unlinked — a ~/.aveloxis
+// another uid created, a read-only mount — is neither removed nor "not own";
+// stop printed "replaced or removed concurrently" for it, a cause nothing
+// observed. The report carries the unlink error so the caller can name it.
+func TestRemoveIfOwnReportsARefusedUnlink(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "serve.pid")
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	r := RemoveIfOwn(path, 4242)
+	if r.Removed || r.Err == nil {
+		t.Fatalf("a refused unlink = %+v; want Removed=false with the os.Remove error", r)
+	}
+	if p, err := Read(path); err != nil || p != 4242 {
+		t.Fatalf("the file should still hold 4242: %d, %v", p, err)
 	}
 }

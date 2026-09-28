@@ -151,8 +151,8 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		// next snapshot replace.
 		//
 		// GitHub source errors do NOT set scanIncomplete. An ANSWER
-		// (403/404/304 — private repos, missing OAuth scope,
-		// archived/empty repos) is routinely benign and changes nothing;
+		// (403/404 — private repos, missing OAuth scope, archived/empty
+		// repos) is routinely benign and changes nothing;
 		// a NON-answer fails the whole scan instead (githubNonAnswers,
 		// below — v0.29.55).
 		scanIncomplete bool
@@ -257,9 +257,10 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	}
 
 	// Sources 3, 4, 5: GitHub (release assets, packages, manifests).
-	// Errors here keep WARN level. The client answers a 403/404/304 (a
+	// Errors here keep WARN level. The client answers a 403/404 (a
 	// private repo, a missing OAuth scope, an archived or empty repo)
-	// with nil, nil — those never reach these arms (worklist item 26);
+	// with nil, nil — those never reach these arms (worklist item 26); an
+	// unsolicited 304 does reach them, as a non-answer (round 8);
 	// what does is a rejected request or a NON-answer, and one non-answer
 	// fails the scan (below), so the later GitHub arms are skipped once
 	// one is recorded: their calls would be spent on a scan already lost.
@@ -435,7 +436,8 @@ func (s *CompositeScanner) Healthy() bool {
 // about the repository, so the scan must fail rather than be stored: any
 // error that is not an answer (platform.IsDefinitiveAnswer). Answers — 404,
 // 410, a non-rate-limit 403, 204, the pagination cap, a rejected request —
-// and 304 keep the pre-v0.29.55 treatment (routinely benign);
+// keep the pre-v0.29.55 treatment (routinely benign); an unsolicited 304 is
+// a non-answer (review round 8 of items 22–25);
 // a cancelled context is a shutdown, which the worker releases without a
 // strike.
 //

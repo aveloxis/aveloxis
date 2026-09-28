@@ -6,9 +6,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -28,6 +30,9 @@ func TestFleetWalkingCommandsAreInterruptible(t *testing.T) {
 		"backfill-mailing-list-projection": {"backfill_mailing_list_projection.go"},
 		"mark-gone-repos":                  {"mark_gone_repos.go"},
 		"heal-libyear":                     {"heal_libyear.go"},
+		"reconcile-repos":                  {"reconcile_repos.go"},
+		"install-tools":                    {"install_tools_cmd.go"},
+		"upgrade-tools":                    {"upgrade_tools_cmd.go"},
 	} {
 		var src strings.Builder
 		for _, f := range files {
@@ -62,5 +67,40 @@ func TestHealVulnerabilitiesReport(t *testing.T) {
 	other := errors.New("boom")
 	if err := backfillProjectionReport(1, 1, 1, other); !errors.Is(err, other) || strings.Contains(err.Error(), "interrupted") {
 		t.Errorf("backfill other error = %v; want it unchanged", err)
+	}
+}
+
+// TestToolCommandsReportFailures (batch 4a review round 14): install-tools
+// exits non-zero when a tool failed, like upgrade-tools; a per-tool timeout
+// is named as one in both CLIs instead of "context deadline exceeded" (with
+// upgrade-tools' pipx hint, wrong for a timeout).
+func TestToolCommandsReportFailures(t *testing.T) {
+	if err := installToolsReport(0, 0, 3); err != nil {
+		t.Errorf("no failures = %v; want nil", err)
+	}
+	if err := installToolsReport(1, 0, 3); err == nil || !strings.Contains(err.Error(), "1 of 3 tools failed") {
+		t.Errorf("one failure = %v; want an error naming 1 of 3", err)
+	}
+	if err := installToolsReport(0, 1, 3); err == nil || !strings.Contains(err.Error(), "not on PATH") {
+		t.Errorf("one off PATH = %v; want an error — serve's LookPath fails the same way (round 15)", err)
+	}
+	if err := installToolsReport(1, 1, 3); err == nil || !strings.Contains(err.Error(), "failed") || !strings.Contains(err.Error(), "off PATH") {
+		t.Errorf("both = %v; want both causes named", err)
+	}
+	wrapped := fmt.Errorf("pipx upgrade x: %w (if scancode was installed via pip ...)", context.DeadlineExceeded)
+	if got := toolFailureText(wrapped); !strings.Contains(got, "timed out after "+collector.ToolInstallBound().String()) || strings.Contains(got, "pipx") {
+		t.Errorf("a wrapped deadline = %q; want the per-tool bound named and the hint dropped", got)
+	}
+	if got := toolFailureText(errors.New("exit status 1")); got != "exit status 1" {
+		t.Errorf("another error = %q; want it unchanged", got)
+	}
+	for _, f := range []string{"install_tools_cmd.go", "upgrade_tools_cmd.go"} {
+		code := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/"+f))
+		if !strings.Contains(code, "toolFailureText(") {
+			t.Errorf("%s prints a tool failure without toolFailureText: a timeout reads as \"context deadline exceeded\"", f)
+		}
+	}
+	if code := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/install_tools_cmd.go"), "func runInstallTools(")); !strings.Contains(code, "return installToolsReport(failed, offPath, len(tools))") || !strings.Contains(code, "offPath++") {
+		t.Error("runInstallTools must count the off-PATH outcome and end with installToolsReport(failed, offPath, len(tools)) so neither exits 0")
 	}
 }

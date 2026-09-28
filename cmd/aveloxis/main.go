@@ -1469,45 +1469,17 @@ Requires Go for scc/scorecard. Requires Python 3.10+ for scancode.
 Tools installed:
   scc        — Code complexity analysis (repo_labor)
   scorecard  — OpenSSF Scorecard security checks (repo_deps_scorecard)
-  scancode   — Per-file license/copyright detection (aveloxis_scan, every 30 days)`,
+  scancode   — Per-file license/copyright detection (aveloxis_scan, every 30 days)
+
+Non-interactive: each tool runs in its own process group with pip and git
+prompts disabled (a Homebrew formula install never prompts), so credentials
+must come from configuration or a keyring; a tool that would have prompted
+fails at once. Each tool is bounded (the same bound as the monthly check);
+Ctrl-C ends the walk. Exits non-zero if any tool fails to install or lands
+off PATH, so ` + "`aveloxis install-tools && aveloxis start all`" + ` stops before
+a start without the tool.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tools := collector.ExternalTools()
-			installed := 0
-			failed := 0
-
-			for _, tool := range tools {
-				// Check if already installed.
-				if path, err := exec.LookPath(tool.CheckBinary); err == nil {
-					fmt.Printf("✓ %s already installed: %s\n", tool.Name, path)
-					installed++
-					continue
-				}
-
-				fmt.Printf("Installing %s — %s...\n", tool.Name, tool.Description)
-
-				if err := collector.RunToolInstall(cmd.Context(), tool); err != nil {
-					fmt.Printf("✗ Failed to install %s: %v\n  Manual install: %s\n", tool.Name, err, tool.InstallCmd)
-					failed++
-					continue
-				}
-
-				// Verify it's on PATH.
-				if path, err := exec.LookPath(tool.CheckBinary); err == nil {
-					fmt.Printf("✓ %s installed: %s\n", tool.Name, path)
-				} else {
-					// Don't print generic PATH advice — the InstallFunc
-					// already printed tool-specific guidance if needed.
-					fmt.Printf("⚠ %s installed but not found on PATH.\n", tool.Name)
-				}
-				installed++
-			}
-
-			fmt.Printf("\n%d/%d tools installed", installed, len(tools))
-			if failed > 0 {
-				fmt.Printf(", %d failed", failed)
-			}
-			fmt.Println()
-			return nil
+			return runInstallTools(cmd.Context())
 		},
 	}
 }
@@ -2137,14 +2109,27 @@ func stopComponent(component string) (bool, error) {
 	case !found:
 		// no pidfile — fall through to pgrep
 	case !pidfile.IsRunning(pid):
-		fmt.Printf("%s: stale PID file (PID %d not running), cleaning up\n", component, pid)
-		pidfile.Remove(pidPath)
+		// Only the file read as pid is removed: between the read above and
+		// this call a concurrent `start` may have written its own child's
+		// pid (or a second `stop` removed the file), and the message
+		// follows the report (rounds 7–8) — "cleaned up" was printed before
+		// an unconditional Remove once, and stayed after the removal became
+		// conditional; then a refused unlink (a ~/.aveloxis another uid
+		// created) read as "replaced or removed concurrently".
+		switch r := pidfile.RemoveIfOwn(pidPath, pid); {
+		case r.Removed:
+			fmt.Printf("%s: stale PID file (PID %d not running), cleaned up\n", component, pid)
+		case r.Err != nil:
+			fmt.Printf("%s: stale PID file (PID %d not running) could not be removed: %v — left in place; delete it by hand\n", component, pid, r.Err)
+		default:
+			fmt.Printf("%s: stale PID file (PID %d not running) was replaced or removed concurrently — left in place\n", component, pid)
+		}
 	default:
 		attempted = pid
 		if serr := signalProcess(component, pid); serr != nil {
 			errs = append(errs, serr)
 		} else {
-			pidfile.Remove(pidPath)
+			pidfile.RemoveIfOwn(pidPath, pid)
 			return true, nil
 		}
 	}

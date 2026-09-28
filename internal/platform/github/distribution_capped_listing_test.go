@@ -81,8 +81,9 @@ func TestListRootManifestsPastTheContentsCap(t *testing.T) {
 	// So is any DEFINITIVE answer from the tree read (review round 5): the
 	// Contents API just listed 1,000 entries, so a 404 or 409 on the tree
 	// cannot mean "no files" — read as such it completed the scan and wiped
-	// the snapshot. A 304 (unsolicited: GetJSON is ETag-free) is in the loop
-	// so the defensive half of the arm is pinned too (round 6).
+	// the snapshot. A 304 (unsolicited: GetJSON is ETag-free) stays in the
+	// loop as a regression guard on the common non-answer path (round 10:
+	// the arm's own 304 clause no longer decided anything and was removed).
 	for _, status := range []int{http.StatusNotFound, http.StatusConflict, http.StatusGone, http.StatusNotModified} {
 		treesHit = 0
 		gone := func(w http.ResponseWriter, r *http.Request) {
@@ -154,4 +155,39 @@ func TestUnsolicited304IsANonAnswerForEveryReader(t *testing.T) {
 	check("root manifests", len(manifests), err)
 	content, err := c.FetchManifestContent(ctx, "o", "r", "package.json")
 	check("manifest content", len(content), err)
+}
+
+// TestUnsolicited304IsANonAnswerAtTheFallbackSites (round 9): the all-304
+// fixture above never reaches two of the six emptyAnswer sites — the org
+// packages fallback (taken only after a user 404) and the first-level
+// directory read (reached only after the root listed a directory). Each is
+// pinned on its own path so a local widening there cannot drift back.
+func TestUnsolicited304IsANonAnswerAtTheFallbackSites(t *testing.T) {
+	ctx := context.Background()
+	check := func(what string, n int, err error) {
+		t.Helper()
+		if err == nil || platform.IsDefinitiveAnswer(err) || !errors.Is(err, platform.ErrNotModified) || n != 0 {
+			t.Errorf("%s = (%d rows, %v); want zero rows and a non-definitive ErrNotModified", what, n, err)
+		}
+	}
+	// user 404 → the org endpoint answers 304.
+	orgC := testGHClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/users/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	pkgs, err := orgC.ListRepoPackages(ctx, "o", "r")
+	check("org packages fallback on an unsolicited 304", len(pkgs), err)
+	// the root lists one directory → the directory read answers 304.
+	dirC := testGHClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/o/r/contents" || r.URL.Path == "/repos/o/r/contents/" {
+			_, _ = w.Write([]byte(`[{"name":"sub","path":"sub","type":"dir"}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	manifests, err := dirC.ListRootManifests(ctx, "o", "r")
+	check("first-level directory on an unsolicited 304", len(manifests), err)
 }

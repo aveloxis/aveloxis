@@ -5,9 +5,12 @@ package collector
 
 import (
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.23.3 — four coupled fixes prompted by the 2026-05-21 diagnostic
@@ -15,7 +18,7 @@ import (
 // stuck on subprocesses that never returned.
 //
 // 1. Subprocess cleanup on ctx cancel — process groups
-//    (Setpgid + cmd.Cancel + WaitDelay) so the entire subprocess
+//    (groupKilled: Setpgid + cmd.Cancel + WaitDelay) so the entire subprocess
 //    tree (scancode + its Python worker pool; git clone + git-lfs)
 //    dies on aveloxis stop, not just the immediate child.
 // 2. Full stderr to file on failure so operators don't have to grep
@@ -28,87 +31,60 @@ import (
 //    distinguish from a legitimate in-flight scan until next
 //    startup.
 
-func TestScancodeRunOneSetsProcessGroup(t *testing.T) {
-	src, err := os.ReadFile("scancode_worker.go")
-	if err != nil {
-		t.Fatal(err)
+// TestSubprocessGroupKillIsTheSharedHelper: the scancode clone and scan,
+// the preflight probe and scorecard each spawn grandchildren (git-lfs, the
+// Python multiprocessing pool, scorecard's check probes) that survived a
+// kill of the leader alone — the 2026-05-21 wedge: two worker slots held
+// for six hours, scorecard ghosts eating CPU after `aveloxis stop`. Each
+// site once carried its own Setpgid + Cancel + WaitDelay block; the four
+// copies returned a raw errno from Cancel where os/exec wants
+// os.ErrProcessDone (v0.29.68 review round 14), so every site calls
+// groupKilled on its command and no production file of the package sets
+// the three fields inline but groupKilled itself (SR-17). The pins that
+// stood here matched the word "Setpgid" anywhere in the file, comments
+// included.
+func TestSubprocessGroupKillIsTheSharedHelper(t *testing.T) {
+	for _, site := range []struct{ file, fn, call string }{
+		{"internal/collector/scancode_worker.go", "func (w *ScancodeWorker) prepareClone(", "groupKilled(cloneCmd)"},
+		{"internal/collector/scancode_worker.go", "func (w *ScancodeWorker) executeScan(", "groupKilled(cmd)"},
+		{"internal/collector/scancode_preflight.go", "func (w *ScancodeWorker) probeScancodeHealth(", "groupKilled(cmd)"},
+		{"internal/collector/scorecard.go", "func invokeScorecard(", "groupKilled(cmd)"},
+	} {
+		body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, site.file), site.fn))
+		if !strings.Contains(body, "exec.CommandContext(") {
+			t.Fatalf("%s %s no longer spawns a subprocess — move this pin to where it went", site.file, site.fn)
+		}
+		if !strings.Contains(body, site.call) {
+			t.Errorf("%s %s spawns a subprocess without %s: its grandchildren (git-lfs, the multiprocessing pool, check probes) outlive a cancel — the 2026-05-21 wedge", site.file, site.fn, site.call)
+		}
 	}
-	code := string(src)
-	// Both the git clone and the scancode subprocess must be put in
-	// their own process group via SysProcAttr.Setpgid. Without this,
-	// killing the immediate child leaves its children (git-lfs,
-	// scancode's Python multiprocessing pool) as orphans.
-	if !strings.Contains(code, "Setpgid") {
-		t.Error("scancode runOne must set cmd.SysProcAttr.Setpgid = true on both " +
-			"the git clone command and the scancode subprocess. Without this, " +
-			"`syscall.Kill(-pid, ...)` to the process group ID can't kill child " +
-			"processes spawned by the subprocess (git-lfs, scancode --processes " +
-			"workers). 2026-05-21 diagnostic: 2 worker slots wedged for 6+ hours " +
-			"because of this exact gap.")
-	}
-	// Count occurrences: we expect Setpgid on BOTH commands (clone + scancode).
-	if strings.Count(code, "Setpgid") < 2 {
-		t.Errorf("Setpgid must be set on both the git clone command AND the " +
-			"scancode subprocess command. git clone can hang in git-lfs even with " +
-			"GIT_LFS_SKIP_SMUDGE=1 (the smudge filter still tries to spawn the " +
-			"check) and needs the same cleanup guarantee.")
-	}
-}
-
-func TestScancodeRunOneCmdCancelKillsProcessGroup(t *testing.T) {
-	src, err := os.ReadFile("scancode_worker.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-	// cmd.Cancel callback that signals the whole process group
-	// (-pid in syscall.Kill arguments). The negative PID is the
-	// signal-to-group syscall convention; without it the kill only
-	// hits the immediate child.
-	if !strings.Contains(code, "cmd.Cancel") && !strings.Contains(code, ".Cancel = func") {
-		t.Error("scancode runOne must override cmd.Cancel with a callback that " +
-			"sends SIGKILL to the process group (-pid). The default exec.CommandContext " +
-			"behavior only signals the immediate child on ctx cancel — grandchildren " +
-			"survive as orphans, which is the 'ghosts consuming CPU and memory' the " +
-			"operator reported on 2026-05-21.")
-	}
-	// Pin the negative-pid pattern. Anything matching syscall.Kill(-...)
-	// or syscall.Kill(-cmd.Process.Pid, ...) qualifies.
-	if !regexp.MustCompile(`syscall\.Kill\s*\(\s*-`).MatchString(code) {
-		t.Error("scancode runOne must call syscall.Kill with a NEGATIVE PID " +
-			"(signals the whole process group, not just the leader). syscall.Kill(pid, " +
-			"sig) and syscall.Kill(-pid, sig) are different operations — only the " +
-			"negative form kills grandchildren.")
-	}
-	// WaitDelay as the fallback safety net — if cmd.Cancel didn't
-	// successfully signal everything, WaitDelay bounds how long
-	// Wait() blocks waiting for cleanup.
-	if !strings.Contains(code, "WaitDelay") {
-		t.Error("scancode runOne must set cmd.WaitDelay so Wait() returns within " +
-			"a bounded window even if the subprocess (or its inherited file " +
-			"descriptors via grandchildren) refuse to exit. Without WaitDelay, " +
-			"Wait() can hang forever if any descendant inherits stderr/stdout " +
-			"pipes and doesn't close them — exactly the wedge pattern the " +
-			"2026-05-21 diagnostic showed on the chaoss.tv fleet.")
+	for name, src := range srctest.PackageFiles(t, "internal/collector", 40) {
+		if strings.HasSuffix(name, "/swept_command.go") {
+			continue // groupKilled's own body
+		}
+		code := srctest.StripGoComments(src)
+		for _, inline := range []string{"SysProcAttr{", ".Cancel = func", ".WaitDelay = "} {
+			if strings.Contains(code, inline) {
+				t.Errorf("%s sets %s inline — call groupKilled(cmd): the one shared block returns os.ErrProcessDone for an already-gone group (SR-17)", name, inline)
+			}
+		}
 	}
 }
 
-func TestScorecardSetsProcessGroupAndCancel(t *testing.T) {
-	src, err := os.ReadFile("scorecard.go")
-	if err != nil {
-		t.Fatal(err)
+// TestShutdownGraceCoversTheAppliedWaitDelay (review round 15): the
+// scheduler waits ScancodeShutdownBookkeepingGrace for the runners' DB
+// bookkeeping after a kill, derived from scancodeWaitDelay as the post-kill
+// Wait; since round 14 the WaitDelay a scancode subprocess actually carries
+// is the one groupKilled sets. A second literal let the two drift with
+// every test green (a 3 s sweptWaitDelay passed the suite).
+func TestShutdownGraceCoversTheAppliedWaitDelay(t *testing.T) {
+	cmd := exec.Command("true")
+	groupKilled(cmd)
+	if cmd.WaitDelay != scancodeWaitDelay {
+		t.Fatalf("groupKilled applies WaitDelay %s; the shutdown grace is derived from scancodeWaitDelay %s", cmd.WaitDelay, scancodeWaitDelay)
 	}
-	code := string(src)
-	if !strings.Contains(code, "Setpgid") {
-		t.Error("RunScorecard must set cmd.SysProcAttr.Setpgid = true. Same " +
-			"reasoning as scancode: scorecard spawns its own subprocesses (git, " +
-			"various check probes) that survive as orphans when only the " +
-			"immediate child is killed.")
-	}
-	if !regexp.MustCompile(`syscall\.Kill\s*\(\s*-`).MatchString(code) {
-		t.Error("RunScorecard must signal the process group on ctx cancel (the " +
-			"negative-PID form of syscall.Kill). Without this, aveloxis stop leaves " +
-			"scorecard subprocess trees running.")
+	if ScancodeShutdownBookkeepingGrace != cmd.WaitDelay+2*scancodeBestEffortDBTimeout {
+		t.Fatalf("ScancodeShutdownBookkeepingGrace %s does not cover the applied post-kill wait %s plus two best-effort writes", ScancodeShutdownBookkeepingGrace, cmd.WaitDelay)
 	}
 }
 

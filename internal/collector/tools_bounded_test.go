@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -35,8 +34,20 @@ func TestToolFetchIsBounded(t *testing.T) {
 			t.Errorf("tools.go uses %s — every request goes through toolFetchClient and every subprocess through exec.CommandContext (an unbounded leg held serve's startup)", banned)
 		}
 	}
-	if n := len(regexp.MustCompile(`exec\.CommandContext\(ctx,`).FindAllString(src, -1)); n < 7 {
-		t.Errorf("tools.go has %d exec.CommandContext(ctx, …) sites; the install chain has at least seven subprocess legs", n)
+	// Every subprocess goes through runToolCommand (group kill + execErr)
+	// except the output probes, which take groupKilled directly — so the
+	// direct groupKilled calls are exactly the CommandContext sites that
+	// are not runToolCommand calls, plus the one inside the helper (round
+	// 14: a hand-written "+2" stayed green when a probe lost its group kill).
+	runs, ctxs := strings.Count(src, "runToolCommand(ctx, "), len(regexp.MustCompile(`exec\.CommandContext\(ctx,`).FindAllString(src, -1))
+	if runs < 1 || ctxs <= runs {
+		t.Fatalf("tools.go has %d exec.CommandContext sites and %d runToolCommand calls; want at least one call and at least one direct probe", ctxs, runs)
+	}
+	if kills := strings.Count(src, "groupKilled("); kills != 1+ctxs-runs {
+		t.Errorf("tools.go has %d groupKilled calls; want %d — one inside runToolCommand and one per CommandContext site that does not go through it (%d): a probe is missing the process-group kill", kills, 1+ctxs-runs, ctxs-runs)
+	}
+	if n := strings.Count(src, "cmd.Run()"); n != 1 || !strings.Contains(srctest.FuncBody(t, src, "func runToolCommand("), "cmd.Run()") {
+		t.Errorf("tools.go calls cmd.Run() %d time(s); the one call belongs inside runToolCommand (group kill + execErr)", n)
 	}
 
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +63,8 @@ func TestToolFetchIsBounded(t *testing.T) {
 	t.Cleanup(func() { toolFetchClient, scorecardLatestReleaseURL = savedClient, savedURL })
 	start := time.Now()
 	_, err := scorecardLatestVersion(context.Background())
-	if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) && !strings.Contains(err.Error(), "deadline") && !strings.Contains(err.Error(), "Timeout") {
-		t.Fatalf("the release lookup against a stalled server = %v; want the client's timeout", err)
+	if !errors.Is(err, context.DeadlineExceeded) { // what http.Client.Timeout returns (round 13: the os.ErrDeadlineExceeded arm was never true)
+		t.Fatalf("the release lookup against a stalled server = %v; want context.DeadlineExceeded from the client's timeout", err)
 	}
 	if took := time.Since(start); took > time.Second {
 		t.Errorf("the lookup took %s; want the 100 ms client bound", took)

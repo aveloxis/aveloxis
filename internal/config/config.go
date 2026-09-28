@@ -811,11 +811,13 @@ type CollectionConfig struct {
 	// expensive.
 	DistributionTrackingWorkers int `json:"distribution_tracking_workers"`
 
-	// DistributionTrackingStartIntervalSec is the minimum time between
-	// consecutive CLAIM operations. Default 30 seconds when unset. With
-	// the default 4 workers and 30s ticker, steady-state throughput is
-	// ~120 repos/hour — comfortably under any known external rate
-	// limit and well below the GitHub key pool's budget.
+	// DistributionTrackingStartIntervalSec is the minimum gap between
+	// successful scan STARTS, enforced by the one dispatcher (a deadline
+	// stamped after each handoff — not a ticker, and the worker count does
+	// not enter the rate: workers set concurrency, this sets the start
+	// rate). Default 30 seconds when unset → at most 120 starts/hour
+	// (2,880/day), comfortably under any known external rate limit and
+	// well below the GitHub key pool's budget.
 	DistributionTrackingStartIntervalSec int `json:"distribution_tracking_start_interval_s"`
 
 	// DistributionTrackingPoliteEmail is the value passed in the

@@ -171,10 +171,13 @@ const healthCheckInterval = 60 * time.Second
 
 // dispatcher polls the store for new claims and forwards them to
 // the runners via the jobs channel. Minimum-gap pacing means
-// nextStartAllowed is stamped AFTER each successful start, so the
-// dispatcher loops as fast as the runtime allows when jobs are
-// available; the gate only fires to prevent claim bursts on
-// fresh startup.
+// nextStartAllowed is stamped AFTER each successful start (an empty
+// poll or a claim error consumes no gap — the v0.21.3 change from the
+// ticker, whose tick they did consume). With scans of seconds and a due
+// queue the gate fires between EVERY two starts, so it is the binding
+// start-rate cap (120/hour at the 30 s default); the unbuffered send on
+// jobs is the back-pressure when every runner is busy. Workers set
+// concurrency, not the rate (review round 11 of the v0.29.68 batch).
 //
 // v0.25.0: also checks scanner.Healthy() before each claim and
 // pauses entirely when the scanner reports unhealthy (currently:

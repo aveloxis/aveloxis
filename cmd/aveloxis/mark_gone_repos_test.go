@@ -84,7 +84,7 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	// failure (batch 7b review round 1): the cancel arm sits between the
 	// probe and every error arm, and the stamp closure skips a dead ctx.
 	probe := strings.Index(src, "collector.ResolveRedirectTarget(ctx, c.GitURL)")
-	cancelArm := strings.Index(src, "if perr != nil && ctx.Err() != nil {\n\t\t\treturn interrupted()")
+	cancelArm := regexIndex(src, `if perr != nil && ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) // whitespace-tolerant (round 7)
 	if probe < 0 || cancelArm < probe || cancelArm > i {
 		t.Errorf("the probe's cancel arm `if perr != nil && ctx.Err() != nil { return interrupted() }` must follow the probe (%d) and precede the error arms (%d); at %d", probe, i, cancelArm)
 	}
@@ -102,20 +102,28 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	// it, as one prefix (round 4: a counter ahead of the check, or a return
 	// elsewhere before the WARN, passed a contains-anywhere check).
 	stripped := srctest.StripGoComments(src)
-	armPrefix := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return\b`)
-	for _, write := range []string{"store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {", "store.MarkRepoGone(ctx, c.RepoID); err != nil {", "store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {"} {
+	// Round 5: `return nil` (a silent success, exit 0) satisfied `return\b`;
+	// the loop arms must return interrupted(), the stamp closure a bare
+	// return (its caller's loop top or the post-loop check reports).
+	loopArm := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`)
+	closureArm := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return\s*\n`)
+	for write, arm := range map[string]*regexp.Regexp{
+		"store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {": closureArm,
+		"store.MarkRepoGone(ctx, c.RepoID); err != nil {":        loopArm,
+		"store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {":   loopArm,
+	} {
 		at := strings.Index(stripped, write)
 		if at < 0 {
 			t.Fatalf("store write %q missing", write)
 		}
-		if !armPrefix.MatchString(stripped[at+len(write):]) {
-			t.Errorf("%s: the error arm must BEGIN `if ctx.Err() != nil { return … }` before its WARN and counter — a cancel mid-UPDATE is the interruption, not a failure", write)
+		if !arm.MatchString(stripped[at+len(write):]) {
+			t.Errorf("%s: the error arm must BEGIN `if ctx.Err() != nil { return interrupted() }` (bare return in the stamp closure) before its WARN and counter — a cancel mid-UPDATE is the interruption, not a failure or a silent success", write)
 		}
 	}
 	// A cancel on the LAST candidate's check stamp has no next loop top
 	// (round 4: the run logged "complete" and exited 0): the post-loop check
 	// sits between the loop and the completion line.
-	loopEnd, complete := strings.Index(stripped, "\n\tif ctx.Err() != nil {\n\t\treturn interrupted()"), strings.Index(stripped, `"mark-gone-repos complete"`)
+	loopEnd, complete := regexIndex(stripped, `\n\tif ctx\.Err\(\) != nil \{\s*return interrupted\(\)`), strings.Index(stripped, `"mark-gone-repos complete"`)
 	if loopEnd < 0 || complete < 0 || loopEnd > complete || loopEnd < strings.Index(stripped, "if perr != nil {") {
 		t.Errorf("a top-level `if ctx.Err() != nil { return interrupted() }` must follow the candidate loop and precede the completion log (post-loop check at %d, completion at %d)", loopEnd, complete)
 	}

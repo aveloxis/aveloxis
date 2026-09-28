@@ -9,14 +9,19 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
-	"time"
 )
 
-// sweptWaitDelay is the post-cancel allowance on a swept command, matched
-// to scancodeWaitDelay rather than invented here. It does NOT bound a read
-// blocked on stdout: the caller owns that pipe, so os/exec has no handle on
-// the read end to close. See startSweptCommand for what it does buy.
-const sweptWaitDelay = 10 * time.Second
+// sweptWaitDelay is the post-cancel allowance groupKilled sets on every
+// group-killed subprocess. It IS scancodeWaitDelay, not a second literal:
+// ScancodeShutdownBookkeepingGrace is derived from that constant as the
+// post-kill Wait the scheduler must cover, and since review round 14 the
+// scancode subprocesses take their WaitDelay from here — a separate value
+// let the applied wait and the grace drift apart with every test green
+// (round 15; TestShutdownGraceCoversTheAppliedWaitDelay). For a swept
+// command it does NOT bound a read blocked on stdout: the caller owns that
+// pipe, so os/exec has no handle on the read end to close. See
+// startSweptCommand for what it does buy.
+const sweptWaitDelay = scancodeWaitDelay
 
 // sweptCommand is a started subprocess whose stdout pipe the CALLER owns
 // and whose process group is killed the moment the leader exits.
@@ -42,6 +47,44 @@ type sweptCommand struct {
 	waitCh chan error
 	once   sync.Once
 	err    error
+}
+
+// groupKilled makes cmd's cancellation kill its whole process group: the
+// child is a group leader (Setpgid), Cancel sends SIGKILL to the group, and
+// WaitDelay bounds the wait. The scheduler-workers rule for every
+// subprocess that spawns grandchildren; shared by the swept command, the
+// tool installs (batch 4a review round 13: pipx, go install and brew spawn
+// grandchildren, and CommandContext alone killed only the leader — an
+// aborted pip left a half-upgraded venv), the scancode clone, scan and
+// preflight probe, and scorecard (round 14: four inline copies of this
+// block returned a raw errno from Cancel — SR-17, one shared function).
+func groupKilled(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// "Already gone" must be os.ErrProcessDone, os/exec's documented
+		// return for a process that had already finished. A raw errno
+		// becomes Wait's error instead ("exec: canceling Cmd: operation
+		// not permitted"), and nil makes watchCtx believe it interrupted
+		// the command, so Wait returns ctx.Err().
+		if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil {
+			if errors.Is(killErr, syscall.ESRCH) || errors.Is(killErr, syscall.EPERM) {
+				return os.ErrProcessDone
+			}
+			return killErr
+		}
+		return nil
+	}
+	// Kept because it costs nothing: it buys watchCtx's post-cancel
+	// Process.Kill backstop, which the group kill above already covers. For
+	// the swept command's caller-owned pipe it cannot bound a read blocked
+	// on Stdout — os/exec never receives the read end; where os/exec owns
+	// the pipe (an Output() probe, an io.Writer Stdout such as the
+	// scancode, scorecard and preflight buffers) it does bound the
+	// post-cancel wait.
+	cmd.WaitDelay = sweptWaitDelay
 }
 
 // startSweptCommand starts cmd with an owned stdout pipe, its own process
@@ -77,29 +120,7 @@ func startSweptCommand(cmd *exec.Cmd) (*sweptCommand, error) {
 		return nil, err
 	}
 	cmd.Stdout = pw
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		// "Already gone" must be os.ErrProcessDone, os/exec's documented
-		// return for a process that had already finished. A raw errno
-		// becomes Wait's error instead ("exec: canceling Cmd: operation
-		// not permitted"), and nil makes watchCtx believe it interrupted
-		// the command, so Wait returns ctx.Err().
-		if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil {
-			if errors.Is(killErr, syscall.ESRCH) || errors.Is(killErr, syscall.EPERM) {
-				return os.ErrProcessDone
-			}
-			return killErr
-		}
-		return nil
-	}
-	// Kept because it costs nothing: it buys watchCtx's post-cancel
-	// Process.Kill backstop, which the group kill above already covers. It
-	// cannot bound a read blocked on Stdout — os/exec never receives the
-	// read end.
-	cmd.WaitDelay = sweptWaitDelay
+	groupKilled(cmd)
 
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()

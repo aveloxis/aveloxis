@@ -34,7 +34,7 @@ func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
 }
 
 // TestLoginLogsAFailedAdminLookup pins worklist follow-up 6 at the login
-// (batch-2 review rounds 2–15), on the syntax tree rather than on tokens (a
+// (batch-2 review rounds 2–18), on the syntax tree rather than on tokens (a
 // token pin was satisfied by the token in a log string, by one arm's
 // condition doubled, and by an arm that classified without returning):
 // after the user upsert and after the admin-flag lookup, the FIRST if
@@ -56,9 +56,30 @@ func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
 // no error parameter; the identifiers `sessions` and `sessionMu` appear
 // nowhere in the function (the map is createSession's to write — round 15
 // minted a second admin session in the arm and expired the real one in the
-// tail); and the tail after SetCookie is exactly the login's three
-// statements (destination, clearNext, redirect) with the receiver's own
-// log calls allowed among them, the token reaching nothing but SetCookie.
+// tail); no assignment's left side mentions the receiver (round 16:
+// `s.cfg.DevMode = true` stripped Secure for the process — a method call
+// that writes, a pointer taken earlier or a range binding are the runtime
+// test's Secure+HttpOnly assertion to catch), the arm reaches no member
+// of the receiver but its logger (round 17: `s.store.SetUserAdmin(…, true)`
+// in the arm promoted the user's NEXT login with both tiers green — the
+// trigger had already deleted the probe row, so the UPDATE hit nothing —
+// round 18 rewrote that fixture so the row persists and every write is
+// recorded, which is what holds an alias, a method value or a helper handed
+// the receiver; structurally the arm's every mention of the receiver is
+// the `X` of its logger selector, and the session statement follows the
+// arm directly — a re-probe between them was the round-18 window; recorded
+// false-red direction: the arm's log may not carry a receiver-held
+// attribute), nothing after the arm mentions the lookup's error variable
+// (a second non-returning `if err != nil` arm was green too), the arm
+// touches neither the writer nor the request and no assignment aliases
+// either (round 16: an oauth_next cookie added to the request sent the
+// login to /logout; round 18: the same through `req := r`); and the tail after SetCookie is exactly the
+// login's three statements (destination, clearNext, redirect — each once;
+// clearNext before the redirect, because a Set-Cookie after WriteHeader is
+// dropped by net/http and the stale oauth_next then steers the NEXT login —
+// round 18; the destination may come before or after clearNext) with the
+// receiver's own log calls allowed among them, the token reaching nothing
+// but SetCookie.
 // The runtime twin is TestLoginWithFailedAdminLookupIsNonAdminAndNotRefused
 // (DB tier).
 func TestLoginLogsAFailedAdminLookup(t *testing.T) {
@@ -84,6 +105,13 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		t.Fatal("completeOAuthLogin must be a method with a named receiver whose first parameter is the named ResponseWriter")
 	}
 	recv, writer := fn.Recv.List[0].Names[0].Name, fn.Type.Params.List[0].Names[0].Name
+	request := ""
+	if len(fn.Type.Params.List) > 1 && len(fn.Type.Params.List[1].Names) == 1 {
+		request = fn.Type.Params.List[1].Names[0].Name
+	}
+	if request == "" {
+		t.Fatal("completeOAuthLogin's second parameter must be the named *http.Request")
+	}
 	callIdx := func(method string) int {
 		for i, s := range stmts {
 			found := false
@@ -152,6 +180,20 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		})
 		return found
 	}
+	aliasesRequest := func(e ast.Expr) bool {
+		if isIdent(e, request) {
+			return true
+		}
+		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND && isIdent(u.X, request) {
+			return true
+		}
+		if c, ok := e.(*ast.CallExpr); ok {
+			if sel, ok := c.Fun.(*ast.SelectorExpr); ok && isIdent(sel.X, request) && (sel.Sel.Name == "WithContext" || sel.Sel.Name == "Clone") {
+				return true
+			}
+		}
+		return false
+	}
 	// Whole-function rules (round 13). A go or defer statement moves a write
 	// outside every window; a local named errors/context/http shadows the
 	// package the canceled check is matched by name against; an alias of
@@ -171,10 +213,22 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 				if id, ok := l.(*ast.Ident); ok && x.Tok == token.DEFINE && (id.Name == "errors" || id.Name == "context" || id.Name == "http") {
 					t.Errorf("completeOAuthLogin declares a local named %s (%s): it shadows the package this pin matches by name", id.Name, fset.Position(id.Pos()))
 				}
+				// A write through the receiver (`s.cfg.DevMode = true`, round
+				// 16) changes the server for every later response.
+				if mentions(l, recv) {
+					t.Errorf("completeOAuthLogin writes through the receiver %s (%s): the login must not change the server", recv, fset.Position(x.Pos()))
+				}
 			}
 			for _, r := range x.Rhs {
 				if mentions(r, writer) {
 					t.Errorf("completeOAuthLogin aliases the ResponseWriter %s (%s): the response must be reached under its own name", writer, fset.Position(x.Pos()))
+				}
+				// A read through the request (`r.Context()`, `postLoginRedirect(r)`)
+				// binds a value; an ALIAS binds the request itself — the bare
+				// name, its address, or a copy from WithContext/Clone (round
+				// 18: `req := r` reached the arm under another name).
+				if aliasesRequest(r) {
+					t.Errorf("completeOAuthLogin aliases the Request %s (%s): an alias reaches the arm under another name (round 18)", request, fset.Position(x.Pos()))
 				}
 			}
 		case *ast.ValueSpec:
@@ -186,6 +240,9 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 			for _, v := range x.Values {
 				if mentions(v, writer) {
 					t.Errorf("completeOAuthLogin aliases the ResponseWriter %s (%s)", writer, fset.Position(x.Pos()))
+				}
+				if aliasesRequest(v) {
+					t.Errorf("completeOAuthLogin aliases the Request %s (%s)", request, fset.Position(x.Pos()))
 				}
 			}
 		case *ast.Field:
@@ -393,6 +450,13 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 	// commits the response, so the session cookie set later is dropped — a
 	// refusal in effect; a `goto` past the session compiled once the
 	// declarations it crossed were hoisted).
+	// The session statement follows the arm directly (round 18: a re-probe
+	// `if e := s.store.Pool().QueryRow(...).Scan(&again); e != nil { promote }`
+	// sat between them, conditioned on the same failure without naming err).
+	if create != lookup+3 {
+		t.Errorf("completeOAuthLogin's session statement must follow the admin-flag ERROR arm directly (arm at statement %d, session at %d): nothing may sit between them", lookup+2, create)
+	}
+	recvIdents, loggerSels := 0, 0
 	ast.Inspect(arm.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.ReturnStmt:
@@ -405,10 +469,46 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 			if x.Name == writer {
 				t.Error(armShape + " — the arm uses the ResponseWriter: a response committed here drops the session cookie set later (a refusal in effect)")
 			}
+			if x.Name == request {
+				t.Error(armShape + " — the arm uses the Request: an oauth_next cookie added here redirects the login to /logout (round 16)")
+			}
+		case *ast.SelectorExpr:
+			// The arm may only log: any other member of the receiver — the
+			// store, the pool, the config, the mailer — is a way to change
+			// state the round-17 fixture could not see (round 17:
+			// `s.store.SetUserAdmin(ctx, userID, true)` promoted the user's
+			// NEXT login; the trigger had already deleted the probe row).
+			if isIdent(x.X, recv) {
+				if x.Sel.Name != "logger" {
+					t.Errorf(armShape+" — the arm reaches the receiver's %s (%s): the arm may only log", x.Sel.Name, fset.Position(x.Pos()))
+				} else {
+					loggerSels++
+				}
+			}
+		}
+		if id, ok := n.(*ast.Ident); ok && id.Name == recv {
+			recvIdents++
 		}
 		_, isFunc := n.(*ast.FuncLit)
 		return !isFunc
 	})
+	// Every mention of the receiver in the arm is the X of its logger
+	// selector (round 18: `promoteOnLookupFailure(s, userID)` handed the
+	// bare receiver to a helper that wrote the store).
+	if recvIdents != loggerSels {
+		t.Errorf(armShape+" — the arm mentions the receiver %s %d time(s) but reaches its logger %d time(s): a bare receiver handed to a helper is a write the arm may not make", recv, recvIdents, loggerSels)
+	}
+	// Nothing after the arm is conditioned on the failed lookup (round 17:
+	// a SECOND `if err != nil { s.store.SetUserAdmin(...) }` without a
+	// return sat outside the return walk). Recorded false-red direction: a
+	// later `if err := ...; err != nil` that reuses the NAME is refused
+	// too — the tail is the login's three statements and the receiver's
+	// logs, so nothing legitimate needs the name there.
+	for _, st := range stmts[lookup+3:] {
+		if mentions(st, lookupErr) {
+			t.Errorf("completeOAuthLogin mentions the admin lookup's error %s after its ERROR arm (%s): nothing later may be conditioned on the failed lookup", lookupErr, fset.Position(st.Pos()))
+		}
+	}
 	// From the lookup to the END of the function (round 13: the walks ended
 	// at the session statement, and four escapes — a refusal, a cookie
 	// behind `if err == nil`, two escalations — sat after it): no write to
@@ -482,10 +582,22 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		inner, ok := sel.X.(*ast.SelectorExpr)
 		return ok && inner.Sel.Name == "logger" && isIdent(inner.X, recv)
 	}
+	// The tail after SetCookie; bounded so a function ending at the session
+	// (or the cookie) is a clean failure, not a slice panic that aborts the
+	// package's test binary (round 17; the round-4 shape).
+	tail := stmts[min(create+2, len(stmts)):]
+	dest := "" // the destination local, read from its declaration (round 16: a renamed `target` was refused)
+	for _, st := range tail {
+		if as, ok := st.(*ast.AssignStmt); ok && as.Tok == token.DEFINE && len(as.Lhs) == 1 && len(as.Rhs) == 1 && isMethodCall(as.Rhs[0], "postLoginRedirect") {
+			if id, ok := as.Lhs[0].(*ast.Ident); ok {
+				dest = id.Name
+			}
+		}
+	}
 	expect := []func(ast.Stmt) bool{
-		func(st ast.Stmt) bool { // dest := s.postLoginRedirect(r)
+		func(st ast.Stmt) bool { // <dest> := s.postLoginRedirect(r)
 			as, ok := st.(*ast.AssignStmt)
-			return ok && as.Tok == token.DEFINE && len(as.Lhs) == 1 && isIdent(as.Lhs[0], "dest") && len(as.Rhs) == 1 && isMethodCall(as.Rhs[0], "postLoginRedirect")
+			return ok && as.Tok == token.DEFINE && len(as.Lhs) == 1 && dest != "" && isIdent(as.Lhs[0], dest) && len(as.Rhs) == 1 && isMethodCall(as.Rhs[0], "postLoginRedirect")
 		},
 		func(st ast.Stmt) bool { // s.clearNext(w)
 			es, ok := st.(*ast.ExprStmt)
@@ -497,26 +609,54 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 				return false
 			}
 			c, ok := es.X.(*ast.CallExpr)
-			if !ok || len(c.Args) != 4 || !isIdent(c.Args[0], writer) || !isIdent(c.Args[2], "dest") {
+			if !ok || len(c.Args) != 4 || !isIdent(c.Args[0], writer) || dest == "" || !isIdent(c.Args[2], dest) {
+				return false
+			}
+			// The status is part of the promise (round 17: the message named
+			// http.StatusFound while a 303 or a 403 matched).
+			status, ok := c.Args[3].(*ast.SelectorExpr)
+			if !ok || !isIdent(status.X, "http") || status.Sel.Name != "StatusFound" {
 				return false
 			}
 			sel, ok := c.Fun.(*ast.SelectorExpr)
 			return ok && sel.Sel.Name == "Redirect" && isIdent(sel.X, "http")
 		},
 	}
-	next := 0
-	for _, st := range stmts[create+2:] {
+	// Each of the three exactly once. The destination may come before or
+	// after clearNext (round 16: that order carries no property), but
+	// clearNext must precede the redirect: a Set-Cookie after WriteHeader
+	// is dropped by net/http, so the oauth_next deletion never reaches the
+	// browser and the stale destination steers the NEXT login (round 18;
+	// the runtime test's cookie assertion holds it, this pin says why).
+	seen := make([]bool, len(expect))
+	clearAt, redirectAt := -1, -1
+	for i, st := range tail {
 		if isRecvLog(st) {
 			continue
 		}
-		if next < len(expect) && expect[next](st) {
-			next++
-			continue
+		matched := false
+		for j, want := range expect {
+			if !seen[j] && want(st) {
+				seen[j], matched = true, true
+				if j == 1 {
+					clearAt = i
+				} else if j == 2 {
+					redirectAt = i
+				}
+				break
+			}
 		}
-		t.Errorf("completeOAuthLogin's tail after SetCookie holds an unexpected statement (%s): only `dest := s.postLoginRedirect(r)`, `s.clearNext(w)`, `http.Redirect(w, r, dest, http.StatusFound)` and the receiver's log calls belong there", fset.Position(st.Pos()))
+		if !matched {
+			t.Errorf("completeOAuthLogin's tail after SetCookie holds an unexpected statement (%s): only `<dest> := s.postLoginRedirect(r)`, `s.clearNext(w)`, `http.Redirect(w, r, <dest>, http.StatusFound)` and the receiver's log calls belong there", fset.Position(st.Pos()))
+		}
 	}
-	if next != len(expect) {
-		t.Errorf("completeOAuthLogin's tail after SetCookie must end with the destination, clearNext and the redirect, in that order (%d of 3 seen)", next)
+	for i, ok := range seen {
+		if !ok {
+			t.Errorf("completeOAuthLogin's tail after SetCookie lacks statement %d of the login's three (destination, clearNext, redirect)", i+1)
+		}
+	}
+	if clearAt >= 0 && redirectAt >= 0 && clearAt > redirectAt {
+		t.Error("completeOAuthLogin calls s.clearNext(w) after http.Redirect: a Set-Cookie after WriteHeader is dropped, so the oauth_next deletion never reaches the browser (round 18)")
 	}
 	for i, st := range stmts {
 		if i == create || i == create+1 || sessVar == "" {

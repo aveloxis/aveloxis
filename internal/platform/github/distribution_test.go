@@ -359,9 +359,10 @@ func TestListRootManifestsRecognizesJuliaRCondaManifests(t *testing.T) {
 // TestDistributionCallsBypassETagConditionals pins the v0.25.0
 // silent-data-loss fix. The four distribution-related GitHub
 // functions must call platform.WithoutETag(ctx) at entry so the
-// HTTPClient does NOT send If-None-Match — a 304 response under
-// snapshot-replace semantics would otherwise delete prior rows
-// without ever reinserting them.
+// HTTPClient does NOT send If-None-Match — through v0.29.67 a 304
+// read as "empty" deleted prior rows under snapshot-replace; since
+// v0.29.68 (round 8) a 304 is a non-answer, so a solicited one would
+// fail the scan of an unchanged repository and strike it.
 //
 // Behavioral test: drive each function twice through the same test
 // server. If ETag were active, the second call would carry If-None-
@@ -404,7 +405,7 @@ func TestDistributionCallsBypassETagConditionals(t *testing.T) {
 	}
 
 	if sawIfNoneMatch != 0 {
-		t.Errorf("distribution calls leaked %d If-None-Match headers; ETag MUST be bypassed for these paths to avoid the v0.24.0 snapshot-replace silent-data-loss bug", sawIfNoneMatch)
+		t.Errorf("distribution calls leaked %d If-None-Match headers; ETag MUST be bypassed for these paths (a solicited 304 is a non-answer that fails the scan of an unchanged repository)", sawIfNoneMatch)
 	}
 }
 

@@ -137,11 +137,11 @@ func (noopRunner) Run(context.Context) {}
 // ".../distribution"` makes `NewWorker(o)` selector-free) — refused below
 // by an assertion over the same corpus (go/parser's import list plus
 // strconv.Unquote, so every legal spelling — block, one-line,
-// parenthesised, raw-string or escaped path — is one predicate);
-// staticcheck ST1001 also flags a production-file dot import today, which
-// this pin does not rely on (ledger rounds 8–11: the analyzer's test-file
-// exemption and the CI tiers' required-check status are facts outside this
-// repository); and any route through another package — a re-export (`var New =
+// parenthesised, raw-string or escaped path — is one predicate); the
+// lint tiers' own dot-import rule (staticcheck ST1001) is not relied on
+// here (ledger rounds 8–12 record why: what the analyzer exempts and
+// which CI checks are required are pinned by nothing in this tree); and
+// any route through another package — a re-export (`var New =
 // distribution.NewWorker`), a `//go:linkname`, another package's init().
 func TestDistributionWorkerSeamIsTheOnlyConstructor(t *testing.T) {
 	files := srctest.PackageFiles(t, "internal/scheduler", 10)

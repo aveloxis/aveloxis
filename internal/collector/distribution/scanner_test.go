@@ -94,8 +94,9 @@ func TestScannerEmitsErrorLogWhenBothExternalSourcesFail(t *testing.T) {
 
 func TestScannerGitHubErrorsStayWarnLevel(t *testing.T) {
 	body := readFile(t, "scanner.go")
-	// GitHub source error logs should remain WARN — 403/404/304 from
-	// GitHub on these endpoints are common and benign.
+	// GitHub source error logs should remain WARN — 403/404 from GitHub
+	// on these endpoints are common and benign (a 304 is a non-answer
+	// since v0.29.68 round 8; it still logs at WARN and fails the scan).
 	for _, expected := range []string{
 		`"distribution: github release assets failed"`,
 		`"distribution: github packages failed"`,
@@ -371,7 +372,7 @@ var _ json.Decoder
 
 // TestCompositeScannerGitHubNonAnswerFailsTheScan (v0.29.55 review round 3;
 // operator decision (a), 2026-09-17): GitHub source errors never failed or
-// marked a scan, on the grounds that 403/404/304 from these endpoints are
+// marked a scan, on the grounds that 403/404 from these endpoints are
 // routinely benign. That covers ANSWERS; it also swallowed failures that say
 // nothing (retries exhausted — four "github manifests failed … exhausted 10
 // retries" lines in the 2026-09-17 incident log — a cut-off body, an empty

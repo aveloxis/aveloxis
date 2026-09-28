@@ -383,17 +383,19 @@ type ctxKeyBypassETag struct{}
 // WithoutETag returns a derived context that suppresses both the
 // If-None-Match send and the ETag cache write for any Get call made
 // with it (GetJSON applies it unconditionally since v0.28.17 — see its
-// doc; callers only need WithoutETag for bare Get / paginate paths). Use this for endpoints where 304 responses
-// would silently destroy data via snapshot-replace semantics — the
-// v0.24.0 DistributionWorker is the canonical case: on 304 the
-// scanner gets back empty data, MarkDistributionComplete rotates
-// the prior rows to history and never reinserts them, so the
-// repo's distribution evidence quietly disappears even though
-// GitHub politely told us "you already have this."
+// doc; callers only need WithoutETag for bare Get / paginate paths). Use this for endpoints where a 304 is
+// not a usable answer — the v0.24.0 DistributionWorker is the canonical
+// case: through v0.29.67 the scanner read a 304 as empty data,
+// MarkDistributionComplete rotated the prior rows to history and never
+// reinserted them, so the repo's distribution evidence quietly
+// disappeared even though GitHub had said "you already have this"; since
+// v0.29.68 a 304 there is a non-answer that fails the scan, so a
+// solicited one would strike an unchanged repository for nothing.
 //
 // At 180-day distribution cadence the wasted GitHub API budget
-// from disabling ETag is ~1.6% of the pool — well worth the
-// silent-data-loss avoidance.
+// from disabling ETag is ~1.6% of the pool — well worth not striking
+// an unchanged repository (and, through v0.29.67, not wiping its
+// snapshot).
 func WithoutETag(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyBypassETag{}, true)
 }
@@ -520,8 +522,8 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		// Conditional request: send If-None-Match when we have a cached ETag.
 		// GitHub does not count 304 responses against the rate limit.
-		// Skipped when the caller used WithoutETag(ctx) — see v0.25.0
-		// docstring on WithoutETag for the silent-data-loss rationale.
+		// Skipped when the caller used WithoutETag(ctx) — see the
+		// WithoutETag docstring for the rationale.
 		if !skipETag {
 			c.etagMu.RLock()
 			if etag, ok := c.etagCache[path]; ok {

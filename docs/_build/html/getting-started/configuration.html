@@ -2333,12 +2333,12 @@ a half against its own reference table below:</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.distribution_tracking_workers</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
-<td><p>v0.24.0. Concurrent runner goroutines fetching against deps.dev / ecosyste.ms / GitHub. Each runner performs ~5 cheap HTTP calls per claimed repo; concurrency is bounded primarily to keep total outbound traffic predictable. Raise this only if first-pass coverage timing matters and outbound bandwidth is not a concern.</p></td>
+<td><p>v0.24.0. Concurrent runner goroutines fetching against deps.dev / ecosyste.ms / GitHub. Each runner performs ~5 cheap HTTP calls per claimed repo; concurrency is bounded primarily to keep total outbound traffic predictable. Workers set concurrency, not the scan rate (the start interval does); raise this only when scans run long enough that the 30 s start gap is no longer the binding limit.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.distribution_tracking_start_interval_s</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code></p></td>
-<td><p>v0.24.0. Minimum seconds between successful CLAIM operations. With default 4 workers and a 30s ticker, steady-state throughput is ~120 repos/hour — comfortably under any known external rate limit. Same minimum-gap pacing primitive as scancode (post-v0.21.3); not a throughput cap.</p></td>
+<td><p>v0.24.0. Minimum gap between successful scan STARTS, enforced by the one dispatcher whatever the worker count: at most 120 starts/hour (2,880/day) at the default, comfortably under any known external rate limit. The same minimum-gap primitive as scancode (post-v0.21.3), where a 90 s gap never binds because scans run minutes; here scans take seconds, so it is the binding start-rate cap.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.distribution_tracking_polite_email</span></code></p></td>
 <td><p>string</p></td>

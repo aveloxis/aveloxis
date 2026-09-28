@@ -74,8 +74,10 @@ func TestGitHubAPIVersionPredatesTheMergeCommitSHADrop(t *testing.T) {
 // and internal/ containing the request literal `"https://api.github.com/`
 // carries at least as many header SETs as such literals (round 2: one Set
 // per file let a second site in the same file drop it), and no non-test
-// file but github_host.go may spell the host without the trailing slash
-// (round 3: a concatenated request would slip under the count).
+// file under those two roots but github_host.go may spell the host without
+// the trailing slash (round 3: a concatenated request would slip under the
+// count; scripts/loadorgs spells it once, into platform.NewHTTPClient,
+// which sets the header — outside the walk).
 // The scorecard rate-limit probe builds its URL from the configured base,
 // so this sweep cannot see it: TestScorecardRateLimitProbePinsTheAPIVersion
 // (internal/collector) pins it at runtime.

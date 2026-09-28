@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -179,14 +178,7 @@ func (w *ScancodeWorker) probeScancodeHealth(ctx context.Context) (status, detai
 	// real scans — probing a DIFFERENT libmagic than the scans would use
 	// makes the health verdict meaningless.
 	cmd.Env = w.scancodeEnv()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	cmd.WaitDelay = 10 * time.Second
+	groupKilled(cmd) // the probe's multiprocessing pool dies with it (v0.29.68 review round 14)
 	stderr := &capWriter{cap: scancodePreflightStderrCap}
 	cmd.Stderr = stderr
 	cmd.Stdout = &capWriter{cap: 4096}

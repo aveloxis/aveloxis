@@ -130,10 +130,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	// or from an UPDATE fell into that arm's failure WARN and counter — one
 	// row counted as skipped, a second WARN for the stamp on the dead ctx).
 	interrupted := func() error {
-		logger.Warn("mark-gone-repos interrupted — a rerun walks the whole cohort again",
-			"probed", stamped+cleared+alreadyGone+alive+skipped+refused, "of", len(cands),
-			"stamped", stamped, "cleared", cleared, "already_gone", alreadyGone, "alive", alive, "skipped", skipped, "refused", refused, "stamp_failed", stampFailed, "dry_run", dryRun)
-		return fmt.Errorf("mark-gone-repos interrupted: %w", ctx.Err())
+		return markGoneInterruptedReport(logger, markGoneCounts{stamped, cleared, alreadyGone, alive, skipped, refused, stampFailed}, len(cands), dryRun, ctx.Err())
 	}
 	for _, c := range cands {
 		if ctx.Err() != nil {
@@ -250,4 +247,20 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 		return fmt.Errorf("%d candidate(s) have a repo_git carrying credentials — correct them, then rerun", refused)
 	}
 	return nil
+}
+
+// markGoneCounts is the walk's tally.
+type markGoneCounts struct {
+	stamped, cleared, alreadyGone, alive, skipped, refused, stampFailed int
+}
+
+// markGoneInterruptedReport logs the interruption with every counter and
+// returns the non-zero exit wrapping the cancellation (batch 7b review
+// round 7: the same pure-function shape as reconcile-repos', so the unit
+// test holds the exit status a source pin let become `return nil`).
+func markGoneInterruptedReport(logger *slog.Logger, c markGoneCounts, total int, dryRun bool, cause error) error {
+	logger.Warn("mark-gone-repos interrupted — a rerun walks the whole cohort again",
+		"probed", c.stamped+c.cleared+c.alreadyGone+c.alive+c.skipped+c.refused, "of", total,
+		"stamped", c.stamped, "cleared", c.cleared, "already_gone", c.alreadyGone, "alive", c.alive, "skipped", c.skipped, "refused", c.refused, "stamp_failed", c.stampFailed, "dry_run", dryRun)
+	return fmt.Errorf("mark-gone-repos interrupted: %w", cause)
 }

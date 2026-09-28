@@ -61,8 +61,12 @@ func TestRunScorecardRefusesWhileServeRunning(t *testing.T) {
 		t.Errorf("refusal message should tell the operator the recovery command, got: %v", err)
 	}
 
-	// Stale pidfile (serve exited without cleanup) → no refusal.
-	pidfile.Remove(pidfile.Path("serve"))
+	// No pidfile (serve exited and removed it) → no refusal. The stale
+	// case — a readable file naming a dead PID — is componentAlreadyRunning's
+	// own tests'.
+	if err := os.Remove(pidfile.Path("serve")); err != nil {
+		t.Fatal(err)
+	}
 	if err := refuseIfServeRunning(); err != nil {
 		t.Fatalf("removed pidfile should not refuse: %v", err)
 	}

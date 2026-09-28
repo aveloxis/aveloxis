@@ -3,7 +3,9 @@
 
 // Package pidfile manages PID files for aveloxis background processes.
 // Each component (serve, web, api, scancode-worker) writes its PID to a file at startup
-// and removes it on shutdown. The start/stop commands use these files
+// and removes it on shutdown while the file still holds its own PID
+// (RemoveIfOwn — the one removal primitive; a concurrent start's file is
+// left alone). The start/stop commands use these files
 // to reliably identify and manage background processes.
 package pidfile
 
@@ -74,34 +76,50 @@ func Read(path string) (int, error) {
 	return pid, nil
 }
 
-// Remove deletes a PID file. Best-effort by contract.
-//
-// A leftover pidfile whose PID is DEAD is resolved by the liveness check
-// on the next start (that is what IsRunning is for). A leftover pidfile
-// that cannot be READ — EACCES, EIO, corrupt or truncated content — is
-// neither stale nor live: it never reaches IsRunning at all, and since
-// round-11 finding 2 (SR-5) callers report that state as UNKNOWN and
-// REFUSE to start rather than risk a second scheduler on one host. So a
-// failed Remove here is not always self-healing; the operator may have
-// to delete the file by hand.
-func Remove(path string) {
-	_ = os.Remove(path)
-}
-
 // RemoveIfOwn removes the PID file only while it still holds pid. Two
 // `start`s inside the "already running" guard's read→write window both
 // spawn; the loser's unconditional Remove — the parent's on childExited,
 // or a refused serve's own deferred one — took the WINNER's file with it,
 // leaving a live process with no pidfile (review rounds 3 and 5 of the
 // deploy-path batch). A file holding another PID, or an unreadable one,
-// is left in place. Reports whether the file was removed.
-func RemoveIfOwn(path string, pid int) bool {
+// is left in place. The report says what happened: Removed when the file
+// held pid and is gone; neither Removed nor Err when the file was not the
+// caller's — gone already (the parent's childExited arm and the child's own
+// defer both remove the same file), another pid, or unreadable; Err when
+// the file held pid but the unlink was refused (EACCES, EROFS — a
+// ~/.aveloxis another uid created), which round 8 of the deploy-path
+// review found stop reporting as "replaced or removed concurrently".
+//
+// This is the package's ONLY removal (deploy-path review round 7): the
+// unconditional Remove had no production caller left and its doc still
+// presented it as the normal removal, so it was deleted rather than
+// documented around; tests clearing a fixture use os.Remove. A leftover
+// pidfile whose PID is DEAD is resolved by the liveness check on the next
+// start (that is what IsRunning is for). A leftover pidfile that cannot
+// be READ — EACCES, EIO, corrupt or truncated content — is neither stale
+// nor live: it never reaches IsRunning at all, and since round-11
+// finding 2 (SR-5) callers report that state as UNKNOWN and REFUSE to
+// start rather than risk a second scheduler on one host; the operator
+// may have to delete the file by hand.
+func RemoveIfOwn(path string, pid int) Removal {
 	p, err := Read(path)
 	if err != nil || p != pid {
-		return false
+		return Removal{}
 	}
-	_ = os.Remove(path)
-	return true
+	if err := os.Remove(path); err != nil {
+		return Removal{Err: err}
+	}
+	return Removal{Removed: true}
+}
+
+// Removal is RemoveIfOwn's report. A struct rather than (bool, error) so
+// the callers that only release their own file on the way out — every
+// component's defer, the parent's childExited arm — can discard it in
+// statement position; the one caller that tells the operator what
+// happened (stop's stale arm) reads both fields.
+type Removal struct {
+	Removed bool  // the file held pid and is gone
+	Err     error // the file held pid but os.Remove refused; nil when it was not the caller's file
 }
 
 // IsRunning checks if the process with the given PID is still alive.

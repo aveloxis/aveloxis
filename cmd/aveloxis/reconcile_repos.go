@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -34,9 +35,8 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/spf13/cobra"
-
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/spf13/cobra"
 )
 
 func reconcileReposCmd(cfgPath *string) *cobra.Command {
@@ -98,11 +98,27 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 	// index) but the run exits nonzero so a script cannot read a fully
 	// refused reconcile as success.
 	preconditionUnmet := 0
+	// Interrupted (batch 7b review round 5, the mark-gone shape): what landed
+	// stays — every store write is its own statement or transaction — and a
+	// rerun walks the whole cohort again (idempotent; no resume marker).
+	// Reached at the loop top, from a probe the cancel cut short, from
+	// every store write it cut short, and after the loop. Through v0.29.67 a
+	// cancelled walk printed the completion line and exited 0.
+	mode := ""
+	if dryRun {
+		mode = " (dry run — nothing written)"
+	}
+	interrupted := func() error {
+		return reconcileInterruptedReport(os.Stdout, mode, reconcileCounts{dead, healedDataless, consolidated, enqueued, skipped, refused, preconditionUnmet}, total, ctx.Err())
+	}
 	for _, sr := range stranded {
 		if ctx.Err() != nil {
-			break
+			return interrupted()
 		}
 		finalURL, status, rerr := collector.ResolveRedirectTarget(ctx, sr.GitURL)
+		if rerr != nil && ctx.Err() != nil {
+			return interrupted() // the cancel, not the probe, ended this row
+		}
 		if errors.Is(rerr, platform.ErrRedirectTargetUserinfo) {
 			// The forge's redirect target, not the stored URL (round 7):
 			// skipped, not refused.
@@ -130,6 +146,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			fmt.Printf("  dead:        %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
 				if err := store.ArchiveRepo(ctx, sr.RepoID); err != nil {
+					if ctx.Err() != nil {
+						return interrupted()
+					}
 					logger.Warn("reconcile: archive failed", "repo_id", sr.RepoID, "error", err)
 					skipped++
 					continue
@@ -142,6 +161,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			// in place (rename detection is prelim's job).
 			winnerID, ferr := store.FindRepoByURL(ctx, finalURL)
 			if ferr != nil {
+				if ctx.Err() != nil {
+					return interrupted()
+				}
 				logger.Warn("reconcile: winner lookup failed — skipping", "repo_id", sr.RepoID, "error", ferr)
 				skipped++
 				continue
@@ -152,6 +174,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 				if !dryRun {
 					healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)
 					if herr != nil {
+						if ctx.Err() != nil {
+							return interrupted()
+						}
 						logger.Warn("reconcile: heal failed — skipping", "repo_id", sr.RepoID, "error", herr)
 						if errors.Is(herr, db.ErrEmailMessageIndexesNotReady) {
 							preconditionUnmet++
@@ -173,6 +198,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 							winnerGit = wr.GitURL
 						}
 						if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {
+							if ctx.Err() != nil {
+								return interrupted()
+							}
 							logger.Warn("reconcile: fallback consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
 							if errors.Is(derr, db.ErrEmailMessageIndexesNotReady) {
 								preconditionUnmet++
@@ -193,6 +221,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 						winnerGit = wr.GitURL
 					}
 					if derr := db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {
+						if ctx.Err() != nil {
+							return interrupted()
+						}
 						logger.Warn("reconcile: consolidation failed — skipping", "repo_id", sr.RepoID, "error", derr)
 						if errors.Is(derr, db.ErrEmailMessageIndexesNotReady) {
 							preconditionUnmet++
@@ -206,6 +237,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 				fmt.Printf("  enqueue (renamed, target untracked): %s (repo %d)\n", sr.GitURL, sr.RepoID)
 				if !dryRun {
 					if err := store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {
+						if ctx.Err() != nil {
+							return interrupted()
+						}
 						logger.Warn("reconcile: enqueue failed", "repo_id", sr.RepoID, "error", err)
 						skipped++
 						continue
@@ -219,6 +253,9 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			fmt.Printf("  enqueue (lost queue row): %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
 				if err := store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {
+					if ctx.Err() != nil {
+						return interrupted()
+					}
 					logger.Warn("reconcile: enqueue failed", "repo_id", sr.RepoID, "error", err)
 					skipped++
 					continue
@@ -227,11 +264,10 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			enqueued++
 		}
 	}
-
-	mode := ""
-	if dryRun {
-		mode = " (dry run — nothing written)"
+	if ctx.Err() != nil {
+		return interrupted()
 	}
+
 	fmt.Printf("reconcile-repos%s: dead=%d healed_dataless=%d consolidated=%d enqueued=%d skipped=%d refused=%d of %d stranded\n",
 		mode, dead, healedDataless, consolidated, enqueued, skipped, refused, total)
 	if skipped > 0 {
@@ -258,4 +294,20 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 // for the rename comparison (matches prelim's normalization intent).
 func normalizeReconcileURL(u string) string {
 	return strings.ToLower(model.NormalizeRepoGitURL(u)) // the stored spelling's suffix rule (follow-up 8)
+}
+
+// reconcileCounts is the walk's tally, in the order the lines print it.
+type reconcileCounts struct {
+	dead, healedDataless, consolidated, enqueued, skipped, refused, preconditionUnmet int
+}
+
+// reconcileInterruptedReport prints the interruption line — the mode
+// marker and every counter, so the operator knows what landed — and
+// returns the non-zero exit wrapping the cancellation (batch 7b review
+// round 7: the closure's `return fmt.Errorf(...)` could become `return nil`
+// with every pin green; a pure function is what the unit test drives).
+func reconcileInterruptedReport(w io.Writer, mode string, c reconcileCounts, total int64, cause error) error {
+	fmt.Fprintf(w, "reconcile-repos%s interrupted: dead=%d healed_dataless=%d consolidated=%d enqueued=%d skipped=%d refused=%d precondition_unmet=%d of %d stranded — a rerun walks the whole cohort again\n",
+		mode, c.dead, c.healedDataless, c.consolidated, c.enqueued, c.skipped, c.refused, c.preconditionUnmet, total)
+	return fmt.Errorf("reconcile-repos interrupted: %w", cause)
 }

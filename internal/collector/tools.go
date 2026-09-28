@@ -12,6 +12,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -92,14 +93,45 @@ func scorecardDownloadURL(version, goos, goarch string) string {
 // headroom; the lookup shares it rather than carrying a second constant.
 var toolFetchClient = &http.Client{Timeout: 5 * time.Minute}
 
-// toolInstallBound bounds one tool's whole install or upgrade — its
+// ToolInstallBound bounds one tool's whole install or upgrade — its
 // subprocesses (`go install`, pipx, pip, brew) and its requests together.
-// Derived from toolFetchClient: the scorecard path is two serial bounded
-// requests, so twice that bound; a module-proxy or PyPI stall inside a
-// subprocess (batch 4a review round 12: those legs were unbounded and
-// ctx-less, and a `stop serve` during the check orphaned the child) is
-// held to the same budget.
-var toolInstallBound = 2 * toolFetchClient.Timeout
+// Derived from toolFetchClient at call time (a test that swaps the client
+// moves it too): the scorecard path is two serial bounded requests, so
+// twice that bound; a module-proxy or PyPI stall inside a subprocess
+// (batch 4a review round 12: those legs were unbounded and ctx-less, and a
+// `stop serve` during the check orphaned the child) is held to the same
+// budget. Shared with the install-tools and upgrade-tools commands.
+func ToolInstallBound() time.Duration { return 2 * toolFetchClient.Timeout }
+
+// runToolCommand runs one install subprocess under the caller's context
+// with the whole process group killed on cancel (groupKilled) and the
+// cancellation reported as the context's error, not "signal: killed"
+// (execErr) — the scheduler-workers rule for every subprocess (batch 4a
+// review round 13).
+func runToolCommand(ctx context.Context, cmd *exec.Cmd) error {
+	groupKilled(cmd)
+	// In its own process group the child cannot use the controlling
+	// terminal: a prompt (pip's getpass for an authenticated index, git's
+	// credential prompt under `go install`) is stopped by SIGTTIN instead
+	// of answered, and the operator watches ToolInstallBound() run out. The
+	// two ecosystems' no-prompt variables turn a prompt into an immediate,
+	// named failure (review round 14). A Homebrew formula install never
+	// reads the terminal (round 15: NONINTERACTIVE is the installer
+	// script's knob, unread by `brew install`, so it is not set). A
+	// caller's own environment is kept; the process environment is the
+	// default os/exec would have used.
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, nonInteractiveEnv...)
+	return execErr(ctx, cmd.Run())
+}
+
+// nonInteractiveEnv is what every tool command carries so no installer
+// prompts: pip (PIP_NO_INPUT — pip still consults the keyring) and git
+// (GIT_TERMINAL_PROMPT=0). Credentials must come from configuration or a
+// keyring; both CLIs' help says so.
+var nonInteractiveEnv = []string{"PIP_NO_INPUT=1", "GIT_TERMINAL_PROMPT=0"}
 
 // scorecardLatestReleaseURL is the release lookup's URL; a variable so the
 // bounded-fetch test can point it at a fixture.
@@ -235,7 +267,7 @@ func CheckAndUpdateTools(ctx context.Context, logger *slog.Logger) {
 
 	for _, tool := range ExternalTools() {
 		if ctx.Err() != nil {
-			logger.Info("tool update check interrupted — the next start resumes it", "updated", updated)
+			logger.Info("tool update check interrupted — the next start re-runs it", "updated", updated)
 			return // the timestamp is not written: the check is still due
 		}
 		// Only update tools that are already installed.
@@ -244,16 +276,26 @@ func CheckAndUpdateTools(ctx context.Context, logger *slog.Logger) {
 		}
 
 		logger.Info("updating tool", "name", tool.Name)
-		// Each tool's install is bounded (toolInstallBound) and cancelled
+		// Each tool's install is bounded (ToolInstallBound) and cancelled
 		// with the caller's ctx, so a stop during the check ends the
 		// subprocess instead of orphaning it (batch 4a review round 12).
-		tctx, cancel := context.WithTimeout(ctx, toolInstallBound)
+		bound := ToolInstallBound()
+		tctx, cancel := context.WithTimeout(ctx, bound)
 		err := runToolInstall(tctx, tool)
+		timedOut := errors.Is(tctx.Err(), context.DeadlineExceeded) // still readable after cancel
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
-				logger.Info("tool update check interrupted — the next start resumes it", "name", tool.Name, "updated", updated)
+				logger.Info("tool update check interrupted — the next start re-runs it", "name", tool.Name, "updated", updated)
 				return
+			}
+			if timedOut {
+				// Named for the operator (round 13: the subprocess reports
+				// "signal: killed", never the deadline); the installed tool
+				// keeps working at its old version and the next monthly
+				// check retries.
+				logger.Warn("tool update timed out — retried at the next monthly check", "name", tool.Name, "bound", bound)
+				continue
 			}
 			logger.Warn("failed to update tool", "name", tool.Name, "error", err)
 			continue
@@ -280,7 +322,7 @@ func runToolInstall(ctx context.Context, tool ExternalTool) error {
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runToolCommand(ctx, cmd)
 }
 
 // toolCheckTimestampFile returns the path to the timestamp file.
@@ -383,7 +425,7 @@ func pipxUpgradeScancode(ctx context.Context, pipxPath string) error {
 	cmd := exec.CommandContext(ctx, pipxPath, "upgrade", scancodePipxPackage)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := runToolCommand(ctx, cmd); err != nil {
 		return fmt.Errorf("pipx upgrade %s: %w (if scancode was installed via `pip install --user` rather than pipx, "+
 			"uninstall it and run `aveloxis install-tools` to move it into a pipx venv)",
 			scancodePipxPackage, err)
@@ -410,7 +452,7 @@ func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 	cmd := exec.CommandContext(ctx, pipxPath, "install", scancodePipxPackage)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := runToolCommand(ctx, cmd); err != nil {
 		return err
 	}
 	// v0.23.6: inject typecode-libmagic into the freshly-built
@@ -443,7 +485,7 @@ func pipInstallScancodeFresh(ctx context.Context) error {
 		cmd := exec.CommandContext(ctx, pipPath, "install", "--user", scancodePipxPackage)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err == nil {
+		if err := runToolCommand(ctx, cmd); err == nil {
 			// pip --user installs to a platform-specific bin dir that
 			// may not be on PATH. Detect it and add to shell profile.
 			if _, lookErr := exec.LookPath("scancode"); lookErr != nil {
@@ -487,7 +529,7 @@ func injectTypecodeLibmagic(ctx context.Context, pipxPath, scancodePkg string) e
 	cmd := exec.CommandContext(ctx, pipxPath, "inject", scancodePkg, "typecode-libmagic")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runToolCommand(ctx, cmd)
 }
 
 // InjectTypecodeLibmagic is the public alias for injectTypecodeLibmagic.
@@ -509,12 +551,16 @@ func installLibmagicIfNeeded(ctx context.Context) {
 		if _, err := exec.LookPath("brew"); err == nil {
 			// Check if already installed via brew.
 			check := exec.CommandContext(ctx, "brew", "list", "libmagic")
+			groupKilled(check)
 			if check.Run() != nil {
+				if ctx.Err() != nil {
+					return // the probe failed because the walk was cancelled, not because libmagic is missing (round 15)
+				}
 				fmt.Println("Installing libmagic via Homebrew (required by scancode)...")
 				cmd := exec.CommandContext(ctx, "brew", "install", "libmagic")
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
-				if err := cmd.Run(); err != nil {
+				if err := runToolCommand(ctx, cmd); err != nil {
 					fmt.Printf("  Warning: brew install libmagic failed: %v\n", err)
 				}
 			}
@@ -539,7 +585,9 @@ func ensurePythonUserBinOnPath(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		out, err := exec.CommandContext(ctx, pyPath, "-m", "site", "--user-base").Output()
+		probe := exec.CommandContext(ctx, pyPath, "-m", "site", "--user-base")
+		groupKilled(probe)
+		out, err := probe.Output()
 		if err == nil {
 			binDir = filepath.Join(strings.TrimSpace(string(out)), "bin")
 			break

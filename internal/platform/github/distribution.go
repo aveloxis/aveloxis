@@ -80,11 +80,13 @@ type ghReleaseAsset struct {
 // Optional endpoint: 404 / 403 / 410 → empty result, not error.
 //
 // v0.25.0: routes through platform.WithoutETag(ctx) to suppress the
-// HTTPClient's If-None-Match conditional layer. A 304 response from
-// the distribution path would otherwise silently delete prior rows
-// via the v0.24.0 snapshot-replace semantics in
-// MarkDistributionComplete — see WithoutETag's docstring for the
-// silent-data-loss rationale.
+// HTTPClient's If-None-Match conditional layer. Through v0.29.67 a 304
+// read as "empty" deleted prior rows via the v0.24.0 snapshot-replace
+// semantics in MarkDistributionComplete (see WithoutETag's docstring);
+// since round 8 a 304 is a non-answer that fails the scan, so a SOLICITED
+// one would now strike an unchanged repository toward the sideline and
+// spend the read for nothing — the bypass stays (GetJSON is ETag-free
+// unconditionally since v0.28.17; this call is belt-and-braces).
 func (c *Client) ListReleaseAssetExtensions(ctx context.Context, owner, repo string) ([]model.PackageDistribution, error) {
 	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=100", owner, repo)
@@ -193,7 +195,6 @@ func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]mo
 		var pkgs []ghPackage
 		err := c.http.GetJSON(ctx, userPath, &pkgs)
 		if err != nil {
-			// ClassNotModified treated like ClassSkip (defense in depth).
 			if emptyAnswer(err) {
 				// 404 on user endpoint: try org endpoint.
 				if errors.Is(err, platform.ErrNotFound) {
@@ -374,8 +375,9 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
 		if err != nil {
 			// An answer about this directory (platform.IsDefinitiveAnswer:
-			// 404/410, a non-rate-limit 403, a rejected request) or a 304:
-			// nothing to list, keep the rest. The SAME rule as the scanner's
+			// 404/410, a non-rate-limit 403, a rejected request): nothing to
+			// list, keep the rest; an unsolicited 304 is a non-answer and
+			// fails the scan (round 8). The SAME rule as the scanner's
 			// githubErrorIsNonAnswer — round 6 caught a 422 here failing the
 			// listing while the scanner, counting it as an answer, stored the
 			// scan complete with no manifests.
@@ -451,8 +453,10 @@ const packagesPageSize = 100
 // repository's snapshot for the cadence). A tree GitHub truncates (100k
 // entries) is a non-answer for the same reason. A 304 is never SOLICITED
 // by GetJSON (ETag-free, WithoutETag); one that arrives anyway surfaces as
-// ErrNotModified and is read as a non-answer here as everywhere in these
-// readers (review rounds 6 and 8; emptyAnswer).
+// ErrNotModified and takes the common non-answer path below like every
+// other non-definitive error (round 8 made that the rule for every reader;
+// round 10 removed this arm's own 304 clause, which no longer decided
+// anything).
 func (c *Client) fetchRootTree(ctx context.Context, owner, repo string) ([]ghContentsEntry, error) {
 	var tree struct {
 		Truncated bool `json:"truncated"`
@@ -465,7 +469,7 @@ func (c *Client) fetchRootTree(ctx context.Context, owner, repo string) ([]ghCon
 		if errors.Is(err, context.Canceled) {
 			return nil, err
 		}
-		if platform.IsDefinitiveAnswer(err) || errors.Is(err, platform.ErrNotModified) {
+		if platform.IsDefinitiveAnswer(err) {
 			return nil, fmt.Errorf("root tree for %s/%s after a capped Contents listing: %v — the listing is not complete: %w", owner, repo, err, platform.ErrTransient)
 		}
 		return nil, fmt.Errorf("root tree for %s/%s: %w", owner, repo, err)

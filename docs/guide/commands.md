@@ -696,6 +696,8 @@ Installs three external analysis tools: [scc](https://github.com/boyter/scc) (pe
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
+Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a tool that would have prompted fails at once; each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk.
+
 ---
 
 ## `aveloxis upgrade-tools`
@@ -772,7 +774,7 @@ aveloxis stop all              # stop serve + web + api (never the scancode work
 aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. For `serve`: in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released; staging data is preserved. For `web` and `api`: the listener closes, in-flight requests get 10 s to finish, then the pool closes. The scancode worker has its own bounds (`collection.scancode_shutdown_grace_minutes`; see [Graceful shutdown](../architecture/scancode.md#6-graceful-shutdown)). PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. For `serve`: in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released; staging data is preserved. For `web` and `api`: the listener closes, in-flight requests get 10 s to finish, then the pool closes. The scancode worker has its own bounds (`collection.scancode_shutdown_grace_minutes`; see [Graceful shutdown](../architecture/scancode.md#6-graceful-shutdown)). PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, whose process it could not signal, or that it could not remove (the message carries the error) is left in place for you to inspect; a stale file another `start` replaced meanwhile is left to that start. `stop all` names a scancode worker it left running.
 
 Nothing to stop is exit 0 — `stop` is idempotent. A process that was
 found but could not be signaled (typically `operation not permitted` on a
@@ -1049,7 +1051,12 @@ aveloxis reconcile-repos             # everything
 
 The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
-Re-run until stranded = 0; healed repos drop out of the set.
+Re-run until stranded = 0; healed repos drop out of the set. Since
+v0.29.68 `Ctrl-C` or a SIGTERM (`kill <pid>`) cancels the in-flight probe
+or statement, ends the walk and prints an interruption summary (what was
+archived, healed, consolidated and enqueued so far, with the dry-run marker
+when set); the exit is nonzero, every outcome is idempotent, and a rerun
+walks the whole cohort again (there is no resume marker).
 
 Both consolidation arms (the dataless heal and the per-pair merge)
 share `dedup-repos`' precondition: the v0.28.18 migrate must have built

@@ -721,20 +721,13 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 	defer cloneCancel()
 	cloneCmd := exec.CommandContext(cloneCtx, "git", "clone", "--depth", "1", "--", job.RepoGit, tempDir)
 	cloneCmd.Env = append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
-	// v0.23.3: process-group cleanup. Setpgid puts the git subprocess
-	// (and any grandchildren — git-lfs, git-remote-https, the smudge-
-	// filter pre-check) into its own pgid. cmd.Cancel signals the
-	// whole group on ctx cancel; WaitDelay bounds how long Wait()
-	// blocks if anything refuses to exit. Without this, the operator's
-	// `aveloxis stop` leaves git+lfs subprocesses running as orphans.
-	cloneCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cloneCmd.Cancel = func() error {
-		if cloneCmd.Process != nil {
-			return syscall.Kill(-cloneCmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	cloneCmd.WaitDelay = scancodeWaitDelay
+	// v0.23.3: process-group cleanup — the git subprocess and its
+	// grandchildren (git-lfs, git-remote-https, the smudge-filter
+	// pre-check) die together on ctx cancel, and Wait() is bounded.
+	// Without this, the operator's `aveloxis stop` leaves git+lfs
+	// subprocesses running as orphans. groupKilled is the one shared
+	// block (v0.29.68 review round 14).
+	groupKilled(cloneCmd)
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
 			// Shutdown killed the clone: a clean release, not a strike
@@ -865,15 +858,9 @@ func (w *ScancodeWorker) executeScan(ctx context.Context, job db.ScancodeJob, te
 	// Without pgid kill, cmd.Wait() can block forever waiting for
 	// those inherited fds to close even when the lead scancode process
 	// has died — the 2026-05-21 wedge pattern. WaitDelay caps the
-	// blocking at 10 s as a safety net.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	cmd.WaitDelay = scancodeWaitDelay
+	// blocking as a safety net. groupKilled is the one shared block
+	// (v0.29.68 review round 14).
+	groupKilled(cmd)
 
 	// cmd.Start() is the key change from the legacy synchronous
 	// invocation: we need the OS PID BEFORE the subprocess
@@ -1211,7 +1198,8 @@ func (w *ScancodeWorker) sweepCloneDirAtShutdown() {
 }
 
 // scancodeWaitDelay bounds how long cmd.Wait blocks after the process
-// group is SIGKILLed (pipes held by stragglers); scancodeBestEffortDBTimeout
+// group is SIGKILLed (pipes held by stragglers) — applied by groupKilled,
+// whose sweptWaitDelay is this constant; scancodeBestEffortDBTimeout
 // bounds each Background-ctx bookkeeping write a runner issues after its
 // ctx is dead. ScancodeShutdownBookkeepingGrace is the worst case of
 // one runner's DB bookkeeping once the scan is killed: the post-kill

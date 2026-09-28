@@ -258,11 +258,33 @@ func TestServeUntilDone(t *testing.T) {
 	}
 }
 
-// TestChildrenRemoveOnlyTheirOwnPidfile (review round 5): every component's
-// deferred pidfile removal is pidfile.RemoveIfOwn with its own PID — an
-// unconditional Remove in a refused serve took the winner's file after a
-// double start inside the guard window.
+// TestChildrenRemoveOnlyTheirOwnPidfile (review rounds 5–6): every
+// component's deferred pidfile removal is pidfile.RemoveIfOwn with its own
+// PID — an unconditional Remove in a refused serve took the winner's file
+// after a double start inside the guard window — and no production source
+// in cmd/aveloxis removes a pidfile unconditionally at all (round 6: the
+// run-scorecard release and stop's two arms were the same primitive;
+// round 7: the unconditional primitive itself is gone from internal/pidfile,
+// TestPidfileRemoveContractDoesNotOverclaim, so the compiler enforces this
+// loop's ban — it stays as the message an alias or re-export would meet).
+// stop's stale arm reads the report: the message says whether the file
+// was removed, could not be removed (the unlink error), or was a
+// concurrent start's file left in place (rounds 7–8).
 func TestChildrenRemoveOnlyTheirOwnPidfile(t *testing.T) {
+	for name, src := range srctest.PackageFiles(t, "cmd/aveloxis", 20) {
+		if strings.Contains(srctest.StripGoComments(src), "pidfile.Remove(") {
+			t.Errorf("%s removes a pidfile unconditionally — use pidfile.RemoveIfOwn(path, pid) so a concurrent start's file survives", name)
+		}
+	}
+	stop := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/main.go"), "func stopComponent("))
+	if !strings.Contains(stop, ":= pidfile.RemoveIfOwn(pidPath, pid);") {
+		t.Error("stopComponent's stale arm must bind RemoveIfOwn's report and say what happened — \"cleaned up\" was printed while the file could have been left in place (round 7)")
+	}
+	for _, msg := range []string{"cleaned up", "could not be removed: %v", "replaced or removed concurrently"} {
+		if !strings.Contains(stop, msg) {
+			t.Errorf("stopComponent's stale arm must print %q for its case of the report — a refused unlink read as a concurrent replacement (round 8)", msg)
+		}
+	}
 	for _, f := range []struct{ file, fn string }{
 		{"cmd/aveloxis/main.go", "func runServe("},
 		{"cmd/aveloxis/main.go", "func runAPI("},

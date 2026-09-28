@@ -546,15 +546,177 @@ func parseTOMLDeps(content, section string) []string {
 //     (`gem "rails", '~> 7.0'`) inventoried the constraint — 387 rows of
 //     `aveloxis_large` are a Ruby "package" called `~> 7.0` or similar.
 //
-// The name is the first comma-separated argument, unquoted, which is how
-// parseGemfileVersions has always read it.
+// Item 71 (v0.29.68): "the first comma-separated argument" was not the name
+// either. A trailing modifier or an interpolated name became a fabricated gem
+// (`json" if defined?(RUBY_VERSION) && RUBY_VERSION < '1.9`,
+// `github-pages" if ENV["GH_PAGES"]`, `beaker-#{ENV['BEAKER_HYPERVISOR']}`),
+// stored in the inventory and minted into purls. The name is now read the way
+// Ruby reads it: parseGemDeclaration.
 func gemDeclaredName(line string) string {
-	line = strings.TrimSpace(stripHashComment(line))
-	if !strings.HasPrefix(line, "gem ") {
-		return ""
+	d, _ := parseGemDeclaration(line)
+	return d.Name
+}
+
+// gemDeclaration is one `gem` call of a Gemfile: the static name, the
+// version requirements given as string literals right after it, and Text,
+// the call's source without its comment or a trailing `if`/`unless`
+// modifier — what a reader stores as the declared requirement, so the
+// modifier's `< '1.9'` or `=~` never reaches classifyRequirement. Keyword
+// options stay in Text, as they always have in the stored requirement.
+type gemDeclaration struct {
+	Name         string
+	Requirements []string
+	// Declared is the call through its last version literal — what the
+	// requirement classifier reads (classificationText). Keyword options are
+	// not version material (`:require => false` read as a `>` lower bound;
+	// `install_if: -> { RUBY_VERSION < "3.0" }` as an upper one), so they
+	// stop here (item 71 review round 2).
+	Declared string
+	// Text is the call without its comment or a trailing modifier, keyword
+	// options included — the stored requirement (the raw manifest truth the
+	// display shows, `path: "../shared"` included) and where the inline
+	// group scope is read.
+	Text string
+}
+
+// parseGemDeclaration reads a `gem` call the way Ruby does, for every reader
+// of a Gemfile (SR-17). The first argument must be a string literal — "x",
+// 'x', %q(x), %Q(x) or %(x) — and the name is exactly its contents. The
+// requirements are the string literals that follow, each after a comma;
+// anything else (keyword options, a splat, a computed value, a trailing `if`
+// or `unless` modifier, a comment) ends the list. A name built by
+// interpolation (`"beaker-#{hv}"`) is not a static name and cannot be
+// resolved, so the line declares nothing — the same as any other line the
+// readers cannot read (no log: a manifest reader reports what it found). An
+// interpolated requirement is dropped with the ones after it.
+func parseGemDeclaration(line string) (gemDeclaration, bool) {
+	rest := strings.TrimLeft(line, " \t")
+	start := rest
+	if !strings.HasPrefix(rest, "gem") {
+		return gemDeclaration{}, false
 	}
-	first := strings.SplitN(line, ",", 2)[0]
-	return strings.Trim(strings.TrimSpace(strings.TrimPrefix(first, "gem ")), "\"' ")
+	// `gem "x"`, `gem("x")` and `gem"x"` are all the call; `gemspec`,
+	// `gems "x"` and `gem_name "x"` are not, and fail below because a
+	// string literal cannot start with an identifier character.
+	rest = strings.TrimLeft(rest[3:], " \t(")
+	name, interpolated, rest, ok := rubyStringLiteral(rest)
+	if !ok || interpolated || name == "" {
+		return gemDeclaration{}, false
+	}
+	d := gemDeclaration{Name: name}
+	for {
+		rest = strings.TrimLeft(rest, " \t")
+		if !strings.HasPrefix(rest, ",") {
+			break
+		}
+		req, interp, after, ok := rubyStringLiteral(strings.TrimLeft(rest[1:], " \t"))
+		if !ok || interp {
+			break
+		}
+		d.Requirements = append(d.Requirements, req)
+		rest = after
+	}
+	d.Declared = strings.TrimRight(start[:len(start)-len(rest)], " \t")
+	tail := stripHashComment(rest)
+	if cut := rubyModifierIndex(tail); cut >= 0 {
+		tail = tail[:cut]
+	}
+	d.Text = strings.TrimRight(start[:len(start)-len(rest)]+tail, " \t")
+	return d, true
+}
+
+// rubyModifierIndex is the offset in s of a statement modifier keyword
+// (`if`, `unless`) outside any string, or -1. A keyword must stand as a word
+// (at the start or after a space, followed by a space, `(` or the end): `if:`
+// (a hash key) and `diff` are not modifiers. Declined edges (item 71 review): `if!x` / `)if` with no
+// space are left uncut (legal Ruby, not seen in Gemfiles), and an `unless`
+// inside an `install_if: -> { ... }` block cuts inside the option (the
+// declared literals are already read; only the stored text is shorter).
+func rubyModifierIndex(s string) int {
+	at := -1
+	scanOutsideStrings(s, func(i int, c byte) bool {
+		if i > 0 && s[i-1] != ' ' && s[i-1] != '\t' {
+			return true
+		}
+		for _, kw := range []string{"if", "unless"} {
+			if !strings.HasPrefix(s[i:], kw) {
+				continue
+			}
+			if j := i + len(kw); j == len(s) || s[j] == ' ' || s[j] == '\t' || s[j] == '(' {
+				at = i
+				return false
+			}
+		}
+		return true
+	})
+	return at
+}
+
+// rubyStringLiteral reads the Ruby string literal at the start of s: its
+// contents, whether it interpolates (`#{` in a double-quoted or %Q/% form),
+// and the text after it. ok is false when s does not start with a literal or
+// the literal is unterminated. Delimiters of the %-forms do not nest (no gem
+// name contains one).
+func rubyStringLiteral(s string) (contents string, interpolated bool, rest string, ok bool) {
+	if s == "" {
+		return "", false, s, false
+	}
+	var closer byte
+	interpolating := false
+	body := 0
+	switch {
+	case s[0] == '"':
+		closer, interpolating, body = '"', true, 1
+	case s[0] == '\'':
+		closer, body = '\'', 1
+	case strings.HasPrefix(s, "%q") && len(s) > 2:
+		closer, body = rubyPercentCloser(s[2]), 3
+	case strings.HasPrefix(s, "%Q") && len(s) > 2:
+		closer, interpolating, body = rubyPercentCloser(s[2]), true, 3
+	case s[0] == '%' && len(s) > 1 && strings.IndexByte("([{<", s[1]) >= 0:
+		closer, interpolating, body = rubyPercentCloser(s[1]), true, 2
+	default:
+		return "", false, s, false
+	}
+	if closer == 0 {
+		return "", false, s, false
+	}
+	var b strings.Builder
+	for i := body; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i+1 < len(s):
+			i++
+			b.WriteByte(s[i])
+		case c == closer:
+			return b.String(), interpolated, s[i+1:], true
+		default:
+			if interpolating && c == '#' && i+1 < len(s) && s[i+1] == '{' {
+				interpolated = true
+			}
+			b.WriteByte(c)
+		}
+	}
+	return "", false, s, false
+}
+
+// rubyPercentCloser is the closing delimiter of a %-literal opened by open,
+// or 0 when open cannot open one (alphanumerics and space).
+func rubyPercentCloser(open byte) byte {
+	switch open {
+	case '(':
+		return ')'
+	case '[':
+		return ']'
+	case '{':
+		return '}'
+	case '<':
+		return '>'
+	}
+	if open == ' ' || open == '\t' || ('a' <= open && open <= 'z') || ('A' <= open && open <= 'Z') || ('0' <= open && open <= '9') {
+		return 0
+	}
+	return open
 }
 
 func parseGemfile(content string) []string {
@@ -2161,41 +2323,35 @@ func parseGemfileVersions(path string) []libyearDep {
 			groupStack = groupStack[:len(groupStack)-1]
 			continue
 		}
-		if !strings.HasPrefix(line, "gem ") {
+		// gem 'name', '~> 1.0' — read by the one shared declaration parser
+		// (item 71): only a string-literal argument after the name is a
+		// version requirement, so keyword options (v0.27.71: "require:
+		// false" was the #1 rubygems garbage version in production) and a
+		// trailing `if`/`unless` modifier (`">= 1.5" if RUBY_VERSION < '1.9'`
+		// was stored as `1.5"`) never are.
+		decl, ok := parseGemDeclaration(line)
+		if !ok {
 			continue
 		}
 		// v0.29.56: a trailing comment was read into the name or version
 		// ("gem 'logger'   # stdlib in Ruby <= 3.x" → name
-		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io).
-		line = strings.TrimSpace(stripHashComment(line))
-		// gem 'name', '~> 1.0'
-		parts := strings.Split(line, ",")
-		name := ""
+		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io). The
+		// parser stops before it and before a modifier, so decl.Text is
+		// the stored requirement (keyword options kept for display; the
+		// classifier reads decl.Declared through classificationText).
+		name := decl.Name
 		version := ""
-		if len(parts) >= 1 {
-			name = gemDeclaredName(line)
-		}
-		if len(parts) >= 2 {
-			// v0.27.71: only a QUOTED second argument is a version
-			// requirement ("~> 1.0", ">= 1.1"). Unquoted keyword
-			// options (require: false, path: "..", group: :x,
-			// platforms: [..]) were captured as versions —
-			// "require: false" was the #1 rubygems garbage version
-			// in production (1,212 rows).
-			if arg := strings.TrimSpace(parts[1]); strings.HasPrefix(arg, `"`) || strings.HasPrefix(arg, "'") {
-				version = cleanVersion(strings.Trim(arg, "\"' "))
-			}
+		if len(decl.Requirements) > 0 {
+			version = cleanVersion(decl.Requirements[0])
 		}
 		scope := "runtime"
 		if len(groupStack) > 0 {
 			scope = groupStack[len(groupStack)-1]
 		}
-		if inlineGroup := gemInlineGroupScope(line); inlineGroup != "" {
+		if inlineGroup := gemInlineGroupScope(decl.Text); inlineGroup != "" {
 			scope = inlineGroup
 		}
-		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "rubygems"})
-		}
+		deps = append(deps, libyearDep{Name: name, Version: version, Requirement: decl.Text, Type: scope, Manager: "rubygems"})
 	}
 	return deps
 }

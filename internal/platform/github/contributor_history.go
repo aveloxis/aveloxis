@@ -311,7 +311,7 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		// (code-review finding 3) — nothing incomplete is ever stamped.
 		tooExpensive := errors.Is(err, platform.ErrResourceLimits) ||
 			(strings.Contains(err.Error(), "decode graphql envelope") &&
-				strings.Contains(err.Error(), "RESOURCE_LIMITS_EXCEEDED"))
+				platform.CarriesResourceLimitsError([]byte(err.Error())))
 		if w.To.Sub(w.From) >= historyMinWindow &&
 			(tooExpensive || platform.ClassifyError(err) == platform.ClassTransient) {
 			c.logger.Info("activity history: query too expensive or transient — subdividing window",

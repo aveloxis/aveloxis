@@ -241,7 +241,7 @@ func vulnScanTargets(dep db.VulnScanDep, locked map[string][]string) []vulnScanT
 	return []vulnScanTarget{{
 		Purl: dep.Purl, Dep: dep,
 		Requirement: dep.Requirement,
-		Resolution:  classifyRequirement(dep.Requirement, dep.CurrentVersion),
+		Resolution:  classifyRequirement(classificationText(dep.PackageManager, dep.Requirement), dep.CurrentVersion),
 		Kind:        dependencyKindDirect,
 		Scope:       scope,
 	}}

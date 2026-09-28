@@ -577,7 +577,8 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	token, err := s.ghOAuth.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "OAuth exchange failed: "+err.Error(), http.StatusInternalServerError)
+		s.logOAuthFailure("github", "exchange", err)
+		http.Error(w, "OAuth exchange failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -592,6 +593,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	userReq.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion) // every GitHub REST request pins the version (worklist item 15)
 	resp, err := client.Do(userReq)
 	if err != nil {
+		s.logOAuthFailure("github", "user", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}
@@ -648,6 +650,23 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		GHLogin:   ghUser.Login,
 		Provider:  "github",
 	}, "GitHub")
+}
+
+// logOAuthFailure logs a failed forge request on an OAuth callback (final
+// whole-tree review F4, 2026-09-28: the exchange and user-request arms
+// returned without a log line, so the callback bound expired silently). A
+// browser that left mid-callback is not a failure and is not logged; an
+// expired bound says so. The browser is shown a fixed message, never err.
+func (s *Server) logOAuthFailure(provider, phase string, err error) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return
+	case errors.Is(err, context.DeadlineExceeded):
+		s.logger.Error("oauth callback: the forge did not answer within the callback bound",
+			"provider", provider, "phase", phase, "bound", oauthCallbackTimeout, "error", err)
+	default:
+		s.logger.Error("oauth callback: forge request failed", "provider", provider, "phase", phase, "error", err)
+	}
 }
 
 // completeOAuthLogin is the shared tail of both OAuth callbacks
@@ -783,7 +802,8 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	token, err := s.glOAuth.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "OAuth exchange failed: "+err.Error(), http.StatusInternalServerError)
+		s.logOAuthFailure("gitlab", "exchange", err)
+		http.Error(w, "OAuth exchange failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -805,6 +825,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := client.Do(userReq)
 	if err != nil {
+		s.logOAuthFailure("gitlab", "user", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}

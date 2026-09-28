@@ -336,6 +336,13 @@ func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time
 	if archivedMultiplier < 1 {
 		archivedMultiplier = 1
 	}
+	// A row whose last attempt FAILED (last_error set; CompleteJob clears it
+	// on success) keeps the due date its failure gave it — NOW() + interval
+	// at the failure (worklist 68, the 2026-09-28 kate log: last_collected
+	// is the last SUCCESS, so realigning a failed row put it in the past and
+	// it re-ran at every start; eight repositories failed within seconds of
+	// each of seven starts). A changed interval reaches such a row at its
+	// next completion.
 	stretch := fmt.Sprintf(archivedStretchCaseSQL, "$2")
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
@@ -343,6 +350,7 @@ func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time
 			updated_at = NOW()
 		WHERE status = 'queued'
 		  AND last_collected IS NOT NULL
+		  AND last_error IS NULL
 		  AND due_at <> last_collected + ($1::interval * `+stretch+`)`,
 		recollectAfter.String(), archivedMultiplier)
 	if err != nil {

@@ -62,6 +62,14 @@ func (s *PostgresStore) UpdateUserEmail(ctx context.Context, userID int, email s
 // real user account. See the v0.18.28 incident in CLAUDE.md.
 var ErrEmptyLogin = errors.New("oauth login name is empty")
 
+// ErrLoginNameTaken refuses an OAuth login whose name belongs to an account
+// with a different forge identity (final whole-tree review F1, 2026-09-28):
+// another provider's user, another numeric ID on the same provider, or a row
+// the login cannot prove it owns. A name is not an identity (SR-6); merging
+// on it handed a GitLab user who registered a GitHub admin's username that
+// admin's account.
+var ErrLoginNameTaken = errors.New("oauth login name belongs to another forge identity")
+
 // OAuthUserInfo holds user data from an OAuth provider.
 type OAuthUserInfo struct {
 	Login      string
@@ -97,11 +105,48 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 
 	var userID int
 
-	// Try to find existing user by login.
-	err := s.pool.QueryRow(ctx,
-		`SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1`,
-		info.Login).Scan(&userID)
+	// The forge's numeric user ID is the identity; the login name is a
+	// label a forge lets anyone register once it is free (final whole-tree
+	// review F1, 2026-09-28: matching on login_name alone handed a GitLab
+	// user with a GitHub admin's username that admin's account). An account
+	// is found by its ID first; the name is claimed only by a row of the
+	// same provider that carries no ID to contradict the login (a legacy or
+	// ID-less row, stamped by the claim), and any other collision is refused.
+	// A row from before oauth_provider existed is a GitHub row: GitLab
+	// sign-in arrived with that column.
+	var ownID int64
+	switch info.Provider {
+	case "github":
+		ownID = info.GHUserID
+	case "gitlab":
+		ownID = info.GLUserID
+	default:
+		return 0, fmt.Errorf("oauth login %q: unknown provider %q", info.Login, info.Provider)
+	}
+	if ownID > 0 {
+		byID := `SELECT user_id FROM aveloxis_ops.users WHERE gh_user_id = $1 ORDER BY user_id LIMIT 1`
+		if info.Provider == "gitlab" {
+			byID = `SELECT user_id FROM aveloxis_ops.users WHERE gl_user_id = $1 ORDER BY user_id LIMIT 1`
+		}
+		err := s.pool.QueryRow(ctx, byID, ownID).Scan(&userID)
+		if err == nil {
+			return userID, s.updateOAuthUser(ctx, userID, info)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("lookup user by %s id: %w", info.Provider, err)
+		}
+	}
 
+	var rowGH, rowGL int64
+	var rowProvider string
+	err := s.pool.QueryRow(ctx,
+		`SELECT user_id, COALESCE(gh_user_id, 0), COALESCE(gl_user_id, 0), COALESCE(NULLIF(oauth_provider, ''), 'github')
+		 FROM aveloxis_ops.users WHERE login_name = $1`,
+		info.Login).Scan(&userID, &rowGH, &rowGL, &rowProvider)
+
+	if err == nil && (rowProvider != info.Provider || rowGH != 0 || rowGL != 0) {
+		return 0, fmt.Errorf("oauth login %q (%s id %d): %w", info.Login, info.Provider, ownID, ErrLoginNameTaken)
+	}
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			// Real DB error — surface it. Treating this as "not
@@ -137,7 +182,7 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 				 gh_user_id, gh_login, gl_user_id, gl_username,
 				 oauth_provider, admin, email_verified, email_confirmed_at,
 				 tool_source, tool_version, data_source)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, TRUE, NOW(),
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6::bigint, 0), $7, NULLIF($8::bigint, 0), $9, $10, $12, TRUE, NOW(),
 				'aveloxis-web', $11, $10 || ' OAuth')
 			RETURNING user_id`,
 			info.Login, info.Email, firstName, lastName, info.AvatarURL,
@@ -147,18 +192,26 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		return userID, err
 	}
 
-	// Found — update OAuth fields. v0.27.84: the display name is
-	// refreshed on every login too (it used to be written only at
-	// first signup, going stale after provider-side renames); an
-	// empty provider name preserves the stored one.
+	// Found and owned (an ID-less row of this provider): the claim stamps
+	// the login's ID on it.
+	return userID, s.updateOAuthUser(ctx, userID, info)
+}
+
+// updateOAuthUser refreshes an owned account's OAuth fields. v0.27.84: the
+// display name is refreshed on every login too (it used to be written only
+// at first signup, going stale after provider-side renames); an empty
+// provider name preserves the stored one. A stored ID is never replaced,
+// and a zero ID is never stored (0 read as "has an identity" would lock the
+// row against its own provider's claim).
+func (s *PostgresStore) updateOAuthUser(ctx context.Context, userID int, info OAuthUserInfo) error {
 	freshFirst, freshLast := splitOAuthName(info.Name)
-	_, err = s.pool.Exec(ctx, `
+	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.users SET
 			email = COALESCE(NULLIF($2, ''), email),
 			avatar_url = $3,
-			gh_user_id = COALESCE(gh_user_id, $4),
+			gh_user_id = COALESCE(NULLIF(gh_user_id, 0), NULLIF($4::bigint, 0)),
 			gh_login = COALESCE(NULLIF($5, ''), gh_login),
-			gl_user_id = COALESCE(gl_user_id, $6),
+			gl_user_id = COALESCE(NULLIF(gl_user_id, 0), NULLIF($6::bigint, 0)),
 			gl_username = COALESCE(NULLIF($7, ''), gl_username),
 			oauth_provider = $8,
 			first_name = CASE WHEN $9 = '' THEN first_name ELSE $9 END,
@@ -168,7 +221,7 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		userID, info.Email, info.AvatarURL,
 		info.GHUserID, info.GHLogin, info.GLUserID, info.GLUsername,
 		info.Provider, freshFirst, freshLast)
-	return userID, err
+	return err
 }
 
 // verifyGroupOwnership checks that the given group belongs to the user.

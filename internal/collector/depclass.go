@@ -30,6 +30,23 @@ const (
 	resolutionUnpinned     = "unpinned"
 )
 
+// classificationText is the part of a stored requirement the classifier
+// reads. The Requirement field stays the raw manifest truth for display
+// (v0.27.11); for a Gemfile call that includes keyword options, which are
+// not version material — `:require => false` read as a `>` lower bound and
+// `install_if: -> { RUBY_VERSION < "3.0" }` as an upper one (item 71 review
+// round 2) — so a rubygems requirement is re-read through the one Gemfile
+// parser and classified on the call through its last version literal.
+// Every other manager's text is classified as stored.
+func classificationText(manager, requirement string) string {
+	if manager == "rubygems" {
+		if d, ok := parseGemDeclaration(requirement); ok {
+			return d.Declared
+		}
+	}
+	return requirement
+}
+
 // classifyRequirement maps a raw manifest requirement string (plus the
 // floor version the parser extracted) to a resolution class:
 //

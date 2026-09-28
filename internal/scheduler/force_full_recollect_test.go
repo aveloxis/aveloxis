@@ -12,6 +12,8 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // Force-recollect (v0.18.24): scheduler-side contract for the flag that
@@ -177,5 +179,22 @@ func TestCompleteJobPathWiresAutoFlag(t *testing.T) {
 	}
 	if !strings.Contains(src, "SetForceFullCollect") {
 		t.Error("scheduler.go must call store.SetForceFullCollect when auto-flag triggers — otherwise the flag is never persisted")
+	}
+}
+
+// TestFailedJobCompleteLogsItsError (worklist 66): the `job complete` line of
+// a failed job carries the error; through v0.29.68 it logged success=false
+// and nothing else, so six giant repositories' 6–21 h failures had no reason
+// in the log.
+func TestFailedJobCompleteLogsItsError(t *testing.T) {
+	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go"))
+	at := strings.Index(src, `s.logger.Info("job complete", completeAttrs...)`)
+	if at < 0 {
+		t.Fatal(`the job-complete log must be s.logger.Info("job complete", completeAttrs...)`)
+	}
+	before := src[:at]
+	arm := strings.LastIndex(before, "if !outcome.success {")
+	if arm < 0 || !strings.Contains(before[arm:], `completeAttrs = append(completeAttrs, "error", outcome.errMsg)`) {
+		t.Error("a failed job's complete line must append its error: `if !outcome.success { completeAttrs = append(completeAttrs, \"error\", outcome.errMsg) }` just before the log")
 	}
 }

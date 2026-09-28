@@ -1488,13 +1488,20 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		}
 	}
 
-	s.logger.Info("job complete",
+	// A failed job says why (worklist 66: `success=false` carried no error —
+	// six giant repositories failed 6–21 h attempts with the reason only in
+	// collection_queue.last_error).
+	completeAttrs := []any{
 		"repo_id", job.RepoID,
 		"owner", repo.Owner, "repo", repo.Name,
 		"success", outcome.success,
 		"duration", duration.Truncate(time.Second),
 		"issues", outcome.issues, "prs", outcome.prs,
-	)
+	}
+	if !outcome.success {
+		completeAttrs = append(completeAttrs, "error", outcome.errMsg)
+	}
+	s.logger.Info("job complete", completeAttrs...)
 }
 
 // completeJobStampRetryTimeout is the CEILING on the background-context
@@ -1976,7 +1983,8 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 		return
 	}
 
-	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.ghAPIBase, s.logger)
+	resolver := collector.NewCommitResolver(s.store, s.ghKeys, s.ghAPIBase, s.logger).
+		WithBareClone(collector.BareClonePath(s.cfg.Collection.RepoCloneDir, repoID))
 	resolveResult, resolveErr := resolver.ResolveCommits(ctx, repoID, repo.Owner, repo.Name)
 	if errors.Is(resolveErr, context.Canceled) {
 		return // shutdown, not a failure

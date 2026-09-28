@@ -233,7 +233,8 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 
 	// Phase 5: Commit author resolution (GitHub only).
 	if c.client.Platform() == model.PlatformGitHub && c.ghKeys != nil {
-		commitResolver := NewCommitResolver(c.store, c.ghKeys, c.ghAPIBase, c.logger)
+		commitResolver := NewCommitResolver(c.store, c.ghKeys, c.ghAPIBase, c.logger).
+			WithBareClone(BareClonePath(c.facade.repoDir, repoID))
 		resolveResult, resolveErr := commitResolver.ResolveCommits(ctx, repoID, owner, repo)
 		if resolveErr != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("commit resolution: %w", resolveErr))

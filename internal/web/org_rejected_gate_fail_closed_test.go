@@ -695,7 +695,9 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 			if p, isSel := parent.(*ast.SelectorExpr); isSel && p.Sel == x {
 				return true // a field or method name, not a reference
 			}
-			if kv, isKV := parent.(*ast.KeyValueExpr); isKV && kv.Key == x {
+			// A composite key is a field name — unless it names a package
+			// global: a map-literal key is a read of it (round 27).
+			if kv, isKV := parent.(*ast.KeyValueExpr); isKV && kv.Key == x && !pkgNames[x.Name] {
 				return true
 			}
 			if !(params[x.Name] || locals[x.Name] || importNames[x.Name] || builtins[x.Name] || allowedBareCalls[x.Name]) {

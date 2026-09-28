@@ -2475,6 +2475,9 @@ func (s *PostgresStore) InsertCommitParent(ctx context.Context, repoID int64, co
 	})
 }
 
+// UpsertCommitMessage writes one commit message. An unchanged message is
+// not rewritten (worklist 70; the guard and its reasoning are at
+// UpsertCommitMessageBatch in commit_batch.go).
 func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.CommitMessage) error {
 	msg.Message = SanitizeText(msg.Message)
 	return s.withRetry(ctx, func(ctx context.Context) error {
@@ -2485,7 +2488,8 @@ func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.Comm
 			ON CONFLICT (repo_id, cmt_hash) DO UPDATE SET
 				cmt_msg = EXCLUDED.cmt_msg,
 				tool_version = EXCLUDED.tool_version,
-				data_collection_date = NOW()`,
+				data_collection_date = NOW()
+			WHERE commit_messages.cmt_msg IS DISTINCT FROM EXCLUDED.cmt_msg`,
 			msg.RepoID, msg.Message, msg.Hash,
 		)
 		return err

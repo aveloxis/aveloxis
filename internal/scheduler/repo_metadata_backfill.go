@@ -29,12 +29,16 @@ import (
 // in ~28 hours — well under the natural recollect cycle (21 days
 // default) so the backfill leads recollection, not trails it.
 //
-// Per-repo failures (network, 404, rate limit) are logged and
-// skipped; the repo stays in the candidate set and the next restart
-// retries it. A GitHub candidate met with no usable GitHub key is not
+// Every answer is stamped (metadata_backfill_attempted_at, v0.29.68,
+// worklist 69) and the candidate query skips repos answered within one
+// recollect interval (collection.days_until_recollect), so an honestly
+// empty forge answer or a 404 is asked again once per interval, not at
+// every restart. Non-answers (network, rate limit, 5xx) are logged and
+// skipped unstamped; the next restart retries them. A GitHub candidate met with no usable GitHub key is not
 // a failure: it is counted apart (skipped_no_github_key) and left for a
-// restart with a key. Permanent 404s (renamed/deleted repos) cycle until
-// prelim's rename-detect or the operator removes the repo.
+// restart with a key. Permanent 404s (renamed/deleted repos) are asked
+// again once per recollect interval until prelim's rename-detect or the
+// operator removes the repo.
 //
 // v0.23.0 — see summary/changelog/v0.23.md, "Capture description and primary languages"
 // rationale.
@@ -60,7 +64,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			return
 		}
 
-		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, afterRepoID, metadataBackfillPageSize)
+		targets, err := s.store.ReposNeedingMetadataBackfill(ctx, afterRepoID, metadataBackfillPageSize, s.cfg.Collection.RecollectAfterDuration())
 		if errors.Is(err, context.Canceled) {
 			return // shutdown, not a failure
 		}
@@ -118,8 +122,24 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			if errors.Is(err, context.Canceled) {
 				return // shutdown, not a failure
 			}
+			// v0.29.68 (worklist 69): stamp every ANSWER so the candidate
+			// query leaves the repo alone for one recollect interval — an
+			// honestly empty description and language, or a definitive
+			// 404/gone, otherwise kept ~5,600 repos candidates forever.
+			// A non-answer (rate limit, 5xx, auth, empty key pool) is not
+			// stamped: it says nothing about the repo (SR-5/SR-16, the
+			// IsDefinitiveAnswer rule enrichment and search-resolve follow),
+			// and stamping it would park a whole pool-level outage's worth
+			// of repos for a full interval. A failed UpdateRepoMetadata is
+			// not stamped either: the answer was never written (SR-3).
+			answered := false
 			if err != nil {
-				s.logger.Info("repo metadata backfill: FetchRepoInfo failed (will retry next restart)",
+				answered = platform.IsDefinitiveAnswer(err)
+				retry := "will retry next restart"
+				if answered {
+					retry = "definitive; will retry after the recollect interval"
+				}
+				s.logger.Info("repo metadata backfill: FetchRepoInfo failed ("+retry+")",
 					"owner", t.Owner, "repo", t.Name, "error", err)
 				totalFailed++
 			} else {
@@ -133,6 +153,17 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 					totalFailed++
 				} else {
 					totalProcessed++
+					answered = true
+				}
+			}
+			if answered {
+				if mErr := s.store.MarkMetadataBackfillAttempted(ctx, t.RepoID); mErr != nil {
+					if errors.Is(mErr, context.Canceled) {
+						return // shutdown, not a failure
+					}
+					// The repo is asked again at the next start; nothing lost.
+					s.logger.Warn("repo metadata backfill: stamping the attempt failed (the repo is asked again next restart)",
+						"owner", t.Owner, "repo", t.Name, "repo_id", t.RepoID, "error", mErr)
 				}
 			}
 

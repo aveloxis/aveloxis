@@ -475,6 +475,19 @@ var deployChecklists = map[string][]deployStep{
 	// No schema change.
 	"0.29.67": v02967DeployChecklist,
 	"0.29.68": v02968DeployChecklist,
+	// v0.29.69: the 2026-09-28 kate log batch (worklist 66–74). One new
+	// nullable column (repos.metadata_backfill_attempted_at, instant ALTER).
+	"0.29.69": v02969DeployChecklist,
+}
+
+// 0.29.69 adds one nullable column (the metadata backfill's attempt stamp,
+// created by migrate) and carries 0.29.68's notes for a fleet that skipped it.
+var v02969DeployChecklist = []deployStep{
+	v02967DeployChecklist[0],
+	{"aveloxis migrate --skip-views", "adds repos.metadata_backfill_attempted_at (nullable, no default: an instant ALTER); otherwise as 0.29.67 — re-creates the two supply-chain views from Go (--skip-views skips only the 8Knot batch) and creates repo_forge_id_changes if 0.29.62 was skipped"},
+	v02967DeployChecklist[2],
+	v02968DeployChecklist[3],
+	{"aveloxis start all", "the first start runs the repository-metadata backfill once over its current candidates (~5,600 on kate) and stamps each answer; later starts ask only repositories never answered, not answered (a rate limit, a 5xx, an empty key pool — retried) or last asked more than one recollect interval ago (worklist 69). A repository whose last collection FAILED keeps the due date its failure gave it instead of re-running at every start (68). A GraphQL response cut off mid-body is retried, and an exhausted retry is transient (the PR batch subdivides) — the giant repositories that looped on 6–21 h failed attempts should complete, and a failed job's 'job complete' line now names its error (66). A search key that draws a headerless rate-limit 403 rests 60 s before any caller can lease it again (67). Unresolved commits no longer on the default branch (history rewritten upstream) are skipped from the bare clone instead of aborting commit resolution every cycle (73). Unchanged commit messages are no longer rewritten (fewer dead tuples on commit_messages — 70); a stop no longer logs staged processing as ERROR (72); the contributor-activity batch no longer deadlocks with the contributor upsert (74); Gemfile gem names and version requirements are read as Ruby literals — a trailing `if`/`unless` or an interpolated name no longer becomes a fabricated gem, and keyword options no longer skew the requirement's classification (71). If 0.29.68 was skipped, its start-up notes apply as well: " + v02968DeployChecklist[4].desc},
 }
 
 // 0.29.68 (branch brewers1.0, the worklist batch) has no schema change and

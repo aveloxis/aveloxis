@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -328,6 +329,19 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if readErr == nil && len(respBody) == 0 {
 				readErr = io.ErrUnexpectedEOF
 			}
+			// A NON-empty body that ends inside a JSON value is the same
+			// stream abort (worklist 66, the 2026-09-28 kate log: a
+			// truncated `{"data":{"repository":{"pr0":…` body on 200 was
+			// ClassFatal, failed the PR batch, set force_full_recollect,
+			// and nixpkgs, kibana and azure-powershell restarted from zero
+			// for 6–21 h). A complete but malformed body is not a stream
+			// abort and still fails at decode. So does a truncated body
+			// carrying RESOURCE_LIMITS_EXCEEDED: that is GitHub refusing the
+			// query (the 2026-09-05 shape), a retry gets the same answer, and
+			// the history sweep subdivides on the decode failure's marker.
+			if readErr == nil && jsonTruncated(respBody) && !CarriesResourceLimitsError(respBody) {
+				readErr = io.ErrUnexpectedEOF
+			}
 			if readErr == nil {
 				parsed = parseGraphQLResponse(respBody, dest, c.logger)
 				if parsed != nil && ClassifyError(parsed) == ClassRateLimit {
@@ -385,6 +399,13 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 						return err
 					}
 					continue
+				}
+				if isRetryableReadError(readErr) {
+					// The sub-budget is spent on a stream the gateway keeps
+					// cutting off — a query too expensive to finish. Transient,
+					// as paginate's exhaustion is, so the PR-batch caller can
+					// subdivide instead of failing the job (worklist 66).
+					return fmt.Errorf("read graphql response after %d read retries: %w: %w", readRetries, readErr, ErrTransient)
 				}
 				return fmt.Errorf("read graphql response: %w", readErr)
 			}
@@ -889,6 +910,35 @@ var ErrResourceLimits = errors.New("graphql resource limits exceeded")
 // ErrResourceLimits: that is the one condition where halving provably
 // helps.
 var ErrGraphQLExecutionTimeout = errors.New("graphql execution timeout")
+
+// resourceLimitsErrorType matches an errors entry whose type is
+// RESOURCE_LIMITS_EXCEEDED. Quotes inside JSON string content are escaped,
+// so data that merely mentions the word (an issue titled after it) cannot
+// form `"type":"…"` (final review F3 of v0.29.69).
+var resourceLimitsErrorType = regexp.MustCompile(`"type"\s*:\s*"RESOURCE_LIMITS_EXCEEDED"`)
+
+// CarriesResourceLimitsError reports whether a response body — whole,
+// truncated, or quoted inside a decode error's text — carries GitHub's
+// RESOURCE_LIMITS_EXCEEDED errors entry. It is the one spelling the client's
+// read-retry exemption and the history sweep's too-expensive arm share
+// (SR-17).
+func CarriesResourceLimitsError(body []byte) bool {
+	return resourceLimitsErrorType.Match(body)
+}
+
+// jsonTruncated reports whether body is invalid JSON whose only fault is
+// that it ends too early. json.Decoder says so with the typed
+// io.ErrUnexpectedEOF; a syntax error's offset does not, because a bad final
+// byte also sits at the end of the input (final review F2 of v0.29.69:
+// `{"a":1,}` read as a stream abort and was retried). Every response pays
+// one json.Valid scan; only an invalid one is decoded again.
+func jsonTruncated(body []byte) bool {
+	if len(body) == 0 || json.Valid(body) {
+		return false
+	}
+	var v any
+	return errors.Is(json.NewDecoder(bytes.NewReader(body)).Decode(&v), io.ErrUnexpectedEOF)
+}
 
 // isRetryableReadError classifies an error surfaced while READING or
 // DECODING a 200-OK response body — GraphQL (io.ReadAll) and REST

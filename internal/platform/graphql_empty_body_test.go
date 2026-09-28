@@ -5,6 +5,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -102,5 +103,192 @@ func TestGraphQLGivesUpAfterPersistentEmptyBodies(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "read graphql response") {
 		t.Errorf("error message %q should indicate a read failure after the retry budget is exhausted", msg)
+	}
+	// Exhaustion is transient, like paginate's (worklist 66): a body the
+	// gateway keeps cutting off comes from a query too expensive to finish,
+	// and only a transient class lets the PR-batch caller subdivide it;
+	// ClassFatal failed the whole job and set force_full_recollect.
+	if ClassifyError(err) != ClassTransient || !errors.Is(err, ErrTransient) {
+		t.Errorf("exhausted read retries classify %v (err %v); want ClassTransient wrapping ErrTransient, as the paginate path does", ClassifyError(err), err)
+	}
+}
+
+// TestGraphQLRetriesAfterTruncatedBody200 (worklist 66, the 2026-09-28 kate
+// log): a NON-empty body cut off mid-JSON on HTTP 200 — `{"data":{"repository":
+// {"pr0":…` — was not retried: only a zero-byte body became a read failure,
+// so the truncated one reached parseGraphQLResponse, "decode graphql envelope:
+// unexpected end of JSON input" classified ClassFatal, the PR batch failed,
+// force_full_recollect was set, and the next attempt on nixpkgs, kibana,
+// azure-powershell and atomist restarted from zero and ran longer (6–21 h).
+// A body that ends inside the JSON is the same stream abort as an empty one.
+func TestGraphQLRetriesAfterTruncatedBody200(t *testing.T) {
+	var attempts atomic.Int32
+	const goodBody = `{"data":{"hello":"world"}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pr0":{"number":1,"tit`))
+			return
+		}
+		_, _ = w.Write([]byte(goodBody))
+	}))
+	defer server.Close()
+
+	keys := NewKeyPool([]string{"test-token"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewHTTPClient(server.URL, keys, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthGitHub)
+	var got struct {
+		Hello string `json:"hello"`
+	}
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, &got); err != nil {
+		t.Fatalf("GraphQL failed after a truncated 200 body: %v (a body ending inside the JSON must be retried like an empty one)", err)
+	}
+	if got.Hello != "world" || attempts.Load() != 2 {
+		t.Errorf("got %q after %d attempts; want \"world\" after exactly 2", got.Hello, attempts.Load())
+	}
+}
+
+// TestGraphQLDoesNotRetryAMalformedCompleteBody: a body that is complete but
+// not JSON (an HTML error page) is not a truncation and is not retried —
+// only a body that ENDS inside a JSON value is (the retry sub-budget is for
+// stream aborts, not wire-format errors).
+func TestGraphQLDoesNotRetryAMalformedCompleteBody(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html>oops</html>`))
+	}))
+	defer server.Close()
+	keys := NewKeyPool([]string{"test-token"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewHTTPClient(server.URL, keys, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthGitHub)
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, nil); err == nil {
+		t.Fatal("a malformed complete body must fail")
+	}
+	if n := attempts.Load(); n != 1 {
+		t.Errorf("a malformed complete body was attempted %d times; want 1 (not a stream abort)", n)
+	}
+}
+
+// TestGraphQLDoesNotRetryATruncatedResourceLimitAnswer: GitHub sometimes
+// refuses a too-expensive query with a TRUNCATED body that carries
+// RESOURCE_LIMITS_EXCEEDED (the 2026-09-05 chaoss.tv shape the history
+// sweep subdivides on). That is the server's answer about the query, not a
+// stream abort: a retry gets the same answer and spends the read budget, and
+// the caller must see the decode failure with the marker in it (worklist 66,
+// found by the full suite after the truncation retry landed).
+func TestGraphQLDoesNotRetryATruncatedResourceLimitAnswer(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"user":null},"errors":[{"type":"RESOURCE_LIMITS_EXCEEDED","path":["user",0,`))
+	}))
+	defer server.Close()
+	keys := NewKeyPool([]string{"test-token"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewHTTPClient(server.URL, keys, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthGitHub)
+	err := c.GraphQL(context.Background(), "{ hello }", nil, nil)
+	if err == nil {
+		t.Fatal("a truncated resource-limit answer must fail")
+	}
+	if n := attempts.Load(); n != 1 {
+		t.Errorf("a truncated resource-limit answer was attempted %d times; want 1 (the answer, not a stream abort)", n)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "decode graphql envelope") || !strings.Contains(msg, "RESOURCE_LIMITS_EXCEEDED") {
+		t.Errorf("error %q must be the decode failure carrying the marker — the history sweep's too-expensive arm reads exactly that", msg)
+	}
+}
+
+// TestJSONTruncatedOnlyForEndOfInput (final review F2 of v0.29.69):
+// encoding/json reports a bad FINAL byte at offset == len too, so an
+// offset test read a complete malformed body as a stream abort and retried
+// it. Only a body that runs out inside a value is truncated.
+func TestJSONTruncatedOnlyForEndOfInput(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"data":{"repository":{"pr0":{"number":1,"tit`, true},
+		{`{"a":`, true},
+		{`[1,2`, true},
+		{`{"a":1,}`, false},
+		{`{"data":{}}}`, false},
+		{`{"a":1]`, false},
+		{`{"data":{}}`, false},
+		{`<html>oops</html>`, false},
+		{``, false},
+	} {
+		if got := jsonTruncated([]byte(tc.body)); got != tc.want {
+			t.Errorf("jsonTruncated(%q) = %v; want %v", tc.body, got, tc.want)
+		}
+	}
+}
+
+// TestGraphQLDoesNotRetryABodyMalformedAtItsLastByte: the client-level
+// twin — a complete body whose one bad byte is its last fails at decode,
+// once.
+func TestGraphQLDoesNotRetryABodyMalformedAtItsLastByte(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"hello":"world"},}`))
+	}))
+	defer server.Close()
+	keys := NewKeyPool([]string{"test-token"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewHTTPClient(server.URL, keys, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthGitHub)
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, nil); err == nil {
+		t.Fatal("a malformed complete body must fail")
+	}
+	if n := attempts.Load(); n != 1 {
+		t.Errorf("a body malformed at its last byte was attempted %d times; want 1", n)
+	}
+}
+
+// TestGraphQLRetriesATruncatedBodyThatMerelyMentionsTheMarker (final review
+// F3 of v0.29.69): the resource-limit exemption keys on the errors entry's
+// type field, not the word anywhere — an issue title naming
+// RESOURCE_LIMITS_EXCEEDED in a cut-off PR batch is still a stream abort.
+func TestGraphQLRetriesATruncatedBodyThatMerelyMentionsTheMarker(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pr0":{"title":"Handle \"type\":\"RESOURCE_LIMITS_EXCEEDED\" and RESOURCE_LIMITS_EXCEEDED","bo`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"hello":"world"}}`))
+	}))
+	defer server.Close()
+	keys := NewKeyPool([]string{"test-token"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c := NewHTTPClient(server.URL, keys, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthGitHub)
+	var got struct {
+		Hello string `json:"hello"`
+	}
+	if err := c.GraphQL(context.Background(), "{ hello }", nil, &got); err != nil {
+		t.Fatalf("a truncated body whose data mentions the marker was not retried: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Errorf("attempts = %d; want 2", attempts.Load())
+	}
+}
+
+func TestCarriesResourceLimitsError(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"data":{"user":null},"errors":[{"type":"RESOURCE_LIMITS_EXCEEDED","path":["user",0,`, true},
+		{`{"errors":[{"type" : "RESOURCE_LIMITS_EXCEEDED"}]}`, true},
+		{`decode graphql envelope: unexpected end of JSON input (body: {"errors":[{"type":"RESOURCE_LIMITS_EXCEEDED","pa)`, true},
+		{`{"data":{"t":"RESOURCE_LIMITS_EXCEEDED"}}`, false},
+		{`{"data":{"t":"Handle \"type\":\"RESOURCE_LIMITS_EXCEEDED\""}}`, false},
+		{`{"errors":[{"type":"RATE_LIMITED"}]}`, false},
+	} {
+		if got := CarriesResourceLimitsError([]byte(tc.body)); got != tc.want {
+			t.Errorf("CarriesResourceLimitsError(%q) = %v; want %v", tc.body, got, tc.want)
+		}
 	}
 }

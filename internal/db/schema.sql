@@ -100,6 +100,17 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- MarkRepoGone (the sideline probe IS a check), MarkRepoGoneChecked
     -- and mark-gone-repos; only ever set on a gone-stamped row.
     repo_gone_checked_at    TIMESTAMPTZ,
+    -- v0.29.68 (worklist 69): when the startup metadata backfill last
+    -- got an ANSWER from the forge about this repo: metadata written
+    -- (an honestly empty description and language included) or an
+    -- error platform.IsDefinitiveAnswer accepts (404/gone, not
+    -- visible, a rejected request). A non-answer (transient, rate limit, empty
+    -- key pool) or a failed write is not stamped (SR-5/SR-3). The
+    -- candidate query skips rows stamped within one recollect interval;
+    -- before this, a repo whose forge answer really is empty stayed a
+    -- candidate forever and ~5,600 were re-fetched at every serve start.
+    -- NULL = never answered. Written only by MarkMetadataBackfillAttempted.
+    metadata_backfill_attempted_at TIMESTAMPTZ,
     -- scancode_locked_at + locked_pid + locked_boot_id form the
     -- in-flight scan state. Cleared on success and on failure.
     -- (locked_boot_id, locked_pid) tuple makes the recovery liveness

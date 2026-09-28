@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestMetadataBackfillSkipsPlatformsWithNoAPI(t *testing.T) {
@@ -52,7 +53,7 @@ func TestMetadataBackfillSkipsPlatformsWithNoAPI(t *testing.T) {
 		}
 	})
 
-	got, err := store.ReposNeedingMetadataBackfill(ctx, ids[1]-1, 500)
+	got, err := store.ReposNeedingMetadataBackfill(ctx, ids[1]-1, 500, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

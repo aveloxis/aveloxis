@@ -407,15 +407,40 @@ func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 		return pipxUpgradeScancode(ctx, pipxPath)
 	}
 
+	// Each failure is carried to the caller (final whole-tree review F2,
+	// 2026-09-28): a timed-out pipx must not fall through to pip under the
+	// expired context and end in "neither pipx nor pip found", and a pip
+	// that ran and failed is a failure, not an absence.
+	var pipxFail error
 	if pipxErr == nil {
-		if err := pipxFreshInstallScancode(ctx, pipxPath); err == nil {
+		err := pipxFreshInstallScancode(ctx, pipxPath)
+		if err == nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("scancode install via pipx: %w", errors.Join(err, ctx.Err()))
 		}
 		// pipx failed on a FRESH install — fall through to pip.
 		fmt.Println("pipx install failed, trying pip...")
+		pipxFail = err
 	}
-	return pipInstallScancodeFresh(ctx)
+	err := pipInstallScancodeFresh(ctx)
+	switch {
+	case err == nil:
+		return nil
+	case pipxFail != nil && errors.Is(err, errNoPip):
+		return fmt.Errorf("scancode install via pipx failed and no pip is on PATH to fall back to: %w", pipxFail)
+	case pipxFail != nil:
+		return fmt.Errorf("scancode install failed: pipx: %w; %w", pipxFail, err)
+	case errors.Is(err, errNoPip):
+		return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: pipx install %s", scancodePipxPackage)
+	}
+	return err
 }
+
+// errNoPip is pipInstallScancodeFresh's answer when neither pip3 nor pip is
+// on PATH — an absence, told apart from a pip that ran and failed.
+var errNoPip = errors.New("neither pip3 nor pip is on PATH")
 
 // pipxUpgradeScancode is the installed-branch implementation:
 // `pipx upgrade` (never `pipx install`, which fails on an installed
@@ -478,16 +503,21 @@ func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 // scancode creates a second, uninjected copy that can shadow the pipx
 // venv's binary — the exact regression vector the monthly updater had.
 func pipInstallScancodeFresh(ctx context.Context) error {
+	var lastErr error
 	for _, pip := range []string{"pip3", "pip"} {
 		pipPath, err := exec.LookPath(pip)
 		if err != nil {
 			continue
 		}
+		if ctx.Err() != nil {
+			break // the bound expired on the previous pip: its error says so
+		}
 		fmt.Printf("Installing %s via %s --user...\n", scancodePipxPackage, pip)
 		cmd := exec.CommandContext(ctx, pipPath, "install", "--user", scancodePipxPackage)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := runToolCommand(ctx, cmd); err == nil {
+		err = runToolCommand(ctx, cmd)
+		if err == nil {
 			// pip --user installs to a platform-specific bin dir that
 			// may not be on PATH. Detect it and add to shell profile.
 			if _, lookErr := exec.LookPath("scancode"); lookErr != nil {
@@ -495,9 +525,12 @@ func pipInstallScancodeFresh(ctx context.Context) error {
 			}
 			return nil
 		}
+		lastErr = fmt.Errorf("%s install --user %s: %w", pip, scancodePipxPackage, err)
 	}
-
-	return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: pipx install %s", scancodePipxPackage)
+	if lastErr != nil {
+		return lastErr
+	}
+	return errNoPip
 }
 
 // injectTypecodeLibmagic (v0.23.6) runs `pipx inject scancode-toolkit-mini

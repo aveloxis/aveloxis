@@ -141,12 +141,25 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 // every later page. The cursor drains the candidate set monotonically;
 // failures are retried on the next restart.
 //
+// v0.29.68 (worklist 69): rows the backfill got an answer for within
+// cooldown are left out (metadata_backfill_attempted_at, stamped by
+// MarkMetadataBackfillAttempted). Without it a repo whose forge answer
+// really is empty was written back empty and stayed a candidate forever, and
+// a 404 was retried forever: production re-fetched the same ~5,600 repos at
+// every serve start (3-4 h each), 546 of 594 failures the same 404s. The
+// caller passes the collection recollect interval
+// (collection.days_until_recollect): Phase 0 of every collection cycle
+// already refreshes a queued repo's metadata on that cadence
+// (StagedCollector's UpdateRepoMetadata), so the backfill asking sooner
+// learns nothing a collection would not. A NULL stamp (never answered) is a
+// candidate; a stamp exactly cooldown old is a candidate again (<=).
+//
 // Filters archived repos out — archived projects' descriptions rarely
 // matter and we don't want to spend API budget on them. Operators can
 // remove the filter manually if needed.
 //
 // v0.23.0.
-func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterRepoID int64, limit int) ([]RepoMetadataBackfillTarget, error) {
+func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterRepoID int64, limit int, cooldown time.Duration) ([]RepoMetadataBackfillTarget, error) {
 	if limit <= 0 {
 		limit = 500
 	}
@@ -165,8 +178,10 @@ func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterR
 		  AND COALESCE(repo_archived, FALSE) = FALSE
 		  AND COALESCE(repo_owner, '') != ''
 		  AND COALESCE(repo_name, '') != ''
+		  AND (metadata_backfill_attempted_at IS NULL
+		       OR metadata_backfill_attempted_at <= NOW() - make_interval(secs => $3))
 		ORDER BY repo_id
-		LIMIT $2`, afterRepoID, limit)
+		LIMIT $2`, afterRepoID, limit, cooldown.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +195,24 @@ func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterR
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// MarkMetadataBackfillAttempted stamps repos.metadata_backfill_attempted_at
+// with the current time: the startup backfill asked the forge about this
+// repo and got an answer (metadata written, an honestly empty description
+// and language written back, or an error platform.IsDefinitiveAnswer
+// accepts, such as a 404/gone), so
+// ReposNeedingMetadataBackfill leaves the row alone until its cooldown has
+// passed. The caller decides what counts as an answer; this only stamps.
+// v0.29.68 (worklist 69).
+func (s *PostgresStore) MarkMetadataBackfillAttempted(ctx context.Context, repoID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE aveloxis_data.repos
+			SET metadata_backfill_attempted_at = NOW()
+			WHERE repo_id = $1`, repoID)
+		return err
+	})
 }
 
 // RepoMetadataBackfillTarget is one row from ReposNeedingMetadataBackfill.

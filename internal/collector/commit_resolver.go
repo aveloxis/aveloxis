@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -58,6 +59,56 @@ type CommitResolver struct {
 	// runs, since it can answer for a commit the email search never could.
 	// Never persisted; the next run retries.
 	transient map[string]bool
+
+	// bareClone is the repository's bare clone (the facade's, whose HEAD is
+	// the default branch it walks); defaultBranch is that branch's commit
+	// set, listed at most once per run and only after the first 422 — see
+	// loadDefaultBranch. nil until listed; listed says an attempt was made.
+	bareClone     string
+	defaultBranch map[string]bool
+	listed        bool
+}
+
+// WithBareClone gives the resolver the repository's bare clone, so a run
+// that meets commits no longer on the default branch (history rewritten
+// upstream) can recognise them locally instead of spending a SHA lookup on
+// each and aborting on the 422s (worklist 73). Without it the resolver
+// behaves as before.
+func (r *CommitResolver) WithBareClone(path string) *CommitResolver {
+	r.bareClone = path
+	return r
+}
+
+// loadDefaultBranch lists the bare clone's default-branch commits once per
+// run (`git rev-list HEAD`; the facade walks the same branch) and reports
+// whether a list is available. Called only after a 422, so a repository
+// whose commits all resolve never pays for the listing. A failure is
+// logged and leaves the old behaviour (the 50-in-a-row abort) in place.
+func (r *CommitResolver) loadDefaultBranch(ctx context.Context, repoID int64) bool {
+	if r.listed {
+		return r.defaultBranch != nil
+	}
+	r.listed = true
+	if r.bareClone == "" {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.bareClone, "rev-list", "HEAD")
+	groupKilled(cmd)
+	out, err := cmd.Output()
+	if err != nil && ctx.Err() != nil {
+		return false // a stop, not a failed listing: the loop's ctx check ends the run
+	}
+	if err != nil {
+		r.logger.Warn("commit resolution: listing the default branch failed — commits not on it cannot be told apart this run",
+			"repo_id", repoID, "clone", r.bareClone, "error", execErr(ctx, err))
+		return false
+	}
+	set := make(map[string]bool)
+	for _, h := range strings.Fields(string(out)) {
+		set[h] = true
+	}
+	r.defaultBranch = set
+	return true
 }
 
 // errTransientMemo is resolveOne's answer for a commit whose email is in
@@ -65,6 +116,11 @@ type CommitResolver struct {
 // (TransientSkipped) and moves on, without a WARN, without Errors++ and
 // without recording the email as unresolved.
 var errTransientMemo = errors.New("search for this email already failed without an answer this run")
+
+// errNotOnDefaultBranch is resolveOne's answer for a commit that needs an API
+// lookup but is not on the listed default branch (worklist 73): the loop
+// counts it (NotOnDefaultBranch) and moves on, with no WARN and no 422 count.
+var errNotOnDefaultBranch = errors.New("commit is not on the default branch")
 
 // NewCommitResolver creates a resolver using the GitHub API via the given key pool.
 // NewCommitResolver builds a resolver against the GitHub API at baseURL, or
@@ -105,6 +161,7 @@ type ResolveResult struct {
 	TransientSkipped     int // commits skipped because an earlier commit's search for the same email failed without an answer this run
 	WriteFailed          int // commits resolved by a strategy whose write then failed (counted in Errors, not as resolved)
 	Consecutive422       int // consecutive 422 "No commit found" errors from GitHub API
+	NotOnDefaultBranch   int // unresolved commits no longer on the default branch (history rewritten upstream): skipped, rows kept
 	ContribsCreated      int
 	ContribsUpdated      int
 	AliasesCreated       int
@@ -128,7 +185,7 @@ func (r *ResolveResult) resolved() int {
 // refusal after a memoised author counted the skipped commits as
 // key-exhausted and flipped the run to FAILED).
 func (r *ResolveResult) accounted() int {
-	return r.resolved() + r.Unresolved + r.Errors + r.TransientSkipped
+	return r.resolved() + r.Unresolved + r.Errors + r.TransientSkipped + r.NotOnDefaultBranch
 }
 
 // IsSuccess returns true if the resolution completed meaningfully —
@@ -194,10 +251,13 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-
 		login, ghUserID, err := r.resolveOne(ctx, repoID, owner, repo, cmt, result)
 		if errors.Is(err, context.Canceled) {
 			return result, err // shutdown, not a failure (pass 35)
+		}
+		if errors.Is(err, errNotOnDefaultBranch) {
+			result.NotOnDefaultBranch++
+			continue
 		}
 		if errors.Is(err, errTransientMemo) {
 			result.TransientSkipped++
@@ -220,6 +280,14 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			// by a stale bare clone that belonged to a different repo). After 50
 			// consecutive 422s, abort — continuing would just waste API calls.
 			if strings.Contains(errMsg, "unprocessable entity") {
+				// A 422 on a commit the default branch no longer has is
+				// rewritten history, not a stale clone (worklist 73: an
+				// upstream rewrite left 359 unresolved rows and the run
+				// aborted at every cycle). List the branch once and skip.
+				if r.loadDefaultBranch(ctx, repoID) && !r.defaultBranch[cmt.Hash] {
+					result.NotOnDefaultBranch++
+					continue
+				}
 				result.Consecutive422++
 				if result.ShouldAbort422() {
 					remaining := result.TotalCommits - result.accounted()
@@ -274,6 +342,11 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		}
 	}
 
+	if result.NotOnDefaultBranch > 0 {
+		r.logger.Info("commit resolution: unresolved commits no longer on the default branch were skipped (history rewritten upstream) — their rows are kept",
+			"repo_id", repoID, "owner", owner, "repo", repo, "skipped", result.NotOnDefaultBranch)
+	}
+
 	// Bulk backfill: connect commits to contributors via cmt_ght_author_id.
 	if n, err := r.store.BackfillCommitAuthorIDs(ctx, repoID); err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
@@ -302,6 +375,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		"unresolved", result.Unresolved,
 		"key_exhausted", result.KeyExhausted,
 		"transient_skipped", result.TransientSkipped,
+		"not_on_default_branch", result.NotOnDefaultBranch,
 		"write_failed", result.WriteFailed,
 		"errors", result.Errors,
 		"contribs_created", result.ContribsCreated,
@@ -362,6 +436,14 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 		r.hashCache[cmt.Hash] = login
 		result.ResolvedDBHit++
 		return login, 0, nil
+	}
+
+	// Once the default branch is listed, a commit not on it gets no API
+	// lookup (worklist 73): the SHA lookup answers 422 for it, and the
+	// email search was never reached for a 422. The free strategies above
+	// still ran (final review F1 of v0.29.69).
+	if r.defaultBranch != nil && !r.defaultBranch[cmt.Hash] {
+		return "", 0, errNotOnDefaultBranch
 	}
 
 	// Strategy 3: GitHub Commits API.

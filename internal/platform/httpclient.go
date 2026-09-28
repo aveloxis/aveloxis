@@ -4,6 +4,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -564,6 +565,22 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// rotation below — so the slot is never held across a wait
 		// (lease_every_exit_test.go drives every exit).
 		c.keys.UpdateFromResponse(key, resp)
+		// A headerless 403 whose BODY says rate limit is GitHub's secondary
+		// limit with no Retry-After to size a rest by (worklist 67; the
+		// v0.29.9 decision rule was met on kate: 18.1% of retry
+		// opportunities reused the SAME key against a ~1.9% baseline).
+		// Its body is read here, under the lease, so the key rests for
+		// GitHub's documented floor before any waiter can re-lease it; the
+		// body is re-attached for handleResponse below. The unauthenticated
+		// shape is a key-leak bug, not this key's throttle, and rests nothing.
+		if resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") == "" && !isPrimaryRefusal(resp) {
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			if readErr == nil && isRateLimitBody(body) && !isAnonymousRateLimitBody(body) {
+				c.keys.MarkSecondaryLimited(key, parseRetryAfter(resp)) // no Retry-After: GitHub's 60 s floor
+			}
+		}
 		release()
 
 		// Log rate limit state on every response so operators can monitor usage.
@@ -876,17 +893,12 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return respRetry, nil, nil
 		}
 		if isRateLimitBody(body) {
-			// v0.29.9: nothing is marked on the key for this shape (no
-			// Retry-After to size a rest by). token_prefix and attempt are
-			// logged so the next release's log review can test whether the
-			// pool re-leases the throttled key inside GitHub's one-minute
-			// secondary-limit floor. The clearest case is this caller's own
-			// retry: the same url at attempt 2, 3, ... on the same key (a
-			// search 403 leaves the key's core budget untouched, so
-			// least-loaded selection tends to pick it again after the
-			// backoff below). Evidence of that justifies resting the key
-			// here (summary/changelog/v0.29.md, v0.29.9 "next-release log
-			// review").
+			// The key was rested in the pool under the lease, before the
+			// release (worklist 67: the v0.29.9 log review showed the pool
+			// re-leasing the throttled key inside GitHub's one-minute floor);
+			// this arm keeps its logging and this attempt's own pacing.
+			// token_prefix and attempt stay in the line so the next review
+			// can confirm the same-key rate fell to the ~1/K baseline.
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
 				"url", RedactURLUserinfo(url),
 				"token_prefix", tokenPrefix(key.Token),

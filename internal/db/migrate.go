@@ -754,6 +754,11 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// v0.29.7: the recheck cadence marker (see schema.sql). NULL on
 	// existing gone rows = never rechecked = claimed first.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_gone_checked_at", "TIMESTAMPTZ")
+	// v0.29.68 (worklist 69): the metadata backfill's attempt stamp (see
+	// schema.sql). NULL on existing rows = never answered = still a candidate.
+	// No index: the candidate query pages the repos PK and this is one more
+	// filter on rows it already reads.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "metadata_backfill_attempted_at", "TIMESTAMPTZ")
 
 	// v0.21.4: failure tracking + exponential backoff.
 	//

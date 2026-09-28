@@ -42,9 +42,10 @@ func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
 // statement tests errors.Is(<err>, context.Canceled) and its body is the
 // receiver's log calls (no call in their arguments) and a bare return (a
 // browser that left mid-callback is not a failure; round 19: a store write
-// there passed both tiers); the receiver's store is reached exactly three
-// ways — the first-signup Pool().QueryRow (a literal SELECT, the chain
-// written out, never hoisted), UpsertOAuthUser, IsUserAdmin — every mention
+// there passed both tiers); the receiver's store is reached exactly two
+// ways — SignInOAuthUser (which reports a created account; the first-signup
+// Pool().QueryRow it replaced in the final review's round 3 is now banned),
+// IsUserAdmin — every mention
 // of the receiver is a field or method access, never an alias, and only
 // the members the login needs are touched — store, logger, mailer
 // (SendWelcome), createSession, sessionCookie, postLoginRedirect,
@@ -52,8 +53,9 @@ func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
 // (errors.Is, context.Canceled, http.Error/SetCookie/Redirect and two
 // status codes, mailer.IsSkip; bare calls truncateForLog and builtins —
 // round 23: a second store opened with config.Load and db.NewPostgresStore
-// wrote around every receiver rule); the first-signup SQL is the one exact
-// count statement; the runtime twin records any INSERT, UPDATE, DELETE or
+// wrote around every receiver rule); the login uses no pool (the first-signup
+// count it had is the store's created flag since the final review's round 3);
+// the runtime twin records any INSERT, UPDATE, DELETE or
 // TRUNCATE on an existing table of the three data schemas but users
 // (DDL, and writes a Go-side check keeps the empty fixture from provoking,
 // are the structural allowlists' to refuse); the admin
@@ -336,7 +338,7 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		_, ok := b.List[len(b.List)-1].(*ast.ReturnStmt)
 		return ok
 	}
-	upsert, lookup, create := callIdx("UpsertOAuthUser"), callIdx("IsUserAdmin"), callIdx("createSession")
+	upsert, lookup, create := callIdx("SignInOAuthUser"), callIdx("IsUserAdmin"), callIdx("createSession")
 	if upsert < 0 || lookup < 0 || create < 0 || !(upsert < lookup && lookup < create) {
 		t.Fatalf("completeOAuthLogin must upsert (stmt %d), look the admin flag up (stmt %d) and create the session (stmt %d), in that order", upsert, lookup, create)
 	}
@@ -429,8 +431,11 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		}
 		return true
 	})
-	if storeRefs != 3 || storeUses["Pool"] != 1 || storeUses["UpsertOAuthUser"] != 1 || storeUses["IsUserAdmin"] != 1 {
-		t.Errorf("completeOAuthLogin reaches %s.store %d time(s) (%v); want exactly the first-signup count (Pool().QueryRow), UpsertOAuthUser and IsUserAdmin — any other store use or alias is a write path the login does not have (round 20)", recv, storeRefs, storeUses)
+	// Final review round 3 (2026-09-28): the first-signup COUNT through
+	// Pool().QueryRow is gone — SignInOAuthUser reports whether it created
+	// the account — so the login has no pool use at all.
+	if storeRefs != 2 || storeUses["Pool"] != 0 || storeUses["SignInOAuthUser"] != 1 || storeUses["IsUserAdmin"] != 1 {
+		t.Errorf("completeOAuthLogin reaches %s.store %d time(s) (%v); want exactly SignInOAuthUser and IsUserAdmin — any other store use, a pool or an alias is a write path the login does not have (round 20)", recv, storeRefs, storeUses)
 	}
 	// Every mention of the receiver is a field or method access (round 21:
 	// `srv := s` escaped every rule keyed on the receiver's name), and the
@@ -474,8 +479,8 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 			// <table>` passed a "SELECT with no data-modifying keyword"
 			// heuristic and created a table on every login).
 			lit, ok := x.Args[1].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING || lit.Value != "`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`" {
-				t.Errorf("the first-signup count's SQL must be exactly `SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1` (rounds 21–22), got %s", fset.Position(x.Args[1].Pos()))
+			if !ok || lit.Kind != token.STRING || lit.Value != "`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1 OR gh_user_id = NULLIF($2::bigint, 0) OR gl_user_id = NULLIF($3::bigint, 0)`" {
+				t.Errorf("the first-signup count's SQL must be exactly `SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1 OR gh_user_id = NULLIF($2::bigint, 0) OR gl_user_id = NULLIF($3::bigint, 0)` (rounds 21–22; the identity arms, final review round 2), got %s", fset.Position(x.Args[1].Pos()))
 			}
 		}
 		return true
@@ -494,7 +499,7 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 			return true
 		}
 		if isIdent(sel.X, recv) && !allowedMembers[sel.Sel.Name] {
-			t.Errorf("completeOAuthLogin reaches %s.%s (%s): the login may touch only %v (round 22)", recv, sel.Sel.Name, fset.Position(sel.Pos()), []string{"store (three uses)", "logger", "mailer (SendWelcome)", "createSession", "sessionCookie", "postLoginRedirect", "clearNext"})
+			t.Errorf("completeOAuthLogin reaches %s.%s (%s): the login may touch only %v (round 22)", recv, sel.Sel.Name, fset.Position(sel.Pos()), []string{"store (SignInOAuthUser, IsUserAdmin)", "logger", "mailer (SendWelcome)", "createSession", "sessionCookie", "postLoginRedirect", "clearNext"})
 		}
 		if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "mailer" && isIdent(inner.X, recv) && sel.Sel.Name != "SendWelcome" {
 			t.Errorf("completeOAuthLogin calls %s.mailer.%s (%s): the mailer's one use is SendWelcome (round 22)", recv, sel.Sel.Name, fset.Position(sel.Pos()))
@@ -709,8 +714,8 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 	if recvMentions != recvSelectors {
 		t.Errorf("completeOAuthLogin mentions its receiver %s %d time(s) but only %d are field or method accesses: an alias (`srv := %s`) or a bare receiver escapes every rule keyed on its name (round 21)", recv, recvMentions, recvSelectors, recv)
 	}
-	if countChains != 1 {
-		t.Errorf("the one pool use must be exactly %s.store.Pool().QueryRow(...) — found %d such chains; a hoisted pool writes from anywhere (round 21)", recv, countChains)
+	if countChains != 0 {
+		t.Errorf("completeOAuthLogin has %d %s.store.Pool().QueryRow(...) chain(s); since the final review's round 3 the login uses no pool (round 21: a hoisted pool writes from anywhere)", countChains, recv)
 	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		c, ok := n.(*ast.CallExpr)
@@ -723,7 +728,7 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		}
 		if pool, ok := sel.X.(*ast.CallExpr); ok {
 			if ps, ok := pool.Fun.(*ast.SelectorExpr); ok && ps.Sel.Name == "Pool" {
-				t.Errorf("completeOAuthLogin calls Pool().%s: the only pool use is the first-signup QueryRow (round 20)", sel.Sel.Name)
+				t.Errorf("completeOAuthLogin calls Pool().%s: the login uses no pool (round 20; final review round 3)", sel.Sel.Name)
 			}
 		}
 		return true
@@ -1082,13 +1087,15 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 	// The session takes the upsert's user as its first argument and the flag
 	// as the bare variable — no `|| wasNewUser`, no swapped identity.
 	upsertUser := ""
-	if as, ok := stmts[upsert].(*ast.AssignStmt); ok && len(as.Lhs) == 2 {
+	// Three results since the final review's round 3: the user, whether
+	// the sign-in created the account, the error.
+	if as, ok := stmts[upsert].(*ast.AssignStmt); ok && len(as.Lhs) == 3 {
 		if id, ok := as.Lhs[0].(*ast.Ident); ok {
 			upsertUser = id.Name
 		}
 	}
 	if upsertUser == "" {
-		t.Fatal("the upsert must bind its user to a named variable (`userID, err := ...`)")
+		t.Fatal("the sign-in must bind its user to a named variable (`userID, wasNewUser, err := ...`)")
 	}
 	// The user variable is written by the upsert alone (round 14: `userID =
 	// 1` in the ERROR arm handed the session to another user with the bare

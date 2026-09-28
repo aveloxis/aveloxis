@@ -7874,8 +7874,8 @@ is nullable and un-FK’d; <code class="docutils literal notranslate"><span clas
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">login_name</span></code></p></td>
 <td><p>TEXT NOT NULL UNIQUE</p></td>
-<td><p>User input</p></td>
-<td><p>Username.</p></td>
+<td><p>OAuth</p></td>
+<td><p>The user name shown in the interface. A label, not the identity: sign-in finds the account by the forge’s user ID, and the name follows a rename on the forge unless another account holds it (v0.29.69).</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">login_hashword</span></code></p></td>
 <td><p>TEXT NOT NULL</p></td>
@@ -7911,6 +7911,36 @@ is nullable and un-FK’d; <code class="docutils literal notranslate"><span clas
 <td><p>BOOLEAN NOT NULL</p></td>
 <td><p>Computed</p></td>
 <td><p>Whether the email has been verified. Default <code class="docutils literal notranslate"><span class="pre">FALSE</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>GitHub OAuth</p></td>
+<td><p>The GitHub user’s numeric ID: the account’s identity for a GitHub sign-in (v0.29.69). NULL when the account has none.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gh_login</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>GitHub OAuth</p></td>
+<td><p>The GitHub user name at the last sign-in.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gl_user_id</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>GitLab OAuth</p></td>
+<td><p>The GitLab user’s numeric ID, an identity only together with <code class="docutils literal notranslate"><span class="pre">gl_oauth_host</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gl_username</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>GitLab OAuth</p></td>
+<td><p>The GitLab user name at the last sign-in.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gl_oauth_host</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>GitLab OAuth</p></td>
+<td><p>v0.29.69: the GitLab instance <code class="docutils literal notranslate"><span class="pre">gl_user_id</span></code> belongs to (<code class="docutils literal notranslate"><span class="pre">web.gitlab_base_url</span></code>, lowercased, no trailing slash; empty means gitlab.com). Two instances number their users independently. NULL on accounts from before it was recorded; the next GitLab sign-in stamps it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">oauth_provider</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>OAuth</p></td>
+<td><p>The provider of the last sign-in (<code class="docutils literal notranslate"><span class="pre">github</span></code> or <code class="docutils literal notranslate"><span class="pre">gitlab</span></code>).</p></td>
 </tr>
 <tr class="row-odd"><td><p></p></td>
 <td><p></p></td>

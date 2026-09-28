@@ -2483,6 +2483,10 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.users (
     gl_user_id     BIGINT,
     gl_username    TEXT DEFAULT '',
     oauth_provider TEXT DEFAULT '',     -- "github" or "gitlab"
+    -- v0.29.69: the GitLab instance gl_user_id belongs to, as spelled by
+    -- GitLabOAuthHost. A GitLab ID is an identity only on its own instance. NULL on rows
+    -- from before it was recorded (claimed by ID, then stamped).
+    gl_oauth_host  TEXT,
     oauth_token    TEXT DEFAULT '',     -- encrypted or hashed access token
     tool_source    TEXT DEFAULT 'aveloxis',
     tool_version   TEXT DEFAULT '',

@@ -26,6 +26,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 const serverSourceFile = "server.go"
@@ -70,9 +72,14 @@ func TestGitHubCallbackRejectsEmptyLogin(t *testing.T) {
 	if body == "" {
 		t.Fatal("could not locate handleGitHubCallback function body")
 	}
-	upsertIdx := strings.Index(body, "UpsertOAuthUser")
+	// The callback hands the login to completeOAuthLogin, which signs the
+	// user in (SignInOAuthUser). Comments are stripped: until the final
+	// review's round 3 this found "UpsertOAuthUser" in a comment, not a
+	// call, and would have passed with the check below after the handoff.
+	body = srctest.StripGoComments(body)
+	upsertIdx := strings.Index(body, "s.completeOAuthLogin(")
 	if upsertIdx < 0 {
-		t.Fatal("handleGitHubCallback must call UpsertOAuthUser somewhere in its body")
+		t.Fatal("handleGitHubCallback must hand the login to completeOAuthLogin")
 	}
 	preUpsert := body[:upsertIdx]
 	// Accept any of the common empty-string check patterns for the

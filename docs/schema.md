@@ -1953,7 +1953,7 @@ User accounts for the Aveloxis web interface and API.
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `user_id` | SERIAL (PK) | Auto-generated | Primary key. |
-| `login_name` | TEXT NOT NULL UNIQUE | User input | Username. |
+| `login_name` | TEXT NOT NULL UNIQUE | OAuth | The user name shown in the interface. A label, not the identity: sign-in finds the account by the forge's user ID, and the name follows a rename on the forge unless another account holds it (v0.29.69). |
 | `login_hashword` | TEXT NOT NULL | User input | Hashed password. |
 | `email` | TEXT NOT NULL UNIQUE | User input | Email address. |
 | `text_phone` | TEXT UNIQUE | User input | Phone number for notifications. |
@@ -1961,6 +1961,12 @@ User accounts for the Aveloxis web interface and API.
 | `last_name` | TEXT NOT NULL | User input | Last name. |
 | `admin` | BOOLEAN NOT NULL | User input | Whether this user is an admin. Default `FALSE`. |
 | `email_verified` | BOOLEAN NOT NULL | Computed | Whether the email has been verified. Default `FALSE`. |
+| `gh_user_id` | BIGINT | GitHub OAuth | The GitHub user's numeric ID: the account's identity for a GitHub sign-in (v0.29.69). NULL when the account has none. |
+| `gh_login` | TEXT | GitHub OAuth | The GitHub user name at the last sign-in. |
+| `gl_user_id` | BIGINT | GitLab OAuth | The GitLab user's numeric ID, an identity only together with `gl_oauth_host`. |
+| `gl_username` | TEXT | GitLab OAuth | The GitLab user name at the last sign-in. |
+| `gl_oauth_host` | TEXT | GitLab OAuth | v0.29.69: the GitLab instance `gl_user_id` belongs to (`web.gitlab_base_url`, lowercased, no trailing slash; empty means gitlab.com). Two instances number their users independently. NULL on accounts from before it was recorded: such an account matches no instance at sign-in, and `aveloxis web` records its configured instance on them at start. |
+| `oauth_provider` | TEXT | OAuth | The provider of the last sign-in (`github` or `gitlab`). |
 | | | | *Standard metadata columns* |
 
 ---

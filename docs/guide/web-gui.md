@@ -86,7 +86,17 @@ The server starts on the address specified by `web.addr` (default `:8082`). Open
 4. Aveloxis exchanges the code for an access token and fetches your profile (login, email, avatar).
 5. A session cookie is set in your browser. You are now logged in and redirected to the dashboard.
 
-Your Aveloxis account is tied to the provider's numeric user ID, not to your user name (v0.29.69). Renaming yourself on GitHub or GitLab keeps your account. A user name is not proof of identity, because anyone can register a name another forge's user holds, or one a renamed account gave up. So a sign-in whose name already belongs to a different GitHub or GitLab account is refused with "Failed to create user", and the server log names the collision. An administrator resolves it. Signing in with GitHub and with GitLab under the same name therefore does not link the two accounts.
+Your Aveloxis account is tied to the provider's numeric user ID, not to your user name (v0.29.69). Renaming yourself on GitHub or GitLab keeps your account. A user name is not proof of identity, because anyone can register a name another forge's user holds, or one a renamed account gave up. So a sign-in whose name already belongs to a different GitHub or GitLab account is refused with "Failed to create user", and the server log names the collision. Signing in with GitHub and with GitLab under the same name therefore does not link the two accounts. When a user renames on the forge, the account's name follows unless another account holds the new name.
+
+An administrator resolves a refusal by freeing the name the other account holds. The refused person can then sign in. This works when the holding account carries its forge user ID (`gh_user_id` or `gl_user_id` set), because its owner is then found by that ID. An account without one, from before sign-in recorded IDs or loaded from Augur, would be locked out once its name moves. Record its owner's ID first, for example `UPDATE aveloxis_ops.users SET gh_user_id = <the owner's GitHub user ID> WHERE user_id = <N>`. The ID is the `id` field of `https://api.github.com/users/<name>`.
+
+```sql
+-- the account that holds the name (its owner keeps it and can sign in again,
+-- which moves the name back if nobody else has taken it)
+UPDATE aveloxis_ops.users SET login_name = login_name || '-renamed' WHERE login_name = 'the-name';
+```
+
+Accounts created before v0.29.69 may include a second account per person, left by a rename, and accounts linked across GitHub and GitLab under one name. The deploy checklist's two audits count both.
 
 ## Creating Groups
 

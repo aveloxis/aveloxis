@@ -1540,6 +1540,10 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			warnAPIPortMismatch(cfg, logger)
 
 			webServer := newWebServer(store, cfg, ghKeys, logger)
+			// GitLab accounts from before 0.29.69 carry no instance and
+			// match none at sign-in until this stamps them with the
+			// configured one (final review round 3).
+			webServer.StampLegacyGitLabAccounts(ctx)
 			// Bind before the pidfile and the readiness signal: a port in
 			// use is a startup refusal, not a running web (review round 2).
 			ln, err := net.Listen("tcp", cfg.Web.Addr)

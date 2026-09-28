@@ -1428,6 +1428,9 @@ func migrateStage7UsersAndGroups(ctx context.Context, pg *PostgresStore, logger 
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "gl_user_id", "BIGINT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "gl_username", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "oauth_provider", "TEXT DEFAULT ''")
+	// v0.29.69 (final review round 2 F4): the GitLab instance a gl_user_id
+	// belongs to. Nullable, no default: an instant ALTER.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "gl_oauth_host", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "oauth_token", "TEXT DEFAULT ''")
 
 	// v0.27.89: real join date for the admin users screen. ORDER IS

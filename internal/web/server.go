@@ -80,6 +80,11 @@ type Session struct {
 // New creates a web server. ghKeys is optional — if provided, org repos are
 // scanned immediately when added via the GUI.
 func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool, ghAPIBase string, logger *slog.Logger) *Server {
+	// One spelling of the GitLab base for every consumer below (the OAuth
+	// endpoints, the /api/v4/user read): a trailing slash made the token
+	// URL "//oauth/token" and every GitLab sign-in failed (found by the
+	// final review round 2's host test, 2026-09-28).
+	cfg.GitLabBaseURL = strings.TrimRight(strings.TrimSpace(cfg.GitLabBaseURL), "/")
 	s := &Server{
 		store:     store,
 		cfg:       cfg,
@@ -639,7 +644,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// v0.19.0: UpsertOAuthUser auto-promotes the first-ever user to
+	// v0.19.0: SignInOAuthUser auto-promotes the first-ever user to
 	// admin so a fresh deployment can review subsequent submissions.
 	s.completeOAuthLogin(w, r, db.OAuthUserInfo{
 		Login:     ghUser.Login,
@@ -650,6 +655,26 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		GHLogin:   ghUser.Login,
 		Provider:  "github",
 	}, "GitHub")
+}
+
+// StampLegacyGitLabAccounts records this web's GitLab instance on every
+// GitLab account from before the instance was recorded (final review round
+// 3): such an account matches no instance at sign-in, so without the stamp
+// its owner is refused. `aveloxis web` calls it once at start. A failure is
+// logged and not fatal: those owners are refused (fail closed) until a
+// later start stamps them.
+func (s *Server) StampLegacyGitLabAccounts(ctx context.Context) {
+	if s.glOAuth == nil || s.store == nil {
+		return
+	}
+	n, err := s.store.StampLegacyGitLabHost(ctx, s.cfg.GitLabBaseURL)
+	if err != nil {
+		s.logger.Error("recording the GitLab instance on accounts from before 0.29.69 failed — their owners cannot sign in through GitLab until a later web start stamps them", "instance", db.GitLabOAuthHost(s.cfg.GitLabBaseURL), "error", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Info("recorded the GitLab instance on accounts from before 0.29.69", "instance", db.GitLabOAuthHost(s.cfg.GitLabBaseURL), "accounts", n)
+	}
 }
 
 // logOAuthFailure logs a failed forge request on an OAuth callback (final
@@ -675,15 +700,12 @@ func (s *Server) logOAuthFailure(provider, phase string, err error) {
 // user upsert, welcome email, fresh admin flag, session creation, and
 // the post-login redirect.
 func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info db.OAuthUserInfo, providerLabel string) {
-	// First-signup probe. Best-effort tolerated (v0.27.36 review): a
-	// failed COUNT only risks a duplicate welcome email.
-	wasNewUser := false
-	preCount := 0
-	_ = s.store.Pool().QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1`, info.Login).Scan(&preCount)
-	wasNewUser = preCount == 0
-
-	userID, err := s.store.UpsertOAuthUser(r.Context(), info)
+	// The store says whether this sign-in created the account (final
+	// review round 3: a separate name-keyed COUNT here disagreed with the
+	// store's identity rule — a renamed user read as new, a new user on
+	// another GitLab instance as returning). Only a created account gets
+	// the welcome.
+	userID, wasNewUser, err := s.store.SignInOAuthUser(r.Context(), info)
 	if errors.Is(err, context.Canceled) {
 		return // the browser left mid-callback: nothing to serve, not a failure
 	}
@@ -706,7 +728,7 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	}
 
 	// Read fresh admin flag — set to TRUE for the first-ever user
-	// (auto-promotion in UpsertOAuthUser) and stays whatever the admin
+	// (auto-promotion in SignInOAuthUser) and stays whatever the admin
 	// user-management page set it to thereafter. A failed lookup is logged
 	// and the session is a non-admin one: the user can sign in again once
 	// the store answers (worklist follow-up 6).
@@ -863,6 +885,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		Name:       glUser.Name,
 		AvatarURL:  glUser.AvatarURL,
 		GLUserID:   glUser.ID,
+		GLHost:     glBase, // the instance that answered; the store normalizes it (GitLabOAuthHost)
 		GLUsername: glUser.Username,
 		Provider:   "gitlab",
 	}, "GitLab")

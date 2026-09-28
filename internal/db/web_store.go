@@ -80,10 +80,28 @@ type OAuthUserInfo struct {
 	GHLogin    string
 	GLUserID   int64
 	GLUsername string
+	GLHost     string // the GitLab instance that answered (web.gitlab_base_url); see GitLabOAuthHost
 	Provider   string
 }
 
-// UpsertOAuthUser creates or updates a user from OAuth login. Returns user_id.
+// GitLabOAuthHost is the one spelling of the GitLab instance a login came
+// from (SR-17): the callback's base URL trimmed, lowercased, without a
+// trailing slash; empty is gitlab.com, the callback's default. A GitLab user
+// ID is an identity only on its own instance (final review round 2 F4: two
+// self-hosted instances number their users from 1, so moving
+// web.gitlab_base_url handed instance B's user 7 instance A's user 7).
+func GitLabOAuthHost(base string) string {
+	h := strings.TrimRight(strings.ToLower(strings.TrimSpace(base)), "/")
+	if h == "" {
+		return "https://gitlab.com"
+	}
+	return h
+}
+
+// SignInOAuthUser creates or updates a user from OAuth login. Returns the
+// user_id and whether this sign-in created the account (the web login's
+// welcome mail keys on it; final review round 3 — a second, name-keyed
+// probe in the handler disagreed with the identity rule below).
 // Rejects an empty Login with ErrEmptyLogin so a blank row never gets
 // inserted. Distinguishes pgx.ErrNoRows from real DB errors on the
 // initial lookup so a transient query failure doesn't silently
@@ -98,9 +116,9 @@ type OAuthUserInfo struct {
 // email_confirmed_at is set to NOW() at signup because GitHub/GitLab
 // OAuth has already verified the address before handing it to us; the
 // column is for audit only, not gating.
-func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo) (int, error) {
+func (s *PostgresStore) SignInOAuthUser(ctx context.Context, info OAuthUserInfo) (int, bool, error) {
 	if strings.TrimSpace(info.Login) == "" {
-		return 0, ErrEmptyLogin
+		return 0, false, ErrEmptyLogin
 	}
 
 	var userID int
@@ -118,22 +136,37 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 	switch info.Provider {
 	case "github":
 		ownID = info.GHUserID
+		info.GLHost = "" // a GitHub login never stamps a GitLab instance
 	case "gitlab":
 		ownID = info.GLUserID
+		info.GLHost = GitLabOAuthHost(info.GLHost)
 	default:
-		return 0, fmt.Errorf("oauth login %q: unknown provider %q", info.Login, info.Provider)
+		return 0, false, fmt.Errorf("oauth login %q: unknown provider %q", info.Login, info.Provider)
 	}
 	if ownID > 0 {
-		byID := `SELECT user_id FROM aveloxis_ops.users WHERE gh_user_id = $1 ORDER BY user_id LIMIT 1`
+		// Through 0.29.68 a rename inserted a second row with the same ID,
+		// so more than one can match: the most recently used one signs in,
+		// and the duplicate is logged for an administrator (round 2 F3). A
+		// GitLab ID matches only on its own instance; a row from before the
+		// instance was recorded matches none until StampLegacyGitLabHost
+		// stamps it at web start (round 3).
+		byID := `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gh_user_id = $1 AND $2 = ''
+			ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
 		if info.Provider == "gitlab" {
-			byID = `SELECT user_id FROM aveloxis_ops.users WHERE gl_user_id = $1 ORDER BY user_id LIMIT 1`
+			byID = `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gl_user_id = $1 AND gl_oauth_host = $2
+			ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
 		}
-		err := s.pool.QueryRow(ctx, byID, ownID).Scan(&userID)
+		var matches int
+		err := s.pool.QueryRow(ctx, byID, ownID, info.GLHost).Scan(&userID, &matches)
 		if err == nil {
-			return userID, s.updateOAuthUser(ctx, userID, info)
+			if matches > 1 && s.logger != nil {
+				s.logger.Warn("oauth login: more than one account carries this forge user ID — the most recently used one signed in; merge or remove the others",
+					"provider", info.Provider, "forge_user_id", ownID, "accounts", matches, "user_id", userID)
+			}
+			return userID, false, s.updateOAuthUser(ctx, userID, info)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return 0, fmt.Errorf("lookup user by %s id: %w", info.Provider, err)
+			return 0, false, fmt.Errorf("lookup user by %s id: %w", info.Provider, err)
 		}
 	}
 
@@ -145,14 +178,14 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		info.Login).Scan(&userID, &rowGH, &rowGL, &rowProvider)
 
 	if err == nil && (rowProvider != info.Provider || rowGH != 0 || rowGL != 0) {
-		return 0, fmt.Errorf("oauth login %q (%s id %d): %w", info.Login, info.Provider, ownID, ErrLoginNameTaken)
+		return 0, false, fmt.Errorf("oauth login %q (%s id %d): %w", info.Login, info.Provider, ownID, ErrLoginNameTaken)
 	}
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			// Real DB error — surface it. Treating this as "not
 			// found" and falling through to INSERT is what created
 			// blank/duplicate rows in the v0.18.28 incident.
-			return 0, fmt.Errorf("lookup user by login: %w", err)
+			return 0, false, fmt.Errorf("lookup user by login: %w", err)
 		}
 		// Not found — create.
 		firstName, lastName := splitOAuthName(info.Name)
@@ -172,7 +205,7 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 		// retries once the DB is healthy and gets the correct answer.
 		var existingCount int
 		if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.users`).Scan(&existingCount); err != nil {
-			return 0, fmt.Errorf("counting users for first-admin bootstrap: %w", err)
+			return 0, false, fmt.Errorf("counting users for first-admin bootstrap: %w", err)
 		}
 		isFirstUser := existingCount == 0
 
@@ -181,20 +214,44 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 				(login_name, email, first_name, last_name, avatar_url,
 				 gh_user_id, gh_login, gl_user_id, gl_username,
 				 oauth_provider, admin, email_verified, email_confirmed_at,
-				 tool_source, tool_version, data_source)
+				 tool_source, tool_version, data_source, gl_oauth_host)
 			VALUES ($1, $2, $3, $4, $5, NULLIF($6::bigint, 0), $7, NULLIF($8::bigint, 0), $9, $10, $12, TRUE, NOW(),
-				'aveloxis-web', $11, $10 || ' OAuth')
+				'aveloxis-web', $11, $10 || ' OAuth', NULLIF($13, ''))
 			RETURNING user_id`,
 			info.Login, info.Email, firstName, lastName, info.AvatarURL,
 			info.GHUserID, info.GHLogin, info.GLUserID, info.GLUsername,
-			info.Provider, ToolVersion, isFirstUser,
+			info.Provider, ToolVersion, isFirstUser, info.GLHost,
 		).Scan(&userID)
-		return userID, err
+		return userID, err == nil, err
 	}
 
 	// Found and owned (an ID-less row of this provider): the claim stamps
 	// the login's ID on it.
-	return userID, s.updateOAuthUser(ctx, userID, info)
+	return userID, false, s.updateOAuthUser(ctx, userID, info)
+}
+
+// UpsertOAuthUser is SignInOAuthUser without the created flag, for callers
+// that only need the account (fixtures, the test deployment's bootstrap
+// admin).
+func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo) (int, error) {
+	id, _, err := s.SignInOAuthUser(ctx, info)
+	return id, err
+}
+
+// StampLegacyGitLabHost records base (spelled by GitLabOAuthHost) as the
+// instance of every GitLab account from before the instance was recorded
+// (final review round 3, decided as a class): such a row matches no
+// instance at sign-in, because matching any let a later instance's user with
+// the same ID take it. `aveloxis web` runs it at start for its configured
+// instance, so those accounts sign in as before; a recorded host is never
+// replaced. Idempotent.
+func (s *PostgresStore) StampLegacyGitLabHost(ctx context.Context, base string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE aveloxis_ops.users SET gl_oauth_host = $1
+		WHERE COALESCE(gl_user_id, 0) <> 0 AND COALESCE(gl_oauth_host, '') = ''`, GitLabOAuthHost(base))
+	if err != nil {
+		return 0, fmt.Errorf("stamp legacy GitLab accounts with %s: %w", GitLabOAuthHost(base), err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // updateOAuthUser refreshes an owned account's OAuth fields. v0.27.84: the
@@ -202,7 +259,11 @@ func (s *PostgresStore) UpsertOAuthUser(ctx context.Context, info OAuthUserInfo)
 // at first signup, going stale after provider-side renames); an empty
 // provider name preserves the stored one. A stored ID is never replaced,
 // and a zero ID is never stored (0 read as "has an identity" would lock the
-// row against its own provider's claim).
+// row against its own provider's claim). The account's login_name follows
+// the forge's current name unless another account holds it (round 2 F2: a
+// renamed user kept the old name, which then refused whoever registered it
+// next and made the first-signup probe read the user as new at every
+// login), and a GitLab row records the instance that answered.
 func (s *PostgresStore) updateOAuthUser(ctx context.Context, userID int, info OAuthUserInfo) error {
 	freshFirst, freshLast := splitOAuthName(info.Name)
 	_, err := s.pool.Exec(ctx, `
@@ -216,22 +277,38 @@ func (s *PostgresStore) updateOAuthUser(ctx context.Context, userID int, info OA
 			oauth_provider = $8,
 			first_name = CASE WHEN $9 = '' THEN first_name ELSE $9 END,
 			last_name = CASE WHEN $9 = '' THEN last_name ELSE $10 END,
+			gl_oauth_host = COALESCE(NULLIF(gl_oauth_host, ''), NULLIF($11, '')),
+			login_name = CASE WHEN NOT EXISTS (
+					SELECT 1 FROM aveloxis_ops.users o WHERE o.login_name = $12 AND o.user_id <> $1)
+				THEN $12 ELSE login_name END,
 			data_collection_date = NOW()
 		WHERE user_id = $1`,
 		userID, info.Email, info.AvatarURL,
 		info.GHUserID, info.GHLogin, info.GLUserID, info.GLUsername,
-		info.Provider, freshFirst, freshLast)
+		info.Provider, freshFirst, freshLast, info.GLHost, info.Login)
 	return err
 }
 
-// CrossProviderUserAuditSQL counts accounts that carry BOTH a GitHub and a
-// GitLab user ID. Through 0.29.68 a login was matched on login_name alone,
+// CrossProviderUserAuditSQL counts accounts linked to BOTH a GitHub and a
+// GitLab user. Through 0.29.68 a login was matched on login_name alone,
 // so a GitLab user who signed in with a GitHub user's name was linked to
 // that account (final whole-tree review F1); such a row is either a person
 // who really uses both forges under one name or a takeover. The 0.29.69
 // deploy checklist runs it as an observation-only audit.
+//
+// The old code wrote the other provider's ID as 0 and a takeover kept it,
+// so such a row is found by its name trail — a GitHub login AND a GitLab
+// user name on one account — as well as by two IDs (round 2 F1).
 func CrossProviderUserAuditSQL() string {
-	return `SELECT count(*) FROM aveloxis_ops.users WHERE COALESCE(gh_user_id, 0) <> 0 AND COALESCE(gl_user_id, 0) <> 0`
+	return `SELECT count(*) FROM aveloxis_ops.users WHERE (COALESCE(gh_user_id, 0) <> 0 AND COALESCE(gl_user_id, 0) <> 0) OR (COALESCE(gh_login, '') <> '' AND COALESCE(gl_username, '') <> '')`
+}
+
+// DuplicateForgeIDUserAuditSQL counts forge user IDs that more than one
+// account carries. Through 0.29.68 a user who renamed on the forge got a
+// second account at the next sign-in; from 0.29.69 the most recently used one
+// signs in and the rest are logged (round 2 F3). Observation only.
+func DuplicateForgeIDUserAuditSQL() string {
+	return `SELECT (SELECT count(*) FROM (SELECT gh_user_id FROM aveloxis_ops.users WHERE COALESCE(gh_user_id, 0) <> 0 GROUP BY 1 HAVING count(*) > 1) g) + (SELECT count(*) FROM (SELECT gl_user_id, COALESCE(gl_oauth_host, '') FROM aveloxis_ops.users WHERE COALESCE(gl_user_id, 0) <> 0 GROUP BY 1, 2 HAVING count(*) > 1) l)`
 }
 
 // verifyGroupOwnership checks that the given group belongs to the user.

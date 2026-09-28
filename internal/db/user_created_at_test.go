@@ -109,9 +109,9 @@ func TestUpsertOAuthUserNeverTouchesCreatedAt(t *testing.T) {
 	src := readFileForUserCreatedAt(t, "web_store.go")
 	// The login-time UPDATE is updateOAuthUser since the F1 identity fix
 	// (2026-09-28); UpsertOAuthUser itself must issue none.
-	upsert := strings.Index(src, "func (s *PostgresStore) UpsertOAuthUser(")
+	upsert := strings.Index(src, "func (s *PostgresStore) SignInOAuthUser(")
 	if upsert < 0 {
-		t.Fatal("UpsertOAuthUser not found")
+		t.Fatal("SignInOAuthUser not found")
 	}
 	if e := strings.Index(src[upsert:], "\n}"); strings.Contains(src[upsert:upsert+e], "UPDATE aveloxis_ops.users") {
 		t.Error("UpsertOAuthUser must update through updateOAuthUser, not an UPDATE of its own")

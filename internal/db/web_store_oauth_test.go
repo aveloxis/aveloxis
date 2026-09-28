@@ -88,7 +88,7 @@ func TestErrEmptyLoginIsExported(t *testing.T) {
 func TestUpsertOAuthUserSourceUsesErrNoRows(t *testing.T) {
 	src := mustReadSource(t, "web_store.go")
 
-	body := extractFunc(src, "UpsertOAuthUser")
+	body := extractFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
 		t.Fatal("could not locate UpsertOAuthUser function body")
 	}
@@ -105,7 +105,7 @@ func TestUpsertOAuthUserSourceUsesErrNoRows(t *testing.T) {
 // while leaving the runtime test passing on the constructor path.
 func TestUpsertOAuthUserSourceChecksEmptyLogin(t *testing.T) {
 	src := mustReadSource(t, "web_store.go")
-	body := extractFunc(src, "UpsertOAuthUser")
+	body := extractFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
 		t.Fatal("could not locate UpsertOAuthUser function body")
 	}

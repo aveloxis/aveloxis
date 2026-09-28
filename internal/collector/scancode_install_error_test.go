@@ -47,6 +47,10 @@ func TestScancodeFreshInstallReportsTheRealFailure(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("err = %v; want the per-tool deadline in the chain", err)
 		}
+		// pip3 is on PATH: a timeout must not read as a missing fallback.
+		if msg := err.Error(); strings.Contains(msg, "no pip") || strings.Contains(msg, "not found") {
+			t.Errorf("err = %q; a timeout was reported as a missing installer", msg)
+		}
 	})
 	t.Run("a pip failure is reported as one", func(t *testing.T) {
 		fakeTools(t, map[string]string{"pipx": "exit 3", "pip3": "exit 4"})
@@ -56,6 +60,35 @@ func TestScancodeFreshInstallReportsTheRealFailure(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "exit status 3") || !strings.Contains(err.Error(), "exit status 4") {
 			t.Errorf("err = %v; want both installers' failures", err)
+		}
+	})
+	t.Run("a bound spent before pip ran is a timeout", func(t *testing.T) {
+		// Final review round 2 F5: no pipx, pip3 on PATH, the bound already
+		// spent (a stalled `brew install libmagic` on macOS): the pip loop
+		// saw the expired ctx and broke before running anything, and the
+		// result read "neither pipx nor pip found".
+		fakeTools(t, map[string]string{"pip3": "exit 0"})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+		defer cancel()
+		<-ctx.Done()
+		err := ensureScancodeCurrent(ctx, false)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v; want the per-tool deadline in the chain", err)
+		}
+		if msg := err.Error(); strings.Contains(msg, "not found") || strings.Contains(msg, "no pip") {
+			t.Errorf("err = %q; a spent bound was reported as a missing installer", msg)
+		}
+	})
+	t.Run("no installer is 'not found' even with the bound spent", func(t *testing.T) {
+		// Round 3 F5: the spent-bound arm must not turn an absence into a
+		// timeout — the operator would retry instead of installing Python.
+		fakeTools(t, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+		defer cancel()
+		<-ctx.Done()
+		err := ensureScancodeCurrent(ctx, false)
+		if err == nil || !strings.Contains(err.Error(), "neither pipx nor pip found") {
+			t.Errorf("err = %v; want the not-found advice", err)
 		}
 	})
 	t.Run("no installer is still 'not found'", func(t *testing.T) {

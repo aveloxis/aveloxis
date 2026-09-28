@@ -67,7 +67,7 @@ func TestSchemaAddsEmailConfirmedAtColumn(t *testing.T) {
 // nobody can approve anything.
 func TestUpsertOAuthUserPromotesFirstUserToAdmin(t *testing.T) {
 	src := mustReadStoreSource(t, "web_store.go")
-	body := extractBatchFunc(src, "UpsertOAuthUser")
+	body := extractBatchFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
 		t.Fatal("could not locate UpsertOAuthUser body")
 	}
@@ -91,7 +91,7 @@ func TestUpsertOAuthUserPromotesFirstUserToAdmin(t *testing.T) {
 // provider's verification).
 func TestUpsertOAuthUserSetsEmailConfirmedAt(t *testing.T) {
 	src := mustReadStoreSource(t, "web_store.go")
-	body := extractBatchFunc(src, "UpsertOAuthUser")
+	body := extractBatchFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
 		t.Skip("UpsertOAuthUser not yet refactored")
 	}

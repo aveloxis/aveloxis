@@ -506,11 +506,13 @@ func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 // venv's binary — the exact regression vector the monthly updater had.
 func pipInstallScancodeFresh(ctx context.Context) error {
 	var lastErr error
+	found := false
 	for _, pip := range []string{"pip3", "pip"} {
 		pipPath, err := exec.LookPath(pip)
 		if err != nil {
 			continue
 		}
+		found = true
 		if ctx.Err() != nil {
 			break // the bound expired on the previous pip: its error says so
 		}
@@ -531,6 +533,12 @@ func pipInstallScancodeFresh(ctx context.Context) error {
 	}
 	if lastErr != nil {
 		return lastErr
+	}
+	if err := ctx.Err(); err != nil && found {
+		// A pip was found but the bound was spent before it ran (round 2
+		// F5: a stalled `brew install libmagic` first): a timeout. With no
+		// pip at all it is an absence whatever the clock says (round 3).
+		return fmt.Errorf("scancode install via pip: %w", err)
 	}
 	return errNoPip
 }

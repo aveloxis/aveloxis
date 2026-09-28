@@ -224,6 +224,16 @@ func (s *PostgresStore) updateOAuthUser(ctx context.Context, userID int, info OA
 	return err
 }
 
+// CrossProviderUserAuditSQL counts accounts that carry BOTH a GitHub and a
+// GitLab user ID. Through 0.29.68 a login was matched on login_name alone,
+// so a GitLab user who signed in with a GitHub user's name was linked to
+// that account (final whole-tree review F1); such a row is either a person
+// who really uses both forges under one name or a takeover. The 0.29.69
+// deploy checklist runs it as an observation-only audit.
+func CrossProviderUserAuditSQL() string {
+	return `SELECT count(*) FROM aveloxis_ops.users WHERE COALESCE(gh_user_id, 0) <> 0 AND COALESCE(gl_user_id, 0) <> 0`
+}
+
 // verifyGroupOwnership checks that the given group belongs to the user.
 // Returns the group name or an error if not found/owned.
 func (s *PostgresStore) verifyGroupOwnership(ctx context.Context, userID int, groupID int64) (string, error) {

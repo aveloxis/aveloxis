@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- MarkRepoGone (the sideline probe IS a check), MarkRepoGoneChecked
     -- and mark-gone-repos; only ever set on a gone-stamped row.
     repo_gone_checked_at    TIMESTAMPTZ,
-    -- v0.29.68 (worklist 69): when the startup metadata backfill last
+    -- v0.29.69 (worklist 69): when the startup metadata backfill last
     -- got an ANSWER from the forge about this repo: metadata written
     -- (an honestly empty description and language included) or an
     -- error platform.IsDefinitiveAnswer accepts (404/gone, not

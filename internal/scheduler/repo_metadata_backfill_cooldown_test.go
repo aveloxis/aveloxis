@@ -3,7 +3,7 @@
 
 package scheduler
 
-// v0.29.68 (worklist 69) — the startup metadata backfill re-fetched the
+// v0.29.69 (worklist 69) — the startup metadata backfill re-fetched the
 // same ~5,600 repositories at every serve start (3–4 h each time on
 // production), because nothing recorded that a repo had been asked: an
 // honestly empty forge answer and a 404 both left the row a candidate.

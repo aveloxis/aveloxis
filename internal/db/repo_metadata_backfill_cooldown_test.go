@@ -3,7 +3,7 @@
 
 package db
 
-// v0.29.68 (worklist 69) — the startup metadata backfill re-fetched the
+// v0.29.69 (worklist 69) — the startup metadata backfill re-fetched the
 // same ~5,600 repositories at every serve start (3–4 h each time on
 // production: processed=5617/5636/5597/5588/5527/5537 across six starts,
 // 546 of 594 FetchRepoInfo failures the same 404s every time). The

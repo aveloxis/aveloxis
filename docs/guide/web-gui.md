@@ -86,6 +86,8 @@ The server starts on the address specified by `web.addr` (default `:8082`). Open
 4. Aveloxis exchanges the code for an access token and fetches your profile (login, email, avatar).
 5. A session cookie is set in your browser. You are now logged in and redirected to the dashboard.
 
+Your Aveloxis account is tied to the provider's numeric user ID, not to your user name (v0.29.69). Renaming yourself on GitHub or GitLab keeps your account. A user name is not proof of identity, because anyone can register a name another forge's user holds, or one a renamed account gave up. So a sign-in whose name already belongs to a different GitHub or GitLab account is refused with "Failed to create user", and the server log names the collision. An administrator resolves it. Signing in with GitHub and with GitLab under the same name therefore does not link the two accounts.
+
 ## Creating Groups
 
 Groups are named collections of repositories. After logging in:

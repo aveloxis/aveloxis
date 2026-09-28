@@ -28,6 +28,9 @@ func fakeTools(t *testing.T, scripts map[string]string) {
 		}
 	}
 	t.Setenv("PATH", dir)
+	// A succeeding install edits the shell profile under HOME; no fake
+	// here succeeds, and HOME is a scratch directory besides.
+	t.Setenv("HOME", t.TempDir())
 }
 
 // TestScancodeFreshInstallReportsTheRealFailure (final whole-tree review F2,
@@ -37,7 +40,7 @@ func fakeTools(t *testing.T, scripts map[string]string) {
 // install Python 3.10+ for a PyPI stall, and a real pip failure was hidden.
 func TestScancodeFreshInstallReportsTheRealFailure(t *testing.T) {
 	t.Run("a timeout is a timeout", func(t *testing.T) {
-		fakeTools(t, map[string]string{"pipx": "sleep 5", "pip3": "exit 0"})
+		fakeTools(t, map[string]string{"pipx": "exec /bin/sleep 5", "pip3": "exit 9"})
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		err := ensureScancodeCurrent(ctx, false)

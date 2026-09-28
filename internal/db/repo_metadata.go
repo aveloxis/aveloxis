@@ -141,7 +141,7 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 // every later page. The cursor drains the candidate set monotonically;
 // failures are retried on the next restart.
 //
-// v0.29.68 (worklist 69): rows the backfill got an answer for within
+// v0.29.69 (worklist 69): rows the backfill got an answer for within
 // cooldown are left out (metadata_backfill_attempted_at, stamped by
 // MarkMetadataBackfillAttempted). Without it a repo whose forge answer
 // really is empty was written back empty and stayed a candidate forever, and
@@ -204,7 +204,7 @@ func (s *PostgresStore) ReposNeedingMetadataBackfill(ctx context.Context, afterR
 // accepts, such as a 404/gone), so
 // ReposNeedingMetadataBackfill leaves the row alone until its cooldown has
 // passed. The caller decides what counts as an answer; this only stamps.
-// v0.29.68 (worklist 69).
+// v0.29.69 (worklist 69).
 func (s *PostgresStore) MarkMetadataBackfillAttempted(ctx context.Context, repoID int64) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `

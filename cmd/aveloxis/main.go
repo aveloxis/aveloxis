@@ -1473,8 +1473,9 @@ Tools installed:
 
 Non-interactive: each tool runs in its own process group with pip and git
 prompts disabled (a Homebrew formula install never prompts), so credentials
-must come from configuration or a keyring; a tool that would have prompted
-fails at once. Each tool is bounded (the same bound as the monthly check);
+must come from configuration or a keyring; a pip or git credential prompt
+fails at once. Any other prompt (an ssh host-key or passphrase question) is
+not answered and ends at the bound. Each tool is bounded (the same bound as the monthly check);
 Ctrl-C ends the walk. Exits non-zero if any tool fails to install or lands
 off PATH, so ` + "`aveloxis install-tools && aveloxis start all`" + ` stops before
 a start without the tool.`,

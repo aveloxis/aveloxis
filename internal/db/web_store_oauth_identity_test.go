@@ -158,6 +158,23 @@ func TestUpsertOAuthUserMatchesByForgeIdentity(t *testing.T) {
 		}
 	})
 
+	t.Run("the audit counts a cross-linked row", func(t *testing.T) {
+		var before, after int
+		if err := store.Pool().QueryRow(ctx, CrossProviderUserAuditSQL()).Scan(&before); err != nil {
+			t.Fatalf("the audit SQL does not run: %v", err)
+		}
+		if _, err := store.Pool().Exec(ctx, `INSERT INTO aveloxis_ops.users (login_name, oauth_provider, gh_user_id, gl_user_id)
+			VALUES ($1, 'gitlab', 900801, 900802)`, prefix+"linked"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Pool().QueryRow(ctx, CrossProviderUserAuditSQL()).Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if after != before+1 {
+			t.Errorf("audit went %d -> %d; want one more for the cross-linked row", before, after)
+		}
+	})
+
 	t.Run("an unknown provider is refused", func(t *testing.T) {
 		if _, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: prefix + "x", Provider: "bitbucket"}); err == nil {
 			t.Error("a login from an unknown provider was accepted")

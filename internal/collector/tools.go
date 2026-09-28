@@ -118,7 +118,9 @@ func runToolCommand(ctx context.Context, cmd *exec.Cmd) error {
 	// credential prompt under `go install`) is stopped by SIGTTIN instead
 	// of answered, and the operator watches ToolInstallBound() run out. The
 	// two ecosystems' no-prompt variables turn a prompt into an immediate,
-	// named failure (review round 14). A Homebrew formula install never
+	// named failure (review round 14). Only those two: an ssh host-key or
+	// passphrase question (git over ssh) reads /dev/tty itself and still
+	// waits out the bound, as the help text says (final review F5). A Homebrew formula install never
 	// reads the terminal (round 15: NONINTERACTIVE is the installer
 	// script's knob, unread by `brew install`, so it is not set). A
 	// caller's own environment is kept; the process environment is the
@@ -237,7 +239,7 @@ func installScorecardBinary(ctx context.Context) error {
 
 			fmt.Printf("scorecard %s installed to %s\n", version, dest)
 			if w := shadowWarning("scorecard", dest); w != "" {
-				fmt.Println(w)
+				return fmt.Errorf("%s: %w", w, ErrInstallShadowed)
 			}
 			return nil
 		}
@@ -733,6 +735,13 @@ func GoBinDir(ctx context.Context) (string, error) {
 	}
 	return dir, nil
 }
+
+// ErrInstallShadowed marks an install that wrote its copy while PATH
+// resolves the tool to another one (final whole-tree review F3,
+// 2026-09-28): the write succeeded, but serve keeps running the other copy,
+// so upgrade-tools, install-tools and the monthly check each count it a
+// failure — the error text names both paths.
+var ErrInstallShadowed = errors.New("installed copy is shadowed on PATH")
 
 // shadowWarning says when PATH resolves name to a copy other than the one
 // just written (round 17: before v0.29.68 scorecard went to GOPATH/bin

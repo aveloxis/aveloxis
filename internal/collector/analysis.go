@@ -546,7 +546,7 @@ func parseTOMLDeps(content, section string) []string {
 //     (`gem "rails", '~> 7.0'`) inventoried the constraint — 387 rows of
 //     `aveloxis_large` are a Ruby "package" called `~> 7.0` or similar.
 //
-// Item 71 (v0.29.68): "the first comma-separated argument" was not the name
+// Item 71 (v0.29.69): "the first comma-separated argument" was not the name
 // either. A trailing modifier or an interpolated name became a fabricated gem
 // (`json" if defined?(RUBY_VERSION) && RUBY_VERSION < '1.9`,
 // `github-pages" if ENV["GH_PAGES"]`, `beaker-#{ENV['BEAKER_HYPERVISOR']}`),

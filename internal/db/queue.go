@@ -323,6 +323,10 @@ func (s *PostgresStore) MakeQueuedReposDue(ctx context.Context) (int64, error) {
 //   - status = 'collecting' — a worker is mid-flight, don't disturb it
 //   - last_collected IS NULL — never-collected repos keep their initial
 //     due_at=NOW() so they collect on first pass
+//   - last_error IS NOT NULL — a failed row's due_at is its retry time and
+//     its last_collected the last success, so realigning it made it due at
+//     once on every restart (worklist 68, v0.29.69); it picks up a changed
+//     interval at its next completion
 //
 // Idempotent: the <> predicate skips rows already in the correct shape, so
 // updated_at stays stable across repeated startups.

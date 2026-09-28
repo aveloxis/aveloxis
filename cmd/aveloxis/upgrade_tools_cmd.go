@@ -64,8 +64,9 @@ not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.
 
 Non-interactive: each tool runs in its own process group with pip and git
 prompts disabled (a Homebrew formula install never prompts), so credentials
-must come from configuration or a keyring; a tool that would have prompted
-fails at once. Each tool is bounded (the same bound as the monthly check);
+must come from configuration or a keyring; a pip or git credential prompt
+fails at once. Any other prompt (an ssh host-key or passphrase question) is
+not answered and ends at the bound. Each tool is bounded (the same bound as the monthly check);
 Ctrl-C ends the walk.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Ctrl-C or a SIGTERM ends the walk and kills the subprocess in

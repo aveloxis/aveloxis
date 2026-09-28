@@ -29,7 +29,7 @@ import (
 // in ~28 hours — well under the natural recollect cycle (21 days
 // default) so the backfill leads recollection, not trails it.
 //
-// Every answer is stamped (metadata_backfill_attempted_at, v0.29.68,
+// Every answer is stamped (metadata_backfill_attempted_at, v0.29.69,
 // worklist 69) and the candidate query skips repos answered within one
 // recollect interval (collection.days_until_recollect), so an honestly
 // empty forge answer or a 404 is asked again once per interval, not at
@@ -122,7 +122,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 			if errors.Is(err, context.Canceled) {
 				return // shutdown, not a failure
 			}
-			// v0.29.68 (worklist 69): stamp every ANSWER so the candidate
+			// v0.29.69 (worklist 69): stamp every ANSWER so the candidate
 			// query leaves the repo alone for one recollect interval — an
 			// honestly empty description and language, or a definitive
 			// 404/gone, otherwise kept ~5,600 repos candidates forever.

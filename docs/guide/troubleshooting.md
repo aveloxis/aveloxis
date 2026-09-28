@@ -1156,13 +1156,13 @@ This makes them claimable immediately and ranks them above any non-zero-priority
 
 **Cause (pre-v0.16.6):** `CompleteJob` sets `collection_queue.due_at = NOW() + days_until_recollect` at the moment a collection finishes. That value is *frozen* in the row — changing the config later has no effect on queued rows until each repo next completes a collection under the new setting. With a fleet of thousands of repos that each completed yesterday under `days_until_recollect=1`, the stale `due_at` values are all already due when you restart, and the scheduler picks them right back up regardless of the new `7`.
 
-**Fix (v0.16.6+):** The scheduler now calls `store.RealignDueDates(ctx, recollectAfter)` once on startup, which recomputes `due_at = last_collected + recollectAfter` for every queued row with a non-null `last_collected`. Look for the log line:
+**Fix (v0.16.6+):** The scheduler now calls `store.RealignDueDates(ctx, recollectAfter)` once on startup, which recomputes `due_at = last_collected + recollectAfter` for every queued row with a non-null `last_collected` whose last collection succeeded. Look for the log line:
 
 ```
 realigned queue due_at from current days_until_recollect rows_updated=3079 recollect_after=168h0m0s
 ```
 
-`'collecting'` rows (in-flight) and never-collected rows (`last_collected IS NULL`) are skipped. The operation is idempotent — repeated restarts that don't change the config are no-ops.
+`'collecting'` rows (in-flight), never-collected rows (`last_collected IS NULL`) and rows whose last collection failed (`last_error` set, v0.29.69) are skipped. A failure sets `due_at` to its retry time and leaves `last_collected` at the last success, so realigning it put the failed repository in the past and it re-ran at every restart; such a row picks up a changed interval at its next completion. The operation is idempotent — repeated restarts that don't change the config are no-ops.
 
 **Verifying on a live database:**
 
@@ -1172,7 +1172,7 @@ SELECT repo_id,
        last_collected,
        (due_at - last_collected) AS cooldown
 FROM aveloxis_ops.collection_queue
-WHERE status = 'queued' AND last_collected IS NOT NULL
+WHERE status = 'queued' AND last_collected IS NOT NULL AND last_error IS NULL
 ORDER BY last_collected DESC
 LIMIT 10;
 ```

@@ -114,7 +114,7 @@ func TestUpsertOAuthUserNeverTouchesCreatedAt(t *testing.T) {
 		t.Fatal("SignInOAuthUser not found")
 	}
 	if e := strings.Index(src[upsert:], "\n}"); strings.Contains(src[upsert:upsert+e], "UPDATE aveloxis_ops.users") {
-		t.Error("UpsertOAuthUser must update through updateOAuthUser, not an UPDATE of its own")
+		t.Error("SignInOAuthUser must update through updateOAuthUser, not an UPDATE of its own")
 	}
 	start := strings.Index(src, "func (s *PostgresStore) updateOAuthUser(")
 	if start < 0 {
@@ -127,7 +127,7 @@ func TestUpsertOAuthUserNeverTouchesCreatedAt(t *testing.T) {
 		t.Fatal("updateOAuthUser UPDATE not found")
 	}
 	if strings.Contains(body[upd:], "created_at") {
-		t.Error("UpsertOAuthUser's UPDATE branch must NOT touch created_at (insert-only — DEFAULT NOW() covers the INSERT path)")
+		t.Error("updateOAuthUser's UPDATE branch must NOT touch created_at (insert-only — DEFAULT NOW() covers the INSERT path)")
 	}
 }
 

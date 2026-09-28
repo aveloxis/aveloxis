@@ -69,7 +69,7 @@ func TestUpsertOAuthUserPromotesFirstUserToAdmin(t *testing.T) {
 	src := mustReadStoreSource(t, "web_store.go")
 	body := extractBatchFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
-		t.Fatal("could not locate UpsertOAuthUser body")
+		t.Fatal("could not locate SignInOAuthUser body")
 	}
 
 	// We expect the function to count existing users on the INSERT
@@ -81,7 +81,7 @@ func TestUpsertOAuthUserPromotesFirstUserToAdmin(t *testing.T) {
 		strings.Contains(body, "admin=TRUE") ||
 		strings.Contains(body, "first user")
 	if !hasAdminPath {
-		t.Error("UpsertOAuthUser must auto-promote the first user to admin. Look for a count-then-set pattern: " +
+		t.Error("SignInOAuthUser must auto-promote the first user to admin. Look for a count-then-set pattern: " +
 			"if no other users exist, set admin=TRUE on the INSERT.")
 	}
 }
@@ -93,10 +93,10 @@ func TestUpsertOAuthUserSetsEmailConfirmedAt(t *testing.T) {
 	src := mustReadStoreSource(t, "web_store.go")
 	body := extractBatchFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
-		t.Skip("UpsertOAuthUser not yet refactored")
+		t.Skip("SignInOAuthUser not yet refactored")
 	}
 	if !strings.Contains(body, "email_confirmed_at") {
-		t.Error("UpsertOAuthUser must set email_confirmed_at on signup so the audit column reflects the OAuth-verified state. " +
+		t.Error("SignInOAuthUser must set email_confirmed_at on signup so the audit column reflects the OAuth-verified state. " +
 			"The user's email is verified by GitHub before OAuth hands it to us.")
 	}
 }

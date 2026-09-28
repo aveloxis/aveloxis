@@ -185,7 +185,7 @@ func TestUpsertOAuthUserRefreshesDisplayName(t *testing.T) {
 	// UpsertOAuthUser's owned-row paths call; the runtime twin is
 	// TestUpsertOAuthUserNameRefreshEndToEnd.
 	if caller := extractFunctionBody(t, "web_store.go", "SignInOAuthUser"); strings.Count(caller, "s.updateOAuthUser(ctx, userID, info)") != 2 {
-		t.Error("UpsertOAuthUser must refresh both owned-row paths (found by ID, claimed by name) through updateOAuthUser")
+		t.Error("SignInOAuthUser must refresh both owned-row paths (found by ID, claimed by name) through updateOAuthUser")
 	}
 	body := extractFunctionBody(t, "web_store.go", "updateOAuthUser")
 	i := strings.Index(body, "UPDATE aveloxis_ops.users")

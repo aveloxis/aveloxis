@@ -668,6 +668,9 @@ func (s *Server) StampLegacyGitLabAccounts(ctx context.Context) {
 		return
 	}
 	n, err := s.store.StampLegacyGitLabHost(ctx, s.cfg.GitLabBaseURL)
+	if err != nil && ctx.Err() != nil {
+		return // a stop during start-up, not a failed stamp (round 4); the next start stamps
+	}
 	if err != nil {
 		s.logger.Error("recording the GitLab instance on accounts from before 0.29.69 failed — their owners cannot sign in through GitLab until a later web start stamps them", "instance", db.GitLabOAuthHost(s.cfg.GitLabBaseURL), "error", err)
 		return

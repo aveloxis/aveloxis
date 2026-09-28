@@ -1965,7 +1965,7 @@ User accounts for the Aveloxis web interface and API.
 | `gh_login` | TEXT | GitHub OAuth | The GitHub user name at the last sign-in. |
 | `gl_user_id` | BIGINT | GitLab OAuth | The GitLab user's numeric ID, an identity only together with `gl_oauth_host`. |
 | `gl_username` | TEXT | GitLab OAuth | The GitLab user name at the last sign-in. |
-| `gl_oauth_host` | TEXT | GitLab OAuth | v0.29.69: the GitLab instance `gl_user_id` belongs to (`web.gitlab_base_url`, lowercased, no trailing slash; empty means gitlab.com). Two instances number their users independently. NULL on accounts from before it was recorded; the next GitLab sign-in stamps it. |
+| `gl_oauth_host` | TEXT | GitLab OAuth | v0.29.69: the GitLab instance `gl_user_id` belongs to (`web.gitlab_base_url`, lowercased, no trailing slash; an unset `web.gitlab_base_url` is stored as `https://gitlab.com`). Two instances number their users independently. NULL on accounts from before it was recorded: such an account matches no instance at sign-in, and `aveloxis web` records its configured instance on them at start when GitLab sign-in is configured. |
 | `oauth_provider` | TEXT | OAuth | The provider of the last sign-in (`github` or `gitlab`). |
 | | | | *Standard metadata columns* |
 

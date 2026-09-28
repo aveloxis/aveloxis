@@ -404,13 +404,14 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		}
 		return true
 	}
-	// The store is reached exactly three ways (round 20, the class answer
+	// The store is reached exactly two ways (round 20, the class answer
 	// after a store write escaped through an alias, a cancel check spelled
 	// `r.Context().Err() != nil` between the upsert and the lookup, and a
-	// session token minted in the arm): the first-signup count through
-	// Pool().QueryRow, the upsert, the admin lookup. Any other mention of
-	// the receiver's store — an alias, another method, Pool().Exec — is a
-	// write path this login does not have.
+	// session token minted in the arm; the first-signup Pool().QueryRow
+	// became SignInOAuthUser's created flag in the final review's round 3):
+	// the sign-in and the admin lookup. Any other mention of the receiver's
+	// store — an alias, another method, a pool — is a write path this login
+	// does not have.
 	storeUses := map[string]int{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
@@ -438,10 +439,9 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		t.Errorf("completeOAuthLogin reaches %s.store %d time(s) (%v); want exactly SignInOAuthUser and IsUserAdmin — any other store use, a pool or an alias is a write path the login does not have (round 20)", recv, storeRefs, storeUses)
 	}
 	// Every mention of the receiver is a field or method access (round 21:
-	// `srv := s` escaped every rule keyed on the receiver's name), and the
-	// one pool use is exactly `s.store.Pool().QueryRow(ctx, <a SELECT>, …)`
-	// (round 21: `pool := s.store.Pool()` hoisted into a local wrote from
-	// the arm; a data-modifying CTE in the count ran on every login).
+	// `srv := s` escaped every rule keyed on the receiver's name), and no
+	// `s.store.Pool().QueryRow` chain remains (round 21 pinned the one
+	// count chain; the final review's round 3 removed it).
 	recvMentions, recvSelectors, countChains := 0, 0, 0
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
@@ -471,17 +471,6 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 				return true
 			}
 			countChains++
-			if len(x.Args) < 2 {
-				t.Error("the first-signup count must pass its SQL as the second argument")
-				return true
-			}
-			// The one count statement, exactly (round 22: `SELECT … INTO
-			// <table>` passed a "SELECT with no data-modifying keyword"
-			// heuristic and created a table on every login).
-			lit, ok := x.Args[1].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING || lit.Value != "`SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1 OR gh_user_id = NULLIF($2::bigint, 0) OR gl_user_id = NULLIF($3::bigint, 0)`" {
-				t.Errorf("the first-signup count's SQL must be exactly `SELECT COUNT(*) FROM aveloxis_ops.users WHERE login_name = $1 OR gh_user_id = NULLIF($2::bigint, 0) OR gl_user_id = NULLIF($3::bigint, 0)` (rounds 21–22; the identity arms, final review round 2), got %s", fset.Position(x.Args[1].Pos()))
-			}
 		}
 		return true
 	})

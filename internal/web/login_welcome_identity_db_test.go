@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/smtp"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -188,5 +189,29 @@ func TestGitLabCallbackRecordsItsInstance(t *testing.T) {
 	}
 	if want := db.GitLabOAuthHost(forge.URL); host != want || id != 900701 {
 		t.Errorf("stored gl_user_id %d on %q; want 900701 on %q", id, host, want)
+	}
+}
+
+// TestWebStartStampStopIsNotAFailure (final review round 4): a stop during
+// web start-up cancels the stamp; that is a shutdown, not "their owners
+// cannot sign in".
+func TestWebStartStampStopIsNotAFailure(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	store, err := db.NewPostgresStore(context.Background(), dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	s := New(store, config.WebConfig{GitLabClientID: "id", GitLabClientSecret: "secret"}, nil, "", logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.StampLegacyGitLabAccounts(ctx)
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("a stop during the start-up stamp was logged as a failure:\n%s", logs.String())
 	}
 }

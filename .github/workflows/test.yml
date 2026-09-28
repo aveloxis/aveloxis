@@ -32,7 +32,7 @@ jobs:
       # test that skips on raceBuild (referenced only in an if condition
       # directly inside the test) to be selected by this step.
       - name: Run cost tests (no race detector)
-        run: go test -count=1 -run 'CostIsLinear|LookupsAreLogarithmic' ./internal/db/ ./internal/spdx/
+        run: go test -count=1 -run 'CostIsLinear|LookupsAreLogarithmic|^TestCheck(SeparatesLinear|PassesAllocating)|^TestLinearReportsAFailure$' ./internal/db/ ./internal/spdx/ ./internal/costtest/
 
       - name: Upload coverage
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

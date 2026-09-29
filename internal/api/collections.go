@@ -29,7 +29,7 @@ func (s *Server) handleCollectionsList(w http.ResponseWriter, r *http.Request) {
 	}
 	cols, err := s.store.ListCollections(r.Context(), info.UserID)
 	if err != nil {
-		s.serverError(w, "handleCollectionsList", err)
+		s.serverError(w, r, "handleCollectionsList", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"collections": cols})
@@ -63,7 +63,7 @@ func (s *Server) handleStarCollection(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.serverError(w, "handleStarCollection", err)
+		s.serverError(w, r, "handleStarCollection", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true, "starred": r.Method != http.MethodDelete})
@@ -93,12 +93,12 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 
 	groups, err := s.store.GetCollectionGroups(r.Context(), collID)
 	if err != nil {
-		s.serverError(w, "handleCollectionDetail", err)
+		s.serverError(w, r, "handleCollectionDetail", err)
 		return
 	}
 	repos, total, err := s.store.GetCollectionRepos(r.Context(), collID, info.UserID, page, pageSize, sortKey, sortDir)
 	if err != nil {
-		s.serverError(w, "handleCollectionDetail", err)
+		s.serverError(w, r, "handleCollectionDetail", err)
 		return
 	}
 	// Echo the EFFECTIVE paging/sort values (mirrors the store's
@@ -166,7 +166,7 @@ func (s *Server) handleCollectionCopy(w http.ResponseWriter, r *http.Request) {
 		}
 		groupID, err = s.store.FindOrCreateUserGroupByName(r.Context(), info.UserID, req.GroupName)
 		if err != nil {
-			s.serverError(w, "handleCollectionCopy", err)
+			s.serverError(w, r, "handleCollectionCopy", err)
 			return
 		}
 	}
@@ -176,7 +176,7 @@ func (s *Server) handleCollectionCopy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "target group is not yours", http.StatusForbidden)
 			return
 		}
-		s.serverError(w, "handleCollectionCopy", err)
+		s.serverError(w, r, "handleCollectionCopy", err)
 		return
 	}
 	// The copy widened the caller's repo scope — bust both caches.
@@ -205,7 +205,7 @@ func (s *Server) handleAdminCollectionCreate(w http.ResponseWriter, r *http.Requ
 	}
 	id, err := s.store.CreateCollection(r.Context(), req.Name, req.Description, req.Position, info.UserID)
 	if err != nil {
-		s.serverError(w, "handleAdminCollectionCreate", err)
+		s.serverError(w, r, "handleAdminCollectionCreate", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"collection_id": id})
@@ -232,7 +232,7 @@ func (s *Server) handleAdminCollectionUpdate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := s.store.UpdateCollection(r.Context(), collID, req.Name, req.Description, req.Position); err != nil {
-		s.serverError(w, "handleAdminCollectionUpdate", err)
+		s.serverError(w, r, "handleAdminCollectionUpdate", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true})
@@ -249,7 +249,7 @@ func (s *Server) handleAdminCollectionDelete(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := s.store.DeleteCollection(r.Context(), collID); err != nil {
-		s.serverError(w, "handleAdminCollectionDelete", err)
+		s.serverError(w, r, "handleAdminCollectionDelete", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true})
@@ -278,7 +278,7 @@ func (s *Server) handleAdminCollectionAddGroup(w http.ResponseWriter, r *http.Re
 			http.Error(w, "collection member groups must be admin-owned", http.StatusBadRequest)
 			return
 		}
-		s.serverError(w, "handleAdminCollectionAddGroup", err)
+		s.serverError(w, r, "handleAdminCollectionAddGroup", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true})
@@ -301,7 +301,7 @@ func (s *Server) handleAdminCollectionRemoveGroup(w http.ResponseWriter, r *http
 		return
 	}
 	if err := s.store.RemoveGroupFromCollection(r.Context(), collID, groupID); err != nil {
-		s.serverError(w, "handleAdminCollectionRemoveGroup", err)
+		s.serverError(w, r, "handleAdminCollectionRemoveGroup", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true})

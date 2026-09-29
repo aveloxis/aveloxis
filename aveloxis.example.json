@@ -120,6 +120,7 @@
     "refresh_seconds": 60
   },
   "log_level": "info",
+  "http_timeout_seconds": 180,
   "api": {
     "addr": "127.0.0.1:8383",
     "rate_limit_rps": 1,

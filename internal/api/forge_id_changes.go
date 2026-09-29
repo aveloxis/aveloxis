@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
 
 // Forge-ID changes, admin only (v0.29.63; 2026-09-23 operator request: an
@@ -35,7 +37,7 @@ func (s *Server) handleAdminForgeIDChanges(w http.ResponseWriter, r *http.Reques
 	pendingOnly := r.URL.Query().Get("pending") == "1"
 	changes, err := s.store.ListForgeIDChanges(r.Context(), pendingOnly)
 	if err != nil {
-		s.logger.Error("admin forge-ID changes: list failed", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "admin forge-ID changes: list failed", "error", err)
 		http.Error(w, "forge-ID changes could not be listed", http.StatusInternalServerError)
 		return
 	}
@@ -98,7 +100,7 @@ func (s *Server) handleAdminForgeIDAdopt(w http.ResponseWriter, r *http.Request)
 	}
 	adoptedBy, lerr := s.store.UserLabel(r.Context(), info.UserID)
 	if lerr != nil {
-		s.logger.Warn("admin forge-ID adopt: admin label lookup failed — recording the user id", "user_id", info.UserID, "error", lerr)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, lerr, "admin forge-ID adopt: admin label lookup failed — recording the user id", "user_id", info.UserID, "error", lerr)
 		adoptedBy = "user " + strconv.Itoa(info.UserID)
 	}
 	err = s.store.AdoptPendingForgeIDChange(r.Context(), repoID, body.OldForgeID, body.NewForgeID, adoptedBy, body.Note)
@@ -116,7 +118,7 @@ func (s *Server) handleAdminForgeIDAdopt(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "superseded: the repository no longer stores "+body.OldForgeID+" — nothing adopted; reload the list", http.StatusConflict)
 		return
 	case err != nil:
-		s.logger.Error("admin forge-ID adopt failed", "repo_id", repoID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "admin forge-ID adopt failed", "repo_id", repoID, "error", err)
 		http.Error(w, "adoption failed", http.StatusInternalServerError)
 		return
 	}

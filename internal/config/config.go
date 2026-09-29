@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -48,7 +49,29 @@ type Config struct {
 
 	// LogLevel sets the minimum log level: "debug", "info", "warn", or "error".
 	LogLevel string `json:"log_level"`
+
+	// HTTPTimeoutSeconds bounds the monitor, api and web servers (header
+	// and body reads, each request's handler — past it the request's
+	// context, and so its database query, is cancelled, the client gets a
+	// 503 and a WARN names the request — and the idle keep-alive); the web
+	// GUI's /api proxy runs under the web's bound (NET-6, 2026-09-29). Default 180
+	// (httpserver.DefaultTimeout): a backstop above nginx's 60 s defaults —
+	// tune nginx shorter, never this below it. Zero, negative or above
+	// MaxHTTPTimeoutSeconds is refused at load.
+	HTTPTimeoutSeconds int `json:"http_timeout_seconds"`
 }
+
+// HTTPTimeout is http_timeout_seconds as a duration. validate guarantees a
+// positive value, so there is no second default layer here (SR-10).
+func (c *Config) HTTPTimeout() time.Duration {
+	return time.Duration(c.HTTPTimeoutSeconds) * time.Second
+}
+
+// MaxHTTPTimeoutSeconds is the largest http_timeout_seconds whose socket
+// write deadline (the value plus httpserver.WriteMargin) a time.Duration
+// can hold (NET-6 review r1 F2: the margin overflowed the largest values
+// into a negative — i.e. no — write deadline).
+const MaxHTTPTimeoutSeconds = (math.MaxInt64 - int64(httpserver.WriteMargin)) / int64(time.Second)
 
 // MonitorConfig governs the /monitor dashboard.
 //
@@ -1465,6 +1488,9 @@ var ErrNotFound = errors.New("config file not found")
 // coercion (SR-10: one default layer, never a clamp the operator cannot
 // see). Every refusal names the JSON key.
 func (c *Config) validate() error {
+	if t := int64(c.HTTPTimeoutSeconds); t <= 0 || t > MaxHTTPTimeoutSeconds {
+		return fmt.Errorf("http_timeout_seconds is %d — use a number of seconds between 1 and %d, or omit it for the %v default", c.HTTPTimeoutSeconds, MaxHTTPTimeoutSeconds, httpserver.DefaultTimeout)
+	}
 	if h := c.Collection.SupplyChainRefreshHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
@@ -1693,6 +1719,7 @@ func (c *CollectionConfig) MatviewRebuildDayRecognized() bool {
 // DefaultConfig returns configuration with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
+		HTTPTimeoutSeconds: int(httpserver.DefaultTimeout / time.Second),
 		Database: DatabaseConfig{
 			Host:    "localhost",
 			Port:    5432,

@@ -162,7 +162,7 @@ func TestPageLookupErrorsAreNotNotFound(t *testing.T) {
 // asks the typed question and sends everything else to serverError.
 func TestRepoPageClassifiesTheRepoLookup(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/web/server.go"), "func (s *Server) handleRepoDetail("))
-	if !strings.Contains(body, "errors.Is(err, db.ErrRepoNotFound)") || strings.Count(body, `s.serverError(w, "handleRepoDetail", err)`) != 2 {
+	if !strings.Contains(body, "errors.Is(err, db.ErrRepoNotFound)") || strings.Count(body, `s.serverError(w, r, "handleRepoDetail", err)`) != 2 {
 		t.Error("handleRepoDetail must answer 404 only for db.ErrRepoNotFound and send the ownership lookup's and the repository lookup's other errors to serverError (a store failure is not \"not found\")")
 	}
 }
@@ -174,7 +174,7 @@ func TestRepoPageClassifiesTheRepoLookup(t *testing.T) {
 // body never carries the error's text (it did through v0.29.67).
 func TestSBOMDownloadClassifiesTheGenerator(t *testing.T) {
 	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/web/server.go"), "func (s *Server) handleSBOMDownload("))
-	if !strings.Contains(body, "errors.Is(err, db.ErrRepoNotFound)") || strings.Count(body, `s.serverError(w, "handleSBOMDownload", err)`) != 2 || strings.Contains(body, "err.Error()") {
+	if !strings.Contains(body, "errors.Is(err, db.ErrRepoNotFound)") || strings.Count(body, `s.serverError(w, r, "handleSBOMDownload", err)`) != 2 || strings.Contains(body, "err.Error()") {
 		t.Error("handleSBOMDownload must answer 404 for db.ErrRepoNotFound, send the ownership lookup's and the generator's other errors to serverError, and never write err.Error() into the body")
 	}
 }

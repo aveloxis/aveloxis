@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
 	"github.com/aveloxis/aveloxis/internal/static"
@@ -235,9 +236,9 @@ func (s *Server) Handler() http.Handler {
 // cause goes to the log at ERROR with the handler's name, the client gets a
 // generic 500 — never the store's text. A request the client abandoned
 // (context.Canceled) is not a failure and logs at Debug.
-func (s *Server) serverError(w http.ResponseWriter, handler string, err error) {
-	if errors.Is(err, context.Canceled) {
-		s.logger.Debug("request abandoned by the client", "handler", handler, "error", err)
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, handler string, err error) {
+	if httpserver.RequestEnded(r.Context(), err) { // client gone, or http_timeout_seconds fired (its WARN reports it)
+		s.logger.Debug("request ended before its handler finished", "handler", handler, "error", err)
 		return
 	}
 	s.logger.Error("request failed", "handler", handler, "error", err)
@@ -249,7 +250,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// don't re-trigger the GROUP BY scan on every call.
 	stats, lastRefreshed, nextRefresh, err := s.queueStatsCache.Get(r.Context(), s.store.QueueStats)
 	if err != nil {
-		s.serverError(w, "handleStats", err)
+		s.serverError(w, r, "handleStats", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -270,7 +271,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	params := parsePageParams(r)
 	jobs, total, err := s.store.ListQueuePage(r.Context(), params.PageSize, params.Offset, params.Search, "", "")
 	if err != nil {
-		s.serverError(w, "handleQueue", err)
+		s.serverError(w, r, "handleQueue", err)
 		return
 	}
 
@@ -337,7 +338,7 @@ func (s *Server) handlePrioritize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// A store failure is not "not found" (SR-5, follow-up 12).
-		s.serverError(w, "handlePrioritize", fmt.Errorf("prioritize repo %d: %w", repoID, err))
+		s.serverError(w, r, "handlePrioritize", fmt.Errorf("prioritize repo %d: %w", repoID, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -379,12 +380,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// both errors were discarded, so an outage rendered as zero jobs).
 	stats, lastRefreshed, nextRefresh, err := s.queueStatsCache.Get(ctx, s.store.QueueStats)
 	if err != nil {
-		s.serverError(w, "handleDashboard", err)
+		s.serverError(w, r, "handleDashboard", err)
 		return
 	}
 	jobs, total, err := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search, "", "")
 	if err != nil {
-		s.serverError(w, "handleDashboard", err)
+		s.serverError(w, r, "handleDashboard", err)
 		return
 	}
 
@@ -412,12 +413,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	repos, err := s.store.GetReposBatch(ctx, repoIDs)
 	if err != nil {
-		s.serverError(w, "handleDashboard", err)
+		s.serverError(w, r, "handleDashboard", err)
 		return
 	}
 	repoStats, err := s.store.GetRepoStatsBatch(ctx, repoIDs)
 	if err != nil {
-		s.serverError(w, "handleDashboard", err)
+		s.serverError(w, r, "handleDashboard", err)
 		return
 	}
 

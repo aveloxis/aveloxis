@@ -150,7 +150,7 @@ func jsonResponse(w http.ResponseWriter, data any) {
 func (s *Server) handleRepoGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := s.store.GetAllRepoGroups(r.Context())
 	if err != nil {
-		s.serverError(w, "handleRepoGroups", err)
+		s.serverError(w, r, "handleRepoGroups", err)
 		return
 	}
 	jsonResponse(w, groups)
@@ -159,7 +159,7 @@ func (s *Server) handleRepoGroups(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAllRepos(w http.ResponseWriter, r *http.Request) {
 	repos, err := s.store.GetAllRepos(r.Context())
 	if err != nil {
-		s.serverError(w, "handleAllRepos", err)
+		s.serverError(w, r, "handleAllRepos", err)
 		return
 	}
 	jsonResponse(w, repos)
@@ -180,7 +180,7 @@ func (s *Server) handleRepoByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleRepoByID", err)
+		s.serverError(w, r, "handleRepoByID", err)
 		return
 	}
 	jsonResponse(w, repo)
@@ -194,7 +194,7 @@ func (s *Server) handleReposByGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	repos, err := s.store.GetReposByGroup(r.Context(), groupID)
 	if err != nil {
-		s.serverError(w, "handleReposByGroup", err)
+		s.serverError(w, r, "handleReposByGroup", err)
 		return
 	}
 	jsonResponse(w, repos)
@@ -209,7 +209,7 @@ func (s *Server) handleRepoByOwnerName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleRepoByOwnerName", err)
+		s.serverError(w, r, "handleRepoByOwnerName", err)
 		return
 	}
 	jsonResponse(w, repo)
@@ -223,7 +223,7 @@ func (s *Server) handleRepoGroupByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleRepoGroupByName", err)
+		s.serverError(w, r, "handleRepoGroupByName", err)
 		return
 	}
 	jsonResponse(w, group)
@@ -239,12 +239,12 @@ func (s *Server) handleRepoByGroupAndName(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleRepoByGroupAndName", err)
+		s.serverError(w, r, "handleRepoByGroupAndName", err)
 		return
 	}
 	repos, err := s.store.GetReposByGroup(r.Context(), group.ID)
 	if err != nil {
-		s.serverError(w, "handleRepoByGroupAndName", err)
+		s.serverError(w, r, "handleRepoByGroupAndName", err)
 		return
 	}
 	for _, repo := range repos {
@@ -273,7 +273,7 @@ func (s *Server) handleIssuesNew(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.IssuesNew(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleIssuesNew", err)
+		s.serverError(w, r, "handleIssuesNew", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -292,7 +292,7 @@ func (s *Server) handleIssuesClosed(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.IssuesClosed(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleIssuesClosed", err)
+		s.serverError(w, r, "handleIssuesClosed", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -311,7 +311,7 @@ func (s *Server) handleIssuesActive(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.IssuesActive(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleIssuesActive", err)
+		s.serverError(w, r, "handleIssuesActive", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -328,7 +328,7 @@ func (s *Server) handleIssueBacklog(w http.ResponseWriter, r *http.Request) {
 	}
 	count, err := s.store.IssueBacklog(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleIssueBacklog", err)
+		s.serverError(w, r, "handleIssueBacklog", err)
 		return
 	}
 	jsonResponse(w, map[string]int{"issue_backlog": count})
@@ -345,7 +345,7 @@ func (s *Server) handleIssueThroughput(w http.ResponseWriter, r *http.Request) {
 	}
 	throughput, err := s.store.IssueThroughput(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleIssueThroughput", err)
+		s.serverError(w, r, "handleIssueThroughput", err)
 		return
 	}
 	jsonResponse(w, map[string]float64{"throughput": throughput})
@@ -363,7 +363,7 @@ func (s *Server) handleIssueDuration(w http.ResponseWriter, r *http.Request) {
 	begin, end := parseDateRange(r)
 	data, err := s.store.IssueDuration(r.Context(), repoID, begin, end)
 	if err != nil {
-		s.serverError(w, "handleIssueDuration", err)
+		s.serverError(w, r, "handleIssueDuration", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -380,7 +380,7 @@ func (s *Server) handleAvgIssueResolution(w http.ResponseWriter, r *http.Request
 	}
 	avg, err := s.store.AverageIssueResolutionTime(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleAvgIssueResolution", err)
+		s.serverError(w, r, "handleAvgIssueResolution", err)
 		return
 	}
 	jsonResponse(w, map[string]float64{"avg_issue_resolution_days": avg})
@@ -397,7 +397,7 @@ func (s *Server) handleAbandonedIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := s.store.AbandonedIssues(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleAbandonedIssues", err)
+		s.serverError(w, r, "handleAbandonedIssues", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -414,7 +414,7 @@ func (s *Server) handleOpenIssuesCount(w http.ResponseWriter, r *http.Request) {
 	}
 	count, err := s.store.IssueBacklog(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleOpenIssuesCount", err)
+		s.serverError(w, r, "handleOpenIssuesCount", err)
 		return
 	}
 	jsonResponse(w, map[string]int{"open_count": count})
@@ -436,7 +436,7 @@ func (s *Server) handleClosedIssuesCount(w http.ResponseWriter, r *http.Request)
 		SELECT COUNT(issue_id)
 		FROM aveloxis_data.issues
 		WHERE repo_id = $1 AND issue_state = 'closed' AND pull_request IS NULL`, repoID).Scan(&count); err != nil {
-		s.serverError(w, "handleClosedIssuesCount", err)
+		s.serverError(w, r, "handleClosedIssuesCount", err)
 		return
 	}
 	jsonResponse(w, map[string]int{"closed_count": count})
@@ -459,7 +459,7 @@ func (s *Server) handlePRsNew(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.PRsNew(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handlePRsNew", err)
+		s.serverError(w, r, "handlePRsNew", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -483,7 +483,7 @@ func (s *Server) handleReviewsAccepted(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.ReviewsAccepted(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleReviewsAccepted", err)
+		s.serverError(w, r, "handleReviewsAccepted", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -502,7 +502,7 @@ func (s *Server) handleReviewsDeclined(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.ReviewsDeclined(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleReviewsDeclined", err)
+		s.serverError(w, r, "handleReviewsDeclined", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -520,7 +520,7 @@ func (s *Server) handleReviewDuration(w http.ResponseWriter, r *http.Request) {
 	begin, end := parseDateRange(r)
 	data, err := s.store.ReviewDuration(r.Context(), repoID, begin, end)
 	if err != nil {
-		s.serverError(w, "handleReviewDuration", err)
+		s.serverError(w, r, "handleReviewDuration", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -543,7 +543,7 @@ func (s *Server) handleCommitters(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.Committers(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleCommitters", err)
+		s.serverError(w, r, "handleCommitters", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -562,7 +562,7 @@ func (s *Server) handleCodeChanges(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.CodeChanges(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleCodeChanges", err)
+		s.serverError(w, r, "handleCodeChanges", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -581,7 +581,7 @@ func (s *Server) handleCodeChangesLines(w http.ResponseWriter, r *http.Request) 
 	period := parsePeriod(r)
 	data, err := s.store.CodeChangesLines(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleCodeChangesLines", err)
+		s.serverError(w, r, "handleCodeChangesLines", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -603,7 +603,7 @@ func (s *Server) handleContributors(w http.ResponseWriter, r *http.Request) {
 	begin, end := parseDateRange(r)
 	data, err := s.store.Contributors(r.Context(), repoID, begin, end)
 	if err != nil {
-		s.serverError(w, "handleContributors", err)
+		s.serverError(w, r, "handleContributors", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -622,7 +622,7 @@ func (s *Server) handleContributorsNew(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.ContributorsNew(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleContributorsNew", err)
+		s.serverError(w, r, "handleContributorsNew", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -643,7 +643,7 @@ func (s *Server) handleStars(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := s.store.StarsTimeSeries(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleStars", err)
+		s.serverError(w, r, "handleStars", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -660,7 +660,7 @@ func (s *Server) handleStarsCount(w http.ResponseWriter, r *http.Request) {
 	}
 	count, name, err := s.store.LatestCount(r.Context(), repoID, "star_count")
 	if err != nil {
-		s.serverError(w, "handleStarsCount", err)
+		s.serverError(w, r, "handleStarsCount", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"repo_name": name, "stars": count})
@@ -677,7 +677,7 @@ func (s *Server) handleForks(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := s.store.ForksTimeSeries(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleForks", err)
+		s.serverError(w, r, "handleForks", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -694,7 +694,7 @@ func (s *Server) handleForkCount(w http.ResponseWriter, r *http.Request) {
 	}
 	count, name, err := s.store.LatestCount(r.Context(), repoID, "fork_count")
 	if err != nil {
-		s.serverError(w, "handleForkCount", err)
+		s.serverError(w, r, "handleForkCount", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"repo_name": name, "forks": count})
@@ -717,7 +717,7 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 		WHERE ri.repo_id = $1
 		ORDER BY ri.data_collection_date`, repoID)
 	if err != nil {
-		s.serverError(w, "handleWatchers", err)
+		s.serverError(w, r, "handleWatchers", err)
 		return
 	}
 	defer rows.Close()
@@ -727,13 +727,13 @@ func (s *Server) handleWatchers(w http.ResponseWriter, r *http.Request) {
 		var value int
 		var name string
 		if err := rows.Scan(&date, &value, &name); err != nil {
-			s.serverError(w, "handleWatchers", err)
+			s.serverError(w, r, "handleWatchers", err)
 			return
 		}
 		result = append(result, map[string]any{"date": date, "watchers": value, "repo_name": name})
 	}
 	if err := rows.Err(); err != nil {
-		s.serverError(w, "handleWatchers", err)
+		s.serverError(w, r, "handleWatchers", err)
 		return
 	}
 	jsonResponse(w, result)
@@ -750,7 +750,7 @@ func (s *Server) handleWatchersCount(w http.ResponseWriter, r *http.Request) {
 	}
 	count, name, err := s.store.LatestCount(r.Context(), repoID, "watcher_count")
 	if err != nil {
-		s.serverError(w, "handleWatchersCount", err)
+		s.serverError(w, r, "handleWatchersCount", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"repo_name": name, "watchers": count})
@@ -767,7 +767,7 @@ func (s *Server) handleLanguages(w http.ResponseWriter, r *http.Request) {
 	}
 	lang, err := s.store.Languages(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleLanguages", err)
+		s.serverError(w, r, "handleLanguages", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"repo_id": repoID, "primary_language": lang})
@@ -803,7 +803,7 @@ func (s *Server) handleDeps(w http.ResponseWriter, r *http.Request) {
 		data, err = s.store.DepsFiltered(r.Context(), repoID, licFilter, scope == "runtime")
 	}
 	if err != nil {
-		s.serverError(w, "handleDeps", err)
+		s.serverError(w, r, "handleDeps", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -826,7 +826,7 @@ func (s *Server) handleRepoMessages(w http.ResponseWriter, r *http.Request) {
 	period := parsePeriod(r)
 	data, err := s.store.RepoMessages(r.Context(), repoID, period, begin, end)
 	if err != nil {
-		s.serverError(w, "handleRepoMessages", err)
+		s.serverError(w, r, "handleRepoMessages", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -847,7 +847,7 @@ func (s *Server) handleReleases(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := s.store.Releases(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleReleases", err)
+		s.serverError(w, r, "handleReleases", err)
 		return
 	}
 	jsonResponse(w, data)
@@ -868,7 +868,7 @@ func (s *Server) handleProjectLanguages(w http.ResponseWriter, r *http.Request) 
 	}
 	data, err := s.store.ProjectLanguages(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleProjectLanguages", err)
+		s.serverError(w, r, "handleProjectLanguages", err)
 		return
 	}
 	jsonResponse(w, data)

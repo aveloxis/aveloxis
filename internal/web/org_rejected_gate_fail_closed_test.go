@@ -29,7 +29,10 @@ func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
 	if strings.Contains(between, `== nil &&`) {
 		t.Error("scanOrgRepos reads a GetGroupStatus error as \"not rejected\"; an error must stop the scan (SR-5)")
 	}
-	if !strings.Contains(between, "!= nil") || !strings.Contains(between, ".logger.Error(") || !strings.Contains(between, "return") {
+	// NET-6 review r5 F2: the ERROR goes through httpserver.LogFailure, which
+	// keeps the level on a live context (Debug only when the scan's context
+	// is done — a shutdown, not a failure).
+	if !strings.Contains(between, "!= nil") || !strings.Contains(between, "httpserver.LogFailure(ctx, s.logger, slog.LevelError,") || !strings.Contains(between, "return") {
 		t.Error("scanOrgRepos must handle a GetGroupStatus error before the \"rejected\" comparison: log at ERROR and return")
 	}
 }
@@ -309,10 +312,26 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 			t.Errorf("createSession must take (userID int, loginName, avatarURL, provider string, isAdmin bool) — five parameters, the last the bare flag; got %d", len(params))
 		}
 	}
+	// NET-6 review r3 F1: the request's end is classified by
+	// httpserver.RequestEnded(<err>) — the one classifier (client gone, or
+	// http_timeout_seconds fired); the bare context.Canceled test it replaced
+	// logged a bound cut at ERROR.
 	isCanceledCheck := func(e ast.Expr, errName string) bool {
 		c, ok := e.(*ast.CallExpr)
 		if !ok {
 			return false
+		}
+		if sel, ok := c.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "RequestEnded" && len(c.Args) == 2 {
+			// httpserver.RequestEnded(r.Context(), <err>) — decided by the
+			// request's context (NET-6 review r5 F1).
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "httpserver" {
+				ctxCall, ok := c.Args[0].(*ast.CallExpr)
+				if !ok {
+					return false
+				}
+				ctxSel, ok := ctxCall.Fun.(*ast.SelectorExpr)
+				return ok && ctxSel.Sel.Name == "Context" && isIdent(ctxSel.X, "r") && isIdent(c.Args[1], errName)
+			}
 		}
 		sel, ok := c.Fun.(*ast.SelectorExpr)
 		if !ok || sel.Sel.Name != "Is" || len(c.Args) != 2 {
@@ -511,7 +530,7 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		}
 		importNames[name] = true
 	}
-	allowedPkgNames := map[string]bool{"context.Canceled": true, "errors.Is": true, "http.Error": true, "http.Redirect": true, "http.SetCookie": true, "http.StatusFound": true, "http.StatusInternalServerError": true, "mailer.IsSkip": true}
+	allowedPkgNames := map[string]bool{"context.Canceled": true, "httpserver.RequestEnded": true, "errors.Is": true, "http.Error": true, "http.Redirect": true, "http.SetCookie": true, "http.StatusFound": true, "http.StatusInternalServerError": true, "mailer.IsSkip": true}
 	allowedBareCalls := map[string]bool{"truncateForLog": true, "len": true, "cap": true, "append": true, "min": true, "max": true, "string": true}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
@@ -725,7 +744,7 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 	for name, at := range map[string]int{"user upsert": upsert, "admin-flag lookup": lookup} {
 		next, ok := stmts[at+1].(*ast.IfStmt)
 		if !ok || next.Init != nil || next.Else != nil || !isCanceledCheck(next.Cond, errVar(stmts[at])) || !endsInReturn(next.Body) {
-			t.Errorf("the statement after the %s must be `if errors.Is(<its own error variable>, context.Canceled) { ...; return }` with no init clause and no else (round 12: an `else if err != nil { return }` refused the login) — a browser that left mid-callback is not a failure", name)
+			t.Errorf("the statement after the %s must be `if httpserver.RequestEnded(r.Context(), <its own error variable>) { ...; return }` with no init clause and no else (round 12: an `else if err != nil { return }` refused the login) — a browser that left mid-callback is not a failure", name)
 			continue
 		}
 		if !onlyLogsThenReturns(next.Body) {

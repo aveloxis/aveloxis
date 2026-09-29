@@ -61,7 +61,7 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.store.TopContributors(r.Context(), repoID, since, until, limit, excludeBots)
 	if err != nil {
-		s.serverError(w, "handleTopContributors", err)
+		s.serverError(w, r, "handleTopContributors", err)
 		return
 	}
 
@@ -73,7 +73,7 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
-		s.serverError(w, "handleTopContributors", err)
+		s.serverError(w, r, "handleTopContributors", err)
 		return
 	}
 	s.respCache.put(key, body)

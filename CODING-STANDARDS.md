@@ -117,6 +117,7 @@ Every finding gets exactly one severity. Severity orders the report; it does not
   - durations: a `time.Duration` value under `"duration"` (or `"elapsed"`, `"wait"`, `"bound"` where more specific). (The `duration_seconds` example in `code-conventions.md` predates this and should be aligned.)
 - **LOG-4** Levels: `Debug` for noisy per-row detail; `Info` for per-cycle and per-repository lifecycle events; `Warn` for degraded but recoverable; `Error` for data integrity at risk or operator action needed. Per-item logging inside a loop over thousands of items is aggregated into one line per batch.
 - **LOG-5** Never log secrets, tokens, auth headers, connection strings with passwords, or URLs carrying credentials (redacted through `platform.RedactURLUserinfo`; enforced by the URL redaction tripwire). User-derived strings pass through `logSafe`/`truncateForLog`. Contributor email addresses are collected data but are not logged at `Warn` or above without a reason.
+- **LOG-7** (house) On request paths (api, web, monitor), a failure is logged through `httpserver.LogFailure(ctx, logger, level, err, …)` or behind `httpserver.RequestEnded(r.Context(), err)`: the request's own end — decided by the request's **context**, never by the error's type — is Debug, and the same error on a live request keeps its level (enforced: `TestRequestHandlersLogThroughLogFailure`, `TestNoEndpointBlamesTheRequestsEnd`). Classifying by `errors.Is(err, context.DeadlineExceeded)` read a database connect timeout as "the client left" (SR-5).
 - **LOG-6** (house) Log the **effective** value a component uses, after any clamp or default, at the point of use (SR-10). Shutdown is not a failure: a cancellation is classified and returned without an error-level log (the shutdown classification ratchet, `scripts/shutdown_classification_baseline.txt`, is empty and shrink-only).
 
 ## 10. Configuration and secrets (CFG)
@@ -148,7 +149,7 @@ Every finding gets exactly one severity. Severity orders the report; it does not
 - **NET-3** Check status codes explicitly; a non-2xx is not an error from `Do`. Classify definitive answers through the shared rules (`platform.IsRepoGoneStatus` for 404/410/451; `platform.IsDefinitiveAnswer`); treating a non-2xx as success is a BLOCKER.
 - **NET-4** (house) Retries use exponential backoff with jitter and a maximum attempt count. Retryable: 429, 5xx, connection resets and truncated bodies, GitHub's in-body GraphQL execution timeout, and GitHub rate-limit 403s, which the `KeyPool` handles (§20: a refusal benches the key and rotates; a secondary limit rests the key and paces). Definitive, never retried: 400, 404, 410, 422, 451. Read-only GraphQL POSTs count as idempotent. Any other 4xx retry is a MAJOR.
 - **NET-5** Pagination has a termination guarantee beyond "no next link" (`ErrPaginationLimitExceeded`, cycle detection); incremental walks compare `Before(since)`, never `!After`.
-- **NET-6** HTTP servers set `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` and `IdleTimeout`, and shut down through `Server.Shutdown(ctx)` with a deadline on SIGTERM. (Known gap to fix: the three `http.Server` literals in `cmd/aveloxis/main.go` set no timeouts.)
+- **NET-6** HTTP servers are built by `internal/httpserver` (every timeout from `http_timeout_seconds`, default 180 s; enforced: `TestHTTPServersComeFromHTTPServer`), and shut down through `Server.Shutdown(ctx)` with a deadline on SIGTERM. (house) Aveloxis's bound is a backstop, never the shortest in the chain: latency is tuned in nginx, below it.
 
 ## 13. Testing (TEST)
 
@@ -242,7 +243,6 @@ The standing rules, restated for reviewers. Each has an enforcing test in `scrip
 
 A conformance scan of the tree against this document found these. They are recorded work, not findings against an unrelated change; a change that touches one of these sites fixes it (L11).
 
-- **NET-6**: the three `http.Server` literals in `cmd/aveloxis/main.go` (monitor, api, web) set no timeouts.
 - **DB-2**: `rows.Err()` unchecked after iteration in `internal/db/add_requests.go`, `affiliations.go` (which also swallows query and scan errors), `affiliations_populate.go`, `data_verify.go`, `distribution_store.go`, `internal/collector/data_verify_groundtruth.go`, `cmd/aveloxis/shadow_diff.go`, `scripts/loadorgs`.
 - **ERR-1**: ignored store writes in `internal/web/server.go` (`RemoveRepoFromGroup`), `internal/scheduler/mailinglist_wiring.go` (`MarkSenderResolveAttempt`), `db_health.go`, `internal/db/session_tokens.go`; ignored file writes or writer closes in `scancode_worker.go`, `tools.go` (the shell-profile append), `long_jobs_watchdog.go`.
 - **ERR-3 / SR-5**: `internal/collector/commit_resolver.go` matches `err.Error()` for "not found" where `platform.ErrNotFound` exists.

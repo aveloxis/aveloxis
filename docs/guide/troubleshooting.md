@@ -1326,6 +1326,47 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 
 ---
 
+## Charts or pages time out (504 / 502 in the browser)
+
+**Symptom:** A repository or comparison page for a large repository shows
+no charts, or the browser gets a 504 Gateway Timeout or a 502 Bad Gateway.
+
+**Cause:** Some API queries on large repositories take tens of seconds
+(on the reference fleet, statements from the api reached 60 s). Every hop
+in front of the query has a timeout, and the shortest one answers:
+
+1. **nginx** — `proxy_read_timeout` (and `proxy_send_timeout`,
+   `send_timeout`, `client_header_timeout`, `client_body_timeout`) default
+   to **60 s**. A cut here is a **504** logged in nginx's error log
+   ("upstream timed out").
+2. **The web GUI's `/api` proxy** (when nginx sends `/api/` to the web
+   rather than straight to the api) has no wait of its own: the web's
+   request bound (item 3) governs it, so a slow chart behind the web is
+   a **503** with the WARN in `web.log` (its path is the `/api/…` URL); the
+   api's query is cancelled with it, and `api.log` has no line for it. A **502** "API
+   backend unavailable" with an `api reverse proxy error` WARN in
+   `web.log` means the api is not answering at all (not running, or
+   `web.api_internal_url` points at the wrong port). Before 0.29.69 this
+   proxy gave up after a hard-coded 15 s — the shortest bound in the chain.
+3. **The monitor, api and web servers** bound each request by
+   `http_timeout_seconds` (default **180 s**). Past it the request's
+   database query is cancelled, the client gets a **503** "request exceeded
+   http_timeout_seconds", and a WARN `request exceeded http_timeout_seconds`
+   in `api.log`, `web.log` or `aveloxis.log` (the monitor) names the path
+   and the time it took.
+
+**Solution:** Keep Aveloxis's bound the **longest** and tune latency in
+nginx, where a timeout is logged and easy to see: set nginx's timeouts
+for the Aveloxis `location` blocks **below** `http_timeout_seconds` (for
+example `proxy_read_timeout 120s;` against the 180 s default). Raise
+`http_timeout_seconds` in `aveloxis.json` only when a legitimate request
+needs longer than nginx allows, and restart `web`, `api` and `serve` (the
+monitor) to apply it. A query that is regularly this slow is also worth a
+report: the listing surfaces read cached counts, and a slow chart query
+usually means a missing index.
+
+---
+
 ## Deadlock errors
 
 **Symptom:** Log shows `ERROR: deadlock detected (SQLSTATE 40P01)`.

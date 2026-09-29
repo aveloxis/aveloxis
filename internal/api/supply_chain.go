@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
 
 // Supply-chain endpoints (v0.29.60): the package-centred view of the
@@ -74,7 +76,7 @@ func (s *Server) resolveSupplyChainScope(w http.ResponseWriter, r *http.Request,
 		return supplyChainScope{}, false
 	}
 	if err != nil {
-		s.logger.Warn("supply-chain group scope failed", "group_id", gid, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "supply-chain group scope failed", "group_id", gid, "error", err)
 		http.Error(w, "group lookup failed", http.StatusInternalServerError)
 		return supplyChainScope{}, false
 	}
@@ -132,7 +134,7 @@ func (s *Server) handleSupplyChainPackages(w http.ResponseWriter, r *http.Reques
 	}
 	page, err := s.store.ListPackageExposure(r.Context(), query)
 	if err != nil {
-		s.logger.Warn("supply-chain package list failed", "scope", scope.Kind, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "supply-chain package list failed", "scope", scope.Kind, "error", err)
 		http.Error(w, "package list failed", http.StatusInternalServerError)
 		return
 	}
@@ -193,25 +195,25 @@ func (s *Server) handleSupplyChainPackage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		s.logger.Warn("supply-chain package profile failed", "ecosystem", ecosystem, "package", name, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "supply-chain package profile failed", "ecosystem", ecosystem, "package", name, "error", err)
 		http.Error(w, "package profile failed", http.StatusInternalServerError)
 		return
 	}
 	advisories, err := s.store.GetPackageAdvisories(ctx, ecosystem, name, scope.ids)
 	if err != nil {
-		s.logger.Warn("supply-chain advisories failed", "ecosystem", ecosystem, "package", name, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "supply-chain advisories failed", "ecosystem", ecosystem, "package", name, "error", err)
 		http.Error(w, "package advisories failed", http.StatusInternalServerError)
 		return
 	}
 	versions, err := s.store.GetPackageVersionsInUse(ctx, ecosystem, name, scope.ids)
 	if err != nil {
-		s.logger.Warn("supply-chain versions failed", "ecosystem", ecosystem, "package", name, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "supply-chain versions failed", "ecosystem", ecosystem, "package", name, "error", err)
 		http.Error(w, "package versions failed", http.StatusInternalServerError)
 		return
 	}
 	repos, err := s.store.GetPackageExposedRepos(ctx, ecosystem, name, scope.ids, repoLimit)
 	if err != nil {
-		s.logger.Warn("supply-chain repos failed", "ecosystem", ecosystem, "package", name, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "supply-chain repos failed", "ecosystem", ecosystem, "package", name, "error", err)
 		http.Error(w, "package repositories failed", http.StatusInternalServerError)
 		return
 	}

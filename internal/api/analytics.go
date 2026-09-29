@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
 
 // MetricDef is one catalog entry — served verbatim so the GUI's
@@ -236,7 +238,7 @@ func (s *Server) recordComparison(r *http.Request, entities []entity) {
 		return
 	}
 	if _, err := s.store.RecordComparisonRepos(r.Context(), info.UserID, repoIDs); err != nil {
-		s.logger.Warn("comparison record failed", "user_id", info.UserID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "comparison record failed", "user_id", info.UserID, "error", err)
 	}
 }
 
@@ -252,7 +254,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		var err error
 		ids, err = s.store.ResolveOrgRepos(r.Context(), e.Host, e.Login)
 		if err != nil {
-			s.serverError(w, "resolveEntityRepos", err)
+			s.serverError(w, r, "resolveEntityRepos", err)
 			return nil, "", false
 		}
 	}
@@ -277,7 +279,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 				// (SR-5; batch 5b review round 2): it read as an unlogged
 				// 403 telling an entitled user their repository is out of
 				// scope.
-				s.serverError(w, "resolveEntityRepos", err)
+				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false
 			}
 			if repos[collected[0]] == nil {
@@ -294,7 +296,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 				}
 			}
 			if err != nil {
-				s.serverError(w, "resolveEntityRepos", err)
+				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false
 			}
 			// Scope changed — the cached token validation must re-resolve
@@ -530,7 +532,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		entitySince := since
 		dataStart := ""
 		if fa, ok, err := s.entityFirstActivity(r.Context(), ids); err != nil {
-			s.logger.Warn("first-activity floor lookup failed — serving unclamped window",
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "first-activity floor lookup failed — serving unclamped window",
 				"entity", logSafe(e.Label), "error", logSafe(err.Error()))
 		} else if ok {
 			dataStart = fa.Format("2006-01-02")
@@ -547,7 +549,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		// points, nil parts).
 		points, parts, err := s.metricSeriesAndParts(r, ids, metric, bucket, entitySince, until, retentionThreshold)
 		if err != nil {
-			s.logger.Error("compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "series computation failed", http.StatusInternalServerError)
 			return
 		}
@@ -763,7 +765,7 @@ func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
 			sv, err = s.store.LicenseCoverageSnapshot(r.Context(), ids)
 		}
 		if err != nil {
-			s.logger.Error("snapshot failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "snapshot failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "snapshot computation failed", http.StatusInternalServerError)
 			return
 		}
@@ -797,7 +799,7 @@ func (s *Server) handleEntitiesSearch(w http.ResponseWriter, r *http.Request) {
 
 	repos, err := s.store.SearchRepos(r.Context(), q, 20)
 	if err != nil {
-		s.serverError(w, "handleEntitiesSearch", err)
+		s.serverError(w, r, "handleEntitiesSearch", err)
 		return
 	}
 	type repoResult struct {
@@ -816,7 +818,7 @@ func (s *Server) handleEntitiesSearch(w http.ResponseWriter, r *http.Request) {
 
 	orgs, err := s.store.SearchOrgs(r.Context(), q, 10)
 	if err != nil {
-		s.serverError(w, "handleEntitiesSearch", err)
+		s.serverError(w, r, "handleEntitiesSearch", err)
 		return
 	}
 	type orgResult struct {

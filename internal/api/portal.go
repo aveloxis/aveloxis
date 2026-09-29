@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/safego"
@@ -50,7 +52,7 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 		}
 		if !errors.Is(err, errInvalidToken) {
 			// The store failed: 503, not "sign in again" (follow-up 6).
-			s.auth.refuseStoreError(w, err)
+			s.auth.refuseStoreError(w, r, err)
 			return authInfo{}, false
 		}
 	}
@@ -120,7 +122,7 @@ func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
 	}
 	groups, err := s.store.GetUserGroups(r.Context(), info.UserID)
 	if err != nil {
-		s.serverError(w, "handleGroupsList", err)
+		s.serverError(w, r, "handleGroupsList", err)
 		return
 	}
 	out := make([]groupJSON, 0, len(groups))
@@ -148,7 +150,7 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.store.CreateUserGroup(r.Context(), info.UserID, strings.TrimSpace(req.Name))
 	if err != nil {
-		s.serverError(w, "handleGroupCreate", err)
+		s.serverError(w, r, "handleGroupCreate", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"group_id": id})
@@ -198,7 +200,7 @@ func (s *Server) handleGroupRepos(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The store returns every failure but "not yours" since v0.29.68
 		// (follow-up 12): a 403 with the store's text misfiled it.
-		s.serverError(w, "handleGroupRepos", err)
+		s.serverError(w, r, "handleGroupRepos", err)
 		return
 	}
 	if repos == nil {
@@ -241,7 +243,7 @@ func (s *Server) handleGroupOrgs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleGroupOrgs", err)
+		s.serverError(w, r, "handleGroupOrgs", err)
 		return
 	}
 	type orgJSON struct {
@@ -373,7 +375,7 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			// A server-side failure is a 500 without its database text
 			// (Copilot review of PR #207 on d436880: every error was a 400
 			// carrying it).
-			s.logger.Warn("group add failed", "group_id", groupID, "user_id", info.UserID, "kind", req.Kind, "error", err)
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "group add failed", "group_id", groupID, "user_id", info.UserID, "kind", req.Kind, "error", err)
 			http.Error(w, "could not add to the group right now; try again", http.StatusInternalServerError)
 		}
 		return
@@ -402,7 +404,7 @@ func (s *Server) handleGroupPendingAdds(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		// No database text in the body (round-25 review: the 403 showed a
 		// non-admin the database user, name, host and port during an outage).
-		s.logger.Warn("group pending adds failed", "group_id", groupID, "user_id", info.UserID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "group pending adds failed", "group_id", groupID, "user_id", info.UserID, "error", err)
 		http.Error(w, "could not load the group's pending additions right now; try again", http.StatusInternalServerError)
 		return
 	}
@@ -458,7 +460,7 @@ func (s *Server) handleAdminAddRequests(w http.ResponseWriter, r *http.Request) 
 	}
 	pending, err := s.store.ListPendingAddRequests(r.Context())
 	if err != nil {
-		s.serverError(w, "handleAdminAddRequests", err)
+		s.serverError(w, r, "handleAdminAddRequests", err)
 		return
 	}
 	type reqJSON struct {
@@ -526,7 +528,7 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		// One failure, one line (PR #218 review C15): serverError logs it at
 		// ERROR, carrying the request and decision in the wrapped error.
-		s.serverError(w, "handleAdminAddRequestDecision", fmt.Errorf("request %d, decision %s: %w", requestID, r.PathValue("decision"), err))
+		s.serverError(w, r, "handleAdminAddRequestDecision", fmt.Errorf("request %d, decision %s: %w", requestID, r.PathValue("decision"), err))
 		return
 	}
 	// Re-approving an approved repos request resumes its processing pass.
@@ -584,7 +586,7 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
-		s.serverError(w, "handleAdminUsers", err)
+		s.serverError(w, r, "handleAdminUsers", err)
 		return
 	}
 	type userJSON struct {
@@ -632,7 +634,7 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 			http.Error(w, db.ErrLastAdmin.Error(), http.StatusConflict)
 			return
 		}
-		s.serverError(w, "handleAdminSetUserAdmin", err)
+		s.serverError(w, r, "handleAdminSetUserAdmin", err)
 		return
 	}
 	// Role changed — drop the token-validation cache so the target's
@@ -647,7 +649,7 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
 	}
 	pending, err := s.store.ListPendingGroups(r.Context())
 	if err != nil {
-		s.serverError(w, "handleAdminPendingGroups", err)
+		s.serverError(w, r, "handleAdminPendingGroups", err)
 		return
 	}
 	type pendingJSON struct {
@@ -692,7 +694,7 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		// One failure, one line (PR #218 review C15): serverError logs it at
 		// ERROR, carrying the group and decision in the wrapped error.
-		s.serverError(w, "handleAdminGroupDecision", fmt.Errorf("group %d, decision %s: %w", groupID, decision, err))
+		s.serverError(w, r, "handleAdminGroupDecision", fmt.Errorf("group %d, decision %s: %w", groupID, decision, err))
 		return
 	}
 	// v0.27.20 parity fix: the web handler has emailed the requester
@@ -719,7 +721,7 @@ func (s *Server) handleAdminMonitorStats(w http.ResponseWriter, r *http.Request)
 	}
 	stats, err := s.store.QueueStats(r.Context())
 	if err != nil {
-		s.serverError(w, "handleAdminMonitorStats", err)
+		s.serverError(w, r, "handleAdminMonitorStats", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"queue": stats})
@@ -754,7 +756,7 @@ func (s *Server) handleAdminMonitorQueue(w http.ResponseWriter, r *http.Request)
 		sortDir = "asc"
 	}
 	if err != nil {
-		s.serverError(w, "handleAdminMonitorQueue", err)
+		s.serverError(w, r, "handleAdminMonitorQueue", err)
 		return
 	}
 	// Attach repo names — ids alone mean nothing to users (operator) —
@@ -819,7 +821,7 @@ func (s *Server) handleAdminPrioritizeRepo(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "repo not found in queue", http.StatusNotFound)
 			return
 		}
-		s.serverError(w, "handleAdminPrioritizeRepo", err)
+		s.serverError(w, r, "handleAdminPrioritizeRepo", err)
 		return
 	}
 	jsonResponse(w, map[string]any{"ok": true, "repo_id": repoID})
@@ -853,7 +855,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 			_, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
 		}
 		if gerr != nil {
-			s.serverError(w, "handleStarRepo", gerr)
+			s.serverError(w, r, "handleStarRepo", gerr)
 			return
 		}
 		addedToGroup = db.StarredGroupName
@@ -867,7 +869,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		err = s.store.StarRepo(r.Context(), info.UserID, repoID)
 	}
 	if err != nil {
-		s.serverError(w, "handleStarRepo", err)
+		s.serverError(w, r, "handleStarRepo", err)
 		return
 	}
 	s.homeCache.invalidate(info.UserID)
@@ -895,7 +897,7 @@ func (s *Server) handleRepoStarState(w http.ResponseWriter, r *http.Request) {
 	}
 	starred, err := s.store.IsRepoStarred(r.Context(), info.UserID, repoID)
 	if err != nil {
-		s.logger.Error("star state read failed", "user_id", info.UserID, "repo_id", repoID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "star state read failed", "user_id", info.UserID, "repo_id", repoID, "error", err)
 		http.Error(w, "could not read star state", http.StatusInternalServerError)
 		return
 	}
@@ -926,7 +928,7 @@ func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, 
 		// Fail CLOSED like the sharedWithMeStore precedent — a bare
 		// Server without the seam must never nil-panic (review
 		// 2026-08-31 #7).
-		s.serverError(w, "serveHomeRepos", errors.New("home loader not configured"))
+		s.serverError(w, r, "serveHomeRepos", errors.New("home loader not configured"))
 		return
 	}
 	if limit <= 0 {
@@ -960,7 +962,7 @@ func (s *Server) serveHomeRepos(w http.ResponseWriter, r *http.Request, userID, 
 	gen := s.homeCache.generation(userID)
 	repos, err := s.homeLoader(r.Context(), userID, limit)
 	if err != nil {
-		s.serverError(w, "serveHomeRepos", err)
+		s.serverError(w, r, "serveHomeRepos", err)
 		return
 	}
 	body, _ = json.Marshal(map[string]any{"repos": repos})

@@ -27,6 +27,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -151,13 +152,18 @@ func New(store *db.PostgresStore, cfg config.WebConfig, ghKeys *platform.KeyPool
 	}
 	if target, err := url.Parse(apiURL); err == nil && target.Host != "" {
 		rp := httputil.NewSingleHostReverseProxy(target)
-		rp.Transport = &http.Transport{
-			// Short timeouts so a dead api process fails fast instead of
-			// blocking browser requests. The browser sees 502 Bad Gateway.
-			ResponseHeaderTimeout: 15 * time.Second,
-			IdleConnTimeout:       60 * time.Second,
-		}
+		// No response-header wait of its own (NET-6 review r2 F1): the
+		// proxied request carries the web request's context, so the web's
+		// http_timeout_seconds bound (httpserver.Bound) governs a slow api;
+		// a separate wait of the same length only raced it. A dead api
+		// fails fast at the dial (connection refused → 502).
+		rp.Transport = &http.Transport{IdleConnTimeout: 60 * time.Second}
 		rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if r.Context().Err() != nil {
+				// The web's bound fired (its WARN says so) or the client
+				// left: the api is not at fault, and nobody reads a 502.
+				return
+			}
 			// r.URL.Path is attacker-controlled — sanitize before logging.
 			logger.Warn("api reverse proxy error", "path", truncateForLog([]byte(r.URL.Path), 200), "error", err)
 			http.Error(w, "API backend unavailable", http.StatusBadGateway)
@@ -452,7 +458,8 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 // logging is the only possible action — but it must happen.
 func (s *Server) render(w http.ResponseWriter, name string, data any) {
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
-		s.logger.Error("template render failed", "template", name, "error", err)
+		// No request here: a render refused after the bound is http.ErrHandlerTimeout, which RequestEnded recognises on any context.
+		httpserver.LogFailure(context.Background(), s.logger, slog.LevelError, err, "template render failed", "template", name, "error", err)
 	}
 }
 
@@ -581,7 +588,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	token, err := s.ghOAuth.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
-		s.logOAuthFailure("github", "exchange", err)
+		s.logOAuthFailure(r.Context(), "github", "exchange", err)
 		http.Error(w, "OAuth exchange failed", http.StatusInternalServerError)
 		return
 	}
@@ -597,7 +604,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	userReq.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion) // every GitHub REST request pins the version (worklist item 15)
 	resp, err := client.Do(userReq)
 	if err != nil {
-		s.logOAuthFailure("github", "user", err)
+		s.logOAuthFailure(r.Context(), "github", "user", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}
@@ -608,7 +615,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// had sent it (PR #218 review C9).
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		s.logOAuthFailure("github", "user", err)
+		s.logOAuthFailure(r.Context(), "github", "user", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}
@@ -647,7 +654,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// nothing, we fall through to the email-prompt flow at
 	// /account/email.
 	if ghUser.Email == "" {
-		if email := fetchGitHubPrimaryEmail(ctx, client, s.logger); email != "" {
+		if email := fetchGitHubPrimaryEmail(r.Context(), ctx, client, s.logger); email != "" {
 			ghUser.Email = email
 		}
 	}
@@ -680,7 +687,7 @@ func (s *Server) StampLegacyGitLabAccounts(ctx context.Context) {
 		return // a stop during start-up, not a failed stamp (round 4); the next start stamps
 	}
 	if err != nil {
-		s.logger.Error("recording the GitLab instance on accounts from before 0.29.69 failed — their owners cannot sign in through GitLab until a later web start stamps them", "instance", db.GitLabOAuthHost(s.cfg.GitLabBaseURL), "error", err)
+		httpserver.LogFailure(ctx, s.logger, slog.LevelError, err, "recording the GitLab instance on accounts from before 0.29.69 failed — their owners cannot sign in through GitLab until a later web start stamps them", "instance", db.GitLabOAuthHost(s.cfg.GitLabBaseURL), "error", err)
 		return
 	}
 	if n > 0 {
@@ -693,9 +700,14 @@ func (s *Server) StampLegacyGitLabAccounts(ctx context.Context) {
 // returned without a log line, so the callback bound expired silently). A
 // browser that left mid-callback is not a failure and is not logged; an
 // expired bound says so. The browser is shown a fixed message, never err.
-func (s *Server) logOAuthFailure(provider, phase string, err error) {
+func (s *Server) logOAuthFailure(reqCtx context.Context, provider, phase string, err error) {
 	switch {
-	case errors.Is(err, context.Canceled):
+	case reqCtx.Err() != nil:
+		// The request itself ended — the client left, or http_timeout_seconds
+		// fired (its WARN reports it) — so this is not the callback bound's
+		// expiry (NET-6 review r3 F3: with the knob under 30 s, this logged
+		// ERROR naming the wrong bound).
+		s.logger.Debug("oauth callback: the request ended before the forge answered", "provider", provider, "phase", phase, "error", err)
 		return
 	case errors.Is(err, context.DeadlineExceeded):
 		s.logger.Error("oauth callback: the forge did not answer within the callback bound",
@@ -717,7 +729,7 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	// another GitLab instance as returning). Only a created account gets
 	// the welcome.
 	userID, wasNewUser, err := s.store.SignInOAuthUser(r.Context(), info)
-	if errors.Is(err, context.Canceled) {
+	if httpserver.RequestEnded(r.Context(), err) {
 		return // the browser left mid-callback: nothing to serve, not a failure
 	}
 	if err != nil {
@@ -744,7 +756,7 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	// and the session is a non-admin one: the user can sign in again once
 	// the store answers (worklist follow-up 6).
 	isAdmin, err := s.store.IsUserAdmin(r.Context(), userID)
-	if errors.Is(err, context.Canceled) {
+	if httpserver.RequestEnded(r.Context(), err) {
 		return // the browser left mid-callback: nothing to serve, not a failure
 	}
 	if err != nil {
@@ -767,16 +779,19 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 // The user:email OAuth scope must be requested by ghOAuth — without
 // it, /user/emails returns 404. The scope IS requested as of v0.19.0;
 // see ghOAuth.Scopes in NewServer.
-func fetchGitHubPrimaryEmail(ctx context.Context, client *http.Client, logger *slog.Logger) string {
+// reqCtx is the request's own context — it classifies a failure (NET-6
+// review r6 F1: classifying by ctx, the callback's 30 s bound, hid that
+// bound's expiry on a live request at Debug); ctx bounds the forge read.
+func fetchGitHubPrimaryEmail(reqCtx, ctx context.Context, client *http.Client, logger *slog.Logger) string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
 	if err != nil {
-		logger.Error("building the GitHub emails request failed", "error", err)
+		httpserver.LogFailure(reqCtx, logger, slog.LevelError, err, "building the GitHub emails request failed", "error", err)
 		return ""
 	}
 	req.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion)
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Warn("failed to call /user/emails for OAuth fallback", "error", err)
+		httpserver.LogFailure(reqCtx, logger, slog.LevelWarn, err, "failed to call /user/emails for OAuth fallback", "callback_bound", oauthCallbackTimeout, "error", err)
 		return ""
 	}
 	defer resp.Body.Close()
@@ -792,7 +807,7 @@ func fetchGitHubPrimaryEmail(ctx context.Context, client *http.Client, logger *s
 		Verified bool   `json:"verified"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
-		logger.Warn("failed to decode /user/emails", "error", err)
+		httpserver.LogFailure(reqCtx, logger, slog.LevelWarn, err, "failed to decode /user/emails", "error", err)
 		return ""
 	}
 	for _, e := range emails {
@@ -835,7 +850,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	token, err := s.glOAuth.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
-		s.logOAuthFailure("gitlab", "exchange", err)
+		s.logOAuthFailure(r.Context(), "gitlab", "exchange", err)
 		http.Error(w, "OAuth exchange failed", http.StatusInternalServerError)
 		return
 	}
@@ -858,7 +873,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := client.Do(userReq)
 	if err != nil {
-		s.logOAuthFailure("gitlab", "user", err)
+		s.logOAuthFailure(r.Context(), "gitlab", "user", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}
@@ -869,7 +884,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 	// had sent it (PR #218 review C9).
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		s.logOAuthFailure("gitlab", "user", err)
+		s.logOAuthFailure(r.Context(), "gitlab", "user", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}
@@ -932,7 +947,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		// A failed lookup is not "no groups" (SR-5; batch 5b review round
 		// 1): it read as an empty dashboard, indistinguishable from a fresh
 		// login, and the pending-approval banner keyed off it.
-		s.serverError(w, "handleDashboard", err)
+		s.serverError(w, r, "handleDashboard", err)
 		return
 	}
 
@@ -1072,13 +1087,13 @@ type accountEmailLookup interface {
 func dashboardEmailGate(ctx context.Context, st accountEmailLookup, p confirmationPolicy, logger *slog.Logger, r *http.Request, userID int) (needsForm bool, pending string) {
 	confirmed, err := st.GetUserEmail(ctx, userID)
 	if err != nil {
-		logger.Warn("dashboard: could not read the user's email; rendering without the email-form redirect",
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "dashboard: could not read the user's email; rendering without the email-form redirect",
 			"user_id", userID, "error", err)
 		return false, ""
 	}
 	pending, err = st.GetUserLivePendingEmail(ctx, userID)
 	if err != nil {
-		logger.Warn("dashboard: could not read the user's pending email; rendering without the email-form redirect",
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "dashboard: could not read the user's pending email; rendering without the email-form redirect",
 			"user_id", userID, "error", err)
 		return false, ""
 	}
@@ -1131,16 +1146,18 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmatio
 		return "Email confirmation is not configured on this site. Contact the operator."
 	}
 	if err := st.SetUserPendingEmail(ctx, sess.UserID, email); err != nil {
-		logger.Warn("failed to set pending email", "user_id", sess.UserID, "error", err)
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to set pending email", "user_id", sess.UserID, "error", err)
 		return "Could not save email. Try again."
 	}
 	token, err := st.CreateEmailConfirmation(ctx, sess.UserID, email)
 	if err != nil {
-		logger.Warn("failed to create email confirmation", "user_id", sess.UserID, "error", err)
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to create email confirmation", "user_id", sess.UserID, "error", err)
 		return "Could not generate confirmation. Try again."
 	}
 	if err := p.mailer.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token), db.EmailConfirmationLifetime); err != nil {
 		if !mailer.IsSkip(err) { // a skip was already logged by the mailer
+			// The send takes no context: its failure is never the
+			// request's end (NET-6 review r6 F2), so no LogFailure.
 			logger.Warn("failed to send confirmation email",
 				"user_id", sess.UserID, "email", email, "error", err)
 		}
@@ -1151,7 +1168,15 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmatio
 		// is still this submission's (a second tab may have replaced it,
 		// v0.29.30), and tell the user a link that does arrive still works:
 		// its token is in the database until it expires.
-		if clearErr := st.ClearUserPendingEmailIf(ctx, sess.UserID, email); clearErr != nil {
+		//
+		// The clean-up is the second half of writes that already committed,
+		// so it runs detached from the request (NET-6 review r7 F1: an SMTP
+		// dial can outlast nginx and the bound, and on the cancelled request
+		// context the clean-up failed at once, leaving the dashboard
+		// announcing a link that was never sent) and any failure is a WARN.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), pendingEmailCleanupTimeout)
+		defer cleanupCancel()
+		if clearErr := st.ClearUserPendingEmailIf(cleanupCtx, sess.UserID, email); clearErr != nil {
 			logger.Warn("failed to clear the pending email after a failed confirmation send",
 				"user_id", sess.UserID, "error", clearErr)
 		}
@@ -1159,6 +1184,13 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmatio
 	}
 	return ""
 }
+
+// pendingEmailCleanupTimeout bounds submitAccountEmail's detached clean-up:
+// one conditional UPDATE by the user's key, which takes milliseconds unless
+// the pool or the database is stalled — the case the bound exists for. The
+// house precedent for such a statement is 30 s (the deploy gate's
+// deployGateDialTimeout, cmd/aveloxis).
+const pendingEmailCleanupTimeout = 30 * time.Second
 
 // loopbackAuthority parses an HTTP Host header ONCE and, when it names the
 // loopback interface, returns it as a URL authority for an emailed link. A
@@ -1241,7 +1273,7 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 	email, err := s.store.GetUserEmail(r.Context(), sess.UserID)
 	if err != nil {
 		// Showing the form is the safe fallback; the error is still logged.
-		s.logger.Warn("account email form: could not read the user's email", "user_id", sess.UserID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "account email form: could not read the user's email", "user_id", sess.UserID, "error", err)
 	}
 	if strings.TrimSpace(email) != "" {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
@@ -1290,7 +1322,7 @@ func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
 			return
 		}
-		s.logger.Warn("failed to confirm user email", "user_id", sess.UserID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to confirm user email", "user_id", sess.UserID, "error", err)
 		http.Redirect(w, r, "/account/email?error=1", http.StatusFound)
 		return
 	}
@@ -1310,7 +1342,7 @@ func (s *Server) handleNewGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := s.store.CreateUserGroup(r.Context(), sess.UserID, name); err != nil {
-		s.logger.Warn("failed to create group", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to create group", "error", err)
 	}
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
@@ -1351,7 +1383,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleGroup", err)
+		s.serverError(w, r, "handleGroup", err)
 		return
 	}
 
@@ -1470,7 +1502,7 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
 			out, err := s.store.AddReposToGroup(r.Context(), sess.UserID, groupID, urls,
 				s.cfg.AutoApproveAddLimitValue())
 			if err != nil {
-				s.logger.Warn("failed to add repos to group", "group_id", groupID, "error", err)
+				httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to add repos to group", "group_id", groupID, "error", err)
 				if errors.Is(err, db.ErrURLTooLong) {
 					// Name the line (follow-up 14): the store refuses the
 					// whole paste and its error names none of them.
@@ -1559,7 +1591,7 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 			return
 		case err != nil:
 			// Say so (worklist follow-up 11): this redirected as a success.
-			s.logger.Warn("failed to add org to group", "group_id", groupID, "error", err)
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to add org to group", "group_id", groupID, "error", err)
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=1", groupID), http.StatusFound)
 			return
 		case out.Registered:
@@ -1611,7 +1643,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	if err != nil {
 		// A lookup error is not "not rejected" (SR-5; worklist follow-up 2):
 		// nothing scans until the status is known.
-		s.logger.Error("org scan skipped — group status lookup failed", "group_id", groupID, "org_url", logURL(orgURL), "error", err)
+		httpserver.LogFailure(ctx, s.logger, slog.LevelError, err, "org scan skipped — group status lookup failed", "group_id", groupID, "org_url", logURL(orgURL), "error", err)
 		return
 	}
 	if status == "rejected" {
@@ -1653,7 +1685,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				if platform.ClassifyError(err) == platform.ClassSkip {
 					break
 				}
-				s.logger.Warn("scan API error", "name", name, "error", err)
+				httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "scan API error", "name", name, "error", err)
 				break
 			}
 			var items []struct {
@@ -1668,7 +1700,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 			if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 				resp.Body.Close()
 				// A decode failure must not read as "no repos found".
-				s.logger.Warn("org scan: decoding repo page failed", "name", name, "page", page, "error", err)
+				httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: decoding repo page failed", "name", name, "page", page, "error", err)
 				break
 			}
 			resp.Body.Close()
@@ -1686,19 +1718,19 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				// refresh retries it next scan.
 				repoID, err := s.store.FindRepoByURL(ctx, item.HTMLURL)
 				if err != nil {
-					s.logger.Warn("org scan: repo lookup failed", "url", logURL(item.HTMLURL), "error", err)
+					httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: repo lookup failed", "url", logURL(item.HTMLURL), "error", err)
 					continue
 				}
 				if repoID > 0 {
 					// Already exists — just add the user_repos reference.
 					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
-						s.logger.Warn("org scan: linking existing repo failed", "repo_id", repoID, "error", err)
+						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: linking existing repo failed", "repo_id", repoID, "error", err)
 					}
 					// v0.27.102: opportunistic forge-ID backfill (fill-
 					// empty-only) so the org-tracked cohort gains rename
 					// protection on the next scan pass.
 					if idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, model.ForgeIDString(item.ID), item.CreatedAt); idErr != nil {
-						s.logger.Warn("org scan: platform_repo_id backfill failed", "repo_id", repoID, "error", idErr)
+						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, idErr, "org scan: platform_repo_id backfill failed", "repo_id", repoID, "error", idErr)
 					}
 					alreadyExisted++
 					added++
@@ -1712,17 +1744,17 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 						PlatformID: model.ForgeIDString(item.ID), // v0.27.102 — enables the rename-heal inside UpsertRepo
 					})
 					if err != nil {
-						s.logger.Warn("org scan: upserting new repo failed", "url", logURL(item.HTMLURL), "error", err)
+						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: upserting new repo failed", "url", logURL(item.HTMLURL), "error", err)
 						continue
 					}
 					// A silently failed enqueue strands a catalog row with no
 					// queue row — a suspected origin of the reconciliation
 					// gap found in the 2026-07-21 audit (summary/18 Phase 2).
 					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
-						s.logger.Warn("org scan: enqueue failed", "repo_id", repoID, "url", logURL(item.HTMLURL), "error", err)
+						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: enqueue failed", "repo_id", repoID, "url", logURL(item.HTMLURL), "error", err)
 					}
 					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
-						s.logger.Warn("org scan: linking new repo failed", "repo_id", repoID, "error", err)
+						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: linking new repo failed", "repo_id", repoID, "error", err)
 					}
 					newlyQueued++
 					added++
@@ -1763,7 +1795,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	// Get the user's groups and their repos for the search dropdown.
 	groups, err := s.store.GetUserGroups(r.Context(), sess.UserID)
 	if err != nil {
-		s.serverError(w, "handleCompare", err)
+		s.serverError(w, r, "handleCompare", err)
 		return
 	}
 
@@ -1793,7 +1825,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request, sess
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		s.serverError(w, "handleSBOMDownload", err)
+		s.serverError(w, r, "handleSBOMDownload", err)
 		return
 	}
 
@@ -1824,7 +1856,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request, sess
 	if err != nil {
 		// The cause goes to the log, not the body (it carried the store's
 		// text through v0.29.67; follow-up 12).
-		s.serverError(w, "handleSBOMDownload", err)
+		s.serverError(w, r, "handleSBOMDownload", err)
 		return
 	}
 
@@ -1849,7 +1881,7 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleRepoDetail", err)
+		s.serverError(w, r, "handleRepoDetail", err)
 		return
 	}
 
@@ -1860,14 +1892,14 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleRepoDetail", err)
+		s.serverError(w, r, "handleRepoDetail", err)
 		return
 	}
 
 	// Get stats: an enrichment the page renders without, so a failure is
 	// logged, not a 500 (the template handles a nil Stats).
 	stats, err := s.store.GetRepoStats(r.Context(), repoID)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil && !httpserver.RequestEnded(r.Context(), err) {
 		s.logger.Warn("repo page: stats unavailable", "repo_id", repoID, "error", err)
 	}
 
@@ -1902,12 +1934,12 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := s.store.QueueStats(r.Context())
 	if err != nil {
-		s.serverError(w, "handleMonitor", err)
+		s.serverError(w, r, "handleMonitor", err)
 		return
 	}
 	jobs, total, err := s.store.ListQueuePage(r.Context(), monitorPageSize, offset, query, "", "")
 	if err != nil {
-		s.serverError(w, "handleMonitor", err)
+		s.serverError(w, r, "handleMonitor", err)
 		return
 	}
 
@@ -1951,11 +1983,11 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	// Enrichment of the rows: the page renders without it, so a failure is
 	// logged, not a 500.
 	repos, err := s.store.GetReposBatch(r.Context(), repoIDs)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil && !httpserver.RequestEnded(r.Context(), err) {
 		s.logger.Warn("monitor page: repository details unavailable", "rows", len(repoIDs), "error", err)
 	}
 	repoStats, err := s.store.GetRepoStatsBatch(r.Context(), repoIDs)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil && !httpserver.RequestEnded(r.Context(), err) {
 		s.logger.Warn("monitor page: repository stats unavailable", "rows", len(repoIDs), "error", err)
 	}
 
@@ -2046,7 +2078,7 @@ func (s *Server) handleMonitorPrioritize(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "repo not found in queue", http.StatusNotFound)
 			return
 		}
-		s.serverError(w, "handleMonitorPrioritize", err)
+		s.serverError(w, r, "handleMonitorPrioritize", err)
 		return
 	}
 	// Redirect back to the monitor page.
@@ -2064,7 +2096,7 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := s.store.CreateSessionToken(r.Context(), sess.UserID, 0)
 	if err != nil {
-		s.logger.Error("failed to mint session token", "user_id", sess.UserID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "failed to mint session token", "user_id", sess.UserID, "error", err)
 		http.Error(w, "token creation failed", http.StatusInternalServerError)
 		return
 	}
@@ -2084,9 +2116,9 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 // lookup error into a 404 or 403, and the SBOM download wrote the error's
 // text into its body). A client that left mid-request (context.Canceled) is
 // Debug, as in the API's serverError.
-func (s *Server) serverError(w http.ResponseWriter, handler string, err error) {
-	if errors.Is(err, context.Canceled) {
-		s.logger.Debug("request abandoned by the client", "handler", handler, "error", err)
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, handler string, err error) {
+	if httpserver.RequestEnded(r.Context(), err) { // the client left, or http_timeout_seconds fired (its WARN reports it)
+		s.logger.Debug("request ended before its handler finished", "handler", handler, "error", err)
 		return
 	}
 	s.logger.Error("request failed", "handler", handler, "error", err)

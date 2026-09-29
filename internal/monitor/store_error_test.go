@@ -110,7 +110,11 @@ func TestMonitorStoreFailuresAreLoggedGeneric500s(t *testing.T) {
 func TestMonitorAbandonedRequestIsNotAnError(t *testing.T) {
 	var logs bytes.Buffer
 	s := newServer(faultStore{}, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), Options{})
-	s.serverError(httptest.NewRecorder(), "probe", context.Canceled)
+	// NET-6 review r5 F1: "abandoned" is the REQUEST's context being done,
+	// not the error's type.
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.serverError(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(gone), "probe", context.Canceled)
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a canceled request logged at ERROR:\n%s", logs.String())
 	}

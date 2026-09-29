@@ -189,7 +189,8 @@ a half against its own reference table below:
     "trusted_proxy": "",
     "require_auth": false
   },
-  "log_level": "info"
+  "log_level": "info",
+  "http_timeout_seconds": 180
 }
 ```
 
@@ -410,6 +411,7 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `log_level` | string | `"info"` | Log verbosity level. Options: `debug`, `info`, `warn`, `error`. |
+| `http_timeout_seconds` | int | `180` | Bounds the monitor, api and web servers: reading a request's headers and body, each request's handling (past the bound its database query is cancelled, the client gets a **503** "request exceeded http_timeout_seconds", and a WARN in that process's log names the request), and idle keep-alive connections. The web GUI's `/api` proxy runs under the web's bound, with no wait of its own. A **backstop**, not the latency knob: keep every nginx timeout in front of Aveloxis (`proxy_read_timeout`, `proxy_send_timeout`, `send_timeout`, `client_header_timeout`, `client_body_timeout`) **below** it, so nginx answers first with a 504 you can see in its log. Raise it only if a legitimate request (a large repository's charts, an SBOM download) needs longer than nginx allows. Zero, negative or too large is refused at startup. |
 
 Log level descriptions:
 

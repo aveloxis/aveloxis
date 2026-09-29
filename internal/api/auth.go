@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
 
 // sessionStore is the role interface auth needs from the DB layer
@@ -143,9 +144,9 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 // client that went away mid-lookup (r.Context() cancelled, the store's
 // error wraps context.Canceled) is neither: nothing to serve, nothing to
 // chase — no ERROR (batch-2 review round 2).
-func (a *authenticator) refuseStoreError(w http.ResponseWriter, err error) {
-	if errors.Is(err, context.Canceled) {
-		a.logger.Debug("session lookup abandoned — the request was cancelled", "error", err)
+func (a *authenticator) refuseStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	if httpserver.RequestEnded(r.Context(), err) { // client gone, or http_timeout_seconds fired
+		a.logger.Debug("session lookup abandoned — the request ended", "error", err)
 		return
 	}
 	a.logger.Error("session token could not be resolved — store failure, request refused (503)", "error", err)
@@ -195,7 +196,7 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 				default:
 					// A presented token the store could not resolve: refuse,
 					// rather than run the request unscoped.
-					a.refuseStoreError(w, err)
+					a.refuseStoreError(w, r, err)
 					return
 				}
 			}
@@ -213,7 +214,7 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			return
 		}
 		if err != nil {
-			a.refuseStoreError(w, err)
+			a.refuseStoreError(w, r, err)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info)))
@@ -288,7 +289,7 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 		case errors.Is(err, db.ErrSharedRepoNotFound):
 			// Nonexistent repo id — fall through to the 403.
 		default:
-			s.logger.Warn("shared-with-me auto-add failed — refusing access (fail closed)",
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "shared-with-me auto-add failed — refusing access (fail closed)",
 				"user_id", info.UserID, "repo_id", repoID, "error", err)
 		}
 	}

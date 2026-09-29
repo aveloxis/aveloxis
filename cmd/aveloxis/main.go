@@ -30,6 +30,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/monitor"
@@ -290,7 +291,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 	// refuse to collect because :5555 is taken, and the monitor is
 	// auxiliary — so its bind is not part of serve's readiness signal
 	// above. Recorded exemption (review round 3 of items 2/37/49).
-	srv := &http.Server{Addr: monitorAddr, Handler: mon.Handler()}
+	srv := newMonitorServer(cfg, monitorAddr, mon.Handler(), logger)
 	go func() {
 		logger.Info("monitor listening", "addr", monitorAddr)
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
@@ -445,7 +446,7 @@ func runAPI(cfgPath, addr string) error {
 	defer pidfile.RemoveIfOwn(pidPath, os.Getpid())
 	signalReady(logger)
 
-	srv := &http.Server{Addr: addr, Handler: apiServer.Handler()}
+	srv := newAPIServer(cfg, addr, apiServer.Handler(), logger)
 	return serveUntilDone(ctx, srv, ln, logger, "API server")
 }
 
@@ -1559,7 +1560,7 @@ Create a GitLab OAuth app at: https://gitlab.com/-/profile/applications`,
 			defer pidfile.RemoveIfOwn(webPidPath, os.Getpid())
 			signalReady(logger)
 
-			srv := &http.Server{Addr: cfg.Web.Addr, Handler: webServer.Handler()}
+			srv := newWebHTTPServer(cfg, cfg.Web.Addr, webServer.Handler(), logger)
 			return serveUntilDone(ctx, srv, ln, logger, "web GUI")
 		},
 	}
@@ -2392,6 +2393,21 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config {
 // TestProcessMailWiring checks the mailer it carries.
 func newWebServer(store *db.PostgresStore, cfg *config.Config, ghKeys *platform.KeyPool, logger *slog.Logger) *web.Server {
 	return web.New(store, cfg.Web, ghKeys, cfg.GitHub.GitHubAPIBase(), logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger))
+}
+
+// newMonitorServer, newAPIServer and newWebHTTPServer build the three
+// listeners bounded by aveloxis.json's http_timeout_seconds (NET-6,
+// 2026-09-29); a request past it is cancelled, answered 503 and logged.
+func newMonitorServer(cfg *config.Config, addr string, h http.Handler, logger *slog.Logger) *http.Server {
+	return httpserver.New(addr, h, cfg.HTTPTimeout(), logger, "monitor")
+}
+
+func newAPIServer(cfg *config.Config, addr string, h http.Handler, logger *slog.Logger) *http.Server {
+	return httpserver.New(addr, h, cfg.HTTPTimeout(), logger, "api")
+}
+
+func newWebHTTPServer(cfg *config.Config, addr string, h http.Handler, logger *slog.Logger) *http.Server {
+	return httpserver.New(addr, h, cfg.HTTPTimeout(), logger, "web")
 }
 
 // apiOptions maps aveloxis.json onto `aveloxis api`'s server options.

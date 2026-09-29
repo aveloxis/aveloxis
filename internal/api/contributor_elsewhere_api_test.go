@@ -21,7 +21,9 @@ func TestContributorActivityDistinguishesNotFoundFromFailure(t *testing.T) {
 		"errors.Is(err, pgx.ErrNoRows)",
 		"http.StatusNotFound",
 		"http.StatusInternalServerError",
-		"s.logger.Error(",
+		// NET-6 review r4 F1: the failure is logged through logFailure, so a
+		// request ended by http_timeout_seconds is not blamed at ERROR.
+		"httpserver.LogFailure(r.Context(), s.logger, slog.LevelError,",
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("handleContributorActivity must contain %q — 404 only for the genuine no-rows case, logged 500 for operational failures", needle)

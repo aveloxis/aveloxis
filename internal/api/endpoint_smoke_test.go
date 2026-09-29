@@ -227,24 +227,7 @@ func TestEveryEndpointExecutes(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	fill := strings.NewReplacer(
-		"{repoID}", fmt.Sprint(fx.repoID),
-		"{groupID}", fmt.Sprint(fx.groupID),
-		"{userID}", fmt.Sprint(fx.userID),
-		"{decision}", "approve",
-		"{requestID}", fmt.Sprint(fx.requestID),
-		"{collectionID}", fmt.Sprint(fx.collectionID),
-		"{cntrbID}", fx.cntrbID,
-		"{owner}", fx.owner,
-		"{repo}", fx.repoName,
-		"{repoName}", fx.repoName,
-		"{rgName}", fx.rgName,
-		// v0.29.60: the supply-chain package path; the fixture seeds no
-		// finding, so the profile answers the typed not-found (the
-		// aggregate still executes against the real schema).
-		"{ecosystem}", "npm",
-		"{name...}", "smoke-package",
-	)
+	fill := smokeFill(fx)
 
 	run := func(route string, r smokeRecipe) {
 		t.Run(route, func(t *testing.T) {
@@ -462,4 +445,27 @@ func seedSmokeFixture(t *testing.T, ctx context.Context, store *db.PostgresStore
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.repo_groups WHERE rg_name = $1`, fx.rgName)
 	})
 	return fx
+}
+
+// smokeFill fills a recipe's path placeholders from the seeded fixture
+// (shared by TestEveryEndpointExecutes and the request-end log test).
+func smokeFill(fx smokeFixture) *strings.Replacer {
+	return strings.NewReplacer(
+		"{repoID}", fmt.Sprint(fx.repoID),
+		"{groupID}", fmt.Sprint(fx.groupID),
+		"{userID}", fmt.Sprint(fx.userID),
+		"{decision}", "approve",
+		"{requestID}", fmt.Sprint(fx.requestID),
+		"{collectionID}", fmt.Sprint(fx.collectionID),
+		"{cntrbID}", fx.cntrbID,
+		"{owner}", fx.owner,
+		"{repo}", fx.repoName,
+		"{repoName}", fx.repoName,
+		"{rgName}", fx.rgName,
+		// v0.29.60: the supply-chain package path; the fixture seeds no
+		// finding, so the profile answers the typed not-found (the
+		// aggregate still executes against the real schema).
+		"{ecosystem}", "npm",
+		"{name...}", "smoke-package",
+	)
 }

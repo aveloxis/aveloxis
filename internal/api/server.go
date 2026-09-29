@@ -25,6 +25,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
@@ -199,12 +200,13 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 // ERROR with the handler's name, and the body is generic (worklist follow-up
 // 4: handlers wrote the store's error text into 500 bodies — schema and host
 // names a client cannot act on). Client-side refusals keep their own bodies.
-func (s *Server) serverError(w http.ResponseWriter, handler string, err error) {
-	if errors.Is(err, context.Canceled) {
-		// The client left mid-request (every handler passes r.Context()
-		// to the store): nobody is listening, and refuseStoreError
-		// classifies the same event as Debug.
-		s.logger.Debug("request abandoned by the client", "handler", handler, "error", err)
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, handler string, err error) {
+	if httpserver.RequestEnded(r.Context(), err) {
+		// The client left mid-request, or http_timeout_seconds fired (every
+		// handler passes r.Context() to the store; the bound's WARN reports
+		// a timeout — NET-6 review r2 F2): nobody is listening, and
+		// refuseStoreError classifies the same event as Debug.
+		s.logger.Debug("request ended before its handler finished", "handler", handler, "error", err)
 		return
 	}
 	s.logger.Error("request failed", "handler", handler, "error", err)
@@ -227,7 +229,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMailingListStats(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store.MailingListStats(r.Context())
 	if err != nil {
-		s.serverError(w, "handleMailingListStats", err)
+		s.serverError(w, r, "handleMailingListStats", err)
 		return
 	}
 	jsonResponse(w, st)
@@ -244,7 +246,7 @@ func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats, err := s.store.GetRepoStats(r.Context(), repoID)
 	if err != nil {
-		s.serverError(w, "handleRepoStats", err)
+		s.serverError(w, r, "handleRepoStats", err)
 		return
 	}
 	jsonResponse(w, stats)
@@ -279,7 +281,7 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	stats, err := s.store.GetRepoStatsBatch(r.Context(), ids)
 	if err != nil {
-		s.serverError(w, "handleRepoStatsBatch", err)
+		s.serverError(w, r, "handleRepoStatsBatch", err)
 		return
 	}
 	jsonResponse(w, stats)
@@ -342,7 +344,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.serverError(w, "handleSBOMDownload", err)
+		s.serverError(w, r, "handleSBOMDownload", err)
 		return
 	}
 
@@ -354,7 +356,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	if withVulns {
 		vulns, verr := s.store.GetRepoVulnerabilities(r.Context(), repoID)
 		if verr != nil {
-			s.serverError(w, "handleSBOMDownload", verr)
+			s.serverError(w, r, "handleSBOMDownload", verr)
 			return
 		}
 		if sbomFormat == collector.FormatCycloneDX {
@@ -363,7 +365,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 			data, err = annotateSPDXWithVulns(data, vulns)
 		}
 		if err != nil {
-			s.serverError(w, "handleSBOMDownload", err)
+			s.serverError(w, r, "handleSBOMDownload", err)
 			return
 		}
 		filename = strings.Replace(filename, ".cdx.json", "-with-vulns.cdx.json", 1)
@@ -406,7 +408,7 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {
-		s.serverError(w, "handleTimeSeries", err)
+		s.serverError(w, r, "handleTimeSeries", err)
 		return
 	}
 	jsonResponse(w, ts)
@@ -420,7 +422,7 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	repos, err := s.store.SearchRepos(r.Context(), q, 20)
 	if err != nil {
-		s.serverError(w, "handleRepoSearch", err)
+		s.serverError(w, r, "handleRepoSearch", err)
 		return
 	}
 	// v0.27.4: annotate star state when the caller presented a Bearer
@@ -459,7 +461,7 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	}
 	licenses, err := s.store.GetRepoLicensesScoped(r.Context(), repoID, runtimeOnly)
 	if err != nil {
-		s.serverError(w, "handleLicenses", err)
+		s.serverError(w, r, "handleLicenses", err)
 		return
 	}
 	// v0.27.4: `scanned` lets the GUI distinguish "dependency analysis
@@ -486,11 +488,11 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 
 	licenses, err := s.store.GetScancodeSourceLicenses(r.Context(), repoID)
 	if err != nil {
-		s.logger.Warn("failed to get scancode licenses", "repo_id", repoID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode licenses", "repo_id", repoID, "error", err)
 	}
 	copyrights, err := s.store.GetScancodeCopyrights(r.Context(), repoID)
 	if err != nil {
-		s.logger.Warn("failed to get scancode copyrights", "repo_id", repoID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode copyrights", "repo_id", repoID, "error", err)
 	}
 
 	// v0.21.0 — Freshness fields surface the cadence/run state of
@@ -501,7 +503,7 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	// of "Loading...".
 	lastRun, scancodeVer, err := s.store.ScancodeFreshness(r.Context(), repoID)
 	if err != nil {
-		s.logger.Warn("failed to get scancode freshness", "repo_id", repoID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode freshness", "repo_id", repoID, "error", err)
 	}
 	var lastRunStr string
 	if !lastRun.IsZero() {
@@ -536,7 +538,7 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := s.store.GetScancodeFileEntries(r.Context(), repoID)
 	if err != nil {
-		s.logger.Warn("failed to get scancode file entries", "repo_id", repoID, "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode file entries", "repo_id", repoID, "error", err)
 	}
 	if files == nil {
 		files = []db.ScancodeFileEntry{}

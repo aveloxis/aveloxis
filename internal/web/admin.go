@@ -16,11 +16,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/safego"
@@ -144,7 +146,7 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		// A store failure: logged, generic body (PR #218 review C6 — the
 		// body carried the store's text).
-		s.serverError(w, "handleApproveAddRequest", fmt.Errorf("approve add-request %d: %w", requestID, err))
+		s.serverError(w, r, "handleApproveAddRequest", fmt.Errorf("approve add-request %d: %w", requestID, err))
 		return
 	}
 	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
@@ -162,7 +164,7 @@ func (s *Server) handleRejectAddRequest(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "no such add request", http.StatusNotFound)
 			return
 		}
-		s.serverError(w, "handleRejectAddRequest", fmt.Errorf("reject add-request %d: %w", requestID, err)) // PR #218 review C6
+		s.serverError(w, r, "handleRejectAddRequest", fmt.Errorf("reject add-request %d: %w", requestID, err)) // PR #218 review C6
 		return
 	}
 	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
@@ -171,7 +173,7 @@ func (s *Server) handleRejectAddRequest(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request) {
 	pending, err := s.store.ListPendingGroups(r.Context())
 	if err != nil {
-		s.logger.Warn("failed to list pending groups", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to list pending groups", "error", err)
 		http.Error(w, "Failed to list pending groups", http.StatusInternalServerError)
 		return
 	}
@@ -180,7 +182,7 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
 	// table is the ongoing queue.
 	requests, err := s.store.ListPendingAddRequests(r.Context())
 	if err != nil {
-		s.logger.Warn("failed to list pending add-requests", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to list pending add-requests", "error", err)
 		http.Error(w, "Failed to list pending additions", http.StatusInternalServerError)
 		return
 	}
@@ -274,7 +276,7 @@ func (s *Server) handleApproveGroup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// A store failure: logged, generic body (PR #218 review C6 — the
 		// body carried the store's text).
-		s.serverError(w, "handleApproveGroup", fmt.Errorf("approve group %d: %w", groupID, err))
+		s.serverError(w, r, "handleApproveGroup", fmt.Errorf("approve group %d: %w", groupID, err))
 		return
 	}
 
@@ -302,7 +304,7 @@ func (s *Server) handleRejectGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.RejectGroup(r.Context(), groupID, sess.UserID); err != nil {
-		s.serverError(w, "handleRejectGroup", fmt.Errorf("reject group %d: %w", groupID, err)) // PR #218 review C6
+		s.serverError(w, r, "handleRejectGroup", fmt.Errorf("reject group %d: %w", groupID, err)) // PR #218 review C6
 		return
 	}
 	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
@@ -312,7 +314,7 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
-		s.logger.Warn("failed to list users", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to list users", "error", err)
 		http.Error(w, "Failed to list users", http.StatusInternalServerError)
 		return
 	}
@@ -393,7 +395,7 @@ func (s *Server) handleSetUserAdmin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, db.ErrLastAdmin.Error(), http.StatusConflict)
 			return
 		}
-		s.serverError(w, "handleSetUserAdmin", fmt.Errorf("set admin=%t for user %d: %w", isAdmin, userID, err))
+		s.serverError(w, r, "handleSetUserAdmin", fmt.Errorf("set admin=%t for user %d: %w", isAdmin, userID, err))
 		return
 	}
 	http.Redirect(w, r, "/admin/users", http.StatusFound)

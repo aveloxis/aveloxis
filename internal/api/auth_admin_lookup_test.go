@@ -76,6 +76,11 @@ func TestCanceledRequestIsNotAStoreFailure(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/repos/1/stats", nil)
 	req.RemoteAddr = "203.0.113.5:1"
 	req.Header.Set("Authorization", "Bearer good")
+	// NET-6 review r5 F1: a disconnected client is the REQUEST's context
+	// being cancelled (the error's type alone no longer decides).
+	gone, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(gone)
 	h.ServeHTTP(rec, req)
 	if served {
 		t.Error("a request cancelled during the session lookup was served")

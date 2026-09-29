@@ -247,13 +247,16 @@ func TestServerErrorIsQuietOnACanceledRequest(t *testing.T) {
 	var logs strings.Builder
 	s := &Server{logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 	rec := httptest.NewRecorder()
-	s.serverError(rec, "probe", fmt.Errorf("query: %w", context.Canceled))
+	// NET-6 review r5 F1: "cancelled" is the REQUEST's context being done.
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.serverError(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(gone), "probe", fmt.Errorf("query: %w", context.Canceled))
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a canceled request logged at ERROR:\n%s", logs.String())
 	}
 	logs.Reset()
 	rec = httptest.NewRecorder()
-	s.serverError(rec, "probe", errors.New("relation aveloxis_data.repos does not exist"))
+	s.serverError(rec, httptest.NewRequest(http.MethodGet, "/", nil), "probe", errors.New("relation aveloxis_data.repos does not exist"))
 	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "aveloxis_data") {
 		t.Errorf("a real failure: status %d body %q; want a generic 500", rec.Code, rec.Body.String())
 	}
@@ -439,13 +442,13 @@ func TestResolveEntityReposDoesNotReadAStoreErrorAsOutOfScope(t *testing.T) {
 		t.Fatal("the nil-row check `collected = nil` moved; re-anchor this pin")
 	}
 	arm = arm[:end]
-	at := strings.Index(arm, `s.serverError(w, "resolveEntityRepos", err)`)
+	at := strings.Index(arm, `s.serverError(w, r, "resolveEntityRepos", err)`)
 	if at < 0 || strings.Contains(arm, "err != nil ||") {
 		t.Fatal("a GetReposBatch error must go to serverError before the nil-row check: a store failure is not \"not a collected repository\"")
 	}
 	// The statement after the log is the return (review round 3: without
 	// it the 500 is followed by a 403 and a JSON tail on the same body).
-	if !strings.HasPrefix(strings.TrimSpace(arm[at+len(`s.serverError(w, "resolveEntityRepos", err)`):]), `return nil, "", false`) {
+	if !strings.HasPrefix(strings.TrimSpace(arm[at+len(`s.serverError(w, r, "resolveEntityRepos", err)`):]), `return nil, "", false`) {
 		t.Error("serverError in resolveEntityRepos must be followed by `return nil, \"\", false`")
 	}
 }

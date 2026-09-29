@@ -1653,20 +1653,31 @@ one — register a checklist here.
 
 ```bash
 aveloxis deploy-checklist
-aveloxis deploy-checklist --since 0.29.64   # every release's steps after the one last deployed, oldest first
+aveloxis deploy-checklist --since 0.29.64   # every release's steps after the last acknowledged deploy, oldest first
+aveloxis deploy-checklist --since 0.29.64 --inclusive   # the same, 0.29.64's own steps included
 ```
 
-`--since` takes the version last deployed (the schema stamp,
-`SELECT schema_version FROM aveloxis_ops.schema_meta`, read before the
-migrate moves it) and prints every later release's block up to this binary,
-oldest first. Consecutive releases with identical steps print as one block
+`--since` takes the last **acknowledged** deploy — the highest version in
+`aveloxis_ops.deploy_ack`, compared as a version (`SELECT tool_version FROM
+aveloxis_ops.deploy_ack WHERE tool_version ~ '^[0-9]+(\.[0-9]+)*$' ORDER BY
+string_to_array(tool_version, '.')::int[] DESC LIMIT 1`), the same starting
+point the start gate uses — and prints every later release's block up to
+this binary, oldest first. It is exclusive: that release's steps already
+ran. When no deploy was ever acknowledged, pass the schema stamp (`SELECT
+schema_version FROM aveloxis_ops.schema_meta`, read before the migrate
+moves it) with `--inclusive`, which prints the stamp release's own block as
+well: its steps were never acknowledged either (PR #218 fix review r1).
+`--inclusive` without `--since` is an error. Consecutive releases with identical steps print as one block
 labelled with the range it covers. When more than one release has steps, a
 header comes first: run `aveloxis stop all`, the migrate and `aveloxis start
 all` **once**, not once per block — the migrate is the strongest any block
-asks for (a plain `aveloxis migrate` if any block needs one, otherwise
+asks for (a plain `aveloxis migrate` if any block needs one and no later
+release in the range lifts it, as 0.29.61 lifts 0.29.60's; otherwise
 `aveloxis migrate --skip-views`) — then every block's checks, heals and
-audits, oldest first, and a step that needs the running release (such as
-`adopt-forge-id` or the approvals page) after the start. A `--since` value
+audits, oldest first, then `aveloxis ack-deploy`, then `aveloxis start all`,
+and a step that needs the running release (such as `adopt-forge-id` or the
+approvals page) after the start. The start gate's refusal names the same
+migrate for the range it prints. A `--since` value
 that is not a version (dotted non-negative numbers such as `0.29.64`) is an
 error: the command names the flag and exits non-zero.
 

@@ -27,7 +27,15 @@ import (
 // is verifyBackendsDisconnected (pass 41), which gives its dial its own
 // 30s ctx for exactly this reason.
 func TestRunDeployGateBoundsTheDialOnly(t *testing.T) {
-	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func runDeployGate("))
+	src := srctest.Read(t, "cmd/aveloxis/deploy_checklist.go")
+	// PR #218 fix review r8 F1: the dial lives in openDeployGate, the one
+	// opener shared with `deploy-checklist --pending`; the gate call stays
+	// in runDeployGate.
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func openDeployGate("))
+	gate := srctest.StripGoComments(srctest.FuncBody(t, src, "func runDeployGate("))
+	if !strings.Contains(gate, "openDeployGate(") {
+		t.Fatal("runDeployGate must open its store through openDeployGate")
+	}
 
 	if !strings.Contains(body, "context.WithTimeout") {
 		t.Fatal("runDeployGate must bound the DIAL: db.NewPostgresStore pings the pool, and an\n" +
@@ -53,11 +61,11 @@ func TestRunDeployGateBoundsTheDialOnly(t *testing.T) {
 	// [y/N] answer, which no deadline may cut short.
 	// PR #218 fix review r1 F2: the body is checkDeployReadinessNaming
 	// (it also returns the migrate its refusal named).
-	gateIdx := strings.Index(body, "checkDeployReadinessNaming(")
+	gateIdx := strings.Index(gate, "checkDeployReadinessNaming(")
 	if gateIdx < 0 {
 		t.Fatal("runDeployGate must still call checkDeployReadinessNaming")
 	}
-	gateArgs := body[gateIdx:min(len(body), gateIdx+80)]
+	gateArgs := gate[gateIdx:min(len(gate), gateIdx+80)]
 	if strings.Contains(gateArgs, "dialCtx") {
 		t.Errorf("checkDeployReadiness must NOT run under the dial's deadline — it blocks on the\n"+
 			"interactive `[y/N]` prompt, and an expired ctx there would make RecordDeployAck fail\n"+

@@ -11,9 +11,11 @@ Every upgrade is these four steps, in this order, on the primary host:
 ```bash
 AVELOXIS_SRC=/path/to/aveloxis    # the git checkout of this repository
 AVELOXIS_DB=postgres://aveloxis@localhost:5432/aveloxis   # the database in aveloxis.json, as a psql connection string
-FROM=$(psql "$AVELOXIS_DB" -Atc "SELECT schema_version FROM aveloxis_ops.schema_meta")   # the version you are coming from — read it before step 3 moves it
+FROM=$(psql "$AVELOXIS_DB" -Atc "SELECT tool_version FROM aveloxis_ops.deploy_ack WHERE tool_version ~ '^[0-9]+(\.[0-9]+)*$' ORDER BY string_to_array(tool_version, '.')::int[] DESC LIMIT 1")   # the last ACKNOWLEDGED deploy (highest version, not newest row)
+INCL=
+[ -n "$FROM" ] || { FROM=$(psql "$AVELOXIS_DB" -Atc "SELECT schema_version FROM aveloxis_ops.schema_meta"); INCL=--inclusive; }   # never acknowledged: the schema stamp, its own block included — read it before step 3 moves it
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version   # 1. the new binary (running processes keep the old one until restarted)
-aveloxis deploy-checklist --since "$FROM"   #    every release's steps after FROM, oldest first — read it now: it names the migrate for step 3
+aveloxis deploy-checklist --since "$FROM" $INCL   #    every release's steps after FROM (from it, with --inclusive), oldest first — read it now: it names the migrate for step 3
 aveloxis stop all                 # 2. nothing runs against the schema while it changes
 aveloxis migrate --skip-views     # 3. the schema — a plain `aveloxis migrate` instead when the checklist asks for one (a release that changed a view definition)
 #                                 #    …then the checklist's checks, heals and audits, every block's, oldest first
@@ -21,11 +23,25 @@ aveloxis ack-deploy               #    …then record that they ran
 aveloxis start all                # 4. serve, web and api; then any step the checklist says needs the running release
 ```
 
-When more than one release since `FROM` has deploy steps, `deploy-checklist
+`FROM` is the last **acknowledged** deploy, the same starting point
+`aveloxis start serve` uses: `--since` is exclusive, and the acknowledged
+release's steps already ran. Versions compare as numbers (0.29.9 is before
+0.29.10), so the query orders by the version, not by time or text. When no
+deploy was ever acknowledged (the query prints nothing, or fails because
+the `deploy_ack` table predates v0.29.0), `FROM` falls back to the schema
+stamp with `--inclusive`: the stamp release's own steps were never
+acknowledged either, so its block prints and runs too — the range the start
+gate prints in that case.
+
+When more than one release in the range has deploy steps, `deploy-checklist
 --since` prints a header before the blocks: stop, migrate and start **once**,
 not once per block, with the strongest migrate any block asks for (a plain
-`aveloxis migrate` if any block needs it, otherwise `--skip-views`) — that is
-the migrate step 3 runs. Consecutive releases with identical steps print as
+`aveloxis migrate` if any block needs it and no later release in the range
+lifts it — 0.29.61 lifts 0.29.60's, for example, because it moved the
+supply-chain views out of the 8Knot batch — otherwise `--skip-views`) —
+that is the migrate step 3 runs, and the one the start gate's refusal names.
+The header's sequence ends with `aveloxis ack-deploy`, then `aveloxis start
+all`, as the steps above do. Consecutive releases with identical steps print as
 one block labelled with the range they cover. Each block's own stop, migrate
 and start lines are covered by the four steps; its checks, heals and audits
 are not, and run in step 3, oldest first; a step that needs the running
@@ -37,9 +53,10 @@ is an error and exits non-zero, rather than printing an empty list.
 deploy steps, `aveloxis start serve` (and `start all`) asks at a terminal
 whether they were completed and, without a terminal — a script, systemd,
 an SSH command — **refuses to start** until they are acknowledged. Run it
-after the heals, not before: it records that the steps ran. If `FROM` comes
-back empty or with an error, the section below says how to find it; with
-an empty `FROM`, `deploy-checklist` prints only the new binary's own steps.
+after the heals, not before: it records that the steps ran. If the schema
+stamp comes back empty or with an error too, the section below says how to
+find the version you are coming from; with an empty `FROM`,
+`deploy-checklist` prints only the new binary's own steps.
 
 `--skip-views` skips only the 8Knot materialized-view batch (hours at
 fleet scale); everything else — the schema, the ledgered backfills, the

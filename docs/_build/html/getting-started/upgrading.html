@@ -1678,9 +1678,11 @@ does <strong>not</strong> do for you.</p>
 <p>Every upgrade is these four steps, in this order, on the primary host:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">    </span><span class="c1"># the git checkout of this repository</span>
 <span class="nv">AVELOXIS_DB</span><span class="o">=</span>postgres://aveloxis@localhost:5432/aveloxis<span class="w">   </span><span class="c1"># the database in aveloxis.json, as a psql connection string</span>
-<span class="nv">FROM</span><span class="o">=</span><span class="k">$(</span>psql<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_DB</span><span class="s2">&quot;</span><span class="w"> </span>-Atc<span class="w"> </span><span class="s2">&quot;SELECT schema_version FROM aveloxis_ops.schema_meta&quot;</span><span class="k">)</span><span class="w">   </span><span class="c1"># the version you are coming from — read it before step 3 moves it</span>
+<span class="nv">FROM</span><span class="o">=</span><span class="k">$(</span>psql<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_DB</span><span class="s2">&quot;</span><span class="w"> </span>-Atc<span class="w"> </span><span class="s2">&quot;SELECT tool_version FROM aveloxis_ops.deploy_ack WHERE tool_version ~ &#39;^[0-9]+(\.[0-9]+)*</span>$<span class="s2">&#39; ORDER BY string_to_array(tool_version, &#39;.&#39;)::int[] DESC LIMIT 1&quot;</span><span class="k">)</span><span class="w">   </span><span class="c1"># the last ACKNOWLEDGED deploy (highest version, not newest row)</span>
+<span class="nv">INCL</span><span class="o">=</span>
+<span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FROM</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nv">FROM</span><span class="o">=</span><span class="k">$(</span>psql<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_DB</span><span class="s2">&quot;</span><span class="w"> </span>-Atc<span class="w"> </span><span class="s2">&quot;SELECT schema_version FROM aveloxis_ops.schema_meta&quot;</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="nv">INCL</span><span class="o">=</span>--inclusive<span class="p">;</span><span class="w"> </span><span class="o">}</span><span class="w">   </span><span class="c1"># never acknowledged: the schema stamp, its own block included — read it before step 3 moves it</span>
 <span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>version<span class="w">   </span><span class="c1"># 1. the new binary (running processes keep the old one until restarted)</span>
-aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FROM</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1">#    every release&#39;s steps after FROM, oldest first — read it now: it names the migrate for step 3</span>
+aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FROM</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">$INCL</span><span class="w">   </span><span class="c1">#    every release&#39;s steps after FROM (from it, with --inclusive), oldest first — read it now: it names the migrate for step 3</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">                 </span><span class="c1"># 2. nothing runs against the schema while it changes</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">     </span><span class="c1"># 3. the schema — a plain `aveloxis migrate` instead when the checklist asks for one (a release that changed a view definition)</span>
 <span class="c1">#                                 #    …then the checklist&#39;s checks, heals and audits, every block&#39;s, oldest first</span>
@@ -1688,10 +1690,22 @@ aveloxis<span class="w"> </span>ack-deploy<span class="w">               </span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all<span class="w">                </span><span class="c1"># 4. serve, web and api; then any step the checklist says needs the running release</span>
 </pre></div>
 </div>
-<p>When more than one release since <code class="docutils literal notranslate"><span class="pre">FROM</span></code> has deploy steps, <code class="docutils literal notranslate"><span class="pre">deploy-checklist</span> <span class="pre">--since</span></code> prints a header before the blocks: stop, migrate and start <strong>once</strong>,
+<p><code class="docutils literal notranslate"><span class="pre">FROM</span></code> is the last <strong>acknowledged</strong> deploy, the same starting point
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> uses: <code class="docutils literal notranslate"><span class="pre">--since</span></code> is exclusive, and the acknowledged
+release’s steps already ran. Versions compare as numbers (0.29.9 is before
+0.29.10), so the query orders by the version, not by time or text. When no
+deploy was ever acknowledged (the query prints nothing, or fails because
+the <code class="docutils literal notranslate"><span class="pre">deploy_ack</span></code> table predates v0.29.0), <code class="docutils literal notranslate"><span class="pre">FROM</span></code> falls back to the schema
+stamp with <code class="docutils literal notranslate"><span class="pre">--inclusive</span></code>: the stamp release’s own steps were never
+acknowledged either, so its block prints and runs too — the range the start
+gate prints in that case.</p>
+<p>When more than one release in the range has deploy steps, <code class="docutils literal notranslate"><span class="pre">deploy-checklist</span> <span class="pre">--since</span></code> prints a header before the blocks: stop, migrate and start <strong>once</strong>,
 not once per block, with the strongest migrate any block asks for (a plain
-<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> if any block needs it, otherwise <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>) — that is
-the migrate step 3 runs. Consecutive releases with identical steps print as
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> if any block needs it and no later release in the range
+lifts it — 0.29.61 lifts 0.29.60’s, for example, because it moved the
+supply-chain views out of the 8Knot batch — otherwise <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>) —
+that is the migrate step 3 runs, and the one the start gate’s refusal names.
+The header’s sequence ends with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code>, then <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code>, as the steps above do. Consecutive releases with identical steps print as
 one block labelled with the range they cover. Each block’s own stop, migrate
 and start lines are covered by the four steps; its checks, heals and audits
 are not, and run in step 3, oldest first; a step that needs the running
@@ -1702,9 +1716,10 @@ is an error and exits non-zero, rather than printing an empty list.</p>
 deploy steps, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> (and <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">all</span></code>) asks at a terminal
 whether they were completed and, without a terminal — a script, systemd,
 an SSH command — <strong>refuses to start</strong> until they are acknowledged. Run it
-after the heals, not before: it records that the steps ran. If <code class="docutils literal notranslate"><span class="pre">FROM</span></code> comes
-back empty or with an error, the section below says how to find it; with
-an empty <code class="docutils literal notranslate"><span class="pre">FROM</span></code>, <code class="docutils literal notranslate"><span class="pre">deploy-checklist</span></code> prints only the new binary’s own steps.</p>
+after the heals, not before: it records that the steps ran. If the schema
+stamp comes back empty or with an error too, the section below says how to
+find the version you are coming from; with an empty <code class="docutils literal notranslate"><span class="pre">FROM</span></code>,
+<code class="docutils literal notranslate"><span class="pre">deploy-checklist</span></code> prints only the new binary’s own steps.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--skip-views</span></code> skips only the 8Knot materialized-view batch (hours at
 fleet scale); everything else — the schema, the ledgered backfills, the
 two supply-chain views — runs either way (v0.29.61). <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code> is not one of the four steps: a release whose heals fed a

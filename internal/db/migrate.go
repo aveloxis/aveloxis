@@ -3397,10 +3397,11 @@ func (s *PostgresStore) otherServeConnected(ctx context.Context) (bool, error) {
 // to run. A release's deploy checklist can differ from the standard ladder
 // (v0.29.57 migrates WITHOUT --skip-views, because only a plain migrate
 // applies a changed view definition), and this package cannot see the
-// checklists, so the messages point at `aveloxis deploy-checklist` — which
-// prints the binary's own list — and name the standard migrate only as the
-// fallback for a release that has none.
-const DeployStepsAdvice = "the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
+// checklists, so the messages point at `aveloxis deploy-checklist
+// --pending`, which prints every release's steps this database still needs
+// (the start gate's range, PR #218 fix review r3 — the binary's own list
+// missed a skipped release's plain migrate) and ends by naming the migrate.
+const DeployStepsAdvice = "the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none)"
 
 // startupMigrateRefusal is the pure decision behind the serve-startup
 // gate: with another serve connected, a stamp that is not this

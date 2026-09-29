@@ -517,15 +517,15 @@ The merge refuses to start until the v0.28.18 migrate has built the
 `email_message` FK indexes (`idx_email_message_repo_id` /
 `idx_email_message_signaled_repo_id`) — without them every pair would
 sequential-scan that table on the repoints and again at commit. Run the
-new binary's deploy steps first (`aveloxis deploy-checklist` prints them;
-`aveloxis migrate --skip-views` if it prints none); the refusal names the
+pending deploy steps first (`aveloxis deploy-checklist --pending` prints
+them and names the migrate); the refusal names the
 missing index. The precondition checks the indexes, not the schema stamp,
 so a fleet that built them in an earlier release passes it on a binary
 that is not yet deployed: keeping that order is up to you.
 
 ### After the run
 
-Once the binary's deploy steps are done (so the views already carry the
+Once the pending deploy steps are done (so the views already carry the
 release's definitions):
 
 ```bash
@@ -1653,16 +1653,28 @@ one — register a checklist here.
 
 ```bash
 aveloxis deploy-checklist
+aveloxis deploy-checklist --pending         # every step THIS database still needs — the range the start gate enforces — and the migrate to run
 aveloxis deploy-checklist --since 0.29.64   # every release's steps after the last acknowledged deploy, oldest first
 aveloxis deploy-checklist --since 0.29.64 --inclusive   # the same, 0.29.64's own steps included
 ```
 
-`--since` takes the last **acknowledged** deploy — the highest version in
-`aveloxis_ops.deploy_ack`, compared as a version (`SELECT tool_version FROM
-aveloxis_ops.deploy_ack WHERE tool_version ~ '^[0-9]+(\.[0-9]+)*$' ORDER BY
-string_to_array(tool_version, '.')::int[] DESC LIMIT 1`), the same starting
-point the start gate uses — and prints every later release's block up to
-this binary, oldest first. It is exclusive: that release's steps already
+`--pending` reads the database's last acknowledged deploy and schema stamp
+and prints the range `aveloxis start serve` enforces, computed by the same
+code: after the acknowledged release; from the stamp, inclusive, when
+nothing was acknowledged or the stamp is behind the acknowledgement; the
+binary's own steps when neither can be used. It prints `nothing pending`
+only when the schema stamp is readable and current and this release's steps
+are acknowledged (or it has none); a missing, unreadable or malformed stamp
+prints the steps, with a first line saying why, and so does a database
+with no collected data yet (the start gate does not require the steps on a
+fresh install). Otherwise its last line is
+the migrate to run. It does not take `--since` or `--inclusive`. Use it for
+upgrades ([Upgrading](../getting-started/upgrading.md)).
+
+`--since` is the offline form: it takes a version you name — typically the
+last acknowledged deploy, the highest version in `aveloxis_ops.deploy_ack`
+compared as a version — and prints every later release's block up to this
+binary, oldest first, without reading the database. It is exclusive: that release's steps already
 ran. When no deploy was ever acknowledged, pass the schema stamp (`SELECT
 schema_version FROM aveloxis_ops.schema_meta`, read before the migrate
 moves it) with `--inclusive`, which prints the stamp release's own block as
@@ -1690,7 +1702,7 @@ binary: the heals of a skipped release never ran (v0.29.68).
 
 Records that the current binary version's deploy/heal steps were run,
 so `aveloxis start serve` / `aveloxis start all` stops prompting for
-them. Run it AFTER completing the `deploy-checklist` steps. It cannot
+them. Run it AFTER completing the steps `deploy-checklist --pending` prints. It cannot
 stand in for step 2: while the schema stamp is behind the binary the
 start gate refuses regardless of the acknowledgement (v0.29.4) — only a
 completed migration of that binary (the checklist's migrate step —

@@ -3461,19 +3461,27 @@ collection-ordering caveat.</p>
 Releases that heal data a plain restart does not touch — v0.29.0 is
 one — register a checklist here.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>deploy-checklist
-aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="m">0</span>.29.64<span class="w">   </span><span class="c1"># every release&#39;s steps after the one last deployed, oldest first</span>
+aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="m">0</span>.29.64<span class="w">   </span><span class="c1"># every release&#39;s steps after the last acknowledged deploy, oldest first</span>
+aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="m">0</span>.29.64<span class="w"> </span>--inclusive<span class="w">   </span><span class="c1"># the same, 0.29.64&#39;s own steps included</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">--since</span></code> takes the version last deployed (the schema stamp,
-<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">schema_version</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.schema_meta</span></code>, read before the
-migrate moves it) and prints every later release’s block up to this binary,
-oldest first. Consecutive releases with identical steps print as one block
+<p><code class="docutils literal notranslate"><span class="pre">--since</span></code> takes the last <strong>acknowledged</strong> deploy — the highest version in
+<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.deploy_ack</span></code>, compared as a version (<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">tool_version</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.deploy_ack</span> <span class="pre">WHERE</span> <span class="pre">tool_version</span> <span class="pre">~</span> <span class="pre">'^[0-9]+(\.[0-9]+)*$'</span> <span class="pre">ORDER</span> <span class="pre">BY</span> <span class="pre">string_to_array(tool_version,</span> <span class="pre">'.')::int[]</span> <span class="pre">DESC</span> <span class="pre">LIMIT</span> <span class="pre">1</span></code>), the same starting
+point the start gate uses — and prints every later release’s block up to
+this binary, oldest first. It is exclusive: that release’s steps already
+ran. When no deploy was ever acknowledged, pass the schema stamp (<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">schema_version</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.schema_meta</span></code>, read before the migrate
+moves it) with <code class="docutils literal notranslate"><span class="pre">--inclusive</span></code>, which prints the stamp release’s own block as
+well: its steps were never acknowledged either (PR #218 fix review r1).
+<code class="docutils literal notranslate"><span class="pre">--inclusive</span></code> without <code class="docutils literal notranslate"><span class="pre">--since</span></code> is an error. Consecutive releases with identical steps print as one block
 labelled with the range it covers. When more than one release has steps, a
 header comes first: run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">all</span></code>, the migrate and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code> <strong>once</strong>, not once per block — the migrate is the strongest any block
-asks for (a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> if any block needs one, otherwise
+asks for (a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> if any block needs one and no later
+release in the range lifts it, as 0.29.61 lifts 0.29.60’s; otherwise
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>) — then every block’s checks, heals and
-audits, oldest first, and a step that needs the running release (such as
-<code class="docutils literal notranslate"><span class="pre">adopt-forge-id</span></code> or the approvals page) after the start. A <code class="docutils literal notranslate"><span class="pre">--since</span></code> value
+audits, oldest first, then <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code>, then <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code>,
+and a step that needs the running release (such as <code class="docutils literal notranslate"><span class="pre">adopt-forge-id</span></code> or the
+approvals page) after the start. The start gate’s refusal names the same
+migrate for the range it prints. A <code class="docutils literal notranslate"><span class="pre">--since</span></code> value
 that is not a version (dotted non-negative numbers such as <code class="docutils literal notranslate"><span class="pre">0.29.64</span></code>) is an
 error: the command names the flag and exits non-zero.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> prints the same accumulated list, with the same

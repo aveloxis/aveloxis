@@ -40,10 +40,14 @@ type fakeGate struct {
 	otherErr       error
 	listErr        error // round 6: a confirmed positive whose address listing failed
 	otherProbed    bool
+	ackedErr       error // PR #218 fix review r4 F1: DeployAckExists fails
+	hasDataErr     error // PR #218 fix review r7 F1: FleetHasCollectedData fails
 }
 
-func (f *fakeGate) FleetHasCollectedData(context.Context) (bool, error)   { return f.hasData, nil }
-func (f *fakeGate) DeployAckExists(context.Context, string) (bool, error) { return f.acked, nil }
+func (f *fakeGate) FleetHasCollectedData(context.Context) (bool, error) {
+	return f.hasData, f.hasDataErr
+}
+func (f *fakeGate) DeployAckExists(context.Context, string) (bool, error) { return f.acked, f.ackedErr }
 func (f *fakeGate) LatestDeployAck(context.Context, string) (string, error) {
 	return f.latestAck, f.latestAckErr
 }
@@ -132,7 +136,7 @@ func TestStartCmdGatesOnDeploySteps(t *testing.T) {
 	if !strings.Contains(src, `BoolVar(&skipDeployCheck, "skip-deploy-check"`) {
 		t.Error("start must register the --skip-deploy-check flag")
 	}
-	for _, name := range []string{"deployChecklistCmd()", "ackDeployCmd(&cfgPath)"} {
+	for _, name := range []string{"deployChecklistCmd(&cfgPath)", "ackDeployCmd(&cfgPath)"} {
 		if !strings.Contains(src, name) {
 			t.Errorf("%s must be registered in main", name)
 		}
@@ -219,7 +223,7 @@ func TestCheckDeployReadinessRefusesWhenStampBehindBinary(t *testing.T) {
 		t.Fatal("nothing may be acknowledged on the fleet ledger from a refusal")
 	}
 	s := out.String()
-	for _, want := range []string{"0.29.2", "0.29.3", "step 2", "aveloxis migrate --skip-views", "has not completed", "aveloxis start scancode-worker", "--skip-deploy-check"} {
+	for _, want := range []string{"0.29.2", "0.29.3", "the migrate of the deploy steps from the schema stamp (0.29.2", "aveloxis migrate --skip-views", "has not completed", "aveloxis start scancode-worker", "--skip-deploy-check"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the refusal must carry %q:\n%s", want, s)
 		}
@@ -451,14 +455,28 @@ func TestDeployAckContextSurvivesAnExpiredCaller(t *testing.T) {
 // The wiring pin: runDeployGate must not hand the readiness check a
 // fresh unbounded context.Background().
 func TestRunDeployGateDoesNotPassAnUnboundedContext(t *testing.T) {
-	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func runDeployGate("))
-	if strings.Contains(body, "checkDeployReadiness(context.Background()") {
-		t.Error("runDeployGate must bound checkDeployReadiness's pre-prompt queries — an unbounded context " +
-			"lets a concurrent migrate's ACCESS EXCLUSIVE on collection_queue block `start all` forever, " +
-			"before web and api ever launch (L10 finding 2)")
+	src := srctest.Read(t, "cmd/aveloxis/deploy_checklist.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func runDeployGate("))
+	// PR #218 fix review r2 F3: this used to look for the unbounded call's
+	// literal spelling, which the rename to checkDeployReadinessNaming made
+	// unmatchable — so assert the POSITIVE shape instead: the one readiness
+	// call's first argument is queryCtx, and queryCtx is the bounded one.
+	// r8 F1: the bounds now live in openDeployGate, shared with
+	// `deploy-checklist --pending`; runDeployGate's queryCtx is its result.
+	const call = "checkDeployReadinessNaming("
+	if n := strings.Count(body, call); n != 1 {
+		t.Fatalf("runDeployGate must call %s exactly once (found %d); this pin reads its first argument", call, n)
 	}
-	if !strings.Contains(body, "deployGateDialTimeout") {
-		t.Error("runDeployGate must derive its query bound from the named timeout, not a fresh literal")
+	arg, _, _ := strings.Cut(body[strings.Index(body, call)+len(call):], ",")
+	if strings.TrimSpace(arg) != "queryCtx" || !strings.Contains(body, "queryCtx, closeGate, err := openDeployGate(cfgPath, deployGateDialTimeout)") {
+		t.Errorf("runDeployGate must hand the readiness check queryCtx from openDeployGate, the bounded context (first argument is %q) — "+
+			"an unbounded context lets a concurrent migrate's ACCESS EXCLUSIVE on collection_queue block `start all` "+
+			"forever, before web and api ever launch (L10 finding 2)", strings.TrimSpace(arg))
+	}
+	opener := srctest.StripGoComments(srctest.FuncBody(t, src, "func openDeployGate("))
+	if strings.Count(opener, "context.WithTimeout(context.Background(), bound)") != 2 ||
+		!strings.Contains(opener, "db.NewPostgresStore(dialCtx,") {
+		t.Error("openDeployGate must bound the dial AND the queries with deployGateDialTimeout (round-11 finding 4, L10 finding 2)")
 	}
 	check := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func checkDeployReadinessNaming(")) // the body since PR #218 fix review r1 F2
 	if !strings.Contains(check, "deployAckContext(ctx)") {
@@ -710,10 +728,13 @@ func TestDedupReposSendsTheDeployStepsFirst(t *testing.T) {
 			}
 		}
 	}
-	// The help's precondition and backstop paragraphs, the no-duplicates
-	// INFO and the next-steps INFO. Fewer means a mention was dropped or
-	// the scan stopped seeing one; re-derive before lowering.
-	srctest.MinCount(t, "`--skip-views` mentions in dedup_repos.go's strings", mentions, 4)
+	// The help's backstop paragraph, the no-duplicates INFO and the
+	// next-steps INFO. (The precondition paragraph named `migrate
+	// --skip-views` as a fallback until PR #218 fix review r4: it now
+	// points at `deploy-checklist --pending`, whose last line names the
+	// migrate.) Fewer means a mention was dropped or the scan stopped
+	// seeing one; re-derive before lowering.
+	srctest.MinCount(t, "`--skip-views` mentions in dedup_repos.go's strings", mentions, 3)
 }
 
 // stringExpressionsIn returns the value of every string expression in a Go

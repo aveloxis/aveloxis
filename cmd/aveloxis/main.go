@@ -81,7 +81,7 @@ func newRootCmd() *cobra.Command {
 		stripQuotedHistoryCmd(&cfgPath),
 		registerJiraProjectsCmd(&cfgPath),
 		backfillJiraIdentitiesCmd(&cfgPath),
-		deployChecklistCmd(),
+		deployChecklistCmd(&cfgPath),
 		ackDeployCmd(&cfgPath),
 		mailingListStatsCmd(&cfgPath),
 		verifyMailingListCmd(&cfgPath),

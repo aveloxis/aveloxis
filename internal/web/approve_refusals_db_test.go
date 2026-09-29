@@ -70,13 +70,14 @@ func TestApproveRefusalsAreNotServerErrors(t *testing.T) {
 	var logs strings.Builder
 	s := New(store, config.WebConfig{}, nil, "", slog.New(slog.NewTextHandler(&logs, nil)))
 	s.sessions["admin"] = &Session{UserID: auid, LoginName: admin, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
-	approve := func(id int64) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "/admin/add-requests/"+strconv.FormatInt(id, 10)+"/approve", nil)
+	decide := func(id int64, decision string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/admin/add-requests/"+strconv.FormatInt(id, 10)+"/"+decision, nil)
 		r.AddCookie(&http.Cookie{Name: "aveloxis_session", Value: "admin"})
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
 		return w
 	}
+	approve := func(id int64) *httptest.ResponseRecorder { return decide(id, "approve") }
 
 	w := approve(reqID)
 	body := strings.ToLower(w.Body.String())
@@ -85,12 +86,23 @@ func TestApproveRefusalsAreNotServerErrors(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(body, "longer than 2684") || strings.Contains(body, "1342") || !strings.Contains(body, "reject") {
 		t.Errorf("approving an over-long legacy org = %d %q; want 409 telling the admin to reject it", w.Code, strings.TrimSpace(w.Body.String()))
 	}
+	// PR #218 fix review r2 F6: a request approved before v0.29.39 that lost
+	// its registration reaches the same refusal on re-approve, and rejecting
+	// an approved row is a silent no-op, so the advice must cover that state
+	// as its credentials twin does.
+	if !strings.Contains(body, "already approved") {
+		t.Errorf("the over-long refusal must say what happens to an already-approved request: %q", strings.TrimSpace(w.Body.String()))
+	}
 	if strings.Contains(w.Body.String(), strings.Repeat("a", 50)) {
 		t.Errorf("the 409 body echoes the URL")
 	}
 
 	if w := approve(reqID + 1_000_000); w.Code != http.StatusNotFound {
 		t.Errorf("approving a request that does not exist = %d %q; want 404", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	// PR #218 fix review r2 (test gap): the reject handler's 404 arm.
+	if w := decide(reqID+1_000_000, "reject"); w.Code != http.StatusNotFound {
+		t.Errorf("rejecting a request that does not exist = %d %q; want 404", w.Code, strings.TrimSpace(w.Body.String()))
 	}
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a refusal or a missing request was logged as a server error:\n%s", logs.String())

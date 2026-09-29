@@ -441,12 +441,18 @@ func OrgApprovalRefusalAdvice(err error, ghAPIBase string) string {
 	if errors.Is(err, ErrURLTooLong) {
 		// PR #218 fix review r1: its own text ("longer than 1342 bytes") is
 		// the add limit; this refusal is the registration index's bound.
-		return fmt.Sprintf("the organization URL is longer than %d bytes, the most the registration index holds; reject the request — it can never be registered", maxIndexedURLBytes)
+		// PR #218 fix review r2 F6: a request approved before v0.29.39
+		// that lost its registration reaches this on re-approve, and a
+		// reject of an approved row changes nothing — say so, as the
+		// credentials twin below does.
+		return fmt.Sprintf("the organization URL is longer than %d bytes, the most the registration index holds; reject the request — it can never be registered, and one that is already approved cannot be registered and nothing enumerates it", maxIndexedURLBytes)
 	}
 	if errors.Is(err, platform.ErrURLUserinfo) {
 		return "the organization URL carries credentials; reject the request — one that is already approved cannot be registered and nothing enumerates it"
 	}
-	return err.Error() + " (" + platform.GitHubWebHost(ghAPIBase) + "); reject the request instead"
+	// PR #218 fix review r3 F3: an org approved before v0.29.57's host gate
+	// reaches this on re-approve too (registerApprovedOrg → orgRegistrable).
+	return err.Error() + " (" + platform.GitHubWebHost(ghAPIBase) + "); reject the request instead — one that is already approved cannot be registered and nothing enumerates it"
 }
 
 // orgRegistrable is the registration gate: a "github"-labelled org must be

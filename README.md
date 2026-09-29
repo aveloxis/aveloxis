@@ -1241,7 +1241,7 @@ pip install -r docs/requirements.txt && rm -f docs/_build/html/searchindex.js &&
 Starting Apache mailing-list collection
 
 ###### 1. Schema must be at v0.25.9+ (the mailing-list tables + platform 6):
-Run the binary's deploy steps: `aveloxis deploy-checklist` prints them. A release with none needs only:
+Run the pending deploy steps: `aveloxis deploy-checklist --pending` prints them and the migrate to run. With none pending, it is only:
 ```bash
 aveloxis stop all && aveloxis migrate --skip-views && aveloxis start all
 ```

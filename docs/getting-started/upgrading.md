@@ -10,12 +10,8 @@ Every upgrade is these four steps, in this order, on the primary host:
 
 ```bash
 AVELOXIS_SRC=/path/to/aveloxis    # the git checkout of this repository
-AVELOXIS_DB=postgres://aveloxis@localhost:5432/aveloxis   # the database in aveloxis.json, as a psql connection string
-FROM=$(psql "$AVELOXIS_DB" -Atc "SELECT tool_version FROM aveloxis_ops.deploy_ack WHERE tool_version ~ '^[0-9]+(\.[0-9]+)*$' ORDER BY string_to_array(tool_version, '.')::int[] DESC LIMIT 1")   # the last ACKNOWLEDGED deploy (highest version, not newest row)
-INCL=
-[ -n "$FROM" ] || { FROM=$(psql "$AVELOXIS_DB" -Atc "SELECT schema_version FROM aveloxis_ops.schema_meta"); INCL=--inclusive; }   # never acknowledged: the schema stamp, its own block included — read it before step 3 moves it
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version   # 1. the new binary (running processes keep the old one until restarted)
-aveloxis deploy-checklist --since "$FROM" $INCL   #    every release's steps after FROM (from it, with --inclusive), oldest first — read it now: it names the migrate for step 3
+aveloxis deploy-checklist --pending   #    every step this database still needs, oldest first, and the migrate for step 3 — read it now, before step 3 moves the stamp
 aveloxis stop all                 # 2. nothing runs against the schema while it changes
 aveloxis migrate --skip-views     # 3. the schema — a plain `aveloxis migrate` instead when the checklist asks for one (a release that changed a view definition)
 #                                 #    …then the checklist's checks, heals and audits, every block's, oldest first
@@ -23,23 +19,34 @@ aveloxis ack-deploy               #    …then record that they ran
 aveloxis start all                # 4. serve, web and api; then any step the checklist says needs the running release
 ```
 
-`FROM` is the last **acknowledged** deploy, the same starting point
-`aveloxis start serve` uses: `--since` is exclusive, and the acknowledged
-release's steps already ran. Versions compare as numbers (0.29.9 is before
-0.29.10), so the query orders by the version, not by time or text. When no
-deploy was ever acknowledged (the query prints nothing, or fails because
-the `deploy_ack` table predates v0.29.0), `FROM` falls back to the schema
-stamp with `--inclusive`: the stamp release's own steps were never
-acknowledged either, so its block prints and runs too — the range the start
-gate prints in that case.
+`deploy-checklist --pending` reads this database's last **acknowledged**
+deploy and its schema stamp and prints the range `aveloxis start serve`
+enforces — the same computation, not a copy of it: every release after the
+acknowledged one; from the stamp, its own block included, when no deploy
+was ever acknowledged (the stamp release's steps were never acknowledged
+either) or when the stamp is *behind* the acknowledgement (one recorded
+after a migrate that did not complete — the stamp is the evidence); and the
+new binary's own steps when there is neither, or when the acknowledgements
+cannot be read, which it says. A database from before v0.29.0 has no
+`deploy_ack` table and counts as never acknowledged: its range starts at
+the stamp. When the stamp is current and this release's steps are
+acknowledged (or it has none), it prints `nothing pending` — only then: a
+missing, unreadable or malformed stamp prints the steps, saying why first,
+and so does a fresh install with no collected data yet.
+Otherwise its last line names the migrate step 3 runs. It reads the database in
+`aveloxis.json` (`--config` for another) and changes nothing. Versions
+compare as numbers (0.29.9 is before 0.29.10).
 
 When more than one release in the range has deploy steps, `deploy-checklist
---since` prints a header before the blocks: stop, migrate and start **once**,
+--pending` (and `--since`) prints a header before the blocks: stop, migrate and start **once**,
 not once per block, with the strongest migrate any block asks for (a plain
 `aveloxis migrate` if any block needs it and no later release in the range
 lifts it — 0.29.61 lifts 0.29.60's, for example, because it moved the
 supply-chain views out of the 8Knot batch — otherwise `--skip-views`) —
 that is the migrate step 3 runs, and the one the start gate's refusal names.
+When the header names `--skip-views` although an older block in the range
+asks for a plain migrate, a line under it says which later release lifts
+that block's instruction.
 The header's sequence ends with `aveloxis ack-deploy`, then `aveloxis start
 all`, as the steps above do. Consecutive releases with identical steps print as
 one block labelled with the range they cover. Each block's own stop, migrate
@@ -54,9 +61,11 @@ deploy steps, `aveloxis start serve` (and `start all`) asks at a terminal
 whether they were completed and, without a terminal — a script, systemd,
 an SSH command — **refuses to start** until they are acknowledged. Run it
 after the heals, not before: it records that the steps ran. If the schema
-stamp comes back empty or with an error too, the section below says how to
-find the version you are coming from; with an empty `FROM`,
-`deploy-checklist` prints only the new binary's own steps.
+stamp cannot be read, `--pending` says so and starts the range from the
+acknowledgements (the new binary's own steps if there are none); the
+section below says how to find the version you are
+coming from, and `aveloxis deploy-checklist --since <version>` prints the
+steps after it.
 
 `--skip-views` skips only the 8Knot materialized-view batch (hours at
 fleet scale); everything else — the schema, the ledgered backfills, the
@@ -69,7 +78,7 @@ is behind their binary, naming the migrate, instead of serving queries
 against columns the schema does not have yet; and `aveloxis start serve`
 prints the deploy steps of every release since the last acknowledged one,
 oldest first, under the same once-only header and with the same collapsing
-of identical blocks as `deploy-checklist --since`, not only the current
+of identical blocks as `deploy-checklist --pending`, not only the current
 version's. Neither web nor api ever migrates. The
 sections below are the detail behind step 3.
 
@@ -116,7 +125,7 @@ LIMIT 1;
 AVELOXIS_SRC=/path/to/aveloxis   # the git checkout of this repository
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis
 aveloxis version                # confirm the new binary
-aveloxis deploy-checklist       # this release's exact steps: follow them where they differ from these
+aveloxis deploy-checklist --pending   # the exact steps this database needs: follow them where they differ from these
 aveloxis stop all               # serve, web, api (also cleans stale pidfiles)
 aveloxis migrate --skip-views   # schema + ledgered backfills; skips the materialized views
 # ... operator-run heals from the table below, in order ...
@@ -130,7 +139,7 @@ aveloxis start all
 `aveloxis migrate` (without `--skip-views`), which drops and re-creates the
 views from the new definitions; `serve` never does it at startup. v0.29.57 is
 such a release (`explorer_libyear_summary`'s definition now orders unknown
-repositories last): its deploy checklist, printed by `aveloxis deploy-checklist`, uses a
+repositories last): its deploy checklist (in the range `aveloxis deploy-checklist --pending` prints) uses a
 plain `aveloxis migrate` in place of the `--skip-views` step above, then
 checks that the new definition is in place. That check matters because the
 migrate only logs a WARN (`materialized view creation had errors`) when the

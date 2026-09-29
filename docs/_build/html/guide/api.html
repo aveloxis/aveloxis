@@ -3044,7 +3044,12 @@ an approved org request whose registration is missing registers it,
 returns <code class="docutils literal notranslate"><span class="pre">changed:</span> <span class="pre">true</span></code> and notifies the requester). The
 requester is notified by email when a mailer is configured.
 Response: <code class="docutils literal notranslate"><span class="pre">{ok:</span> <span class="pre">true,</span> <span class="pre">changed:</span> <span class="pre">bool}</span></code> — <code class="docutils literal notranslate"><span class="pre">changed=false</span></code> means the
-request was already decided (idempotent double-click).</p></li>
+request was already decided (idempotent double-click). A request id that
+does not exist answers <code class="docutils literal notranslate"><span class="pre">404</span></code>. An org request that can never be registered
+answers <code class="docutils literal notranslate"><span class="pre">409</span></code> with the reason and “reject the request”: an org that is
+not on this deployment’s GitHub host, a URL carrying credentials, or a
+request created before v0.29.54 whose URL is longer than the registration
+index holds (2,684 bytes).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/monitor/stats</span></code> — <code class="docutils literal notranslate"><span class="pre">{queue:</span> <span class="pre">{status:</span> <span class="pre">count}}</span></code>:
 <code class="docutils literal notranslate"><span class="pre">queued</span></code>, <code class="docutils literal notranslate"><span class="pre">collecting</span></code> (real jobs), <code class="docutils literal notranslate"><span class="pre">draining</span></code> (repos parked by the
 startup staging drain or by heal-collection-gaps, v0.29.64) and <code class="docutils literal notranslate"><span class="pre">total</span></code>.</p></li>

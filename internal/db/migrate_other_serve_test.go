@@ -844,7 +844,9 @@ func TestOtherServeAdviceIsTheOneVerdictSpelling(t *testing.T) {
 	for _, site := range []struct{ file, sig, what string }{
 		{"internal/db/migrate.go", "func RunMigrations(", "the serve fast-path WARN"},
 		{"internal/db/migrate.go", "func startupMigrateRefusal(", "the startup-migration refusal"},
-		{"cmd/aveloxis/deploy_checklist.go", "func checkDeployReadiness(", "the `aveloxis start serve` deploy-gate note"},
+		// checkDeployReadinessNaming holds the gate's body since PR #218 fix
+		// review r1 F2 (checkDeployReadiness is a thin wrapper over it).
+		{"cmd/aveloxis/deploy_checklist.go", "func checkDeployReadinessNaming(", "the `aveloxis start serve` deploy-gate note"},
 	} {
 		body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, site.file), site.sig))
 		if !strings.Contains(body, ".Advice()") {

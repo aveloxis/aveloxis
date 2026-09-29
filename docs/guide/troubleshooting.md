@@ -657,7 +657,7 @@ this binary` instead of serving queries against columns the schema does
 not have yet (`aveloxis start` reports the child as exited):
 
 ```
-level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
+level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none)"
 ```
 
 If the ERROR instead reads `schema version could not be read`, the process
@@ -670,8 +670,8 @@ the connection and grants first. (Before v0.29.57 a failed read was logged as
 
 **Solution:**
 
-Run the release's upgrade ladder. `aveloxis deploy-checklist` prints it; a
-release with no checklist needs only:
+Run the upgrade ladder. `aveloxis deploy-checklist --pending` prints every
+step this database still needs and the migrate to run; with none, it is only:
 
 ```bash
 aveloxis stop all
@@ -1464,8 +1464,8 @@ msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_g
 **Fix sequence (v0.25.32+):**
 
 ```bash
-aveloxis deploy-checklist           # first: this binary's deploy steps, if not done
-                                    # yet (its migrate creates the LOWER(repo_git)
+aveloxis deploy-checklist --pending # first: the deploy steps not done yet, if any
+                                    # (the migrate creates the LOWER(repo_git)
                                     # lookup index and WARNs + skips the unique
                                     # index while dups remain; with no checklist,
                                     # `stop all`, `migrate --skip-views`, `start all`)

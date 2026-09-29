@@ -446,7 +446,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// machinery.
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", RedactURLUserinfo(url), "attempt", attempt+1, "error", parsed,
-					"token_prefix", tokenPrefix(key.Token),
+					"token_hash", TokenHash(key.Token),
 					"reset", resetHeaderTime(resp)) // Phase 0
 				noteCause(parsed, attempt)
 				if rotations < maxRotations {
@@ -494,7 +494,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", RedactURLUserinfo(url), "query", query, "wait", wait,
-					"token_prefix", tokenPrefix(key.Token))
+					"token_hash", TokenHash(key.Token))
 				// 2026-09-12 (Bug C of the chaoss.tv analysis): rest THIS
 				// key in the pool for the Retry-After. Pre-fix only this
 				// goroutine slept and every other caller kept being handed
@@ -521,7 +521,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// on PR #209).
 			if isPrimaryRefusal(resp) {
 				c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url),
-					"token_prefix", tokenPrefix(key.Token),
+					"token_hash", TokenHash(key.Token),
 					"reset", resetHeaderTime(resp)) // Phase 0: when GitHub says the refusal ends
 				// Copilot round 7 on PR #193: a 403 carrying
 				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
@@ -560,11 +560,11 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			if readErr == nil && isRateLimitBody(respBody) {
 				if isAnonymousRateLimitBody(respBody) {
 					c.logger.Error("graphql 403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
-						"url", RedactURLUserinfo(url), "token_prefix", tokenPrefix(key.Token),
+						"url", RedactURLUserinfo(url), "token_hash", TokenHash(key.Token),
 						"attempt", attempt+1, "body_snippet", truncateBody(string(respBody), 240))
 				} else {
 					c.logger.Warn("graphql 403 with rate-limit body but no rate-limit headers — key rested, retrying",
-						"url", RedactURLUserinfo(url), "token_prefix", tokenPrefix(key.Token),
+						"url", RedactURLUserinfo(url), "token_hash", TokenHash(key.Token),
 						"attempt", attempt+1, "body_snippet", truncateBody(string(respBody), 240))
 				}
 				noteCause(&classifiedGraphQLError{class: ClassRateLimit,
@@ -582,7 +582,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// key's checkout budget was marked before release.
 			_ = resp.Body.Close()
 			c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url), "status", resp.StatusCode,
-				"token_prefix", tokenPrefix(key.Token))
+				"token_hash", TokenHash(key.Token))
 			noteCause(&classifiedGraphQLError{class: ClassRateLimit,
 				message: "graphql rate limit exhausted (429 primary refusal, remaining 0) persisted through the retry budget"}, attempt)
 			if rotations < maxRotations {
@@ -595,7 +595,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("graphql 429 rate limited", "url", RedactURLUserinfo(url), "wait", wait,
-				"token_prefix", tokenPrefix(key.Token))
+				"token_hash", TokenHash(key.Token))
 			// 429 is the same per-key throttle as 403 + Retry-After
 			// (GitHub documents both shapes for secondary limits): the
 			// key is already resting (UpdateFromResponse, under the

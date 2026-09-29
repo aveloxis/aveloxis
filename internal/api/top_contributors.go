@@ -48,8 +48,8 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 	// v0.27.69 — the "hide bots" checkbox: ?bots=hide filters bot
-	// identities (App accounts, [bot] logins, -bot/-robot machine
-	// accounts — the k8s-ci-robot class).
+	// identities (App accounts, [bot] logins, logins ending in "bot" —
+	// the k8s-ci-robot and pytorchmergebot class; db.displayBotLoginSQL).
 	excludeBots := r.URL.Query().Get("bots") == "hide"
 
 	key := fmt.Sprintf("topcontrib|%d|%s|%s|%d|%t", repoID, since.Format("2006-01-02"), until.Format("2006-01-02"), limit, excludeBots)

@@ -87,7 +87,7 @@ func (s *PostgresStore) GetContributorsForHistoryBackfill(ctx context.Context, l
 			  AND NOT (
 			      COALESCE(gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
 			      OR gh_login ILIKE '%[bot]%'
-			      OR gh_login ~* '[-_](bot|robot)[0-9]*$'
+			      OR gh_login ~* '[-_](bot|robot)[0-9]*$' -- narrower than "Hide bots" (displayBotLoginSQL) on purpose: this decides whose history is collected
 			      OR LOWER(gh_login) = ANY($4::text[])
 			  )
 			  `+classFilter+`

@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,15 +115,15 @@ type errorTextAlias struct {
 // variable already known to hold it, or either through a normalising
 // strings call — and names the variable it came through ("<inline>" when
 // none).
-func derivesFromErrorText(e ast.Expr, aliases map[*ast.Object]bool) (bool, string) { //nolint:staticcheck // SA1019: ast.Object is the parser's own local-scope resolution; its known mis-resolution (composite-literal keys) cannot reach a strings-call argument, and type-checking the tree for a source ratchet is not worth it
+func derivesFromErrorText(e ast.Expr, aliases *aliasSet) (bool, string) {
 	switch x := e.(type) {
 	case *ast.ParenExpr:
 		return derivesFromErrorText(x.X, aliases)
 	case *ast.Ident:
-		// Keyed by the parser's resolved object, not the name, so a
-		// shadowing variable or a closure parameter of the same name is a
-		// different variable (review round 4).
-		if x.Obj != nil && aliases[x.Obj] {
+		// Keyed by the declaration the identifier resolves to, not the
+		// name, so a shadowing variable or a closure parameter of the same
+		// name is a different variable (review round 4).
+		if aliases.has(x) {
 			return true, x.Name
 		}
 	case *ast.CallExpr:
@@ -143,21 +144,66 @@ func derivesFromErrorText(e ast.Expr, aliases map[*ast.Object]bool) (bool, strin
 	return false, ""
 }
 
+// aliasSet holds the variables known to carry an error's text, keyed by
+// the declaration each identifier resolves to (go/types; the parser's own
+// ast.Object resolution is deprecated, SA1019).
+type aliasSet struct {
+	info *types.Info
+	set  map[types.Object]bool
+}
+
+func (a *aliasSet) has(id *ast.Ident) bool {
+	o := a.info.ObjectOf(id)
+	return o != nil && a.set[o]
+}
+
+// add records the variable id declares or assigns; false when id resolves
+// to nothing or is already known.
+func (a *aliasSet) add(id *ast.Ident) bool {
+	o := a.info.ObjectOf(id)
+	if o == nil || a.set[o] {
+		return false
+	}
+	a.set[o] = true
+	return true
+}
+
+// resolveIdents type-checks one file on its own, only to learn which
+// declaration each identifier names. Imports resolve to empty packages and
+// every type error is ignored: local variables, parameters and closures
+// resolve without the rest of the package, and nothing else is used.
+func resolveIdents(fset *token.FileSet, f *ast.File) *types.Info {
+	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
+	conf := types.Config{Importer: emptyImporter{}, Error: func(error) {}}
+	_, _ = conf.Check(f.Name.Name, fset, []*ast.File{f}, info)
+	return info
+}
+
+type emptyImporter struct{}
+
+func (emptyImporter) Import(path string) (*types.Package, error) {
+	p := types.NewPackage(path, filepath.Base(path))
+	p.MarkComplete()
+	return p, nil
+}
+
 func errorTextAliasDecisions(fset *token.FileSet, f *ast.File, examined *int) []errorTextAlias {
 	var out []errorTextAlias
+	info := resolveIdents(fset, f)
 	check := func(fn string, body *ast.BlockStmt) {
-		aliases := map[*ast.Object]bool{} //nolint:staticcheck // SA1019: ast.Object is the parser's own local-scope resolution; its known mis-resolution (composite-literal keys) cannot reach a strings-call argument, and type-checking the tree for a source ratchet is not worth it
+		aliases := &aliasSet{info: info, set: map[types.Object]bool{}}
 		// Fixpoint: a variable built from another alias is an alias too.
 		for changed := true; changed; {
 			changed = false
 			note := func(lhs, rhs ast.Expr) {
 				id, ok := lhs.(*ast.Ident)
-				if !ok || id.Name == "_" || id.Obj == nil || aliases[id.Obj] {
+				if !ok || id.Name == "_" || aliases.has(id) {
 					return
 				}
 				if ok, _ := derivesFromErrorText(rhs, aliases); ok {
-					aliases[id.Obj] = true
-					changed = true
+					if aliases.add(id) {
+						changed = true
+					}
 				}
 			}
 			ast.Inspect(body, func(n ast.Node) bool {

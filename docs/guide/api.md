@@ -358,20 +358,22 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-`?bots=hide` (v0.27.69; widened v0.28.1) filters automation
+`?bots=hide` (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types
 `gh_type IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`
 (GitHub App accounts like `dependabot[bot]`; fine-grained-PAT
 actors; org accounts acting as contributors — the codecov shape,
 whose enriched row is typed Organization), the `[bot]` login
-suffix, the hyphenated `-bot`/`-robot` machine-account convention
-(the `k8s-ci-robot` class, which GitHub types as a regular User —
+suffix, a login ending in `bot` (so `-bot`, `-robot` and
+separator-less names such as `pytorchmergebot`; digits may follow —
+the `k8s-ci-robot` class, which GitHub types as a regular User,
 verified live), and the curated system-account list (actions-user,
 web-flow, ghost, codecov, codecov-io, codecov-commenter — machine
 accounts GitHub types as plain User). `Mannequin` rows are
 deliberately NOT hidden: mannequins are import placeholders
-standing in for unmatched humans, not automation. The separator
-requirement keeps human surnames (talbot) safe. Deliberately
+standing in for unmatched humans, not automation. Logins ending in a
+surname that ends in `bot` (abbot, barbot, cabot, chabot, jabot, rabot,
+talbot) stay visible. Deliberately
 broader than the `contributor_retention` metric's bot exclusion,
 which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the

@@ -262,10 +262,11 @@ func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, r
 	return strings.Join(tokens, ","), tokens[0], release
 }
 
-// lentTokenPrefixes names the tokens lent to a scorecard attempt by the key
-// pool's token_prefix, never in full (worklist item 79). joined is the
+// lentTokenHashes names the tokens lent to a scorecard attempt by the key
+// pool's token_hash (platform.TokenHash), never by any character of the
+// token (worklist item 79; CodeQL alert 201). joined is the
 // comma-separated GITHUB_TOKEN value.
-func lentTokenPrefixes(joined string) []string {
+func lentTokenHashes(joined string) []string {
 	if joined == "" {
 		return nil
 	}
@@ -273,7 +274,7 @@ func lentTokenPrefixes(joined string) []string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if p != "" {
-			out = append(out, platform.TokenPrefix(p))
+			out = append(out, platform.TokenHash(p))
 		}
 	}
 	return out
@@ -499,7 +500,7 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 			"timed_out", errors.Is(attemptCtx.Err(), context.DeadlineExceeded),
 			"duration", time.Since(attemptStart),
 			"timeout_cap", timeout,
-			"lent_tokens", lentTokenPrefixes(githubToken), // worklist item 79
+			"lent_tokens", lentTokenHashes(githubToken), // worklist item 79
 			"error", invokeErr)
 	}()
 

@@ -100,7 +100,7 @@ func TestTopContributorsBotFilterCoversNonHumanTypes(t *testing.T) {
 		t.Error("excludeBots must exclude the curated githubSystemAccounts list against the EFFECTIVE login expression (machine accounts typed 'User')")
 	}
 	if strings.Count(src, effLogin+` ILIKE '%[bot]%'`) != 1 ||
-		strings.Count(src, effLogin+` ~* '[-_](bot|robot)[0-9]*$'`) != 1 {
+		strings.Count(src, "displayBotLoginSQL(`"+effLogin+"`)") != 1 {
 		t.Error("the [bot]/-robot pattern predicates must test the effective-login expression, not bare cntrb_login")
 	}
 	if strings.Contains(src, `OR c.cntrb_login ILIKE`) {
@@ -278,6 +278,15 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	seedBot("_avtopc_x-ci-robot", "0100abcd-0000-0000-0000-0000000000b2", "User") // k8s-class machine user
 	seedBot("_avtopc_x-bot", "0100abcd-0000-0000-0000-0000000000b3", "User")      // hyphen-bot machine user
 	seedBot("_avtopc_xtalbot", "0100abcd-0000-0000-0000-0000000000b4", "User")    // HUMAN surname — must survive
+	// v0.29.70 (operator: "widen the pattern for hiding"): a machine
+	// account without a separator (pytorchmergebot ranked first with
+	// "Hide bots" on), with digits, and a -robot without a separator;
+	// surnames ending in "bot" stay visible, digits included.
+	seedBot("_avtopc_xpytorchmergebot", "0100abcd-0000-0000-0000-0000000000b9", "User")
+	seedBot("_avtopc_xmergebot2", "0100abcd-0000-0000-0000-0000000000ba", "User")
+	seedBot("_avtopc_xcirobot", "0100abcd-0000-0000-0000-0000000000bb", "User")
+	seedBot("_avtopc_xabbot", "0100abcd-0000-0000-0000-0000000000bc", "User")  // HUMAN surname
+	seedBot("_avtopc_xcabot3", "0100abcd-0000-0000-0000-0000000000bd", "User") // HUMAN surname + digits
 
 	// v0.28.1 (A1): non-human account TYPES. Organization is the
 	// codecov production shape; ProgrammaticAccessBot is the
@@ -312,12 +321,13 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != len(filtered)+6 {
-		t.Errorf("excludeBots must drop exactly the 6 automation rows (incl. the fallback-login robot): all=%d filtered=%d", len(all), len(filtered))
+	if len(all) != len(filtered)+9 {
+		t.Errorf("excludeBots must drop exactly the 9 automation rows (incl. the fallback-login robot and the separator-less bots): all=%d filtered=%d", len(all), len(filtered))
 	}
 	for _, r := range filtered {
 		switch r.Login {
-		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot", "_avtopc_xorg", "_avtopc_xpab", "_avtopc_x-fb-robot":
+		case "_avtopc_x[bot]", "_avtopc_x-ci-robot", "_avtopc_x-bot", "_avtopc_xorg", "_avtopc_xpab", "_avtopc_x-fb-robot",
+			"_avtopc_xpytorchmergebot", "_avtopc_xmergebot2", "_avtopc_xcirobot":
 			t.Errorf("automation account %q survived the filter", r.Login)
 		}
 	}
@@ -325,8 +335,10 @@ func TestTopContributorsEndToEnd(t *testing.T) {
 	for _, r := range filtered {
 		survivors[r.Login] = true
 	}
-	if !survivors["_avtopc_xtalbot"] {
-		t.Error("human login ending in 'bot' without a separator (talbot) must NOT be filtered")
+	for _, human := range []string{"_avtopc_xtalbot", "_avtopc_xabbot", "_avtopc_xcabot3"} {
+		if !survivors[human] {
+			t.Errorf("%s: a login ending in a surname that ends in 'bot' must NOT be filtered", human)
+		}
 	}
 	if !survivors["_avtopc_xmann"] {
 		t.Error("Mannequin rows must NOT be filtered — they stand in for unmatched humans")

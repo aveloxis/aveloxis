@@ -106,7 +106,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 		if len(hot) == keyPoolSummaryHotKeys || k.Inflight == 0 {
 			break
 		}
-		hot = append(hot, fmt.Sprintf("%s:%d", k.Prefix, k.Inflight))
+		hot = append(hot, fmt.Sprintf("%s:%d", k.Hash, k.Inflight))
 	}
 	s.logger.Info("key pool summary",
 		"keys_alive", alive,
@@ -133,7 +133,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	if s.logger.Enabled(context.Background(), slog.LevelDebug) {
 		for _, k := range keys {
 			s.logger.Debug("key pool key",
-				"token_prefix", k.Prefix, "invalid", k.Invalid,
+				"token_hash", k.Hash, "invalid", k.Invalid,
 				"inflight", k.Inflight, "lent", k.Lent,
 				"core", k.Core, "graphql", k.GraphQL,
 				"secondary_hits", k.SecondaryHits,

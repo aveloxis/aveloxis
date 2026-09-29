@@ -860,7 +860,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			resp.Body.Close()
 			wait := parseRetryAfter(resp)
 			c.logger.Info("secondary rate limit", "url", RedactURLUserinfo(url), "wait", wait,
-				"token_prefix", tokenPrefix(key.Token))
+				"token_hash", TokenHash(key.Token))
 			// 2026-09-12 (Bug C): THIS key is resting in the pool for the
 			// Retry-After so other callers are routed to healthy keys —
 			// applied by UpdateFromResponse under the lease (PR #203
@@ -893,7 +893,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// like a regular rate limit so we don't hot-loop on the bug.
 			c.logger.Error("403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
 				"url", RedactURLUserinfo(url),
-				"token_prefix", tokenPrefix(key.Token),
+				"token_hash", TokenHash(key.Token),
 				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
@@ -909,11 +909,11 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			// release (worklist 67: the v0.29.9 log review showed the pool
 			// re-leasing the throttled key inside GitHub's one-minute floor);
 			// this arm keeps its logging and this attempt's own pacing.
-			// token_prefix and attempt stay in the line so the next review
+			// token_hash and attempt stay in the line so the next review
 			// can confirm the same-key rate fell to the ~1/K baseline.
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
 				"url", RedactURLUserinfo(url),
-				"token_prefix", tokenPrefix(key.Token),
+				"token_hash", TokenHash(key.Token),
 				"attempt", attempt+1,
 				"body_snippet", truncateBody(string(body), 240))
 			wait := jitteredBackoff(attempt)
@@ -943,7 +943,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		wait := parseRetryAfter(resp)
 		c.logger.Info("rate limited", "url", RedactURLUserinfo(url), "wait", wait,
-			"token_prefix", tokenPrefix(key.Token))
+			"token_hash", TokenHash(key.Token))
 		// 429 is the same per-key throttle as 403 + Retry-After: the key
 		// is already resting (UpdateFromResponse, under the lease — PR
 		// #203 review); this is only this attempt's own pacing.
@@ -1014,7 +1014,7 @@ func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, ur
 	if resource == res.String() && res != ResourceGraphQL {
 		c.logger.Info("rate limit exhausted",
 			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "resource", resource, "reset", reset,
-			"token_prefix", tokenPrefix(key.Token), "attempt", attempt+1,
+			"token_hash", TokenHash(key.Token), "attempt", attempt+1,
 			"rotating_to_another_key", true)
 		return respRotate, nil, nil
 	}
@@ -1024,7 +1024,7 @@ func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, ur
 	}
 	c.logger.Info("rate limit exhausted",
 		"url", RedactURLUserinfo(url), "status", resp.StatusCode, "resource", resource, "reset", reset,
-		"token_prefix", tokenPrefix(key.Token), "attempt", attempt+1,
+		"token_hash", TokenHash(key.Token), "attempt", attempt+1,
 		"rotating_to_another_key", false, "wait", wait)
 	select {
 	case <-ctx.Done():

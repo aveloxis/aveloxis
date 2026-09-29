@@ -112,8 +112,10 @@ func TestAdminGroupApprovalMailsTheRequesterOnce(t *testing.T) {
 		if w := decide(closed, decision); w.Code != http.StatusInternalServerError {
 			t.Errorf("%s on a failing store = %d, want 500", decision, w.Code)
 		}
-		if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "decision="+decision) || !strings.Contains(logs.String(), "closed pool") {
-			t.Errorf("a failed group %s must be logged at WARN with its error; log:\n%s", decision, logs.String())
+		// One line at ERROR through serverError (PR #218 review C15: a WARN
+		// before it logged the same failure twice).
+		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "decision "+decision+":") || !strings.Contains(logs.String(), "closed pool") {
+			t.Errorf("a failed group %s must be logged at ERROR with its error; log:\n%s", decision, logs.String())
 		}
 	}
 }
@@ -259,8 +261,10 @@ func TestAdminAddRequestDecisionThroughTheHandler(t *testing.T) {
 		if w := decide(closed, decision); w.Code != http.StatusInternalServerError {
 			t.Errorf("%s on a failing store = %d, want 500", decision, w.Code)
 		}
-		if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "decision="+decision) || !strings.Contains(logs.String(), "closed pool") {
-			t.Errorf("a failed add-request %s must be logged at WARN with its error; log:\n%s", decision, logs.String())
+		// One line at ERROR through serverError (PR #218 review C15: a WARN
+		// before it logged the same failure twice).
+		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "decision "+decision+":") || !strings.Contains(logs.String(), "closed pool") {
+			t.Errorf("a failed add-request %s must be logged at ERROR with its error; log:\n%s", decision, logs.String())
 		}
 	}
 }

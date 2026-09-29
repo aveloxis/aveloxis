@@ -206,18 +206,22 @@ one](#why-work_mem-is-the-dangerous-one).
 | `shared_buffers` | 20–25% of RAM | PostgreSQL's own page cache. Past ~25% you are just duplicating the OS page cache, and on a write-heavy fleet the larger checkpoint working set costs more than the extra hits gain. |
 | `effective_cache_size` | 65–75% of RAM | A planner *hint*, not an allocation. It tells the planner how much OS cache it can assume, which is what makes index scans win over sequential scans on the large tables. |
 | `work_mem` | See the budget below — **not** a round number | Per **operation**, not per connection. This is the setting that OOMs hosts. |
+| `hash_mem_multiplier` | Leave at the default `2.0` and budget for it, or set `1.0` to fit a tighter budget | A hash operation may use `work_mem × hash_mem_multiplier` (PostgreSQL 15 raised the default from `1.0` to `2.0`), so it enters the `work_mem` budget below. |
 | `maintenance_work_mem` | 2–4 GB | `VACUUM`, `CREATE INDEX`, `ALTER TABLE`. Bounded by `autovacuum_max_workers` running concurrently, so it multiplies too — just by a much smaller number. |
 | `jit` | `off` | Aveloxis's workload is insert- and index-lookup-heavy; JIT compilation buys little and is a known memory sink on wide analytic queries. A host that reports `fatal llvm error: Unable to allocate section memory` is paying for JIT it is not benefiting from. |
 | `max_connections` | Pool floor from [PostgreSQL configuration](#postgresql-configuration), plus headroom | Every connection is a potential `work_mem` multiplier, so this is a memory setting as much as a concurrency one. Raise it only with the budget below recomputed. |
 
 ### Why `work_mem` is the dangerous one
 
-`work_mem` is the limit for **one** sort or hash operation. A single query can
-use several; a parallel query multiplies by its worker count; and every
-connection can be running one. So the worst-case allocation is:
+`work_mem` is the limit for **one** sort operation. A hash operation (hash
+join, hash aggregate) may use `work_mem × hash_mem_multiplier`, and since
+PostgreSQL 15 that multiplier defaults to `2.0`, so a hash node can use twice
+`work_mem`. A single query can use several such operations; a parallel query
+multiplies by its worker count; and every connection can be running one. So
+the worst-case allocation, when the operations are hash nodes, is:
 
 ```
-max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
+max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem × hash_mem_multiplier
 ```
 
 where `ops_per_query` is the number of sort/hash nodes a plan runs at once
@@ -230,27 +234,31 @@ against roughly 10% of RAM, which leaves the rest for `shared_buffers` and
 the OS page cache:
 
 ```
-work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))
+work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather) × hash_mem_multiplier)
 ```
 
 A worked example on a 1 TB host running 300 connections with
-`max_parallel_workers_per_gather = 4`:
+`max_parallel_workers_per_gather = 4` and the default
+`hash_mem_multiplier = 2.0`:
 
 ```
-work_mem ≤ (1024 GB × 0.10) / (300 × 5) = 102 GB / 1500 ≈ 70 MB
+work_mem ≤ (1024 GB × 0.10) / (300 × 5 × 2.0) = 102.4 GB / 3000 ≈ 35 MB
 ```
 
-…so `64MB` is the right order of magnitude, and `2GB` — a value that looks
-unremarkable next to a 1 TB host — implies a worst case of
-`300 × 5 × 2GB = 3 TB`, three times the machine. That is not a hypothetical:
-it is what a real fleet drifted to, and it produced 106 out-of-memory errors
-in a three-second window, failing allocations as small as 40 bytes while
-inserting commits.
+With `hash_mem_multiplier = 1.0` the same host gives `102.4 GB / 1500 ≈ 70
+MB`. So tens of megabytes is the right order of magnitude, and `2GB` — a value
+that looks unremarkable next to a 1 TB host — implies a worst case of
+`300 × 5 × 2GB × 2.0 = 6000 GB`, almost six times the machine (3000 GB,
+almost three times it, even with the multiplier at `1.0`). That is not a hypothetical: it is what a
+real fleet drifted to, and it produced 106 out-of-memory errors in a
+three-second window, failing allocations as small as 40 bytes while inserting
+commits.
 
 The denominator moves with `max_connections`. The same host at 1000
-connections gives `(1024 GB × 0.10) / (1000 × 5) ≈ 21 MB`, and `128MB` there
-implies a worst case of `1000 × 5 × 128MB ≈ 625 GB`, more than half the
-machine on top of `shared_buffers`. When `max_connections` is far above what
+connections gives `(1024 GB × 0.10) / (1000 × 5 × 2.0) ≈ 10 MB`, and `128MB`
+there implies a worst case of `1000 × 5 × 128MB × 2.0 = 1250 GB`, more than
+the whole 1024 GB machine (625 GB, more than half of it on top of
+`shared_buffers`, with the multiplier at `1.0`). When `max_connections` is far above what
 the clients use, lower it to the pool floor first (it needs a restart), then
 recompute `work_mem`; lowering `work_mem` alone makes more operations spill
 to temporary files (see [Write-heavy hosts](#write-heavy-hosts-wal-checkpoints-and-temporary-files)).
@@ -270,7 +278,7 @@ collection workers):
 ```ini
 shared_buffers = 200GB                  # ~20% of RAM
 effective_cache_size = 700GB            # ~68% of RAM — a hint, not an allocation
-work_mem = 64MB                         # per OPERATION; see the budget above
+work_mem = 64MB                         # per OPERATION (hash: × hash_mem_multiplier); see the budget above
 maintenance_work_mem = 4GB
 max_connections = 300
 jit = off
@@ -278,7 +286,13 @@ jit = off
 
 Scale `shared_buffers`, `effective_cache_size` and `max_connections` to your
 host, then recompute `work_mem` from the budget — do not carry the `64MB`
-across unchanged, because it is an output of the formula, not an input.
+across unchanged, because it is an output of the formula, not an input. The
+`64MB` fits the 10% budget with `hash_mem_multiplier = 1.0` (≈ 70 MB, above).
+With the default `2.0` the formula gives ≈ 35 MB, and `64MB`'s all-hash worst
+case is `300 × 5 × 64MB × 2.0 ≈ 188 GB`, about 18% of RAM: either set
+`hash_mem_multiplier = 1.0`, lower `work_mem` to the formula's value, or
+accept that the 10% headroom is being spent on the rare plan that is all hash
+nodes in every worker at once.
 
 ### Operating-system settings
 
@@ -308,7 +322,7 @@ SELECT name, setting, unit, source
 FROM pg_settings
 WHERE name IN ('work_mem', 'maintenance_work_mem', 'shared_buffers',
                'effective_cache_size', 'max_connections', 'jit',
-               'max_parallel_workers_per_gather')
+               'max_parallel_workers_per_gather', 'hash_mem_multiplier')
 ORDER BY name;
 ```
 
@@ -322,11 +336,20 @@ includes (a `conf.d/` directory) and `postgresql.auto.conf`, which
 before changing a value, or an edit to `postgresql.conf` can be silently
 overridden by an included file or by `postgresql.auto.conf`.
 
-Settings made per role do not appear in `pg_settings` for other sessions.
-Check them separately:
+Settings made with `ALTER ROLE … SET`, `ALTER ROLE … IN DATABASE … SET` and
+`ALTER DATABASE … SET` are applied when a session starts, so they appear in
+`pg_settings` only in sessions of the role and database they name. All three
+are stored in `pg_db_role_setting`; check them there (a `setrole` of `0` means
+every role, a `setdatabase` of `0` every database):
 
 ```sql
-SELECT rolname, rolconfig FROM pg_roles WHERE rolconfig IS NOT NULL;
+SELECT coalesce(r.rolname, '(all roles)')     AS role,
+       coalesce(d.datname, '(all databases)') AS database,
+       s.setconfig
+FROM pg_db_role_setting s
+LEFT JOIN pg_roles r    ON r.oid = s.setrole
+LEFT JOIN pg_database d ON d.oid = s.setdatabase
+ORDER BY 1, 2;
 ```
 
 ```bash
@@ -346,9 +369,9 @@ volume or move it; each is a trade-off, stated with it.
 |---|---|---|---|
 | `max_wal_size` | At least the WAL your peak produces per checkpoint interval × (1 + `checkpoint_completion_target`), plus headroom. Measure the rate from `pg_stat_wal.wal_bytes` (or two `pg_current_wal_lsn()` readings) over a peak hour. | `pg_wal` can grow to this size, so check the volume's free space first. Crash recovery takes longer. | reload |
 | `checkpoint_timeout` | 15–30 min on a write-heavy host | Every checkpoint makes the next change to each page write a full-page image, so fewer checkpoints mean less WAL. Crash recovery takes longer. | reload |
-| `wal_compression` | `lz4` | Compresses those full-page images; costs a little CPU. | reload |
-| `synchronous_commit` for the collection role | `ALTER ROLE <role> SET synchronous_commit = off` | A COMMIT no longer waits for its WAL to reach disk. An OS crash (not a PostgreSQL crash) can lose the last fraction of a second of committed work, with no corruption. Collection is idempotent and re-collected, so that loss is recoverable; the same role's web writes (accounts, groups) would be lost too. Applies to new sessions only. | new sessions |
-| `temp_tablespaces` | A tablespace on a separate fast device, when the data volume is write-bound | Sorts and hashes larger than `work_mem` spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering `work_mem`, which increases spills. | reload (after `CREATE TABLESPACE`) |
+| `wal_compression` | `lz4`, where the server was built `--with-lz4`; otherwise `zstd` (built `--with-zstd`) or `pglz` (always available; `on` means `pglz`) | Compresses those full-page images; costs a little CPU. `SELECT enumvals FROM pg_settings WHERE name = 'wal_compression'` lists the methods this server was built with, and a method it lacks is rejected. | reload |
+| `synchronous_commit` for the collection role | `ALTER ROLE <role> SET synchronous_commit = off` | A COMMIT no longer waits for its WAL to reach disk. An operating-system **or** database crash can lose the most recent transactions already reported as committed — at most three times `wal_writer_delay` (600 ms at the default 200 ms) — with no corruption: the database is as if they had aborted. Collection is idempotent and re-collected, so that loss is recoverable; the same role's web writes (accounts, groups) would be lost too. `ALTER ROLE … SET` applies when a session starts, and serve, web and api hold pooled connections: an open connection keeps the old value until the pool retires it (after 4 minutes idle or at most 1 hour of age), or restart the three processes to apply it at once. | new sessions |
+| `temp_tablespaces` | A tablespace on a separate fast device, when the data volume is write-bound, plus `GRANT CREATE ON TABLESPACE <ts> TO <role>` for every role whose queries should spill there | Sorts and hashes larger than their memory limit spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering `work_mem`, which increases spills. A value from `postgresql.conf` (or any previously set value) silently ignores a listed tablespace the role lacks `CREATE` on, and that role's temporary files stay in its database's default tablespace; only an interactive `SET` reports the missing privilege as an error. Check with `log_temp_files` or `pg_ls_tmpdir()` that the spills moved. | reload (after `CREATE TABLESPACE` and the `GRANT`) |
 
 Forced checkpoints are the signal for `max_wal_size`: with `log_checkpoints`
 on (the default since PostgreSQL 15), a `checkpoint starting: wal` line means

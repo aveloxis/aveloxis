@@ -180,18 +180,46 @@ gem 'testonly', '1.0.0', group: :test
 	}
 }
 
-// TestClassificationTextLeavesOtherManagersAlone: only a rubygems
-// requirement is re-read; every other manager's stored text is classified
-// as stored, and a rubygems text the parser cannot read falls back to it.
+// TestClassificationTextLeavesOtherManagersAlone: a rubygems requirement
+// and a pypi TOML table declaration are re-read (PR #218 review A8 for the
+// latter); every other manager's stored text is classified as stored, and a
+// text the re-reader cannot read falls back to it.
 func TestClassificationTextLeavesOtherManagersAlone(t *testing.T) {
 	for _, tc := range []struct{ manager, req, want string }{
 		{"npm", "^4.18.0", "^4.18.0"},
-		{"pypi", `numpy = {version = "*", extras = ["dev"]}`, `numpy = {version = "*", extras = ["dev"]}`},
+		{"pypi", `numpy = {version = "*", extras = ["dev"]}`, "*"},
+		{"pypi", "requests>=2.31; python_version < '3.8'", "requests>=2.31; python_version < '3.8'"},
+		{"pypi", "requests == 2.31", "requests == 2.31"},
+		{"cargo", `serde = { version = "1.0", features = ["derive"] }`, `serde = { version = "1.0", features = ["derive"] }`},
 		{"rubygems", `gem 'rocket', '1.2.3', :require => false`, `gem 'rocket', '1.2.3'`},
 		{"rubygems", "not a gem call", "not a gem call"},
 	} {
 		if got := classificationText(tc.manager, tc.req); got != tc.want {
 			t.Errorf("classificationText(%q, %q) = %q; want %q", tc.manager, tc.req, got, tc.want)
+		}
+	}
+}
+
+// TestPypiTableMarkersAreNotBounds pins PR #218 review A8: a Poetry or
+// Pipfile table entry is stored with its whole declaration as the
+// requirement, and classifying that text read an environment marker
+// (`markers = "python_version < '3.8'"`, `python = "<3.10"`) as an upper
+// bound — bounded-range where the declared version is a floor only. The
+// classifier reads the table's version value; the stored text stays raw.
+func TestPypiTableMarkersAreNotBounds(t *testing.T) {
+	for _, tc := range []struct{ req, wantText, wantClass string }{
+		{`numpy = {version = ">=1.20", markers = "python_version < '3.8'"}`, ">=1.20", resolutionRangeFloor},
+		{`numpy = { version = ">=1.20", python = "<3.10" }`, ">=1.20", resolutionRangeFloor},
+		{`requests = "^2.31"`, "^2.31", resolutionBoundedRange},
+		{`flask = {version = "==2.3.0", markers = "sys_platform != 'win32'"}`, "==2.3.0", resolutionExact},
+		{`"zope.interface".version = ">=6.0"; "zope.interface".markers = "python_version < '3.8'"`, ">=6.0", resolutionRangeFloor},
+	} {
+		text := classificationText("pypi", tc.req)
+		if text != tc.wantText {
+			t.Errorf("classificationText(pypi, %q) = %q; want %q", tc.req, text, tc.wantText)
+		}
+		if got := classifyRequirement(text, ""); got != tc.wantClass {
+			t.Errorf("class of %q = %q; want %q", tc.req, got, tc.wantClass)
 		}
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -69,33 +70,7 @@ func TestMetadataBackfillDoesNotReaskWithinCooldown(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
-	// Rows other tests in this package left behind would be candidates too,
-	// each costing the backfill's one-second pacing; park them for the
-	// duration (this package's database is its own) and put them back.
-	var parked []int64
-	rows, err := store.Pool().Query(ctx, `
-		UPDATE aveloxis_data.repos SET metadata_backfill_attempted_at = NOW()
-		WHERE metadata_backfill_attempted_at IS NULL RETURNING repo_id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		parked = append(parked, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if _, err := store.Pool().Exec(context.Background(),
-			`UPDATE aveloxis_data.repos SET metadata_backfill_attempted_at = NULL WHERE repo_id = ANY($1)`, parked); err != nil {
-			t.Logf("cleanup: un-parking repos: %v", err)
-		}
-	})
+	parkOtherMetadataCandidates(t, store)
 
 	forge := &metadataFakeForge{
 		answers: map[string]error{
@@ -145,7 +120,10 @@ func TestMetadataBackfillDoesNotReaskWithinCooldown(t *testing.T) {
 	})
 
 	cfg := config.DefaultConfig()
-	s := New(store, nil, forge, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Collection: &cfg.Collection})
+	// A GitLab pool with a usable key: without one the backfill skips GitLab
+	// candidates (PR #218 review E15).
+	glKeys := platform.NewKeyPool([]string{"glpat-avmetacool"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewWithKeys(store, nil, forge, nil, glKeys, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Collection: &cfg.Collection})
 
 	s.runRepoMetadataBackfill(ctx) // the first serve start asks every candidate once
 	for name := range forge.answers {
@@ -168,5 +146,99 @@ func TestMetadataBackfillDoesNotReaskWithinCooldown(t *testing.T) {
 	if forge.calls["writefail"] != 2 {
 		t.Errorf("second start asked the repo whose write failed %d times in total, want 2 — an answer that was never written must not be stamped (SR-3)",
 			forge.calls["writefail"])
+	}
+}
+
+// parkOtherMetadataCandidates stamps every unstamped repository so only a
+// test's own fixtures are backfill candidates. Rows other tests in this
+// package left behind would be candidates too, each costing the backfill's
+// one-second pacing; they are parked for the duration (this package's
+// database is its own) and put back.
+func parkOtherMetadataCandidates(t *testing.T, store *db.PostgresStore) {
+	t.Helper()
+	ctx := context.Background()
+	var parked []int64
+	rows, err := store.Pool().Query(ctx, `
+		UPDATE aveloxis_data.repos SET metadata_backfill_attempted_at = NOW()
+		WHERE metadata_backfill_attempted_at IS NULL RETURNING repo_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		parked = append(parked, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := store.Pool().Exec(context.Background(),
+			`UPDATE aveloxis_data.repos SET metadata_backfill_attempted_at = NULL WHERE repo_id = ANY($1)`, parked); err != nil {
+			t.Logf("cleanup: un-parking repos: %v", err)
+		}
+	})
+}
+
+// TestMetadataBackfillSkipsGitLabWithoutUsableKey (PR #218 review E15): a
+// GitHub candidate met with no usable GitHub key is skipped and counted
+// apart, but a GitLab candidate on a deployment whose GitLab pool has no
+// usable key was fetched anyway, failed on the pool's ErrNoKeys and was
+// counted as failed at every restart. It must be skipped the same way: no
+// fetch, no stamp (nothing was answered), counted as skipped, not failed.
+func TestMetadataBackfillSkipsGitLabWithoutUsableKey(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	parkOtherMetadataCandidates(t, store)
+
+	id, err := store.UpsertRepo(ctx, &model.Repo{
+		Platform: model.PlatformGitLab,
+		GitURL:   "https://gitlab.com/_avmetanokey/project",
+		Owner:    "_avmetanokey",
+		Name:     "project",
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id); err != nil {
+			t.Logf("cleanup: deleting fixture repo: %v", err)
+		}
+	})
+
+	forge := &metadataFakeForge{answers: map[string]error{"project": nil}, calls: map[string]int{}}
+	var logs strings.Builder // the backfill runs on this goroutine
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	emptyGitLab := platform.NewKeyPool(nil, logger) // loadKeys' shape for "no GitLab keys"
+	cfg := config.DefaultConfig()
+	s := NewWithKeys(store, nil, forge, nil, emptyGitLab, logger, Config{Collection: &cfg.Collection})
+
+	s.runRepoMetadataBackfill(ctx)
+	if forge.calls["project"] != 0 {
+		t.Errorf("a GitLab candidate was fetched %d times with no usable GitLab key; want 0 (skipped like the GitHub arm)", forge.calls["project"])
+	}
+	var stamped bool
+	if err := store.Pool().QueryRow(ctx,
+		`SELECT metadata_backfill_attempted_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&stamped); err != nil {
+		t.Fatal(err)
+	}
+	if stamped {
+		t.Error("a skipped GitLab candidate was stamped; nothing was answered, so it must stay a candidate for a restart with a key")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "repo metadata backfill complete") ||
+		!strings.Contains(out, "failed=0") || !strings.Contains(out, "skipped_no_gitlab_key=1") {
+		t.Errorf("the completion line must count the candidate as skipped_no_gitlab_key=1 and failed=0; log:\n%s", out)
 	}
 }

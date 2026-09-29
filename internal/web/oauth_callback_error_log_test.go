@@ -66,9 +66,14 @@ func TestOAuthCallbackFailuresAreLogged(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			rec := httptest.NewRecorder()
 			if tc.provider == "github" {
-				ctx, _ := githubCallbackFixture(t, forgeHandler("/login/oauth/access_token", "/user", tc.failExchange))
+				ctx, refuse := githubCallbackFixture(t, forgeHandler("/login/oauth/access_token", "/user", tc.failExchange))
 				s := New(nil, config.WebConfig{DevMode: true, GitHubClientID: "id", GitHubClientSecret: "secret"}, nil, "", logger)
 				s.handleGitHubCallback(rec, githubCallbackRequest(ctx))
+				// PR #218 review C10: a request that bypassed the fixture
+				// fails too, and would read here as the logged failure.
+				if hosts := refuse.leaked(); len(hosts) > 0 {
+					t.Fatalf("a request to %v left through http.DefaultTransport instead of the oauth2 client", hosts)
+				}
 			} else {
 				forge := httptest.NewServer(forgeHandler("/oauth/token", "/api/v4/user", tc.failExchange))
 				t.Cleanup(forge.Close)

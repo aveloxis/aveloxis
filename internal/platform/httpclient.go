@@ -492,8 +492,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// returns and the response's header state is applied, BEFORE
 		// handleResponse (and the caller) read the body and BEFORE any
 		// Retry-After sleep — so a throttled caller never pins a slot
-		// while it waits. graphql.go is the twin with one difference: it
-		// holds the lease through a 200 body read, for its in-body mark.
+		// while it waits. The lease is held through a body read only where
+		// the body decides the key's state: here a GitHub headerless 403
+		// (below, worklist 67); in graphql.go, the twin, a 200 body (its
+		// in-body mark) and the same headerless 403 (PR #218 review E2/E3).
 		key, release, err := c.keys.Acquire(ctx, res)
 		if err != nil {
 			return nil, fmt.Errorf("getting API key: %w", err)
@@ -573,7 +575,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// GitHub's documented floor before any waiter can re-lease it; the
 		// body is re-attached for handleResponse below. The unauthenticated
 		// shape is a key-leak bug, not this key's throttle, and rests nothing.
-		if resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") == "" && !isPrimaryRefusal(resp) {
+		// GitHub only (PR #218 review E4): the 60 s floor is GitHub's
+		// documented rule, and a GitLab 403 must not bench a key on it.
+		if c.authStyle == AuthGitHub && resp.StatusCode == http.StatusForbidden &&
+			resp.Header.Get("Retry-After") == "" && !isPrimaryRefusal(resp) {
 			body, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(body))

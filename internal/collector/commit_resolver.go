@@ -24,10 +24,12 @@
 package collector
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -84,7 +86,7 @@ func (r *CommitResolver) WithBareClone(path string) *CommitResolver {
 // whether a list is available. Called only after a 422, so a repository
 // whose commits all resolve never pays for the listing. A failure is
 // logged and leaves the old behaviour (the 50-in-a-row abort) in place.
-func (r *CommitResolver) loadDefaultBranch(ctx context.Context, repoID int64) bool {
+func (r *CommitResolver) loadDefaultBranch(ctx context.Context, repoID int64, unresolved []unresolvedCommit) bool {
 	if r.listed {
 		return r.defaultBranch != nil
 	}
@@ -92,20 +94,52 @@ func (r *CommitResolver) loadDefaultBranch(ctx context.Context, repoID int64) bo
 	if r.bareClone == "" {
 		return false
 	}
+	// Streamed, and only this run's unresolved hashes are kept: the run
+	// asks about nothing else, and holding the whole listing plus a map of
+	// every branch commit cost 100+ MB on a kernel-size repository (PR #218
+	// review A9).
+	want := make(map[string]struct{}, len(unresolved))
+	for _, c := range unresolved {
+		want[c.Hash] = struct{}{}
+	}
 	cmd := exec.CommandContext(ctx, "git", "-C", r.bareClone, "rev-list", "HEAD")
-	groupKilled(cmd)
-	out, err := cmd.Output()
+	stderr := &stderrCapture{}
+	cmd.Stderr = stderr
+	set := make(map[string]bool)
+	err := func() error {
+		// startSweptCommand, not cmd.StdoutPipe: it owns the process group
+		// and the pipe, so a child that outlives git cannot wedge the read
+		// (PR #207).
+		swept, err := startSweptCommand(cmd)
+		if err != nil {
+			return err
+		}
+		defer swept.Close()
+		sc := bufio.NewScanner(swept.Stdout)
+		for sc.Scan() {
+			if h := strings.TrimSpace(sc.Text()); h != "" {
+				if _, ok := want[h]; ok {
+					set[h] = true
+				}
+			}
+		}
+		scanErr := sc.Err()
+		if scanErr != nil {
+			// Drain so git is not blocked on a full pipe before Wait.
+			_, _ = io.Copy(io.Discard, swept.Stdout)
+		}
+		if waitErr := swept.Wait(); waitErr != nil {
+			return waitErr
+		}
+		return scanErr
+	}()
 	if err != nil && ctx.Err() != nil {
 		return false // a stop, not a failed listing: the loop's ctx check ends the run
 	}
 	if err != nil {
 		r.logger.Warn("commit resolution: listing the default branch failed — commits not on it cannot be told apart this run",
-			"repo_id", repoID, "clone", r.bareClone, "error", execErr(ctx, err))
+			"repo_id", repoID, "clone", r.bareClone, "error", execErr(ctx, err), "stderr", stderr.String())
 		return false
-	}
-	set := make(map[string]bool)
-	for _, h := range strings.Fields(string(out)) {
-		set[h] = true
 	}
 	r.defaultBranch = set
 	return true
@@ -284,7 +318,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 				// rewritten history, not a stale clone (worklist 73: an
 				// upstream rewrite left 359 unresolved rows and the run
 				// aborted at every cycle). List the branch once and skip.
-				if r.loadDefaultBranch(ctx, repoID) && !r.defaultBranch[cmt.Hash] {
+				if r.loadDefaultBranch(ctx, repoID, commits) && !r.defaultBranch[cmt.Hash] {
 					result.NotOnDefaultBranch++
 					continue
 				}

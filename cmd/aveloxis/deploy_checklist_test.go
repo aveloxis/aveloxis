@@ -34,6 +34,7 @@ type fakeGate struct {
 	recorded       bool
 	stamp          string // "" = unstamped (the pre-v0.29.4 fixtures)
 	latestAck      string // "" = no acknowledgement recorded
+	latestAckErr   error  // PR #218 review D1: the acknowledgements cannot be read
 	stampErr       error
 	otherServe     bool
 	otherErr       error
@@ -44,7 +45,7 @@ type fakeGate struct {
 func (f *fakeGate) FleetHasCollectedData(context.Context) (bool, error)   { return f.hasData, nil }
 func (f *fakeGate) DeployAckExists(context.Context, string) (bool, error) { return f.acked, nil }
 func (f *fakeGate) LatestDeployAck(context.Context, string) (string, error) {
-	return f.latestAck, nil
+	return f.latestAck, f.latestAckErr
 }
 func (f *fakeGate) SchemaVersion(context.Context) (string, error) { return f.stamp, f.stampErr }
 func (f *fakeGate) OtherServeConnected(context.Context) (db.OtherServe, error) {
@@ -459,7 +460,7 @@ func TestRunDeployGateDoesNotPassAnUnboundedContext(t *testing.T) {
 	if !strings.Contains(body, "deployGateDialTimeout") {
 		t.Error("runDeployGate must derive its query bound from the named timeout, not a fresh literal")
 	}
-	check := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func checkDeployReadiness("))
+	check := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "cmd/aveloxis/deploy_checklist.go"), "func checkDeployReadinessNaming(")) // the body since PR #218 fix review r1 F2
 	if !strings.Contains(check, "deployAckContext(ctx)") {
 		t.Error("RecordDeployAck must run on deployAckContext(ctx) — the caller's bound belongs to the " +
 			"pre-prompt READS, and the operator's answer arrives after it has expired")
@@ -627,7 +628,7 @@ func TestDeployGateNamesThisReleasesMigrateStep(t *testing.T) {
 			t.Errorf("skip=%v: the 0.29.57 gate must name its checklist's plain `aveloxis migrate` as step 2:\n%s", skip, advice)
 		}
 	}
-	if msg := startAbortMessage("0.29.57"); strings.Contains(msg, "--skip-views") || !strings.Contains(msg, "`aveloxis migrate`") {
+	if msg := startAbortMessage("0.29.57", ladderMigrateStep("0.29.57")); strings.Contains(msg, "--skip-views") || !strings.Contains(msg, "`aveloxis migrate`") {
 		t.Errorf("start's abort line for 0.29.57 must name `aveloxis migrate`, not --skip-views:\n%s", msg)
 	}
 }

@@ -903,8 +903,13 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	// is a throttle by definition; a 403 is one only with Retry-After
 	// (without it, it is a permission error — ErrForbidden). Secondary
 	// limits are per token across resources, so a search 403 rests the
-	// key too. This is the ONE place the rest is recorded per response;
-	// the clients' branches keep only their logging and pacing.
+	// key too. This is the one place the rest is recorded from a
+	// response's HEADERS; the clients' branches keep only their logging
+	// and pacing. A GitHub 403 with neither Retry-After nor a primary
+	// refusal is decided by its BODY, which this function never reads: the
+	// REST client (httpclient.go Get) and the GraphQL client (graphql.go)
+	// read that body under the same lease and call MarkSecondaryLimited
+	// for a rate-limit body (worklist 67; PR #218 review E2/E3).
 	// A 429 that is a primary refusal (Remaining: 0, no Retry-After) is
 	// recorded above, not here, so the causes stay distinguishable.
 	if (resp.StatusCode == http.StatusTooManyRequests && !refused) ||

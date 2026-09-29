@@ -49,7 +49,7 @@ func runInstallTools(parent context.Context) error {
 		tcancel()
 		if err != nil {
 			if ctx.Err() != nil {
-				return fmt.Errorf("install-tools interrupted while installing %s (%d of %d done; installs are idempotent, rerun to continue): %w", tool.Name, installed, len(tools), ctx.Err())
+				return fmt.Errorf("install-tools interrupted while installing %s (%d of %d done; installs are idempotent, rerun to continue): %w", tool.Name, installed+failed, len(tools), ctx.Err())
 			}
 			fmt.Printf("✗ Failed to install %s: %s\n  Manual install: %s\n", tool.Name, toolFailureText(err), tool.InstallCmd)
 			failed++

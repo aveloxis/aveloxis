@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -255,5 +256,72 @@ func TestRemoveIfOwnReadsAVanishedFileAsNotOwn(t *testing.T) {
 	}
 	if reflect.ValueOf(saved).Pointer() != reflect.ValueOf(os.Remove).Pointer() {
 		t.Fatal("removeFile's production default must be os.Remove")
+	}
+}
+
+// TestWriteIsAtomicForAConcurrentReader — PR #218 review D10: Write used
+// os.WriteFile, which truncates and then writes, so a `stop` or a `start`
+// guard reading the file in between saw an empty file (an unreadable
+// pidfile, which the callers report as UNKNOWN and refuse on). Write now
+// renames a complete temp file over the path: a reader sees the old PID or
+// the new one, never an empty or partial file, and no temp file is left.
+func TestWriteIsAtomicForAConcurrentReader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.pid")
+	pids := []int{7, 123456789}
+	if err := Write(path, pids[0]); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if err := Write(path, pids[i%2]); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	bad := ""
+	for i := 0; i < 20000 && bad == ""; i++ {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			bad = "read error: " + err.Error()
+			break
+		}
+		if s := string(data); s != "7" && s != "123456789" {
+			bad = "content " + strconv.Quote(s)
+		}
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if bad != "" {
+		t.Fatalf("a concurrent reader saw %s while Write rewrote the file; want the old or the new PID only", bad)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "test.pid" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory after Write = %v; want only test.pid (no temp file left behind)", names)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after Write: %v", err) // fi is nil: no mode to read (PR #218 fix review r1)
+	}
+	if fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode after Write = %v; want 0644 as before", fi.Mode().Perm())
 	}
 }

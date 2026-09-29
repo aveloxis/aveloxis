@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -475,13 +476,16 @@ var deployChecklists = map[string][]deployStep{
 	// No schema change.
 	"0.29.67": v02967DeployChecklist,
 	"0.29.68": v02968DeployChecklist,
-	// v0.29.69: the 2026-09-28 kate log batch (worklist 66–74). One new
-	// nullable column (repos.metadata_backfill_attempted_at, instant ALTER).
+	// v0.29.69: the 2026-09-28 kate log batch (worklist 66–74). Two new
+	// nullable columns (repos.metadata_backfill_attempted_at and
+	// users.gl_oauth_host, instant ALTERs; PR #218 review D4).
 	"0.29.69": v02969DeployChecklist,
 }
 
-// 0.29.69 adds one nullable column (the metadata backfill's attempt stamp,
-// created by migrate) and carries 0.29.68's notes for a fleet that skipped it.
+// 0.29.69 adds two nullable columns (the metadata backfill's attempt stamp,
+// repos.metadata_backfill_attempted_at, and the GitLab sign-in instance,
+// users.gl_oauth_host — both created by migrate; PR #218 review D4) and
+// carries 0.29.68's notes for a fleet that skipped it.
 var v02969DeployChecklist = []deployStep{
 	v02967DeployChecklist[0],
 	{"aveloxis migrate --skip-views", "adds repos.metadata_backfill_attempted_at and users.gl_oauth_host (nullable, no default: instant ALTERs); otherwise as 0.29.67 — re-creates the two supply-chain views from Go (--skip-views skips only the 8Knot batch) and creates repo_forge_id_changes if 0.29.62 was skipped"},
@@ -588,6 +592,19 @@ var v02958DeployChecklist = []deployStep{
 	{"aveloxis start all", "resume collection; the mailing-list pass bounds now read the index"},
 }
 
+// migrateSupersededBy records, as data, a release whose plain-migrate
+// requirement a later release lifts: when an accumulated range contains
+// both, strongestMigrate ignores the earlier block's plain migrate (PR #218
+// fix review r1 F1). 0.29.60 built its two supply-chain views as members of
+// the 8Knot batch, which only a plain migrate re-creates; 0.29.61 moved
+// them to a set every migrate builds from Go, so a range carrying 0.29.61
+// needs only --skip-views for them (0.29.61's own comment above says so).
+// 0.29.57's plain migrate is NOT here: explorer_libyear_summary is an
+// 8Knot view, and nothing later changes how its definition is applied.
+var migrateSupersededBy = map[string]string{
+	"0.29.60": "0.29.61",
+}
+
 // deployChecklistFor returns the steps for a version, if any.
 func deployChecklistFor(version string) ([]deployStep, bool) {
 	steps, ok := deployChecklists[version]
@@ -633,34 +650,125 @@ func deployStepsFrom(after string, inclusive bool, upTo string) []versionSteps {
 // 0.29.68 saw only 0.29.68's steps, and the skipped releases' heals never
 // ran. The range starts after the latest ack; with no ack at all it starts
 // AT the schema stamp (that version's steps are unacknowledged too); with
-// neither, or when the acknowledgements cannot be read, the binary's own
-// steps print alone.
+// neither the binary's own steps print alone. When the acknowledgements
+// cannot be read, the binary's own steps print alone as well — the stamp
+// fallback is skipped (PR #218 review D1: it printed every release since
+// the stamp under a message that said "this version's steps only").
 func printDeploySteps(ctx context.Context, g deployGate, out io.Writer, stamp, version string) {
-	after, inclusive := "", false
-	if latest, err := g.LatestDeployAck(ctx, version); err != nil {
-		fmt.Fprintf(out, "(could not read the deploy acknowledgements: %v — printing this version's steps only)\n", err)
-	} else if latest != "" {
-		after = latest
+	list, origin, ackErr := deployRange(ctx, g, stamp, version)
+	printRange(out, list, origin, ackErr)
+}
+
+// printRange prints a range deployRange computed, saying first when the
+// acknowledgements could not be read (the list is then the binary's own).
+func printRange(out io.Writer, list []versionSteps, origin string, ackErr error) {
+	if ackErr != nil {
+		fmt.Fprintf(out, "(could not read the deploy acknowledgements: %v — printing this version's steps only)\n", ackErr)
 	}
-	if after == "" && stamp != "" {
-		after, inclusive = stamp, true
+	printStepBlocks(out, list, origin)
+}
+
+// deployRange is the ONE computation of the accumulated range the gate
+// prints and names (PR #218 fix review r1 F2): after the latest ack; with
+// no ack, from the schema stamp inclusive; with neither, or when the
+// acknowledgements cannot be read (ackErr, D1), the binary's own steps
+// alone. origin is "" for the binary-only list.
+func deployRange(ctx context.Context, g deployGate, stamp, version string) (list []versionSteps, origin string, ackErr error) {
+	latest, err := g.LatestDeployAck(ctx, version)
+	if err != nil {
+		ackErr = err
+	} else {
+		switch {
+		case latest != "":
+			list = deployStepsFrom(latest, false, version)
+			origin = fmt.Sprintf("since the last acknowledged deploy (%s)", latest)
+		case stamp != "":
+			list = deployStepsFrom(stamp, true, version)
+			origin = fmt.Sprintf("from the schema stamp (%s, whose own steps are unacknowledged) to this binary", stamp)
+		}
 	}
-	list := deployStepsFrom(after, inclusive, version)
 	if len(list) == 0 {
+		origin = ""
 		if steps, ok := deployChecklistFor(version); ok {
 			list = []versionSteps{{version: version, steps: steps}}
 		}
 	}
+	return list, origin, ackErr
+}
+
+// rangeMigrateStep is the migrate the gate's own lines name: the strongest
+// migrate of the range deployRange computed (PR #218 fix review r1 F2 —
+// they named the binary's own migrate, so a stamp at 0.29.56 under a 0.29.69
+// binary was told --skip-views while the list below it needed 0.29.57's
+// plain migrate). An empty range falls back to the binary's ladder step.
+func rangeMigrateStep(list []versionSteps, version string) string {
+	if len(list) == 0 {
+		return ladderMigrateStep(version)
+	}
+	return strongestMigrate(list)
+}
+
+// printStepBlocks is the ONE printer of an accumulated checklist, shared by
+// the start gate (printDeploySteps) and `deploy-checklist --since` (PR #218
+// review D2: --since printed the blocks raw, uncollapsed and without the
+// header). With more than one release it prints the header — origin says
+// where the range starts — then the collapsed blocks.
+//
+// The header does NOT say "run each block's steps" (PR #218 review D3):
+// nearly every block is a full stop → migrate → … → start ladder, and a
+// `start all` in the middle of the list re-enters the deploy gate. The
+// ladder runs once, with the strongest migrate any block asks for.
+func printStepBlocks(out io.Writer, list []versionSteps, origin string) {
 	if len(list) > 1 {
-		if inclusive {
-			fmt.Fprintf(out, "\n%d releases have deploy steps from the schema stamp (%s, whose own steps are unacknowledged) to this binary: run each block's steps, oldest first.\n", len(list), after)
-		} else {
-			fmt.Fprintf(out, "\n%d releases have deploy steps since the last acknowledged deploy (%s): run each block's steps, oldest first.\n", len(list), after)
-		}
+		fmt.Fprintf(out, "\n%d releases have deploy steps %s. Stop, migrate and start ONCE, not once per block: `aveloxis stop all`, then %s (the strongest migrate any block asks for), then every block's checks, heals and audits, oldest first, then `aveloxis ack-deploy`, then `aveloxis start all` (a step that needs the running release, such as adopt-forge-id or the approvals page, after it). Each block's own stop, migrate, ack and start lines are covered by these, and their notes all apply.\n",
+			len(list), origin, "`"+strongestMigrate(list)+"`")
 	}
 	for _, block := range collapseIdenticalChecklists(list) {
 		printChecklist(out, block.version, block.steps)
 	}
+}
+
+// strongestMigrate is the migrate the accumulated ladder runs once: the
+// first block's migrate step that does not skip the 8Knot batch (only a
+// migrate without --skip-views re-creates those views from matviews.sql,
+// v0.29.57), otherwise the standard `aveloxis migrate --skip-views`. A
+// block's migrate step is read by migrateStepOf, the same reading as
+// ladderMigrateStep; a block whose plain migrate a later release in the
+// SAME range lifts (migrateSupersededBy) does not count (PR #218 fix review
+// r1 F1). list must be uncollapsed (plain version labels).
+func strongestMigrate(list []versionSteps) string {
+	const standard = "aveloxis migrate --skip-views"
+	inRange := make(map[string]bool, len(list))
+	for _, vs := range list {
+		inRange[vs.version] = true
+	}
+	for _, vs := range list {
+		m, ok := migrateStepOf(vs.steps)
+		if !ok || migrateSkipsViews(m) {
+			continue
+		}
+		if by, lifted := migrateSupersededBy[vs.version]; lifted && inRange[by] {
+			continue
+		}
+		return m
+	}
+	return standard
+}
+
+// migrateStepOf is a checklist's migrate step: its first step whose
+// command is `aveloxis migrate`, with or without flags.
+func migrateStepOf(steps []deployStep) (string, bool) {
+	for _, st := range steps {
+		if st.cmd == "aveloxis migrate" || strings.HasPrefix(st.cmd, "aveloxis migrate ") {
+			return st.cmd, true
+		}
+	}
+	return "", false
+}
+
+// migrateSkipsViews reports whether a migrate command carries --skip-views.
+func migrateSkipsViews(cmd string) bool {
+	return slices.Contains(strings.Fields(cmd), "--skip-views")
 }
 
 // collapseIdenticalChecklists merges consecutive versions whose steps are
@@ -754,10 +862,8 @@ type deployGate interface {
 // ladder's command.
 func ladderMigrateStep(version string) string {
 	if steps, ok := deployChecklistFor(version); ok {
-		for _, st := range steps {
-			if st.cmd == "aveloxis migrate" || strings.HasPrefix(st.cmd, "aveloxis migrate ") {
-				return st.cmd
-			}
+		if m, ok := migrateStepOf(steps); ok {
+			return m
 		}
 	}
 	return "aveloxis migrate --skip-views"
@@ -791,12 +897,21 @@ func deployStepsProvablyUnrun(stamp, binary string) bool {
 // no checklist on a current stamp, and an already-acked version proceed
 // silently.
 func checkDeployReadiness(ctx context.Context, g deployGate, version string, skip bool, in *os.File, out io.Writer) (proceed bool, err error) {
+	proceed, _, err = checkDeployReadinessNaming(ctx, g, version, skip, in, out)
+	return proceed, err
+}
+
+// checkDeployReadinessNaming is checkDeployReadiness that also returns the
+// migrate its refusal named (the printed range's strongest, PR #218 fix
+// review r1 F2), so start's abort line names the same one. migrate is ""
+// when nothing was refused on a range.
+func checkDeployReadinessNaming(ctx context.Context, g deployGate, version string, skip bool, in *os.File, out io.Writer) (proceed bool, migrate string, err error) {
 	fleetHasData, err := g.FleetHasCollectedData(ctx)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if !fleetHasData {
-		return true, nil
+		return true, "", nil
 	}
 	// Round-4 finding 3 (observation only): a same-version second serve
 	// passes the stamp refusal below AND serve's own startup gate — the
@@ -815,47 +930,55 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 	// whose migration has not completed here. A probe error fails closed.
 	stamp, err := g.SchemaVersion(ctx)
 	if err != nil {
-		return false, fmt.Errorf("reading the schema stamp for the deploy gate: %w", err)
+		return false, "", fmt.Errorf("reading the schema stamp for the deploy gate: %w", err)
 	}
 	if deployStepsProvablyUnrun(stamp, version) {
+		// PR #218 fix review r1 F2: the migrate named here is the
+		// strongest of the range printed below (and by `deploy-checklist
+		// --since`), not the binary's own: a 0.29.56 stamp under a 0.29.69
+		// binary needs 0.29.57's plain migrate.
+		list, origin, ackErr := deployRange(ctx, g, stamp, version)
+		migrate = rangeMigrateStep(list, version)
 		if skip {
-			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`%s`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above), and web, api and the scancode worker refuse to start until the migrate has moved the stamp — start them again afterwards.\n", stamp, version, version, ladderMigrateStep(version))
+			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`%s`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above), and web, api and the scancode worker refuse to start until the migrate has moved the stamp — start them again afterwards.\n", stamp, version, version, migrate)
 			// Round-11 finding 7: this is the ONE path with EVIDENCE the
 			// steps did not run, so it is the last place to send the
 			// operator away without them. Every other bypass below prints
 			// the checklist before proceeding.
-			printDeploySteps(ctx, g, out, stamp, version)
-			return true, nil
+			printRange(out, list, origin, ackErr)
+			return true, migrate, nil
 		}
-		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`%s`) has not completed against this database.\n", stamp, version, version, ladderMigrateStep(version))
-		fmt.Fprintf(out, "Run them from the primary host (`aveloxis stop all`, `%s`, the heals, `aveloxis ack-deploy`), or pass --skip-deploy-check.\n", ladderMigrateStep(version))
+		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — step 2 of the deploy steps for %s (`%s`) has not completed against this database.\n", stamp, version, version, migrate)
+		fmt.Fprintf(out, "Run them from the primary host (`aveloxis stop all`, `%s`, the heals, `aveloxis ack-deploy`), or pass --skip-deploy-check.\n", migrate)
 		fmt.Fprintln(out, "If this host should only run scancode, use `aveloxis start scancode-worker` instead — `start serve` is the full scheduler regardless of the config's knobs.")
-		return false, nil
+		return false, migrate, nil
 	}
 	_, hasChecklist := deployChecklistFor(version)
 	if !hasChecklist {
-		return true, nil
+		return true, "", nil
 	}
 	acked, err := g.DeployAckExists(ctx, version)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	// Reduces to `acked`: fleetHasData is true (the !fleetHasData return
 	// above) and hasChecklist is true (the !hasChecklist return above).
 	// Round-11 finding 11 removed the three-argument deployGateNeeded
 	// that spelled this as a decision it never made.
 	if acked {
-		return true, nil
+		return true, "", nil
 	}
-	printDeploySteps(ctx, g, out, stamp, version)
+	list, origin, ackErr := deployRange(ctx, g, stamp, version)
+	migrate = rangeMigrateStep(list, version)
+	printRange(out, list, origin, ackErr)
 	if skip {
 		fmt.Fprintln(out, "Proceeding without acknowledgement (--skip-deploy-check).")
-		return true, nil
+		return true, migrate, nil
 	}
 	if !isInteractive(in) {
 		fmt.Fprintln(out, "Refusing to start: this release's deploy steps are not acknowledged.")
 		fmt.Fprintln(out, "Run them then `aveloxis ack-deploy`, or pass --skip-deploy-check.")
-		return false, nil
+		return false, migrate, nil
 	}
 	fmt.Fprintf(out, "Have you completed these steps for %s? [y/N]: ", version)
 	line, _ := bufio.NewReader(in).ReadString('\n')
@@ -865,10 +988,10 @@ func checkDeployReadiness(ctx context.Context, g deployGate, version string, ski
 		if err := g.RecordDeployAck(ackCtx, version, "confirmed at start"); err != nil {
 			fmt.Fprintf(out, "warning: could not record acknowledgement: %v\n", err)
 		}
-		return true, nil
+		return true, migrate, nil
 	}
 	fmt.Fprintln(out, "Not starting. Run the steps above, then `aveloxis ack-deploy` (or start with --skip-deploy-check).")
-	return false, nil
+	return false, migrate, nil
 }
 
 // deployGateDialTimeout bounds the deploy gate's database dial. Matches
@@ -886,7 +1009,7 @@ const deployGateDialTimeout = 30 * time.Second
 // start command. It never blocks a fresh install or an acked release on
 // a current stamp; the stamp evidence and the other-serve note run for
 // every version (round-5 finding 1).
-func runDeployGate(cfgPath string, skip bool) (bool, error) {
+func runDeployGate(cfgPath string, skip bool) (proceed bool, migrate string, err error) {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := loadConfig(cfgPath, bootLog)
 	// The DIAL gets its own bound (round-11 finding 4, the pass-41
@@ -915,12 +1038,14 @@ func runDeployGate(cfgPath string, skip bool) (bool, error) {
 	defer dialCancel()
 	store, err := db.NewPostgresStore(dialCtx, cfg.Database.ConnectionString(), newLogger(cfg))
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	defer store.Close()
 	queryCtx, queryCancel := context.WithTimeout(context.Background(), deployGateDialTimeout)
 	defer queryCancel()
-	return checkDeployReadiness(queryCtx, store, db.ToolVersion, skip, os.Stdin, os.Stdout)
+	// migrate is the range's strongest, for start's abort line (PR #218
+	// fix review r1 F2).
+	return checkDeployReadinessNaming(queryCtx, store, db.ToolVersion, skip, os.Stdin, os.Stdout)
 }
 
 // deployAckContext is the context RecordDeployAck runs on. The caller's
@@ -944,41 +1069,81 @@ func deployAckContext(ctx context.Context) (context.Context, context.CancelFunc)
 // out (round-8 finding 4). The map's own comment schedules entries to
 // age out two releases after the one that introduced them, so the
 // no-entry state is a planned state, not a slip.
-func startAbortMessage(version string) string {
-	stamp := fmt.Sprintf("a schema stamp behind this binary, which only a completed migration of this binary moves: the ladder's `%s`", ladderMigrateStep(version))
+//
+// migrate is the one the gate's refusal named — the strongest of the range
+// it printed (PR #218 fix review r1 F2); "" falls back to the binary's own
+// ladder step.
+func startAbortMessage(version, migrate string) string {
+	if migrate == "" {
+		migrate = ladderMigrateStep(version)
+	}
+	stamp := fmt.Sprintf("a schema stamp behind this binary, which only a completed migration of this binary moves: the ladder's `%s`", migrate)
 	if _, ok := deployChecklistFor(version); !ok {
 		return fmt.Sprintf("start aborted: see the reason printed above (%s); --skip-deploy-check bypasses", stamp)
 	}
 	return fmt.Sprintf("start aborted: see the reason printed above (un-acknowledged deploy steps — `aveloxis deploy-checklist` lists them, `aveloxis ack-deploy` records them — or %s); --skip-deploy-check bypasses", stamp)
 }
 
+// runDeployChecklist is deploy-checklist's body: the binary's own steps, or
+// with since every release's after it through printStepBlocks. An
+// unparseable --since is an error (non-zero exit, PR #218 review D2): it
+// printed "no release after X" and exited 0, so a typo read as "nothing to
+// do".
+func runDeployChecklist(out io.Writer, since, version string) error {
+	return runDeployChecklistRange(out, since, false, version)
+}
+
+// runDeployChecklistRange is runDeployChecklist with --inclusive: the
+// --since release's own block prints too (PR #218 fix review r1 F4). A
+// fleet that never acknowledged a deploy passes its schema stamp, whose
+// own steps are unacknowledged — the range the start gate prints.
+func runDeployChecklistRange(out io.Writer, since string, inclusive bool, version string) error {
+	if inclusive && since == "" {
+		return fmt.Errorf("--inclusive needs --since")
+	}
+	if since != "" {
+		// SchemaVersionAtLeast is false for any unparseable side, so a
+		// version compared with itself is true exactly when it parses.
+		if !db.SchemaVersionAtLeast(since, since) {
+			return fmt.Errorf("--since %q is not a version: want dotted non-negative numbers such as 0.29.64 (the last version deployed)", since)
+		}
+		list := deployStepsFrom(since, inclusive, version)
+		if len(list) == 0 {
+			if inclusive {
+				fmt.Fprintf(out, "no release from %s up to aveloxis %s has manual deploy steps.\n", since, version)
+			} else {
+				fmt.Fprintf(out, "no release after %s up to aveloxis %s has manual deploy steps.\n", since, version)
+			}
+			return nil
+		}
+		origin := "since " + since
+		if inclusive {
+			origin = "from " + since + " (inclusive)"
+		}
+		printStepBlocks(out, list, origin)
+		return nil
+	}
+	steps, ok := deployChecklistFor(version)
+	if !ok {
+		fmt.Fprintf(out, "aveloxis %s has no manual deploy steps.\n", version)
+		return nil
+	}
+	printChecklist(out, version, steps)
+	return nil
+}
+
 func deployChecklistCmd() *cobra.Command {
 	var since string
+	var inclusive bool
 	cmd := &cobra.Command{
 		Use:   "deploy-checklist",
 		Short: "Print this release's manual deploy/heal steps (read-only); --since prints every release's since a version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if since != "" {
-				list := deployStepsFrom(since, false, db.ToolVersion)
-				if len(list) == 0 {
-					fmt.Printf("no release after %s up to aveloxis %s has manual deploy steps.\n", since, db.ToolVersion)
-					return nil
-				}
-				for _, vs := range list {
-					printChecklist(os.Stdout, vs.version, vs.steps)
-				}
-				return nil
-			}
-			steps, ok := deployChecklistFor(db.ToolVersion)
-			if !ok {
-				fmt.Printf("aveloxis %s has no manual deploy steps.\n", db.ToolVersion)
-				return nil
-			}
-			printChecklist(os.Stdout, db.ToolVersion, steps)
-			return nil
+			return runDeployChecklistRange(os.Stdout, since, inclusive, db.ToolVersion)
 		},
 	}
-	cmd.Flags().StringVar(&since, "since", "", "print the steps of every release after this version (the last one deployed) up to this binary, oldest first")
+	cmd.Flags().StringVar(&since, "since", "", "print the steps of every release after this version (the last acknowledged deploy) up to this binary, oldest first")
+	cmd.Flags().BoolVar(&inclusive, "inclusive", false, "with --since, print that release's own steps too (use when --since is the schema stamp because no deploy was ever acknowledged)")
 	return cmd
 }
 

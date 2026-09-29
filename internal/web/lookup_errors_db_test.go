@@ -83,8 +83,17 @@ func TestPageLookupErrorsAreNotNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The server runs on a store of its own, closed below to fault it; the
+	// fixture's store stays open so the cleanups run (PR #218 review C11:
+	// closing the fixture's store left every t.Cleanup delete on a closed
+	// pool). Close is idempotent, so the registered Close is harmless.
+	served, err := db.NewPostgresStore(ctx, dsn, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(served.Close)
 	var logs strings.Builder
-	s := New(store, config.WebConfig{}, nil, "", slog.New(slog.NewTextHandler(&logs, nil)))
+	s := New(served, config.WebConfig{}, nil, "", slog.New(slog.NewTextHandler(&logs, nil)))
 	s.sessions["probe-token"] = &Session{UserID: uid, LoginName: login, ExpiresAt: time.Now().Add(time.Hour)}
 	get := func(path string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -126,7 +135,7 @@ func TestPageLookupErrorsAreNotNotFound(t *testing.T) {
 
 	// The store fails: every page is a logged 500 with a generic body, not
 	// "not found" and not "forbidden", and never the store's text.
-	store.Close()
+	served.Close()
 	for _, path := range []string{groupPage, repoPage, sbom} {
 		logs.Reset()
 		w := get(path)

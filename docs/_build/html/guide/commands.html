@@ -562,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -3462,9 +3464,22 @@ one — register a checklist here.</p>
 aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="m">0</span>.29.64<span class="w">   </span><span class="c1"># every release&#39;s steps after the one last deployed, oldest first</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> prints the same accumulated list when the last
-acknowledged deploy is behind the binary: the heals of a skipped release
-never ran (v0.29.68).</p>
+<p><code class="docutils literal notranslate"><span class="pre">--since</span></code> takes the version last deployed (the schema stamp,
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">schema_version</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.schema_meta</span></code>, read before the
+migrate moves it) and prints every later release’s block up to this binary,
+oldest first. Consecutive releases with identical steps print as one block
+labelled with the range it covers. When more than one release has steps, a
+header comes first: run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">all</span></code>, the migrate and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code> <strong>once</strong>, not once per block — the migrate is the strongest any block
+asks for (a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> if any block needs one, otherwise
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code>) — then every block’s checks, heals and
+audits, oldest first, and a step that needs the running release (such as
+<code class="docutils literal notranslate"><span class="pre">adopt-forge-id</span></code> or the approvals page) after the start. A <code class="docutils literal notranslate"><span class="pre">--since</span></code> value
+that is not a version (dotted non-negative numbers such as <code class="docutils literal notranslate"><span class="pre">0.29.64</span></code>) is an
+error: the command names the flag and exits non-zero.</p>
+<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> prints the same accumulated list, with the same
+header and collapsing, when the last acknowledged deploy is behind the
+binary: the heals of a skipped release never ran (v0.29.68).
+<a class="reference internal" href="../getting-started/upgrading.html"><span class="std std-doc">Upgrading</span></a> puts both commands in order.</p>
 </section>
 <section id="aveloxis-ack-deploy">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code><a class="headerlink" href="#aveloxis-ack-deploy" title="Link to this heading"></a></h2>

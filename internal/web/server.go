@@ -289,10 +289,6 @@ func (s *Server) Handler() http.Handler {
 // Session management
 // ============================================================
 
-// sessionCookie builds a session cookie with security attributes set from config.
-// Secure is true in production (default), false when dev_mode is enabled.
-// HttpOnly is always true.
-
 // oauthCallbackTimeout bounds the OAuth callback's forge round trips AS A
 // WHOLE (the code exchange, /user and, on GitHub, /user/emails share one
 // context): three sequential requests to one forge × the 10 s the scorecard
@@ -301,6 +297,9 @@ func (s *Server) Handler() http.Handler {
 // unbounded spinner. A var so the runtime test can shorten it.
 var oauthCallbackTimeout = 30 * time.Second
 
+// sessionCookie builds a session cookie with security attributes set from config.
+// Secure is true in production (default), false when dev_mode is enabled.
+// HttpOnly is always true.
 func (s *Server) sessionCookie(token string) *http.Cookie {
 	return &http.Cookie{
 		Name:     "aveloxis_session",
@@ -603,7 +602,16 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// The body read is part of the user request: a forge that sends the
+	// headers and stalls the body hits the callback bound HERE, and a
+	// dropped error sent the partial body on to the decode as if the forge
+	// had sent it (PR #218 review C9).
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.logOAuthFailure("github", "user", err)
+		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		return
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Error("github /user returned non-200",
@@ -855,7 +863,16 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// The body read is part of the user request: a forge that sends the
+	// headers and stalls the body hits the callback bound HERE, and a
+	// dropped error sent the partial body on to the decode as if the forge
+	// had sent it (PR #218 review C9).
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.logOAuthFailure("gitlab", "user", err)
+		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		return
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		s.logger.Error("gitlab /user returned non-200",
@@ -1520,7 +1537,10 @@ func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request) {
 				"group_id", groupID, "org_url", logURL(orgURL), "github_host", platform.GitHubWebHost(s.ghAPIBase))
 			http.Redirect(w, r, fmt.Sprintf("/groups/%d?org_error=host", groupID), http.StatusFound)
 			return
-		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong):
+		case errors.Is(err, platform.ErrURLUserinfo), errors.Is(err, db.ErrURLTooLong), db.IsRejectedValue(err):
+			// A value the database refused (SQLSTATE class 22, e.g. a NUL
+			// byte) is the user's input too, as addErrorFlag reads it on the
+			// repo path (PR #218 review C4).
 			// The user's input, fixable by the user: say so on the page, as
 			// the repo path (add_error=invalid) and the portal (400) do
 			// (fix-review round 1: the store's refusal fell through to a plain
@@ -1754,8 +1774,11 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSBOMDownload generates and returns an SBOM for a repo.
-// Only available to authenticated users who own the group containing the repo.
+// handleSBOMDownload generates and returns an SBOM for a repo. The caller
+// must own the group named in the URL; whether the repo is a member of that
+// group is not checked (PR #218 review C16: the doc claimed "the group
+// containing the repo"; adding the membership check was not taken, a
+// recorded decision).
 func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request, sess *Session, groupID int64, repoIDStr string) {
 	repoID, err := strconv.ParseInt(repoIDStr, 10, 64)
 	if err != nil {

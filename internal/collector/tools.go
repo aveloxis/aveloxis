@@ -197,6 +197,11 @@ func installScorecardBinary(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// GoBinDir names where `go install` WOULD write; on a host without Go
+	// that is ~/go/bin, which need not exist yet (PR #218 review A2).
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s for scorecard: %w", destDir, err)
+	}
 	dest := filepath.Join(destDir, "scorecard")
 
 	// Extract the scorecard binary from the .tar.gz archive.
@@ -218,7 +223,10 @@ func installScorecardBinary(ctx context.Context) error {
 		// The binary is typically named "scorecard" or "scorecard-<os>-<arch>".
 		base := filepath.Base(hdr.Name)
 		if base == "scorecard" || strings.HasPrefix(base, "scorecard-") {
-			tmp, err := os.CreateTemp("", "scorecard-*")
+			// Staged beside the destination, so the rename below never
+			// crosses a filesystem — from a tmpfs /tmp it failed with
+			// EXDEV (PR #218 review A2).
+			tmp, err := os.CreateTemp(destDir, ".scorecard-*")
 			if err != nil {
 				return fmt.Errorf("creating temp file: %w", err)
 			}
@@ -756,6 +764,8 @@ var ErrInstallShadowed = errors.New("installed copy is shadowed on PATH")
 // whatever GOBIN said, so an upgrade into GoBinDir can leave the old copy
 // first on PATH — serve would keep running it while the upgrade reported
 // success). Empty when the written copy is the one PATH finds, or none is.
+// The text is wrapped as ErrInstallShadowed, so it carries no "warning:"
+// prefix (PR #218 review A3: callers printed "failed: warning: ...").
 func shadowWarning(name, written string) string {
 	found, err := exec.LookPath(name)
 	if err != nil {
@@ -771,5 +781,5 @@ func shadowWarning(name, written string) string {
 	if found == w {
 		return ""
 	}
-	return fmt.Sprintf("warning: %s was written to %s, but %s is first on PATH — remove the older copy or reorder PATH, or serve keeps running it", name, written, found)
+	return fmt.Sprintf("%s was written to %s, but %s is first on PATH — remove the older copy or reorder PATH, or serve keeps running it", name, written, found)
 }

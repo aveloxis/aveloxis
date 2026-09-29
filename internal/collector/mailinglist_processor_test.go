@@ -470,4 +470,15 @@ func TestProcessRowDefersOnASenderLookupFailure(t *testing.T) {
 	if !strings.Contains(logs.String(), "sender lookup failed") {
 		t.Errorf("the deferral's cause is not logged:\n%s", logs.String())
 	}
+	// PR #218 review A5: the WARN matches the other deferral sites — the
+	// processor prefix, the list (rgls_id) and the message key — and does
+	// not put the sender's address in a WARN line.
+	for _, want := range []string{"mailing-list processor: sender lookup failed", "rgls_id=7", "message_id=<probe@example.invalid>"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("the deferral WARN lacks %q:\n%s", want, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), row.Message.SenderEmail) {
+		t.Errorf("the deferral WARN carries the sender's email:\n%s", logs.String())
+	}
 }

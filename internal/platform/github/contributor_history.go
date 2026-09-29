@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -287,11 +286,10 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		//  (a) a global RESOURCE_LIMITS_EXCEEDED (the ErrResourceLimits
 		//      sentinel; gate with errors.Is, never the message text —
 		//      graphql.go's own contract, code-review finding 12);
-		//  (b) a TRUNCATED body whose partial JSON carries the marker (a
-		//      decode error the classifier cannot reach — the string
-		//      check exists ONLY for this shape, scoped to decode
-		//      failures so ordinary errors echoing the bytes don't
-		//      false-match);
+		//  (b) a TRUNCATED body whose partial JSON carries the marker —
+		//      the GraphQL client now classifies it as (a) itself
+		//      (truncatedResourceLimitsError, PR #218 review E1), so the
+		//      decode-error string match that used to catch it here is gone;
 		//  (c) persistent 500s that exhaust the retry budget
 		//      (ErrTransient — QCADevProd/robinmordasiewicz presented
 		//      this way; v0.27.81's fetchActivityWithSubdivide subdivides
@@ -309,9 +307,7 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 		// of cost: it BUBBLES, the contributor fails un-stamped, and the
 		// scheduler's failure cooldown retires it from the claim head
 		// (code-review finding 3) — nothing incomplete is ever stamped.
-		tooExpensive := errors.Is(err, platform.ErrResourceLimits) ||
-			(strings.Contains(err.Error(), "decode graphql envelope") &&
-				platform.CarriesResourceLimitsError([]byte(err.Error())))
+		tooExpensive := errors.Is(err, platform.ErrResourceLimits)
 		if w.To.Sub(w.From) >= historyMinWindow &&
 			(tooExpensive || platform.ClassifyError(err) == platform.ClassTransient) {
 			c.logger.Info("activity history: query too expensive or transient — subdividing window",

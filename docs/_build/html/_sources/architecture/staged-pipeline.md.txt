@@ -170,7 +170,7 @@ The staged pipeline is designed for safe restart at any point:
 
 ### On startup
 
-- The locks a previous serve left behind are reclaimed first, whatever their age (a fresh serve has no in-flight work), except a live `heal-collection-gaps` run's drain-parked rows; then stale locks, then the serve's own; then `due_at` is realigned
+- The locks a previous serve left behind are reclaimed first, whatever their age (a fresh serve has no in-flight work), except a live `heal-collection-gaps` run's drain-parked rows; then stale locks, then the serve's own; then, when it is due, the monthly tool-update check (each installed tool's re-install is bounded at 10 minutes and cancelled by a stop, but together they can delay startup by minutes); then `due_at` is realigned
 - Leftover staging data from the previous run is drained LAST, in a background goroutine, while normal queue polling starts at once (v0.18.29; the reclaim-before-drain order is pinned by `TestLockRecoveryRunsBeforeLeftoverStaging`)
 - This means data already fetched from the API is not lost
 

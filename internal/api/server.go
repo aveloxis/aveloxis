@@ -214,7 +214,6 @@ func (s *Server) serverError(w http.ResponseWriter, handler string, err error) {
 // Handler returns the HTTP handler: CORS outermost (preflights are
 // never rate-limited), then the per-IP limiter, then Bearer auth +
 // scope, then the routes.
-
 func (s *Server) Handler() http.Handler {
 	return s.limiter.cors(s.limiter.middleware(s.auth.middleware(s.limiter, s.mux)))
 }

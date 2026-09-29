@@ -903,6 +903,14 @@ func (s *Scheduler) githubKeysAvailable() bool {
 	return s.ghKeys.HasUsableKey() // nil-safe
 }
 
+// gitlabKeysAvailable is githubKeysAvailable's GitLab twin (PR #218 review
+// E15): the GitLab pool has at least one non-invalidated key. loadKeys
+// builds an EMPTY pool when no GitLab key is configured; a nil pool reads
+// as unavailable too, as refreshGitLabGroup's own gate treats it.
+func (s *Scheduler) gitlabKeysAvailable() bool {
+	return s.glKeys.HasUsableKey() // nil-safe
+}
+
 // runSearchResolve runs the v0.19.2 search-resolve background task.
 // Takes a batch of contributors with email but no gh_user_id and
 // calls /search/users?q=email for each — on hit, backfills the
@@ -917,7 +925,6 @@ func (s *Scheduler) githubKeysAvailable() bool {
 // At default 100 candidates per hour, the task uses ~1.7 search
 // requests per minute — comfortable headroom against the 30/min
 // per-token budget.
-
 func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	if !s.githubKeysAvailable() {
 		return // GitLab-only keys, or every key invalidated

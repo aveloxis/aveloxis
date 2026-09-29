@@ -1834,3 +1834,9 @@ always. Before v0.29.68 the idle tasks ran against the empty
 pool — breadth recorded whole batches as attempted and three tickers logged
 an unanswered WARN each tick. Add a GitHub key (`aveloxis add-key <token>
 --platform github`) and restart to enable them.
+
+The GitHub-only deployment has the mirror case in one place: the
+repository-metadata backfill's GitLab candidates need a usable GitLab key.
+Without one they are skipped, logged once per run and counted as
+`skipped_no_gitlab_key` on its progress lines, not as failures; they stay
+candidates and are asked at the first restart with a GitLab key (v0.29.69).

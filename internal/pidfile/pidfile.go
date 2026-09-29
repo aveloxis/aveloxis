@@ -50,9 +50,43 @@ func LogPath(component string) string {
 	}
 }
 
-// Write creates a PID file with the given process ID.
+// Write creates (or replaces) a PID file with the given process ID,
+// atomically: the PID goes to a temp file in the same directory, which is
+// then renamed over path, so a concurrent Read sees the old PID or the new
+// one — never the empty or partial file os.WriteFile's truncate-then-write
+// exposed (PR #218 review D10; an unreadable pidfile makes start and stop
+// refuse as UNKNOWN). The temp file is removed on any failure.
+//
+// The error does not name path — every caller does (PR #218 fix review r1:
+// both wrapped it, and the path printed twice); the underlying os error
+// still names the temp file it was working on.
 func Write(path string, pid int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("atomic pidfile write: %w", err)
+	}
+	name := tmp.Name()
+	fail := func(err error) error {
+		tmp.Close()
+		_ = os.Remove(name) // best effort; the write error is the one reported
+		return fmt.Errorf("atomic pidfile write: %w", err)
+	}
+	if _, err := tmp.WriteString(strconv.Itoa(pid)); err != nil {
+		return fail(err)
+	}
+	// CreateTemp makes the file 0600; a pidfile has always been 0644.
+	if err := tmp.Chmod(0o644); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("atomic pidfile write: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("atomic pidfile write: %w", err)
+	}
+	return nil
 }
 
 // Read returns the PID from a PID file.
@@ -104,6 +138,13 @@ func Read(path string) (int, error) {
 // finding 2 (SR-5) callers report that state as UNKNOWN and REFUSE to
 // start rather than risk a second scheduler on one host; the operator
 // may have to delete the file by hand.
+//
+// The read and the unlink are two steps, not one (PR #218 review D10,
+// documented rather than locked): a concurrent `start` that rewrites the
+// file between them (the double-start race above, with the winner's Write
+// landing after the loser's read) has its new file removed, and the live
+// winner is left without a pidfile. The window is the two system calls;
+// closing it would need a lock that every start, stop and child shares.
 func RemoveIfOwn(path string, pid int) Removal {
 	p, err := Read(path)
 	if err != nil || p != pid {

@@ -562,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -2082,7 +2084,9 @@ Done -&gt; repo re-queued with new due time
 <ol class="arabic simple">
 <li><p>Reclaims the locks a previous serve left behind, whatever their age — a fresh serve has no in-flight work — except a live <code class="docutils literal notranslate"><span class="pre">heal-collection-gaps</span></code> run’s drain-parked rows (a <code class="docutils literal notranslate"><span class="pre">gap-heal:</span></code> owner whose heartbeat is inside the stale-lock window, v0.29.68)</p></li>
 <li><p>Recovers stale locks (older than the stale-lock window) from any crashed worker instance</p></li>
-<li><p>Releases any locks held by our own worker ID (from a previous unclean shutdown), then realigns <code class="docutils literal notranslate"><span class="pre">due_at</span></code> to the configured recollection interval</p></li>
+<li><p>Releases any locks held by our own worker ID (from a previous unclean shutdown)</p></li>
+<li><p>Runs the monthly tool-update check when it is due (more than 30 days since the last, recorded in <code class="docutils literal notranslate"><span class="pre">~/.aveloxis-tool-check</span></code>): re-installs each external tool already on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (scc, scorecard, scancode). Each install is bounded at 10 minutes and cancelled by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code>, but together they can hold startup for minutes before polling begins</p></li>
+<li><p>Realigns <code class="docutils literal notranslate"><span class="pre">due_at</span></code> to the configured recollection interval</p></li>
 <li><p>Lock-parks the repositories with leftover staging rows from a previous interrupted run and drains them in a background goroutine while polling begins</p></li>
 </ol>
 </section>

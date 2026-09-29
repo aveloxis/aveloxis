@@ -51,9 +51,11 @@ func TestRunDeployGateBoundsTheDialOnly(t *testing.T) {
 	}
 	// ...and checkDeployReadiness must NOT — it blocks on the operator's
 	// [y/N] answer, which no deadline may cut short.
-	gateIdx := strings.Index(body, "checkDeployReadiness(")
+	// PR #218 fix review r1 F2: the body is checkDeployReadinessNaming
+	// (it also returns the migrate its refusal named).
+	gateIdx := strings.Index(body, "checkDeployReadinessNaming(")
 	if gateIdx < 0 {
-		t.Fatal("runDeployGate must still call checkDeployReadiness")
+		t.Fatal("runDeployGate must still call checkDeployReadinessNaming")
 	}
 	gateArgs := body[gateIdx:min(len(body), gateIdx+80)]
 	if strings.Contains(gateArgs, "dialCtx") {

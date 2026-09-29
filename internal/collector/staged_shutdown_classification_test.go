@@ -29,6 +29,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -86,6 +87,31 @@ func TestProcessRepoPoolClosedUnderShutdownIsNotAnError(t *testing.T) {
 	}
 	if !strings.Contains(out, "entity processing aborted by shutdown") {
 		t.Errorf("want the INFO interruption line, got:\n%s", out)
+	}
+}
+
+// PR #218 review A10: CollectRepo's early return — the collection-status
+// write failing under a done ctx, before the first phase — returned the
+// raw error, which carries no context.Canceled when the pool closed under
+// the statement; it now reports the interruption as ProcessRepo does.
+func TestCollectRepoEarlyReturnUnderShutdownCarriesTheCancellation(t *testing.T) {
+	store, _ := shutdownTestStore(t)
+	store.Close()
+
+	logger, logs := bufLogger()
+	sc := NewStagedCollector(&fakeClient{plat: model.PlatformGitHub}, store, logger)
+	_, err := sc.CollectRepo(doneUnobservedCtx{context.Background()}, 1, "o", "r", time.Time{})
+	if err == nil {
+		t.Fatal("CollectRepo returned nil on a closed pool — the fixture did not reach the early return")
+	}
+	if !strings.Contains(err.Error(), "closed pool") {
+		t.Fatalf("fixture: want the closed-pool failure, got %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("returned error %q does not carry context.Canceled — callers cannot classify the shutdown", err)
+	}
+	if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("shutdown logged as a failure:\n%s", logs.String())
 	}
 }
 

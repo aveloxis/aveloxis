@@ -175,9 +175,8 @@ func TestGraphQLDoesNotRetryAMalformedCompleteBody(t *testing.T) {
 // refuses a too-expensive query with a TRUNCATED body that carries
 // RESOURCE_LIMITS_EXCEEDED (the 2026-09-05 chaoss.tv shape the history
 // sweep subdivides on). That is the server's answer about the query, not a
-// stream abort: a retry gets the same answer and spends the read budget, and
-// the caller must see the decode failure with the marker in it (worklist 66,
-// found by the full suite after the truncation retry landed).
+// stream abort: a retry gets the same answer and spends the read budget
+// (worklist 66, found by the full suite after the truncation retry landed).
 func TestGraphQLDoesNotRetryATruncatedResourceLimitAnswer(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -195,8 +194,13 @@ func TestGraphQLDoesNotRetryATruncatedResourceLimitAnswer(t *testing.T) {
 	if n := attempts.Load(); n != 1 {
 		t.Errorf("a truncated resource-limit answer was attempted %d times; want 1 (the answer, not a stream abort)", n)
 	}
-	if msg := err.Error(); !strings.Contains(msg, "decode graphql envelope") || !strings.Contains(msg, "RESOURCE_LIMITS_EXCEEDED") {
-		t.Errorf("error %q must be the decode failure carrying the marker — the history sweep's too-expensive arm reads exactly that", msg)
+	// PR #218 review E1: the answer classifies exactly like the complete-body
+	// RESOURCE_LIMITS_EXCEEDED answer — ClassTransient wrapping
+	// ErrResourceLimits — so every subdivision caller (the PR batch as well
+	// as the history sweep) halves the query instead of failing on a
+	// ClassFatal decode error.
+	if !errors.Is(err, ErrResourceLimits) || ClassifyError(err) != ClassTransient {
+		t.Errorf("error %v classifies %v; want ClassTransient wrapping ErrResourceLimits (the complete-body RLE answer's class)", err, ClassifyError(err))
 	}
 }
 

@@ -485,16 +485,23 @@ func (s *PostgresStore) GetGroupDetail(ctx context.Context, userID int, groupID 
 			FROM aveloxis_ops.user_repos ur
 			WHERE ur.group_id = $1`, groupID).Scan(&totalRepos)
 	}
+	// A failed read after the ownership check is returned, never rendered as
+	// an empty group (PR #218 review C17, SR-5): the web handlers turn it
+	// into a logged 500.
 	if err != nil {
-		totalRepos = 0
+		return nil, 0, fmt.Errorf("count repos of group %d: %w", groupID, err)
 	}
 
 	// Load paginated repos.
 	offset := (page - 1) * perPage
-	detail.Repos, _ = s.loadGroupRepos(ctx, groupID, search, perPage, offset)
+	if detail.Repos, err = s.loadGroupRepos(ctx, groupID, search, perPage, offset); err != nil {
+		return nil, 0, fmt.Errorf("load repos of group %d: %w", groupID, err)
+	}
 
 	// Load tracked orgs.
-	detail.Orgs, _ = s.loadGroupOrgs(ctx, groupID)
+	if detail.Orgs, err = s.loadGroupOrgs(ctx, groupID); err != nil {
+		return nil, 0, fmt.Errorf("load orgs of group %d: %w", groupID, err)
+	}
 
 	return detail, totalRepos, nil
 }
@@ -536,7 +543,9 @@ func (s *PostgresStore) loadGroupRepos(ctx context.Context, groupID int64, searc
 		}
 		result = append(result, r)
 	}
-	return result, nil
+	// An error ending the rows is the query's failure, not the end of the
+	// page (PR #218 review C17).
+	return result, repoRows.Err()
 }
 
 // loadGroupOrgs fetches tracked orgs for a group.
@@ -559,7 +568,7 @@ func (s *PostgresStore) loadGroupOrgs(ctx context.Context, groupID int64) ([]Gro
 		}
 		result = append(result, o)
 	}
-	return result, nil
+	return result, orgRows.Err() // PR #218 review C17, as in loadGroupRepos
 }
 
 // AddRepoToGroup adds a single repo URL to a user group under the
@@ -1050,9 +1059,15 @@ func (s *PostgresStore) ListUsers(ctx context.Context) ([]AdminUser, error) {
 	return out, rows.Err()
 }
 
+// ErrLastAdmin is SetUserAdmin's refusal to demote the only remaining
+// administrator: the store declining the operation, not failing (PR #218
+// review, follow-up to C6 — untyped, it read as a server error once store
+// failures became logged generic 500s). Handlers answer it 409.
+var ErrLastAdmin = errors.New("refusing to demote the last admin — promote another user first")
+
 // SetUserAdmin toggles the admin role for a user. Refuses to demote
-// the last remaining admin so the system can't end up with zero
-// admins (which would leave the approval queue forever stuck).
+// the last remaining admin (ErrLastAdmin) so the system can't end up with
+// zero admins (which would leave the approval queue forever stuck).
 func (s *PostgresStore) SetUserAdmin(ctx context.Context, userID int, isAdmin bool) error {
 	if !isAdmin {
 		// Demoting — make sure another admin remains.
@@ -1063,7 +1078,7 @@ func (s *PostgresStore) SetUserAdmin(ctx context.Context, userID int, isAdmin bo
 			return fmt.Errorf("count remaining admins: %w", err)
 		}
 		if otherAdmins == 0 {
-			return fmt.Errorf("refusing to demote the last admin — promote another user first")
+			return ErrLastAdmin
 		}
 	}
 	_, err := s.pool.Exec(ctx,

@@ -38,17 +38,32 @@ func TestGitHubKeysAvailable(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("%d keys", len(keys))
 	}
-	if snap, _ := pool.Snapshot(); len(snap) == 1 {
-		// Invalidate the only key through the pool's own path.
-		key, release, err := pool.Acquire(t.Context(), platform.ResourceCore)
-		if err != nil {
-			t.Fatal(err)
-		}
-		release()
-		pool.InvalidateKey(key)
+	// Invalidate the only key through the pool's own path.
+	key, release, err := pool.Acquire(t.Context(), platform.ResourceCore)
+	if err != nil {
+		t.Fatal(err)
 	}
+	release()
+	pool.InvalidateKey(key)
 	if s.githubKeysAvailable() {
 		t.Error("a pool whose every key was invalidated reads as available")
+	}
+}
+
+// TestGitLabKeysAvailable (PR #218 review E15): the GitLab twin reads the
+// GitLab pool, never the GitHub one, with the same nil / empty / keyed
+// answers.
+func TestGitLabKeysAvailable(t *testing.T) {
+	lg := slog.New(slog.NewTextHandler(io.Discard, nil))
+	github := platform.NewKeyPool([]string{"ghp_probe"}, lg)
+	if (&Scheduler{ghKeys: github}).gitlabKeysAvailable() {
+		t.Error("a nil GitLab pool reads as available (or the GitHub pool was read)")
+	}
+	if (&Scheduler{ghKeys: github, glKeys: platform.NewKeyPool(nil, lg)}).gitlabKeysAvailable() {
+		t.Error("an empty GitLab pool reads as available")
+	}
+	if !(&Scheduler{glKeys: platform.NewKeyPool([]string{"glpat-probe"}, lg)}).gitlabKeysAvailable() {
+		t.Error("a GitLab pool with a key reads as unavailable")
 	}
 }
 

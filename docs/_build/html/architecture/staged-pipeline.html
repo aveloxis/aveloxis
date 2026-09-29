@@ -562,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -1829,7 +1831,7 @@
 <section id="on-startup">
 <h3>On startup<a class="headerlink" href="#on-startup" title="Link to this heading"></a></h3>
 <ul class="simple">
-<li><p>The locks a previous serve left behind are reclaimed first, whatever their age (a fresh serve has no in-flight work), except a live <code class="docutils literal notranslate"><span class="pre">heal-collection-gaps</span></code> run’s drain-parked rows; then stale locks, then the serve’s own; then <code class="docutils literal notranslate"><span class="pre">due_at</span></code> is realigned</p></li>
+<li><p>The locks a previous serve left behind are reclaimed first, whatever their age (a fresh serve has no in-flight work), except a live <code class="docutils literal notranslate"><span class="pre">heal-collection-gaps</span></code> run’s drain-parked rows; then stale locks, then the serve’s own; then, when it is due, the monthly tool-update check (each installed tool’s re-install is bounded at 10 minutes and cancelled by a stop, but together they can delay startup by minutes); then <code class="docutils literal notranslate"><span class="pre">due_at</span></code> is realigned</p></li>
 <li><p>Leftover staging data from the previous run is drained LAST, in a background goroutine, while normal queue polling starts at once (v0.18.29; the reclaim-before-drain order is pinned by <code class="docutils literal notranslate"><span class="pre">TestLockRecoveryRunsBeforeLeftoverStaging</span></code>)</p></li>
 <li><p>This means data already fetched from the API is not lost</p></li>
 </ul>

@@ -1973,15 +1973,19 @@ one</a>.</p>
 <td><p>See the budget below — <strong>not</strong> a round number</p></td>
 <td><p>Per <strong>operation</strong>, not per connection. This is the setting that OOMs hosts.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span></code></p></td>
+<td><p>Leave at the default <code class="docutils literal notranslate"><span class="pre">2.0</span></code> and budget for it, or set <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to fit a tighter budget</p></td>
+<td><p>A hash operation may use <code class="docutils literal notranslate"><span class="pre">work_mem</span> <span class="pre">×</span> <span class="pre">hash_mem_multiplier</span></code> (PostgreSQL 15 raised the default from <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to <code class="docutils literal notranslate"><span class="pre">2.0</span></code>), so it enters the <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> budget below.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code></p></td>
 <td><p>2–4 GB</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">VACUUM</span></code>, <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span></code>, <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">TABLE</span></code>. Bounded by <code class="docutils literal notranslate"><span class="pre">autovacuum_max_workers</span></code> running concurrently, so it multiplies too — just by a much smaller number.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jit</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jit</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">off</span></code></p></td>
 <td><p>Aveloxis’s workload is insert- and index-lookup-heavy; JIT compilation buys little and is a known memory sink on wide analytic queries. A host that reports <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">llvm</span> <span class="pre">error:</span> <span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">allocate</span> <span class="pre">section</span> <span class="pre">memory</span></code> is paying for JIT it is not benefiting from.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code></p></td>
 <td><p>Pool floor from <a class="reference internal" href="#postgresql-configuration">PostgreSQL configuration</a>, plus headroom</p></td>
 <td><p>Every connection is a potential <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier, so this is a memory setting as much as a concurrency one. Raise it only with the budget below recomputed.</p></td>
 </tr>
@@ -1990,10 +1994,13 @@ one</a>.</p>
 </section>
 <section id="why-work-mem-is-the-dangerous-one">
 <h3>Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one<a class="headerlink" href="#why-work-mem-is-the-dangerous-one" title="Link to this heading"></a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the limit for <strong>one</strong> sort or hash operation. A single query can
-use several; a parallel query multiplies by its worker count; and every
-connection can be running one. So the worst-case allocation is:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
+<p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the limit for <strong>one</strong> sort operation. A hash operation (hash
+join, hash aggregate) may use <code class="docutils literal notranslate"><span class="pre">work_mem</span> <span class="pre">×</span> <span class="pre">hash_mem_multiplier</span></code>, and since
+PostgreSQL 15 that multiplier defaults to <code class="docutils literal notranslate"><span class="pre">2.0</span></code>, so a hash node can use twice
+<code class="docutils literal notranslate"><span class="pre">work_mem</span></code>. A single query can use several such operations; a parallel query
+multiplies by its worker count; and every connection can be running one. So
+the worst-case allocation, when the operations are hash nodes, is:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem × hash_mem_multiplier
 </pre></div>
 </div>
 <p>where <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> is the number of sort/hash nodes a plan runs at once
@@ -2004,24 +2011,27 @@ than the denominator, because every connection is never running its
 heaviest plan at once; if yours are, divide by <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> too. Budget it
 against roughly 10% of RAM, which leaves the rest for <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and
 the OS page cache:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather) × hash_mem_multiplier)
 </pre></div>
 </div>
 <p>A worked example on a 1 TB host running 300 connections with
-<code class="docutils literal notranslate"><span class="pre">max_parallel_workers_per_gather</span> <span class="pre">=</span> <span class="pre">4</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (1024 GB × 0.10) / (300 × 5) = 102 GB / 1500 ≈ 70 MB
+<code class="docutils literal notranslate"><span class="pre">max_parallel_workers_per_gather</span> <span class="pre">=</span> <span class="pre">4</span></code> and the default
+<code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">2.0</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (1024 GB × 0.10) / (300 × 5 × 2.0) = 102.4 GB / 3000 ≈ 35 MB
 </pre></div>
 </div>
-<p>…so <code class="docutils literal notranslate"><span class="pre">64MB</span></code> is the right order of magnitude, and <code class="docutils literal notranslate"><span class="pre">2GB</span></code> — a value that looks
-unremarkable next to a 1 TB host — implies a worst case of
-<code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2GB</span> <span class="pre">=</span> <span class="pre">3</span> <span class="pre">TB</span></code>, three times the machine. That is not a hypothetical:
-it is what a real fleet drifted to, and it produced 106 out-of-memory errors
-in a three-second window, failing allocations as small as 40 bytes while
-inserting commits.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">1.0</span></code> the same host gives <code class="docutils literal notranslate"><span class="pre">102.4</span> <span class="pre">GB</span> <span class="pre">/</span> <span class="pre">1500</span> <span class="pre">≈</span> <span class="pre">70</span> <span class="pre">MB</span></code>. So tens of megabytes is the right order of magnitude, and <code class="docutils literal notranslate"><span class="pre">2GB</span></code> — a value
+that looks unremarkable next to a 1 TB host — implies a worst case of
+<code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2GB</span> <span class="pre">×</span> <span class="pre">2.0</span> <span class="pre">=</span> <span class="pre">6000</span> <span class="pre">GB</span></code>, almost six times the machine (3000 GB,
+almost three times it, even with the multiplier at <code class="docutils literal notranslate"><span class="pre">1.0</span></code>). That is not a hypothetical: it is what a
+real fleet drifted to, and it produced 106 out-of-memory errors in a
+three-second window, failing allocations as small as 40 bytes while inserting
+commits.</p>
 <p>The denominator moves with <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>. The same host at 1000
-connections gives <code class="docutils literal notranslate"><span class="pre">(1024</span> <span class="pre">GB</span> <span class="pre">×</span> <span class="pre">0.10)</span> <span class="pre">/</span> <span class="pre">(1000</span> <span class="pre">×</span> <span class="pre">5)</span> <span class="pre">≈</span> <span class="pre">21</span> <span class="pre">MB</span></code>, and <code class="docutils literal notranslate"><span class="pre">128MB</span></code> there
-implies a worst case of <code class="docutils literal notranslate"><span class="pre">1000</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">128MB</span> <span class="pre">≈</span> <span class="pre">625</span> <span class="pre">GB</span></code>, more than half the
-machine on top of <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>. When <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is far above what
+connections gives <code class="docutils literal notranslate"><span class="pre">(1024</span> <span class="pre">GB</span> <span class="pre">×</span> <span class="pre">0.10)</span> <span class="pre">/</span> <span class="pre">(1000</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2.0)</span> <span class="pre">≈</span> <span class="pre">10</span> <span class="pre">MB</span></code>, and <code class="docutils literal notranslate"><span class="pre">128MB</span></code>
+there implies a worst case of <code class="docutils literal notranslate"><span class="pre">1000</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">128MB</span> <span class="pre">×</span> <span class="pre">2.0</span> <span class="pre">=</span> <span class="pre">1250</span> <span class="pre">GB</span></code>, more than
+the whole 1024 GB machine (625 GB, more than half of it on top of
+<code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>, with the multiplier at <code class="docutils literal notranslate"><span class="pre">1.0</span></code>). When <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is far above what
 the clients use, lower it to the pool floor first (it needs a restart), then
 recompute <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>; lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> alone makes more operations spill
 to temporary files (see <a class="reference internal" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts</a>).</p>
@@ -2039,7 +2049,7 @@ connections, and nothing in PostgreSQL warns you about the difference.</p>
 collection workers):</p>
 <div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">shared_buffers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">200GB</span><span class="w">                  </span><span class="c1"># ~20% of RAM</span>
 <span class="na">effective_cache_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">700GB</span><span class="w">            </span><span class="c1"># ~68% of RAM — a hint, not an allocation</span>
-<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">64MB</span><span class="w">                         </span><span class="c1"># per OPERATION; see the budget above</span>
+<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">64MB</span><span class="w">                         </span><span class="c1"># per OPERATION (hash: × hash_mem_multiplier); see the budget above</span>
 <span class="na">maintenance_work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">4GB</span>
 <span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">300</span>
 <span class="na">jit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">off</span>
@@ -2047,7 +2057,13 @@ collection workers):</p>
 </div>
 <p>Scale <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>, <code class="docutils literal notranslate"><span class="pre">effective_cache_size</span></code> and <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> to your
 host, then recompute <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> from the budget — do not carry the <code class="docutils literal notranslate"><span class="pre">64MB</span></code>
-across unchanged, because it is an output of the formula, not an input.</p>
+across unchanged, because it is an output of the formula, not an input. The
+<code class="docutils literal notranslate"><span class="pre">64MB</span></code> fits the 10% budget with <code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">1.0</span></code> (≈ 70 MB, above).
+With the default <code class="docutils literal notranslate"><span class="pre">2.0</span></code> the formula gives ≈ 35 MB, and <code class="docutils literal notranslate"><span class="pre">64MB</span></code>’s all-hash worst
+case is <code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">64MB</span> <span class="pre">×</span> <span class="pre">2.0</span> <span class="pre">≈</span> <span class="pre">188</span> <span class="pre">GB</span></code>, about 18% of RAM: either set
+<code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">1.0</span></code>, lower <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> to the formula’s value, or
+accept that the 10% headroom is being spent on the rare plan that is all hash
+nodes in every worker at once.</p>
 </section>
 <section id="operating-system-settings">
 <h3>Operating-system settings<a class="headerlink" href="#operating-system-settings" title="Link to this heading"></a></h3>
@@ -2073,7 +2089,7 @@ one thing and the server doing another. Check the server, not the file:</p>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_settings</span>
 <span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;maintenance_work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;shared_buffers&#39;</span><span class="p">,</span>
 <span class="w">               </span><span class="s1">&#39;effective_cache_size&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;max_connections&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;jit&#39;</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">)</span>
+<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;hash_mem_multiplier&#39;</span><span class="p">)</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
 </pre></div>
 </div>
@@ -2086,9 +2102,18 @@ includes (a <code class="docutils literal notranslate"><span class="pre">conf.d/
 <code class="docutils literal notranslate"><span class="pre">pg_read_all_settings</span></code> can see it; for any other role it is blank. Check it
 before changing a value, or an edit to <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code> can be silently
 overridden by an included file or by <code class="docutils literal notranslate"><span class="pre">postgresql.auto.conf</span></code>.</p>
-<p>Settings made per role do not appear in <code class="docutils literal notranslate"><span class="pre">pg_settings</span></code> for other sessions.
-Check them separately:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">rolname</span><span class="p">,</span><span class="w"> </span><span class="n">rolconfig</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pg_roles</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">rolconfig</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">;</span>
+<p>Settings made with <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">…</span> <span class="pre">SET</span></code>, <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">…</span> <span class="pre">IN</span> <span class="pre">DATABASE</span> <span class="pre">…</span> <span class="pre">SET</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">DATABASE</span> <span class="pre">…</span> <span class="pre">SET</span></code> are applied when a session starts, so they appear in
+<code class="docutils literal notranslate"><span class="pre">pg_settings</span></code> only in sessions of the role and database they name. All three
+are stored in <code class="docutils literal notranslate"><span class="pre">pg_db_role_setting</span></code>; check them there (a <code class="docutils literal notranslate"><span class="pre">setrole</span></code> of <code class="docutils literal notranslate"><span class="pre">0</span></code> means
+every role, a <code class="docutils literal notranslate"><span class="pre">setdatabase</span></code> of <code class="docutils literal notranslate"><span class="pre">0</span></code> every database):</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="k">coalesce</span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">rolname</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;(all roles)&#39;</span><span class="p">)</span><span class="w">     </span><span class="k">AS</span><span class="w"> </span><span class="k">role</span><span class="p">,</span>
+<span class="w">       </span><span class="k">coalesce</span><span class="p">(</span><span class="n">d</span><span class="mf">.</span><span class="n">datname</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;(all databases)&#39;</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">database</span><span class="p">,</span>
+<span class="w">       </span><span class="n">s</span><span class="mf">.</span><span class="n">setconfig</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">pg_db_role_setting</span><span class="w"> </span><span class="n">s</span>
+<span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">pg_roles</span><span class="w"> </span><span class="n">r</span><span class="w">    </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="mf">.</span><span class="n">setrole</span>
+<span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">pg_database</span><span class="w"> </span><span class="n">d</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">d</span><span class="mf">.</span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="mf">.</span><span class="n">setdatabase</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">;</span>
 </pre></div>
 </div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sysctl<span class="w"> </span>vm.overcommit_memory<span class="w"> </span>vm.overcommit_ratio<span class="w"> </span>vm.swappiness
@@ -2122,19 +2147,19 @@ volume or move it; each is a trade-off, stated with it.</p>
 <td><p>reload</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wal_compression</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code></p></td>
-<td><p>Compresses those full-page images; costs a little CPU.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code>, where the server was built <code class="docutils literal notranslate"><span class="pre">--with-lz4</span></code>; otherwise <code class="docutils literal notranslate"><span class="pre">zstd</span></code> (built <code class="docutils literal notranslate"><span class="pre">--with-zstd</span></code>) or <code class="docutils literal notranslate"><span class="pre">pglz</span></code> (always available; <code class="docutils literal notranslate"><span class="pre">on</span></code> means <code class="docutils literal notranslate"><span class="pre">pglz</span></code>)</p></td>
+<td><p>Compresses those full-page images; costs a little CPU. <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">enumvals</span> <span class="pre">FROM</span> <span class="pre">pg_settings</span> <span class="pre">WHERE</span> <span class="pre">name</span> <span class="pre">=</span> <span class="pre">'wal_compression'</span></code> lists the methods this server was built with, and a method it lacks is rejected.</p></td>
 <td><p>reload</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">synchronous_commit</span></code> for the collection role</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">&lt;role&gt;</span> <span class="pre">SET</span> <span class="pre">synchronous_commit</span> <span class="pre">=</span> <span class="pre">off</span></code></p></td>
-<td><p>A COMMIT no longer waits for its WAL to reach disk. An OS crash (not a PostgreSQL crash) can lose the last fraction of a second of committed work, with no corruption. Collection is idempotent and re-collected, so that loss is recoverable; the same role’s web writes (accounts, groups) would be lost too. Applies to new sessions only.</p></td>
+<td><p>A COMMIT no longer waits for its WAL to reach disk. An operating-system <strong>or</strong> database crash can lose the most recent transactions already reported as committed — at most three times <code class="docutils literal notranslate"><span class="pre">wal_writer_delay</span></code> (600 ms at the default 200 ms) — with no corruption: the database is as if they had aborted. Collection is idempotent and re-collected, so that loss is recoverable; the same role’s web writes (accounts, groups) would be lost too. <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">…</span> <span class="pre">SET</span></code> applies when a session starts, and serve, web and api hold pooled connections: an open connection keeps the old value until the pool retires it (after 4 minutes idle or at most 1 hour of age), or restart the three processes to apply it at once.</p></td>
 <td><p>new sessions</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temp_tablespaces</span></code></p></td>
-<td><p>A tablespace on a separate fast device, when the data volume is write-bound</p></td>
-<td><p>Sorts and hashes larger than <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>, which increases spills.</p></td>
-<td><p>reload (after <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLESPACE</span></code>)</p></td>
+<td><p>A tablespace on a separate fast device, when the data volume is write-bound, plus <code class="docutils literal notranslate"><span class="pre">GRANT</span> <span class="pre">CREATE</span> <span class="pre">ON</span> <span class="pre">TABLESPACE</span> <span class="pre">&lt;ts&gt;</span> <span class="pre">TO</span> <span class="pre">&lt;role&gt;</span></code> for every role whose queries should spill there</p></td>
+<td><p>Sorts and hashes larger than their memory limit spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>, which increases spills. A value from <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code> (or any previously set value) silently ignores a listed tablespace the role lacks <code class="docutils literal notranslate"><span class="pre">CREATE</span></code> on, and that role’s temporary files stay in its database’s default tablespace; only an interactive <code class="docutils literal notranslate"><span class="pre">SET</span></code> reports the missing privilege as an error. Check with <code class="docutils literal notranslate"><span class="pre">log_temp_files</span></code> or <code class="docutils literal notranslate"><span class="pre">pg_ls_tmpdir()</span></code> that the spills moved.</p></td>
+<td><p>reload (after <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLESPACE</span></code> and the <code class="docutils literal notranslate"><span class="pre">GRANT</span></code>)</p></td>
 </tr>
 </tbody>
 </table>

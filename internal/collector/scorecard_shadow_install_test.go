@@ -43,6 +43,83 @@ func TestScorecardInstallShadowedIsAnError(t *testing.T) {
 	if err != nil {
 		t.Skip("go not on PATH")
 	}
+	serveScorecardFixture(t)
+
+	early, gobin := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(early, "scorecard"), []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOBIN", gobin)
+	t.Setenv("PATH", early+string(os.PathListSeparator)+filepath.Dir(goBin))
+
+	err = installScorecardBinary(context.Background())
+	if !errors.Is(err, ErrInstallShadowed) {
+		t.Fatalf("err = %v; want ErrInstallShadowed for a copy written behind an older one on PATH", err)
+	}
+	for _, p := range []string{filepath.Join(gobin, "scorecard"), filepath.Join(early, "scorecard")} {
+		if !strings.Contains(err.Error(), p) {
+			t.Errorf("err %q does not name %s", err, p)
+		}
+	}
+	// PR #218 review A3: the shadow text is an error now, so it must not
+	// print as "failed: warning: ...".
+	if strings.Contains(err.Error(), "warning:") {
+		t.Errorf("err %q still carries the warning prefix of its printed-warning past", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(gobin, "scorecard")); statErr != nil {
+		t.Errorf("the new copy was not written: %v", statErr)
+	}
+
+	// Unshadowed: the written copy is the one PATH finds.
+	t.Setenv("PATH", gobin+string(os.PathListSeparator)+filepath.Dir(goBin))
+	if err := installScorecardBinary(context.Background()); err != nil {
+		t.Errorf("an unshadowed install failed: %v", err)
+	}
+}
+
+// TestScorecardInstallCreatesDestAndStagesBesideIt pins PR #218 review A2:
+// the installer renamed a temp file from os.TempDir into GoBinDir without
+// creating GoBinDir — on a host without Go, ~/go/bin need not exist, and
+// where /tmp is its own filesystem (tmpfs) the rename fails with EXDEV. The
+// destination is created and the binary is staged inside it, so the rename
+// never crosses a filesystem. A TMPDIR that does not exist proves the
+// staging no longer depends on os.TempDir.
+func TestScorecardInstallCreatesDestAndStagesBesideIt(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not on PATH")
+	}
+	serveScorecardFixture(t)
+
+	gobin := filepath.Join(t.TempDir(), "not", "yet", "bin")
+	t.Setenv("GOBIN", gobin)
+	t.Setenv("PATH", gobin+string(os.PathListSeparator)+filepath.Dir(goBin))
+	if err := installScorecardBinary(context.Background()); err != nil {
+		t.Fatalf("install into a GoBinDir that does not exist yet failed: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(gobin, "scorecard")); statErr != nil {
+		t.Fatalf("the copy was not written: %v", statErr)
+	}
+
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "no-such-tmp"))
+	if err := installScorecardBinary(context.Background()); err != nil {
+		t.Fatalf("install with an unusable TMPDIR failed — the binary is still staged in os.TempDir: %v", err)
+	}
+	entries, err := os.ReadDir(gobin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "scorecard" {
+			t.Errorf("staging file %s left behind in %s", e.Name(), gobin)
+		}
+	}
+}
+
+// serveScorecardFixture points toolFetchClient at a local server answering
+// the latest-release probe and the tarball download.
+func serveScorecardFixture(t *testing.T) {
+	t.Helper()
 	var tgz bytes.Buffer
 	gz := gzip.NewWriter(&tgz)
 	tw := tar.NewWriter(gz)
@@ -62,35 +139,9 @@ func TestScorecardInstallShadowedIsAnError(t *testing.T) {
 		}
 		_, _ = w.Write(tgz.Bytes())
 	}))
-	defer fixture.Close()
+	t.Cleanup(fixture.Close)
 	target, _ := url.Parse(fixture.URL)
 	saved := toolFetchClient
 	toolFetchClient = &http.Client{Timeout: time.Minute, Transport: rewriteAll{target: target, base: http.DefaultTransport}}
 	t.Cleanup(func() { toolFetchClient = saved })
-
-	early, gobin := t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(early, "scorecard"), []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GOBIN", gobin)
-	t.Setenv("PATH", early+string(os.PathListSeparator)+filepath.Dir(goBin))
-
-	err = installScorecardBinary(context.Background())
-	if !errors.Is(err, ErrInstallShadowed) {
-		t.Fatalf("err = %v; want ErrInstallShadowed for a copy written behind an older one on PATH", err)
-	}
-	for _, p := range []string{filepath.Join(gobin, "scorecard"), filepath.Join(early, "scorecard")} {
-		if !strings.Contains(err.Error(), p) {
-			t.Errorf("err %q does not name %s", err, p)
-		}
-	}
-	if _, statErr := os.Stat(filepath.Join(gobin, "scorecard")); statErr != nil {
-		t.Errorf("the new copy was not written: %v", statErr)
-	}
-
-	// Unshadowed: the written copy is the one PATH finds.
-	t.Setenv("PATH", gobin+string(os.PathListSeparator)+filepath.Dir(goBin))
-	if err := installScorecardBinary(context.Background()); err != nil {
-		t.Errorf("an unshadowed install failed: %v", err)
-	}
 }

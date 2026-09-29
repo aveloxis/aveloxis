@@ -5,8 +5,11 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.23.6 — `aveloxis upgrade-tools` subcommand. Re-runs the
@@ -106,5 +109,30 @@ func TestUpgradeToolsReinstallsScorecard(t *testing.T) {
 		t.Error("upgrade-tools must handle scorecard — pinned because " +
 			"scorecard's upgrade path differs from scancode's (tarball " +
 			"re-download, not pipx upgrade)")
+	}
+}
+
+// TestToolInterruptMessagesCountTheSameProgress — PR #218 review D8: the
+// loop-top interrupt message counted every tool the walk had finished
+// (installed+failed; upgraded+skipped+failed) while the mid-tool message
+// counted only the successes, so one interrupted run could say "3 of 5"
+// and "1 of 5 done" for the same progress. Every interrupt message of each
+// walk names the same sum.
+func TestToolInterruptMessagesCountTheSameProgress(t *testing.T) {
+	re := regexp.MustCompile(`fmt\.Errorf\("[\w-]+ interrupted [^"]*",\s*(?:tool\.Name,\s*)?([^,]+),\s*len\(tools\)`)
+	for _, tc := range []struct{ file, fn, sum string }{
+		{"cmd/aveloxis/install_tools_cmd.go", "func runInstallTools(", "installed+failed"},
+		{"cmd/aveloxis/upgrade_tools_cmd.go", "func upgradeToolsCmd(", "upgraded+skipped+failed"},
+	} {
+		body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, tc.file), tc.fn))
+		ms := re.FindAllStringSubmatch(body, -1)
+		if len(ms) != 2 {
+			t.Fatalf("%s: %d interrupt messages found; want the loop-top and the mid-tool one", tc.file, len(ms))
+		}
+		for _, m := range ms {
+			if strings.TrimSpace(m[1]) != tc.sum {
+				t.Errorf("%s: an interrupt message counts %q; want %q (the same progress as the other)", tc.file, m[1], tc.sum)
+			}
+		}
 	}
 }

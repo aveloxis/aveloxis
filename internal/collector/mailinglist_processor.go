@@ -396,7 +396,10 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
-			p.logger.Warn("mailing-list: sender lookup failed — row deferred for the next drain", "email", m.SenderEmail, "error", err)
+			// Same shape as the other deferral WARNs; the sender's address
+			// stays out of a WARN line (PR #218 review A5).
+			p.logger.Warn("mailing-list processor: sender lookup failed — row deferred for retry",
+				"rgls_id", rglsID, "message_id", m.MessageID, "external_key", m.ExternalKey, "error", err)
 			return deferRetryOutcome(fmt.Errorf("resolve sender: %w", err))
 		}
 		if ok {

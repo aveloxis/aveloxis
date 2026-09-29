@@ -1165,6 +1165,9 @@ Per-user:
   fields are present; the single-`url` body remains accepted. The
   response carries `submitted` plus the outcome counts
   `{linked, enqueued, pending_approval?, request_id?, registered?}`.
+  `linked` counts only repositories this request newly linked into the
+  group: posting a repository that is already in the group again
+  returns `linked: 0` (PR #218 review C2).
   When `web.auto_approve_add_limit` lets a batch through and some of its
   repositories cannot be added, the others are still added and the call
   fails with an error saying how many could not be; sending the same
@@ -1203,7 +1206,9 @@ Admin-only:
   and diverge from the next login onward.
 - `POST /api/v1/admin/users/{userID}/admin` with
   `{"admin": true|false}` — promote/demote. Self-demotion is refused
-  (last-admin guard).
+  (last-admin guard). A demotion that would leave no admin at all is a
+  `409` with `refusing to demote the last admin — promote another user
+  first` (it was a `500` before PR #218 review).
 - `GET /api/v1/admin/groups/pending` — pending groups awaiting
   approval, with requester login/email and repo/org counts.
 - `POST /api/v1/admin/groups/{groupID}/{decision}` where decision is
@@ -1235,7 +1240,12 @@ Admin-only:
   returns `changed: true` and notifies the requester). The
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
-  request was already decided (idempotent double-click).
+  request was already decided (idempotent double-click). A request id that
+  does not exist answers `404`. An org request that can never be registered
+  answers `409` with the reason and "reject the request": an org that is
+  not on this deployment's GitHub host, a URL carrying credentials, or a
+  request created before v0.29.54 whose URL is longer than the registration
+  index holds (2,684 bytes).
 - `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`:
   `queued`, `collecting` (real jobs), `draining` (repos parked by the
   startup staging drain or by heal-collection-gaps, v0.29.64) and `total`.

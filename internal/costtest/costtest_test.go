@@ -45,7 +45,8 @@ func TestCheckSeparatesLinearFromQuadratic(t *testing.T) {
 	}
 	// Short enough (about 1 ms at 4n) that macOS keeps the thread on a
 	// performance core: a 16 ms loop was moved to an efficiency core for
-	// whole measurements and read as 17–20x.
+	// whole measurements and read as 17–20x (the wall clock's
+	// efficiency-core case, not the process-CPU-clock one).
 	if ok, report := Check(linearOp(50), 20000, 0); !ok {
 		t.Errorf("linear work failed the check: %s", report)
 	}
@@ -75,7 +76,8 @@ var keep *node
 // TestCheckPassesAllocatingLinearWork (PR #218 review of the CPU clock,
 // critical): the process CPU clock counts the collector's background mark
 // workers on every P, so linear work that allocates — the larger input
-// triggering more collections — read as 8–11x and failed. Collection is
+// triggering more collections — read as 8–11x and failed (measured on an
+// idle machine with TestOperandTextsCostIsLinear). Collection is
 // off while a measurement runs; linear allocating work must pass.
 func TestCheckPassesAllocatingLinearWork(t *testing.T) {
 	if testing.Short() || raceBuild {

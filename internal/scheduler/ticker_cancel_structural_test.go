@@ -113,13 +113,7 @@ func TestEveryTickerTaskClassifiesCancellation(t *testing.T) {
 	// the WARN the first comment blamed has a ctx-free producer), so it is
 	// kept for the next helper and driven by its fixture in
 	// TestTickerCancelAnalyzerCatchesTheProbedShapes.
-	ctxMethods := map[string]bool{}
-	sigRe := regexp.MustCompile(`func \(s \*Scheduler\) (\w+)\([^)]*\bctx context\.Context`)
-	for _, src := range files {
-		for _, m := range sigRe.FindAllStringSubmatch(src, -1) {
-			ctxMethods[m[1]] = true
-		}
-	}
+	ctxMethods := schedulerCtxMethods(files)
 	for _, name := range sortedKeys(boolKeys(bodies)) {
 		body := bodies[name]
 		if body == "" {
@@ -147,6 +141,23 @@ var failureLogRe = regexp.MustCompile(`s\.logger\.(Warn|Error|Info)\(`)
 // violations and the exempted (non-ctx-bound) sites.
 func cancelViolations(body string) (violations, exempt []string) {
 	return cancelViolationsWith(body, nil)
+}
+
+// ctxMethodSigRe matches a Scheduler method whose parameter list takes a
+// context.Context under ANY name (PR #218 review E16: the pattern once
+// required the name `ctx`, so `(c context.Context)` was invisible).
+var ctxMethodSigRe = regexp.MustCompile(`func \(s \*Scheduler\) (\w+)\([^)]*\b\w+ context\.Context\b`)
+
+// schedulerCtxMethods names every Scheduler method in srcs that takes a
+// context.Context.
+func schedulerCtxMethods(srcs map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, src := range srcs {
+		for _, m := range ctxMethodSigRe.FindAllStringSubmatch(src, -1) {
+			out[m[1]] = true
+		}
+	}
+	return out
 }
 
 // cancelViolationsWith is cancelViolations with the set of Scheduler methods
@@ -651,4 +662,27 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestSchedulerCtxMethodsFindsAnyContextParamName (PR #218 review E16): a
+// method whose context parameter is not spelled `ctx` is still ctx-bound.
+func TestSchedulerCtxMethodsFindsAnyContextParamName(t *testing.T) {
+	got := schedulerCtxMethods(map[string]string{"fixture.go": `
+func (s *Scheduler) spelledCtx(ctx context.Context) {}
+func (s *Scheduler) shortName(c context.Context) error { return nil }
+func (s *Scheduler) secondParam(n int, runCtx context.Context) {}
+func (s *Scheduler) grouped(a, b context.Context) {}
+func (s *Scheduler) noContext(n int) {}
+func (s *Scheduler) contextual(contextName string) {}
+`})
+	for _, name := range []string{"spelledCtx", "shortName", "secondParam", "grouped"} {
+		if !got[name] {
+			t.Errorf("%s takes a context.Context but is not recognized (got %v)", name, got)
+		}
+	}
+	for _, name := range []string{"noContext", "contextual"} {
+		if got[name] {
+			t.Errorf("%s takes no context.Context but is recognized", name)
+		}
+	}
 }

@@ -441,6 +441,17 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// web and portal adds refuse over-long URLs at their entry, but add-repo
 	// and every other UpsertRepo path had none, and the database's answer
 	// (SQLSTATE 54000) is also the code for a server-wide stop.
+	//
+	// Repositories are bounded at MaxAddURLBytes while registerApprovedOrg
+	// bounds org URLs at maxIndexedURLBytes (PR #218 review B3, decided in
+	// v0.29.68, worklist 14). Every add of a repository URL comes through
+	// here, so a stored row longer than MaxAddURLBytes predates v0.29.54
+	// (or is a forge-reported redirect target UpdateRepoURL wrote, which
+	// the forges keep far shorter); re-adding such a legacy URL is now
+	// refused. That is the decided direction, not an oversight. Org
+	// approval keeps the index's own bound because pending org requests of
+	// 1,343–2,684 bytes, created before the limit, always approved and
+	// still must.
 	if len(r.GitURL) > MaxAddURLBytes {
 		return 0, fmt.Errorf("repo %s/%s: %w", r.Owner, r.Name, ErrURLTooLong)
 	}

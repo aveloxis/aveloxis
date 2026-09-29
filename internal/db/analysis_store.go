@@ -80,7 +80,12 @@ func (s *PostgresStore) GetRepoForSBOM(ctx context.Context, repoID int64) (*Repo
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("repo %d: %w", repoID, ErrRepoNotFound)
 	}
-	return r, err
+	if err != nil {
+		// Every failure names the repository, not only not-found: the SBOM
+		// generator returns this error as is (PR #218 review A7).
+		return nil, fmt.Errorf("repo %d: %w", repoID, err)
+	}
+	return r, nil
 }
 
 // GetRepoLibyearDeps returns all libyear deps for a repo, for SBOM generation.

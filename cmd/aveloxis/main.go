@@ -652,10 +652,12 @@ func runAddRepo(cfgPath string, repoURLs []string, priority int) error {
 			if plat == model.PlatformGitLab {
 				rgType = "gitlab_group"
 			}
-			// Stored trimmed (batch 5 review round 5): a typed trailing "/"
-			// made rg_website miss every user-group registration on each
-			// refresh.
-			repoURL = strings.TrimSuffix(strings.TrimSpace(repoURL), "/")
+			// Stored as typed: rg_website is matched to user-group
+			// registrations through db.GetUserGroupIDsForOrgURL, which
+			// canonicalizes its argument (db.CanonicalOrgURL — trailing "/",
+			// case, scheme), so a second inline spelling of that normalizer
+			// here is not needed (PR #218 review D9, SR-17; the trailing-"/"
+			// lookup is pinned by TestLegacyMixedCaseOrgRowIsNotDuplicated).
 			groupID, err := store.UpsertRepoGroup(ctx, orgName, rgType, repoURL)
 			if errors.Is(err, platform.ErrURLUserinfo) {
 				// The store refuses a URL carrying credentials (round 6);
@@ -1614,12 +1616,12 @@ regardless of which knobs the config carries.`,
 				// operator here would only precede that refusal.
 				_, serveUp, livenessErr := componentAlreadyRunning("serve")
 				if !serveUp && livenessErr == nil {
-					proceed, err := runDeployGate(*cfgPath, skipDeployCheck)
+					proceed, migrate, err := runDeployGate(*cfgPath, skipDeployCheck)
 					if err != nil {
 						return fmt.Errorf("deploy-readiness check: %w", err)
 					}
 					if !proceed {
-						return errors.New(startAbortMessage(db.ToolVersion))
+						return errors.New(startAbortMessage(db.ToolVersion, migrate))
 					}
 				}
 			}
@@ -1775,7 +1777,7 @@ func startComponent(component, cfgPath string) error {
 	// this child's provisional file is removed only while it still holds
 	// this PID (round 5).
 	if err := pidfile.Write(pidPath, pid); err != nil {
-		fmt.Printf("Warning: started %s (PID %d) but failed to write PID file: %v\n", component, pid, err)
+		fmt.Printf("Warning: started %s (PID %d) but failed to write PID file %s: %v\n", component, pid, pidPath, err)
 	}
 
 	// Readiness is the child's own word on the pipe (signalReady, past
@@ -1837,19 +1839,24 @@ func awaitReadyLine(r io.Reader) <-chan struct{} {
 // awaitChildStartup waits for the child's readiness signal, its exit, or
 // the bound. An exit wins over a readiness signal that arrived with it
 // (review round 2 removed the "ready then exited = up" arm: the process
-// is gone, and the only way its pidfile could look alive is PID reuse).
+// is gone, and the only way its pidfile could look alive is PID reuse):
+// the ready arm re-checks the exit without blocking before reporting up
+// (PR #218 review D11 — a check only BEFORE the select missed an exit that
+// landed with the signal while the select waited, whenever Go's select
+// woke on the ready arm). An exit after that re-check is after "Started"
+// was decided; no check can close that window.
 // Split out so the decision is testable without spawning a process.
 func awaitChildStartup(exited <-chan error, ready <-chan struct{}, bound time.Duration) childStartOutcome {
 	select {
 	case <-exited:
 		return childExited
-	default:
-	}
-	select {
-	case <-exited:
-		return childExited
 	case <-ready:
-		return childUp
+		select {
+		case <-exited:
+			return childExited
+		default:
+			return childUp
+		}
 	case <-time.After(bound):
 		return childUnknown
 	}

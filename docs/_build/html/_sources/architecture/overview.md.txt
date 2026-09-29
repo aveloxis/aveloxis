@@ -301,8 +301,10 @@ On startup, before entering the poll loop:
 
 1. Reclaims the locks a previous serve left behind, whatever their age — a fresh serve has no in-flight work — except a live `heal-collection-gaps` run's drain-parked rows (a `gap-heal:` owner whose heartbeat is inside the stale-lock window, v0.29.68)
 2. Recovers stale locks (older than the stale-lock window) from any crashed worker instance
-3. Releases any locks held by our own worker ID (from a previous unclean shutdown), then realigns `due_at` to the configured recollection interval
-4. Lock-parks the repositories with leftover staging rows from a previous interrupted run and drains them in a background goroutine while polling begins
+3. Releases any locks held by our own worker ID (from a previous unclean shutdown)
+4. Runs the monthly tool-update check when it is due (more than 30 days since the last, recorded in `~/.aveloxis-tool-check`): re-installs each external tool already on `PATH` (scc, scorecard, scancode). Each install is bounded at 10 minutes and cancelled by `aveloxis stop serve`, but together they can hold startup for minutes before polling begins
+5. Realigns `due_at` to the configured recollection interval
+6. Lock-parks the repositories with leftover staging rows from a previous interrupted run and drains them in a background goroutine while polling begins
 
 ---
 

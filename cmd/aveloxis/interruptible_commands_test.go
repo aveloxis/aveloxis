@@ -23,6 +23,21 @@ import (
 // learns what landed and that a rerun resumes. TestEveryNotifyContextHandlesSIGTERM
 // checks only that a NotifyContext call registers SIGTERM; nothing required a
 // command to have one, which is how these drifted.
+//
+// This is a PRESENCE pin (PR #218 review D12): it proves each command's
+// source has a NotifyContext and some cancellation classification with an
+// "interrupted" report, not that the report is reached or correct. The
+// behavior is carried by the report-function and seam tests:
+// heal-vulnerabilities and backfill-mailing-list-projection by
+// TestHealVulnerabilitiesReport (healVulnerabilitiesReport,
+// backfillProjectionReport); heal-collection-gaps by the
+// TestGapHeal*Interrupt* tests in heal_gaps_release_test.go; heal-libyear by
+// TestHealLibyearReportsProgressOnInterrupt; reconcile-repos by
+// TestReconcileReposIsInterruptedNotFailed and TestInterruptedReportsExitNonZero;
+// mark-gone-repos by the cancel-arm structure pins in mark_gone_repos_test.go;
+// install-tools and upgrade-tools by TestToolCommandsReportFailures and
+// TestToolInterruptMessagesCountTheSameProgress (message structure only — the
+// tool walks have no seam to drive an interrupt at runtime).
 func TestFleetWalkingCommandsAreInterruptible(t *testing.T) {
 	for cmd, files := range map[string][]string{
 		"heal-collection-gaps":             {"heal_collection_gaps.go", "heal_collection_gaps_run.go"},

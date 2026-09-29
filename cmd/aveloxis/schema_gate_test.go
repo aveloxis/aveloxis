@@ -121,7 +121,13 @@ func TestStartGuardsDoubleStartBeforeWaiting(t *testing.T) {
 // review round 1: `aveloxis start web` exited 0 and printed "Started web"
 // while the child had already refused): the readiness signal is "up", an
 // exit is "exited" — also when the signal arrived with it (round 2: the
-// process is gone) — and neither within the bound is "unknown".
+// process is gone) — and neither within the bound is "unknown". The
+// both-arrived calls below are the re-check's pin (PR #218 review D11):
+// with both channels ready the select picks at random, so without the ready
+// arm's non-blocking exit re-check half the calls would say "up". A test
+// that sent the exit while the select was parked could not exercise it — a
+// send to a parked select resolves that case directly — and was removed as
+// flaky (PR #218 fix review r1).
 func TestAwaitChildStartup(t *testing.T) {
 	closed := make(chan struct{})
 	close(closed)
@@ -241,10 +247,19 @@ func TestServeUntilDone(t *testing.T) {
 		t.Fatal("serveUntilDone did not return after the context was cancelled")
 	}
 	// And the server is down (review round 3: the Shutdown call removed
-	// left the package green).
-	if resp, err := http.Get("http://" + ln.Addr().String() + "/"); err == nil {
-		resp.Body.Close()
-		t.Error("the server still answers after serveUntilDone returned; want the listener closed by Shutdown")
+	// left the package green). Asserted on the listener itself, not by
+	// dialing the freed port — another process may bind it in between
+	// (PR #218 review D13). A closed listener's Accept returns
+	// net.ErrClosed at once; an open one would block, so the deadline turns
+	// that into a timeout instead of a hang.
+	if tl, ok := ln.(*net.TCPListener); ok {
+		_ = tl.SetDeadline(time.Now().Add(200 * time.Millisecond)) // errors on a closed listener; Accept reports it
+	}
+	if c, err := ln.Accept(); !errors.Is(err, net.ErrClosed) {
+		if c != nil {
+			c.Close()
+		}
+		t.Errorf("Accept after serveUntilDone returned = %v; want net.ErrClosed (the listener closed by Shutdown)", err)
 	}
 
 	ln2, err := net.Listen("tcp", "127.0.0.1:0")

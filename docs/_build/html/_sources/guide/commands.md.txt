@@ -1656,9 +1656,24 @@ aveloxis deploy-checklist
 aveloxis deploy-checklist --since 0.29.64   # every release's steps after the one last deployed, oldest first
 ```
 
-`aveloxis start serve` prints the same accumulated list when the last
-acknowledged deploy is behind the binary: the heals of a skipped release
-never ran (v0.29.68).
+`--since` takes the version last deployed (the schema stamp,
+`SELECT schema_version FROM aveloxis_ops.schema_meta`, read before the
+migrate moves it) and prints every later release's block up to this binary,
+oldest first. Consecutive releases with identical steps print as one block
+labelled with the range it covers. When more than one release has steps, a
+header comes first: run `aveloxis stop all`, the migrate and `aveloxis start
+all` **once**, not once per block — the migrate is the strongest any block
+asks for (a plain `aveloxis migrate` if any block needs one, otherwise
+`aveloxis migrate --skip-views`) — then every block's checks, heals and
+audits, oldest first, and a step that needs the running release (such as
+`adopt-forge-id` or the approvals page) after the start. A `--since` value
+that is not a version (dotted non-negative numbers such as `0.29.64`) is an
+error: the command names the flag and exits non-zero.
+
+`aveloxis start serve` prints the same accumulated list, with the same
+header and collapsing, when the last acknowledged deploy is behind the
+binary: the heals of a skipped release never ran (v0.29.68).
+[Upgrading](../getting-started/upgrading.md) puts both commands in order.
 
 ## `aveloxis ack-deploy`
 

@@ -21,8 +21,9 @@
 // thread's own CPU time (clock_gettime CLOCK_THREAD_CPUTIME_ID), so neither
 // other processes on a busy runner nor the runtime's background threads are
 // in the measurement (a process CPU clock was tried and counted the
-// collector's mark workers and the scavenger); elsewhere it is the wall
-// clock; the collector is off while measuring; and a comparison over the
+// collector's mark workers and the scavenger); elsewhere, or when the
+// thread clock's one probe fails, it is the wall clock for the whole
+// process; the collector is off while measuring; and a comparison over the
 // limit is measured again, failing only when three attempts in a row are
 // over. A real quadratic is over every time; a noisy moment rarely three
 // times. A first attempt more than fastFail times over fails at once, so a
@@ -68,9 +69,10 @@ const (
 // time for no measured gain). Collection is OFF from then until it returns:
 // a collection's mark workers, and its assists on the measuring thread,
 // land more often in the larger input's runs — it allocates more — so
-// linear work read as 8–11x under a process CPU clock
-// (TestOperandTextsCostIsLinear failed 9 runs in 10; PR #218 review). memoryBackstop still lets a runaway allocation collect
-// instead of exhausting the machine.
+// linear work read as 8–11x under a process CPU clock on an idle
+// machine (TestOperandTextsCostIsLinear failed 9 runs in 10; PR #218
+// review). memoryBackstop still lets a runaway allocation collect instead of
+// exhausting the machine.
 func fastest(op func()) time.Duration {
 	// One measurement at a time: the collector settings saved and restored
 	// below are process-wide, and two interleaved save/restore pairs could
@@ -78,11 +80,13 @@ func fastest(op func()) time.Duration {
 	// F3; no cost test is parallel today).
 	measuring.Lock()
 	defer measuring.Unlock()
-	if threadClock {
+	now := wallNow
+	if measureClock.useThread() {
 		// The op runs on this goroutine; pin it to one thread so the thread
 		// clock sees all of it.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
+		now = threadCPUNow
 	}
 	runtime.GC()
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
@@ -90,9 +94,9 @@ func fastest(op func()) time.Duration {
 	op()
 	best := time.Duration(1<<63 - 1)
 	for range runs {
-		start := cpuNow()
+		start := now()
 		op()
-		if d := cpuNow() - start; d < best {
+		if d := now() - start; d < best {
 			best = d
 		}
 	}
@@ -123,6 +127,25 @@ func Check(prepare func(n int) func(), small int, slack time.Duration) (bool, st
 
 // measuring serializes measurements (see fastest).
 var measuring sync.Mutex
+
+// clockChoice decides the measurement clock once, at first use, for the
+// whole process (PR #218 review B7): the thread CPU clock when its probe
+// succeeds, otherwise the wall clock. A per-reading fallback could subtract
+// a wall reading from a thread-CPU one, so the choice never changes.
+type clockChoice struct {
+	once   sync.Once
+	probe  func() bool
+	thread bool
+}
+
+// useThread reports whether measurements use the thread CPU clock.
+func (c *clockChoice) useThread() bool {
+	c.once.Do(func() { c.thread = c.probe() })
+	return c.thread
+}
+
+// measureClock is the process's clock choice.
+var measureClock = &clockChoice{probe: threadClockWorks}
 
 // wallStart anchors wallNow.
 var wallStart = time.Now()

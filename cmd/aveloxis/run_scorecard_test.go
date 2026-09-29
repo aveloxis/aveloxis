@@ -271,3 +271,30 @@ func TestRunScorecardBorrowsTokensPerRepo(t *testing.T) {
 		}
 	}
 }
+
+// TestRunScorecardPidfileErrorNamesThePathOnce — PR #218 fix review r1
+// (pidfile nit): pidfile.Write began wrapping its errors as "pidfile
+// <path>: …" and this caller wraps as "writing pidfile <path>: …", so the
+// path printed twice. Write's errors no longer name the path; its callers do.
+func TestRunScorecardPidfileErrorNamesThePathOnce(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory's permission bits")
+	}
+	dir := isolateHome(t)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	release, err := acquireRunScorecardPidfile()
+	if err == nil {
+		release()
+		t.Fatal("a pidfile write into a read-only directory must fail")
+	}
+	path := pidfile.Path("run-scorecard")
+	if n := strings.Count(err.Error(), path); n != 1 {
+		t.Errorf("the error names the pidfile path %d times; want once:\n%v", n, err)
+	}
+}

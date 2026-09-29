@@ -34,8 +34,9 @@ import (
 // recollect interval (collection.days_until_recollect), so an honestly
 // empty forge answer or a 404 is asked again once per interval, not at
 // every restart. Non-answers (network, rate limit, 5xx) are logged and
-// skipped unstamped; the next restart retries them. A GitHub candidate met with no usable GitHub key is not
-// a failure: it is counted apart (skipped_no_github_key) and left for a
+// skipped unstamped; the next restart retries them. A candidate met with no
+// usable key for its forge is not a failure: it is counted apart
+// (skipped_no_github_key / skipped_no_gitlab_key) and left unstamped for a
 // restart with a key. Permanent 404s (renamed/deleted repos) are asked
 // again once per recollect interval until prelim's rename-detect or the
 // operator removes the repo.
@@ -51,7 +52,8 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 	s.logger.Info("repo metadata backfill starting (v0.23.0)")
 	totalProcessed := 0
 	totalFailed := 0
-	skippedNoKey := 0 // GitHub candidates met with no usable GitHub key
+	skippedNoKey := 0       // GitHub candidates met with no usable GitHub key
+	skippedNoGitLabKey := 0 // GitLab candidates met with no usable GitLab key (PR #218 review E15)
 	// Keyset cursor: pages advance past every repo seen, including the ones
 	// whose fetch failed (nothing is stamped on failure, so a plain LIMIT
 	// re-served them on every later page).
@@ -60,7 +62,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			s.logger.Info("repo metadata backfill stopping (ctx cancelled)",
-				"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey)
+				"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey, "skipped_no_gitlab_key", skippedNoGitLabKey)
 			return
 		}
 
@@ -75,7 +77,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 		}
 		if len(targets) == 0 {
 			s.logger.Info("repo metadata backfill complete",
-				"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey)
+				"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey, "skipped_no_gitlab_key", skippedNoGitLabKey)
 			return
 		}
 
@@ -100,6 +102,17 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 				}
 				client = s.ghClient
 			case model.PlatformGitLab:
+				if !s.gitlabKeysAvailable() {
+					// PR #218 review E15, the GitLab twin of the arm above:
+					// with no usable GitLab key the fetch fails on the pool's
+					// ErrNoKeys and was counted as failed at every restart.
+					// Logged once per run, counted apart, never stamped.
+					if skippedNoGitLabKey == 0 {
+						s.logger.Info("repo metadata backfill: skipping GitLab candidates — no usable GitLab API key (they are asked at a restart with one)")
+					}
+					skippedNoGitLabKey++
+					continue
+				}
 				client = s.glClient
 			default:
 				// Generic-git repos have no API to ask. The candidate
@@ -180,7 +193,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 
 		// Log progress every page so operators can monitor.
 		s.logger.Info("repo metadata backfill progress",
-			"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey, "after_repo_id", afterRepoID)
+			"processed", totalProcessed, "failed", totalFailed, "skipped_no_github_key", skippedNoKey, "skipped_no_gitlab_key", skippedNoGitLabKey, "after_repo_id", afterRepoID)
 	}
 }
 

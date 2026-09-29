@@ -371,7 +371,20 @@ func checkTrustedNamesInFile(rel string, fset *token.FileSet, f *ast.File, isTes
 // (the ONE derivation the attribute scan and the helper check share; round
 // 5: a string match and an AST walk disagreed on a generic helper) with the
 // counts of helpers and redactors found, reporting every finding.
-func scanTrustedNames(t *testing.T, root string) (logURLPackages map[string]bool, helpers, redactors int) {
+func scanTrustedNames(t testing.TB, root string) (logURLPackages map[string]bool, helpers, redactors int) {
+	t.Helper()
+	logURLPackages, helpers, redactors, problems := collectTrustedNames(t, root)
+	for _, p := range problems {
+		t.Error(p)
+	}
+	return logURLPackages, helpers, redactors
+}
+
+// collectTrustedNames is scanTrustedNames without the reporting: the
+// violations come back as problems for the caller to report or ignore (PR
+// #218 review D14 — the attribute scan's view reported every violation a
+// second time). t is used only to fail on a walk or parse error.
+func collectTrustedNames(t testing.TB, root string) (logURLPackages map[string]bool, helpers, redactors int, problems []string) {
 	t.Helper()
 	logURLPackages = map[string]bool{}
 	for _, top := range urlLogScanRoots {
@@ -390,9 +403,7 @@ func scanTrustedNames(t *testing.T, root string) (logURLPackages map[string]bool
 			}
 			rel, _ := filepath.Rel(root, path)
 			found := checkTrustedNamesInFile(rel, fset, f, strings.HasSuffix(path, "_test.go"))
-			for _, p := range found.problems {
-				t.Error(p)
-			}
+			problems = append(problems, found.problems...)
 			if found.helper {
 				helpers++
 				logURLPackages[filepath.Dir(rel)] = true
@@ -406,13 +417,15 @@ func scanTrustedNames(t *testing.T, root string) (logURLPackages map[string]bool
 			t.Fatal(err)
 		}
 	}
-	return logURLPackages, helpers, redactors
+	return logURLPackages, helpers, redactors, problems
 }
 
-// packagesDefiningLogURL is the attribute scan's view of scanTrustedNames.
-func packagesDefiningLogURL(t *testing.T, root string) map[string]bool {
+// packagesDefiningLogURL is the attribute scan's view of the trusted-name
+// walk. It does not report violations: TestLogURLHelpersRedact does, once
+// (PR #218 review D14).
+func packagesDefiningLogURL(t testing.TB, root string) map[string]bool {
 	t.Helper()
-	pkgs, _, _ := scanTrustedNames(t, root)
+	pkgs, _, _, _ := collectTrustedNames(t, root)
 	return pkgs
 }
 
@@ -779,5 +792,50 @@ func TestUnredactedURLLogAttrsFixtures(t *testing.T) {
 		if len(got) != tc.want {
 			t.Errorf("%s: %d flagged, want %d (%v)", tc.name, len(got), tc.want, got)
 		}
+	}
+}
+
+// errorRecorder is a testing.TB that records Error/Errorf instead of
+// failing, so a test can count what a helper reported.
+type errorRecorder struct {
+	testing.TB
+	errors []string
+}
+
+func (r *errorRecorder) Helper()           {}
+func (r *errorRecorder) Error(args ...any) { r.errors = append(r.errors, fmt.Sprint(args...)) }
+func (r *errorRecorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+// TestTrustedNameViolationsAreReportedOnce — PR #218 review D14: the
+// attribute scan took its logURL packages from scanTrustedNames, which
+// t.Errors every trusted-name violation, and TestLogURLHelpersRedact reports
+// the same violations — each one twice. The attribute scan's view does not
+// report; scanTrustedNames still does, once.
+func TestTrustedNameViolationsAreReportedOnce(t *testing.T) {
+	root := t.TempDir()
+	for _, top := range urlLogScanRoots {
+		if err := os.MkdirAll(filepath.Join(root, top), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := filepath.Join(root, "internal", "probe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A logURL declared in a test file: one trusted-name violation.
+	if err := os.WriteFile(filepath.Join(dir, "probe_test.go"), []byte("package probe\n\nfunc logURL(s string) string { return s }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := &errorRecorder{TB: t}
+	_ = packagesDefiningLogURL(rec, root)
+	if len(rec.errors) != 0 {
+		t.Errorf("packagesDefiningLogURL reported %d violation(s): %v; want none (TestLogURLHelpersRedact reports them)", len(rec.errors), rec.errors)
+	}
+	rec = &errorRecorder{TB: t}
+	_, _, _ = scanTrustedNames(rec, root)
+	if len(rec.errors) != 1 {
+		t.Errorf("scanTrustedNames reported %d violation(s): %v; want the fixture's one", len(rec.errors), rec.errors)
 	}
 }

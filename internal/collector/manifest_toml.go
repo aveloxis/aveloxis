@@ -230,6 +230,48 @@ func pythonTOMLDeps(content string, sections map[string]string) []libyearDep {
 	return deps
 }
 
+// pythonTableDeclVersion reads back the version value of a stored Python
+// table declaration — the Raw pythonTOMLDeps stores as the requirement:
+// `name = "spec"`, `name = {version = "spec", ...}`, or quoted dotted keys
+// joined with "; ". ok is false for text that is not such a declaration (a
+// PEP 508 requirement such as `requests == 2.31`, whose `=` is followed by
+// an operator, not a TOML value), so the caller keeps the text as stored.
+// The declaration goes back through scanTOMLDepTables, the one reader of
+// this grammar (SR-17), under a Python table header (PR #218 review A8).
+func pythonTableDeclVersion(requirement string) (string, bool) {
+	_, value, found := strings.Cut(requirement, "=")
+	if !found {
+		return "", false
+	}
+	if v := strings.TrimSpace(value); v == "" || !strings.ContainsAny(v[:1], "{\"'") {
+		return "", false
+	}
+	// The "; " joins sit outside strings and brackets; a marker's own
+	// punctuation sits inside its string.
+	var decls []string
+	depth, start := 0, 0
+	scanOutsideStrings(requirement, func(i int, c byte) bool {
+		switch c {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			depth--
+		case ';':
+			if depth == 0 {
+				decls = append(decls, requirement[start:i])
+				start = i + 1
+			}
+		}
+		return true
+	})
+	decls = append(decls, requirement[start:])
+	entries := scanTOMLDepTables("[packages]\n"+strings.Join(decls, "\n"), map[string]bool{"[packages]": true})
+	if len(entries) != 1 {
+		return "", false
+	}
+	return entries[0].Version, true
+}
+
 // splitTOMLDottedKey splits "serde.version" into ("serde", "version"). A
 // quoted key is ONE name however many dots it holds — but it can still carry
 // a dotted subkey after the closing quote.

@@ -89,14 +89,18 @@ func (s *PostgresStore) GetContributorsForActivityCheck(ctx context.Context, lim
 //   - Lock order. The transaction first locks every target row in
 //     cntrb_login byte order (COLLATE "C" is byte order, which is what
 //     sort.Strings gives UpsertContributorBatch over its cntrb_login
-//     keys), so this write and the upsert acquire shared rows in one
-//     order and cannot form a cycle. The order is read from the rows
-//     themselves: the update carries only cntrb_id, and gh_login can
-//     differ from cntrb_login after a rename. FOR NO KEY UPDATE is the
-//     lock the UPDATEs take anyway (no key column changes).
+//     keys), so this write and the upsert usually acquire shared rows in
+//     one order, which removes the common cycle. The order is read from
+//     the rows themselves: the update carries only cntrb_id, and gh_login
+//     can differ from cntrb_login after a rename. It does not remove every
+//     cycle (PR #218 review B2): the upsert sorts by the forge's CURRENT
+//     login, so for a renamed contributor whose stored cntrb_login still
+//     differs, the two orders can invert. FOR NO KEY UPDATE is the lock
+//     the UPDATEs take anyway (no key column changes).
 //   - Retry. The whole transaction runs inside withRetry (the one
-//     40P01/40001 classifier, SR-17), so a victim retries instead of
-//     discarding the tick's GraphQL results.
+//     40P01/40001 classifier, SR-17), the backstop for the cycles the
+//     ordering leaves: a victim retries instead of discarding the tick's
+//     GraphQL results.
 //
 // A non-retryable error returns to the caller, which logs it.
 func (s *PostgresStore) UpdateContributorActivityBatch(ctx context.Context, updates []ContributorActivityUpdate) error {

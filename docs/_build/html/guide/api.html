@@ -562,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -2969,6 +2971,9 @@ batched add (one approval unit per v0.27.20). <code class="docutils literal notr
 fields are present; the single-<code class="docutils literal notranslate"><span class="pre">url</span></code> body remains accepted. The
 response carries <code class="docutils literal notranslate"><span class="pre">submitted</span></code> plus the outcome counts
 <code class="docutils literal notranslate"><span class="pre">{linked,</span> <span class="pre">enqueued,</span> <span class="pre">pending_approval?,</span> <span class="pre">request_id?,</span> <span class="pre">registered?}</span></code>.
+<code class="docutils literal notranslate"><span class="pre">linked</span></code> counts only repositories this request newly linked into the
+group: posting a repository that is already in the group again
+returns <code class="docutils literal notranslate"><span class="pre">linked:</span> <span class="pre">0</span></code> (PR #218 review C2).
 When <code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code> lets a batch through and some of its
 repositories cannot be added, the others are still added and the call
 fails with an error saying how many could not be; sending the same
@@ -3006,7 +3011,8 @@ timestamp to backfill from), so for those two fields start equal
 and diverge from the next login onward.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/admin</span></code> with
 <code class="docutils literal notranslate"><span class="pre">{&quot;admin&quot;:</span> <span class="pre">true|false}</span></code> — promote/demote. Self-demotion is refused
-(last-admin guard).</p></li>
+(last-admin guard). A demotion that would leave no admin at all is a
+<code class="docutils literal notranslate"><span class="pre">409</span></code> with <code class="docutils literal notranslate"><span class="pre">refusing</span> <span class="pre">to</span> <span class="pre">demote</span> <span class="pre">the</span> <span class="pre">last</span> <span class="pre">admin</span> <span class="pre">—</span> <span class="pre">promote</span> <span class="pre">another</span> <span class="pre">user</span> <span class="pre">first</span></code> (it was a <code class="docutils literal notranslate"><span class="pre">500</span></code> before PR #218 review).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/groups/pending</span></code> — pending groups awaiting
 approval, with requester login/email and repo/org counts.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/groups/{groupID}/{decision}</span></code> where decision is

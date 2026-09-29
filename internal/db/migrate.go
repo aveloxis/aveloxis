@@ -1429,7 +1429,10 @@ func migrateStage7UsersAndGroups(ctx context.Context, pg *PostgresStore, logger 
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "gl_username", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "oauth_provider", "TEXT DEFAULT ''")
 	// v0.29.69 (final review round 2 F4): the GitLab instance a gl_user_id
-	// belongs to. Nullable, no default: an instant ALTER.
+	// belongs to. Nullable, no default: an instant ALTER. A NULL host (a row
+	// from before it was recorded) matches no instance at sign-in until
+	// StampLegacyGitLabHost, run by `aveloxis web` at start, records the
+	// configured one (round 3, fail-closed; PR #218 review B1).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "gl_oauth_host", "TEXT")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.users", "oauth_token", "TEXT DEFAULT ''")
 
@@ -2666,6 +2669,13 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 			JOIN pg_namespace n ON n.oid = c.relnamespace
 			WHERE n.nspname = $1 AND c.relname = $2`,
 			schema, indexName).Scan(&isInvalid)
+		// Only no rows means "no such index" (nothing to drop). Any other
+		// probe failure is the step's error, not "valid" (PR #218 review
+		// B8, SR-5/SR-16): building over an unseen INVALID leftover fails
+		// as "already exists", blamed on the wrong statement.
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("probe %s.%s for an invalid leftover: %w", schema, indexName, err)
+		}
 		if err == nil && isInvalid {
 			logger.Warn("dropping invalid index from prior interrupted CONCURRENT build",
 				"index", schema+"."+indexName)
@@ -3441,8 +3451,11 @@ func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) 
 }
 
 // CheckSchemaVersion compares the database schema stamp against the running
-// binary's ToolVersion and logs an ERROR (since v0.20.15) when they differ,
-// when there is no stamp, or when the stamp cannot be read. Called by the
+// binary's ToolVersion and logs an ERROR (since v0.20.15) when the stamp is
+// behind the binary, when there is no stamp, or when the stamp cannot be
+// read; a stamp AHEAD of the binary (a rollback) is a WARN and the process
+// proceeds, since the schema has every column the older binary knows (PR
+// #218 review B9). Called by the
 // non-migrating commands (web, api, scancode-worker) so the operator gets a
 // clear signal to run the release's deploy steps; since v0.29.4 a bare
 // `start serve` refuses while the stamp is behind, so restarting serve is

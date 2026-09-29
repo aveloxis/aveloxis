@@ -233,7 +233,10 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		CoreStatus: string(StatusCollecting),
 	}); err != nil {
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-			return nil, err // shutdown before the first phase (pass 35)
+			// Shutdown before the first phase (pass 35). Reported as the
+			// interruption, as ProcessRepo does: a pool closed under the
+			// statement fails without context.Canceled (PR #218 review A10).
+			return nil, interruptedErr(ctx, err)
 		}
 		sc.logger.Warn("failed to update collection status", "repo_id", repoID, "error", err)
 	}

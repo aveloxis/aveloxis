@@ -562,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -3265,6 +3267,11 @@ GitHub-sourced rows), and other repositories complete with no evidence, as
 always. Before v0.29.68 the idle tasks ran against the empty
 pool — breadth recorded whole batches as attempted and three tickers logged
 an unanswered WARN each tick. Add a GitHub key (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-key</span> <span class="pre">&lt;token&gt;</span> <span class="pre">--platform</span> <span class="pre">github</span></code>) and restart to enable them.</p>
+<p>The GitHub-only deployment has the mirror case in one place: the
+repository-metadata backfill’s GitLab candidates need a usable GitLab key.
+Without one they are skipped, logged once per run and counted as
+<code class="docutils literal notranslate"><span class="pre">skipped_no_gitlab_key</span></code> on its progress lines, not as failures; they stay
+candidates and are asked at the first restart with a GitLab key (v0.29.69).</p>
 </section>
 </section>
 

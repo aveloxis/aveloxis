@@ -134,7 +134,7 @@ func parsePyprojectDevBuildVersions(content string) []libyearDep {
 			}
 		}
 		// A table header may carry a trailing comment (v0.29.57).
-		if header := strings.TrimSpace(stripHashComment(trimmed)); strings.HasPrefix(header, "[") && strings.HasSuffix(header, "]") && !strings.Contains(header, "=") {
+		if header, ok := pyprojectHeader(trimmed); ok {
 			section := strings.Trim(header, "[]")
 			arrayScope, kvScope, inArray, arrayItemScope = "", "", false, ""
 			switch {
@@ -223,13 +223,18 @@ func parsePyprojectDevBuildVersions(content string) []libyearDep {
 // poetryGroupSections maps every Poetry group table header in content to
 // the scope its dependencies take: a group named like a test group is test,
 // every other group and the legacy dev-dependencies table is dev.
+//
+// The headers are found with the line reader's own test (pyprojectHeader),
+// not the bare-key tomlSectionHeader: a group whose name needs quoting
+// (`[tool.poetry.group."docs-x".dependencies]`) failed the bare-key test
+// and its dependencies were dropped (PR #218 review A1).
 func poetryGroupSections(content string) map[string]string {
 	out := map[string]string{}
 	for _, raw := range strings.Split(content, "\n") {
-		if !tomlSectionHeader(raw) {
+		header, ok := pyprojectHeader(raw)
+		if !ok {
 			continue
 		}
-		header := strings.TrimSpace(stripHashComment(raw))
 		section := strings.Trim(header, "[]")
 		switch {
 		case strings.HasPrefix(section, "tool.poetry.group.") && strings.HasSuffix(section, ".dependencies"):
@@ -244,6 +249,20 @@ func poetryGroupSections(content string) map[string]string {
 		}
 	}
 	return out
+}
+
+// pyprojectHeader reports whether a pyproject.toml line is a table header —
+// a `[`...`]` line, trailing comment removed, carrying no `=` — and returns
+// the header as scanTOMLDepTables keys its sections. The one header test for
+// both readers of this file (the section list above and the line reader in
+// parsePyprojectDevBuildVersions), so they cannot disagree about a quoted
+// group name (PR #218 review A1).
+func pyprojectHeader(line string) (string, bool) {
+	header := strings.TrimSpace(stripHashComment(line))
+	if strings.HasPrefix(header, "[") && strings.HasSuffix(header, "]") && !strings.Contains(header, "=") {
+		return header, true
+	}
+	return "", false
 }
 
 // parsePipfileDevPackages extracts the [dev-packages] section the

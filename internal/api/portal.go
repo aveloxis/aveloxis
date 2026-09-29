@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -324,21 +325,26 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			// v0.27.84: lets the GUI say "tracked now" (admin add OR
 			// the already-registered-org auto-approve) vs "pending".
 			resp["registered"] = 1
-			s.auth.invalidateAll() // the org's repositories join the caller's scope as they link
+			// No invalidateAll here (PR #218 review C3): registering links
+			// no repository. The scheduler's org scan links them later, in
+			// another process, and the token cache's TTL (authCacheTTL)
+			// covers those links — the recorded cross-process decision.
 		}
 	} else {
 		out, aerr := s.store.AddReposToGroup(r.Context(), info.UserID, groupID,
 			urls, s.autoApproveAddLimit)
 		err = aerr
+		if out.Linked+out.Enqueued > 0 {
+			// The caller's scope changed (worklist follow-up 7): a cached
+			// token would answer 403 for the repository it just added
+			// until the TTL. Admin mutations already bust here. Whatever
+			// the error: an add that fails for some URLs (ErrAddItemsFailed)
+			// has still linked the others (PR #218 review C1).
+			s.auth.invalidateAll()
+		}
 		if err == nil {
 			resp["linked"] = out.Linked
 			resp["enqueued"] = out.Enqueued
-			if out.Linked+out.Enqueued > 0 {
-				// The caller's scope changed (worklist follow-up 7): a cached
-				// token would answer 403 for the repository it just added
-				// until the TTL. Admin mutations already bust here.
-				s.auth.invalidateAll()
-			}
 			if out.Pending > 0 {
 				resp["pending_approval"] = out.Pending
 				resp["request_id"] = out.RequestID
@@ -505,7 +511,11 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req, changed, err := s.store.DecideAddRequest(r.Context(), requestID, info.UserID, approve, s.ghAPIBase)
-	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) {
+	if errors.Is(err, db.ErrAddRequestNotFound) {
+		http.Error(w, "no such add request", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) || errors.Is(err, db.ErrURLTooLong) {
 		// A pending org that is not on this deployment's GitHub host cannot
 		// be approved: nothing would ever enumerate it (round 2).
 		// Or a legacy org URL carrying credentials (review 5267193512).
@@ -514,8 +524,9 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err != nil {
-		s.logger.Warn("admin add-request decision failed", "request_id", requestID, "decision", r.PathValue("decision"), "error", err)
-		s.serverError(w, "handleAdminAddRequestDecision", err)
+		// One failure, one line (PR #218 review C15): serverError logs it at
+		// ERROR, carrying the request and decision in the wrapped error.
+		s.serverError(w, "handleAdminAddRequestDecision", fmt.Errorf("request %d, decision %s: %w", requestID, r.PathValue("decision"), err))
 		return
 	}
 	// Re-approving an approved repos request resumes its processing pass.
@@ -617,6 +628,10 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.store.SetUserAdmin(r.Context(), targetID, req.Admin); err != nil {
+		if errors.Is(err, db.ErrLastAdmin) { // a refusal, not a failure (PR #218 review, follow-up to C6)
+			http.Error(w, db.ErrLastAdmin.Error(), http.StatusConflict)
+			return
+		}
 		s.serverError(w, "handleAdminSetUserAdmin", err)
 		return
 	}
@@ -675,8 +690,9 @@ func (s *Server) handleAdminGroupDecision(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		s.logger.Warn("admin group decision failed", "group_id", groupID, "decision", decision, "error", err)
-		s.serverError(w, "handleAdminGroupDecision", err)
+		// One failure, one line (PR #218 review C15): serverError logs it at
+		// ERROR, carrying the group and decision in the wrapped error.
+		s.serverError(w, "handleAdminGroupDecision", fmt.Errorf("group %d, decision %s: %w", groupID, decision, err))
 		return
 	}
 	// v0.27.20 parity fix: the web handler has emailed the requester

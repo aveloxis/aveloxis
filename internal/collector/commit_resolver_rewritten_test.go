@@ -167,10 +167,59 @@ func TestLoadDefaultBranchStopIsNotAWarning(t *testing.T) {
 	r := &CommitResolver{logger: slog.New(slog.NewTextHandler(&logs, nil)), bareClone: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if r.loadDefaultBranch(ctx, 1) {
+	if r.loadDefaultBranch(ctx, 1, nil) {
 		t.Fatal("a cancelled listing reported a branch list")
 	}
 	if strings.Contains(logs.String(), "level=WARN") {
 		t.Errorf("a stop during the listing was logged as a failure:\n%s", logs.String())
+	}
+}
+
+// TestLoadDefaultBranchKeepsOnlyUnresolvedHashes pins PR #218 review A9:
+// the listing held the whole `git rev-list HEAD` output and a map of every
+// commit on the branch (100+ MB on a kernel-size repository) when the run
+// only ever asks about its own unresolved commits. The listing is streamed
+// and the kept set is bounded to those hashes.
+func TestLoadDefaultBranchKeepsOnlyUnresolvedHashes(t *testing.T) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	work := filepath.Join(t.TempDir(), "work")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitBin, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid", "GIT_CONFIG_NOSYSTEM=1", "HOME="+t.TempDir())
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "init", "-q", "-b", "main")
+	var onBranch []string
+	for i := 0; i < 5; i++ {
+		git(work, "commit", "-q", "--allow-empty", "-m", fmt.Sprintf("c%d", i))
+		onBranch = append(onBranch, git(work, "rev-parse", "HEAD"))
+	}
+	bare := filepath.Join(t.TempDir(), "repo.git")
+	git(filepath.Dir(bare), "clone", "-q", "--bare", work, bare)
+
+	var logs bytes.Buffer
+	r := &CommitResolver{logger: slog.New(slog.NewTextHandler(&logs, nil)), bareClone: bare}
+	stale := fmt.Sprintf("%040x", 0xdead)
+	unresolved := []unresolvedCommit{{Hash: onBranch[1]}, {Hash: stale}}
+	if !r.loadDefaultBranch(context.Background(), 1, unresolved) {
+		t.Fatalf("the listing failed:\n%s", logs.String())
+	}
+	if len(r.defaultBranch) != 1 || !r.defaultBranch[onBranch[1]] {
+		t.Errorf("kept set = %v; want only the unresolved on-branch hash %s (not all %d branch commits)", r.defaultBranch, onBranch[1], len(onBranch))
+	}
+	if r.defaultBranch[stale] {
+		t.Error("a hash not on the branch was kept")
 	}
 }

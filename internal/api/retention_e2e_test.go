@@ -63,7 +63,7 @@ func TestRetentionCompareEndToEnd(t *testing.T) {
 		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
-		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '_avrete2e_%'`)
+		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '\_avrete2e\_%'`)
 	})
 	seedContributor := func(login string) string {
 		var id string

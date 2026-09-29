@@ -28,7 +28,7 @@ import (
 // AddOutcome reports what AddReposToGroup did with a batch of URLs so
 // handlers can tell the user "N added, M awaiting approval".
 type AddOutcome struct {
-	Linked    int   // known repos linked into the group (no new collection)
+	Linked    int   // known repos newly linked into the group (no new collection; an existing link is not counted)
 	Enqueued  int   // new repos created + enqueued (admin or auto-approved path)
 	Pending   int   // URLs parked on a pending add-request
 	Failed    int   // auto-approved repos whose add failed (their items are stamped -1)
@@ -181,11 +181,17 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		}
 		switch {
 		case tracked:
-			// Known repo: instant link, zero collection load added.
-			if _, err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+			// Known repo: instant link, zero collection load added. Only a
+			// link this call inserted counts: a repository already in the
+			// group changed no one's scope, and the API drops its whole
+			// token cache on Linked > 0 (PR #218 review C2).
+			inserted, err := s.AddRepoToGroupByID(ctx, groupID, repoID)
+			if err != nil {
 				return out, err
 			}
-			out.Linked++
+			if inserted {
+				out.Linked++
+			}
 		case isAdmin:
 			if _, err := s.ensureRepoCollectedInGroup(ctx, groupID, repoURL); err != nil {
 				return out, err
@@ -357,6 +363,9 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		WHERE ar.request_id = $1`, requestID).Scan(
 		&req.RequestID, &req.UserID, &req.UserLogin, &req.UserEmail,
 		&req.GroupID, &req.GroupName, &req.Kind, &req.OrgURL, &req.Status, &req.ItemCount, &req.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return req, false, fmt.Errorf("add request %d: %w", requestID, ErrAddRequestNotFound)
+	}
 	if err != nil {
 		return req, false, fmt.Errorf("load add request: %w", err)
 	}
@@ -429,6 +438,11 @@ var ErrOrgOffGitHubHost = errors.New("organization is not on this deployment's G
 // half-state re-approve) cannot be rejected, and nothing enumerates it, so
 // the advice says exactly that — there is no delete path to point at.
 func OrgApprovalRefusalAdvice(err error, ghAPIBase string) string {
+	if errors.Is(err, ErrURLTooLong) {
+		// PR #218 fix review r1: its own text ("longer than 1342 bytes") is
+		// the add limit; this refusal is the registration index's bound.
+		return fmt.Sprintf("the organization URL is longer than %d bytes, the most the registration index holds; reject the request — it can never be registered", maxIndexedURLBytes)
+	}
 	if errors.Is(err, platform.ErrURLUserinfo) {
 		return "the organization URL carries credentials; reject the request — one that is already approved cannot be registered and nothing enumerates it"
 	}
@@ -545,6 +559,11 @@ const maxIndexedURLBytes = 2704 - 20
 
 // ErrURLTooLong means a URL in an add is longer than MaxAddURLBytes.
 var ErrURLTooLong = fmt.Errorf("a URL is longer than %d bytes", MaxAddURLBytes)
+
+// ErrAddRequestNotFound is DecideAddRequest's answer for a request id that
+// does not exist: the caller's input, a 404, not a store failure (PR #218
+// fix review r1 — it read as a logged generic 500 after review C6).
+var ErrAddRequestNotFound = errors.New("no such add request")
 
 // ErrAddItemsFailed means some repositories of an auto-approved add could not
 // be added; the rest were.

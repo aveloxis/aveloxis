@@ -233,7 +233,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		// least-loaded key. The lease covers the wire request: released
 		// at once when Do fails, and otherwise once the response's pool
 		// state is applied — for a 200 that is after the body is read and
-		// parsed (see the block after Do) — but always BEFORE any
+		// parsed, for a headerless GitHub 403 after its body is read (see
+		// the block after Do) — but always BEFORE any
 		// Retry-After or backoff sleep below, so a throttled caller
 		// sleeping out a 5-minute Retry-After never pins an in-flight
 		// slot (which is what the ceilings exist to keep free).
@@ -278,7 +279,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		// released — release() Broadcasts, so any mark that lands after
 		// it is a gap in which every parked waiter may select this key.
 		// UpdateFromResponse carries the header state (primary budget,
-		// secondary-limit rest, 401 strike). The two GraphQL-only marks
+		// secondary-limit rest, 401 strike). The GraphQL-side marks
 		// follow it here (round 2; round 1 had left both after release
 		// with a site note that undercounted the gap as "one wasted
 		// request"):
@@ -299,6 +300,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		//     backoff, read-retry pacing — all happen after release.
 		//   - the 403 + Remaining: 0 belt for the older resource-header-
 		//     less shape, whose zero UpdateFromResponse routed into CORE.
+		//   - the headerless-403 rest, which needs the 403 body (PR #218
+		//     review E3, the REST client's worklist-67 twin).
 		//
 		// Released here — before any retry sleep or key rotation below —
 		// so the slot is never held across a wait
@@ -335,14 +338,21 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// ClassFatal, failed the PR batch, set force_full_recollect,
 			// and nixpkgs, kibana and azure-powershell restarted from zero
 			// for 6–21 h). A complete but malformed body is not a stream
-			// abort and still fails at decode. So does a truncated body
-			// carrying RESOURCE_LIMITS_EXCEEDED: that is GitHub refusing the
-			// query (the 2026-09-05 shape), a retry gets the same answer, and
-			// the history sweep subdivides on the decode failure's marker.
-			if readErr == nil && jsonTruncated(respBody) && !CarriesResourceLimitsError(respBody) {
+			// abort and still fails at decode. A truncated body carrying
+			// RESOURCE_LIMITS_EXCEEDED is not one either: it is GitHub
+			// refusing the query (the 2026-09-05 shape) and a retry gets the
+			// same answer. It is classified exactly like the complete-body
+			// answer (truncatedResourceLimitsError), so every subdivision
+			// caller halves the query — the PR batch as well as the history
+			// sweep (PR #218 review E1: as a decode error it was ClassFatal
+			// and failed the PR batch).
+			truncated := readErr == nil && jsonTruncated(respBody)
+			switch {
+			case truncated && CarriesResourceLimitsError(respBody):
+				parsed = truncatedResourceLimitsError(respBody)
+			case truncated:
 				readErr = io.ErrUnexpectedEOF
-			}
-			if readErr == nil {
+			case readErr == nil:
 				parsed = parseGraphQLResponse(respBody, dest, c.logger)
 				if parsed != nil && ClassifyError(parsed) == ClassRateLimit {
 					c.markBudgetExhausted(key, resp)
@@ -350,6 +360,19 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			}
 		case isPrimaryRefusal(resp):
 			c.markBudgetExhausted(key, resp)
+		case c.authStyle == AuthGitHub && resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") == "":
+			// PR #218 review E3, the twin of the REST client's headerless-
+			// 403 read (worklist 67): with neither Retry-After nor a primary
+			// refusal, only the BODY says whether this is GitHub's secondary
+			// limit. It is read under the lease so a rate-limit body rests
+			// the key for GitHub's documented floor (parseRetryAfter's
+			// default) before any waiter can re-lease it. The unauthenticated
+			// shape is a key-leak bug, not this key's throttle: no rest.
+			respBody, readErr = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr == nil && isRateLimitBody(respBody) && !isAnonymousRateLimitBody(respBody) {
+				c.keys.MarkSecondaryLimited(key, parseRetryAfter(resp))
+			}
 		}
 		release()
 
@@ -465,7 +488,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			_ = resp.Body.Close()
 			// Retry-After is a secondary limit (rest the key, pace this
 			// attempt); a primary refusal (isPrimaryRefusal) rotates to another
-			// key; anything else is a permission error.
+			// key; a rate-limit body is a secondary limit without the header
+			// (PR #218 review E3); anything else is a permission error.
 			if resp.Header.Get("Retry-After") != "" {
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", RedactURLUserinfo(url), "query", query, "wait", wait,
@@ -515,6 +539,36 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				if rotations < maxRotations {
 					rotations++
 					attempt--
+				}
+				continue
+			}
+			// A rate-limit BODY on a 403 with no rate-limit headers (read
+			// and, for the key's own throttle, rested above under the lease
+			// — PR #218 review E3). Retried like REST's arm: this attempt's
+			// pacing is the short jittered backoff, because the next
+			// Acquire routes around the resting key; the in-body shape and
+			// the anonymous one both feed the exhaustion class.
+			if readErr != nil && ctx.Err() != nil {
+				return ctx.Err() // a stop, not a failure
+			}
+			if readErr != nil {
+				c.logger.Warn("graphql 403 body could not be read — treated as a permission error",
+					"url", RedactURLUserinfo(url), "error", readErr)
+			}
+			if readErr == nil && isRateLimitBody(respBody) {
+				if isAnonymousRateLimitBody(respBody) {
+					c.logger.Error("graphql 403 with unauthenticated rate-limit body — possible key-leak or unauthenticated request bug",
+						"url", RedactURLUserinfo(url), "token_prefix", tokenPrefix(key.Token),
+						"attempt", attempt+1, "body_snippet", truncateBody(string(respBody), 240))
+				} else {
+					c.logger.Warn("graphql 403 with rate-limit body but no rate-limit headers — key rested, retrying",
+						"url", RedactURLUserinfo(url), "token_prefix", tokenPrefix(key.Token),
+						"attempt", attempt+1, "body_snippet", truncateBody(string(respBody), 240))
+				}
+				noteCause(&classifiedGraphQLError{class: ClassRateLimit,
+					message: "graphql secondary rate limit (403 rate-limit body, no Retry-After) persisted through the retry budget"}, attempt)
+				if err := retrySleep(ctx, jitteredBackoff(attempt), attempt, budget); err != nil {
+					return err
 				}
 				continue
 			}
@@ -860,6 +914,19 @@ func classifyGraphQLErrors(errs []graphqlError) error {
 	}
 }
 
+// truncatedResourceLimitsError classifies a TRUNCATED 200 body that carries
+// a RESOURCE_LIMITS_EXCEEDED errors entry (PR #218 review E1). The body cannot
+// be decoded, but the entry it carries is GitHub's answer, so it goes through
+// classifyGraphQLErrors — the one constructor the complete-body answer uses —
+// and comes back ClassTransient wrapping ErrResourceLimits. The message
+// quotes the body the way parseGraphQLResponse's decode error does.
+func truncatedResourceLimitsError(body []byte) error {
+	return classifyGraphQLErrors([]graphqlError{{
+		Type:    "RESOURCE_LIMITS_EXCEEDED",
+		Message: fmt.Sprintf("truncated response body (%d bytes): %s", len(body), truncateBody(string(body), 200)),
+	}})
+}
+
 // joinErrs concatenates error messages without pulling in strings.Join
 // just for this; keeps the import surface small.
 func joinErrs(msgs []string) string {
@@ -919,9 +986,10 @@ var resourceLimitsErrorType = regexp.MustCompile(`"type"\s*:\s*"RESOURCE_LIMITS_
 
 // CarriesResourceLimitsError reports whether a response body — whole,
 // truncated, or quoted inside a decode error's text — carries GitHub's
-// RESOURCE_LIMITS_EXCEEDED errors entry. It is the one spelling the client's
-// read-retry exemption and the history sweep's too-expensive arm share
-// (SR-17).
+// RESOURCE_LIMITS_EXCEEDED errors entry. It is the one spelling of that test
+// (SR-17); since PR #218 review E1 its only caller is the client's truncated-
+// body arm, which turns a match into the ErrResourceLimits error every
+// subdivision caller gates on with errors.Is.
 func CarriesResourceLimitsError(body []byte) bool {
 	return resourceLimitsErrorType.Match(body)
 }

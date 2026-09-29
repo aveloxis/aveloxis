@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,22 @@ func sentinelCountsOnly(lines []string, i int) bool {
 	return false
 }
 
+// servedStore opens a second store on dsn for the server under test, so a
+// test can close the server's pool to fault its handlers while the
+// fixture's own store stays open for the cleanups (PR #218 review C11:
+// closing the fixture store in the body left every t.Cleanup delete to run
+// on a closed pool, so the probe rows were never removed). Close is
+// idempotent, so the registered Close after the body's is harmless.
+func servedStore(t *testing.T, dsn string) *db.PostgresStore {
+	t.Helper()
+	served, err := db.NewPostgresStore(context.Background(), dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(served.Close)
+	return served
+}
+
 // TestServerErrorBodyIsGeneric drives one handler into a store failure with
 // the DB tier: the token is resolved while the store works (cached), then
 // the pool is closed, so the handler's own query fails. The body is the
@@ -92,7 +109,7 @@ func TestServerErrorBodyIsGeneric(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs strings.Builder
-	s := New(store, slog.New(slog.NewTextHandler(&logs, nil)))
+	s := New(servedStore(t, dsn), slog.New(slog.NewTextHandler(&logs, nil)))
 	get := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/groups", nil)
 		req.RemoteAddr = "203.0.113.5:1"
@@ -104,7 +121,7 @@ func TestServerErrorBodyIsGeneric(t *testing.T) {
 	if rec := get(); rec.Code != http.StatusOK {
 		t.Fatalf("priming GET /api/v1/groups = %d %s", rec.Code, rec.Body.String())
 	}
-	store.Close() // the token stays cached; the handler's query now fails
+	s.store.Close() // the token stays cached; the handler's query now fails
 	rec := get()
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /api/v1/groups over a closed pool = %d %s; want 500", rec.Code, rec.Body.String())
@@ -187,22 +204,38 @@ func TestGroupAddRepoBustsTheTokenCache(t *testing.T) {
 		t.Fatalf("%d cached tokens before the add; want 1", cached())
 	}
 	payload, _ := json.Marshal(map[string]any{"urls": []string{repoURL}, "kind": "repos"})
-	rec := do(http.MethodPost, "/api/v1/groups/"+itoa(gid)+"/repos", string(payload))
+	rec := do(http.MethodPost, "/api/v1/groups/"+strconv.FormatInt(gid, 10)+"/repos", string(payload))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST add = %d %s", rec.Code, rec.Body.String())
 	}
 	if cached() != 0 {
 		t.Errorf("%d cached tokens after an add that linked a repository; want 0 (the caller's scope changed)", cached())
 	}
-}
+	var first map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil || first["linked"] != float64(1) {
+		t.Errorf("the first add's response = %s (%v); want linked 1", rec.Body.String(), err)
+	}
 
-func itoa(n int64) string {
-	return strings.TrimSpace(strings.Repeat(" ", 0) + json.Number(strconvItoa(n)).String())
-}
-
-func strconvItoa(n int64) string {
-	b, _ := json.Marshal(n)
-	return string(b)
+	// PR #218 review C2: re-posting a repository already in the group links
+	// nothing, so it reports linked 0 and leaves every cached token alone
+	// (it counted as linked and dropped the whole cache every time).
+	if rec := do(http.MethodGet, "/api/v1/groups", ""); rec.Code != http.StatusOK {
+		t.Fatalf("re-priming GET = %d", rec.Code)
+	}
+	if cached() != 1 {
+		t.Fatalf("%d cached tokens before the re-post; want 1", cached())
+	}
+	rec = do(http.MethodPost, "/api/v1/groups/"+strconv.FormatInt(gid, 10)+"/repos", string(payload))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-POST add = %d %s", rec.Code, rec.Body.String())
+	}
+	var again map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &again); err != nil || again["linked"] != float64(0) {
+		t.Errorf("re-posting an already-linked repository = %s (%v); want linked 0", rec.Body.String(), err)
+	}
+	if cached() != 1 {
+		t.Errorf("%d cached tokens after a re-post that linked nothing; want 1 (no scope changed)", cached())
+	}
 }
 
 // TestServerErrorIsQuietOnACanceledRequest (batch 5 review round 1): every
@@ -249,11 +282,14 @@ func TestGroupListsAreNot403OnAStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	const login = "_avapi_grouplist_probe"
+	const other = "_avapi_grouplist_other"
 	pool := store.Pool()
 	clean := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
-		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
-		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+		for _, l := range []string{login, other} {
+			_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, l)
+			_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, l)
+			_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, l)
+		}
 	}
 	clean()
 	t.Cleanup(clean)
@@ -265,12 +301,20 @@ func TestGroupListsAreNot403OnAStoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	otherUID, err := store.UpsertOAuthUser(ctx, db.OAuthUserInfo{Login: other, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherGID, err := store.CreateUserGroup(ctx, otherUID, "someone else's group")
+	if err != nil {
+		t.Fatal(err)
+	}
 	token, err := store.CreateSessionToken(ctx, uid, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var logs strings.Builder
-	s := New(store, slog.New(slog.NewTextHandler(&logs, nil)))
+	s := New(servedStore(t, dsn), slog.New(slog.NewTextHandler(&logs, nil)))
 	get := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.RemoteAddr = "203.0.113.6:1"
@@ -285,11 +329,17 @@ func TestGroupListsAreNot403OnAStoreFailure(t *testing.T) {
 			t.Fatalf("priming GET %s = %d %s", p, rec.Code, rec.Body.String())
 		}
 	}
-	// Someone else's group is still the caller's 403.
-	if rec := get(fmt.Sprintf("/api/v1/groups/%d/repos", gid+1000000)); rec.Code != http.StatusForbidden {
-		t.Errorf("a group the caller does not own = %d; want 403", rec.Code)
+	// Someone else's group, and a group id nobody has, are still the
+	// caller's 403 (PR #218 review C14: only the missing id was exercised,
+	// under a comment naming someone else's group).
+	for _, g := range []int64{otherGID, otherGID + 1000000} {
+		for _, p := range []string{fmt.Sprintf("/api/v1/groups/%d/repos", g), fmt.Sprintf("/api/v1/groups/%d/orgs", g)} {
+			if rec := get(p); rec.Code != http.StatusForbidden {
+				t.Errorf("GET %s, a group the caller does not own = %d; want 403", p, rec.Code)
+			}
+		}
 	}
-	store.Close() // the token stays cached; the list queries now fail
+	s.store.Close() // the token stays cached; the list queries now fail
 	for _, p := range []string{repos, orgs} {
 		logs.Reset()
 		rec := get(p)
@@ -341,7 +391,7 @@ func TestRepoLookupsAreNot404OnAStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs strings.Builder
-	s := New(store, slog.New(slog.NewTextHandler(&logs, nil)))
+	s := New(servedStore(t, dsn), slog.New(slog.NewTextHandler(&logs, nil)))
 	get := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.RemoteAddr = "203.0.113.7:1"
@@ -356,7 +406,7 @@ func TestRepoLookupsAreNot404OnAStoreFailure(t *testing.T) {
 			t.Errorf("GET %s (nothing there) = %d %q; want 404", p, rec.Code, rec.Body.String())
 		}
 	}
-	store.Close() // the token stays cached; the lookups now fail
+	s.store.Close() // the token stays cached; the lookups now fail
 	for _, p := range paths {
 		logs.Reset()
 		rec := get(p)
@@ -438,7 +488,7 @@ func TestSBOMDownloadAnswers404ForARepoNobodyHas(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs strings.Builder
-	s := New(store, slog.New(slog.NewTextHandler(&logs, nil)))
+	s := New(servedStore(t, dsn), slog.New(slog.NewTextHandler(&logs, nil)))
 	get := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.RemoteAddr = "203.0.113.8:1"
@@ -451,7 +501,7 @@ func TestSBOMDownloadAnswers404ForARepoNobodyHas(t *testing.T) {
 	if rec := get(path); rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "no rows") {
 		t.Errorf("SBOM of a repository nobody has = %d %q; want a plain 404", rec.Code, rec.Body.String())
 	}
-	store.Close()
+	s.store.Close()
 	logs.Reset()
 	if rec := get(path); rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "closed pool") || !strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("SBOM over a closed pool = %d %q (logs: %q); want a logged 500 without the store's text", rec.Code, rec.Body.String(), logs.String())

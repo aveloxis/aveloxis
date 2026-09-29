@@ -96,7 +96,7 @@ Ctrl-C ends the walk.`,
 				tcancel()
 				if upgradeErr != nil {
 					if ctx.Err() != nil {
-						return fmt.Errorf("upgrade-tools interrupted while upgrading %s (%d of %d done; upgrades are idempotent, rerun to continue): %w", tool.Name, upgraded, len(tools), ctx.Err())
+						return fmt.Errorf("upgrade-tools interrupted while upgrading %s (%d of %d done; upgrades are idempotent, rerun to continue): %w", tool.Name, upgraded+skipped+failed, len(tools), ctx.Err())
 					}
 					fmt.Printf("x %s upgrade failed: %s\n", tool.Name, toolFailureText(upgradeErr))
 					failed++

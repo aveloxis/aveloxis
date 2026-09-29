@@ -79,6 +79,31 @@ flask = "*"
 	}
 }
 
+// TestQuotedPoetryGroupHeaderKeepsItsDeps pins PR #218 review A1: a Poetry
+// group whose name is not a bare key is written with a quoted segment
+// (`[tool.poetry.group."docs-x".dependencies]`). The group-section list
+// was filtered by the bare-key header test, so such a group's dependencies
+// were dropped; the line reader's header test (a `[`...`]` line without
+// `=`) accepts it, and the table reader must agree.
+func TestQuotedPoetryGroupHeaderKeepsItsDeps(t *testing.T) {
+	const poetry = `[tool.poetry.group."docs-x".dependencies]
+sphinx = "^7.0"
+
+[tool.poetry.group."integration-test".dependencies]  # quoted, test-named
+pytest = { version = "^8.0" }
+`
+	scoped := map[string]libyearDep{}
+	for _, d := range parsePyprojectDevBuildVersions(poetry) {
+		scoped[d.Name] = d
+	}
+	if d, ok := scoped["sphinx"]; !ok || d.Version != "7.0" || d.Type != model.ScopeDev {
+		t.Errorf("quoted docs group sphinx = %+v (present %v); want version 7.0, scope dev", d, ok)
+	}
+	if d, ok := scoped["pytest"]; !ok || d.Version != "8.0" || d.Type != model.ScopeTest {
+		t.Errorf("quoted test group pytest = %+v (present %v); want version 8.0, scope test", d, ok)
+	}
+}
+
 // TestPythonDottedKeysAreOnePackage pins worklist item 42, decided as
 // option (a): in a Python table an unquoted dotted key is one package for
 // BOTH readers (the inventory said `ruamel` — no such PyPI package — while

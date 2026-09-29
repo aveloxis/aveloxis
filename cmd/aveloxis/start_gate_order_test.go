@@ -100,7 +100,7 @@ func TestStartAbortMessageBranchesOnChecklist(t *testing.T) {
 		t.Fatalf("test fixture %q must not have a checklist", noChecklist)
 	}
 
-	msg := startAbortMessage(noChecklist)
+	msg := startAbortMessage(noChecklist, ladderMigrateStep(noChecklist))
 	for _, dead := range []string{"deploy-checklist", "ack-deploy", "deploy steps"} {
 		if strings.Contains(msg, dead) {
 			t.Errorf("a version with no checklist must not point at %q — that command prints %q:\n%s", dead, "has no manual deploy steps", msg)
@@ -119,7 +119,7 @@ func TestStartAbortMessageBranchesOnChecklist(t *testing.T) {
 	if _, ok := deployChecklistFor(withChecklist); !ok {
 		t.Skipf("this binary's version (%s) has no checklist entry; the with-checklist arm is unreachable here", withChecklist)
 	}
-	msg = startAbortMessage(withChecklist)
+	msg = startAbortMessage(withChecklist, ladderMigrateStep(withChecklist))
 	// The stamp remedy is the migrate step of THIS version's checklist
 	// (post-loop review finding 2: 0.29.57's is a plain migrate).
 	for _, needle := range []string{"deploy-checklist", "ack-deploy", "`" + ladderMigrateStep(withChecklist) + "`", "--skip-deploy-check"} {

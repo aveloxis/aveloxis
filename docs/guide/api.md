@@ -847,6 +847,22 @@ Token semantics:
   findings on runtime-scope dependencies: `current - dev`, the
   headline GUIs should lead with).
 
+  **Unknown-version advisories (v0.29.70).** A dependency that
+  declares no version (`version_resolution: "unpinned"`) was queried
+  at OSV.dev without one, and OSV answers such a query with every
+  advisory ever published for the package — most of them for old
+  releases. Whether the repository is affected is unknown (the VEX
+  `under_investigation` class), so these rows are no longer
+  dependency exposure: `current`, `critical`, `direct`,
+  `transitive`, `dev` and `runtime` exclude them, and they are
+  counted apart as `unknown_version` (with `unknown_version_critical`).
+  The rows themselves stay in `vulnerabilities`. The same definition
+  applies to the repository stats (`vulnerabilities`,
+  `critical_vulns`, and the new `vulnerabilities_version_unknown`),
+  the operator digest and the supply-chain package views. Range floors
+  (`range-floor`, `bounded-range`) stay exposure: the lowest version
+  the declared range allows is affected.
+
   **Transitive findings (v0.27.21 Phase C1).** With
   `collection.vuln_scan_transitive` enabled, findings from the full
   lockfile closure carry `dependency_kind: "transitive"` (direct

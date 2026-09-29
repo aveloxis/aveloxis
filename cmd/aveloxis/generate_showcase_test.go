@@ -137,7 +137,7 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 		// the OSV scan STAMP, not dependency-row presence — analysis
 		// can run cycles before the first scan, and HasDependencyData
 		// rendered a fabricated clean 0 in that window.
-		"CountRepoVulnerabilities(", "GetVulnScanLastRun(",
+		"CountRepoVulnerabilityClasses(", "GetVulnScanLastRun(", // v0.29.70: exposure + unknown version
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("repo snapshot pages must read %s", needle)

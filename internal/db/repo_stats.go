@@ -27,6 +27,10 @@ type RepoStats struct {
 	MetadataCommits int   `json:"metadata_commits"` // commit_count from repo_info
 	Vulnerabilities int   `json:"vulnerabilities"`  // current (unresolved, non-self) CVEs from OSV.dev scan
 	CriticalVulns   int   `json:"critical_vulns"`   // current CVEs with severity CRITICAL or cvss_score >= 9.0
+	// VulnsVersionUnknown (v0.29.70) counts the current advisories of
+	// dependencies that declare no version — OSV was asked without one, so
+	// exposure is unknown. Not in Vulnerabilities (exposurePredicateSQL).
+	VulnsVersionUnknown int `json:"vulnerabilities_version_unknown"`
 	// Archived (v0.27.50) is the forge's read-only status from the
 	// latest repo_info snapshot (status='Archived') — the ACCURATE
 	// signal, distinct from the repos.repo_archived boolean (which
@@ -220,7 +224,8 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 	}
 
 	// Vulnerability counts from OSV.dev scan.
-	st.Vulnerabilities, st.CriticalVulns, err = s.CountRepoVulnerabilities(ctx, repoID)
+	vc, err := s.CountRepoVulnerabilityClasses(ctx, repoID)
+	st.Vulnerabilities, st.CriticalVulns, st.VulnsVersionUnknown = vc.Exposure, vc.Critical, vc.UnknownVersion
 	if err != nil {
 		return nil, fmt.Errorf("vulnerability counts: %w", err)
 	}
@@ -432,11 +437,13 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	// repo_id is in the requested set, so this stays cheap. Predicates
 	// mirror CountRepoVulnerabilities exactly (see doc comment above).
 	rows5, err := s.pool.Query(ctx, `
-		SELECT repo_id, COUNT(*), COUNT(*) FILTER (WHERE severity = 'CRITICAL' OR cvss_score >= 9.0)
+		SELECT repo_id,
+		       COUNT(*) FILTER (WHERE TRUE`+exposurePredicateSQL+`),
+		       COUNT(*) FILTER (WHERE `+criticalSQL+exposurePredicateSQL+`),
+		       COUNT(*) FILTER (WHERE `+unknownVersionSQL+`)
 		FROM aveloxis_data.repo_deps_vulnerabilities
 		WHERE repo_id = ANY($1)
 		  AND resolved_at IS NULL
-		  AND COALESCE(dependency_kind, '') <> 'self'
 		GROUP BY repo_id`, repoIDs)
 	if err != nil {
 		return nil, fmt.Errorf("batch vulnerability counts: %w", err)
@@ -444,13 +451,14 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	defer rows5.Close()
 	for rows5.Next() {
 		var id int64
-		var total, critical int
-		if err := rows5.Scan(&id, &total, &critical); err != nil {
+		var total, critical, unknown int
+		if err := rows5.Scan(&id, &total, &critical, &unknown); err != nil {
 			return nil, fmt.Errorf("batch vulnerability scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
 			st.Vulnerabilities = total
 			st.CriticalVulns = critical
+			st.VulnsVersionUnknown = unknown
 		}
 	}
 	if err := rows5.Err(); err != nil {

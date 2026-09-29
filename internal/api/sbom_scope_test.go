@@ -179,8 +179,12 @@ func TestDigestDevGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(api), `"runtime": current - devCount`) {
-		t.Error("counts envelope must derive the runtime split (current - devCount)")
+	// v0.29.70: the counts moved into vulnCounts; the runtime split is
+	// counted per exposure finding by scope (TestVulnCountsKeepUnknownVersionApart
+	// drives it at runtime).
+	if !strings.Contains(string(api), `if model.IsRuntimeScope(v.DependencyScope) {
+				c["runtime"]++`) {
+		t.Error("counts envelope must derive the runtime split from each exposure finding's scope")
 	}
 }
 

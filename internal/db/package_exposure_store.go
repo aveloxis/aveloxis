@@ -149,13 +149,13 @@ var PackageExposureSorts = map[string]string{
 const packageExposureDefaultLimit = 50
 const packageExposureMaxLimit = 500
 
-// notSelfFindingSQL excludes "self" rows: advisories against a repository's
-// OWN published package, versionless and never resolved by a later scan.
-// They are not exposure (PR #212 review: one made a package read CRITICAL
-// and its publisher an exposed repository); CountRepoVulnerabilities, the
-// repo stats and the digest exclude them the same way. One spelling for
-// every supply-chain read in this file (SR-17).
-const notSelfFindingSQL = ` AND COALESCE(v.dependency_kind, '') <> 'self'`
+// notSelfFindingSQL restricts every supply-chain read in this file to
+// dependency exposure — exposurePredicateSQL, the one definition the counts,
+// the repo stats and the digest share (SR-17): no "self" rows (a
+// repository's OWN published package — PR #212 review: one made a package
+// read CRITICAL and its publisher an exposed repository), and no unpinned
+// dependency's unknown-version advisories (v0.29.70).
+const notSelfFindingSQL = exposurePredicateSQLv
 
 // packageFindingsSQL is the per-finding base every package-level
 // aggregate reads: one row per finding with the scanned version pulled

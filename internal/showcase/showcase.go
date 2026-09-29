@@ -123,6 +123,11 @@ type RepoPageData struct {
 	VulnScanned  bool
 	VulnTotal    int
 	VulnCritical int
+	// VulnUnknownVersion (v0.29.70) counts the advisories of dependencies
+	// that declare no version — not in VulnTotal (exposure unknown), but
+	// said on the page so a repository never reads as clean when it is
+	// merely unknown.
+	VulnUnknownVersion int
 
 	// ActivityChart is the static weekly-activity SVG (v0.27.80,
 	// trailing 12 months) in the signed-in grammar: commits + issues +

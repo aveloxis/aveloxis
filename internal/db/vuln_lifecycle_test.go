@@ -44,9 +44,14 @@ func TestVulnUpsertRefreshesLifecycle(t *testing.T) {
 	if strings.Count(src, "last_seen_at = NOW()") < 2 || strings.Count(src, "resolved_at = NULL") < 2 {
 		t.Error("both vulnerability upserts must SET last_seen_at = NOW(), resolved_at = NULL on conflict — a reappearing vuln is current again")
 	}
-	// Counts feed dashboards — they must show live exposure only.
-	if strings.Count(src, "resolved_at IS NULL") < 3 {
-		t.Error("CountRepoVulnerabilities queries must filter resolved_at IS NULL (live exposure), and GetRepoVulnerabilities must order current-first")
+	// Counts feed dashboards — they must show live exposure only. Since
+	// v0.29.70 the counting statement is CountRepoVulnerabilityClasses
+	// (vuln_exposure.go); the runtime assertion below also pins it.
+	if !strings.Contains(mustReadFileStr(t, "vuln_exposure.go"), "WHERE repo_id = $1 AND resolved_at IS NULL") {
+		t.Error("CountRepoVulnerabilityClasses must filter resolved_at IS NULL (live exposure)")
+	}
+	if !strings.Contains(src, "resolved_at IS NULL") {
+		t.Error("GetRepoVulnerabilities must order current-first")
 	}
 }
 

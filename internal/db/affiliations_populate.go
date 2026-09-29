@@ -132,6 +132,11 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 			}
 		}
 		exRows.Close()
+		// A map cut short only costs extra upserts (a missing domain is
+		// written again), never a wrong row — but it is said (old problem O1).
+		if err := exRows.Err(); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("affiliation population: existing-map load cut short — the missing domains are upserted again this run", "error", err)
+		}
 	} else {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is

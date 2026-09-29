@@ -27,6 +27,10 @@ type RepoStats struct {
 	MetadataCommits int   `json:"metadata_commits"` // commit_count from repo_info
 	Vulnerabilities int   `json:"vulnerabilities"`  // current (unresolved, non-self) CVEs from OSV.dev scan
 	CriticalVulns   int   `json:"critical_vulns"`   // current CVEs with severity CRITICAL or cvss_score >= 9.0
+	// VulnsVersionUnknown (v0.29.70) counts the current advisories of
+	// dependencies that declare no version — OSV was asked without one, so
+	// exposure is unknown. Not in Vulnerabilities (exposurePredicateSQL).
+	VulnsVersionUnknown int `json:"vulnerabilities_version_unknown"`
 	// Archived (v0.27.50) is the forge's read-only status from the
 	// latest repo_info snapshot (status='Archived') — the ACCURATE
 	// signal, distinct from the repos.repo_archived boolean (which
@@ -52,6 +56,13 @@ type RepoStats struct {
 	// queued banner and render the no-longer-available notice, with
 	// gone taking precedence over the archived chip.
 	GoneAt *time.Time `json:"gone_at,omitempty"`
+	// UnavailableReason and UnavailableURL (v0.29.70, worklist 82) —
+	// the forge's own message for a blocked or disabled repository and
+	// its notice link (https only; the store refuses anything else). The
+	// GUI repeats them on the repository page. Independent of GoneAt: a
+	// repository disabled by staff keeps its queue row.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	UnavailableURL    string `json:"unavailable_url,omitempty"`
 	// MetadataAsOf (v0.28.1 A6) — the repo_info snapshot date behind
 	// the Metadata* counts. On gone repos the metadata is a frozen
 	// pre-disappearance snapshot; this field lets the GUI date it
@@ -181,8 +192,9 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 	// the metadata block does rather than 500 the whole stats payload.
 	// v0.28.1 (A6): repo_gone_at rides the same repos read.
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(forked_from, ''), repo_gone_at FROM aveloxis_data.repos WHERE repo_id = $1`,
-		repoID).Scan(&st.ForkedFrom, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		`SELECT COALESCE(forked_from, ''), COALESCE(repo_unavailable_reason, ''), COALESCE(repo_unavailable_url, ''),
+		        repo_gone_at FROM aveloxis_data.repos WHERE repo_id = $1`,
+		repoID).Scan(&st.ForkedFrom, &st.UnavailableReason, &st.UnavailableURL, &st.GoneAt); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fork lineage: %w", err)
 	}
 	// The forge-ID notice degrades ONLY when its table does not exist yet
@@ -212,7 +224,8 @@ func (s *PostgresStore) GetRepoStats(ctx context.Context, repoID int64) (*RepoSt
 	}
 
 	// Vulnerability counts from OSV.dev scan.
-	st.Vulnerabilities, st.CriticalVulns, err = s.CountRepoVulnerabilities(ctx, repoID)
+	vc, err := s.CountRepoVulnerabilityClasses(ctx, repoID)
+	st.Vulnerabilities, st.CriticalVulns, st.VulnsVersionUnknown = vc.Exposure, vc.Critical, vc.UnknownVersion
 	if err != nil {
 		return nil, fmt.Errorf("vulnerability counts: %w", err)
 	}
@@ -248,7 +261,9 @@ func (s *PostgresStore) queuelessLiveCounts(ctx context.Context, repoID int64, s
 // v0.27.85 cached read stays the sole hot path).
 func (s *PostgresStore) queuelessLiveCountsBatch(ctx context.Context, repoIDs []int64, result map[int64]*RepoStats) error {
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.repo_id, r.repo_gone_at, ri.data_collection_date,
+		SELECT r.repo_id, r.repo_gone_at,
+		       COALESCE(r.repo_unavailable_reason, ''), COALESCE(r.repo_unavailable_url, ''),
+		       ri.data_collection_date,
 		       COALESCE(ri.has_snapshot, FALSE),
 		       COALESCE(ri.pr_count, 0), COALESCE(ri.issues_count, 0), COALESCE(ri.commit_count, 0),
 		       (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = r.repo_id),
@@ -271,13 +286,16 @@ func (s *PostgresStore) queuelessLiveCountsBatch(ctx context.Context, repoIDs []
 	for rows.Next() {
 		var id int64
 		var goneAt, metaAsOf *time.Time
+		var unavailReason, unavailURL string
 		var hasSnap bool
 		var mPRs, mIssues, mCommits, gIssues, gPRs, gCommits int
-		if err := rows.Scan(&id, &goneAt, &metaAsOf, &hasSnap, &mPRs, &mIssues, &mCommits, &gIssues, &gPRs, &gCommits); err != nil {
+		if err := rows.Scan(&id, &goneAt, &unavailReason, &unavailURL, &metaAsOf, &hasSnap, &mPRs, &mIssues, &mCommits, &gIssues, &gPRs, &gCommits); err != nil {
 			return fmt.Errorf("batch queueless scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
 			st.GoneAt = goneAt
+			st.UnavailableReason = unavailReason
+			st.UnavailableURL = unavailURL
 			st.MetadataAsOf = metaAsOf
 			st.HasMetadataSnapshot = hasSnap
 			st.MetadataPRs = mPRs
@@ -358,7 +376,8 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		       COALESCE(ri.commit_count, 0),
 		       ri.data_collection_date,
 		       COALESCE(ri.has_snapshot, FALSE),
-		       r.repo_gone_at
+		       r.repo_gone_at,
+		       COALESCE(r.repo_unavailable_reason, ''), COALESCE(r.repo_unavailable_url, '')
 		FROM aveloxis_ops.collection_queue q
 		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
 		LEFT JOIN LATERAL (
@@ -379,7 +398,8 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 		var gIssues, gPRs, gCommits, mPRs, mIssues, mCommits int
 		var hasSnap bool
 		var lastCollected, metaAsOf, goneAt *time.Time
-		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &lastCollected, &mPRs, &mIssues, &mCommits, &metaAsOf, &hasSnap, &goneAt); err != nil {
+		var unavailReason, unavailURL string
+		if err := rows.Scan(&id, &gIssues, &gPRs, &gCommits, &lastCollected, &mPRs, &mIssues, &mCommits, &metaAsOf, &hasSnap, &goneAt, &unavailReason, &unavailURL); err != nil {
 			return nil, fmt.Errorf("batch stats scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
@@ -394,6 +414,8 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 			st.MetadataAsOf = metaAsOf
 			st.HasMetadataSnapshot = hasSnap
 			st.GoneAt = goneAt
+			st.UnavailableReason = unavailReason
+			st.UnavailableURL = unavailURL
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -415,11 +437,13 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	// repo_id is in the requested set, so this stays cheap. Predicates
 	// mirror CountRepoVulnerabilities exactly (see doc comment above).
 	rows5, err := s.pool.Query(ctx, `
-		SELECT repo_id, COUNT(*), COUNT(*) FILTER (WHERE severity = 'CRITICAL' OR cvss_score >= 9.0)
+		SELECT repo_id,
+		       COUNT(*) FILTER (WHERE TRUE`+exposurePredicateSQL+`),
+		       COUNT(*) FILTER (WHERE `+criticalSQL+exposurePredicateSQL+`),
+		       COUNT(*) FILTER (WHERE `+unknownVersionSQL+`)
 		FROM aveloxis_data.repo_deps_vulnerabilities
 		WHERE repo_id = ANY($1)
 		  AND resolved_at IS NULL
-		  AND COALESCE(dependency_kind, '') <> 'self'
 		GROUP BY repo_id`, repoIDs)
 	if err != nil {
 		return nil, fmt.Errorf("batch vulnerability counts: %w", err)
@@ -427,13 +451,14 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	defer rows5.Close()
 	for rows5.Next() {
 		var id int64
-		var total, critical int
-		if err := rows5.Scan(&id, &total, &critical); err != nil {
+		var total, critical, unknown int
+		if err := rows5.Scan(&id, &total, &critical, &unknown); err != nil {
 			return nil, fmt.Errorf("batch vulnerability scan: %w", err)
 		}
 		if st, ok := result[id]; ok {
 			st.Vulnerabilities = total
 			st.CriticalVulns = critical
+			st.VulnsVersionUnknown = unknown
 		}
 	}
 	if err := rows5.Err(); err != nil {

@@ -32,18 +32,23 @@ func IsRepoGoneStatus(code int) bool {
 	return false
 }
 
-// legalBlockReason extracts GitHub's block reason and notice URL from a
-// 451 body ({"message":..., "block":{"reason":"dmca","html_url":...}}).
-// Best effort: an unparseable body yields empty strings, never an error.
-func legalBlockReason(body []byte) (reason, noticeURL string) {
+// blockNotice extracts GitHub's block object from an error body
+// ({"message":..., "block":{"reason":"dmca","html_url":...}}) — the ONE
+// parser for it (SR-17), shared by the 451 and 403 arms (worklist item
+// 82). ok is false when the body carries no block object: an ordinary
+// 403 ("Resource not accessible …") is not the forge's notice about the
+// repository. Best effort: an unparseable body is "no block", never an
+// error.
+func blockNotice(body []byte) (ForgeNotice, bool) {
 	var b struct {
-		Block struct {
+		Message string `json:"message"`
+		Block   *struct {
 			Reason  string `json:"reason"`
 			HTMLURL string `json:"html_url"`
 		} `json:"block"`
 	}
-	if json.Unmarshal(body, &b) != nil {
-		return "", ""
+	if json.Unmarshal(body, &b) != nil || b.Block == nil {
+		return ForgeNotice{}, false
 	}
-	return b.Block.Reason, b.Block.HTMLURL
+	return ForgeNotice{Message: b.Message, Reason: b.Block.Reason, URL: b.Block.HTMLURL}, true
 }

@@ -547,6 +547,9 @@ func (s *PostgresStore) GetRepoDistribution(ctx context.Context, slug string) (*
 		out.Distributions = append(out.Distributions, d)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read distributions: %w", err)
+	}
 
 	rows, err = s.pool.Query(ctx, `
 		SELECT manifest_path, manifest_type, COALESCE(package_name_declared, '')
@@ -562,6 +565,9 @@ func (s *PostgresStore) GetRepoDistribution(ctx context.Context, slug string) (*
 			return nil, err
 		}
 		out.Manifests = append(out.Manifests, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read manifests: %w", err)
 	}
 	return out, nil
 }

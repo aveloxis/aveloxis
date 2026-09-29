@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -328,6 +329,21 @@ type TopContributor struct {
 	Total         int    `json:"total"`
 }
 
+// botSurnames are surnames that end in "bot", so a login ending in one is
+// a person, not a machine account. Extend it when a person is hidden.
+var botSurnames = []string{"abbot", "barbot", "cabot", "chabot", "jabot", "rabot", "talbot"}
+
+// displayBotLoginSQL is the "Hide bots" login rule (display only): the
+// login ends in "bot" (robot, -bot, _bot, mergebot included), digits
+// allowed after it, unless it ends in one of botSurnames. It is broader
+// on purpose than the history claim's separator rule
+// (contributor_history_store.go), which decides whose history is
+// COLLECTED: a person misread there loses data, here only a row that
+// the checkbox brings back.
+func displayBotLoginSQL(login string) string {
+	return `(` + login + ` ~* 'bot[0-9]*$' AND ` + login + ` !~* '(` + strings.Join(botSurnames, "|") + `)[0-9]*$')`
+}
+
 // TopContributors (v0.27.61) returns the top-N contributors to repoID
 // in [since, until), ranked by total activity, with the per-kind
 // breakdown that produced the rank.
@@ -359,12 +375,13 @@ type TopContributor struct {
 //
 // excludeBots (v0.27.69, the "hide bots" checkbox): filters rows whose
 // identity is a bot by THREE markers — gh_type='Bot' (GitHub App
-// accounts: dependabot[bot]), the '[bot]' login suffix, and the
-// hyphenated -bot/-robot machine-account convention. The third marker
+// accounts: dependabot[bot]), the '[bot]' login suffix, and a login
+// ending in "bot" (robot included) — displayBotLoginSQL. The third marker
 // exists because the k8s fleet's dominant committers (k8s-ci-robot,
 // k8s-release-robot) are gh_type='User' machine accounts — verified
-// live 2026-08-01 — that the first two markers cannot see. The
-// separator requirement keeps human surnames (talbot, abbot) safe.
+// live 2026-08-01 — that the first two markers cannot see. v0.29.70
+// dropped its -/_ separator requirement (operator: pytorchmergebot ranked
+// first with "Hide bots" on); human surnames are kept by name instead.
 // Deliberately BROADER than the contributor_retention metric's
 // exclusion (gh_type + [bot] only) — that one is pinned to 8Knot
 // parity; this one is a user-controlled display filter.
@@ -461,7 +478,7 @@ WHERE COALESCE(c.cntrb_deleted, 0) = 0`
   AND NOT (
       COALESCE(c.gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
       OR COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') ILIKE '%[bot]%'
-      OR COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '') ~* '[-_](bot|robot)[0-9]*$'
+      OR ` + displayBotLoginSQL(`COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')`) + `
       OR LOWER(COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')) = ANY($5::text[])
   )`
 		args = append(args, githubSystemAccounts)

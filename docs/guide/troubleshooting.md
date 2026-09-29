@@ -124,7 +124,8 @@ aveloxis add-key ghp_new_token --platform github
 
 ### `rate limit exhausted` repeats for one key while other keys have budget
 
-**Symptom:** Many `rate limit exhausted` lines carry the same `token_prefix`,
+**Symptom:** Many `rate limit exhausted` lines carry the same `token_hash`
+(`token_prefix` before 0.29.70),
 often the same URL several times in a row. Collection steps fail with
 `exhausted 10 retries … transient`.
 
@@ -144,10 +145,44 @@ resource, or on a budget that does not match the request, logs
 GitHub recommends the headers. On 2026-09-17, for the same token,
 `/rate_limit` reported an unused budget while its response headers showed
 hundreds of calls used. `scripts/check-keys.sh` reads `/rate_limit`, so a
-`5000 / 5000` row there does not prove a key is unused. The 5-minute
+`5000 / 5000` row there does not prove a key is unused. Since 0.29.70 it
+names each key by the same `token_hash` the logs use, so a row matches a
+log line directly. The 5-minute
 `key pool summary` line reports `refused_core_now`, `refused_graphql_now`,
 `refused_search_now` and `refusals_lifetime` next to the tracked
 `core_remaining_*` balances.
+
+### Observation lines added in 0.29.70
+
+These only report; nothing acts on them.
+
+- **`collection slots`** (INFO, with every key pool summary): how many jobs
+  are running (`active`), the oldest one's `oldest_repo_id`, `oldest_phase`
+  and `oldest_age`, and a `per_phase` count. A job stuck in one phase for
+  hours shows up here before its own completion line exists.
+- **`key pool reset agreement`** (INFO, with every key pool summary): for
+  each bucket (`core`, `graphql`), how many responses reported a rate-limit
+  reset `earlier` than, `equal` to or `later` than the window the pool was
+  tracking, or had no tracked window (`untracked`), plus the endpoints that
+  disagreed. It is the data worklist item 28 needs before the pool's
+  window model changes.
+- **`transaction-ID status`** (INFO, hourly): `frozen_xid_age` (the age
+  of the database's `datfrozenxid`), `autovacuum_freeze_max_age`,
+  `pct_of_freeze_max_age` and the current transaction ID. A percentage climbing toward
+  100 means anti-wraparound vacuums are due.
+- **Commit resolution's completion line** now carries `duration`,
+  `backfill_duration` (the author-ID backfill, which ran for over an hour
+  on large repositories), `search_attempts` and `search_time`.
+- **Scorecard's attempt line** carries `lent_tokens`: the `token_hash` of
+  each key lent to that run.
+- **Keys are named by `token_hash`** (0.29.70; it replaces `token_prefix`,
+  which showed the first 8 characters of the token): the token's public
+  type (`ghp_`, `github_pat_`, `glpat-`, …), `#`, and the first 8 hex
+  digits of its SHA-256 — no character of the secret. To find which key a
+  log line names, hash the token you hold:
+  `printf '%s' "$TOKEN" | shasum -a 256 | cut -c1-8`.
+- **`forge notice recorded`** (INFO): a forge's own message about a
+  blocked or disabled repository was stored; the repository page shows it.
 
 ---
 
@@ -1356,6 +1391,15 @@ in front of the query has a timeout, and the shortest one answers:
    and the time it took. A large response (an SBOM download) then gets its
    own `http_timeout_seconds` to be written; a client that reads it more
    slowly than that is cut, logged as a WARN `response write timed out`.
+
+**A maintenance page can hide which hop answered.** An nginx line such as
+`error_page 500 502 503 504 =503 @maintenance;` rewrites every gateway
+error into a 503, so an nginx timeout (really a 504) reaches the browser
+as "503 Service Temporarily Unavailable" and looks like item 3. Tell them
+apart by the logs, not the status: nginx's error log has "upstream timed
+out" for its own cut, while item 3 always leaves the WARN above in the
+Aveloxis log. If neither log has a line, check which hop's timeout is
+shortest before suspecting the database.
 
 **Solution:** Keep Aveloxis's bound the **longest** and tune latency in
 nginx, where a timeout is logged and easy to see: set nginx's timeouts

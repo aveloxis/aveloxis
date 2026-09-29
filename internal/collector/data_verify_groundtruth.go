@@ -63,6 +63,9 @@ func GroundTruthCheck(ctx context.Context, store *db.PostgresStore, client platf
 		}
 		reposToCheck = append(reposToCheck, sr)
 	}
+	if err := rows.Err(); err != nil {
+		return []db.VerifyResult{{Check: "ground truth", Severity: "FAIL", Detail: fmt.Sprintf("sample read failed: %v", err)}}
+	}
 	if len(reposToCheck) == 0 {
 		return []db.VerifyResult{{Check: "ground truth", Severity: "OK", Detail: "no collected GitHub repos to sample"}}
 	}

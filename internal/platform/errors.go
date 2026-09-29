@@ -131,6 +131,20 @@ type ClassifiedError interface {
 // callers stop retrying — no amount of backoff repairs a bad credential.
 var ErrAllKeysInvalidated = errors.New("all API keys invalidated")
 
+// ErrNoKeys is returned by KeyPool.Acquire when the pool has no key at all
+// (none configured, or every key removed by a live reload). Deliberately
+// not in ClassifyError's ladder: it stays ClassFatal, as it always was
+// (Transient would drive subdivision against a pool that cannot serve).
+// v0.29.70: typed so callers decide with errors.Is — the commit resolver
+// matched its text, and a repository named with the words aborted as a
+// false key exhaustion (SR-5).
+var ErrNoKeys = errors.New("no API keys configured")
+
+// ErrUnprocessableEntity marks a 422 response (always wrapped together with
+// ErrRequestRejected, which a 400 also carries), so a caller that must tell
+// a 422 apart decides with errors.Is rather than on the text (v0.29.70).
+var ErrUnprocessableEntity = errors.New("unprocessable entity")
+
 // ErrWrongEntityKind is returned when the API responds with the right
 // status code (200 OK) but the wrong shape — specifically, when
 // FetchIssueByNumber receives a 200 for a number that turns out to be a

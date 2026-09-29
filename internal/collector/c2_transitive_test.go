@@ -34,7 +34,7 @@ func TestEdgesGatedOnTransitiveKnobAndSameSnapshot(t *testing.T) {
 	if !strings.Contains(s, "ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges)") {
 		t.Error("edges must ride the SAME snapshot transaction as the package rows")
 	}
-	if !strings.Contains(s, "ac.scanGoModGraph(ctx, workDir, declared)") {
+	if !strings.Contains(s, "ac.scanGoModGraph(ctx, repoID, workDir, declared)") {
 		t.Error("the Go toolchain closure must feed the same snapshot (knob-gated)")
 	}
 	// v0.27.150 (round 29): the expansion's best-effort posture must
@@ -144,7 +144,7 @@ func TestScanGoModGraphStopsOnExhaustedBudget(t *testing.T) {
 
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	start := time.Now()
-	pkgs, edges, complete := ac.scanGoModGraph(ctx, dir, map[string]bool{})
+	pkgs, edges, complete := ac.scanGoModGraph(ctx, 0, dir, map[string]bool{})
 	if pkgs != nil || edges != nil {
 		t.Errorf("exhausted budget must contribute nothing, got %d pkgs / %d edges", len(pkgs), len(edges))
 	}
@@ -179,7 +179,7 @@ func TestScanGoModGraphReportsWalkFailureAsIncomplete(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) // let TempDir cleanup succeed
 
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	pkgs, edges, complete := ac.scanGoModGraph(context.Background(), dir, map[string]bool{})
+	pkgs, edges, complete := ac.scanGoModGraph(context.Background(), 0, dir, map[string]bool{})
 	if complete {
 		t.Fatal("an unreadable subtree must report INCOMPLETE — complete=true here lets the snapshot replace wipe the prior Go closure on a transient permission/IO failure")
 	}

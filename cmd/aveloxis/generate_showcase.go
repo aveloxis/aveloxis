@@ -483,9 +483,11 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 	for _, c := range checks {
 		d.ScorecardChecks = append(d.ScorecardChecks, showcase.RepoScorecardRow{Name: c.Name, Score: c.Score})
 	}
-	if d.VulnTotal, d.VulnCritical, err = store.CountRepoVulnerabilities(ctx, t.repoID); err != nil {
+	vc, err := store.CountRepoVulnerabilityClasses(ctx, t.repoID)
+	if err != nil {
 		return d, fmt.Errorf("vulnerability counts: %w", err)
 	}
+	d.VulnTotal, d.VulnCritical, d.VulnUnknownVersion = vc.Exposure, vc.Critical, vc.UnknownVersion
 	// v0.28.5 (Copilot round): the "scanned" gate is the OSV scan
 	// STAMP (v0.28.1 A4), not dependency-row presence — analysis can
 	// run cycles before the first OSV scan, and gating on
@@ -495,7 +497,7 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 	if ts, terr := store.GetVulnScanLastRun(ctx, t.repoID); terr != nil {
 		return d, fmt.Errorf("vuln scan stamp: %w", terr)
 	} else {
-		d.VulnScanned = ts != nil || d.VulnTotal > 0
+		d.VulnScanned = showcaseVulnScanned(ts, vc)
 	}
 	// v0.28.2 (items 1c+4): the forge's metadata totals for the tile
 	// sub-lines — one cheap cached read (GetRepoStats reads queue
@@ -924,4 +926,11 @@ func writeAtomic(path string, data []byte) error {
 		return fmt.Errorf("renaming %s: %w", path, err)
 	}
 	return nil
+}
+
+// showcaseVulnScanned is the showcase's "a scan ran" evidence: the OSV scan
+// stamp, or any current finding (pre-v0.28.1 rows carry no stamp until their
+// next scan) — unknown-version advisories included (v0.29.70 review round 6).
+func showcaseVulnScanned(stamp *time.Time, c db.VulnClassCounts) bool {
+	return stamp != nil || c.Exposure > 0 || c.UnknownVersion > 0
 }

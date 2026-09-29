@@ -35,7 +35,6 @@ internal/config/config.go::senderBackfillMaxMinutes<-MailingListSenderBackfillIn
 internal/config/example_defaults_test.go::blockValueOpts<-assertSnippetBlockValues
 internal/config/example_defaults_test.go::exampleBlockAllowlist<-snippetValueAllowlist
 internal/config/example_defaults_test.go::snippetAccessor<-snippetValueAccessors
-internal/db/analytics_store.go::LastActivityAt<-FirstActivityAt
 internal/db/contributor_search_resolve.go::mergeLoserAliasRepointSQL<-GetContributorsNeedingSearch
 internal/db/gap_heal_store.go::nativeGatheredIssuesSQL<-GetGapHealCandidates
 internal/db/queue.go::archivedStretchCaseSQL<-CompleteJob

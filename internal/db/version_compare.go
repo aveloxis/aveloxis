@@ -24,8 +24,8 @@ import "strings"
 // of 1.0.2 < 1.0.10 < 1.0.1b1 < 1.0.2). On plain numeric segments the two
 // rules agree.
 func CompareVersionish(a, b string) int {
-	as := strings.Split(strings.TrimPrefix(a, "v"), ".")
-	bs := strings.Split(strings.TrimPrefix(b, "v"), ".")
+	as := releaseWordLast(strings.Split(strings.TrimPrefix(a, "v"), "."))
+	bs := releaseWordLast(strings.Split(strings.TrimPrefix(b, "v"), "."))
 	n := max(len(as), len(bs))
 	for i := 0; i < n; i++ {
 		av, bv := "0", "0"
@@ -47,6 +47,7 @@ func CompareVersionish(a, b string) int {
 // compared as a digit string (leading zeros dropped, then length, then
 // text), so no segment can overflow an integer.
 func compareVersionSegment(a, b string) int {
+	a, b = canonicalVersionSegment(a), canonicalVersionSegment(b)
 	ad, ar := splitLeadingDigits(a)
 	bd, br := splitLeadingDigits(b)
 	switch {
@@ -135,6 +136,63 @@ func isPreReleaseSuffix(rest string) bool {
 		}
 	}
 	return false
+}
+
+// releaseWords name the release itself (Maven's -final/-GA/-RELEASE), not a
+// pre-release: "1.0.0-final" is "1.0.0" (worklist item 64(b)).
+var releaseWords = map[string]bool{"final": true, "ga": true, "release": true}
+
+// pep440Aliases are PEP 440's alternative pre-release spellings, longest
+// first so "preview" is not read as "pre" (worklist item 64(b)).
+var pep440Aliases = []struct{ from, to string }{
+	{"preview", "rc"}, {"alpha", "a"}, {"beta", "b"}, {"pre", "rc"}, {"c", "rc"},
+}
+
+// releaseWordLast drops a release word where it ENDS the version — the
+// whole last segment ("2.1.0.RELEASE") or its suffix ("1.0.0-final") —
+// because there it names the release itself (worklist 64(b)). Anywhere else
+// it is ordinary text: SemVer "1.0.0-release.1" stays a pre-release of
+// 1.0.0 (whole-branch review).
+func releaseWordLast(segs []string) []string {
+	last := segs[len(segs)-1]
+	digits, rest := splitLeadingDigits(last)
+	if !releaseWords[strings.ToLower(strings.TrimLeft(rest, "-._"))] {
+		return segs
+	}
+	out := append([]string(nil), segs...)
+	if digits == "" {
+		out[len(out)-1] = "0"
+	} else {
+		out[len(out)-1] = digits
+	}
+	return out
+}
+
+// canonicalVersionSegment rewrites one segment to the spelling the
+// comparison keys on, so every branch of compareVersionSegment compares
+// the same key (a total order): a PEP 440 tag is lowercased (PEP 440 is
+// case-insensitive — "1.0RC1" is "1.0rc1", whole-branch review) and an
+// alias is its canonical tag ("0c1" is "0rc1", "0alpha2" is "0a2"). A
+// SemVer "-" suffix is kept as written: "-alpha" and "-a" are different
+// SemVer identifiers, and SemVer compares them as ASCII, case included.
+func canonicalVersionSegment(seg string) string {
+	digits, rest := splitLeadingDigits(seg)
+	low := strings.ToLower(rest)
+	if rest == "" || rest[0] == '-' {
+		return seg
+	}
+	sep := rest[:len(rest)-len(strings.TrimLeft(rest, "._"))]
+	tag := low[len(sep):]
+	for _, al := range pep440Aliases {
+		if strings.HasPrefix(tag, al.from) {
+			after := tag[len(al.from):]
+			if after == "" || strings.TrimLeft(after, "0123456789") == "" {
+				return digits + sep + al.to + after
+			}
+			break
+		}
+	}
+	return digits + low
 }
 
 func splitLeadingDigits(s string) (digits, rest string) {

@@ -121,13 +121,22 @@ func (s *Scheduler) runDBHealthMonitor(ctx context.Context) {
 						poolStateLogArgs(st)...)...)
 				// Best-effort: on a real outage this write fails; on a
 				// saturated pool it waits its turn like everything else.
-				_ = s.store.SetAveloxisStatus(ctx, dbHealthStatusName, dbStatusUnavailable,
-					cause.String()+": database probe failed "+intString(consecutiveFail)+"x consecutively ("+errString(lastErr)+") — collection paused", dbHealthSource)
+				if err := s.store.SetAveloxisStatus(ctx, dbHealthStatusName, dbStatusUnavailable,
+					cause.String()+": database probe failed "+intString(consecutiveFail)+"x consecutively ("+errString(lastErr)+") — collection paused", dbHealthSource); err != nil && !errors.Is(err, context.Canceled) {
+					// Expected during a real outage (old problem O2: it was
+					// discarded); the WARN above already reports the outage.
+					s.logger.Debug("database status could not be recorded as unavailable", "error", err)
+				}
 			case transitionUp:
 				dur := time.Since(downSince).Round(time.Second)
 				s.logger.Info("database back — resuming collection", "unavailable_for", dur.String())
-				_ = s.store.SetAveloxisStatus(ctx, dbHealthStatusName, db.StatusOK,
-					"recovered; collection was paused ~"+dur.String(), dbHealthSource)
+				if err := s.store.SetAveloxisStatus(ctx, dbHealthStatusName, db.StatusOK,
+					"recovered; collection was paused ~"+dur.String(), dbHealthSource); err != nil && !errors.Is(err, context.Canceled) {
+					// The database just answered the probe, so a failed
+					// write here is news: the status page keeps saying
+					// "unavailable" (old problem O2).
+					s.logger.Warn("database recovered but its status could not be recorded — the status page still says unavailable", "error", err)
+				}
 			case transitionNone:
 				switch {
 				case !healthy && time.Since(lastReminder) >= dbHealthReminderInterval:

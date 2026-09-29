@@ -276,7 +276,7 @@ func TestIsAnonymousRateLimitBody(t *testing.T) {
 // throttled key)? The chaoss.tv log held 745 of these lines in six days,
 // all secondary-limit bodies on search/commits and search/users, and none
 // said which key served them. Both body-classified arms must carry
-// token_prefix — the same attribute the header-classified arms already
+// token_hash — the same attribute the header-classified arms already
 // log — so the next release's log review can group by key and time.
 func TestGet_403RateLimitBodyLogsNameTheServingKey(t *testing.T) {
 	for _, tc := range []struct {
@@ -326,7 +326,7 @@ func TestGet_403RateLimitBodyLogsNameTheServingKey(t *testing.T) {
 			if line == "" {
 				t.Fatalf("no %q line logged; log:\n%s", tc.msg, buf.String())
 			}
-			if want := "token_prefix=" + tokenPrefix(tok); !strings.Contains(line, want) {
+			if want := "token_hash=" + TokenHash(tok); !strings.Contains(line, want) {
 				t.Errorf("the %q line must name the key that served the 403 (%s); got:\n%s", tc.msg, want, line)
 			}
 			// attempt separates a caller's OWN retry re-leasing the throttled

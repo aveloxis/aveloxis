@@ -268,6 +268,52 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 	return out, rows.Err()
 }
 
+// LastActivityAt returns the most recent observed activity across the
+// repo set — the MAX of last issue, last PR, and last commit (author
+// timestamp). Unlike FirstActivityAt it deliberately omits
+// repos.created_at (creation is not activity) and is NOT cached: last
+// activity advances as a repo collects, so a process-lifetime cache
+// would go stale (the v0.27.24 first-activity cache is safe only
+// because first activity is immutable). ok=false when the repo set
+// has no activity yet. (v0.27.50: the chart "last-active ceiling" for
+// archived/dormant repos, mirror of the first-activity floor.)
+func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
+	if len(repoIDs) == 0 {
+		return time.Time{}, false, nil
+	}
+	// One row per arm per repository (O11 option 1, 2026-09-29): MAX over
+	// `repo_id = ANY($1)` cannot take PostgreSQL's one-row MIN/MAX path,
+	// so the issue and PR arms read every index entry of a giant
+	// repository. ORDER BY … DESC LIMIT 1 on (repo_id, created_at) reads
+	// one; IS NOT NULL because DESC puts NULLs first. The commits arm reads
+	// the stored repos.last_commit_at (O11 option 2): there is no
+	// (repo_id, cmt_author_timestamp) index — only a partial timestamp
+	// index from 2024 on, which this query cannot use — so the live form
+	// reads every per-file commit row of the repository. The live scan is
+	// COALESCE's fallback, taken only while the column is unfilled (the
+	// facade fills it on the repository's next collection).
+	var la *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT MAX(GREATEST(
+			(SELECT created_at FROM aveloxis_data.issues
+			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT 1),
+			(SELECT created_at FROM aveloxis_data.pull_requests
+			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT 1),
+			COALESCE(
+			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id),
+			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL ORDER BY cmt_author_timestamp DESC LIMIT 1))
+		))
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs).Scan(&la)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if la == nil {
+		return time.Time{}, false, nil
+	}
+	return la.UTC(), true, nil
+}
+
 // FirstActivityAt returns the earliest known activity across a repo
 // set (v0.27.24): the LEAST of first issue, first PR, first commit
 // (author timestamp), and the forge's repo creation date. It is the
@@ -283,55 +329,33 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 // making the clamp a no-op — never hidden data inside the window.
 // Postgres LEAST ignores NULL operands.
 //
-// Cost note: the issues/PR MINs ride idx_issues_repo_created /
-// idx_pull_requests_repo_created; the commits MIN has no serving
-// index and scans the repo's per-file rows. The API layer memoizes
-// per entity for the process lifetime (first activity is immutable —
-// history does not grow backward), so the cost is paid once per
-// entity per process. Deliberately NO index was added for this: a
-// once-per-process aggregate does not justify permanent write
-// amplification on the fleet's largest table.
-// LastActivityAt returns the most recent observed activity across the
-// repo set — the MAX of last issue, last PR, and last commit (author
-// timestamp). Unlike FirstActivityAt it deliberately omits
-// repos.created_at (creation is not activity) and is NOT cached: last
-// activity advances as a repo collects, so a process-lifetime cache
-// would go stale (the v0.27.24 first-activity cache is safe only
-// because first activity is immutable). ok=false when the repo set
-// has no activity yet. (v0.27.50: the chart "last-active ceiling" for
-// archived/dormant repos, mirror of the first-activity floor.)
-func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
-	if len(repoIDs) == 0 {
-		return time.Time{}, false, nil
-	}
-	var la *time.Time
-	err := s.pool.QueryRow(ctx, `
-		SELECT GREATEST(
-			(SELECT MAX(created_at) FROM aveloxis_data.issues WHERE repo_id = ANY($1)),
-			(SELECT MAX(created_at) FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1)),
-			(SELECT MAX(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = ANY($1))
-		)`, repoIDs).Scan(&la)
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	if la == nil {
-		return time.Time{}, false, nil
-	}
-	return la.UTC(), true, nil
-}
-
+// Cost note: the issues/PR arms ride idx_issues_repo_created /
+// idx_pull_requests_repo_created one row per repository. The commits
+// arm reads the stored repos.first_commit_at (v0.29.70, O11 option 2)
+// and scans the repository's per-file rows only while that column is
+// unfilled — there is still deliberately no (repo_id,
+// cmt_author_timestamp) index on the fleet's largest table. The API
+// layer also memoizes per entity for the process lifetime (first
+// activity is immutable — history does not grow backward).
 func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil
 	}
+	// Per-repository arms, as LastActivityAt (O11 option 1).
 	var fa *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT LEAST(
-			(SELECT MIN(created_at) FROM aveloxis_data.issues WHERE repo_id = ANY($1)),
-			(SELECT MIN(created_at) FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1)),
-			(SELECT MIN(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = ANY($1)),
-			(SELECT MIN(created_at) FROM aveloxis_data.repos WHERE repo_id = ANY($1))
-		)`, repoIDs).Scan(&fa)
+		SELECT MIN(LEAST(
+			(SELECT created_at FROM aveloxis_data.issues
+			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at LIMIT 1),
+			(SELECT created_at FROM aveloxis_data.pull_requests
+			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at LIMIT 1),
+			COALESCE(
+			  (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id),
+			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL ORDER BY cmt_author_timestamp LIMIT 1)),
+			(SELECT created_at FROM aveloxis_data.repos WHERE repo_id = r.id)
+		))
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs).Scan(&fa)
 	if err != nil {
 		return time.Time{}, false, err
 	}

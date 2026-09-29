@@ -30,15 +30,27 @@ for cmd in jq psql curl; do
   fi
 done
 
-# Mask a token: show first 4 and last 4 chars.
+# Name a key the way the logs do (platform.TokenHash, the token_hash log
+# attribute): the token's public type marker, '#', and the first 8 hex
+# digits of its SHA-256 — no character of the token itself. Keep the marker
+# list identical to tokenTypePrefixes in internal/platform/ratelimit.go
+# (TestCheckKeysMarkersMatchTokenHash).
 mask() {
-  local t="$1"
-  local len=${#t}
-  if (( len <= 10 )); then
-    echo "${t:0:2}...${t: -2}"
+  local -a prefixes=(github_pat_ ghp_ gho_ ghu_ ghs_ ghr_ glpat- gloas- gldt- glrt- glptt- glft-)
+  local t="$1" kind="" p sum
+  [[ -z "$t" ]] && { echo ""; return; }
+  for p in "${prefixes[@]}"; do
+    if (( ${#t} > ${#p} )) && [[ "$t" == "$p"* ]]; then
+      kind="$p"
+      break
+    fi
+  done
+  if command -v sha256sum >/dev/null 2>&1; then
+    sum=$(printf '%s' "$t" | sha256sum)
   else
-    echo "${t:0:4}...${t: -4}"
+    sum=$(printf '%s' "$t" | shasum -a 256)
   fi
+  echo "${kind}#${sum:0:8}"
 }
 
 # Format a unix timestamp to local time.

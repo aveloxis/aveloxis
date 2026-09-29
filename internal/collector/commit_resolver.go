@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -200,6 +201,11 @@ type ResolveResult struct {
 	ContribsUpdated      int
 	AliasesCreated       int
 	Errors               int
+	// SearchAttempts and SearchTime are the email searches (the API tail)
+	// this run made and the wall time spent in them, rate-limit waits
+	// included (worklist item 76).
+	SearchAttempts int
+	SearchTime     time.Duration
 }
 
 // resolved is every commit a strategy resolved AND whose write landed: a
@@ -261,8 +267,10 @@ func (r *ResolveResult) ShouldAbort422() bool {
 // Only works for GitHub repos (GitLab commit resolution uses a different API).
 func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner, repo string) (*ResolveResult, error) {
 	result := &ResolveResult{}
+	runStart := time.Now()
 
 	dbCommits, err := r.store.GetUnresolvedCommits(ctx, repoID)
+	unresolvedQuery := time.Since(runStart)
 	if err != nil {
 		return result, fmt.Errorf("querying unresolved commits: %w", err)
 	}
@@ -279,7 +287,8 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 
 	r.logger.Info("resolving commit authors",
 		"repo_id", repoID, "owner", owner, "repo", repo,
-		"unresolved", len(commits))
+		"unresolved", len(commits),
+		"unresolved_query", unresolvedQuery.Round(time.Millisecond)) // worklist item 75
 
 	for _, cmt := range commits {
 		if err := ctx.Err(); err != nil {
@@ -300,8 +309,9 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		if err != nil {
 			// Distinguish key exhaustion from other errors — key exhaustion means
 			// we should stop trying (all subsequent calls will fail too).
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "no API keys configured") || strings.Contains(errMsg, "invalidated") {
+			// Typed (v0.29.70): the error text carries the request URL, so a
+			// text match read a repository named "…invalidated…" as exhaustion.
+			if isKeyExhaustion(err) {
 				result.KeyExhausted = result.TotalCommits - result.accounted()
 				r.logger.Error("commit resolution aborted: no API keys available",
 					"repo_id", repoID,
@@ -313,7 +323,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			// commit SHAs in the database don't exist in this repo (usually caused
 			// by a stale bare clone that belonged to a different repo). After 50
 			// consecutive 422s, abort — continuing would just waste API calls.
-			if strings.Contains(errMsg, "unprocessable entity") {
+			if errors.Is(err, platform.ErrUnprocessableEntity) {
 				// A 422 on a commit the default branch no longer has is
 				// rewritten history, not a stale clone (worklist 73: an
 				// upstream rewrite left 359 unresolved rows and the run
@@ -382,15 +392,18 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 	}
 
 	// Bulk backfill: connect commits to contributors via cmt_ght_author_id.
-	if n, err := r.store.BackfillCommitAuthorIDs(ctx, repoID); err != nil {
+	backfillStart := time.Now()
+	n, err := r.store.BackfillCommitAuthorIDs(ctx, repoID)
+	backfill := time.Since(backfillStart) // worklist item 75: up to 4,034 s on kate
+	if err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is
 		// unchanged and the work is retried on the next cycle.
 		if !errors.Is(err, context.Canceled) {
-			r.logger.Warn("backfill cmt_ght_author_id failed", "error", err)
+			r.logger.Warn("backfill cmt_ght_author_id failed", "repo_id", repoID, "duration", backfill.Round(time.Millisecond), "error", err)
 		}
 	} else if n > 0 {
-		r.logger.Info("backfilled cmt_ght_author_id", "rows", n)
+		r.logger.Info("backfilled cmt_ght_author_id", "repo_id", repoID, "rows", n, "duration", backfill.Round(time.Millisecond))
 	}
 
 	logLevel := slog.LevelInfo
@@ -400,6 +413,11 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		status = "FAILED (no API keys available — most commits unresolved)"
 	}
 	r.logger.Log(ctx, logLevel, "commit resolution "+status,
+		"repo_id", repoID, // worklist items 75/76
+		"duration", time.Since(runStart).Round(time.Millisecond),
+		"backfill_duration", backfill.Round(time.Millisecond),
+		"search_attempts", result.SearchAttempts,
+		"search_time", result.SearchTime.Round(time.Millisecond),
 		"total", result.TotalCommits,
 		"noreply", result.ResolvedNoreply,
 		"db_hit", result.ResolvedDBHit,
@@ -502,7 +520,12 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 	if r.transient[email] {
 		return "", 0, errTransientMemo
 	}
+	searchStart := time.Now()
 	login, ghUserID, source, err := ResolveEmailViaAPI(ctx, r.searchClient, email)
+	// Worklist item 76: what the email searches cost this repository (the
+	// time includes the search API's rate-limit waits).
+	result.SearchAttempts++
+	result.SearchTime += time.Since(searchStart)
 	if err != nil && !platform.IsDefinitiveAnswer(err) {
 		if !errors.Is(err, context.Canceled) {
 			r.transient[email] = true // the rest of the run skips this email's search
@@ -572,7 +595,9 @@ func (r *CommitResolver) githubCommitLookup(ctx context.Context, owner, repo, sh
 	// v0.28.18: ETag-free — a body-decoding reader cannot use a 304.
 	resp, err := r.http.Get(platform.WithoutETag(ctx), path)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		// The typed sentinel, never the error's text (old problem O4, SR-5:
+		// a 422 whose URL contained "not found" read as a definitive 404).
+		if errors.Is(err, platform.ErrNotFound) {
 			return nil, nil // 404 — commit not on GitHub
 		}
 		return nil, err
@@ -744,4 +769,11 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 			r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
 		}
 	}
+}
+
+// isKeyExhaustion reports whether err means the key pool can serve no
+// request: empty (ErrNoKeys) or every key invalidated. Decided on the
+// pool's typed errors, never on text (SR-5).
+func isKeyExhaustion(err error) bool {
+	return errors.Is(err, platform.ErrNoKeys) || errors.Is(err, platform.ErrAllKeysInvalidated)
 }

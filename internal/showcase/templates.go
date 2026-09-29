@@ -344,7 +344,7 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     <div class="stat"><div class="v">{{comma .Commits}}</div><div class="k">Commits</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaCommits}}</div>{{end}}</div>
     <div class="stat"><div class="v">{{comma .Issues}}</div><div class="k">Issues</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaIssues}}</div>{{end}}</div>
     <div class="stat"><div class="v">{{comma .PRs}}</div><div class="k">Pull requests</div>{{if .HasMetadata}}<div class="s">metadata {{commaInt .MetaPRs}}</div>{{end}}</div>
-    {{if .VulnScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}</div>
+    {{if .VulnScanned}}<div class="stat"><div class="v">{{commaInt .VulnTotal}}</div><div class="k">Vulnerabilities</div>{{if gt .VulnCritical 0}}<div class="s crit">{{.VulnCritical}} critical</div>{{end}}{{if gt .VulnUnknownVersion 0}}<div class="s">{{commaInt .VulnUnknownVersion}} version unknown</div>{{end}}</div>
     {{else}}<div class="stat"><div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">scan pending</div></div>
     {{end}}<div class="stat"><div class="v">{{if .LastActivity}}{{.LastActivity}}{{else}}—{{end}}</div><div class="k">Last activity</div></div>
     <div class="stat"><div class="v">{{if .LastCollected}}{{.LastCollected}}{{else}}—{{end}}</div><div class="k">Last collected</div></div>
@@ -376,9 +376,10 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     {{- if .VulnScanned -}}
       {{- if gt .VulnTotal 0 -}}
         {{.VulnTotal}} open {{if eq .VulnTotal 1}}vulnerability{{else}}vulnerabilities{{end}} in dependencies{{if gt .VulnCritical 0}} ({{.VulnCritical}} critical){{end}}.
-      {{- else -}}
+      {{- else if eq .VulnUnknownVersion 0 -}}
         No open vulnerabilities recorded in scanned dependencies.
       {{- end -}}
+      {{- if gt .VulnUnknownVersion 0 }} {{commaInt .VulnUnknownVersion}} {{if eq .VulnUnknownVersion 1}}advisory{{else}}advisories{{end}} for dependencies with no declared version (exposure unknown).{{end -}}
     {{- else -}}
       Vulnerability scan pending — results arrive with this repository's next collection cycle.
     {{- end -}}

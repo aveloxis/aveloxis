@@ -255,7 +255,9 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		// Best-effort release. If this fails, the lock release happens
 		// on connection close (lockConn.Release returns to pool, where
 		// pgxpool's reset handlers eventually close idle connections).
-		_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, MigrateAdvisoryLockID)
+		if _, err := lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, MigrateAdvisoryLockID); err != nil {
+			logger.Warn("migrate advisory unlock failed — the lock is released when its connection closes", "error", err)
+		}
 	}()
 
 	// errs collects every schema-integrity failure across the run. We
@@ -677,6 +679,9 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_rgls_email_lower",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rgls_email_lower
 		 ON aveloxis_data.repo_groups_list_serve (lower(rgls_email))`)
+	// Operator request 2026-09-29 (analytics): make the marker explicit,
+	// read back, even where schema.sql's declaration did not apply.
+	ensureAutomationEmailParallelSafe(ctx, pg, logger)
 	// v0.25.20 — indexes for the mailing-list projection backfill's per-row
 	// lookups. Without these, backfill-mailing-list-projection (and the live
 	// projection path) sequential-scan messages / email_message per row — the
@@ -754,6 +759,16 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// v0.29.7: the recheck cadence marker (see schema.sql). NULL on
 	// existing gone rows = never rechecked = claimed first.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_gone_checked_at", "TIMESTAMPTZ")
+	// v0.29.70 (worklist 82): the forge's message and notice link (see
+	// schema.sql). NULL on existing rows = no message captured yet; the
+	// next refused clone or blocked answer fills it.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_unavailable_reason", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "repo_unavailable_url", "TEXT")
+	// v0.29.70 (O11 option 2): the stored commit bounds (see schema.sql).
+	// NULL on existing rows = not filled: each repository's next facade run
+	// computes them once; the readers scan live until then (today's cost).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "first_commit_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "last_commit_at", "TIMESTAMPTZ")
 	// v0.29.69 (worklist 69): the metadata backfill's attempt stamp (see
 	// schema.sql). NULL on existing rows = never answered = still a candidate.
 	// No index: the candidate query pages the repos PK and this is one more
@@ -980,9 +995,9 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 
 	// v0.21.0 — ScancodeWorker claim-query index.
 	//
-	// The worker runs a claim query roughly every
-	// collection.scancode_start_interval_s seconds (default 90),
-	// against ALL repos. Without an index the planner falls back to a
+	// The worker runs a claim query as often as every
+	// collection.scancode_start_interval_s / scancode_workers seconds
+	// (default 90 / 2), against ALL repos. Without an index the planner falls back to a
 	// sequential scan of repos every claim — at fleet scale that's
 	// hundreds of thousands of rows examined per minute, all
 	// returning the same eligible head.

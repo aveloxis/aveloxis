@@ -317,7 +317,7 @@ https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px 
 <div class="stat"><div class="value">{{if .Stats}}{{.Stats.GatheredIssues}}{{else}}0{{end}}</div><div class="label">Issues</div></div>
 <div class="stat"><div class="value">{{if .Stats}}{{.Stats.GatheredPRs}}{{else}}0{{end}}</div><div class="label">PRs</div></div>
 <div class="stat"><div class="value">{{if .Stats}}{{.Stats.GatheredCommits}}{{else}}0{{end}}</div><div class="label">Commits</div></div>
-<div class="stat"><div class="value" {{if .Stats}}{{if .Stats.CriticalVulns}}style="color:#dc2626"{{end}}{{end}}>{{if .Stats}}{{.Stats.Vulnerabilities}}{{else}}0{{end}}</div><div class="label">Vulns{{if .Stats}}{{if .Stats.CriticalVulns}} ({{.Stats.CriticalVulns}} crit){{end}}{{end}}</div></div>
+<div class="stat"><div class="value" {{if .Stats}}{{if .Stats.CriticalVulns}}style="color:#dc2626"{{end}}{{end}}>{{if .Stats}}{{.Stats.Vulnerabilities}}{{else}}0{{end}}</div><div class="label">Vulns{{if .Stats}}{{if .Stats.CriticalVulns}} ({{.Stats.CriticalVulns}} crit){{end}}{{if .Stats.VulnsVersionUnknown}} · {{.Stats.VulnsVersionUnknown}} version unknown{{end}}{{end}}</div></div>
 </div>
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">

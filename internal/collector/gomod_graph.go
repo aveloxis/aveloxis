@@ -57,7 +57,7 @@ const goModGraphTimeout = 5 * time.Minute
 // false-resolved findings. declared holds the repo's declared-dep
 // match keys (the direct set — its members are never written as
 // transitive rows).
-func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string, declared map[string]bool) (
+func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, workDir string, declared map[string]bool) (
 	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
 	// v0.27.152 (round 31, suppressed): discover modules BEFORE the
 	// toolchain check. Zero go.mod files is a DEFINITIVELY complete
@@ -95,7 +95,7 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 	})
 	if walkErr != nil || walkFailed {
 		ac.logger.Warn("go.mod discovery walk failed — treating the expansion as INCOMPLETE (prior closure preserved)",
-			"dir", workDir, "walk_error", walkErr, "partial_modules_found", len(modDirs))
+			"repo_id", repoID, "dir", workDir, "walk_error", walkErr, "partial_modules_found", len(modDirs))
 		return nil, nil, false
 	}
 	if len(modDirs) == 0 {
@@ -103,7 +103,7 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 	}
 	goBin, err := exec.LookPath("go")
 	if err != nil {
-		ac.logger.Debug("go toolchain not installed — skipping go mod graph transitive expansion (incomplete: modules exist but cannot be expanded)")
+		ac.logger.Debug("go toolchain not installed — skipping go mod graph transitive expansion (incomplete: modules exist but cannot be expanded)", "repo_id", repoID)
 		return nil, nil, false
 	}
 	// ONE repo-wide budget; per-module contexts derive from it.
@@ -118,13 +118,13 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 		if rctx.Err() != nil {
 			// No silent caps: say exactly what the budget dropped.
 			ac.logger.Warn("go mod graph repo budget exhausted — skipping remaining modules",
-				"budget", goModGraphTimeout, "modules_processed", i, "modules_skipped", len(modDirs)-i)
+				"repo_id", repoID, "budget", goModGraphTimeout, "modules_processed", i, "modules_skipped", len(modDirs)-i)
 			budgetWarned = true
 			complete = false
 			break
 		}
 		var modOK bool
-		packages, edges, modOK = ac.goModGraphOne(rctx, goBin, workDir, dir, declared, packages, edges)
+		packages, edges, modOK = ac.goModGraphOne(rctx, repoID, goBin, workDir, dir, declared, packages, edges)
 		if !modOK {
 			complete = false
 		}
@@ -133,12 +133,12 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, workDir string,
 		// The budget ran out INSIDE the last module — the loop-top
 		// check never saw it; say so (pass 36).
 		ac.logger.Warn("go mod graph repo budget exhausted during the last module — its expansion was cut short",
-			"budget", goModGraphTimeout, "modules_processed", len(modDirs))
+			"repo_id", repoID, "budget", goModGraphTimeout, "modules_processed", len(modDirs))
 	}
 	return packages, edges, complete
 }
 
-func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, dir string, declared map[string]bool,
+func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, goBin, workDir, dir string, declared map[string]bool,
 	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*db.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
 	// ctx carries the REPO-WIDE deadline (round 28) — no per-module
 	// timeout here, or N modules would multiply the budget.
@@ -162,7 +162,7 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, goBin, workDir, 
 			// ExitError; without it 147 warnings in one run read "exit
 			// status 1" and nothing else (2026-09-22 log review).
 			ac.logger.Warn("go toolchain invocation failed — skipping this module's transitive expansion",
-				"module_dir", rel, "args", strings.Join(args, " "), "error", rerr, "stderr", exitStderr(rerr))
+				"repo_id", repoID, "module_dir", rel, "args", strings.Join(args, " "), "error", rerr, "stderr", exitStderr(rerr))
 			return "", false
 		}
 		return string(out), true

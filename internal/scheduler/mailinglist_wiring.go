@@ -202,13 +202,14 @@ func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
 	storeFailed := 0 // answered, but the contributor write failed (item 18)
 	noIdentity := 0  // a login with no row and no forge id: cooled down, not linked
 	var firstStoreFailure error
+	var stamps stampFailures // old problem O2: attempt stamps were discarded
 	for _, c := range cands {
 		if ctx.Err() != nil {
 			return true
 		}
 		// Bots are never people — terminal stamp so they drop out.
 		if collector.IsAutomationEmail(c.SenderEmail) {
-			_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
+			stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", ""))
 			continue
 		}
 		var apiClient platform.Client
@@ -247,9 +248,7 @@ func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
 			// The forge rejected the query for this sender: stamp so the
 			// same query is not re-sent before the cooldown.
 			s.logger.Debug("mailing-list: sender resolve rejected", "email", c.SenderEmail, "error", rerr)
-			if mErr := s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""); mErr != nil {
-				s.logger.Debug("mailing-list: failed to stamp the sender-resolve attempt", "email", c.SenderEmail, "error", mErr)
-			}
+			stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""))
 			continue
 		}
 		if login == "" {
@@ -283,14 +282,14 @@ func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
 				// valid, so the terminal stamp is right — but under its
 				// honest source, and never counted as a creation.
 				if createdID == "" {
-					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "invalid-email", "")
+					stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "invalid-email", ""))
 					continue
 				}
-				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")
+				stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", ""))
 				created++
 				continue
 			}
-			_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+			stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""))
 			continue
 		}
 		_, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID)
@@ -307,7 +306,7 @@ func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
 			// — terminal — with the login and no alias, and counted
 			// linked. The 30-day cooldown instead: the login may gain
 			// a contributor row.
-			_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+			stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""))
 			noIdentity++
 			continue
 		}
@@ -322,7 +321,7 @@ func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
 			}
 			continue
 		}
-		_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
+		stamps.record(s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login))
 		linked++
 	}
 	if unanswered > 0 && ctx.Err() == nil {
@@ -335,6 +334,9 @@ func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
 		// unanswered resolves, since the fix is on the database side.
 		s.logger.Warn("mailing-list: sender writes failed after an answer — not stamped, retried next tick",
 			"failed", storeFailed, "of", len(cands), "first_error", firstStoreFailure)
+	}
+	if ctx.Err() == nil {
+		stamps.warn(s.logger, "mailing-list: sender", len(cands))
 	}
 	if linked > 0 || created > 0 || noIdentity > 0 {
 		s.logger.Info("mailing-list: sender resolution pass",

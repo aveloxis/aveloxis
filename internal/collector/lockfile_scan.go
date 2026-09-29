@@ -215,7 +215,7 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	// snapshot intact, which is strictly better than replacing it
 	// with a shrunken one.
 	if ac.TransitiveLockfiles {
-		goPkgs, goEdges, goComplete := ac.scanGoModGraph(ctx, workDir, declared)
+		goPkgs, goEdges, goComplete := ac.scanGoModGraph(ctx, repoID, workDir, declared)
 		if goComplete {
 			packages = append(packages, goPkgs...)
 			edges = append(edges, goEdges...)

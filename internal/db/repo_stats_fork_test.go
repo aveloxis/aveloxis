@@ -9,6 +9,7 @@ package db
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -27,8 +28,11 @@ func TestRepoStatsCarriesForkedFrom(t *testing.T) {
 		t.Fatal("GetRepoStats missing")
 	}
 	// v0.28.1 (A6): repo_gone_at rides the same repos read, so the
-	// needle covers the widened SELECT.
-	if !strings.Contains(src[idx:], "SELECT COALESCE(forked_from, ''), repo_gone_at FROM aveloxis_data.repos") {
+	// needle covers the widened SELECT. v0.29.70 (item 82) widened it again
+	// (the forge notice columns sit between the two), so the pin asserts
+	// the one statement reads both, not their adjacency.
+	stmt := regexp.MustCompile(`SELECT COALESCE\(forked_from, ''\),[^;` + "`" + `]*repo_gone_at FROM aveloxis_data\.repos`)
+	if !stmt.MatchString(src[idx:]) {
 		t.Error("GetRepoStats must read repos.forked_from (+ repo_gone_at since v0.28.1) — without the read the GUI chips are a permanent no-op")
 	}
 }

@@ -284,7 +284,8 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 }
 
 // verifyBatchSingleAgreement compares GetRepoStatsBatch's vulnerability
-// counts against CountRepoVulnerabilities for a bounded sample of
+// counts against CountRepoVulnerabilityClasses (every class, the
+// unknown-version count included — v0.29.70) for a bounded sample of
 // repos that HAVE findings — the surface where the two paths disagreed
 // before v0.27.36 (batch counted resolved + self rows).
 func (s *PostgresStore) verifyBatchSingleAgreement(ctx context.Context, sample int) VerifyResult {
@@ -303,6 +304,9 @@ func (s *PostgresStore) verifyBatchSingleAgreement(ctx context.Context, sample i
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return VerifyResult{Check: "batch vs single stats", Severity: "FAIL", Detail: fmt.Sprintf("probe read failed: %v", err)}
+	}
 	if len(ids) == 0 {
 		return VerifyResult{Check: "batch vs single stats", Severity: "OK", Detail: "no repos with findings to compare"}
 	}
@@ -311,21 +315,29 @@ func (s *PostgresStore) verifyBatchSingleAgreement(ctx context.Context, sample i
 		return VerifyResult{Check: "batch vs single stats", Severity: "FAIL", Detail: fmt.Sprintf("batch stats failed: %v", err)}
 	}
 	for _, id := range ids {
-		single, critical, err := s.CountRepoVulnerabilities(ctx, id)
+		single, err := s.CountRepoVulnerabilityClasses(ctx, id)
 		if err != nil {
 			return VerifyResult{Check: "batch vs single stats", Severity: "FAIL", Detail: fmt.Sprintf("single count failed for repo %d: %v", id, err)}
 		}
-		b, ok := batch[id]
-		if !ok || b.Vulnerabilities != single || b.CriticalVulns != critical {
+		b := batch[id]
+		if !statsAgree(b, single) {
 			got := "missing"
-			if ok {
-				got = fmt.Sprintf("%d/%d", b.Vulnerabilities, b.CriticalVulns)
+			if b != nil {
+				got = fmt.Sprintf("%d/%d/%d", b.Vulnerabilities, b.CriticalVulns, b.VulnsVersionUnknown)
 			}
 			return VerifyResult{Check: "batch vs single stats", Severity: "FAIL",
-				Detail: fmt.Sprintf("repo %d: batch says %s, single says %d/%d — the two dashboard paths disagree (the pre-v0.27.36 bug shape)", id, got, single, critical)}
+				Detail: fmt.Sprintf("repo %d: batch says %s, single says %d/%d/%d (exposure/critical/version unknown) — the two dashboard paths disagree (the pre-v0.27.36 bug shape)",
+					id, got, single.Exposure, single.Critical, single.UnknownVersion)}
 		}
 	}
 	return VerifyResult{Check: "batch vs single stats", Severity: "OK", Detail: fmt.Sprintf("%d repos with findings agree on both paths", len(ids))}
+}
+
+// statsAgree reports whether a batch stats row carries the single path's
+// counts — every class, the unknown-version count included (v0.29.70 review
+// round 7). A missing row disagrees.
+func statsAgree(b *RepoStats, c VulnClassCounts) bool {
+	return b != nil && b.Vulnerabilities == c.Exposure && b.CriticalVulns == c.Critical && b.VulnsVersionUnknown == c.UnknownVersion
 }
 
 // SortVerifyResults orders FAIL → WARN → OK (stable within severity).

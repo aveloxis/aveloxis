@@ -11,8 +11,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,12 +126,35 @@ type DatabaseConfig struct {
 
 // ConnectionString returns a PostgreSQL DSN.
 func (d DatabaseConfig) ConnectionString() string {
+	return d.connectionURL(nil)
+}
+
+// connectionURL builds the DSN with every part escaped (old problem O8: the
+// password, user and database were formatted in raw, so a password holding
+// `@ / % ? # :` or a space broke every connection). A host that is a path
+// is a Unix-socket directory: it goes in the host parameter, where pgx
+// reads it. extra carries further query parameters (application_name).
+func (d DatabaseConfig) connectionURL(extra url.Values) string {
 	sslmode := d.SSLMode
 	if sslmode == "" {
 		sslmode = "prefer"
 	}
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		d.User, d.Password, d.Host, d.Port, d.DBName, sslmode)
+	q := url.Values{"sslmode": {sslmode}}
+	for k, v := range extra {
+		q[k] = v
+	}
+	u := url.URL{Scheme: "postgres", User: url.UserPassword(d.User, d.Password), Path: "/" + d.DBName}
+	if strings.HasPrefix(d.Host, "/") {
+		q.Set("host", d.Host)
+		q.Set("port", strconv.Itoa(d.Port))
+	} else {
+		// A bracketed IPv6 literal ("[::1]") was accepted by the pre-O8
+		// DSN; JoinHostPort adds its own brackets (review round 1).
+		host := strings.TrimSuffix(strings.TrimPrefix(d.Host, "["), "]")
+		u.Host = net.JoinHostPort(host, strconv.Itoa(d.Port))
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ConnectionStringWithAppName returns a PostgreSQL DSN with an
@@ -137,7 +163,7 @@ func (d DatabaseConfig) ConnectionString() string {
 // process (serve / web / api). v0.20.0 introduced this so
 // `aveloxis stop` can verify backend disconnection post-SIGTERM.
 func (d DatabaseConfig) ConnectionStringWithAppName(name string) string {
-	return d.ConnectionString() + "&application_name=" + name
+	return d.connectionURL(url.Values{"application_name": {name}})
 }
 
 // PlatformConfig holds API keys and settings for a forge platform.
@@ -555,17 +581,16 @@ type CollectionConfig struct {
 	// to 2.
 	ScancodeWorkers int `json:"scancode_workers"`
 
-	// ScancodeStartIntervalSec is the minimum time between consecutive
-	// scancode CLAIM operations. Default 90 seconds when unset.
-	// Different from the inter-completion time: the ticker fires every
-	// 90s and the dispatcher attempts a new claim. If no slot is free
-	// the tick is a no-op; if one is free the claim happens.
+	// ScancodeStartIntervalSec is the start gap PER WORKER: successful
+	// scancode starts are spaced ScancodeStartIntervalSec / workers apart
+	// (v0.29.70, worklist item 65 option (c); through v0.29.69 the whole
+	// interval separated every start, capping starts at 3600/interval per
+	// hour whatever the worker count). Default 90 seconds when unset.
 	//
 	// Pacing reasoning: each scancode start triggers a shallow git
-	// clone followed by a scancode invocation. The 90s gate prevents
-	// new clones from bursting the network/disk when the operator
-	// wakes a freshly-restarted aveloxis serve with hundreds of
-	// eligible repos.
+	// clone followed by a scancode invocation. Evenly spaced starts keep
+	// a freshly-restarted serve with hundreds of eligible repos from
+	// bursting the network/disk with clones.
 	ScancodeStartIntervalSec int `json:"scancode_start_interval_s"`
 
 	// ScancodeCadenceDays is the minimum interval between successive

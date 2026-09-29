@@ -266,12 +266,12 @@ func TestDispatcherClaimsAheadOfNextStartGate(t *testing.T) {
 	// dispatcher would still throttle to one-per-interval even
 	// when workers are idle.
 	jobsSendIdx := strings.Index(body, "case jobs <- *job:")
-	gateUpdateIdx := strings.Index(body, "nextStartAllowed = time.Now().Add(w.startInterval)")
+	gateUpdateIdx := strings.Index(body, "nextStartAllowed = time.Now().Add(w.startGap)")
 	if jobsSendIdx < 0 {
 		t.Error("dispatcher must do a `case jobs <- *job:` channel send to feed a runner")
 	}
 	if gateUpdateIdx < 0 {
-		t.Error("dispatcher must stamp nextStartAllowed = time.Now().Add(w.startInterval) after a successful start")
+		t.Error("dispatcher must stamp nextStartAllowed = time.Now().Add(w.startGap) after a successful start")
 	}
 	if jobsSendIdx >= 0 && gateUpdateIdx >= 0 && gateUpdateIdx < jobsSendIdx {
 		t.Error("nextStartAllowed must be stamped AFTER the successful send, not before the claim. Otherwise the dispatcher throttles to one-per-startInterval regardless of worker availability — the v0.21.3 regression this test pins against.")

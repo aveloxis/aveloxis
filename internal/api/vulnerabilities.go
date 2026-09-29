@@ -157,40 +157,9 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	}
 
 	out := make([]vulnJSON, 0, len(rows))
-	current, resolved, critical := 0, 0, 0
-	// v0.27.21 C1 count split (CURRENT findings only): a repo with 3
-	// direct and 400 transitive findings must never read as "403
-	// vulnerabilities" — the GUI leads with direct. Pre-C1 rows
-	// ('' kind) count as direct (they were, by construction).
-	directCount, transitiveCount, devCount := 0, 0, 0
-	// v0.27.29: kind='self' = advisories against the repo's OWN
-	// published releases (versionless — the numpy fix). They are
-	// lifecycle-current forever, so they get their own counter and
-	// stay OUT of current/critical/direct — a project's historical
-	// advisories must never read as live dependency exposure.
-	selfCount := 0
+	counts := vulnCounts(rows)
 	for _, v := range rows {
 		osvURL, cveURL := advisoryURLs(v.VulnID, v.CVEID)
-		if v.ResolvedAt == nil {
-			if v.DependencyKind == "self" {
-				selfCount++
-			} else {
-				current++
-				if v.Severity == "CRITICAL" || v.CVSSScore >= 9.0 {
-					critical++
-				}
-				if v.DependencyKind == "transitive" {
-					transitiveCount++
-				} else {
-					directCount++
-				}
-				if !model.IsRuntimeScope(v.DependencyScope) {
-					devCount++
-				}
-			}
-		} else {
-			resolved++
-		}
 		out = append(out, vulnJSON{
 			VulnID: v.VulnID, CVEID: v.CVEID,
 			PackageName: v.PackageName, PackagePurl: v.PackagePurl,
@@ -241,15 +210,53 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		"vulnerabilities":    out,
 		"scanned_at":         scannedAt,
 		"lockfile_certainty": certainty,
-		"counts": map[string]int{
-			"current": current, "resolved": resolved, "critical": critical,
-			"direct": directCount, "transitive": transitiveCount, "dev": devCount,
-			// v0.27.46: runtime = current findings on runtime-scope
-			// deps (the headline the GUI leads with).
-			"runtime": current - devCount,
-			"self":    selfCount,
-		},
+		"counts":             counts,
 	})
+}
+
+// vulnCounts splits a repository's findings for the payload's counts.
+// current/critical/direct/transitive/dev/runtime count EXPOSURE only
+// (db.IsExposureFinding): a repo with 3 direct and 400 transitive findings
+// never reads as "403" (v0.27.21 C1 — the GUI leads with direct; a pre-C1
+// row with an empty kind counts as direct); the project's own release advisories count as
+// self (v0.27.29); and the unknown-version advisories of unpinned
+// dependencies (v0.29.70 — OSV was asked without a version, so every
+// advisory for the package came back) count as unknown_version, with
+// their critical subset apart. runtime = exposure on runtime-scope deps
+// (v0.27.46, the GUI's headline).
+func vulnCounts(rows []*db.VulnerabilityRow) map[string]int {
+	c := map[string]int{"current": 0, "resolved": 0, "critical": 0, "direct": 0, "transitive": 0,
+		"dev": 0, "runtime": 0, "self": 0, "unknown_version": 0, "unknown_version_critical": 0}
+	for _, v := range rows {
+		critical := v.Severity == "CRITICAL" || v.CVSSScore >= 9.0
+		switch {
+		case v.ResolvedAt != nil:
+			c["resolved"]++
+		case v.DependencyKind == "self":
+			c["self"]++
+		case db.IsUnknownVersionFinding(v):
+			c["unknown_version"]++
+			if critical {
+				c["unknown_version_critical"]++
+			}
+		default:
+			c["current"]++
+			if critical {
+				c["critical"]++
+			}
+			if v.DependencyKind == "transitive" {
+				c["transitive"]++
+			} else {
+				c["direct"]++
+			}
+			if model.IsRuntimeScope(v.DependencyScope) {
+				c["runtime"]++
+			} else {
+				c["dev"]++
+			}
+		}
+	}
+	return c
 }
 
 // annotateCycloneDXWithVulns appends a CycloneDX `vulnerabilities`
@@ -290,6 +297,10 @@ func annotateCycloneDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]by
 		}
 		if v.FixedVersion != "" {
 			entry["recommendation"] = "Upgrade " + v.PackageName + " to " + v.FixedVersion + " or later"
+		}
+		if db.IsUnknownVersionFinding(v) {
+			// v0.29.70: VEX under_investigation — CycloneDX's in_triage.
+			entry["analysis"] = map[string]any{"state": "in_triage", "detail": db.UnknownVersionDetail}
 		}
 		entries = append(entries, entry)
 	}
@@ -352,11 +363,17 @@ func annotateSPDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]byte, e
 				continue
 			}
 			seen[osvURL] = true
-			refs = append(refs, map[string]any{
+			ref := map[string]any{
 				"referenceCategory": "SECURITY",
 				"referenceType":     "advisory",
 				"referenceLocator":  osvURL,
-			})
+			}
+			if db.IsUnknownVersionFinding(v) {
+				// v0.29.70: SPDX 2.3 has no status field; the comment says
+				// what CycloneDX's in_triage does.
+				ref["comment"] = db.UnknownVersionDetail
+			}
+			refs = append(refs, ref)
 		}
 		if len(refs) > 0 {
 			pkg["externalRefs"] = refs

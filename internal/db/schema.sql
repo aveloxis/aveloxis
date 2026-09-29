@@ -100,6 +100,26 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- MarkRepoGone (the sideline probe IS a check), MarkRepoGoneChecked
     -- and mark-gone-repos; only ever set on a gone-stamped row.
     repo_gone_checked_at    TIMESTAMPTZ,
+    -- v0.29.70 (worklist 82): the forge's own message for a blocked or
+    -- disabled repository — GitHub's block object on a 451/403
+    -- ("Repository access blocked (dmca)") or a refused clone's
+    -- `remote:` text ("Access to this repository has been disabled by
+    -- GitHub staff."), capped at 500 characters, and the notice link
+    -- (https only). The repository page repeats it. Written by
+    -- SetRepoUnavailable; cleared by ClearRepoUnavailable (a clone or
+    -- fetch succeeded) and by both gone clearers.
+    repo_unavailable_reason TEXT,
+    repo_unavailable_url    TEXT,
+    -- v0.29.70 (O11 option 2): MIN and MAX of the repository's
+    -- commits.cmt_author_timestamp, maintained by the facade and, for a
+    -- gone repository, by the gone recheck (RecordCommitBounds). There is
+    -- no (repo_id, cmt_author_timestamp) index, so computing either live
+    -- reads every per-file commit row of the repository — what ran /stats
+    -- past nginx's 60 s on the giant repositories. NULL = not filled yet:
+    -- the next facade run (or gone recheck) computes it from the table
+    -- once; the readers fall back to the live scan meanwhile.
+    first_commit_at         TIMESTAMPTZ,
+    last_commit_at          TIMESTAMPTZ,
     -- v0.29.69 (worklist 69): when the startup metadata backfill last
     -- got an ANSWER from the forge about this repo: metadata written
     -- (an honestly empty description and language included) or an

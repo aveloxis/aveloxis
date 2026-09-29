@@ -480,6 +480,26 @@ var deployChecklists = map[string][]deployStep{
 	// nullable columns (repos.metadata_backfill_attempted_at and
 	// users.gl_oauth_host, instant ALTERs; PR #218 review D4).
 	"0.29.69": v02969DeployChecklist,
+	// v0.29.70 (release/misiorowski, Stage 1 of summary/40): four nullable
+	// columns (repos.repo_unavailable_reason / repo_unavailable_url, worklist
+	// 82; repos.first_commit_at / last_commit_at, O11 option 2),
+	// is_automation_email marked PARALLEL SAFE, and the scancode start
+	// interval now counted per worker (65).
+	"0.29.70": v02970DeployChecklist,
+}
+
+// 0.29.70 adds four nullable columns and marks one function PARALLEL SAFE
+// (both by migrate), changes what collection.scancode_start_interval_s
+// means (per worker), and carries 0.29.69's notes for a fleet that skipped
+// it.
+var v02970DeployChecklist = []deployStep{
+	v02967DeployChecklist[0],
+	{"aveloxis migrate --skip-views", "adds repos.repo_unavailable_reason, repo_unavailable_url, first_commit_at and last_commit_at (nullable, no default: instant ALTERs) and marks aveloxis_data.is_automation_email(text) PARALLEL SAFE (logged at INFO with its previous marking; a failure is a WARN and the migrate continues); otherwise as 0.29.69 — adds its two columns if it was skipped, re-creates the two supply-chain views from Go (--skip-views skips only the 8Knot batch) and creates repo_forge_id_changes if 0.29.62 was skipped"},
+	v02967DeployChecklist[2],
+	v02969DeployChecklist[3],
+	v02969DeployChecklist[4],
+	v02969DeployChecklist[5],
+	{"aveloxis start all", "collection.scancode_start_interval_s is now the start gap PER WORKER: starts are spaced interval / workers apart (the startup line's start_gap is the effective value), so an unchanged setting with N workers starts scans N times as often as before; to keep the old pace multiply the setting by collection.scancode_workers. A repository GitHub has blocked or disabled now shows the forge's own message on its repository page (captured at the next refused clone or blocked API answer; for a repository already sidelined as legally blocked, at its next gone recheck — within collection.gone_repo_recheck_days; 'forge notice recorded' at INFO). The repository page's last activity and the charts' first-activity floor no longer scan a large repository: issues and PRs are read one row per repository, and commits from the new repos.first_commit_at / last_commit_at. Each repository's next collection fills them (the first fill reads that repository's commit rows once, inside the job — also when its clone is refused), and the gone recheck fills gone repositories, which have no collection; until then the page reads them live as before. Vulnerability counts no longer include the advisories of dependencies that declare no version (OSV.dev returns every advisory ever published for such a package, so exposure is unknown; floating GitHub Actions refs, matched against the ref, still count): the repository tile, the showcase and the API's counts show them apart as version unknown, and the operator digest and the supply-chain package views leave them out — so those numbers DROP on repositories without lockfiles (this migrate re-creates the supply-chain views with the new definition). Deploy aveloxis-gui before or together with this backend: the new pages read both APIs (they derive the split from the rows when the API does not send it), but the old pages misread the new one — their header says the exposure count while their table still lists the unknown-version rows as current. New observation-only lines: 'collection slots' and 'key pool reset agreement' every key-pool summary, 'transaction-ID status' hourly, and commit resolution's duration and search counts on its completion line. Every log line that names an API key now carries token_hash instead of token_prefix: the token's public type (ghp_, github_pat_, glpat-, ...), '#', and the first 8 hex digits of its SHA-256, so no character of the token reaches a log (the old prefix carried 4 secret characters of a ghp_ token, and every fine-grained token read github_p...); scorecard's lent_tokens and add-key's 'key stored' line use the same name. 'Hide bots' on the contributor lists now also hides machine accounts whose login ends in bot without a separator (pytorchmergebot); logins ending in a surname such as talbot or cabot stay visible, and collection is unchanged. Update any saved log search on token_prefix; to find which key a line names, run printf '%s' \"$TOKEN\" | shasum -a 256 | cut -c1-8 on the token you hold. If 0.29.69 was skipped, its start-up notes apply as well: " + v02969DeployChecklist[6].desc},
 }
 
 // 0.29.69 adds two nullable columns (the metadata backfill's attempt stamp,

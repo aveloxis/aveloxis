@@ -128,7 +128,8 @@ GET /api/v1/repos/stats?ids=1,2,3,42
 Returns stats for multiple repos in one call. Response is a map keyed by repo ID.
 
 Since v0.28.7 the batch rows carry the same `gone_at` and
-`metadata_as_of` fields as the single-repo endpoint, and requested ids
+`metadata_as_of` fields as the single-repo endpoint (and, since
+v0.29.70, `unavailable_reason` and `unavailable_url`), and requested ids
 with no collection-queue row (the prelim-dequeued "gone" cohort) fall
 back to live gathered counts instead of serving zeros — the two
 endpoints can no longer disagree about a vanished repository. The
@@ -357,20 +358,22 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-`?bots=hide` (v0.27.69; widened v0.28.1) filters automation
+`?bots=hide` (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types
 `gh_type IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`
 (GitHub App accounts like `dependabot[bot]`; fine-grained-PAT
 actors; org accounts acting as contributors — the codecov shape,
 whose enriched row is typed Organization), the `[bot]` login
-suffix, the hyphenated `-bot`/`-robot` machine-account convention
-(the `k8s-ci-robot` class, which GitHub types as a regular User —
+suffix, a login ending in `bot` (so `-bot`, `-robot` and
+separator-less names such as `pytorchmergebot`; digits may follow —
+the `k8s-ci-robot` class, which GitHub types as a regular User,
 verified live), and the curated system-account list (actions-user,
 web-flow, ghost, codecov, codecov-io, codecov-commenter — machine
 accounts GitHub types as plain User). `Mannequin` rows are
 deliberately NOT hidden: mannequins are import placeholders
-standing in for unmatched humans, not automation. The separator
-requirement keeps human surnames (talbot) safe. Deliberately
+standing in for unmatched humans, not automation. Logins ending in a
+surname that ends in `bot` (abbot, barbot, cabot, chabot, jabot, rabot,
+talbot) stay visible. Deliberately
 broader than the `contributor_retention` metric's bot exclusion,
 which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
@@ -846,6 +849,25 @@ Token semantics:
   findings on runtime-scope dependencies: `current - dev`, the
   headline GUIs should lead with).
 
+  **Unknown-version advisories (v0.29.70).** A dependency that
+  declares no version (`version_resolution: "unpinned"`) was queried
+  at OSV.dev without one, and OSV answers such a query with every
+  advisory ever published for the package — most of them for old
+  releases. Whether the repository is affected is unknown (the VEX
+  `under_investigation` class), so these rows are no longer
+  dependency exposure: `current`, `critical`, `direct`,
+  `transitive`, `dev` and `runtime` exclude them, and they are
+  counted apart as `unknown_version` (with `unknown_version_critical`).
+  Except GitHub Actions dependencies (`ecosystem` `githubactions`): a
+  floating ref (`@v4`, `@main`) is stored `unpinned` too, but its
+  advisories were matched against the ref, so they stay exposure.
+  The rows themselves stay in `vulnerabilities`. The same definition
+  applies to the repository stats (`vulnerabilities`,
+  `critical_vulns`, and the new `vulnerabilities_version_unknown`),
+  the operator digest and the supply-chain package views. Range floors
+  (`range-floor`, `bounded-range`) stay exposure: the lowest version
+  the declared range allows is affected.
+
   **Transitive findings (v0.27.21 Phase C1).** With
   `collection.vuln_scan_transitive` enabled, findings from the full
   lockfile closure carry `dependency_kind: "transitive"` (direct
@@ -890,8 +912,8 @@ Token semantics:
   | `locked` | A committed lockfile resolved this package — the purl is the LOCKED version, not the range floor. Go dependencies are `locked` by construction (go.mod versions are exact under MVS). |
   | `exact` | `==X` or a bare version: the manifest names exactly one version. |
   | `bounded-range` | The requirement has an upper bound (`~=`, `^`, `~`, or a compound containing `<`/`<=`). The purl is the range FLOOR. |
-  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits. UIs should render e.g. "≥2.20 declared — floor shown". |
-  | `unpinned` | No version declared (produces no findings today). |
+  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits, not the installed version. UIs should say so, e.g. "lowest allowed" beside the version, with the declared requirement. |
+  | `unpinned` | No version declared: OSV.dev was queried without one and returned every advisory for the package, so exposure is unknown — counted apart as `unknown_version` (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in `current`. |
 
   Both fields are absent (`""`) on findings last touched by a
   pre-v0.27.11 scan and heal on the repo's next scan.
@@ -960,6 +982,16 @@ Token semantics:
   row — the prelim-dequeued gone cohort) the gathered counts fall
   back to live row counts instead of fabricated zeros; tracked
   repos keep the cached-count read.
+  v0.29.70 adds `unavailable_reason` and `unavailable_url` (both
+  omitted when empty): the forge's own message for a blocked or
+  disabled repository, repeated on the repository page — GitHub's
+  block answer on a 451 or 403 ("Repository access blocked (dmca)")
+  with its notice link, or the text git prints when the forge refuses a
+  clone ("Access to this repository has been disabled by GitHub
+  staff."). At most 500 characters; the link is present only when it
+  is an https URL. Independent of `gone_at`: a repository disabled by
+  staff is not marked gone. Cleared when a clone succeeds again or the
+  gone state is lifted. The batch endpoint carries the same two fields.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo

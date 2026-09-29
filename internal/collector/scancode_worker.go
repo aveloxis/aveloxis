@@ -112,8 +112,10 @@ const (
 type ScancodeWorkerOptions struct {
 	// Workers is the number of concurrent scancode runners. Default 2.
 	Workers int
-	// StartInterval is the minimum gap between consecutive successful
-	// claim starts (v0.21.3 pacing primitive). Default 90s.
+	// StartInterval is the start gap PER WORKER: consecutive successful
+	// claim starts are spaced StartInterval / Workers apart (startGap;
+	// v0.29.70, worklist 65 option (c) — before, the whole gap applied
+	// between any two starts). Default 90s.
 	StartInterval time.Duration
 	// Cadence is the minimum interval between successive scans of the
 	// same repo. Default 180 days.
@@ -161,7 +163,7 @@ type ScancodeWorkerOptions struct {
 //     dirs from the clone directory.
 //  5. dispatcher() claims eligible repos (pausing entirely while the
 //     toolchain health state is BROKEN) and feeds free runner slots,
-//     pacing consecutive starts by startInterval.
+//     pacing consecutive starts by startGap (startInterval / workers).
 //  6. runner() goroutines (workerCount of them) consume jobs and
 //     call runOne(). Each runOne does: generated-content skip check,
 //     shallow clone, scancode subprocess, outcome classification,
@@ -179,6 +181,12 @@ type ScancodeWorker struct {
 	logger        *slog.Logger
 	workerCount   int
 	startInterval time.Duration
+	// startGap is the spacing between successful starts: startInterval
+	// divided by the workers (worklist item 65, option (c), v0.29.70). One
+	// global gap capped starts at 3600/gap per hour whatever the worker
+	// count; dividing it lets throughput scale with workers while starts
+	// stay evenly spaced after a restart (no burst of clones).
+	startGap      time.Duration
 	cadence       time.Duration
 	cloneDir      string
 	shutdownGrace time.Duration
@@ -305,6 +313,7 @@ func NewScancodeWorker(store ScancodeStore, logger *slog.Logger, opts ScancodeWo
 		logger:               logger,
 		workerCount:          opts.Workers,
 		startInterval:        opts.StartInterval,
+		startGap:             opts.StartInterval / time.Duration(opts.Workers),
 		cadence:              opts.Cadence,
 		cloneDir:             opts.CloneDir,
 		shutdownGrace:        opts.ShutdownGrace,
@@ -373,6 +382,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	w.logger.Info("scancode worker started",
 		"workers", w.workerCount,
 		"start_interval", w.startInterval.String(),
+		"start_gap", w.startGap.String(), // the effective spacing: start_interval / workers
 		"cadence", w.cadence.String(),
 		"clone_dir", w.cloneDir,
 		"shutdown_grace", w.shutdownGrace.String(),
@@ -464,9 +474,9 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 //
 // v0.21.3 design: minimum-gap pacing, not throughput cap. The
 // dispatcher uses a `nextStartAllowed` deadline variable to enforce
-// at least `startInterval` between consecutive successful claims,
-// preserving the original burst-protection intent. Between gates
-// the dispatcher runs as fast as workers free up.
+// at least `startGap` (startInterval / workers since v0.29.70) between
+// consecutive successful claims, preserving the burst-protection
+// intent. Between gates the dispatcher runs as fast as workers free up.
 //
 // Pre-v0.21.3 the dispatcher was driven by
 // time.NewTicker(startInterval) — one claim attempt per tick,
@@ -475,7 +485,10 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 // throughput at 40 claims/hour while runners had capacity for
 // ~140. On a 40K-repo fleet this produced ~42-day first-pass
 // estimates when actual capacity was ~12 days. See
-// summary/changelog/v0.21.md, the v0.21.3 entry.
+// summary/changelog/v0.21.md, the v0.21.3 entry. The v0.21.3 fix still
+// spaced starts by the whole startInterval, which by itself capped starts
+// at 3600/startInterval an hour whatever the worker count; v0.29.70
+// divides it by the workers (docs/architecture/scancode.md §3.3).
 //
 // Why an UNBUFFERED jobs channel keeps the design correct: the
 // dispatcher's send blocks until a runner is ready to receive.
@@ -571,16 +584,21 @@ func (w *ScancodeWorker) dispatcher(ctx context.Context, jobs chan<- db.Scancode
 		select {
 		case jobs <- *job:
 			// Successful start. Stamp the next-start window so
-			// we wait at least startInterval before the next
-			// claim — even if a runner frees up immediately.
-			nextStartAllowed = time.Now().Add(w.startInterval)
+			// we wait at least startGap (startInterval / workers)
+			// before the next claim — even if a runner frees up
+			// immediately.
+			nextStartAllowed = time.Now().Add(w.startGap)
 		case <-ctx.Done():
 			// We claimed but ctx canceled before any runner
 			// could accept. Best-effort release of the lock so
 			// the next aveloxis startup's recoverOrphans pass
 			// doesn't have to deal with a phantom claim.
 			relCtx, relCancel := context.WithTimeout(context.Background(), scancodeBestEffortDBTimeout)
-			_ = w.store.ClearScancodeLock(relCtx, job.RepoID)
+			if err := w.store.ClearScancodeLock(relCtx, job.RepoID); err != nil {
+				// Best-effort on stop; said, not silent (old problem O2).
+				w.logger.Warn("scancode: releasing an unstarted claim on stop failed — the next start's orphan recovery clears it",
+					"repo_id", job.RepoID, "error", err)
+			}
 			relCancel()
 			w.bookkeeping.Done() // the claim was never handed off (pass 39)
 			return
@@ -972,7 +990,12 @@ func (w *ScancodeWorker) writeFailureArtifacts(job db.ScancodeJob, ex *scanExecu
 	stdoutPath := ""
 	if ex.stdoutFull.Total() > 0 {
 		stdoutPath = filepath.Join(w.cloneDir, fmt.Sprintf("repo_%d_stdout.log", job.RepoID))
-		_ = os.WriteFile(stdoutPath, ex.stdoutFull.Bytes(), 0o644)
+		if err := os.WriteFile(stdoutPath, ex.stdoutFull.Bytes(), 0o644); err != nil {
+			// Old problem O3: discarded; the line below would then name a
+			// file that does not exist.
+			w.logger.Warn("scancode: could not save the failed scan's stdout", "repo_id", job.RepoID, "path", stdoutPath, "error", err)
+			stdoutPath = ""
+		}
 	}
 	logArgs := []any{
 		"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,

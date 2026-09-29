@@ -89,6 +89,8 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	t.Cleanup(store.Close)
 	const slug = "_avgonetick"
 	cleanup := func() {
+		store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.commits WHERE repo_id IN
+			(SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
 		store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN
 			(SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
 		store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`'`)
@@ -114,6 +116,13 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		// Age the sideline stamp so every row is due.
 		if _, err := store.Pool().Exec(ctx,
 			`UPDATE aveloxis_data.repos SET repo_gone_checked_at = NULL WHERE repo_id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+		// One dated commit and unfilled bounds: every still-gone arm must
+		// fill them (review round 4 F2 — a gone repository gets no facade
+		// run, whatever its probe answered).
+		if _, err := store.Pool().Exec(ctx, `INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_timestamp)
+			VALUES ($1, md5($2), 'f', '2018-08-08Z')`, id, name); err != nil {
 			t.Fatal(err)
 		}
 		return row{id, url}
@@ -220,6 +229,15 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	}
 	if gone, checked, queued := state(creds.id); !gone || !checked || queued {
 		t.Errorf("a credentialed row must stay gone, unprobed, AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	for name, r := range map[string]row{"404": still, "5xx": flaky, "unreachable": unreach, "credentialed target": target, "credentialed row": creds} {
+		var last *time.Time
+		if err := store.Pool().QueryRow(ctx, `SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = $1`, r.id).Scan(&last); err != nil {
+			t.Fatal(err)
+		}
+		if last == nil {
+			t.Errorf("%s arm: the gone repository's commit bounds were not filled (review round 4 F2)", name)
+		}
 	}
 	// A second run within the cadence probes NONE of our rows: every
 	// non-definitive answer was bounded to the cadence, and the

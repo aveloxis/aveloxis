@@ -5,12 +5,15 @@ package platform
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -135,12 +138,18 @@ func (r Resource) tracksBudget() bool {
 // before collection waits. This maximizes throughput when you have dozens
 // of tokens at 400K+ repos.
 type KeyPool struct {
-	mu         sync.Mutex
-	keys       []*APIKey
-	rrIndex    int // round-robin counter (core checkout)
-	rrIndexGQL int // round-robin counter (graphql checkout — separate so the two dimensions don't skew each other)
-	buffer     int // stop using a key when remaining drops to this
-	logger     *slog.Logger
+	mu sync.Mutex
+	// resetAgreement counts responses' resets against the tracked
+	// windows, drained by the 5-minute summary (Phase 0). Recorded only
+	// once RecordResetAgreement opted in (review round 1 F2: the GitLab
+	// pool, which nothing drains, grew its map for the process lifetime).
+	resetAgreement       map[ResetAgreementKey]ResetAgreementCounts
+	recordResetAgreement bool
+	keys                 []*APIKey
+	rrIndex              int // round-robin counter (core checkout)
+	rrIndexGQL           int // round-robin counter (graphql checkout — separate so the two dimensions don't skew each other)
+	buffer               int // stop using a key when remaining drops to this
+	logger               *slog.Logger
 
 	// ── v0.27.34 fleet-level API-outage circuit breaker ────────────
 	// Every HTTPClient (REST + GraphQL) for a platform shares this
@@ -353,7 +362,7 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 			return nil, nil, err
 		}
 		if len(kp.keys) == 0 {
-			return nil, nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+			return nil, nil, fmt.Errorf("%w — add keys via 'aveloxis add-key' or the database", ErrNoKeys)
 		}
 		now := time.Now()
 		kp.refillLocked(now, res)
@@ -818,11 +827,11 @@ func (kp *KeyPool) markSecondaryLimitedLocked(key *APIKey, retryAfter time.Durat
 	}
 	key.secondaryHits++
 	// Debug, not Info: the client that tripped the limit already logs the
-	// event with token_prefix, and the 5-minute pool summary carries the
+	// event with token_hash, and the 5-minute pool summary carries the
 	// lifetime hit count — an Info here doubled the log volume in exactly
 	// the storm this cooldown exists to end.
 	kp.logger.Debug("API key secondary-rate-limited — resting it for Retry-After",
-		"token_prefix", tokenPrefix(key.Token), "retry_after", retryAfter,
+		"token_hash", TokenHash(key.Token), "retry_after", retryAfter,
 		"lifetime_hits", key.secondaryHits, "inflight_on_key", key.inflight)
 }
 
@@ -873,11 +882,13 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	refused := isPrimaryRefusal(resp)
 	switch resource {
 	case "", "core":
+		kp.noteResetAgreement("core", key.ResetAt, resp, reset) // before the guard moves the window
 		windowedBudgetUpdate(&key.Remaining, &key.ResetAt, remaining, reset)
 		if refused {
 			kp.markRefusedLocked(key, ResourceCore, reset, time.Now(), true)
 		}
 	case "graphql":
+		kp.noteResetAgreement("graphql", key.GraphQLResetAt, resp, reset)
 		windowedBudgetUpdate(&key.GraphQLRemaining, &key.GraphQLResetAt, remaining, reset)
 		if refused {
 			kp.markRefusedLocked(key, ResourceGraphQL, reset, time.Now(), true)
@@ -1129,13 +1140,13 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 		}
 	}
 
-	prefix := tokenPrefix(key.Token)
+	name := TokenHash(key.Token)
 	if validRemaining == 0 {
 		kp.logger.Error("LAST API key invalidated — all collection for this platform will fail",
-			"token_prefix", prefix)
+			"token_hash", name)
 	} else {
 		kp.logger.Warn("API key invalidated",
-			"token_prefix", prefix, "valid_keys_remaining", validRemaining)
+			"token_hash", name, "valid_keys_remaining", validRemaining)
 	}
 }
 
@@ -1164,7 +1175,7 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	key.authStrikes++
 	if key.authStrikes < maxAuthStrikes {
 		kp.logger.Warn("API key 401 — treating as transient, key not quarantined",
-			"token_prefix", tokenPrefix(key.Token),
+			"token_hash", TokenHash(key.Token),
 			"strike", key.authStrikes, "threshold", maxAuthStrikes)
 		return false
 	}
@@ -1185,12 +1196,12 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	usable := kp.usableLocked(time.Now())
 	if key.quarantineCount >= authQuarantineEscalate || usable == 0 {
 		kp.logger.Error("API key quarantined after repeated 401s — verify the token is valid",
-			"token_prefix", tokenPrefix(key.Token),
+			"token_hash", TokenHash(key.Token),
 			"quarantine_count", key.quarantineCount,
 			"cooldown", cooldown, "usable_keys", usable)
 	} else {
 		kp.logger.Warn("API key quarantined after consecutive 401s (will auto-recover)",
-			"token_prefix", tokenPrefix(key.Token),
+			"token_hash", TokenHash(key.Token),
 			"cooldown", cooldown, "usable_keys", usable)
 	}
 	return true
@@ -1251,9 +1262,49 @@ func (kp *KeyPool) usableLocked(now time.Time) int {
 	return count
 }
 
-// tokenPrefix returns a short, log-safe prefix of a token.
-func tokenPrefix(t string) string {
-	return t[:min(8, len(t))] + "..."
+// tokenHashHexLen is how many hex digits of the SHA-256 fingerprint name a
+// key: 32 bits, so a pool of a few hundred keys has no realistic collision.
+const tokenHashHexLen = 8
+
+// tokenTypePrefixes are the public type markers the forges put at the
+// front of a token (GitHub: personal, OAuth, user-to-server, server-to-
+// server, refresh, fine-grained; GitLab: personal, OAuth application
+// secret, deploy, runner, pipeline trigger, feed). They carry no secret.
+var tokenTypePrefixes = []string{
+	"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+	"glpat-", "gloas-", "gldt-", "glrt-", "glptt-", "glft-",
+}
+
+// TokenHash is the ONE way a key is named in a log, a snapshot or a
+// summary (SR-17): the token's public type marker, "#", and the first
+// tokenHashHexLen hex digits of its SHA-256. No character of the secret
+// reaches the output (CodeQL go/clear-text-logging, alert 201 on PR #220:
+// the old 8-character prefix carried 4 secret characters of a "ghp_"
+// token, and every fine-grained token read "github_p..."). An operator
+// finds a key's name with:
+//
+//	printf '%s' "$TOKEN" | shasum -a 256 | cut -c1-8
+//
+// CodeQL's go/weak-sensitive-data-hashing flags the SHA-256 here (it classes
+// config.APIKeys as a password): dismissed as a false positive by operator
+// decision, 2026-09-29. That rule guards low-entropy passwords a fast hash
+// lets a dictionary recover; a forge token is random (~178 bits for ghp_)
+// and only 32 bits of the digest are kept, so nothing is recoverable.
+//
+// "" for no token.
+func TokenHash(t string) string {
+	if t == "" {
+		return ""
+	}
+	kind := ""
+	for _, p := range tokenTypePrefixes {
+		if len(t) > len(p) && strings.HasPrefix(t, p) {
+			kind = p
+			break
+		}
+	}
+	sum := sha256.Sum256([]byte(t))
+	return kind + "#" + hex.EncodeToString(sum[:])[:tokenHashHexLen]
 }
 
 // IsEmpty returns true if the pool was created with zero keys.
@@ -1368,7 +1419,7 @@ func (kp *KeyPool) LendTokens(n int) ([]string, func()) {
 
 // KeySnapshot is one key's admission state for the operator summary.
 type KeySnapshot struct {
-	Prefix          string
+	Hash            string // TokenHash of the key
 	Core            int
 	GraphQL         int
 	Inflight        int
@@ -1383,6 +1434,10 @@ type KeySnapshot struct {
 	GraphQLRefusedUntil time.Time
 	SearchRefusedUntil  time.Time
 	Refusals            int
+	// The tracked windows (Phase 0 item 2): the reset each bucket's
+	// balance is held against.
+	CoreResetAt    time.Time
+	GraphQLResetAt time.Time
 }
 
 // Snapshot returns per-key admission state plus the pool-wide in-flight
@@ -1395,11 +1450,12 @@ func (kp *KeyPool) Snapshot() ([]KeySnapshot, int) {
 	out := make([]KeySnapshot, 0, len(kp.keys))
 	for _, k := range kp.keys {
 		out = append(out, KeySnapshot{
-			Prefix: tokenPrefix(k.Token), Core: k.Remaining, GraphQL: k.GraphQLRemaining,
+			Hash: TokenHash(k.Token), Core: k.Remaining, GraphQL: k.GraphQLRemaining,
 			Inflight: k.inflight, Lent: k.lent, SecondaryHits: k.secondaryHits,
 			SecondaryUntil: k.secondaryUntil, QuarantineUntil: k.quarantineUntil, Invalid: k.Invalid,
 			CoreRefusedUntil: k.refusedUntil, GraphQLRefusedUntil: k.graphQLRefusedUntil,
 			SearchRefusedUntil: k.searchRefusedUntil, Refusals: k.refusals,
+			CoreResetAt: k.ResetAt, GraphQLResetAt: k.GraphQLResetAt,
 		})
 	}
 	return out, kp.inflight

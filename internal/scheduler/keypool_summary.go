@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // keyPoolSummaryInterval paces the per-key pool summary. Five minutes:
@@ -104,7 +106,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 		if len(hot) == keyPoolSummaryHotKeys || k.Inflight == 0 {
 			break
 		}
-		hot = append(hot, fmt.Sprintf("%s:%d", k.Prefix, k.Inflight))
+		hot = append(hot, fmt.Sprintf("%s:%d", k.Hash, k.Inflight))
 	}
 	s.logger.Info("key pool summary",
 		"keys_alive", alive,
@@ -131,7 +133,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	if s.logger.Enabled(context.Background(), slog.LevelDebug) {
 		for _, k := range keys {
 			s.logger.Debug("key pool key",
-				"token_prefix", k.Prefix, "invalid", k.Invalid,
+				"token_hash", k.Hash, "invalid", k.Invalid,
 				"inflight", k.Inflight, "lent", k.Lent,
 				"core", k.Core, "graphql", k.GraphQL,
 				"secondary_hits", k.SecondaryHits,
@@ -140,9 +142,48 @@ func (s *Scheduler) logKeyPoolSummary() {
 				"graphql_refused_until", k.GraphQLRefusedUntil,
 				"search_refused_until", k.SearchRefusedUntil,
 				"refusals", k.Refusals,
-				"quarantine_until", k.QuarantineUntil)
+				"quarantine_until", k.QuarantineUntil,
+				"core_reset_at", k.CoreResetAt, // Phase 0: the tracked windows
+				"graphql_reset_at", k.GraphQLResetAt)
 		}
 	}
+	logResetAgreement(s.logger, s.ghKeys.DrainResetAgreement())
+}
+
+// logResetAgreement writes the Phase 0 aggregate (worklist items 27/81,
+// observation only): how responses' rate-limit resets compared with the
+// window the pool tracked, per bucket, and — by name — the endpoints whose
+// resets disagreed (earlier or later), the input item 28's tracking-model
+// decision needs. Nothing when no response carried a reset.
+func logResetAgreement(logger *slog.Logger, counts map[platform.ResetAgreementKey]platform.ResetAgreementCounts) {
+	if len(counts) == 0 {
+		return
+	}
+	totals := map[string]*platform.ResetAgreementCounts{}
+	var disagree []string
+	for k, c := range counts {
+		t := totals[k.Bucket]
+		if t == nil {
+			t = &platform.ResetAgreementCounts{}
+			totals[k.Bucket] = t
+		}
+		t.Earlier += c.Earlier
+		t.Equal += c.Equal
+		t.Later += c.Later
+		t.Untracked += c.Untracked
+		if c.Earlier > 0 || c.Later > 0 {
+			disagree = append(disagree, fmt.Sprintf("%s %s earlier=%d later=%d", k.Bucket, k.Endpoint, c.Earlier, c.Later))
+		}
+	}
+	sort.Strings(disagree)
+	args := []any{"interval", keyPoolSummaryInterval}
+	for _, b := range []string{"core", "graphql"} {
+		if t := totals[b]; t != nil {
+			args = append(args, slog.Group(b, "earlier", t.Earlier, "equal", t.Equal, "later", t.Later, "untracked", t.Untracked))
+		}
+	}
+	args = append(args, "disagreeing_endpoints", strings.Join(disagree, "; "))
+	logger.Info("key pool reset agreement", args...)
 }
 
 // logIdleGitHubTasks logs ONCE, at startup, what an empty GitHub key pool
@@ -152,5 +193,5 @@ func (s *Scheduler) logIdleGitHubTasks() {
 	if s.githubKeysAvailable() {
 		return
 	}
-	s.logger.Warn("GitHub key pool has no usable key — GitHub-only background tasks stay idle: contributor breadth and enrichment, the activity sweeps, search-resolve and the sender resolver's API tail, org scans, the repository-metadata backfill's GitHub candidates; distribution scans of GitHub repositories fail and sideline (snapshots kept)")
+	s.logger.Warn("GitHub key pool has no usable key — GitHub-only background tasks stay idle: contributor breadth and enrichment, the activity sweeps, search-resolve and the sender resolver's API tail, org scans, the repository-metadata backfill's GitHub candidates, legally blocked repositories' block notices; distribution scans of GitHub repositories fail and sideline (snapshots kept)")
 }

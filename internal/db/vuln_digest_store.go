@@ -82,10 +82,10 @@ func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since t
 		  AND v.resolved_at IS NULL
 		  AND ($3 OR COALESCE(v.dependency_kind, '') IS DISTINCT FROM 'transitive')
 		  AND ($4 OR COALESCE(v.dependency_scope, '') NOT IN ('dev','test','build','optional','peer'))
-		  -- v0.27.29: self-advisories (the repo's OWN releases,
-		  -- versionless) never digest — they're historical record,
-		  -- not new dependency exposure for the operator to act on.
-		  AND COALESCE(v.dependency_kind, '') <> 'self'
+		  -- Exposure only (exposurePredicateSQL): the repo's own release
+		  -- advisories (v0.27.29) and unpinned dependencies' unknown-version
+		  -- advisories (v0.29.70) are not new exposure to act on.
+		  `+exposurePredicateSQLv+`
 		  AND UPPER(COALESCE(v.severity, 'UNKNOWN')) = ANY($2)
 		ORDER BY CASE UPPER(COALESCE(v.severity, 'UNKNOWN'))
 		           WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3

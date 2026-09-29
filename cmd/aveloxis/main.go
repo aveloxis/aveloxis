@@ -1103,8 +1103,7 @@ func runAddKey(cfgPath, token, plat, name string) error {
 		return fmt.Errorf("saving key: %w", err)
 	}
 
-	masked := token[:4] + "..." + token[len(token)-4:]
-	logger.Info("key stored", "platform", plat, "token", masked)
+	logger.Info("key stored", "platform", plat, "token_hash", platform.TokenHash(token))
 	return nil
 }
 

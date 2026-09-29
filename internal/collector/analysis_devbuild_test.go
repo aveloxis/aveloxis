@@ -11,10 +11,12 @@ package collector
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestRequirementsFileScope(t *testing.T) {
@@ -416,29 +418,51 @@ func TestRequirementsExtrasStripped(t *testing.T) {
 	}
 }
 
-// A differently cased Requirements.txt reaches no arm of the inventory:
-// its map and its parser switch match the basename byte-exact, and
-// requirementsFileScope (the libyear walk's variant arm) excludes the name
-// in every casing. docs/architecture/analysis.md states this. NOT pinned
-// here: the libyear walk's own `switch base`, which needs a store to drive
-// — a case-folding fix applied there alone passes this test, so closing the
-// worklist's case gap means updating the page by hand too.
-func TestCasedRequirementsFileIsCollectedByNothing(t *testing.T) {
-	for _, name := range []string{"Requirements.txt", "REQUIREMENTS.TXT"} {
-		if lang, ok := manifestFiles[name]; ok {
-			t.Errorf("manifestFiles[%q] = %q — the inventory walk now claims it; update the docs and this test", name, lang)
+// TestCasedRequirementsFileIsCollected (worklist §4, v0.29.68; through
+// v0.29.67 it pinned the opposite): `Requirements.txt` and
+// `REQUIREMENTS.TXT` are the requirements file at every dispatch — the
+// inventory lookup, parseDependencyFile and the libyear walk all compare
+// through canonicalManifestName — and the variant arm still leaves the
+// plain name to them. Every OTHER manifest name stays byte-exact
+// (`gemfile` is not `Gemfile`): the requirements family is the decided class.
+// The libyear walk (scanLibyear) needs a store to drive, so its dispatch is
+// pinned at the source below (batch 7b review round 1: reverting only that
+// operand left the package green).
+func TestCasedRequirementsFileIsCollected(t *testing.T) {
+	for _, name := range []string{"Requirements.txt", "REQUIREMENTS.TXT", "requirements.txt"} {
+		if lang, ok := manifestFiles[canonicalManifestName(name)]; !ok || lang != "Python" {
+			t.Errorf("manifestFiles[canonicalManifestName(%q)] = (%q, %v); want Python", name, lang, ok)
 		}
 		path := filepath.Join(t.TempDir(), name)
 		if err := os.WriteFile(path, []byte("flask==2.0.0\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		deps, err := parseDependencyFile(path, "Python")
-		if err != nil || len(deps) != 0 {
-			t.Errorf("parseDependencyFile(%q) = (%v, %v), want no dependencies — its switch is byte-exact", name, deps, err)
+		if err != nil || len(deps) != 1 || deps[0] != "flask" {
+			t.Errorf("parseDependencyFile(%q) = (%v, %v), want [flask]", name, deps, err)
 		}
 		if scope, ok := requirementsFileScope(name, "/r/"+name); ok {
-			t.Errorf("requirementsFileScope(%q) = (%q, true) — the variant arm now claims it", name, scope)
+			t.Errorf("requirementsFileScope(%q) = (%q, true) — the plain file belongs to the walks, not the variant arm", name, scope)
 		}
+	}
+	if canonicalManifestName("gemfile") != "gemfile" || canonicalManifestName("Cargo.toml") != "Cargo.toml" {
+		t.Error("canonicalManifestName must leave every other name byte-exact: the mixed-case keys are the real names")
+	}
+	// The three dispatches all go through canonicalManifestName; the
+	// libyear walk's is the one no runtime test above reaches.
+	src := srctest.StripGoComments(srctest.Read(t, "internal/collector/analysis.go"))
+	if n := strings.Count(src, "canonicalManifestName(filepath.Base(path))"); n != 3 {
+		t.Errorf("analysis.go dispatches on canonicalManifestName(filepath.Base(path)) %d times; want 3 (inventory, parseDependencyFile, scanLibyear)", n)
+	}
+	// The binding AND the switch on it, as one contiguous needle (review
+	// round 2: `switch filepath.Base(path) {` beside an unused-elsewhere
+	// canonical `base` kept the count at three and the binding present).
+	walk := srctest.FuncBody(t, src, "func (ac *AnalysisCollector) scanLibyear(")
+	// Whitespace only between the two (the body is comment-stripped, so a
+	// comment or blank line is not a statement; review round 3).
+	dispatch := regexp.MustCompile(`base := canonicalManifestName\(filepath\.Base\(path\)\)\s*switch base \{`)
+	if !dispatch.MatchString(walk) || strings.Contains(walk, "switch filepath.Base(") {
+		t.Error("scanLibyear must dispatch with `base := canonicalManifestName(filepath.Base(path))` followed (whitespace only) by `switch base {` — a byte-exact switch operand skips Requirements.txt in the libyear walk alone")
 	}
 }
 

@@ -69,11 +69,8 @@ func runScancodeWorker(cfgPath string) error {
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
 
+	// Written after the schema gate below (worklist item 49).
 	pidPath := pidfile.Path(scancodeWorkerComponent)
-	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
-		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
-	}
-	defer pidfile.Remove(pidPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -90,8 +87,20 @@ func runScancodeWorker(cfgPath string) error {
 	// server (or an operator-run `aveloxis migrate`) to own the
 	// schema; two processes racing startup DDL was exactly the
 	// conflict class v0.21.5 removed. CheckSchemaVersion surfaces
-	// drift loudly instead.
+	// drift loudly; RequireSchemaCurrent refuses a schema behind the
+	// binary (worklist item 49).
 	store.CheckSchemaVersion(ctx, logger)
+	if err := store.RequireSchemaCurrent(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil // a stop during startup, not a refusal
+		}
+		return fmt.Errorf("refusing to start the scancode worker: %w", err)
+	}
+	if err := pidfile.Write(pidPath, os.Getpid()); err != nil {
+		logger.Warn("failed to write PID file — 'aveloxis stop' will fall back to pgrep", "path", pidPath, "error", err)
+	}
+	defer pidfile.RemoveIfOwn(pidPath, os.Getpid())
+	signalReady(logger)
 
 	logger.Info("dedicated scancode worker starting",
 		"config", cfgPath,

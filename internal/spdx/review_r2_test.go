@@ -4,12 +4,14 @@
 package spdx
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/aveloxis/aveloxis/internal/costtest"
 )
 
 // v0.29.67 review round 2.
@@ -180,24 +182,13 @@ func TestValidCostIsLinear(t *testing.T) {
 		t.Skip("timing comparison (not under -short or the race detector)")
 	}
 	build := func(n int) string { return strings.Repeat("GPL-2.0-only OR ", n) + "MIT" }
-	fastest := func(s string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 5 {
-			start := time.Now()
-			if !Valid(s) {
-				t.Fatalf("Valid rejects a valid OR chain of %d bytes", len(s))
-			}
-			if d := time.Since(start); d < best {
-				best = d
-			}
+	costtest.Linear(t, "Valid", func(n int) func() {
+		s := build(n)
+		if !Valid(s) { // the timed input itself, checked outside the timing
+			t.Fatalf("Valid rejects a valid OR chain of %d bytes", len(s))
 		}
-		return best
-	}
-	small, large := build(2000), build(8000)
-	ts, tl := fastest(small), fastest(large)
-	if tl > 8*ts {
-		t.Errorf("Valid is superlinear: %v for %d bytes, %v for %d bytes", ts, len(small), tl, len(large))
-	}
+		return func() { Valid(s) }
+	}, 2000, 0)
 }
 
 // TestValidStillAsksTheLibraryPerLeaf — review round 22 moved go-spdx from
@@ -299,22 +290,10 @@ func TestNestedExpressionCostIsLinear(t *testing.T) {
 		"DisplayKey":      func(s string) { DisplayKey(s) },
 	} {
 		for _, ops := range [][]string{{"OR"}, {"OR", "AND"}} {
-			fastest := func(s string) time.Duration {
-				best := time.Duration(1<<63 - 1)
-				for range 5 {
-					start := time.Now()
-					f(s)
-					if d := time.Since(start); d < best {
-						best = d
-					}
-				}
-				return best
-			}
-			small, large := nest(8000, ops...), nest(32000, ops...)
-			ts, tl := fastest(small), fastest(large)
-			if tl > 8*ts {
-				t.Errorf("%s, nested %v: superlinear: %v for %d bytes, %v for %d bytes", name, ops, ts, len(small), tl, len(large))
-			}
+			costtest.Linear(t, fmt.Sprintf("%s, nested %v", name, ops), func(n int) func() {
+				s := nest(n, ops...)
+				return func() { f(s) }
+			}, 8000, 0)
 		}
 	}
 }
@@ -372,22 +351,10 @@ func TestOperandTextsCostIsLinear(t *testing.T) {
 		t.Skip("timing comparison (not under -short or the race detector)")
 	}
 	build := func(n int) string { return "MIT " + strings.Repeat("or ( ", n) }
-	fastest := func(s string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 5 {
-			start := time.Now()
-			OperandTexts(s)
-			if d := time.Since(start); d < best {
-				best = d
-			}
-		}
-		return best
-	}
-	small, large := build(9000), build(36000)
-	ts, tl := fastest(small), fastest(large)
-	if tl > 8*ts {
-		t.Errorf("OperandTexts is superlinear: %v for %d bytes, %v for %d bytes", ts, len(small), tl, len(large))
-	}
+	costtest.Linear(t, "OperandTexts", func(n int) func() {
+		s := build(n)
+		return func() { OperandTexts(s) }
+	}, 9000, 0)
 }
 
 // refSortedKey is the pre-round-25 DisplayKey sort, kept as the reference:

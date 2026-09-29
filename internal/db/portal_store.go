@@ -18,9 +18,12 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // PortalGroupRepo is one repo inside a user group, for the group page.
@@ -51,8 +54,13 @@ func (s *PostgresStore) GetPortalGroupReposForUser(ctx context.Context, userID i
 		var owner int
 		err := s.pool.QueryRow(ctx,
 			`SELECT user_id FROM aveloxis_ops.user_groups WHERE group_id = $1`, groupID).Scan(&owner)
+		// A failed lookup is not "not yours" (SR-5; worklist follow-up 12):
+		// only "no such group" or another owner is.
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, fmt.Errorf("look up group %d owner: %w", groupID, err)
+		}
 		if err != nil || owner != userID {
-			return nil, 0, fmt.Errorf("group %d is not yours", groupID)
+			return nil, 0, fmt.Errorf("group %d: %w", groupID, ErrGroupNotOwned)
 		}
 	}
 	if page < 1 {
@@ -146,8 +154,13 @@ func (s *PostgresStore) GetPortalGroupOrgsForUser(ctx context.Context, userID in
 		var owner int
 		err := s.pool.QueryRow(ctx,
 			`SELECT user_id FROM aveloxis_ops.user_groups WHERE group_id = $1`, groupID).Scan(&owner)
+		// A failed lookup is not "not yours" (SR-5; worklist follow-up 12):
+		// only "no such group" or another owner is.
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("look up group %d owner: %w", groupID, err)
+		}
 		if err != nil || owner != userID {
-			return nil, fmt.Errorf("group %d is not yours", groupID)
+			return nil, fmt.Errorf("group %d: %w", groupID, ErrGroupNotOwned)
 		}
 	}
 	return s.loadGroupOrgs(ctx, groupID)

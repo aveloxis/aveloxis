@@ -86,6 +86,18 @@ The server starts on the address specified by `web.addr` (default `:8082`). Open
 4. Aveloxis exchanges the code for an access token and fetches your profile (login, email, avatar).
 5. A session cookie is set in your browser. You are now logged in and redirected to the dashboard.
 
+Your Aveloxis account is tied to the provider's numeric user ID, not to your user name (v0.29.69). Renaming yourself on GitHub or GitLab keeps your account. A user name is not proof of identity, because anyone can register a name another forge's user holds, or one a renamed account gave up. So a sign-in whose name already belongs to a different GitHub or GitLab account is refused with "Failed to create user", and the server log names the collision. Signing in with GitHub and with GitLab under the same name therefore does not link the two accounts. When a user renames on the forge, the account's name follows unless another account holds the new name.
+
+An administrator resolves a refusal by freeing the name the other account holds. The refused person can then sign in. This works when the holding account carries its forge user ID (`gh_user_id` or `gl_user_id` set), because its owner is then found by that ID. An account without one, from before sign-in recorded IDs or loaded from Augur, would be locked out once its name moves. Record its owner's ID first, for example `UPDATE aveloxis_ops.users SET gh_user_id = <the owner's GitHub user ID> WHERE user_id = <N>`. The ID is the `id` field of `https://api.github.com/users/<name>`. For a GitLab owner, record the instance with the ID, because a GitLab ID matches only on its own instance: `SET gl_user_id = <ID>, gl_oauth_host = '<web.gitlab_base_url, lowercased, without a trailing slash>'`.
+
+```sql
+-- the account that holds the name (its owner keeps it and can sign in again,
+-- which moves the name back if nobody else has taken it)
+UPDATE aveloxis_ops.users SET login_name = login_name || '-renamed' WHERE login_name = 'the-name';
+```
+
+Accounts created before v0.29.69 may include a second account per person, left by a rename, and accounts linked across GitHub and GitLab under one name. The deploy checklist's two audits count both.
+
 ## Creating Groups
 
 Groups are named collections of repositories. After logging in:
@@ -102,6 +114,26 @@ Groups are named collections of repositories. After logging in:
 4. Click **Add**. The repo is added to the group and automatically queued for collection.
 
 Platform is auto-detected from the URL, the same as `aveloxis add-repo`.
+
+A URL is stored without a trailing `/` or `.git`, and every add path
+resolves a URL to that spelling (v0.29.68): pasting
+`https://github.com/chaoss/augur.git` or `https://github.com/chaoss/augur/`
+for a repository that is already collected links that repository to the
+group, and for a non-administrator links it instead of pending as a new
+repository. Re-adding a collected repository by any path (a paste, the
+portal API, `aveloxis add-repo`) never changes its collected description,
+language or archived flag: those are written by collection only.
+
+An organization's URL is stored in one spelling — `https://`, no trailing
+`/`, lowercase (v0.29.68): GitHub and GitLab paths are case-insensitive, and
+re-adding `github.com/CHAOSS` beside `github.com/chaoss` used to register the
+organization twice in the same group. Registrations made before v0.29.68
+keep their case; the "already registered" check finds them either way.
+
+When a paste from a non-administrator needs approval, the group page says
+how many repositories are waiting; an organization waiting for approval, one
+that could not be added, or one added to a group an administrator rejected,
+is announced the same way.
 
 ## Adding an Entire GitHub Org or GitLab Group
 

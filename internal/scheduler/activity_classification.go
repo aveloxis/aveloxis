@@ -73,6 +73,9 @@ const (
 //     of partial failures nobody ever retired, and an un-retired cohort
 //     pins the head (the v0.20.17 lesson).
 func (s *Scheduler) runActivityClassification(ctx context.Context) {
+	if !s.githubKeysAvailable() {
+		return // GitLab-only keys: nothing to ask GitHub with
+	}
 	fetcher, ok := s.ghClient.(contributorActivityFetcher)
 	if !ok {
 		return // no GitHub GraphQL client (GitLab-only deployment or test fake)

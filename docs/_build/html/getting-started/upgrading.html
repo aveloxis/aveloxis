@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.69 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -558,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -603,7 +609,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +660,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +669,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +822,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +925,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1093,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1197,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1655,6 +1673,67 @@
 <p>How to move an existing deployment from any earlier release to the
 current one — and, just as important, which repairs <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>
 does <strong>not</strong> do for you.</p>
+<section id="the-four-steps">
+<h2>The four steps<a class="headerlink" href="#the-four-steps" title="Link to this heading"></a></h2>
+<p>Every upgrade is these four steps, in this order, on the primary host:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">    </span><span class="c1"># the git checkout of this repository</span>
+<span class="nv">AVELOXIS_DB</span><span class="o">=</span>postgres://aveloxis@localhost:5432/aveloxis<span class="w">   </span><span class="c1"># the database in aveloxis.json, as a psql connection string</span>
+<span class="nv">FROM</span><span class="o">=</span><span class="k">$(</span>psql<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_DB</span><span class="s2">&quot;</span><span class="w"> </span>-Atc<span class="w"> </span><span class="s2">&quot;SELECT tool_version FROM aveloxis_ops.deploy_ack WHERE tool_version ~ &#39;^[0-9]+(\.[0-9]+)*</span>$<span class="s2">&#39; ORDER BY string_to_array(tool_version, &#39;.&#39;)::int[] DESC LIMIT 1&quot;</span><span class="k">)</span><span class="w">   </span><span class="c1"># the last ACKNOWLEDGED deploy (highest version, not newest row)</span>
+<span class="nv">INCL</span><span class="o">=</span>
+<span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FROM</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nv">FROM</span><span class="o">=</span><span class="k">$(</span>psql<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_DB</span><span class="s2">&quot;</span><span class="w"> </span>-Atc<span class="w"> </span><span class="s2">&quot;SELECT schema_version FROM aveloxis_ops.schema_meta&quot;</span><span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="nv">INCL</span><span class="o">=</span>--inclusive<span class="p">;</span><span class="w"> </span><span class="o">}</span><span class="w">   </span><span class="c1"># never acknowledged: the schema stamp, its own block included — read it before step 3 moves it</span>
+<span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>version<span class="w">   </span><span class="c1"># 1. the new binary (running processes keep the old one until restarted)</span>
+aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FROM</span><span class="s2">&quot;</span><span class="w"> </span><span class="nv">$INCL</span><span class="w">   </span><span class="c1">#    every release&#39;s steps after FROM (from it, with --inclusive), oldest first — read it now: it names the migrate for step 3</span>
+aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">                 </span><span class="c1"># 2. nothing runs against the schema while it changes</span>
+aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">     </span><span class="c1"># 3. the schema — a plain `aveloxis migrate` instead when the checklist asks for one (a release that changed a view definition)</span>
+<span class="c1">#                                 #    …then the checklist&#39;s checks, heals and audits, every block&#39;s, oldest first</span>
+aveloxis<span class="w"> </span>ack-deploy<span class="w">               </span><span class="c1">#    …then record that they ran</span>
+aveloxis<span class="w"> </span>start<span class="w"> </span>all<span class="w">                </span><span class="c1"># 4. serve, web and api; then any step the checklist says needs the running release</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">FROM</span></code> is the last <strong>acknowledged</strong> deploy, the same starting point
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> uses: <code class="docutils literal notranslate"><span class="pre">--since</span></code> is exclusive, and the acknowledged
+release’s steps already ran. Versions compare as numbers (0.29.9 is before
+0.29.10), so the query orders by the version, not by time or text. When no
+deploy was ever acknowledged (the query prints nothing, or fails because
+the <code class="docutils literal notranslate"><span class="pre">deploy_ack</span></code> table predates v0.29.0), <code class="docutils literal notranslate"><span class="pre">FROM</span></code> falls back to the schema
+stamp with <code class="docutils literal notranslate"><span class="pre">--inclusive</span></code>: the stamp release’s own steps were never
+acknowledged either, so its block prints and runs too — the range the start
+gate prints in that case.</p>
+<p>When more than one release in the range has deploy steps, <code class="docutils literal notranslate"><span class="pre">deploy-checklist</span> <span class="pre">--since</span></code> prints a header before the blocks: stop, migrate and start <strong>once</strong>,
+not once per block, with the strongest migrate any block asks for (a plain
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> if any block needs it and no later release in the range
+lifts it — 0.29.61 lifts 0.29.60’s, for example, because it moved the
+supply-chain views out of the 8Knot batch — otherwise <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code>) —
+that is the migrate step 3 runs, and the one the start gate’s refusal names.
+The header’s sequence ends with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code>, then <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code>, as the steps above do. Consecutive releases with identical steps print as
+one block labelled with the range they cover. Each block’s own stop, migrate
+and start lines are covered by the four steps; its checks, heals and audits
+are not, and run in step 3, oldest first; a step that needs the running
+release (such as <code class="docutils literal notranslate"><span class="pre">adopt-forge-id</span></code> or the approvals page) runs after step 4.
+A <code class="docutils literal notranslate"><span class="pre">--since</span></code> value that is not a version (dotted numbers such as <code class="docutils literal notranslate"><span class="pre">0.29.64</span></code>)
+is an error and exits non-zero, rather than printing an empty list.</p>
+<p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code> belongs to step 3. When the new binary’s release has
+deploy steps, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code> (and <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">all</span></code>) asks at a terminal
+whether they were completed and, without a terminal — a script, systemd,
+an SSH command — <strong>refuses to start</strong> until they are acknowledged. Run it
+after the heals, not before: it records that the steps ran. If the schema
+stamp comes back empty or with an error too, the section below says how to
+find the version you are coming from; with an empty <code class="docutils literal notranslate"><span class="pre">FROM</span></code>,
+<code class="docutils literal notranslate"><span class="pre">deploy-checklist</span></code> prints only the new binary’s own steps.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--skip-views</span></code> skips only the 8Knot materialized-view batch (hours at
+fleet scale); everything else — the schema, the ledgered backfills, the
+two supply-chain views — runs either way (v0.29.61). <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span></code> is not one of the four steps: a release whose heals fed a
+materialized view lists it in its own checklist (the “standard ladder”
+below shows where it sits when a release asks for it). Since v0.29.68 <code class="docutils literal notranslate"><span class="pre">web</span></code>,
+<code class="docutils literal notranslate"><span class="pre">api</span></code> and the scancode worker <strong>refuse to start</strong> while the schema stamp
+is behind their binary, naming the migrate, instead of serving queries
+against columns the schema does not have yet; and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">serve</span></code>
+prints the deploy steps of every release since the last acknowledged one,
+oldest first, under the same once-only header and with the same collapsing
+of identical blocks as <code class="docutils literal notranslate"><span class="pre">deploy-checklist</span> <span class="pre">--since</span></code>, not only the current
+version’s. Neither web nor api ever migrates. The
+sections below are the detail behind step 3.</p>
+</section>
 <section id="the-two-halves-of-an-upgrade">
 <h2>The two halves of an upgrade<a class="headerlink" href="#the-two-halves-of-an-upgrade" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
@@ -1699,7 +1778,8 @@ aveloxis<span class="w"> </span>deploy-checklist<span class="w">       </span><s
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">               </span><span class="c1"># serve, web, api (also cleans stale pidfiles)</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># schema + ledgered backfills; skips the materialized views</span>
 <span class="c1"># ... operator-run heals from the table below, in order ...</span>
-aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># refresh the materialized views&#39; data (add --aggregates for the dm_ tables; slow)</span>
+aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># refresh the materialized views&#39; data (--set 8knot or supply-chain for one set; add --aggregates for the dm_ tables; slow)</span>
+aveloxis<span class="w"> </span>ack-deploy<span class="w">             </span><span class="c1"># record that the steps ran; a non-interactive `start serve` refuses without it</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </pre></div>
 </div>
@@ -1712,10 +1792,13 @@ repositories last): its deploy checklist, printed by <code class="docutils liter
 plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> in place of the <code class="docutils literal notranslate"><span class="pre">--skip-views</span></code> step above, then
 checks that the new definition is in place. That check matters because the
 migrate only logs a WARN (<code class="docutils literal notranslate"><span class="pre">materialized</span> <span class="pre">view</span> <span class="pre">creation</span> <span class="pre">had</span> <span class="pre">errors</span></code>) when the
-views fail to re-create, and still exits 0 with the old definitions in place.</p>
+views fail to re-create, and still exits 0 with the old definitions in place.
+Since v0.29.68 the build enforces the rule: <code class="docutils literal notranslate"><span class="pre">matviews.sql</span></code> is pinned by
+digest, and a change to it fails the test suite until the release shipping
+it is named and that release’s checklist carries the plain migrate.</p>
 <p>Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> explicitly rather than letting <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>
-migrate at startup: <code class="docutils literal notranslate"><span class="pre">web</span></code> and <code class="docutils literal notranslate"><span class="pre">api</span></code> never migrate and log an ERROR on a
-schema-version mismatch, and (since v0.27.131) <code class="docutils literal notranslate"><span class="pre">serve</span></code> trusts the
+migrate at startup: <code class="docutils literal notranslate"><span class="pre">web</span></code> and <code class="docutils literal notranslate"><span class="pre">api</span></code> never migrate and (since v0.29.68)
+refuse to start while the schema stamp is behind their binary, and (since v0.27.131) <code class="docutils literal notranslate"><span class="pre">serve</span></code> trusts the
 schema-version stamp and skips the migration walk entirely once it
 matches — so after any <em>hand</em> edit to the schema, run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>
 once. Verify the stamp matches the binary afterwards:</p>
@@ -2102,7 +2185,7 @@ without anyone noticing.</p>
 </tr>
 <tr class="row-odd"><td><p>automatic since v0.29.7 (<code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code>, 28)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> re-probes every “gone” repository once per cadence and re-enqueues the ones that answer 2xx; <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code> is the on-demand form</p></td>
-<td><p>a repository that returned 404/410 was <strong>dequeued</strong>, so no collection cycle ever looks at it again, and organizations do flip repositories private and back. On a release before v0.29.7 run the command quarterly by hand. The probe is an unauthenticated HEAD per candidate — it spends no API budget</p></td>
+<td><p>a repository that returned 404/410/451 was <strong>dequeued</strong>, so no collection cycle ever looks at it again, and organizations do flip repositories private and back. On a release before v0.29.7 run the command quarterly by hand. The probe is an unauthenticated HEAD per candidate — it spends no API budget</p></td>
 </tr>
 <tr class="row-even"><td><p>quarterly</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></p></td>

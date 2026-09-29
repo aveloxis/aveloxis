@@ -24,5 +24,5 @@ import "regexp"
 // second `<`, `diff <(a) <(b)` has parens, `2<&1` an ampersand — none
 // match. Both arms are pinned by TestAnglePlaceholderRegexShape.
 // Shared (v0.29.57, Copilot on PR #210) so the docs' shell fences and the
-// commands `aveloxis deploy-checklist` prints are judged by one rule.
+// commands the deploy checklists print are judged by one rule.
 var AnglePlaceholder = regexp.MustCompile(`<[A-Za-z][A-Za-z0-9_-]*(?: [A-Za-z0-9_-]+)*>`)

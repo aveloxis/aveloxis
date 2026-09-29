@@ -4,8 +4,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -24,8 +28,9 @@ import (
 //
 //   - scc / scorecard — re-run their install function. scc uses
 //     `go install ...@latest` so the install IS the upgrade. scorecard
-//     re-downloads the latest tarball and overwrites the existing
-//     binary in $GOPATH/bin.
+//     re-downloads the latest tarball into collector.GoBinDir (where
+//     `go install` would put it), and warns when an older copy
+//     elsewhere is first on PATH.
 //
 //   - scancode — `pipx upgrade scancode-toolkit-mini` rather than
 //     uninstall + reinstall, to preserve any operator customizations
@@ -55,14 +60,29 @@ place. Without this, scancode emits a UserWarning on every scan that
 dominates stderr capture for diagnostics.
 
 Idempotent: re-running is safe. Tools not yet installed are reported but
-not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
+not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.
+
+Non-interactive: each tool runs in its own process group with pip and git
+prompts disabled (a Homebrew formula install never prompts), so credentials
+must come from configuration or a keyring; a pip or git credential prompt
+fails at once. Any other prompt (an ssh host-key or passphrase question) is
+not answered and ends at the bound. Each tool is bounded (the same bound as the monthly check);
+Ctrl-C ends the walk.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Ctrl-C or a SIGTERM ends the walk and kills the subprocess in
+			// flight; each tool shares the monthly check's bound (batch 4a
+			// review round 13 — see runInstallTools).
+			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
 			tools := collector.ExternalTools()
 			upgraded := 0
 			skipped := 0
 			failed := 0
 
 			for _, tool := range tools {
+				if ctx.Err() != nil {
+					return fmt.Errorf("upgrade-tools interrupted after %d of %d tools (upgrades are idempotent; rerun to continue): %w", upgraded+skipped+failed, len(tools), ctx.Err())
+				}
 				path, err := exec.LookPath(tool.CheckBinary)
 				if err != nil {
 					fmt.Printf("- %s not installed; run `aveloxis install-tools` first\n", tool.Name)
@@ -71,8 +91,14 @@ not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
 				}
 				fmt.Printf("Upgrading %s (currently at %s)...\n", tool.Name, path)
 
-				if upgradeErr := upgradeOne(tool); upgradeErr != nil {
-					fmt.Printf("x %s upgrade failed: %v\n", tool.Name, upgradeErr)
+				tctx, tcancel := context.WithTimeout(ctx, collector.ToolInstallBound())
+				upgradeErr := upgradeOne(tctx, tool)
+				tcancel()
+				if upgradeErr != nil {
+					if ctx.Err() != nil {
+						return fmt.Errorf("upgrade-tools interrupted while upgrading %s (%d of %d done; upgrades are idempotent, rerun to continue): %w", tool.Name, upgraded+skipped+failed, len(tools), ctx.Err())
+					}
+					fmt.Printf("x %s upgrade failed: %s\n", tool.Name, toolFailureText(upgradeErr))
 					failed++
 					continue
 				}
@@ -98,14 +124,14 @@ not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.`,
 // upgradeOne dispatches per-tool upgrade logic. scancode uses pipx upgrade
 // + libmagic re-inject; everything else just re-runs the install pipeline
 // (which uses @latest / fetches the newest tarball).
-func upgradeOne(tool collector.ExternalTool) error {
+func upgradeOne(ctx context.Context, tool collector.ExternalTool) error {
 	if tool.Name == "scancode" {
-		return upgradeScancode()
+		return upgradeScancode(ctx)
 	}
 	// scc, scorecard, and any future tools: re-run the install. The
 	// install functions / commands already use @latest or fetch the
 	// newest release, so a fresh install IS the upgrade.
-	return collector.RunToolInstall(tool)
+	return collector.RunToolInstall(ctx, tool)
 }
 
 // upgradeScancode delegates to the unified install/upgrade/inject
@@ -122,6 +148,6 @@ func upgradeOne(tool collector.ExternalTool) error {
 // `pip install --user`. The three paths (install-tools, monthly
 // updater, this CLI) now share ONE implementation so they can never
 // diverge again.
-func upgradeScancode() error {
-	return collector.EnsureScancodeCurrent(true)
+func upgradeScancode(ctx context.Context) error {
+	return collector.EnsureScancodeCurrent(ctx, true)
 }

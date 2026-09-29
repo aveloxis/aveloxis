@@ -19,7 +19,7 @@ import (
 // platform.IsDefinitiveAnswer and end the iteration before the stamp.
 func TestSenderResolveStampsOnlyDefinitiveFailures(t *testing.T) {
 	src := srctest.Read(t, "internal/scheduler/mailinglist_wiring.go")
-	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Scheduler) runMailingListSenderResolve("))
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Scheduler) senderResolvePass("))
 	once := func(hay, needle string) int {
 		t.Helper()
 		if n := strings.Count(hay, needle); n != 1 {
@@ -44,7 +44,7 @@ func TestSenderResolveStampsOnlyDefinitiveFailures(t *testing.T) {
 // iteration without a stamp (the next tick retries).
 func TestSenderResolveDoesNotStampOnStoreFailure(t *testing.T) {
 	src := srctest.Read(t, "internal/scheduler/mailinglist_wiring.go")
-	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Scheduler) runMailingListSenderResolve("))
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Scheduler) senderResolvePass("))
 	for _, arm := range []string{"if cerr != nil {", "if lerr != nil {"} {
 		i := strings.Index(body, arm)
 		if i < 0 {
@@ -58,5 +58,35 @@ func TestSenderResolveDoesNotStampOnStoreFailure(t *testing.T) {
 		if strings.Contains(rest[:end], "MarkSenderResolveAttempt(") {
 			t.Errorf("%s stamps the sender-resolve cooldown on a STORE failure; nothing was saved, so nothing may be stamped", arm)
 		}
+	}
+}
+
+// TestSenderResolveNoIdentityIsNotLinked pins review round 7 of items 16–19:
+// LinkMailingListSender's "no stable identity" skip (a login with no
+// contributor row and no forge id) is a typed error, and the wiring records
+// the 30-day cooldown for it — never the terminal resolved stamp, never a
+// linked count. Through v0.29.67 the skip came back as a nil error and the
+// sender was stamped resolved with the login and no alias.
+func TestSenderResolveNoIdentityIsNotLinked(t *testing.T) {
+	src := srctest.Read(t, "internal/scheduler/mailinglist_wiring.go")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Scheduler) senderResolvePass("))
+	arm := "if errors.Is(lerr, db.ErrNoStableIdentity) {"
+	i := strings.Index(body, arm)
+	if i < 0 {
+		t.Fatalf("%q not found: the skip must be classified before the store-failure arm", arm)
+	}
+	if j := strings.Index(body, "if lerr != nil {"); j >= 0 && j < i {
+		t.Error("the no-identity arm must come before the store-failure arm, or the skip is counted as a store failure")
+	}
+	rest := body[i:]
+	end := strings.Index(rest, "continue")
+	if end < 0 {
+		t.Fatal("the no-identity arm does not end its iteration")
+	}
+	if !strings.Contains(rest[:end], "MarkSenderResolveAttempt(ctx, c.SenderEmail, false, \"\", \"\")") {
+		t.Error("the no-identity arm must record the 30-day cooldown (resolved=false, no login): the login may gain a row later")
+	}
+	if strings.Contains(rest[:end], "linked++") || strings.Contains(rest[:end], ", true,") {
+		t.Error("the no-identity arm must not count the sender linked or stamp it resolved: nothing was written")
 	}
 }

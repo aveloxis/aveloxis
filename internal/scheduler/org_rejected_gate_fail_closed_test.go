@@ -53,7 +53,11 @@ func TestRefreshUserOrgsGroupLookupIsNotSilent(t *testing.T) {
 		t.Error("the GetGroupIDForOrgRequest error arm must return on context.Canceled and log any other error at ERROR before continuing")
 	}
 	// The function's opening lookup (round 3): the same shape.
-	opening := body[strings.Index(body, "GetOrgRequests("):i]
+	o := strings.Index(body, "GetOrgRequests(")
+	if o < 0 || o > i {
+		t.Fatal("refreshUserOrgs must list the org registrations before looking a group up")
+	}
+	opening := body[o:i]
 	if !strings.Contains(opening, "context.Canceled") || !strings.Contains(opening, ".logger.Error(") {
 		t.Error("the GetOrgRequests error arm must return on context.Canceled and log any other error at ERROR — it was the one silent arm left in refreshUserOrgs")
 	}

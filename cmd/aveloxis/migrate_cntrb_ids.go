@@ -13,7 +13,7 @@
 //	aveloxis migrate-cntrb-ids --limit 10000     # incremental
 //	aveloxis refresh-views                       # rebuild matviews
 //
-// See CLAUDE.md v0.22.2 for the full rationale.
+// See summary/changelog/v0.22.md (the v0.22.2 entry) for the full rationale.
 
 package main
 

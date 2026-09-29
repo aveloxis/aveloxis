@@ -80,9 +80,18 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 
 	const slug = "_avrunjob_e2e"
 	cleanup := func() {
-		raw.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN
-			(SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`')`)
-		raw.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = '`+slug+`'`)
+		// A failed delete is said, not swallowed (worklist §4: the slug's
+		// repositories leaked when a child row blocked the delete).
+		for _, q := range []string{
+			`DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '` + slug + `')`,
+			`DELETE FROM aveloxis_data.repo_info WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '` + slug + `')`,
+			`DELETE FROM aveloxis_data.commits WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = '` + slug + `')`,
+			`DELETE FROM aveloxis_data.repos WHERE repo_owner = '` + slug + `'`,
+		} {
+			if _, err := raw.Exec(ctx, q); err != nil {
+				t.Logf("cleanup: %v", err)
+			}
+		}
 	}
 	cleanup()
 	t.Cleanup(cleanup)

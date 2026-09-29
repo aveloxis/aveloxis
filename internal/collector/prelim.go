@@ -335,13 +335,20 @@ var probeTransport http.RoundTripper = &http.Transport{
 // system crashes or network blips DNS resolution fails briefly, and every
 // prelim check in that window would otherwise permanently skip its repo.
 // url has passed RefuseURLUserinfo, so an error's quoted URL carries no
-// credential.
+// credential. The backoff waits on ctx (batch 7b review round 4): a plain
+// sleep noticed a SIGTERM up to 9 s late — longer than a
+// shutdown_grace_seconds of 1..8 and most of the default 10 — at the one
+// probe every consumer shares.
 func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
 	var lastErr error
 	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
 	for attempt, delay := range delays {
 		if attempt > 0 {
-			time.Sleep(delay)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
 		}
 		hopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		req, err := http.NewRequestWithContext(hopCtx, http.MethodHead, url, nil)

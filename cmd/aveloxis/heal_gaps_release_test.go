@@ -27,7 +27,7 @@ import (
 )
 
 // v0.29.65 — heal-collection-gaps parks each repo it heals ('collecting',
-// owner '<gap-heal-…>:drain'). Interrupted, it used to leave them parked,
+// owner '<gap-heal:…>:drain'). Interrupted, it used to leave them parked,
 // log a resume point past unvisited repos, exit 0 in single-repo mode and
 // count cancellations as failures. These tests DRIVE the run (review
 // round 3: the source pins that stood in for them let ten planted
@@ -110,7 +110,7 @@ func (f *fakeGapStore) GetQueueStatus(ctx context.Context, id int64) (db.QueueRo
 func (f *fakeGapStore) log(e string) { f.mu.Lock(); f.events = append(f.events, e); f.mu.Unlock() }
 
 // testWorkerID is the owner every test run uses.
-const testWorkerID = "gap-heal-test"
+const testWorkerID = db.HealWorkerIDPrefix + "test"
 
 func (f *fakeGapStore) LockReposForDrain(ctx context.Context, ids []int64, owner string) ([]int64, error) {
 	f.mu.Lock()
@@ -562,7 +562,7 @@ func TestHealCollectionGapsWiring(t *testing.T) {
 				logger.Warn("hostname unavailable — the heal worker ID falls back to PID and start time", "error", herr)
 				host = "unknown-host"
 			}
-			workerID := fmt.Sprintf("gap-heal-%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
+			workerID := fmt.Sprintf("%s%s-%d-%d", db.HealWorkerIDPrefix, host, os.Getpid(), time.Now().UnixNano())
 			// v0.27.147 (round 26)/v0.27.150 (round 29): the run keeps ONE
 			// set-wide heartbeat for every drain lock this worker holds —
 			// a large repo's listing, fetch and processing can outlive a
@@ -983,8 +983,8 @@ func TestGapHealSingleRepoRefusalReasons(t *testing.T) {
 	}{
 		{"being collected", &fakeGapStore{notQueued: map[int64]bool{7: true}, queueOwner: map[int64]string{7: "host-120000"}},
 			"repo 7 is being collected — nothing healed; rerun when its collection finishes (a crashed owner's lock is reclaimed by stale-lock recovery or the next serve start)"},
-		{"parked by a drain or heal", &fakeGapStore{notQueued: map[int64]bool{7: true}, queueOwner: map[int64]string{7: "gap-heal-h-1-120000:drain"}},
-			"repo 7 is parked by a staging drain or another heal run — nothing healed; rerun when it is released (a crashed owner's park is reclaimed by stale-lock recovery or the next serve start)"},
+		{"parked by a drain or heal", &fakeGapStore{notQueued: map[int64]bool{7: true}, queueOwner: map[int64]string{7: db.HealWorkerIDPrefix + "h-1-120000:drain"}},
+			"repo 7 is parked by a staging drain or another heal run — nothing healed; rerun when it is released (a crashed serve's park is reclaimed by the next serve start; a heal's by stale-lock recovery once its heartbeat stops)"},
 		{"no queue row", &fakeGapStore{notQueued: map[int64]bool{7: true}, noQueueRow: map[int64]bool{7: true}},
 			"repo 7 is not in the collection queue (gone or dequeued) — nothing to heal"},
 		{"queued again since the lock attempt", &fakeGapStore{notQueued: map[int64]bool{7: true}, queueStatus: map[int64]string{7: "queued"}},
@@ -1319,7 +1319,7 @@ func TestGapHealSingleRepoDryRunPredictsTheRealRun(t *testing.T) {
 		{"generic git", &fakeGapStore{}, false, "", true},
 		// Round 14: a row parked by a drain or another heal is refused by a
 		// real run, so dry-run must not predict a heal.
-		{"parked by a drain or heal", &fakeGapStore{queueStatus: map[int64]string{7: "collecting"}, queueOwner: map[int64]string{7: "gap-heal-h-1-120000:drain"}}, true, "Not queued now", false},
+		{"parked by a drain or heal", &fakeGapStore{queueStatus: map[int64]string{7: "collecting"}, queueOwner: map[int64]string{7: db.HealWorkerIDPrefix + "h-1-120000:drain"}}, true, "Not queued now", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.store.locked = map[int64]bool{}

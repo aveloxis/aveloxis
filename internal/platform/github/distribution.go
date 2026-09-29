@@ -19,8 +19,8 @@ import (
 // v0.24.0 — GitHub-side fetchers for the DistributionWorker.
 //
 // ListReleaseAssetExtensions, ListRepoPackages, and ListRootManifests
-// each return a slice (or empty slice) and handle 404 / 403 / 410 as
-// "no signal here" rather than failures, mirroring the existing
+// each return a slice (or empty slice) and handle 404 / 403 / 410 (and a
+// 409, ClassSkip since v0.29.68) as "no signal here" rather than failures, mirroring the existing
 // platform.isOptionalEndpointSkip contract used elsewhere in the
 // collector. Repos with disabled features, private visibility, or
 // missing OAuth scopes produce empty results — not errors.
@@ -80,20 +80,20 @@ type ghReleaseAsset struct {
 // Optional endpoint: 404 / 403 / 410 → empty result, not error.
 //
 // v0.25.0: routes through platform.WithoutETag(ctx) to suppress the
-// HTTPClient's If-None-Match conditional layer. A 304 response from
-// the distribution path would otherwise silently delete prior rows
-// via the v0.24.0 snapshot-replace semantics in
-// MarkDistributionComplete — see WithoutETag's docstring for the
-// silent-data-loss rationale.
+// HTTPClient's If-None-Match conditional layer. Through v0.29.67 a 304
+// read as "empty" deleted prior rows via the v0.24.0 snapshot-replace
+// semantics in MarkDistributionComplete (see WithoutETag's docstring);
+// since round 8 a 304 is a non-answer that fails the scan, so a SOLICITED
+// one would now strike an unchanged repository toward the sideline and
+// spend the read for nothing — the bypass stays (GetJSON is ETag-free
+// unconditionally since v0.28.17; this call is belt-and-braces).
 func (c *Client) ListReleaseAssetExtensions(ctx context.Context, owner, repo string) ([]model.PackageDistribution, error) {
 	ctx = platform.WithoutETag(ctx)
 	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=100", owner, repo)
 	var releases []ghRelease
 	if err := c.http.GetJSON(ctx, path, &releases); err != nil {
-		// ClassNotModified treated like ClassSkip as defense-in-depth.
-		// With WithoutETag we should never receive 304, but if some
-		// future refactor leaks an ETag into the cache for this path,
-		// the defensive branch keeps us out of the failure loop.
+		// A 304 is never solicited here (GetJSON is ETag-free); one that
+		// arrives anyway is a non-answer, returned (round 8 of items 22–25).
 		if emptyAnswer(err) {
 			return nil, nil
 		}
@@ -182,24 +182,24 @@ func gitHubPackageTypeToEcosystem(pt string) string {
 // GitHub does not support a repository-name query parameter on these
 // endpoints.
 func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]model.PackageDistribution, error) {
-	// v0.25.0: bypass ETag so 304 cannot trigger the silent-data-loss
-	// path under snapshot-replace. See WithoutETag docstring.
+	// v0.25.0: bypass ETag so no 304 is solicited (a solicited one read
+	// as "empty" was the silent-data-loss path under snapshot-replace; an
+	// unsolicited one is a non-answer since round 8). See WithoutETag.
 	ctx = platform.WithoutETag(ctx)
 	var out []model.PackageDistribution
 
 	for _, pt := range supportedPackageTypes {
 		// Try user endpoint first.
-		userPath := fmt.Sprintf("/users/%s/packages?package_type=%s&per_page=100",
-			url.PathEscape(owner), url.QueryEscape(pt))
+		userPath := fmt.Sprintf("/users/%s/packages?package_type=%s&per_page=%d",
+			url.PathEscape(owner), url.QueryEscape(pt), packagesPageSize)
 		var pkgs []ghPackage
 		err := c.http.GetJSON(ctx, userPath, &pkgs)
 		if err != nil {
-			// ClassNotModified treated like ClassSkip (defense in depth).
 			if emptyAnswer(err) {
 				// 404 on user endpoint: try org endpoint.
 				if errors.Is(err, platform.ErrNotFound) {
-					orgPath := fmt.Sprintf("/orgs/%s/packages?package_type=%s&per_page=100",
-						url.PathEscape(owner), url.QueryEscape(pt))
+					orgPath := fmt.Sprintf("/orgs/%s/packages?package_type=%s&per_page=%d",
+						url.PathEscape(owner), url.QueryEscape(pt), packagesPageSize)
 					if err := c.http.GetJSON(ctx, orgPath, &pkgs); err != nil {
 						if emptyAnswer(err) {
 							continue
@@ -207,7 +207,7 @@ func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]mo
 						return nil, fmt.Errorf("list org packages for %s (type=%s): %w", owner, pt, err)
 					}
 				} else {
-					// 403/410/304 — scope, visibility, or cached-empty. Skip.
+					// 403/410 — scope or visibility: an empty answer. Skip.
 					continue
 				}
 			} else {
@@ -215,6 +215,14 @@ func (c *Client) ListRepoPackages(ctx context.Context, owner, repo string) ([]mo
 			}
 		}
 
+		if len(pkgs) >= packagesPageSize {
+			// One page is read by decision (worklist item 24; review round 6
+			// of items 22–25): a large owner's registry is not walked once
+			// per repository. A full page says the listing may be incomplete
+			// for THIS owner and type — logged, never silent.
+			c.logger.Warn("distribution: packages listing may be incomplete — one page read",
+				"owner", owner, "repo", repo, "package_type", pt, "page_size", packagesPageSize)
+		}
 		for _, p := range pkgs {
 			if p.Repository.Name != repo {
 				continue
@@ -314,13 +322,17 @@ func classifyManifestFilename(name string) string {
 // package name is left empty here — content parsing happens in Phase
 // D's manifest_parser.go.
 //
-// Optional endpoint: 404 on contents (empty repo, archived
-// generic-git) → empty result + nil error.
+// Optional endpoint: 404 on contents (a repository deleted or made private
+// since its last collection; an empty repository is observed to answer it
+// too — the Contents status table lists 404 without saying for what) →
+// empty result + nil error. A 409 is ClassSkip too (v0.29.68; documented for
+// the Git Database and Commits endpoints — "empty or unavailable" — not for
+// contents), but the tree fallback treats it as a non-answer (fetchRootTree).
 //
-// v0.25.0: ctx wrapped in platform.WithoutETag so 304 responses
-// (which would otherwise propagate as a fatal error in the
-// pre-v0.25.0 code and trigger the silent-data-loss path via
-// snapshot-replace in MarkDistributionComplete) can't fire.
+// v0.25.0: ctx wrapped in platform.WithoutETag so no 304 is solicited (a
+// solicited one, read as "empty", was the silent-data-loss path via
+// snapshot-replace in MarkDistributionComplete); an unsolicited one is a
+// non-answer (round 8).
 func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]model.DistributionManifest, error) {
 	ctx = platform.WithoutETag(ctx)
 	rootEntries, err := c.fetchContentsDir(ctx, owner, repo, "")
@@ -363,12 +375,21 @@ func (c *Client) ListRootManifests(ctx context.Context, owner, repo string) ([]m
 		entries, err := c.fetchContentsDir(ctx, owner, repo, dir)
 		if err != nil {
 			// An answer about this directory (platform.IsDefinitiveAnswer:
-			// 404/410, a non-rate-limit 403, a rejected request) or a 304:
-			// nothing to list, keep the rest. The SAME rule as the scanner's
+			// 404/410, a non-rate-limit 403, a rejected request): nothing to
+			// list, keep the rest; an unsolicited 304 is a non-answer and
+			// fails the scan (round 8). The SAME rule as the scanner's
 			// githubErrorIsNonAnswer — round 6 caught a 422 here failing the
 			// listing while the scanner, counting it as an answer, stored the
 			// scan complete with no manifests.
 			if emptyAnswer(err) || errors.Is(err, platform.ErrRequestRejected) {
+				// An answer for this ONE directory (worklist items 24/25's
+				// boundary): the scan completes without its manifests. WARN
+				// (review rounds 2–3 of items 22–25; it was silent): the root
+				// listed this directory seconds ago, so a 404 here is the
+				// forge contradicting itself — the round-5/6 escaping defect
+				// showed up exactly this way — and the HTTP layer logs nothing
+				// on a 404.
+				c.logger.Warn("distribution: first-level directory skipped", "owner", owner, "repo", repo, "dir", dir, "error", err)
 				continue
 			}
 			// Any other failure says nothing about the directory. Returning
@@ -401,6 +422,69 @@ func (c *Client) fetchContentsDir(ctx context.Context, owner, repo, dirPath stri
 	var entries []ghContentsEntry
 	if err := c.http.GetJSON(ctx, apiPath, &entries); err != nil {
 		return nil, err
+	}
+	if dirPath == "" && len(entries) >= contentsCap {
+		// The Contents API stops silently at contentsCap (live:
+		// DefinitelyTyped/types), and the partial listing was stored as a
+		// complete scan (worklist item 24). The root is re-read through the
+		// Git Trees API, which has no such cap.
+		return c.fetchRootTree(ctx, owner, repo)
+	}
+	return entries, nil
+}
+
+// contentsCap is the most entries the GitHub Contents API returns for one
+// directory; a listing that long is not known to be complete.
+const contentsCap = 1000
+
+// packagesPageSize is the one page of an owner's packages read per package
+// type (GitHub's maximum per_page). A full page is logged as possibly
+// incomplete; see ListRepoPackages.
+const packagesPageSize = 100
+
+// fetchRootTree lists the repository's root through the Git Trees API
+// (HEAD, non-recursive), mapping blobs and trees to the Contents shape. It
+// runs only after the Contents API listed 1,000 entries — the repository is
+// readable and populated — so NO answer from the tree read can mean "no
+// files": every error, the definitive ones included (a 404, a 409 the Git
+// Database endpoints document for a repository "empty or unavailable"), is
+// a NON-answer (review round 5 of items 22–25: a 404 here satisfied
+// emptyAnswer, read as no manifests, and the scan completed — wiping the
+// repository's snapshot for the cadence). A tree GitHub truncates (100k
+// entries) is a non-answer for the same reason. A 304 is never SOLICITED
+// by GetJSON (ETag-free, WithoutETag); one that arrives anyway surfaces as
+// ErrNotModified and takes the common non-answer path below like every
+// other non-definitive error (round 8 made that the rule for every reader;
+// round 10 removed this arm's own 304 clause, which no longer decided
+// anything).
+func (c *Client) fetchRootTree(ctx context.Context, owner, repo string) ([]ghContentsEntry, error) {
+	var tree struct {
+		Truncated bool `json:"truncated"`
+		Tree      []struct {
+			Path string `json:"path"`
+			Type string `json:"type"` // "blob" | "tree" | "commit"
+		} `json:"tree"`
+	}
+	if err := c.http.GetJSON(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/HEAD", owner, repo), &tree); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		if platform.IsDefinitiveAnswer(err) {
+			return nil, fmt.Errorf("root tree for %s/%s after a capped Contents listing: %v — the listing is not complete: %w", owner, repo, err, platform.ErrTransient)
+		}
+		return nil, fmt.Errorf("root tree for %s/%s: %w", owner, repo, err)
+	}
+	if tree.Truncated {
+		return nil, fmt.Errorf("root tree for %s/%s truncated by GitHub — the listing is not complete: %w", owner, repo, platform.ErrTransient)
+	}
+	entries := make([]ghContentsEntry, 0, len(tree.Tree))
+	for _, e := range tree.Tree {
+		switch e.Type {
+		case "blob":
+			entries = append(entries, ghContentsEntry{Name: e.Path, Path: e.Path, Type: "file"})
+		case "tree":
+			entries = append(entries, ghContentsEntry{Name: e.Path, Path: e.Path, Type: "dir"})
+		}
 	}
 	return entries, nil
 }
@@ -459,15 +543,18 @@ func contentsPath(p string) string {
 
 // emptyAnswer is the ONE rule (SR-17) the GitHub distribution readers use to
 // turn an error into "nothing to read here": an answer about the item
-// (platform.IsDefinitiveAnswer) other than a rejected request, or a 304. A
-// rejected request is an answer but not an empty one — the readers return it
-// and the scanner counts the source as errored; the first-level directory arm
-// alone also skips it (review round 6 on v0.29.55). The client's own off-host
+// (platform.IsDefinitiveAnswer) other than a rejected request. A rejected
+// request is an answer but not an empty one — the readers return it and the
+// scanner counts the source as errored; the first-level directory arm alone
+// also skips it (review round 6 on v0.29.55). The client's own off-host
 // refusal is NOT an answer, so it is returned and fails the scan (Copilot
-// review on PR #209; these readers swallowed it as ClassSkip before).
+// review on PR #209; these readers swallowed it as ClassSkip before). A 304
+// is not an answer either (review round 8 of items 22–25): these readers
+// never solicit one (GetJSON is ETag-free), so one that arrives is a
+// misbehaving intermediary's, says nothing about the repository, and read
+// as "empty" it was the very snapshot-wipe the ETag bypass exists to
+// prevent; it is returned and the scanner treats it as a non-answer
+// (githubErrorIsNonAnswer — the same rule, one spelling each side).
 func emptyAnswer(err error) bool {
-	if platform.ClassifyError(err) == platform.ClassNotModified {
-		return true
-	}
 	return platform.IsDefinitiveAnswer(err) && !errors.Is(err, platform.ErrRequestRejected)
 }

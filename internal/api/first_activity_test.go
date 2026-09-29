@@ -127,6 +127,10 @@ func TestFirstActivityFloorEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = $1`, userID)
+		// The API's auto-add linked the repositories into this user's
+		// Comparisons group (worklist §4: the group and its links leaked).
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id = $1)`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, userID)
 		_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
 		for _, id := range allRepos {
 			_, _ = pool.Exec(ctx, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, id)

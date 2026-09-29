@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.69 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -558,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -603,7 +609,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +660,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +669,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +822,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +925,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1093,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1197,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1722,7 +1740,44 @@ on every Phase 0 cycle since v0.27.78. The literal
 <code class="docutils literal notranslate"><span class="pre">(unknown</span> <span class="pre">upstream)</span></code> means the forge reports fork status but the
 upstream was deleted or is inaccessible. Drives the repo page’s
 “Forked from X” chip.</p></li>
+<li><p><strong>forge_id_changes</strong> (v0.29.62, omitted when empty) lists the forge-ID
+changes the operator adopted with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code> or the admin
+approvals page’s Adopt button: the
+upstream repository was deleted and re-created under the same URL, and
+the new one was treated as a continuation, so this row holds data from
+both. Each entry carries <code class="docutils literal notranslate"><span class="pre">old_forge_id</span></code>, <code class="docutils literal notranslate"><span class="pre">new_forge_id</span></code>,
+<code class="docutils literal notranslate"><span class="pre">forge_created_at</span></code> (when the forge created the new repository; omitted
+when unknown), <code class="docutils literal notranslate"><span class="pre">first_observed_at</span></code>, <code class="docutils literal notranslate"><span class="pre">adopted_at</span></code>, <code class="docutils literal notranslate"><span class="pre">adopted_by</span></code> and an
+optional <code class="docutils literal notranslate"><span class="pre">note</span></code>. Pending (observed, not adopted) changes are not listed.
+The repo page shows one notice per entry. Single-repo endpoint only.</p></li>
 </ul>
+</section>
+<section id="forge-id-changes-admin-v0-29-63">
+<h3>Forge-ID changes (admin, v0.29.63)<a class="headerlink" href="#forge-id-changes-admin-v0-29-63" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET  /api/v1/admin/forge-id-changes?pending=1
+POST /api/v1/admin/forge-id-changes/{repoID}/adopt
+</pre></div>
+</div>
+<p>A repository deleted and re-created upstream under the same URL gets a new
+forge ID. The org scan records the change as pending (it never changes the
+repository row itself). <code class="docutils literal notranslate"><span class="pre">GET</span></code> lists the recorded changes: <code class="docutils literal notranslate"><span class="pre">repo_id</span></code>,
+<code class="docutils literal notranslate"><span class="pre">repo_git</span></code>, <code class="docutils literal notranslate"><span class="pre">old_forge_id</span></code>, <code class="docutils literal notranslate"><span class="pre">new_forge_id</span></code>, <code class="docutils literal notranslate"><span class="pre">forge_created_at</span></code> (the new
+repository’s creation date, when the scan listed it), <code class="docutils literal notranslate"><span class="pre">first_observed_at</span></code>,
+<code class="docutils literal notranslate"><span class="pre">last_observed_at</span></code>, and for adopted ones <code class="docutils literal notranslate"><span class="pre">adopted_at</span></code>, <code class="docutils literal notranslate"><span class="pre">adopted_by</span></code>, <code class="docutils literal notranslate"><span class="pre">note</span></code>.
+A pending change whose old ID is no longer the one the repository stores
+is <code class="docutils literal notranslate"><span class="pre">superseded</span></code>: it stays in the full list as history and can no longer be
+adopted. <code class="docutils literal notranslate"><span class="pre">pending=1</span></code> lists only the
+adoptable changes; the full list orders adoptable, superseded, then adopted.</p>
+<p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/adopt</span></code> treats the new repository as a continuation: it moves the
+stored forge ID to the one the scan observed and records the admin’s login.
+The JSON body names the change, since a repository can have more than one:
+<code class="docutils literal notranslate"><span class="pre">{&quot;old_forge_id&quot;:</span> <span class="pre">&quot;…&quot;,</span> <span class="pre">&quot;new_forge_id&quot;:</span> <span class="pre">&quot;…&quot;,</span> <span class="pre">&quot;note&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> (the note is
+optional, at most 1,000 bytes). Answers <code class="docutils literal notranslate"><span class="pre">400</span></code> without both IDs, <code class="docutils literal notranslate"><span class="pre">404</span></code> when
+no unadopted change with that pair is recorded, and <code class="docutils literal notranslate"><span class="pre">409</span></code> when the change is
+superseded (nothing is written). The api
+process holds no forge API keys, so this adopts the recorded observation;
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code> asks the forge live. Both require an admin Bearer
+session.</p>
 </section>
 <section id="batch-statistics">
 <h3>Batch Statistics<a class="headerlink" href="#batch-statistics" title="Link to this heading"></a></h3>
@@ -1795,7 +1850,7 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 <span class="p">]</span>
 </pre></div>
 </div>
-<p>OSI compliance is checked against a built-in list of 30+ known OSI-approved SPDX identifiers.</p>
+<p><code class="docutils literal notranslate"><span class="pre">license</span></code> is the table’s row key: the license normalized to canonical SPDX, with the operands of <code class="docutils literal notranslate"><span class="pre">OR</span></code> and <code class="docutils literal notranslate"><span class="pre">AND</span></code> in a fixed order, so <code class="docutils literal notranslate"><span class="pre">MIT</span> <span class="pre">OR</span> <span class="pre">Apache-2.0</span></code>, <code class="docutils literal notranslate"><span class="pre">Apache-2.0</span> <span class="pre">OR</span> <span class="pre">MIT</span></code> and <code class="docutils literal notranslate"><span class="pre">MIT/Apache-2.0</span></code> are one row (since v0.29.67). <code class="docutils literal notranslate"><span class="pre">is_osi</span></code> follows the SPDX license list’s <code class="docutils literal notranslate"><span class="pre">isOsiApproved</span></code> (the list is embedded; no network): an <code class="docutils literal notranslate"><span class="pre">OR</span></code> is approved when any option is, an <code class="docutils literal notranslate"><span class="pre">AND</span></code> when every term is, and <code class="docutils literal notranslate"><span class="pre">X</span> <span class="pre">WITH</span> <span class="pre">exception</span></code> follows <code class="docutils literal notranslate"><span class="pre">X</span></code>. <code class="docutils literal notranslate"><span class="pre">Unknown</span></code> and free text are never approved, including an <code class="docutils literal notranslate"><span class="pre">OR</span></code> with free text in one option (<code class="docutils literal notranslate"><span class="pre">MIT</span> <span class="pre">OR</span> <span class="pre">proprietary</span></code> is not an expression); a <code class="docutils literal notranslate"><span class="pre">LicenseRef-</span></code> option counts as recognized.</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Parameter</p></th>
@@ -1832,7 +1887,7 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 GET /api/v1/repos/{repoID}/sbom?format=spdx
 </pre></div>
 </div>
-<p>Generates and downloads a Software Bill of Materials in CycloneDX 1.5 or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.</p>
+<p>Generates and downloads a Software Bill of Materials in CycloneDX 1.7 (1.5 until v0.29.67) or SPDX 2.3 JSON format. The SBOM is generated on-the-fly from collected dependency data.</p>
 <p>Since v0.27.134, repositories with C2 lockfile data (<code class="docutils literal notranslate"><span class="pre">collection.vuln_scan_transitive</span></code> enabled) get the <strong>real dependency graph</strong>: lockfile transitives join the component/package list, CycloneDX’s <code class="docutils literal notranslate"><span class="pre">dependencies</span></code> array carries actual parent→child links from the stored edges (root → direct set; parents → their children; unreachable packages stay leaves), and SPDX gains the matching package→package <code class="docutils literal notranslate"><span class="pre">DEPENDS_ON</span></code> relationships. Repositories without C2 data keep the flat pre-v0.27.134 shape byte-identical.</p>
 <table class="docutils align-default">
 <thead>
@@ -1856,7 +1911,7 @@ GET /api/v1/repos/{repoID}/sbom?format=spdx
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vulns</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
 <td><p>absent</p></td>
-<td><p>Annotate with the repo’s CURRENT (unresolved) findings. CycloneDX: native 1.5 <code class="docutils literal notranslate"><span class="pre">vulnerabilities</span></code> array (<code class="docutils literal notranslate"><span class="pre">affects.ref</span></code> = component purl). SPDX (v0.27.46 — previously a 400): package-level <code class="docutils literal notranslate"><span class="pre">externalRefs</span></code> with <code class="docutils literal notranslate"><span class="pre">referenceCategory:</span> <span class="pre">SECURITY</span></code>, <code class="docutils literal notranslate"><span class="pre">referenceType:</span> <span class="pre">advisory</span></code> linking each finding’s OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain <code class="docutils literal notranslate"><span class="pre">-with-vulns</span></code>.</p></td>
+<td><p>Annotate with the repo’s CURRENT (unresolved) findings. CycloneDX: native <code class="docutils literal notranslate"><span class="pre">vulnerabilities</span></code> array (<code class="docutils literal notranslate"><span class="pre">affects.ref</span></code> = component purl). SPDX (v0.27.46 — previously a 400): package-level <code class="docutils literal notranslate"><span class="pre">externalRefs</span></code> with <code class="docutils literal notranslate"><span class="pre">referenceCategory:</span> <span class="pre">SECURITY</span></code>, <code class="docutils literal notranslate"><span class="pre">referenceType:</span> <span class="pre">advisory</span></code> linking each finding’s OSV advisory — the SPDX 2.3-conformant vehicle. Filenames gain <code class="docutils literal notranslate"><span class="pre">-with-vulns</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -2540,10 +2595,23 @@ curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Aut
 <ul class="simple">
 <li><p>Tokens are DB-backed and live <strong>30 days</strong> — they survive server
 restarts. An expired or unknown token gets a structured 401; sign
-in again and mint a new one.</p></li>
+in again and mint a new one. A token the server could not resolve
+because the database failed (validating it, or reading its account
+flags or scope) gets a structured <strong>503</strong> with a try-again body
+(v0.29.68) — never the 401, which the GUI treats as “the token is
+gone”; retry the request.</p></li>
 <li><p>Each visit to <code class="docutils literal notranslate"><span class="pre">/auth/token</span></code> mints a <strong>new</strong> token; existing tokens
 keep working until they expire, so long-running scripts aren’t cut
 off when you log in elsewhere.</p></li>
+<li><p>A token’s role and repository scope are cached for 60 seconds per
+process. An admin mutation, and (v0.29.68) an add through
+<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{id}/repos</span></code> that linked or queued repositories,
+drop the cache in the process that served them. An approval decided in
+the <strong>web</strong> process reaches the <strong>api</strong> process only when its cache
+entry expires — up to 60 seconds; the two processes share no memory.</p></li>
+<li><p>A server-side failure is a <strong>500</strong> whose body never carries the cause
+(<code class="docutils literal notranslate"><span class="pre">internal</span> <span class="pre">error;</span> <span class="pre">try</span> <span class="pre">again</span></code>, or a fixed phrase such as <code class="docutils literal notranslate"><span class="pre">package</span> <span class="pre">list</span> <span class="pre">failed</span></code>, v0.29.68); the cause is in the api log. Client-side refusals
+(400/403/404) keep their own messages.</p></li>
 <li><p>Your token carries <strong>your</strong> repository scope — every repo in any
 of your groups (pending included; approval gates new collection,
 not visibility of collected data). Administrators are unscoped.</p></li>
@@ -2682,7 +2750,7 @@ floor, not necessarily the installed version.</p>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/sbom?vulns=1</span></code> — the CURRENT SBOM
 annotated with the repo’s unresolved findings. CycloneDX: native
-1.5 <code class="docutils literal notranslate"><span class="pre">vulnerabilities</span></code> array (<code class="docutils literal notranslate"><span class="pre">affects.ref</span></code> = component purl). SPDX
+<code class="docutils literal notranslate"><span class="pre">vulnerabilities</span></code> array (<code class="docutils literal notranslate"><span class="pre">affects.ref</span></code> = component purl). SPDX
 (since v0.27.46): package-level SECURITY/advisory <code class="docutils literal notranslate"><span class="pre">externalRefs</span></code> —
 the 2.3-conformant vehicle (the old 400 is gone).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/stats</span></code> — response gains (v0.27.50)
@@ -2696,7 +2764,7 @@ and the historical chart window from these. v0.27.84 adds
 collection pass) — the GUI’s signal to render the “queued for
 first collection” banner instead of misleading zeros. v0.28.1
 adds <code class="docutils literal notranslate"><span class="pre">gone_at</span></code> (omitted unless prelim’s probe got a definitive
-404/410 — the repo no longer resolves on its forge; the GUI must
+404/410/451 — the repo no longer resolves on its forge; the GUI must
 suppress the queued banner and render the no-longer-available
 notice, with gone taking precedence over the archived chip) and
 <code class="docutils literal notranslate"><span class="pre">metadata_as_of</span></code> (the repo_info snapshot date behind the
@@ -2780,6 +2848,75 @@ set (the partial-never-replaces-complete rule), so a repo’s <code class="docut
 only moves from <code class="docutils literal notranslate"><span class="pre">local</span></code> to <code class="docutils literal notranslate"><span class="pre">remote</span></code>, never back.</p></li>
 </ul>
 </section>
+<section id="supply-chain-package-view-v0-29-60">
+<h2>Supply-chain package view (v0.29.60)<a class="headerlink" href="#supply-chain-package-view-v0-29-60" title="Link to this heading"></a></h2>
+<p>The findings turned around: keyed by <strong>package</strong> instead of by repository,
+so a reader can see what a Dependabot pull request for one library cannot
+show — how many repositories in a cohort are exposed, how much of that
+exposure is transitive, how long it has been open, which advisory leads, and
+how many versions are in simultaneous use.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/supply-chain/packages?ecosystem=npm&amp;q=minimatch&amp;sort=repos&amp;limit=50&amp;offset=0&amp;group=12</span></code>
+— the leaderboard: one row per <code class="docutils literal notranslate"><span class="pre">(ecosystem,</span> <span class="pre">package_name)</span></code> in the cohort,
+<code class="docutils literal notranslate"><span class="pre">total</span></code> for paging, <code class="docutils literal notranslate"><span class="pre">sort</span></code> one of <code class="docutils literal notranslate"><span class="pre">repos</span></code> (default), <code class="docutils literal notranslate"><span class="pre">unresolved</span></code>, <code class="docutils literal notranslate"><span class="pre">cvss</span></code>,
+<code class="docutils literal notranslate"><span class="pre">transitive</span></code>, <code class="docutils literal notranslate"><span class="pre">versions</span></code>, <code class="docutils literal notranslate"><span class="pre">days</span></code>, <code class="docutils literal notranslate"><span class="pre">name</span></code>. Every row carries the profile
+fields below.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/supply-chain/packages/{ecosystem}/{name}</span></code> — one package’s
+profile plus <code class="docutils literal notranslate"><span class="pre">advisories</span></code> (most widespread first, each with <code class="docutils literal notranslate"><span class="pre">advisory_url</span></code>
+and <code class="docutils literal notranslate"><span class="pre">cve_url</span></code>), <code class="docutils literal notranslate"><span class="pre">versions</span></code> (each scanned version among CURRENT exposures
+with how many repositories run it — the version-agreement panel) and
+<code class="docutils literal notranslate"><span class="pre">repos</span></code> (the exposed repositories, most findings first; <code class="docutils literal notranslate"><span class="pre">?repos=</span></code> sets the
+list size, default 50, clamped at 500). A scoped npm name keeps its slash:
+<code class="docutils literal notranslate"><span class="pre">/supply-chain/packages/npm/&#64;scope/name</span></code>. A package with no finding in the
+scope is <code class="docutils literal notranslate"><span class="pre">404</span></code>.</p></li>
+</ul>
+<p><strong>Exposed-repository fields.</strong> Each <code class="docutils literal notranslate"><span class="pre">repos</span></code> entry carries <code class="docutils literal notranslate"><span class="pre">repo_id</span></code>,
+<code class="docutils literal notranslate"><span class="pre">repo_owner</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_name</span></code>, <code class="docutils literal notranslate"><span class="pre">findings_unresolved</span></code> (its open findings on the
+package), <code class="docutils literal notranslate"><span class="pre">transitive</span></code> (every open finding is transitive), <code class="docutils literal notranslate"><span class="pre">versions</span></code> (the
+distinct scanned versions, in text order) and <code class="docutils literal notranslate"><span class="pre">version_detail</span></code> — the same
+versions with their weight, one object per version:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1.1.15&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;findings_unresolved&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lockfiles&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">16</span><span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">findings_unresolved</span></code> is that version’s open findings; <code class="docutils literal notranslate"><span class="pre">lockfiles</span></code> is how
+many distinct lockfiles in the repository’s current lockfile snapshot
+resolve the package to exactly that version (the package is matched with
+the same key the lockfile graph uses: ecosystem aliases such as
+<code class="docutils literal notranslate"><span class="pre">gem</span></code>/<code class="docutils literal notranslate"><span class="pre">rubygems</span></code> fold together, names compare case-insensitively, and PyPI
+names fold <code class="docutils literal notranslate"><span class="pre">_</span></code> and <code class="docutils literal notranslate"><span class="pre">.</span></code> to <code class="docutils literal notranslate"><span class="pre">-</span></code>). <code class="docutils literal notranslate"><span class="pre">lockfiles</span></code> can be <code class="docutils literal notranslate"><span class="pre">0</span></code>: a direct dependency
+scanned at its manifest version, or an ecosystem without lockfiles. The
+entries are ordered by open findings, most first, then by version compared
+segment by segment as numbers (<code class="docutils literal notranslate"><span class="pre">1.0.2</span></code> before <code class="docutils literal notranslate"><span class="pre">1.0.10</span></code>). A finding whose
+package URL carries no version counts in the repository’s
+<code class="docutils literal notranslate"><span class="pre">findings_unresolved</span></code> but has no <code class="docutils literal notranslate"><span class="pre">version_detail</span></code> entry, so the entries can
+sum to less than the repository total.</p>
+<p><strong>Profile fields.</strong> <code class="docutils literal notranslate"><span class="pre">cohort_repos</span></code> (repositories that have ever had a finding
+on the package) and <code class="docutils literal notranslate"><span class="pre">repos_unresolved</span></code> (have one now); <code class="docutils literal notranslate"><span class="pre">findings</span></code> /
+<code class="docutils literal notranslate"><span class="pre">findings_unresolved</span></code> (rows: one per repository × advisory × version);
+<code class="docutils literal notranslate"><span class="pre">pct_unresolved</span></code>, <code class="docutils literal notranslate"><span class="pre">pct_transitive</span></code> (share of rows whose dependency is
+transitive — the exposure a manifest reader cannot see); <code class="docutils literal notranslate"><span class="pre">median_days_open</span></code>
+(median age of the current findings); <code class="docutils literal notranslate"><span class="pre">worst_severity</span></code>, <code class="docutils literal notranslate"><span class="pre">max_cvss</span></code>,
+<code class="docutils literal notranslate"><span class="pre">n_advisories</span></code>; <code class="docutils literal notranslate"><span class="pre">distinct_versions_in_use</span></code>, <code class="docutils literal notranslate"><span class="pre">modal_version</span></code> and
+<code class="docutils literal notranslate"><span class="pre">modal_version_share_pct</span></code> (over <code class="docutils literal notranslate"><span class="pre">repos_with_known_versions</span></code>); and the lead
+advisory — the one on the most repositories — as <code class="docutils literal notranslate"><span class="pre">lead_advisory</span></code>,
+<code class="docutils literal notranslate"><span class="pre">lead_cve</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_severity</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_fixed_version</span></code>, <code class="docutils literal notranslate"><span class="pre">lead_advisory_repos</span></code>.</p>
+<p><strong>Scope.</strong> The envelope’s <code class="docutils literal notranslate"><span class="pre">scope</span></code> says which cohort answered (<code class="docutils literal notranslate"><span class="pre">kind</span></code>,
+<code class="docutils literal notranslate"><span class="pre">group_id</span></code>, <code class="docutils literal notranslate"><span class="pre">repos</span></code>) and what answered it: <code class="docutils literal notranslate"><span class="pre">source</span></code> is <code class="docutils literal notranslate"><span class="pre">matview</span></code> when the
+fleet views served the request and <code class="docutils literal notranslate"><span class="pre">live</span></code> when the cohort was aggregated on
+request (or the fleet was, on a deployment without the views). An admin
+without <code class="docutils literal notranslate"><span class="pre">?group</span></code> reads the <strong>fleet</strong> from the materialized views
+<code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code> and <code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code> (Aveloxis-owned:
+refreshed every <code class="docutils literal notranslate"><span class="pre">collection.supply_chain_refresh_hours</span></code>, default 24, apart
+from the weekly 8Knot rebuild — see <a class="reference internal" href="../architecture/materialized-views.html"><span class="std std-doc">Materialized views</span></a>); a signed-in user without <code class="docutils literal notranslate"><span class="pre">?group</span></code> reads their own scope — every
+repository their groups hold — computed live; <code class="docutils literal notranslate"><span class="pre">?group=&lt;id&gt;</span></code> reads that
+group’s repositories live (a non-admin must own the group, and its
+repositories are intersected with the caller’s scope; an unknown or
+unowned group is <code class="docutils literal notranslate"><span class="pre">404</span></code>). The live path aggregates the cohort’s findings on
+request through the repository index, milliseconds for hundreds of
+repositories and about three seconds for a 62,000-repository scope on the
+production fleet; responses are cached for 60 seconds per caller and query.
+Both endpoints require a Bearer session.</p>
+</section>
 <section id="portal-and-admin-endpoints-v0-27-3">
 <h2>Portal and admin endpoints (v0.27.3)<a class="headerlink" href="#portal-and-admin-endpoints-v0-27-3" title="Link to this heading"></a></h2>
 <p>These back the aveloxis-gui portal pages (group / monitor /
@@ -2834,6 +2971,9 @@ batched add (one approval unit per v0.27.20). <code class="docutils literal notr
 fields are present; the single-<code class="docutils literal notranslate"><span class="pre">url</span></code> body remains accepted. The
 response carries <code class="docutils literal notranslate"><span class="pre">submitted</span></code> plus the outcome counts
 <code class="docutils literal notranslate"><span class="pre">{linked,</span> <span class="pre">enqueued,</span> <span class="pre">pending_approval?,</span> <span class="pre">request_id?,</span> <span class="pre">registered?}</span></code>.
+<code class="docutils literal notranslate"><span class="pre">linked</span></code> counts only repositories this request newly linked into the
+group: posting a repository that is already in the group again
+returns <code class="docutils literal notranslate"><span class="pre">linked:</span> <span class="pre">0</span></code> (PR #218 review C2).
 When <code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code> lets a batch through and some of its
 repositories cannot be added, the others are still added and the call
 fails with an error saying how many could not be; sending the same
@@ -2871,7 +3011,8 @@ timestamp to backfill from), so for those two fields start equal
 and diverge from the next login onward.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/admin</span></code> with
 <code class="docutils literal notranslate"><span class="pre">{&quot;admin&quot;:</span> <span class="pre">true|false}</span></code> — promote/demote. Self-demotion is refused
-(last-admin guard).</p></li>
+(last-admin guard). A demotion that would leave no admin at all is a
+<code class="docutils literal notranslate"><span class="pre">409</span></code> with <code class="docutils literal notranslate"><span class="pre">refusing</span> <span class="pre">to</span> <span class="pre">demote</span> <span class="pre">the</span> <span class="pre">last</span> <span class="pre">admin</span> <span class="pre">—</span> <span class="pre">promote</span> <span class="pre">another</span> <span class="pre">user</span> <span class="pre">first</span></code> (it was a <code class="docutils literal notranslate"><span class="pre">500</span></code> before PR #218 review).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/groups/pending</span></code> — pending groups awaiting
 approval, with requester login/email and repo/org counts.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/groups/{groupID}/{decision}</span></code> where decision is
@@ -2903,8 +3044,15 @@ an approved org request whose registration is missing registers it,
 returns <code class="docutils literal notranslate"><span class="pre">changed:</span> <span class="pre">true</span></code> and notifies the requester). The
 requester is notified by email when a mailer is configured.
 Response: <code class="docutils literal notranslate"><span class="pre">{ok:</span> <span class="pre">true,</span> <span class="pre">changed:</span> <span class="pre">bool}</span></code> — <code class="docutils literal notranslate"><span class="pre">changed=false</span></code> means the
-request was already decided (idempotent double-click).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/monitor/stats</span></code> — <code class="docutils literal notranslate"><span class="pre">{queue:</span> <span class="pre">{status:</span> <span class="pre">count}}</span></code>.</p></li>
+request was already decided (idempotent double-click). A request id that
+does not exist answers <code class="docutils literal notranslate"><span class="pre">404</span></code>. An org request that can never be registered
+answers <code class="docutils literal notranslate"><span class="pre">409</span></code> with the reason and “reject the request”: an org that is
+not on this deployment’s GitHub host, a URL carrying credentials, or a
+request created before v0.29.54 whose URL is longer than the registration
+index holds (2,684 bytes).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/monitor/stats</span></code> — <code class="docutils literal notranslate"><span class="pre">{queue:</span> <span class="pre">{status:</span> <span class="pre">count}}</span></code>:
+<code class="docutils literal notranslate"><span class="pre">queued</span></code>, <code class="docutils literal notranslate"><span class="pre">collecting</span></code> (real jobs), <code class="docutils literal notranslate"><span class="pre">draining</span></code> (repos parked by the
+startup staging drain or by heal-collection-gaps, v0.29.64) and <code class="docutils literal notranslate"><span class="pre">total</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/monitor/queue?page=1&amp;q=augur</span></code> — the collection
 queue, 100 rows per page, optional search. Each job carries the
 repo label (<code class="docutils literal notranslate"><span class="pre">owner/name</span></code>), status, priority, due_at,

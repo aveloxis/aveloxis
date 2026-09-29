@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -233,6 +234,14 @@ func (s *PostgresStore) PurgeStagedForRepo(ctx context.Context, repoID int64) {
 	tag, err := s.pool.Exec(ctx,
 		`DELETE FROM aveloxis_ops.staging WHERE repo_id = $1 AND NOT processed`, repoID)
 	if err != nil {
+		// Logged, not returned: the purge is a best-effort cleanup before a
+		// fresh collection, and the rows it leaves are replayed by the next
+		// drain. A stop is not a failure (found while fixing PR #218 review
+		// A10: the error was discarded silently).
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return
+		}
+		s.logger.Warn("purging stale staging rows failed — they stay for the next drain", "repo_id", repoID, "error", err)
 		return
 	}
 	if n := tag.RowsAffected(); n > 0 {

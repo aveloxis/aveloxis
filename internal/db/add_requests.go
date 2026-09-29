@@ -28,7 +28,7 @@ import (
 // AddOutcome reports what AddReposToGroup did with a batch of URLs so
 // handlers can tell the user "N added, M awaiting approval".
 type AddOutcome struct {
-	Linked    int   // known repos linked into the group (no new collection)
+	Linked    int   // known repos newly linked into the group (no new collection; an existing link is not counted)
 	Enqueued  int   // new repos created + enqueued (admin or auto-approved path)
 	Pending   int   // URLs parked on a pending add-request
 	Failed    int   // auto-approved repos whose add failed (their items are stamped -1)
@@ -37,7 +37,7 @@ type AddOutcome struct {
 
 // OrgAddOutcome reports what AddOrgToGroup did.
 type OrgAddOutcome struct {
-	Registered bool  // true = org tracking registered (admin path)
+	Registered bool  // true = org tracking registered: an admin's add, or a non-admin's add of an org already registered elsewhere (v0.27.84) — including a re-add that inserted nothing
 	RequestID  int64 // non-zero when a pending request was created instead
 }
 
@@ -181,11 +181,17 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		}
 		switch {
 		case tracked:
-			// Known repo: instant link, zero collection load added.
-			if _, err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+			// Known repo: instant link, zero collection load added. Only a
+			// link this call inserted counts: a repository already in the
+			// group changed no one's scope, and the API drops its whole
+			// token cache on Linked > 0 (PR #218 review C2).
+			inserted, err := s.AddRepoToGroupByID(ctx, groupID, repoID)
+			if err != nil {
 				return out, err
 			}
-			out.Linked++
+			if inserted {
+				out.Linked++
+			}
 		case isAdmin:
 			if _, err := s.ensureRepoCollectedInGroup(ctx, groupID, repoURL); err != nil {
 				return out, err
@@ -215,10 +221,24 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		// it processed-with-error and goes on, and the add reports the count
 		// (round-23 review: a retryable failure left it and every later item
 		// unprocessed for good).
-		processed, failed, err := s.processAddRequest(context.WithoutCancel(ctx), reqID, true)
+		// detached cannot be cancelled — not by the request, not by a stop —
+		// so the pass's failure below is never a shutdown and needs no
+		// context.Canceled arm (the shutdown-classification ratchet's
+		// producer rule).
+		detached := context.WithoutCancel(ctx)
+		processed, failed, err := s.processAddRequest(detached, reqID, true)
 		out.Enqueued += processed
 		out.Failed = failed
 		if err != nil {
+			// Logged HERE, the layer that detached the pass (SR-18; NET-6
+			// review r8 F1): its failure can never be the caller's request
+			// ending, but the caller logs through httpserver.LogFailure,
+			// which is Debug once nginx or http_timeout_seconds has ended
+			// the request — and an approved request with unprocessed items
+			// is listed for no admin and re-run by nothing (old problem O17
+			// in the operator's to-do list).
+			s.logger.Warn("auto-approved add request: processing failed — its unprocessed items are not retried automatically; the user can add those repositories again",
+				"request_id", reqID, "user_id", userID, "group_id", groupID, "processed", processed, "failed", failed, "error", err)
 			return out, fmt.Errorf("add request %d: %w", reqID, err)
 		}
 		if failed > 0 {
@@ -357,6 +377,9 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		WHERE ar.request_id = $1`, requestID).Scan(
 		&req.RequestID, &req.UserID, &req.UserLogin, &req.UserEmail,
 		&req.GroupID, &req.GroupName, &req.Kind, &req.OrgURL, &req.Status, &req.ItemCount, &req.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return req, false, fmt.Errorf("add request %d: %w", requestID, ErrAddRequestNotFound)
+	}
 	if err != nil {
 		return req, false, fmt.Errorf("load add request: %w", err)
 	}
@@ -429,10 +452,21 @@ var ErrOrgOffGitHubHost = errors.New("organization is not on this deployment's G
 // half-state re-approve) cannot be rejected, and nothing enumerates it, so
 // the advice says exactly that — there is no delete path to point at.
 func OrgApprovalRefusalAdvice(err error, ghAPIBase string) string {
+	if errors.Is(err, ErrURLTooLong) {
+		// PR #218 fix review r1: its own text ("longer than 1342 bytes") is
+		// the add limit; this refusal is the registration index's bound.
+		// PR #218 fix review r2 F6: a request approved before v0.29.39
+		// that lost its registration reaches this on re-approve, and a
+		// reject of an approved row changes nothing — say so, as the
+		// credentials twin below does.
+		return fmt.Sprintf("the organization URL is longer than %d bytes, the most the registration index holds; reject the request — it can never be registered, and one that is already approved cannot be registered and nothing enumerates it", maxIndexedURLBytes)
+	}
 	if errors.Is(err, platform.ErrURLUserinfo) {
 		return "the organization URL carries credentials; reject the request — one that is already approved cannot be registered and nothing enumerates it"
 	}
-	return err.Error() + " (" + platform.GitHubWebHost(ghAPIBase) + "); reject the request instead"
+	// PR #218 fix review r3 F3: an org approved before v0.29.57's host gate
+	// reaches this on re-approve too (registerApprovedOrg → orgRegistrable).
+	return err.Error() + " (" + platform.GitHubWebHost(ghAPIBase) + "); reject the request instead — one that is already approved cannot be registered and nothing enumerates it"
 }
 
 // orgRegistrable is the registration gate: a "github"-labelled org must be
@@ -484,9 +518,33 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBa
 	if err := platform.RefuseURLUserinfo(req.OrgURL); err != nil {
 		return false, fmt.Errorf("register approved org: %w", err)
 	}
+	// A request created before v0.29.54's limit can carry a URL the
+	// registration's unique index refuses (SQLSTATE 54000, forever, at every
+	// approval): refuse it here so the admin is told to reject the request
+	// (worklist follow-up 14). The bound is the index's own — the stored
+	// form — so the 1,343–2,684-byte requests that always approved still do.
+	if len(req.OrgURL) > maxIndexedURLBytes {
+		return false, fmt.Errorf("register approved org: %w", ErrURLTooLong)
+	}
 	orgName, platformName := parseOrgURLMeta(req.OrgURL)
 	if err := orgRegistrable(platformName, req.OrgURL, ghAPIBase); err != nil {
 		return false, err
+	}
+	// The arbiter below is the exact key, and rows written before v0.29.68
+	// keep their case (SR-1: a LOWER() unique needs a dedup migration
+	// first), so the "already registered in this group" question is asked
+	// here case-insensitively (batch 5 review round 1: a legacy mixed-case
+	// row plus an identical re-paste made a second, lowercase row where
+	// the exact-key conflict used to insert nothing).
+	var registered bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM aveloxis_ops.user_org_requests
+			WHERE group_id = $1 AND LOWER(org_url) = LOWER($2))`,
+		req.GroupID, req.OrgURL).Scan(&registered); err != nil {
+		return false, fmt.Errorf("register approved org: %w", err)
+	}
+	if registered {
+		return false, nil
 	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_org_requests
@@ -509,10 +567,23 @@ func registerApprovedOrg(ctx context.Context, tx pgx.Tx, req AddRequest, ghAPIBa
 // URLs reached the database, which refused them with SQLSTATE 54000 — also the
 // code for a server-wide stop, so the API could not tell the caller's mistake
 // from an outage (round-27 review).
-const MaxAddURLBytes = (2704 - 20) / 2
+const MaxAddURLBytes = maxIndexedURLBytes / 2
+
+// maxIndexedURLBytes is the bytes a btree index row can hold for a URL after
+// the tuple header, a bigint key and the text length: the bound on a STORED
+// value. MaxAddURLBytes halves it for the entry checks because the stored
+// or indexed form may be lower() of the input; a value already in that form
+// (a stored org URL — in CanonicalOrgURL's form when pasted since v0.29.68,
+// in the registrant's case when pended before) is bounded by this.
+const maxIndexedURLBytes = 2704 - 20
 
 // ErrURLTooLong means a URL in an add is longer than MaxAddURLBytes.
 var ErrURLTooLong = fmt.Errorf("a URL is longer than %d bytes", MaxAddURLBytes)
+
+// ErrAddRequestNotFound is DecideAddRequest's answer for a request id that
+// does not exist: the caller's input, a 404, not a store failure (PR #218
+// fix review r1 — it read as a logged generic 500 after review C6).
+var ErrAddRequestNotFound = errors.New("no such add request")
 
 // ErrAddItemsFailed means some repositories of an auto-approved add could not
 // be added; the rest were.

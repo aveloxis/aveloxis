@@ -159,9 +159,10 @@ const (
 // stamps the sender's cntrb_id onto their messages rows. Bot/junk senders are
 // stamped resolved (terminal) so they leave the candidate pool permanently.
 func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
-	if s.ghClient == nil {
-		return // no GitHub client → the API tail can't run; DB backfill still does
-	}
+	// No GitHub gate here (review round 1 of items 40/21): two of the three
+	// stages — the noreply parse and the DB lookup — need no key, and this
+	// resolver is what links DB-resolvable senders. Only the API tail is
+	// withheld when no usable key exists (the nil client below).
 	t := time.NewTicker(mailingListSenderResolveInterval)
 	defer t.Stop()
 	for {
@@ -169,137 +170,177 @@ func (s *Scheduler) runMailingListSenderResolve(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			cands, err := s.store.GetMailingListSenderResolveCandidates(ctx,
-				mailingListSenderResolveMinMessages, mailingListSenderResolveCooldown.Seconds(), mailingListSenderResolveBatch)
-			if errors.Is(err, context.Canceled) {
-				return // shutdown, not a failure
-			}
-			if err != nil {
-				s.logger.Warn("mailing-list: sender-resolve candidate query error", "error", err)
-				continue
-			}
-			linked := 0
-			created := 0
-			// Resolutions that failed without an answer: not stamped,
-			// retried next tick; one WARN after the loop.
-			unanswered := 0
-			var firstUnanswered error
-			storeFailed := 0 // answered, but the contributor write failed (item 18)
-			var firstStoreFailure error
-			for _, c := range cands {
-				if ctx.Err() != nil {
-					return
-				}
-				// Bots are never people — terminal stamp so they drop out.
-				if collector.IsAutomationEmail(c.SenderEmail) {
-					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
-					continue
-				}
-				login, ghUserID, source, rerr := collector.ResolveEmailToIdentity(ctx, s.store, s.ghClient, c.SenderEmail)
-				if rerr != nil {
-					if !platform.IsDefinitiveAnswer(rerr) {
-						// Rate limit, transient or auth failure, shutdown, an
-						// empty key pool, a body that did not decode: nothing
-						// was learned about this sender, so the 30-day stamp
-						// would hide them with their messages unattributed
-						// (SR-5; review round 2 on v0.29.55). The batch keeps
-						// going rather than stopping: a failure that recurs for
-						// every candidate every tick is pool-wide (no keys,
-						// keys invalidated), costs no API calls, and blocks
-						// progress whether the loop stops or not — and
-						// continuing lets senders whose searches succeed
-						// resolve. Such a tick is visible in the WARN below.
-						unanswered++
-						if firstUnanswered == nil {
-							firstUnanswered = rerr
-						}
-						s.logger.Debug("mailing-list: sender resolve failed without an answer — not stamped, retried next tick", "email", c.SenderEmail, "error", rerr)
-						continue
-					}
-					// The forge rejected the query for this sender: stamp so the
-					// same query is not re-sent before the cooldown.
-					s.logger.Debug("mailing-list: sender resolve rejected", "email", c.SenderEmail, "error", rerr)
-					if mErr := s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""); mErr != nil {
-						s.logger.Debug("mailing-list: failed to stamp the sender-resolve attempt", "email", c.SenderEmail, "error", mErr)
-					}
-					continue
-				}
-				if login == "" {
-					// Phase 4 (§5g 2a): no platform identity found. For a
-					// DIRECT-HUMAN sender (not a Jira/GitBox/CI relay), create an
-					// email-only contributor so they're attributed and ride the
-					// convergence ticker. Bot-relayed senders get no contributor.
-					if c.HumanClass && !collector.IsAutomationEmail(c.SenderEmail) {
-						createdID, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail)
-						if errors.Is(cerr, context.Canceled) {
-							return // shutdown, not a failure: no attempt stamped
-						}
-						if cerr != nil {
-							// A store failure saved nothing, so nothing is stamped
-							// (SR-5; worklist item 18): the 30-day cooldown would
-							// hide the sender with their messages unattributed. The
-							// next tick retries; a tick full of these is visible in
-							// the unanswered WARN below.
-							s.logger.Warn("mailing-list: email-only contributor create failed — not stamped, retried next tick", "email", c.SenderEmail, "error", cerr)
-							storeFailed++
-							if firstStoreFailure == nil {
-								firstStoreFailure = cerr
-							}
-							continue
-						}
-						// Code-review round 2026-09-06 (finding 7): ("", nil) is
-						// the documented invalid-email outcome (no '@') — NOTHING
-						// was created. Stamping it "email-only" would lie about a
-						// contributor that does not exist and created++ would
-						// over-report. A malformed From header can never become
-						// valid, so the terminal stamp is right — but under its
-						// honest source, and never counted as a creation.
-						if createdID == "" {
-							_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "invalid-email", "")
-							continue
-						}
-						_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")
-						created++
-						continue
-					}
-					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
-					continue
-				}
-				_, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID)
-				if errors.Is(lerr, context.Canceled) {
-					return // shutdown, not a failure: no attempt stamped
-				}
-				if lerr != nil {
-					// As above (worklist item 18): a failed link is not an
-					// attempt to record; the resolved identity is re-derived
-					// next tick from the DB hit.
-					s.logger.Warn("mailing-list: sender link failed — not stamped, retried next tick", "email", c.SenderEmail, "login", login, "error", lerr)
-					storeFailed++
-					if firstStoreFailure == nil {
-						firstStoreFailure = lerr
-					}
-					continue
-				}
-				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
-				linked++
-			}
-			if unanswered > 0 && ctx.Err() == nil {
-				s.logger.Warn("mailing-list: sender resolves failed without an answer — not stamped, retried next tick",
-					"failed", unanswered, "of", len(cands), "first_error", firstUnanswered)
-			}
-			if storeFailed > 0 && ctx.Err() == nil {
-				// Answered, but the contributor row or link could not be
-				// written (worklist item 18): counted apart from the
-				// unanswered resolves, since the fix is on the database side.
-				s.logger.Warn("mailing-list: sender writes failed after an answer — not stamped, retried next tick",
-					"failed", storeFailed, "of", len(cands), "first_error", firstStoreFailure)
-			}
-			if linked > 0 || created > 0 {
-				s.logger.Info("mailing-list: sender resolution pass",
-					"linked", linked, "email_only_created", created, "candidates", len(cands))
+			if s.senderResolvePass(ctx) {
+				return
 			}
 		}
 	}
+}
+
+// senderResolvePass is one tick of runMailingListSenderResolve: the candidate
+// query and one resolve per sender. It reports true when the loop must stop
+// (the context ended). Split out (review round 8 of items 16–19) so the
+// arms are driven at RUNTIME — TestSenderResolvePassCoolsDownANoIdentitySender
+// seeds an ID-less noreply sender and runs the pass twice — where the source
+// pins on the loop body could be respelled around.
+func (s *Scheduler) senderResolvePass(ctx context.Context) bool {
+	cands, err := s.store.GetMailingListSenderResolveCandidates(ctx,
+		mailingListSenderResolveMinMessages, mailingListSenderResolveCooldown.Seconds(), mailingListSenderResolveBatch)
+	if errors.Is(err, context.Canceled) {
+		return true // shutdown, not a failure
+	}
+	if err != nil {
+		s.logger.Warn("mailing-list: sender-resolve candidate query error", "error", err)
+		return false
+	}
+	linked := 0
+	created := 0
+	// Resolutions that failed without an answer: not stamped,
+	// retried next tick; one WARN after the loop.
+	unanswered := 0
+	var firstUnanswered error
+	storeFailed := 0 // answered, but the contributor write failed (item 18)
+	noIdentity := 0  // a login with no row and no forge id: cooled down, not linked
+	var firstStoreFailure error
+	for _, c := range cands {
+		if ctx.Err() != nil {
+			return true
+		}
+		// Bots are never people — terminal stamp so they drop out.
+		if collector.IsAutomationEmail(c.SenderEmail) {
+			_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "bot", "")
+			continue
+		}
+		var apiClient platform.Client
+		if s.githubKeysAvailable() {
+			apiClient = s.ghClient // a nil client skips the API tail (DB stages still run)
+		}
+		// DECIDED (items 40/21, review round 2): with the tail withheld a
+		// DB miss is the chain's terminal answer — a human sender becomes
+		// an email-only contributor and a relay gets its cooldown without
+		// the forge ever being asked, the same outcome an API miss gives a
+		// keyed serve. The alternative (leave them unanswered) keeps every
+		// unresolvable sender at the claim head with a WARN per tick for
+		// the life of a GitLab-only serve. If a key is added later,
+		// search-resolve converges those rows by email.
+		login, ghUserID, source, rerr := collector.ResolveEmailToIdentity(ctx, s.store, apiClient, c.SenderEmail)
+		if rerr != nil {
+			if !platform.IsDefinitiveAnswer(rerr) {
+				// Rate limit, transient or auth failure, shutdown, an
+				// empty key pool, a body that did not decode: nothing
+				// was learned about this sender, so the 30-day stamp
+				// would hide them with their messages unattributed
+				// (SR-5; review round 2 on v0.29.55). The batch keeps
+				// going rather than stopping: a failure that recurs for
+				// every candidate every tick is pool-wide (no keys,
+				// keys invalidated), costs no API calls, and blocks
+				// progress whether the loop stops or not — and
+				// continuing lets senders whose searches succeed
+				// resolve. Such a tick is visible in the WARN below.
+				unanswered++
+				if firstUnanswered == nil {
+					firstUnanswered = rerr
+				}
+				s.logger.Debug("mailing-list: sender resolve failed without an answer — not stamped, retried next tick", "email", c.SenderEmail, "error", rerr)
+				continue
+			}
+			// The forge rejected the query for this sender: stamp so the
+			// same query is not re-sent before the cooldown.
+			s.logger.Debug("mailing-list: sender resolve rejected", "email", c.SenderEmail, "error", rerr)
+			if mErr := s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", ""); mErr != nil {
+				s.logger.Debug("mailing-list: failed to stamp the sender-resolve attempt", "email", c.SenderEmail, "error", mErr)
+			}
+			continue
+		}
+		if login == "" {
+			// Phase 4 (§5g 2a): no platform identity found. For a
+			// DIRECT-HUMAN sender (not a Jira/GitBox/CI relay), create an
+			// email-only contributor so they're attributed and ride the
+			// convergence ticker. Bot-relayed senders get no contributor.
+			if c.HumanClass && !collector.IsAutomationEmail(c.SenderEmail) {
+				createdID, cerr := s.store.CreateEmailOnlyContributor(ctx, c.SenderEmail)
+				if errors.Is(cerr, context.Canceled) {
+					return true // shutdown, not a failure: no attempt stamped
+				}
+				if cerr != nil {
+					// A store failure saved nothing, so nothing is stamped
+					// (SR-5; worklist item 18): the 30-day cooldown would
+					// hide the sender with their messages unattributed. The
+					// next tick retries; a tick full of these is visible in
+					// the "sender writes failed" WARN below.
+					s.logger.Warn("mailing-list: email-only contributor create failed — not stamped, retried next tick", "email", c.SenderEmail, "error", cerr)
+					storeFailed++
+					if firstStoreFailure == nil {
+						firstStoreFailure = cerr
+					}
+					continue
+				}
+				// Code-review round 2026-09-06 (finding 7): ("", nil) is
+				// the documented invalid-email outcome (no '@') — NOTHING
+				// was created. Stamping it "email-only" would lie about a
+				// contributor that does not exist and created++ would
+				// over-report. A malformed From header can never become
+				// valid, so the terminal stamp is right — but under its
+				// honest source, and never counted as a creation.
+				if createdID == "" {
+					_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "invalid-email", "")
+					continue
+				}
+				_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, "email-only", "")
+				created++
+				continue
+			}
+			_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+			continue
+		}
+		_, lerr := s.store.LinkMailingListSender(ctx, c.SenderEmail, login, ghUserID)
+		if errors.Is(lerr, context.Canceled) {
+			return true // shutdown, not a failure: no attempt stamped
+		}
+		if errors.Is(lerr, db.ErrNoStableIdentity) {
+			// Not linked (review round 7 of items 16–19): the login
+			// has no contributor row and the forge gave no numeric id
+			// (an ID-less login@users.noreply.github.com address — the
+			// commit search returns a null author as a no-hit, which
+			// never reaches here), so nothing was written. Through v0.29.67
+			// this came back as a nil error and was stamped resolved
+			// — terminal — with the login and no alias, and counted
+			// linked. The 30-day cooldown instead: the login may gain
+			// a contributor row.
+			_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, false, "", "")
+			noIdentity++
+			continue
+		}
+		if lerr != nil {
+			// As above (worklist item 18): a failed link is not an
+			// attempt to record; the resolved identity is re-derived
+			// next tick from the DB hit.
+			s.logger.Warn("mailing-list: sender link failed — not stamped, retried next tick", "email", c.SenderEmail, "login", login, "error", lerr)
+			storeFailed++
+			if firstStoreFailure == nil {
+				firstStoreFailure = lerr
+			}
+			continue
+		}
+		_ = s.store.MarkSenderResolveAttempt(ctx, c.SenderEmail, true, source, login)
+		linked++
+	}
+	if unanswered > 0 && ctx.Err() == nil {
+		s.logger.Warn("mailing-list: sender resolves failed without an answer — not stamped, retried next tick",
+			"failed", unanswered, "of", len(cands), "first_error", firstUnanswered)
+	}
+	if storeFailed > 0 && ctx.Err() == nil {
+		// Answered, but the contributor row or link could not be
+		// written (worklist item 18): counted apart from the
+		// unanswered resolves, since the fix is on the database side.
+		s.logger.Warn("mailing-list: sender writes failed after an answer — not stamped, retried next tick",
+			"failed", storeFailed, "of", len(cands), "first_error", firstStoreFailure)
+	}
+	if linked > 0 || created > 0 || noIdentity > 0 {
+		s.logger.Info("mailing-list: sender resolution pass",
+			"linked", linked, "email_only_created", created, "no_stable_identity", noIdentity, "candidates", len(cands))
+	}
+	return false
 }
 
 // mailingListSenderBackfillWindow is the msg_id keyset-window width of

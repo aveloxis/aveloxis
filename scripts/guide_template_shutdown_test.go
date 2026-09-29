@@ -58,12 +58,12 @@ func TestGuideCollectorTemplateClassifiesShutdown(t *testing.T) {
 	// Guard the denominator: every `.Warn(`/`.Error(` call in the template, on
 	// any receiver and with any message (a constant too), must have been
 	// examined, or a log the audit cannot read would pass unchecked. The
-	// count covers every call shutdownLogRe can match, so equal counts mean
+	// count covers every call findShutdownLogs can read, so equal counts mean
 	// every such site; `err.Error()` takes no argument and is not counted.
 	// The `WarnContext` / `Log(ctx, level, …)` forms are not counted (the
 	// audit does not read them either).
 	logs := len(regexp.MustCompile(`\.(?:Warn|Error)\(\s*[^\s)]`).FindAllStringIndex(body, -1))
 	if logs == 0 || examined != logs {
-		t.Errorf("the audit examined %d of the template's %d .Warn(/.Error( calls; a log it cannot read (see shutdownLogRe and producerOffset) is invisible to the shutdown ratchet in a copy too", examined, logs)
+		t.Errorf("the audit examined %d of the template's %d .Warn(/.Error( calls; a log it cannot read (see findShutdownLogs and producerOffset) is invisible to the shutdown ratchet in a copy too", examined, logs)
 	}
 }

@@ -4,6 +4,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,12 +58,32 @@ var ErrGone = errors.New("gone")
 // unique repos = ~5.3h of wasted wall-clock per cycle.
 var ErrNoContent = errors.New("no content (204)")
 
+// GitHubAPIVersion is the REST API version every GitHub request names
+// (X-GitHub-Api-Version; worklist item 15). GitHub supports 2022-11-28 until
+// 2028-03-10 and its pull-request shape still carries merge_commit_sha; the
+// 2026-03-10 version drops that field, which the `rest` collection escape
+// hatch and the per-PR REST rescue read (internal/platform/github). Moving
+// this pin past 2026-03-10 needs those two paths to take mergeCommit from
+// GraphQL first (TestGitHubAPIVersionPredatesTheMergeCommitSHADrop).
+const GitHubAPIVersion = "2022-11-28"
+
 // ErrRequestRejected wraps a 400 or a non-pagination-cap 422: the forge
 // rejected the request itself (malformed query, validation failure). It is
 // still ClassFatal; the sentinel exists so IsDefinitiveAnswer can tell this
 // ANSWER apart from the Fatal-class failures that say nothing about the
 // item, such as an empty key pool (v0.29.55 review round 1).
 var ErrRequestRejected = errors.New("request rejected")
+
+// ErrConflict wraps a 409 on a read: GitHub's documented answer on the Git
+// Database and Commits endpoints (the trees fallback, /commits/{sha}) for a
+// repository that is "empty or unavailable". It is definitive (ClassSkip)
+// and never retried; through v0.29.67 it took the "unexpected status" arm —
+// about 110 s of retries, then ErrTransient, which the distribution scanner
+// counted as a non-answer and struck toward the sideline (worklist item 23;
+// 451 was the same class, v0.29.58). Whether it says "no files" is the
+// CALLER's question: the trees fallback, which runs after a listing proved
+// the repository populated, treats it as a non-answer.
+var ErrConflict = errors.New("conflict (409)")
 
 // ErrTransient marks transient-class errors that should route
 // to ClassTransient via platform.ClassifyError. Originally added
@@ -363,17 +384,19 @@ type ctxKeyBypassETag struct{}
 // WithoutETag returns a derived context that suppresses both the
 // If-None-Match send and the ETag cache write for any Get call made
 // with it (GetJSON applies it unconditionally since v0.28.17 — see its
-// doc; callers only need WithoutETag for bare Get / paginate paths). Use this for endpoints where 304 responses
-// would silently destroy data via snapshot-replace semantics — the
-// v0.24.0 DistributionWorker is the canonical case: on 304 the
-// scanner gets back empty data, MarkDistributionComplete rotates
-// the prior rows to history and never reinserts them, so the
-// repo's distribution evidence quietly disappears even though
-// GitHub politely told us "you already have this."
+// doc; callers only need WithoutETag for bare Get / paginate paths). Use this for endpoints where a 304 is
+// not a usable answer — the v0.24.0 DistributionWorker is the canonical
+// case: through v0.29.67 the scanner read a 304 as empty data,
+// MarkDistributionComplete rotated the prior rows to history and never
+// reinserted them, so the repo's distribution evidence quietly
+// disappeared even though GitHub had said "you already have this"; since
+// v0.29.68 a 304 there is a non-answer that fails the scan, so a
+// solicited one would strike an unchanged repository for nothing.
 //
 // At 180-day distribution cadence the wasted GitHub API budget
-// from disabling ETag is ~1.6% of the pool — well worth the
-// silent-data-loss avoidance.
+// from disabling ETag is ~1.6% of the pool — well worth not striking
+// an unchanged repository (and, through v0.29.67, not wiping its
+// snapshot).
 func WithoutETag(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyBypassETag{}, true)
 }
@@ -469,8 +492,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// returns and the response's header state is applied, BEFORE
 		// handleResponse (and the caller) read the body and BEFORE any
 		// Retry-After sleep — so a throttled caller never pins a slot
-		// while it waits. graphql.go is the twin with one difference: it
-		// holds the lease through a 200 body read, for its in-body mark.
+		// while it waits. The lease is held through a body read only where
+		// the body decides the key's state: here a GitHub headerless 403
+		// (below, worklist 67); in graphql.go, the twin, a 200 body (its
+		// in-body mark) and the same headerless 403 (PR #218 review E2/E3).
 		key, release, err := c.keys.Acquire(ctx, res)
 		if err != nil {
 			return nil, fmt.Errorf("getting API key: %w", err)
@@ -489,13 +514,19 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			req.Header.Set("PRIVATE-TOKEN", key.Token)
 		default: // AuthGitHub
 			req.Header.Set("Authorization", "token "+key.Token)
+			// Pinned (worklist item 15): GitHub documents that unversioned
+			// requests default to 2022-11-28 today; pinning it makes the
+			// version ours to move. On 2026-03-10 the REST pull-request
+			// shape drops merge_commit_sha, which the `rest` escape hatch
+			// and the per-PR rescue read.
+			req.Header.Set("X-GitHub-Api-Version", GitHubAPIVersion)
 		}
 		req.Header.Set("Accept", "application/json")
 
 		// Conditional request: send If-None-Match when we have a cached ETag.
 		// GitHub does not count 304 responses against the rate limit.
-		// Skipped when the caller used WithoutETag(ctx) — see v0.25.0
-		// docstring on WithoutETag for the silent-data-loss rationale.
+		// Skipped when the caller used WithoutETag(ctx) — see the
+		// WithoutETag docstring for the rationale.
 		if !skipETag {
 			c.etagMu.RLock()
 			if etag, ok := c.etagCache[path]; ok {
@@ -536,6 +567,25 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// rotation below — so the slot is never held across a wait
 		// (lease_every_exit_test.go drives every exit).
 		c.keys.UpdateFromResponse(key, resp)
+		// A headerless 403 whose BODY says rate limit is GitHub's secondary
+		// limit with no Retry-After to size a rest by (worklist 67; the
+		// v0.29.9 decision rule was met on kate: 18.1% of retry
+		// opportunities reused the SAME key against a ~1.9% baseline).
+		// Its body is read here, under the lease, so the key rests for
+		// GitHub's documented floor before any waiter can re-lease it; the
+		// body is re-attached for handleResponse below. The unauthenticated
+		// shape is a key-leak bug, not this key's throttle, and rests nothing.
+		// GitHub only (PR #218 review E4): the 60 s floor is GitHub's
+		// documented rule, and a GitLab 403 must not bench a key on it.
+		if c.authStyle == AuthGitHub && resp.StatusCode == http.StatusForbidden &&
+			resp.Header.Get("Retry-After") == "" && !isPrimaryRefusal(resp) {
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			if readErr == nil && isRateLimitBody(body) && !isAnonymousRateLimitBody(body) {
+				c.keys.MarkSecondaryLimited(key, parseRetryAfter(resp)) // no Retry-After: GitHub's 60 s floor
+			}
+		}
 		release()
 
 		// Log rate limit state on every response so operators can monitor usage.
@@ -647,6 +697,10 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			reason = "unspecified"
 		}
 		return respDone, nil, fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, url, reason)
+	case resp.StatusCode == http.StatusConflict:
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return respDone, nil, fmt.Errorf("%w: %s: %s", ErrConflict, url, truncateBody(string(body), 200))
 	case resp.StatusCode == http.StatusGone:
 		// 410 — the resource existed but was deliberately removed (e.g.,
 		// a deleted GitHub issue). Never retryable; distinct from 404 so
@@ -844,17 +898,12 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return respRetry, nil, nil
 		}
 		if isRateLimitBody(body) {
-			// v0.29.9: nothing is marked on the key for this shape (no
-			// Retry-After to size a rest by). token_prefix and attempt are
-			// logged so the next release's log review can test whether the
-			// pool re-leases the throttled key inside GitHub's one-minute
-			// secondary-limit floor. The clearest case is this caller's own
-			// retry: the same url at attempt 2, 3, ... on the same key (a
-			// search 403 leaves the key's core budget untouched, so
-			// least-loaded selection tends to pick it again after the
-			// backoff below). Evidence of that justifies resting the key
-			// here (summary/changelog/v0.29.md, v0.29.9 "next-release log
-			// review").
+			// The key was rested in the pool under the lease, before the
+			// release (worklist 67: the v0.29.9 log review showed the pool
+			// re-leasing the throttled key inside GitHub's one-minute floor);
+			// this arm keeps its logging and this attempt's own pacing.
+			// token_prefix and attempt stay in the line so the next review
+			// can confirm the same-key rate fell to the ~1/K baseline.
 			c.logger.Warn("403 with rate-limit body but no rate-limit headers — treating as throttled",
 				"url", RedactURLUserinfo(url),
 				"token_prefix", tokenPrefix(key.Token),
@@ -973,7 +1022,8 @@ func (c *HTTPClient) primaryRefusal(ctx context.Context, resp *http.Response, ur
 //
 // v0.28.17: ALWAYS ETag-free. A body-decoding reader can never use a
 // 304 (there is no body to decode), and no GetJSON caller handles
-// ErrNotModified — so every repeat single-object read in one process
+// ErrNotModified (the distribution readers, since v0.29.68, do handle an
+// UNSOLICITED one, as a non-answer) — so every repeat single-object read in one process
 // (GitHub's FetchPRMeta/FetchPRRepos after FetchPRByNumber on the same
 // /pulls/N; GitLab's labels/assignees/reviewers/meta/repos readers on
 // the same /merge_requests/N; both forges' issue readers) either

@@ -42,7 +42,7 @@ func TestUTF8TracerFileExists(t *testing.T) {
 	_, err := os.Stat("utf8_tracer.go")
 	if err != nil {
 		t.Fatal("expected internal/db/utf8_tracer.go to exist for v0.23.5; " +
-			"see CLAUDE.md `Changes in v0.23.5`. The file holds the " +
+			"see summary/changelog/v0.23.md, the v0.23.5 entry. The file holds the " +
 			"utf8ScrubTracer type that scrubs all pgx TEXT params before " +
 			"they hit the wire.")
 	}

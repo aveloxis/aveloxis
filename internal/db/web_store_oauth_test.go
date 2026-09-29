@@ -88,15 +88,15 @@ func TestErrEmptyLoginIsExported(t *testing.T) {
 func TestUpsertOAuthUserSourceUsesErrNoRows(t *testing.T) {
 	src := mustReadSource(t, "web_store.go")
 
-	body := extractFunc(src, "UpsertOAuthUser")
+	body := extractFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
-		t.Fatal("could not locate UpsertOAuthUser function body")
+		t.Fatal("could not locate SignInOAuthUser function body")
 	}
 	if !strings.Contains(body, "pgx.ErrNoRows") {
-		t.Error("UpsertOAuthUser must reference pgx.ErrNoRows so that real DB errors don't masquerade as not-found and trigger spurious INSERTs")
+		t.Error("SignInOAuthUser must reference pgx.ErrNoRows so that real DB errors don't masquerade as not-found and trigger spurious INSERTs")
 	}
 	if !strings.Contains(body, "errors.Is") {
-		t.Error("UpsertOAuthUser must use errors.Is to detect ErrNoRows (string match on the wrapped error is unreliable)")
+		t.Error("SignInOAuthUser must use errors.Is to detect ErrNoRows (string match on the wrapped error is unreliable)")
 	}
 }
 
@@ -105,12 +105,12 @@ func TestUpsertOAuthUserSourceUsesErrNoRows(t *testing.T) {
 // while leaving the runtime test passing on the constructor path.
 func TestUpsertOAuthUserSourceChecksEmptyLogin(t *testing.T) {
 	src := mustReadSource(t, "web_store.go")
-	body := extractFunc(src, "UpsertOAuthUser")
+	body := extractFunc(src, "SignInOAuthUser") // the body since round 3 of the final review
 	if body == "" {
-		t.Fatal("could not locate UpsertOAuthUser function body")
+		t.Fatal("could not locate SignInOAuthUser function body")
 	}
 	if !strings.Contains(body, "ErrEmptyLogin") {
-		t.Error("UpsertOAuthUser must reference ErrEmptyLogin to short-circuit on blank Login before any DB write")
+		t.Error("SignInOAuthUser must reference ErrEmptyLogin to short-circuit on blank Login before any DB write")
 	}
 }
 

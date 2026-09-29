@@ -798,6 +798,16 @@ Token semantics:
 - Each visit to `/auth/token` mints a **new** token; existing tokens
   keep working until they expire, so long-running scripts aren't cut
   off when you log in elsewhere.
+- A token's role and repository scope are cached for 60 seconds per
+  process. An admin mutation, and (v0.29.68) an add through
+  `POST /api/v1/groups/{id}/repos` that linked or queued repositories,
+  drop the cache in the process that served them. An approval decided in
+  the **web** process reaches the **api** process only when its cache
+  entry expires — up to 60 seconds; the two processes share no memory.
+- A server-side failure is a **500** whose body never carries the cause
+  (`internal error; try again`, or a fixed phrase such as `package list
+  failed`, v0.29.68); the cause is in the api log. Client-side refusals
+  (400/403/404) keep their own messages.
 - Your token carries **your** repository scope — every repo in any
   of your groups (pending included; approval gates new collection,
   not visibility of collected data). Administrators are unscoped.
@@ -1155,6 +1165,9 @@ Per-user:
   fields are present; the single-`url` body remains accepted. The
   response carries `submitted` plus the outcome counts
   `{linked, enqueued, pending_approval?, request_id?, registered?}`.
+  `linked` counts only repositories this request newly linked into the
+  group: posting a repository that is already in the group again
+  returns `linked: 0` (PR #218 review C2).
   When `web.auto_approve_add_limit` lets a batch through and some of its
   repositories cannot be added, the others are still added and the call
   fails with an error saying how many could not be; sending the same
@@ -1193,7 +1206,9 @@ Admin-only:
   and diverge from the next login onward.
 - `POST /api/v1/admin/users/{userID}/admin` with
   `{"admin": true|false}` — promote/demote. Self-demotion is refused
-  (last-admin guard).
+  (last-admin guard). A demotion that would leave no admin at all is a
+  `409` with `refusing to demote the last admin — promote another user
+  first` (it was a `500` before PR #218 review).
 - `GET /api/v1/admin/groups/pending` — pending groups awaiting
   approval, with requester login/email and repo/org counts.
 - `POST /api/v1/admin/groups/{groupID}/{decision}` where decision is
@@ -1225,7 +1240,12 @@ Admin-only:
   returns `changed: true` and notifies the requester). The
   requester is notified by email when a mailer is configured.
   Response: `{ok: true, changed: bool}` — `changed=false` means the
-  request was already decided (idempotent double-click).
+  request was already decided (idempotent double-click). A request id that
+  does not exist answers `404`. An org request that can never be registered
+  answers `409` with the reason and "reject the request": an org that is
+  not on this deployment's GitHub host, a URL carrying credentials, or a
+  request created before v0.29.54 whose URL is longer than the registration
+  index holds (2,684 bytes).
 - `GET /api/v1/admin/monitor/stats` — `{queue: {status: count}}`:
   `queued`, `collecting` (real jobs), `draining` (repos parked by the
   startup staging drain or by heal-collection-gaps, v0.29.64) and `total`.

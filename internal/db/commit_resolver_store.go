@@ -419,8 +419,13 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 		 WHERE gh_login = $1 AND COALESCE(cntrb_deleted, 0) = 0
 		 LIMIT 1`,
 		login).Scan(&id)
-	if err != nil {
+	// Only "no row" is "no contributor" (SR-5; batch-3 review round 4: the
+	// third sibling of FindLoginByEmail's shape in this file).
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find contributor by login: %w", err)
 	}
 	return id, nil
 }

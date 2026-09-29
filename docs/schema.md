@@ -93,7 +93,7 @@ Central repository table. Every collected repository has exactly one row here. A
 
 ---
 
-**Operational lifecycle columns on `repos`** (added over the v0.21–v0.29 series, not itemized above): the scancode worker family (`scancode_last_run`, `scancode_version`, `scancode_locked_at/pid/boot_id/host`, `scancode_output_path`, `scancode_failed_attempts`, `scancode_timeout_attempts`, `scancode_skip_reason`), the distribution worker family (`distribution_last_run`, `distribution_scan_complete`, `distribution_failed_attempts`, `distribution_last_failed_at`), `whitespace_head_hash` (incremental whitespace-walk marker), `added_at` (stable fleet-entry stamp), `vuln_scan_last_run` (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), `repo_gone_at` (v0.28.1 — the distinct "no longer reachable on its forge" state, cleared on resurrection), and `repo_gone_checked_at` (v0.29.7 — when that state was last re-verified; the scheduler's recheck ticker claims on it). See `schema.sql` for the authoritative column list.
+**Operational lifecycle columns on `repos`** (added over the v0.21–v0.29 series, not itemized above): the scancode worker family (`scancode_last_run`, `scancode_version`, `scancode_locked_at/pid/boot_id/host`, `scancode_output_path`, `scancode_failed_attempts`, `scancode_timeout_attempts`, `scancode_skip_reason`), the distribution worker family (`distribution_last_run`, `distribution_scan_complete`, `distribution_failed_attempts`, `distribution_last_failed_at`), `whitespace_head_hash` (incremental whitespace-walk marker), `added_at` (stable fleet-entry stamp), `vuln_scan_last_run` (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), `repo_gone_at` (v0.28.1 — the distinct "no longer reachable on its forge" state, cleared on resurrection), `repo_gone_checked_at` (v0.29.7 — when that state was last re-verified; the scheduler's recheck ticker claims on it), and `metadata_backfill_attempted_at` (v0.29.69 — when the startup metadata backfill last got an answer from the forge for this repository: metadata written, or a definitive not-found; NULL = never answered; the repository is not asked again until one recollect interval has passed). See `schema.sql` for the authoritative column list.
 
 #### repo_groups_list_serve
 
@@ -1953,7 +1953,7 @@ User accounts for the Aveloxis web interface and API.
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `user_id` | SERIAL (PK) | Auto-generated | Primary key. |
-| `login_name` | TEXT NOT NULL UNIQUE | User input | Username. |
+| `login_name` | TEXT NOT NULL UNIQUE | OAuth | The user name shown in the interface. A label, not the identity: sign-in finds the account by the forge's user ID, and the name follows a rename on the forge unless another account holds it (v0.29.69). |
 | `login_hashword` | TEXT NOT NULL | User input | Hashed password. |
 | `email` | TEXT NOT NULL UNIQUE | User input | Email address. |
 | `text_phone` | TEXT UNIQUE | User input | Phone number for notifications. |
@@ -1961,6 +1961,12 @@ User accounts for the Aveloxis web interface and API.
 | `last_name` | TEXT NOT NULL | User input | Last name. |
 | `admin` | BOOLEAN NOT NULL | User input | Whether this user is an admin. Default `FALSE`. |
 | `email_verified` | BOOLEAN NOT NULL | Computed | Whether the email has been verified. Default `FALSE`. |
+| `gh_user_id` | BIGINT | GitHub OAuth | The GitHub user's numeric ID: the account's identity for a GitHub sign-in (v0.29.69). NULL when the account has none. |
+| `gh_login` | TEXT | GitHub OAuth | The GitHub user name at the last sign-in. |
+| `gl_user_id` | BIGINT | GitLab OAuth | The GitLab user's numeric ID, an identity only together with `gl_oauth_host`. |
+| `gl_username` | TEXT | GitLab OAuth | The GitLab user name at the last sign-in. |
+| `gl_oauth_host` | TEXT | GitLab OAuth | v0.29.69: the GitLab instance `gl_user_id` belongs to (`web.gitlab_base_url`, lowercased, no trailing slash; an unset `web.gitlab_base_url` is stored as `https://gitlab.com`). Two instances number their users independently. NULL on accounts from before it was recorded: such an account matches no instance at sign-in, and `aveloxis web` records its configured instance on them at start when GitLab sign-in is configured. |
+| `oauth_provider` | TEXT | OAuth | The provider of the last sign-in (`github` or `gitlab`). |
 | | | | *Standard metadata columns* |
 
 ---

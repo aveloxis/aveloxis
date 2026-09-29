@@ -16,11 +16,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/safego"
@@ -127,7 +129,11 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	err = s.decideAddRequest(r.Context(), requestID, sess.UserID, true)
-	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) {
+	if errors.Is(err, db.ErrAddRequestNotFound) {
+		http.Error(w, "no such add request", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) || errors.Is(err, db.ErrURLTooLong) {
 		// A pending org that is not on this deployment's GitHub host cannot
 		// be approved — nothing would ever enumerate it (v0.29.57 round 3;
 		// the portal reports the same store refusal the same way).
@@ -138,8 +144,9 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err != nil {
-		s.logger.Warn("failed to approve add-request", "request_id", requestID, "error", err)
-		http.Error(w, "Failed to approve request: "+err.Error(), http.StatusInternalServerError)
+		// A store failure: logged, generic body (PR #218 review C6 — the
+		// body carried the store's text).
+		s.serverError(w, r, "handleApproveAddRequest", fmt.Errorf("approve add-request %d: %w", requestID, err))
 		return
 	}
 	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
@@ -153,8 +160,11 @@ func (s *Server) handleRejectAddRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.decideAddRequest(r.Context(), requestID, sess.UserID, false); err != nil {
-		s.logger.Warn("failed to reject add-request", "request_id", requestID, "error", err)
-		http.Error(w, "Failed to reject request", http.StatusInternalServerError)
+		if errors.Is(err, db.ErrAddRequestNotFound) { // PR #218 fix review r1: the caller's input, not a store failure
+			http.Error(w, "no such add request", http.StatusNotFound)
+			return
+		}
+		s.serverError(w, r, "handleRejectAddRequest", fmt.Errorf("reject add-request %d: %w", requestID, err)) // PR #218 review C6
 		return
 	}
 	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
@@ -163,7 +173,7 @@ func (s *Server) handleRejectAddRequest(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request) {
 	pending, err := s.store.ListPendingGroups(r.Context())
 	if err != nil {
-		s.logger.Warn("failed to list pending groups", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to list pending groups", "error", err)
 		http.Error(w, "Failed to list pending groups", http.StatusInternalServerError)
 		return
 	}
@@ -172,7 +182,7 @@ func (s *Server) handleAdminPendingGroups(w http.ResponseWriter, r *http.Request
 	// table is the ongoing queue.
 	requests, err := s.store.ListPendingAddRequests(r.Context())
 	if err != nil {
-		s.logger.Warn("failed to list pending add-requests", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to list pending add-requests", "error", err)
 		http.Error(w, "Failed to list pending additions", http.StatusInternalServerError)
 		return
 	}
@@ -264,8 +274,9 @@ func (s *Server) handleApproveGroup(w http.ResponseWriter, r *http.Request) {
 
 	approval, approved, err := s.store.ApproveGroup(r.Context(), groupID, sess.UserID)
 	if err != nil {
-		s.logger.Warn("failed to approve group", "group_id", groupID, "error", err)
-		http.Error(w, "Failed to approve group: "+err.Error(), http.StatusInternalServerError)
+		// A store failure: logged, generic body (PR #218 review C6 — the
+		// body carried the store's text).
+		s.serverError(w, r, "handleApproveGroup", fmt.Errorf("approve group %d: %w", groupID, err))
 		return
 	}
 
@@ -293,8 +304,7 @@ func (s *Server) handleRejectGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.RejectGroup(r.Context(), groupID, sess.UserID); err != nil {
-		s.logger.Warn("failed to reject group", "group_id", groupID, "error", err)
-		http.Error(w, "Failed to reject group", http.StatusInternalServerError)
+		s.serverError(w, r, "handleRejectGroup", fmt.Errorf("reject group %d: %w", groupID, err)) // PR #218 review C6
 		return
 	}
 	http.Redirect(w, r, "/admin/groups/pending", http.StatusFound)
@@ -304,7 +314,7 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
-		s.logger.Warn("failed to list users", "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to list users", "error", err)
 		http.Error(w, "Failed to list users", http.StatusInternalServerError)
 		return
 	}
@@ -367,9 +377,25 @@ func (s *Server) handleSetUserAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isAdmin := strings.EqualFold(strings.TrimSpace(r.FormValue("admin")), "true")
+	// Demoting yourself is the caller's input, refused before the store, as
+	// the portal refuses it (PR #218 review C6: every store error, a lost
+	// connection included, was answered 400 with its text). The page shows
+	// no Demote button for the signed-in admin, so only a crafted POST gets
+	// here.
+	if sess := s.getSession(r); sess != nil && !isAdmin && sess.UserID == userID {
+		http.Error(w, "Refusing self-demotion — use another admin account.", http.StatusBadRequest)
+		return
+	}
 	if err := s.store.SetUserAdmin(r.Context(), userID, isAdmin); err != nil {
-		s.logger.Warn("failed to toggle admin role", "user_id", userID, "error", err)
-		http.Error(w, "Failed to update role: "+err.Error(), http.StatusBadRequest)
+		// The store's last-admin refusal (reachable only through a stale
+		// admin session, since self-demotion is refused above) is a refusal,
+		// not a failure: 409 with its reason. Any other store error is logged
+		// with a generic 500 body.
+		if errors.Is(err, db.ErrLastAdmin) {
+			http.Error(w, db.ErrLastAdmin.Error(), http.StatusConflict)
+			return
+		}
+		s.serverError(w, r, "handleSetUserAdmin", fmt.Errorf("set admin=%t for user %d: %w", isAdmin, userID, err))
 		return
 	}
 	http.Redirect(w, r, "/admin/users", http.StatusFound)

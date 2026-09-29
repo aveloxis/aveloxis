@@ -29,10 +29,14 @@ type fakeSessionStore struct {
 	scope       []int64
 	valid       map[string]bool
 	validates   atomic.Int64
+	onValidate  func() // runs inside ValidateSessionToken (worklist follow-up 7: a bust racing a resolve)
 }
 
 func (f *fakeSessionStore) ValidateSessionToken(_ context.Context, token string) (int, error) {
 	f.validates.Add(1)
+	if f.onValidate != nil {
+		f.onValidate()
+	}
 	if f.validateErr != nil {
 		return 0, f.validateErr
 	}

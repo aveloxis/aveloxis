@@ -39,7 +39,7 @@ func TestOrgAutoApproveSourceContract(t *testing.T) {
 		t.Fatal("IsOrgRegisteredAnywhere helper missing")
 	}
 	if !strings.Contains(src, "LOWER(org_url)") {
-		t.Error("IsOrgRegisteredAnywhere must match case-insensitively (org URLs are stored case-preserved)")
+		t.Error("IsOrgRegisteredAnywhere must match case-insensitively (org URL rows written before v0.29.68 keep the registrant's case)")
 	}
 }
 
@@ -178,11 +178,21 @@ func TestGetUserIdentityReplacesGetUserLogin(t *testing.T) {
 }
 
 func TestUpsertOAuthUserRefreshesDisplayName(t *testing.T) {
-	body := extractFunctionBody(t, "web_store.go", "UpsertOAuthUser")
 	// The UPDATE path must refresh first/last name (non-empty guard) —
 	// pre-v0.27.84 the display name was written only at first signup and
-	// went stale after provider-side renames.
-	upd := body[strings.Index(body, "UPDATE aveloxis_ops.users"):]
+	// went stale after provider-side renames. Since the F1 identity fix
+	// (2026-09-28) the UPDATE is updateOAuthUser, which both of
+	// UpsertOAuthUser's owned-row paths call; the runtime twin is
+	// TestUpsertOAuthUserNameRefreshEndToEnd.
+	if caller := extractFunctionBody(t, "web_store.go", "SignInOAuthUser"); strings.Count(caller, "s.updateOAuthUser(ctx, userID, info)") != 2 {
+		t.Error("SignInOAuthUser must refresh both owned-row paths (found by ID, claimed by name) through updateOAuthUser")
+	}
+	body := extractFunctionBody(t, "web_store.go", "updateOAuthUser")
+	i := strings.Index(body, "UPDATE aveloxis_ops.users")
+	if i < 0 {
+		t.Fatal("updateOAuthUser has no UPDATE of aveloxis_ops.users")
+	}
+	upd := body[i:]
 	for _, needle := range []string{"first_name", "last_name"} {
 		if !strings.Contains(upd, needle) {
 			t.Errorf("UpsertOAuthUser's UPDATE path must refresh %s from the fresh OAuth name", needle)

@@ -4,10 +4,12 @@
 package db
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/costtest"
 	"github.com/aveloxis/aveloxis/internal/spdx"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -454,11 +456,9 @@ func TestPartialStatementsDoNotSpeakForTheWhole(t *testing.T) {
 
 // TestNoticeCostIsLinear — review round 20 S5: the reader compared every
 // version mention with every anchor, quadratic in the input, and the input is
-// registry-controlled (a 199 KB field took 0.7 s). Four times the input must
-// cost well under sixteen times the time: linear work is about four times,
-// quadratic sixteen, and eight separates them. The fastest of several runs
-// is compared, so a loaded machine or -race (which slows both alike) does
-// not decide it.
+// registry-controlled (a 199 KB field took 0.7 s). The comparison and its
+// noise handling are internal/costtest's (four times the input, at most
+// eight times the time).
 func TestNoticeCostIsLinear(t *testing.T) {
 	if testing.Short() || raceBuild {
 		t.Skip("timing comparison (not under -short or the race detector)")
@@ -466,19 +466,8 @@ func TestNoticeCostIsLinear(t *testing.T) {
 	build := func(n int) string {
 		return "gnu general public license " + strings.Repeat("gpl2 ", n)
 	}
-	fastest := func(s string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 5 {
-			start := time.Now()
-			detectGPLText(s)
-			if d := time.Since(start); d < best {
-				best = d
-			}
-		}
-		return best
-	}
 	// Many version mentions, and many "license" words to account for.
-	for _, build := range []func(int) string{
+	for i, build := range []func(int) string{
 		build,
 		func(n int) string { return "gnu general public license " + strings.Repeat("the license ", n) },
 		func(n int) string { return "gnu general public license " + strings.Repeat("gplv2 or later ", n) },
@@ -508,11 +497,11 @@ func TestNoticeCostIsLinear(t *testing.T) {
 			return "gnu general public license version 2.\nspdx-license-identifier: " + strings.Repeat("gpl-2.0-only/", n) + "gpl-2.0-only\n"
 		},
 	} {
-		small, large := build(10000), build(40000)
-		ts, tl := fastest(small), fastest(large)
-		if tl > 8*ts {
-			t.Errorf("notice reading is superlinear: %v for %d bytes, %v for %d bytes", ts, len(small), tl, len(large))
-		}
+		// Named by position: several inputs share a long prefix (review F4).
+		costtest.Linear(t, fmt.Sprintf("notice reading, input %d (%.70q)", i, build(2)), func(n int) func() {
+			s := build(n)
+			return func() { detectGPLText(s) }
+		}, 10000, 0)
 	}
 }
 
@@ -2153,28 +2142,40 @@ func TestLicenseURLsAreAnchored(t *testing.T) {
 	}
 }
 
+// TestAllInsideCostIsLinear pins allInside on its own (PR #218 review of
+// internal/costtest, F1): inside the notice reader its round-20 quadratic is
+// diluted by the linear rest and measures only about 8.5x, just over the
+// limit. Here n inner spans against n outer spans cost n log n with the
+// sorted running maximum and n² with the old nested loop.
+func TestAllInsideCostIsLinear(t *testing.T) {
+	if testing.Short() || raceBuild {
+		t.Skip("timing comparison (not under -short or the race detector)")
+	}
+	costtest.Linear(t, "allInside", func(n int) func() {
+		outer := make([][]int, n)
+		inner := make([][]int, n)
+		for i := range n {
+			outer[i] = []int{10 * i, 10*i + 8}
+			inner[i] = []int{10*i + 1, 10*i + 7}
+		}
+		return func() {
+			if !allInside(inner, outer) {
+				t.Fatal("every inner span lies inside its outer span")
+			}
+		}
+	}, 20000, 0)
+}
+
 // TestURLReferenceCostIsLinear — PR #215 review round 3: readNotice checked
 // licenseURLRe, whose file-name arm is anchored only at the end, once per
 // fresh start of a URL match, so a token with many "](" link openers cost
 // starts times length (23.8 s at 200 KB). The file-name arm is now checked
-// once per match; four times the input must cost well under sixteen times
-// the time (see TestNoticeCostIsLinear for the rule).
+// once per match; the comparison is internal/costtest's.
 func TestURLReferenceCostIsLinear(t *testing.T) {
 	if testing.Short() || raceBuild {
 		t.Skip("timing comparison (not under -short or the race detector)")
 	}
 	head := "licensed under the apache license, version 2.0 (the \"license\"); you may not use this file except in compliance with the license. you may obtain a copy of the license at "
-	fastest := func(s string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 3 {
-			start := time.Now()
-			detectApacheText(s)
-			if d := time.Since(start); d < best {
-				best = d
-			}
-		}
-		return best
-	}
 	// Two token shapes, one per arm of the own-URL check. The link openers
 	// alone (review round 3) drove the file arm quadratic; a run of "www."
 	// starts ending in "@" (review round 7) drove the host arm quadratic,
@@ -2183,10 +2184,9 @@ func TestURLReferenceCostIsLinear(t *testing.T) {
 		{"link openers", "x)](https://a/", ""},
 		{"www starts before an @", "x)](www.apache.org;", "@"},
 	} {
-		build := func(n int) string { return head + strings.Repeat(tc.unit, n) + tc.end }
-		small, large := fastest(build(2000)), fastest(build(8000))
-		if large > 8*small+20*time.Millisecond {
-			t.Errorf("%s: 4x the token cost %v vs %v: more than 8x, the work is not linear", tc.name, large, small)
-		}
+		costtest.Linear(t, tc.name, func(n int) func() {
+			s := head + strings.Repeat(tc.unit, n) + tc.end
+			return func() { detectApacheText(s) }
+		}, 2000, 20*time.Millisecond)
 	}
 }

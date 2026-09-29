@@ -140,7 +140,7 @@ On non-Linux dev machines (e.g. macOS) the `/proc` path is absent and `readBootI
 
 ## 6. Graceful shutdown
 
-When the scheduler's context is cancelled (`aveloxis stop serve`):
+When the scheduler's context is cancelled (`aveloxis stop serve`; on a dedicated host `aveloxis stop scancode-worker` — the worker's `Run` performs the same steps and the process closes its pool after it returns):
 
 1. The dispatcher exits immediately on its `<-ctx.Done()` arm. No new claims happen.
 2. The dispatcher closes the jobs channel.

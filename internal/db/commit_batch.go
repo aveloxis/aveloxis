@@ -126,6 +126,13 @@ func (s *PostgresStore) UpsertCommitMessageBatch(ctx context.Context, msgs []*mo
 			args = append(args, m.RepoID, SanitizeText(m.Message), m.Hash)
 		}
 
+		// Worklist 70: the WHERE skips an unchanged message, so a
+		// recollection does not leave a dead tuple per commit (the
+		// vacuums of the ~200M-row table were removing 9.3-14.9M each).
+		// tool_version and data_collection_date therefore record when the
+		// text was last WRITTEN, not last seen; nothing reads
+		// commit_messages.data_collection_date as "last seen". Same guard
+		// as UpsertCommitMessage in postgres.go.
 		sql := `
 			INSERT INTO aveloxis_data.commit_messages
 				(repo_id, cmt_msg, cmt_hash, tool_source, data_source)
@@ -133,7 +140,8 @@ func (s *PostgresStore) UpsertCommitMessageBatch(ctx context.Context, msgs []*mo
 			ON CONFLICT (repo_id, cmt_hash) DO UPDATE SET
 				cmt_msg = EXCLUDED.cmt_msg,
 				tool_version = EXCLUDED.tool_version,
-				data_collection_date = NOW()`
+				data_collection_date = NOW()
+			WHERE commit_messages.cmt_msg IS DISTINCT FROM EXCLUDED.cmt_msg`
 
 		if err := s.withRetry(ctx, func(ctx context.Context) error {
 			_, err := s.pool.Exec(ctx, sql, args...)

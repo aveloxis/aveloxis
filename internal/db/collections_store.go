@@ -382,7 +382,13 @@ func (s *PostgresStore) GetCollectionRepos(ctx context.Context, collectionID int
 // (v0.27.20 / v0.27.4 scope semantics).
 func (s *PostgresStore) CopyCollectionToGroup(ctx context.Context, collectionID int64, userID int, targetGroupID int64) (int64, error) {
 	if err := s.verifyGroupOwned(ctx, userID, targetGroupID); err != nil {
-		return 0, ErrNotGroupOwner
+		// verifyGroupOwnership answers ErrGroupNotOwned for "no such owned
+		// group" and returns any other failure as itself; only the first is
+		// ErrNotGroupOwner here (SR-5; worklist follow-up 12).
+		if errors.Is(err, ErrGroupNotOwned) {
+			return 0, ErrNotGroupOwner
+		}
+		return 0, err
 	}
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)

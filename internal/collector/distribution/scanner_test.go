@@ -7,7 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -94,8 +94,9 @@ func TestScannerEmitsErrorLogWhenBothExternalSourcesFail(t *testing.T) {
 
 func TestScannerGitHubErrorsStayWarnLevel(t *testing.T) {
 	body := readFile(t, "scanner.go")
-	// GitHub source error logs should remain WARN — 403/404/304 from
-	// GitHub on these endpoints are common and benign.
+	// GitHub source error logs should remain WARN — 403/404 from GitHub
+	// on these endpoints are common and benign (a 304 is a non-answer
+	// since v0.29.68 round 8; it still logs at WARN and fails the scan).
 	for _, expected := range []string{
 		`"distribution: github release assets failed"`,
 		`"distribution: github packages failed"`,
@@ -159,12 +160,14 @@ func TestScannerSucceedsWhenLegitimateNoDataAcrossWorkingSources(t *testing.T) {
 // half of the contract: if NOTHING completed cleanly, the scan
 // genuinely failed (caller routes to RecordDistributionFailure).
 //
-// The GitHub side must fail with ANSWERS (422, ErrRequestRejected), which
-// are returned at once and are not v0.29.55 non-answers — so the error
-// comes from the v0.25.0 gate. Any error that is not an answer
-// (platform.IsDefinitiveAnswer false — see githubErrorIsNonAnswer) would
-// instead fail the scan through the non-answer check and leave the gate
-// unpinned (review rounds 5–7: the old 401 fixture ended in a deadline).
+// The GitHub source is OFF here. Since worklist item 25 (v0.29.68) a GitHub
+// arm's error is always a non-answer — a rejected whole-source listing
+// included — and one non-answer fails the scan before this gate, so with
+// the GitHub source on the gate cannot be the failing phase: the fixture
+// would pass on the wrong failure (through v0.29.67 it used 422s, then an
+// answer; before that a 401 whose retries ended in a deadline — review
+// rounds 5–7). The gate is reached exactly when every ATTEMPTED source
+// errored: deps.dev and ecosyste.ms, both 500.
 func TestScannerFailsOnlyWhenEveryEnabledSourceErrored(t *testing.T) {
 	depsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "deps.dev down", http.StatusInternalServerError)
@@ -176,20 +179,15 @@ func TestScannerFailsOnlyWhenEveryEnabledSourceErrored(t *testing.T) {
 	}))
 	t.Cleanup(ecoServer.Close)
 
-	// Every GitHub source answers with a 422 (ErrRequestRejected): an error
-	// that IS an answer, returned at once, so it reaches the v0.25.0
-	// every-source-errored gate rather than the v0.29.55 non-answer
-	// failure. (Through v0.29.54 this used a 401; its retries end in a
-	// deadline, which v0.29.55 counts as a non-answer, so the fixture no
-	// longer reached the gate it pins — review round 5.) Combined with
-	// deps.dev/ecosyste.ms 500s, every enabled source errors → the scan
-	// must fail.
+	// A GitHub server that fails the test if asked: the source is off.
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+		t.Errorf("the GitHub source is off; it was asked %s", r.URL.Path)
+		http.Error(w, "off", http.StatusInternalServerError)
 	}))
 	t.Cleanup(ghServer.Close)
 
 	scanner := buildTestScanner(t, depsServer.URL, ecoServer.URL, ghServer.URL, true)
+	scanner.GitHub = nil
 
 	// Short ctx so a fixture that drifts into retries fails fast instead
 	// of hanging the suite.
@@ -200,11 +198,9 @@ func TestScannerFailsOnlyWhenEveryEnabledSourceErrored(t *testing.T) {
 	if err == nil {
 		t.Fatal("when EVERY source errors, scan must return non-nil error so RecordDistributionFailure runs and backoff applies")
 	}
-	// On correct code only the gate's joined error carries the GitHub
-	// answers (the non-answer failure joins non-answers). The answer/
-	// non-answer split itself is pinned by the "rejected (422)" case of
-	// TestCompositeScannerGitHubNonAnswerFailsTheScan.
-	if !errors.Is(err, platform.ErrRequestRejected) {
+	// The gate's joined error carries both registry failures; the
+	// non-answer failure has its own prefix and cannot be this path.
+	if msg := err.Error(); strings.Contains(msg, "without an answer") || !strings.Contains(msg, "deps.dev") || !strings.Contains(msg, "ecosyste.ms") {
 		t.Fatalf("err = %v — the scan did not fail through the every-source-errored gate", err)
 	}
 }
@@ -376,7 +372,7 @@ var _ json.Decoder
 
 // TestCompositeScannerGitHubNonAnswerFailsTheScan (v0.29.55 review round 3;
 // operator decision (a), 2026-09-17): GitHub source errors never failed or
-// marked a scan, on the grounds that 403/404/304 from these endpoints are
+// marked a scan, on the grounds that 403/404 from these endpoints are
 // routinely benign. That covers ANSWERS; it also swallowed failures that say
 // nothing (retries exhausted — four "github manifests failed … exhausted 10
 // retries" lines in the 2026-09-17 incident log — a cut-off body, an empty
@@ -434,10 +430,13 @@ func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
 			}
 			return false
 		}, true},
-		// Review round 6: an error that IS an answer (a rejected request)
-		// must not fail the scan when other sources are clean — pins that
-		// githubErrorIsNonAnswer excludes answers, not only that the
-		// non-answer arms exist.
+		// Review round 6 pinned this as an ANSWER that completes the scan;
+		// worklist item 25 (v0.29.68) reversed it: a rejected WHOLE-SOURCE
+		// listing is the forge's answer about the request, not about the
+		// repository's distributions, and as an answer it emptied the
+		// release rows and stamped the scan complete. It fails the scan now
+		// (TestRejectedListingDoesNotCompleteTheScan drives all three arms);
+		// a rejected fetch of ONE manifest's content stays an answer.
 		"release listing rejected (422)": {func(w http.ResponseWriter, r *http.Request) bool {
 			if r.URL.Path == "/repos/x/y/releases" {
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -445,7 +444,7 @@ func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
 				return true
 			}
 			return false
-		}, false},
+		}, true},
 		// Copilot review 5237013602 on PR #209: an off-host redirect refused by
 		// the client is not an answer; the root listing used to swallow it as
 		// "nothing here" and the scan was stored complete.
@@ -529,5 +528,23 @@ func TestCompositeScannerGitHubNonAnswerFailsTheScan(t *testing.T) {
 				t.Fatalf("err=%v complete=%v — a GitHub answer (404, 422) does not fail the scan: it succeeds and is complete", err, complete)
 			}
 		})
+	}
+}
+
+// TestGitHubUnsolicited304IsANonAnswer pins review round 8 of items 22–25:
+// the readers never solicit a 304 (GetJSON is ETag-free), so one that
+// arrives says nothing about the repository and the scan fails and keeps
+// its snapshot — through round 7 the scanner excluded it from the
+// non-answer rule while the readers read it as "empty" (one rule, two
+// spellings that had drifted).
+func TestGitHubUnsolicited304IsANonAnswer(t *testing.T) {
+	if !githubErrorIsNonAnswer(fmt.Errorf("release assets: %w", platform.ErrNotModified)) {
+		t.Error("an unsolicited 304 must be a non-answer (the scan fails, the snapshot stays)")
+	}
+	if githubErrorIsNonAnswer(fmt.Errorf("x: %w", platform.ErrNotFound)) {
+		t.Error("a 404 is an answer")
+	}
+	if githubErrorIsNonAnswer(context.Canceled) {
+		t.Error("a cancellation is not a non-answer (it is the shutdown)")
 	}
 }

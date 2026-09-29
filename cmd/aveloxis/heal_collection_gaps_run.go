@@ -222,7 +222,7 @@ func (r *gapHealRun) releaseAll() {
 	// A context the interrupt did not cancel.
 	// KeepDue: a heal is not a reason to recollect (worklist item 56).
 	if n, err := r.store.ReleaseDrainLocks(context.Background(), r.workerID, db.DrainReleaseKeepDue); err != nil {
-		r.logger.Warn("releasing this run's parked rows failed — stale-lock recovery or the next serve start reclaims them", "worker_id", r.workerID, "error", err)
+		r.logger.Warn("releasing this run's parked rows failed — stale-lock recovery reclaims them once the heartbeat has stopped (a serve start leaves a heal's fresh rows alone)", "worker_id", r.workerID, "error", err)
 	} else if n > 0 {
 		r.logger.Info("released parked rows on exit", "count", n, "worker_id", r.workerID)
 	}
@@ -376,7 +376,7 @@ func (r *gapHealRun) explainSkip(ctx context.Context, repoID int64) error {
 		// read (a collection finished, or a drain released it).
 		return fmt.Errorf("repo %d became queued after the lock attempt — nothing healed; rerun now", repoID)
 	case q.Drain():
-		return fmt.Errorf("repo %d is parked by a staging drain or another heal run — nothing healed; rerun when it is released (a crashed owner's park is reclaimed by stale-lock recovery or the next serve start)", repoID)
+		return fmt.Errorf("repo %d is parked by a staging drain or another heal run — nothing healed; rerun when it is released (a crashed serve's park is reclaimed by the next serve start; a heal's by stale-lock recovery once its heartbeat stops)", repoID)
 	default:
 		return fmt.Errorf("repo %d is being collected — nothing healed; rerun when its collection finishes (a crashed owner's lock is reclaimed by stale-lock recovery or the next serve start)", repoID)
 	}

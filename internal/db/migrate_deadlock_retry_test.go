@@ -23,18 +23,26 @@ func TestExecMigrationStepRetriesDeadlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	idx := strings.Index(s, "func execMigrationStep(")
+	// The contract lives in retryOnDeadlock since v0.29.68 (worklist item
+	// 37), which the step helpers share; TestRetryOnDeadlock drives it.
+	idx := strings.Index(s, "func retryOnDeadlock(")
 	if idx < 0 {
-		t.Fatal("execMigrationStep not found")
+		t.Fatal("retryOnDeadlock not found")
 	}
-	body := s[idx : idx+1800]
+	body := s[idx : idx+1200]
 	for _, needle := range []string{
 		`pgErr.Code != "40P01"`, // only deadlocks retry
 		"deadlockRetries",       // bounded
 		"errors.As(err, &pgErr)",
 	} {
 		if !strings.Contains(body, needle) {
-			t.Errorf("execMigrationStep missing %q — the deadlock retry contract", needle)
+			t.Errorf("retryOnDeadlock missing %q — the deadlock retry contract", needle)
+		}
+	}
+	for _, helper := range []string{"func execMigrationStep(", "func execCreateIndexConcurrently(", "func addColumnIfMissing("} {
+		i := strings.Index(s, helper)
+		if i < 0 || !strings.Contains(s[i:i+1600], "retryOnDeadlock(") {
+			t.Errorf("%s must route its statements through retryOnDeadlock", helper)
 		}
 	}
 }

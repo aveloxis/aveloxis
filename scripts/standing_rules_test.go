@@ -53,11 +53,14 @@ func TestStandingRulesRegistry(t *testing.T) {
 			if d.IsDir() || !strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
+			scanned++
+			if !srctest.CompiledTestFile(t, root, path) {
+				return nil // go test never compiles it (name, header, testdata/_/. dir, nested module): a test declared there does not exist
+			}
 			b, rerr := os.ReadFile(path)
 			if rerr != nil {
 				return rerr
 			}
-			scanned++
 			src := string(b)
 			af, perr := parser.ParseFile(token.NewFileSet(), path, b, parser.SkipObjectResolution)
 			if perr != nil {

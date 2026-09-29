@@ -100,11 +100,18 @@ func TestStartAbortMessageBranchesOnChecklist(t *testing.T) {
 		t.Fatalf("test fixture %q must not have a checklist", noChecklist)
 	}
 
-	msg := startAbortMessage(noChecklist)
-	for _, dead := range []string{"deploy-checklist", "ack-deploy", "deploy steps"} {
+	msg := startAbortMessage(noChecklist, ladderMigrateStep(noChecklist))
+	// PR #218 fix review r12 F1: the ban was on the flag-less command, which
+	// answers "has no manual deploy steps" here; `--pending` lists the
+	// range the stamp refusal names (a skipped release's heals included)
+	// and always names the migrate, so both branches point at it.
+	for _, dead := range []string{"`aveloxis deploy-checklist`", "ack-deploy", "deploy steps"} {
 		if strings.Contains(msg, dead) {
-			t.Errorf("a version with no checklist must not point at %q — that command prints %q:\n%s", dead, "has no manual deploy steps", msg)
+			t.Errorf("a version with no checklist must not point at %q — the flag-less command prints %q:\n%s", dead, "has no manual deploy steps", msg)
 		}
+	}
+	if !strings.Contains(msg, "`aveloxis deploy-checklist --pending`") {
+		t.Errorf("the no-checklist abort line must say where the range's steps are listed:\n%s", msg)
 	}
 	if !strings.Contains(msg, "migrate --skip-views") {
 		t.Errorf("the stamp remedy is the only reason left, so the message must carry it:\n%s", msg)
@@ -119,10 +126,10 @@ func TestStartAbortMessageBranchesOnChecklist(t *testing.T) {
 	if _, ok := deployChecklistFor(withChecklist); !ok {
 		t.Skipf("this binary's version (%s) has no checklist entry; the with-checklist arm is unreachable here", withChecklist)
 	}
-	msg = startAbortMessage(withChecklist)
+	msg = startAbortMessage(withChecklist, ladderMigrateStep(withChecklist))
 	// The stamp remedy is the migrate step of THIS version's checklist
 	// (post-loop review finding 2: 0.29.57's is a plain migrate).
-	for _, needle := range []string{"deploy-checklist", "ack-deploy", "`" + ladderMigrateStep(withChecklist) + "`", "--skip-deploy-check"} {
+	for _, needle := range []string{"deploy-checklist --pending", "ack-deploy", "`" + ladderMigrateStep(withChecklist) + "`", "--skip-deploy-check"} {
 		if !strings.Contains(msg, needle) {
 			t.Errorf("a version WITH a checklist must still name %q — either reason can have refused:\n%s", needle, msg)
 		}

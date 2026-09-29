@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -76,7 +77,15 @@ func (s *PostgresStore) GetRepoForSBOM(ctx context.Context, repoID int64) (*Repo
 			WHERE repo_id = $1 ORDER BY data_collection_date DESC NULLS LAST, repo_info_id DESC LIMIT 1
 		) ri ON ri.repo_id = r.repo_id
 		WHERE r.repo_id = $1`, repoID).Scan(&r.Name, &r.Owner, &r.GitURL, &r.License)
-	return r, err
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("repo %d: %w", repoID, ErrRepoNotFound)
+	}
+	if err != nil {
+		// Every failure names the repository, not only not-found: the SBOM
+		// generator returns this error as is (PR #218 review A7).
+		return nil, fmt.Errorf("repo %d: %w", repoID, err)
+	}
+	return r, nil
 }
 
 // GetRepoLibyearDeps returns all libyear deps for a repo, for SBOM generation.

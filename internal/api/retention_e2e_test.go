@@ -57,6 +57,14 @@ func TestRetentionCompareEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertRepo: %v", err)
 	}
+	t.Cleanup(func() {
+		// The rows this test seeds (worklist §4: they leaked).
+		cctx := context.Background()
+		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
+		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+		_, _ = store.Pool().Exec(cctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login LIKE '\_avrete2e\_%'`)
+	})
 	seedContributor := func(login string) string {
 		var id string
 		if err := store.Pool().QueryRow(ctx, `

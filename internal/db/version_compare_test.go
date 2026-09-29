@@ -21,10 +21,23 @@ func TestCompareVersionish(t *testing.T) {
 		{"4.1", "4.1.0", 0}, // a missing segment reads as 0
 		{"v1.2.3", "1.2.3", 0},
 		{"1.0.0-rc1", "1.0.0-rc2", -1}, // non-numeric segments compare lexically
-		{"1.2.x", "1.2.3", 1},          // a segment without digits sorts after one with
-		{"1.0.1b1", "1.0.2", -1},       // digits first, then the rest
+		{"1.2.x", "1.2.3", 1},          // a segment without digits sorts after one with — unless it is a pre-release tag
+		{"1.0.1.dev3", "1.0.1.0", -1},
+		{"2.0.0.rc.1", "2.0.0", -1},
+		{"1.0.1b1", "1.0.2", -1}, // digits first, then the rest
 		{"1.0.1b1", "1.0.10", -1},
-		{"1.0.1b1", "1.0.1", 1},
+		// Worklist item 59: a pre-release precedes its release (SemVer "-",
+		// PEP 440 a/b/rc/dev), so a pin at v1.0.0-rc1 IS affected by an
+		// advisory fixed in 1.0.0; post-releases and build metadata follow it.
+		{"1.0.1b1", "1.0.1", -1},
+		{"1.0.0-rc1", "1.0.0", -1},
+		{"1.0.0-alpha.1", "1.0.0", -1},
+		{"2.0.0rc1", "2.0.0", -1},
+		{"1.0.1a1", "1.0.1b1", -1},
+		{"1.0.1.dev3", "1.0.1", -1},
+		{"1.0.post1", "1.0", 1},
+		{"1.0.0+build", "1.0.0", 1},
+		{"1.0.1b1", "1.0.0", 1},
 		{"4.10", "4.9", 1},
 		{"007", "7", 0},
 		{"99999999999999999999999", "100000000000000000000000", -1}, // no integer overflow
@@ -44,7 +57,38 @@ func TestCompareVersionish(t *testing.T) {
 // (1.0.2 < 1.0.10 < 1.0.1b1 < 1.0.2) and gave sort an input-order-
 // dependent result. Every permutation of a mixed set must sort the same.
 func TestCompareVersionishIsASortKey(t *testing.T) {
-	want := []string{"1.0.1", "1.0.1b1", "1.0.2", "1.0.10", "1.0.x", "2.0.0-rc.1"}
+	// The full order, mixing every suffix class (batch 7c review round 1:
+	// with "+build" and ".post1" beside pre-releases the comparator was
+	// not transitive and a sort came out in input order). Too many for a
+	// permutation walk, so every triple is checked for antisymmetry and
+	// transitivity and the sort is driven from several shuffles.
+	full := []string{"1.0.1b1", "1.0.1", "1.0.1.post1", "1.0.1+build", "1.0.2", "1.0.10", "1.0.x", "1.2.dev", "1.2.3", "1.2.build", "2.0.0-rc.1", "2.0.0"}
+	for i := range full {
+		for j := range full {
+			if CompareVersionish(full[i], full[j]) != -CompareVersionish(full[j], full[i]) {
+				t.Errorf("not antisymmetric: %q vs %q", full[i], full[j])
+			}
+			for k := range full {
+				if CompareVersionish(full[i], full[j]) < 0 && CompareVersionish(full[j], full[k]) < 0 && CompareVersionish(full[i], full[k]) >= 0 {
+					t.Errorf("not transitive: %q < %q < %q but %q >= %q", full[i], full[j], full[k], full[i], full[k])
+				}
+			}
+		}
+	}
+	for shuffle := 0; shuffle < len(full); shuffle++ {
+		p := append([]string(nil), full[shuffle:]...)
+		p = append(p, full[:shuffle]...)
+		for i, j := 0, len(p)-1; i < j && shuffle%2 == 1; i, j = i+1, j-1 {
+			p[i], p[j] = p[j], p[i]
+		}
+		sort.Slice(p, func(i, j int) bool { return CompareVersionish(p[i], p[j]) < 0 })
+		for i := range full {
+			if p[i] != full[i] {
+				t.Fatalf("sorted %v, want %v (a comparator that is not transitive sorts by input order)", p, full)
+			}
+		}
+	}
+	want := []string{"1.0.1b1", "1.0.1", "1.0.2", "1.0.10", "1.0.x", "2.0.0-rc.1", "2.0.0"}
 	perm := func(xs []string) [][]string {
 		var out [][]string
 		var rec func(int)

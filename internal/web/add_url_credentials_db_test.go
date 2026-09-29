@@ -156,6 +156,10 @@ func TestAddURLWithCredentialsIsRefusedAndNotLogged(t *testing.T) {
 	for name, orgURL := range map[string]string{
 		"credentials": "https://user:" + secret + "@github.com/" + marker + "-org",
 		"over-long":   "https://github.com/" + marker + "-" + strings.Repeat("x", db.MaxAddURLBytes),
+		// PR #218 review C4: a value the database refuses (SQLSTATE class
+		// 22, here a NUL byte) is the user's input too; the repo path said
+		// so and the org path said "try again".
+		"NUL byte": "https://github.com/" + marker + "-nul\x00org",
 	} {
 		logs.Reset()
 		w := post("/groups/add-org", url.Values{"org_url": {orgURL}})
@@ -177,6 +181,9 @@ func TestAddURLWithCredentialsIsRefusedAndNotLogged(t *testing.T) {
 	page := get(fmt.Sprintf("/groups/%d?org_error=invalid", gid))
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), notice) {
 		t.Errorf("GET ?org_error=invalid = %d; want 200 and the page to say %q", page.Code, notice)
+	}
+	if !strings.Contains(page.Body.String(), "must not carry control characters") {
+		t.Errorf("the org notice must name control characters, as the repo notice does (PR #218 review C4)")
 	}
 	if plain := get(fmt.Sprintf("/groups/%d", gid)); plain.Code != http.StatusOK || strings.Contains(plain.Body.String(), notice) {
 		t.Errorf("the notice shows without its value")

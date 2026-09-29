@@ -525,19 +525,12 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 	// v0.23.3: process-group cleanup. Same shape as scancode runOne.
 	// scorecard spawns its own git subprocess (in remote mode) plus
 	// various check probes that survive as orphans when only the
-	// immediate child is killed via ctx cancel. Setpgid puts the
-	// whole subprocess tree into its own pgid; cmd.Cancel kills the
-	// group on ctx cancel; WaitDelay bounds the post-cancel block.
-	// Operator-reported on 2026-05-21: scorecard ghosts consume CPU
-	// and memory after aveloxis stop.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	cmd.WaitDelay = 10 * time.Second
+	// immediate child is killed via ctx cancel. groupKilled puts the
+	// whole subprocess tree into its own pgid, kills the group on ctx
+	// cancel and bounds the post-cancel block (one shared block since
+	// v0.29.68 review round 14). Operator-reported on 2026-05-21:
+	// scorecard ghosts consume CPU and memory after aveloxis stop.
+	groupKilled(cmd)
 
 	// v0.23.7: split cmd.Run into Start + Wait so we have a PID for
 	// the deferred straggler kill. The v0.23.3 cmd.Cancel only fires
@@ -704,6 +697,7 @@ func fetchRateLimitSnapshot(ctx context.Context, url, token string, logger *slog
 		return rateLimitSnapshot{}
 	}
 	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("X-GitHub-Api-Version", platform.GitHubAPIVersion) // every GitHub REST request pins the version (worklist item 15)
 	// v0.29.12: the probe carries a pool token and never follows a redirect
 	// — Go's default policy re-sends Authorization to the same domain AND its
 	// subdomains, including on an https→http downgrade, and the probe only

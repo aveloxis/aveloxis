@@ -231,6 +231,21 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 // Dependency scanning
 // ============================================================
 
+// canonicalManifestName is the ONE spelling the three manifest dispatches
+// (the inventory lookup, parseDependencyFile's switch, the libyear walk's
+// switch) compare: the requirements family is matched case-insensitively
+// (`Requirements.txt`, `REQUIREMENTS.TXT` were collected by nothing —
+// worklist §4, v0.29.68) and every other name byte-exact, because the other
+// mixed-case keys (Gemfile, Cargo.toml, Package.swift, Pipfile, …) are the
+// real names and lowering them would drop those inventories. Decided as the
+// class: the requirements family only.
+func canonicalManifestName(base string) string {
+	if strings.EqualFold(base, "requirements.txt") {
+		return "requirements.txt"
+	}
+	return base
+}
+
 // manifestFiles maps filename patterns to their language/ecosystem.
 var manifestFiles = map[string]string{
 	"package.json":             "JavaScript",
@@ -299,7 +314,7 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 			return nil
 		}
 
-		filename := filepath.Base(path)
+		filename := canonicalManifestName(filepath.Base(path))
 		lang, ok := manifestFiles[filename]
 		if !ok {
 			// Check extension-based matches (e.g., .csproj).
@@ -357,7 +372,7 @@ func parseDependencyFile(path, lang string) ([]string, error) {
 	// readManifest already transcoded UTF-16 and dropped a UTF-8 BOM.
 	content := string(data)
 
-	switch filepath.Base(path) {
+	switch canonicalManifestName(filepath.Base(path)) {
 	case "package.json":
 		return parsePackageJSON(data)
 	case "requirements.txt":
@@ -531,15 +546,177 @@ func parseTOMLDeps(content, section string) []string {
 //     (`gem "rails", '~> 7.0'`) inventoried the constraint — 387 rows of
 //     `aveloxis_large` are a Ruby "package" called `~> 7.0` or similar.
 //
-// The name is the first comma-separated argument, unquoted, which is how
-// parseGemfileVersions has always read it.
+// Item 71 (v0.29.69): "the first comma-separated argument" was not the name
+// either. A trailing modifier or an interpolated name became a fabricated gem
+// (`json" if defined?(RUBY_VERSION) && RUBY_VERSION < '1.9`,
+// `github-pages" if ENV["GH_PAGES"]`, `beaker-#{ENV['BEAKER_HYPERVISOR']}`),
+// stored in the inventory and minted into purls. The name is now read the way
+// Ruby reads it: parseGemDeclaration.
 func gemDeclaredName(line string) string {
-	line = strings.TrimSpace(stripHashComment(line))
-	if !strings.HasPrefix(line, "gem ") {
-		return ""
+	d, _ := parseGemDeclaration(line)
+	return d.Name
+}
+
+// gemDeclaration is one `gem` call of a Gemfile: the static name, the
+// version requirements given as string literals right after it, and Text,
+// the call's source without its comment or a trailing `if`/`unless`
+// modifier — what a reader stores as the declared requirement, so the
+// modifier's `< '1.9'` or `=~` never reaches classifyRequirement. Keyword
+// options stay in Text, as they always have in the stored requirement.
+type gemDeclaration struct {
+	Name         string
+	Requirements []string
+	// Declared is the call through its last version literal — what the
+	// requirement classifier reads (classificationText). Keyword options are
+	// not version material (`:require => false` read as a `>` lower bound;
+	// `install_if: -> { RUBY_VERSION < "3.0" }` as an upper one), so they
+	// stop here (item 71 review round 2).
+	Declared string
+	// Text is the call without its comment or a trailing modifier, keyword
+	// options included — the stored requirement (the raw manifest truth the
+	// display shows, `path: "../shared"` included) and where the inline
+	// group scope is read.
+	Text string
+}
+
+// parseGemDeclaration reads a `gem` call the way Ruby does, for every reader
+// of a Gemfile (SR-17). The first argument must be a string literal — "x",
+// 'x', %q(x), %Q(x) or %(x) — and the name is exactly its contents. The
+// requirements are the string literals that follow, each after a comma;
+// anything else (keyword options, a splat, a computed value, a trailing `if`
+// or `unless` modifier, a comment) ends the list. A name built by
+// interpolation (`"beaker-#{hv}"`) is not a static name and cannot be
+// resolved, so the line declares nothing — the same as any other line the
+// readers cannot read (no log: a manifest reader reports what it found). An
+// interpolated requirement is dropped with the ones after it.
+func parseGemDeclaration(line string) (gemDeclaration, bool) {
+	rest := strings.TrimLeft(line, " \t")
+	start := rest
+	if !strings.HasPrefix(rest, "gem") {
+		return gemDeclaration{}, false
 	}
-	first := strings.SplitN(line, ",", 2)[0]
-	return strings.Trim(strings.TrimSpace(strings.TrimPrefix(first, "gem ")), "\"' ")
+	// `gem "x"`, `gem("x")` and `gem"x"` are all the call; `gemspec`,
+	// `gems "x"` and `gem_name "x"` are not, and fail below because a
+	// string literal cannot start with an identifier character.
+	rest = strings.TrimLeft(rest[3:], " \t(")
+	name, interpolated, rest, ok := rubyStringLiteral(rest)
+	if !ok || interpolated || name == "" {
+		return gemDeclaration{}, false
+	}
+	d := gemDeclaration{Name: name}
+	for {
+		rest = strings.TrimLeft(rest, " \t")
+		if !strings.HasPrefix(rest, ",") {
+			break
+		}
+		req, interp, after, ok := rubyStringLiteral(strings.TrimLeft(rest[1:], " \t"))
+		if !ok || interp {
+			break
+		}
+		d.Requirements = append(d.Requirements, req)
+		rest = after
+	}
+	d.Declared = strings.TrimRight(start[:len(start)-len(rest)], " \t")
+	tail := stripHashComment(rest)
+	if cut := rubyModifierIndex(tail); cut >= 0 {
+		tail = tail[:cut]
+	}
+	d.Text = strings.TrimRight(start[:len(start)-len(rest)]+tail, " \t")
+	return d, true
+}
+
+// rubyModifierIndex is the offset in s of a statement modifier keyword
+// (`if`, `unless`) outside any string, or -1. A keyword must stand as a word
+// (at the start or after a space, followed by a space, `(` or the end): `if:`
+// (a hash key) and `diff` are not modifiers. Declined edges (item 71 review): `if!x` / `)if` with no
+// space are left uncut (legal Ruby, not seen in Gemfiles), and an `unless`
+// inside an `install_if: -> { ... }` block cuts inside the option (the
+// declared literals are already read; only the stored text is shorter).
+func rubyModifierIndex(s string) int {
+	at := -1
+	scanOutsideStrings(s, func(i int, c byte) bool {
+		if i > 0 && s[i-1] != ' ' && s[i-1] != '\t' {
+			return true
+		}
+		for _, kw := range []string{"if", "unless"} {
+			if !strings.HasPrefix(s[i:], kw) {
+				continue
+			}
+			if j := i + len(kw); j == len(s) || s[j] == ' ' || s[j] == '\t' || s[j] == '(' {
+				at = i
+				return false
+			}
+		}
+		return true
+	})
+	return at
+}
+
+// rubyStringLiteral reads the Ruby string literal at the start of s: its
+// contents, whether it interpolates (`#{` in a double-quoted or %Q/% form),
+// and the text after it. ok is false when s does not start with a literal or
+// the literal is unterminated. Delimiters of the %-forms do not nest (no gem
+// name contains one).
+func rubyStringLiteral(s string) (contents string, interpolated bool, rest string, ok bool) {
+	if s == "" {
+		return "", false, s, false
+	}
+	var closer byte
+	interpolating := false
+	body := 0
+	switch {
+	case s[0] == '"':
+		closer, interpolating, body = '"', true, 1
+	case s[0] == '\'':
+		closer, body = '\'', 1
+	case strings.HasPrefix(s, "%q") && len(s) > 2:
+		closer, body = rubyPercentCloser(s[2]), 3
+	case strings.HasPrefix(s, "%Q") && len(s) > 2:
+		closer, interpolating, body = rubyPercentCloser(s[2]), true, 3
+	case s[0] == '%' && len(s) > 1 && strings.IndexByte("([{<", s[1]) >= 0:
+		closer, interpolating, body = rubyPercentCloser(s[1]), true, 2
+	default:
+		return "", false, s, false
+	}
+	if closer == 0 {
+		return "", false, s, false
+	}
+	var b strings.Builder
+	for i := body; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i+1 < len(s):
+			i++
+			b.WriteByte(s[i])
+		case c == closer:
+			return b.String(), interpolated, s[i+1:], true
+		default:
+			if interpolating && c == '#' && i+1 < len(s) && s[i+1] == '{' {
+				interpolated = true
+			}
+			b.WriteByte(c)
+		}
+	}
+	return "", false, s, false
+}
+
+// rubyPercentCloser is the closing delimiter of a %-literal opened by open,
+// or 0 when open cannot open one (alphanumerics and space).
+func rubyPercentCloser(open byte) byte {
+	switch open {
+	case '(':
+		return ')'
+	case '[':
+		return ']'
+	case '{':
+		return '}'
+	case '<':
+		return '>'
+	}
+	if open == ' ' || open == '\t' || ('a' <= open && open <= 'z') || ('A' <= open && open <= 'Z') || ('0' <= open && open <= '9') {
+		return 0
+	}
+	return open
 }
 
 func parseGemfile(content string) []string {
@@ -1078,165 +1255,22 @@ func parsePyRequirement(req string) *libyearDep {
 	return &libyearDep{Name: name, Version: version, Requirement: req, Type: "runtime", Manager: "pypi"}
 }
 
-// pythonTableIsNonRegistry reports a Poetry/Pipfile inline dependency table
-// that names a source other than PyPI — a local path, a git repository or a
-// URL. Such a dependency is not the PyPI package of the same name (SR-6),
-// and looking it up only ever returned 404.
-func pythonTableIsNonRegistry(table string) bool {
-	for _, kv := range splitTOMLTopLevel(strings.Trim(strings.TrimSpace(table), "{}")) {
-		switch k, _, _ := strings.Cut(kv, "="); strings.TrimSpace(k) {
-		case "path", "git", "url", "file":
-			return true
-		}
-	}
-	return false
-}
-
-// pythonTableVersion reads the version key out of such a table ("" when it
-// has none — the unpinned pathway).
-func pythonTableVersion(table string) string {
-	for _, kv := range splitTOMLTopLevel(strings.Trim(strings.TrimSpace(table), "{}")) {
-		if k, v, ok := strings.Cut(kv, "="); ok && strings.TrimSpace(k) == "version" {
-			return strings.Trim(strings.TrimSpace(v), "\"' ")
-		}
-	}
-	return ""
-}
-
 // parsePipfileDeps extracts dependency names from Pipfile [packages] section.
 func parsePipfileDeps(content string) ([]string, error) {
+	// The shared table reader (worklist items 42 and 43): every declared
+	// name, whatever its source — the inventory lists git and path
+	// dependencies by name as npm's and Cargo's do.
 	var deps []string
-	inPackages := false
-	tableDepth := 0
-
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// The open-table check comes FIRST, before the section headers: a
-		// continuation line can BEGIN with `[` (an array value wrapped onto
-		// its own line), and reading that as a section header left the table
-		// open for the rest of the file (v0.29.57). Every reader that tracks
-		// this state orders it the same way; parsePipfileDevPackages has no
-		// splitter of its own to order, because it delegates here.
-		if tableDepth > 0 {
-			// A table that never closed must not swallow the rest of the
-			// file: a section header ends it, since no inline table can
-			// span one (v0.29.57 — before the depth tracking, such a file
-			// recovered here, and it still does).
-			if tomlSectionHeader(trimmed) {
-				tableDepth = 0
-			} else {
-				tableDepth += bracketDelta(stripHashComment(trimmed))
-				if tableDepth < 0 {
-					tableDepth = 0
-				}
-				continue
-			}
-		}
-		if tomlHeaderIs(trimmed, "packages") {
-			inPackages = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			inPackages = false
-			continue
-		}
-		// A trailing comment is not part of the declaration, and a
-		// commented-out line is not one at all: `# flask = "==1.0"` was
-		// inventoried as a package named "# flask" (v0.29.57).
-		if code := stripHashComment(trimmed); inPackages && strings.Contains(code, "=") {
-			name, sub := tomlDepKeyName(strings.SplitN(code, "=", 2)[0])
-			if name != "" && tomlDepKeyVersionable(sub) {
-				deps = append(deps, name)
-			}
-			if d := bracketDelta(code); d > 0 {
-				tableDepth = d
-			}
-		}
+	for _, e := range scanTOMLDepTables(content, map[string]bool{"[packages]": true}) {
+		deps = append(deps, e.Name)
 	}
 	return deps, nil
 }
 
-// parsePipfileVersions extracts deps with versions from Pipfile [packages].
+// parsePipfileVersions extracts deps with versions from Pipfile [packages]
+// through the shared table reader (pythonTOMLDeps; worklist items 42 and 43).
 func parsePipfileVersions(content string) []libyearDep {
-	var deps []libyearDep
-	inPackages := false
-	tableDepth := 0
-
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// An inline table may span lines, and its continuation lines are the
-		// TABLE's keys, not declarations — see parsePoetryVersions. This runs
-		// before the section headers AND before the "no = means not a
-		// declaration" guard below: a continuation line can BEGIN with `[`
-		// (an array value wrapped onto its own line), which read as a section
-		// header left the table open for the rest of the file, and the line
-		// that CLOSES the table is usually a bare `}`.
-		if tableDepth > 0 {
-			// A table that never closed must not swallow the rest of the
-			// file: a section header ends it, since no inline table can
-			// span one (v0.29.57 — before the depth tracking, such a file
-			// recovered here, and it still does).
-			if tomlSectionHeader(trimmed) {
-				tableDepth = 0
-			} else {
-				tableDepth += bracketDelta(stripHashComment(trimmed))
-				if tableDepth < 0 {
-					tableDepth = 0
-				}
-				continue
-			}
-		}
-		if tomlHeaderIs(trimmed, "packages") {
-			inPackages = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			inPackages = false
-			continue
-		}
-		// Pipfile uses "name = value" where value is quoted.
-		// Use the first unquoted = as delimiter, on the line without its
-		// comment: `requests = "==2.0"  # http` stored the version `2.0"`,
-		// which reached the purl and the OSV lookup (v0.29.57).
-		code := stripHashComment(trimmed)
-		if !inPackages || !strings.Contains(code, "=") {
-			continue
-		}
-		if d := bracketDelta(code); d > 0 {
-			tableDepth = d
-		}
-		eqIdx := strings.Index(code, "=")
-		if eqIdx < 0 {
-			continue
-		}
-		name, sub := tomlDepKeyName(code[:eqIdx])
-		if name == "" || !tomlDepKeyVersionable(sub) {
-			continue
-		}
-		versionRaw := strings.TrimSpace(code[eqIdx+1:])
-		// Pipfile values: "==2.0.2", "~=2.28", "*", {version = "==2.0.0", ...}
-		version := ""
-		versionRaw = strings.Trim(versionRaw, "\"' ")
-		if versionRaw != "*" {
-			// Handle table-style: {version = "==2.0.0", extras = [...]}
-			if strings.HasPrefix(versionRaw, "{") {
-				// path/git/url: not a PyPI package (v0.29.56).
-				if pythonTableIsNonRegistry(versionRaw) {
-					continue
-				}
-				// The shared reader, not a second spelling of it (SR-17,
-				// v0.29.56): the hand-rolled loop here split inside quoted
-				// values and then stopped at the first fragment that merely
-				// STARTED with "version", reporting no version at all. The
-				// Poetry arm already reads its tables this way.
-				version = cleanVersion(pythonTableVersion(versionRaw))
-			} else {
-				version = cleanVersion(versionRaw)
-			}
-		}
-		deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
-	}
-	return deps
+	return pythonTOMLDeps(content, map[string]string{"[packages]": "runtime"})
 }
 
 // parsePyprojectVersionsFromContent extracts deps with versions from pyproject.toml content.
@@ -1320,75 +1354,11 @@ func extractPEP621VersionDeps(line string) []libyearDep {
 	return deps
 }
 
-// parsePoetryVersions extracts deps with versions from Poetry format pyproject.toml.
+// parsePoetryVersions extracts deps with versions from Poetry's
+// [tool.poetry.dependencies] through the shared table reader
+// (pythonTOMLDeps; worklist items 42 and 43).
 func parsePoetryVersions(content string) []libyearDep {
-	var deps []libyearDep
-	inSection := false
-	tableDepth := 0
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// An inline table may span lines, and its continuation lines are the
-		// TABLE's keys — `version`, `extras`, `git`. Read as declarations of
-		// their own they invent packages named after the key: 56 libyear rows
-		// and 21 dependency rows on the production database carried one, each
-		// with a purl and an OSV lookup (v0.29.57). The version inside such a
-		// table is not recovered here — worklist 43 — but nothing is invented.
-		if tableDepth > 0 {
-			// A table that never closed must not swallow the rest of the
-			// file: a section header ends it, since no inline table can
-			// span one (v0.29.57 — before the depth tracking, such a file
-			// recovered here, and it still does).
-			if tomlSectionHeader(trimmed) {
-				tableDepth = 0
-			} else {
-				tableDepth += bracketDelta(stripHashComment(trimmed))
-				if tableDepth < 0 {
-					tableDepth = 0
-				}
-				continue
-			}
-		}
-		if tomlHeaderIs(trimmed, "tool.poetry.dependencies") {
-			inSection = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			inSection = false
-			continue
-		}
-		// Comment-stripped before the split, like the dev/build reader of
-		// the same grammar: a trailing comment otherwise became part of the
-		// version (`"^24.0"  # pinned` → `24.0"`), which is what 234 rows of
-		// the 2026-09-17 production extract carry.
-		code := stripHashComment(trimmed)
-		if parts := strings.SplitN(code, "=", 2); inSection && len(parts) == 2 {
-			// Opened before the continues below: a declaration this reader
-			// skips still has to close.
-			if d := bracketDelta(code); d > 0 {
-				tableDepth = d
-			}
-			name, sub := tomlDepKeyName(parts[0])
-			raw := strings.TrimSpace(parts[1])
-			if name == "" || name == "python" || !tomlDepKeyVersionable(sub) {
-				continue
-			}
-			// A path/git/url dependency names no PyPI package (v0.29.56 —
-			// the same rule parsePyRequirement applies to the other Python
-			// formats); an inline table otherwise carries its version under
-			// the version key, not as the whole table body.
-			version := ""
-			if strings.HasPrefix(raw, "{") {
-				if pythonTableIsNonRegistry(raw) {
-					continue
-				}
-				version = cleanVersion(pythonTableVersion(raw))
-			} else {
-				version = cleanVersion(strings.Trim(raw, "\"'^~>="))
-			}
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: "runtime", Manager: "pypi"})
-		}
-	}
-	return deps
+	return pythonTOMLDeps(content, map[string]string{"[tool.poetry.dependencies]": "runtime"})
 }
 
 // parseDirectoryPackagesProps extracts dependency names from .NET Directory.Packages.props.
@@ -1511,7 +1481,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 			return nil
 		}
-		base := filepath.Base(path)
+		base := canonicalManifestName(filepath.Base(path))
 		switch base {
 		case "package.json":
 			deps, err := parsePackageJSONVersions(path)
@@ -2353,41 +2323,35 @@ func parseGemfileVersions(path string) []libyearDep {
 			groupStack = groupStack[:len(groupStack)-1]
 			continue
 		}
-		if !strings.HasPrefix(line, "gem ") {
+		// gem 'name', '~> 1.0' — read by the one shared declaration parser
+		// (item 71): only a string-literal argument after the name is a
+		// version requirement, so keyword options (v0.27.71: "require:
+		// false" was the #1 rubygems garbage version in production) and a
+		// trailing `if`/`unless` modifier (`">= 1.5" if RUBY_VERSION < '1.9'`
+		// was stored as `1.5"`) never are.
+		decl, ok := parseGemDeclaration(line)
+		if !ok {
 			continue
 		}
 		// v0.29.56: a trailing comment was read into the name or version
 		// ("gem 'logger'   # stdlib in Ruby <= 3.x" → name
-		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io).
-		line = strings.TrimSpace(stripHashComment(line))
-		// gem 'name', '~> 1.0'
-		parts := strings.Split(line, ",")
-		name := ""
+		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io). The
+		// parser stops before it and before a modifier, so decl.Text is
+		// the stored requirement (keyword options kept for display; the
+		// classifier reads decl.Declared through classificationText).
+		name := decl.Name
 		version := ""
-		if len(parts) >= 1 {
-			name = gemDeclaredName(line)
-		}
-		if len(parts) >= 2 {
-			// v0.27.71: only a QUOTED second argument is a version
-			// requirement ("~> 1.0", ">= 1.1"). Unquoted keyword
-			// options (require: false, path: "..", group: :x,
-			// platforms: [..]) were captured as versions —
-			// "require: false" was the #1 rubygems garbage version
-			// in production (1,212 rows).
-			if arg := strings.TrimSpace(parts[1]); strings.HasPrefix(arg, `"`) || strings.HasPrefix(arg, "'") {
-				version = cleanVersion(strings.Trim(arg, "\"' "))
-			}
+		if len(decl.Requirements) > 0 {
+			version = cleanVersion(decl.Requirements[0])
 		}
 		scope := "runtime"
 		if len(groupStack) > 0 {
 			scope = groupStack[len(groupStack)-1]
 		}
-		if inlineGroup := gemInlineGroupScope(line); inlineGroup != "" {
+		if inlineGroup := gemInlineGroupScope(decl.Text); inlineGroup != "" {
 			scope = inlineGroup
 		}
-		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "rubygems"})
-		}
+		deps = append(deps, libyearDep{Name: name, Version: version, Requirement: decl.Text, Type: scope, Manager: "rubygems"})
 	}
 	return deps
 }

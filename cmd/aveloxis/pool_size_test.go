@@ -5,12 +5,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -79,18 +76,11 @@ func TestPoolMaxConnsKnobReachesThePool(t *testing.T) {
 	if dsn == "" {
 		t.Skip("AVELOXIS_TEST_DB not set")
 	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, _ := strconv.Atoi(u.Port())
-	pw, _ := u.User.Password()
-	raw := `{"database":{"host":"` + u.Hostname() + `","port":` + strconv.Itoa(port) + `,"user":"` + u.User.Username() +
-		`","password":"` + pw + `","dbname":"` + strings.TrimPrefix(u.Path, "/") + `","sslmode":"disable","pool_max_conns":7}}`
-	var cfg config.Config
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		t.Fatal(err)
-	}
+	// PR #218 fix review r10 F1: one DSN decomposition (both DSN forms, the
+	// password never reported), shared with the deploy-gate opener test.
+	dbc, redact := testDatabaseConfig(t, dsn)
+	dbc.PoolMaxConns = 7
+	cfg := config.Config{Database: dbc}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ps := decideServePool(ctx, &cfg, 120, logger)
@@ -102,7 +92,7 @@ func TestPoolMaxConnsKnobReachesThePool(t *testing.T) {
 	}
 	store, err := db.NewPostgresStore(ctx, cfg.Database.ConnectionString(), logger, ps.Size)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal(redact(err.Error()))
 	}
 	t.Cleanup(store.Close)
 	if got := store.PoolState().MaxConns; got != 7 {

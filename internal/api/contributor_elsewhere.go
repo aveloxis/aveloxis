@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -69,7 +71,7 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 
 	rows, err := s.store.ContributorsElsewhere(r.Context(), repoID, since, limit, 10, excludeBots)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, r, "handleContributorsElsewhere", err)
 		return
 	}
 	body, err := json.Marshal(map[string]any{
@@ -78,7 +80,7 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 		"contributors": rows,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, r, "handleContributorsElsewhere", err)
 		return
 	}
 	s.respCache.put(key, body)
@@ -127,13 +129,13 @@ func (s *Server) handleContributorActivity(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "contributor not found", http.StatusNotFound)
 			return
 		}
-		s.logger.Error("contributor activity lookup failed", "cntrb_id", logSafe(cntrbID), "error", err)
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "contributor activity lookup failed", "cntrb_id", logSafe(cntrbID), "error", err)
 		http.Error(w, "contributor activity lookup failed", http.StatusInternalServerError)
 		return
 	}
 	body, err := json.Marshal(view)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, r, "handleContributorActivity", err)
 		return
 	}
 	s.respCache.put(key, body)

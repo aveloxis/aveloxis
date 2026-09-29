@@ -437,6 +437,24 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// and the case-insensitive unique index and create duplicate rows. The
 	// one normalizer FindRepoByURL applies too (worklist follow-up 8).
 	r.GitURL = model.NormalizeRepoGitURL(r.GitURL)
+	// The store owns the length limit too (SR-18; worklist follow-up 14): the
+	// web and portal adds refuse over-long URLs at their entry, but add-repo
+	// and every other UpsertRepo path had none, and the database's answer
+	// (SQLSTATE 54000) is also the code for a server-wide stop.
+	//
+	// Repositories are bounded at MaxAddURLBytes while registerApprovedOrg
+	// bounds org URLs at maxIndexedURLBytes (PR #218 review B3, decided in
+	// v0.29.68, worklist 14). Every add of a repository URL comes through
+	// here, so a stored row longer than MaxAddURLBytes predates v0.29.54
+	// (or is a forge-reported redirect target UpdateRepoURL wrote, which
+	// the forges keep far shorter); re-adding such a legacy URL is now
+	// refused. That is the decided direction, not an oversight. Org
+	// approval keeps the index's own bound because pending org requests of
+	// 1,343–2,684 bytes, created before the limit, always approved and
+	// still must.
+	if len(r.GitURL) > MaxAddURLBytes {
+		return 0, fmt.Errorf("repo %s/%s: %w", r.Owner, r.Name, ErrURLTooLong)
+	}
 
 	// Case-variant resolution (v0.25.32): GitHub and GitLab treat
 	// owner/repo paths case-insensitively, so a URL differing from a
@@ -612,7 +630,14 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	return id, err
 }
 
-// GetRepoByID looks up a repo by its database ID.
+// ErrRepoNotFound is GetRepoByID's answer for an id no repository has: the
+// typed not-found (SR-5), so a page can tell "no such repository" (404)
+// from a store failure (500) without reaching for pgx (worklist follow-up
+// 12, the web half).
+var ErrRepoNotFound = errors.New("repository not found")
+
+// GetRepoByID looks up a repo by its database ID. An id no repository has
+// is ErrRepoNotFound; every other failure is returned as the store's error.
 func (s *PostgresStore) GetRepoByID(ctx context.Context, repoID int64) (*model.Repo, error) {
 	r := &model.Repo{ID: repoID}
 	var platID int16
@@ -620,6 +645,9 @@ func (s *PostgresStore) GetRepoByID(ctx context.Context, repoID int64) (*model.R
 		SELECT platform_id, repo_git, repo_name, repo_owner
 		FROM aveloxis_data.repos WHERE repo_id = $1`, repoID,
 	).Scan(&platID, &r.GitURL, &r.Name, &r.Owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("repo %d: %w", repoID, ErrRepoNotFound)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -664,14 +692,24 @@ func (s *PostgresStore) GetOrgRepoGroups(ctx context.Context) ([]OrgGroup, error
 // tracked org lands in user_repos for the operator's group view.
 //
 // Returns an empty slice (not an error) when nothing is tracking the org —
-// callers can range over the result unconditionally.
+// callers can range over the result unconditionally. The comparison is
+// case-insensitive (batch 5 review round 1): callers pass the operator's
+// typed spelling (rg_website, add-repo), which goes through CanonicalOrgURL
+// (case, scheme, trailing slash); rows written before v0.29.68, and any
+// request pended before it, keep the registrant's case while a URL pasted
+// since is stored in CanonicalOrgURL's form; and forge paths are
+// case-insensitive.
 func (s *PostgresStore) GetUserGroupIDsForOrgURL(ctx context.Context, orgURL string) ([]int64, error) {
 	if orgURL == "" {
 		return nil, nil
 	}
+	// The argument goes through the one normalizer (batch 5 review round 5:
+	// a typed trailing "/" missed every registration, and for the legacy
+	// repo_groups refresh the miss was permanent); LOWER() stays on the
+	// column for rows written before v0.29.68.
 	rows, err := s.pool.Query(ctx,
-		`SELECT group_id FROM aveloxis_ops.user_org_requests WHERE org_url = $1`,
-		orgURL)
+		`SELECT group_id FROM aveloxis_ops.user_org_requests WHERE LOWER(org_url) = $1`,
+		CanonicalOrgURL(orgURL))
 	if err != nil {
 		return nil, err
 	}
@@ -2448,6 +2486,9 @@ func (s *PostgresStore) InsertCommitParent(ctx context.Context, repoID int64, co
 	})
 }
 
+// UpsertCommitMessage writes one commit message. An unchanged message is
+// not rewritten (worklist 70; the guard and its reasoning are at
+// UpsertCommitMessageBatch in commit_batch.go).
 func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.CommitMessage) error {
 	msg.Message = SanitizeText(msg.Message)
 	return s.withRetry(ctx, func(ctx context.Context) error {
@@ -2458,7 +2499,8 @@ func (s *PostgresStore) UpsertCommitMessage(ctx context.Context, msg *model.Comm
 			ON CONFLICT (repo_id, cmt_hash) DO UPDATE SET
 				cmt_msg = EXCLUDED.cmt_msg,
 				tool_version = EXCLUDED.tool_version,
-				data_collection_date = NOW()`,
+				data_collection_date = NOW()
+			WHERE commit_messages.cmt_msg IS DISTINCT FROM EXCLUDED.cmt_msg`,
 			msg.RepoID, msg.Message, msg.Hash,
 		)
 		return err

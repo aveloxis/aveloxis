@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -337,5 +338,215 @@ func TestGet_403RateLimitBodyLogsNameTheServingKey(t *testing.T) {
 				t.Errorf("the %q line must carry the 1-based attempt (attempt=1 on the first try); got:\n%s", tc.msg, line)
 			}
 		})
+	}
+}
+
+// TestHeaderless403RateLimitBodyRestsTheKey (worklist 67): the v0.29.9
+// decision rule was met on kate — 87 of 481 retry opportunities (18.1%)
+// reused the SAME key against a ~1.9% baseline at 54 keys, because a
+// headerless search 403 marked nothing and least-loaded selection handed
+// the throttled key straight back. Option (a): the body is read under the
+// lease and a rate-limit body rests the key for GitHub's documented 60 s
+// floor (parseRetryAfter's default), so the retry — and every other
+// caller — lands on another key. The unauthenticated-body shape is not the
+// key's throttle (a key-leak bug) and does not rest it.
+func TestHeaderless403RateLimitBodyRestsTheKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		rests      bool
+	}{
+		{"headerless secondary-limit body rests the key", secondaryRateLimitBody, true},
+		{"unauthenticated body does not rest a key", unauthenticatedIPRateLimitBody, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var tokens []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				n := len(tokens)
+				tokens = append(tokens, strings.TrimPrefix(r.Header.Get("Authorization"), "token "))
+				mu.Unlock()
+				if n == 0 {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer server.Close()
+			logger, _ := captureLogger()
+			keys := NewKeyPool([]string{"ghp_firstkey000", "ghp_secondkey00"}, logger)
+			client := NewHTTPClient(server.URL, keys, logger, AuthGitHub)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp, err := client.Get(ctx, "/search/users?q=x%40y.org&per_page=1")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			resp.Body.Close()
+			mu.Lock()
+			served := append([]string(nil), tokens...)
+			mu.Unlock()
+			if len(served) != 2 {
+				t.Fatalf("served %d requests; want the 403 then the retry", len(served))
+			}
+			resting := restingKeys(keys)
+			if tc.rests {
+				if !resting[served[0]] {
+					t.Errorf("the key that drew the headerless rate-limit 403 is not resting in the pool (resting: %v)", resting)
+				}
+				if served[1] == served[0] {
+					t.Errorf("the retry reused the throttled key %s; want the other key", served[1])
+				}
+			} else if len(resting) != 0 {
+				t.Errorf("an unauthenticated-body 403 rested %v; it is not the key's throttle", resting)
+			}
+		})
+	}
+}
+
+// TestGitLabHeaderless403RateLimitBodyDoesNotRestTheKey (PR #218 review E4):
+// the headerless-403 rest is GitHub's documented secondary-limit rule
+// (a rate-limit body with no Retry-After means "wait at least one minute").
+// GitLab documents no such rule, so a GitLab 403 whose body happens to say
+// "rate limit" must not bench a GitLab key for GitHub's floor; the response
+// is still paced and retried by handleResponse as before.
+func TestGitLabHeaderless403RateLimitBodyDoesNotRestTheKey(t *testing.T) {
+	var mu sync.Mutex
+	served := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := served
+		served++
+		mu.Unlock()
+		if n == 0 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(secondaryRateLimitBody))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	logger, _ := captureLogger()
+	keys := NewKeyPool([]string{"glpat-firstkey00", "glpat-secondkey0"}, logger)
+	client := NewHTTPClient(server.URL, keys, logger, AuthGitLab)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := client.Get(ctx, "/projects/1/issues?per_page=1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	resp.Body.Close()
+	if resting := restingKeys(keys); len(resting) != 0 {
+		t.Errorf("a GitLab 403 rested %v on GitHub's headerless-403 rule; only a GitHub client applies it", resting)
+	}
+}
+
+// TestGraphQLHeaderless403RateLimitBodyRestsTheKey (PR #218 review E3): the
+// GraphQL twin of TestHeaderless403RateLimitBodyRestsTheKey. A GraphQL 403
+// with a secondary-limit BODY but no Retry-After and no primary refusal
+// returned ErrForbidden and rested nothing, so the next caller was handed
+// the throttled key. It now reads the body under the lease, rests the key
+// for GitHub's floor and retries on another key. The unauthenticated shape
+// rests nothing (a key-leak bug, not this key's throttle) but is still
+// retried, as REST does; a genuine permission 403 stays ErrForbidden.
+func TestGraphQLHeaderless403RateLimitBodyRestsTheKey(t *testing.T) {
+	restore := SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+	for _, tc := range []struct {
+		name, body string
+		rests      bool
+		forbidden  bool
+	}{
+		{"secondary-limit body rests the key and retries elsewhere", secondaryRateLimitBody, true, false},
+		{"unauthenticated body rests nothing but is retried", unauthenticatedIPRateLimitBody, false, false},
+		{"permission body stays ErrForbidden", privateRepoForbiddenBody, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var tokens []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				n := len(tokens)
+				tokens = append(tokens, strings.TrimPrefix(r.Header.Get("Authorization"), "bearer "))
+				mu.Unlock()
+				if n == 0 {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":{"hello":"world"}}`))
+			}))
+			defer server.Close()
+			logger, _ := captureLogger()
+			keys := NewKeyPool([]string{"ghp_firstkey000", "ghp_secondkey00"}, logger)
+			client := NewHTTPClient(server.URL, keys, logger, AuthGitHub)
+			var got struct {
+				Hello string `json:"hello"`
+			}
+			err := client.GraphQL(context.Background(), "{ hello }", nil, &got)
+			mu.Lock()
+			served := append([]string(nil), tokens...)
+			mu.Unlock()
+			resting := restingKeys(keys)
+			if tc.forbidden {
+				if !errors.Is(err, ErrForbidden) || len(served) != 1 || len(resting) != 0 {
+					t.Errorf("err=%v served=%d resting=%v; want ErrForbidden after one request, nothing rested", err, len(served), resting)
+				}
+				return
+			}
+			if err != nil || got.Hello != "world" {
+				t.Fatalf("GraphQL: err=%v hello=%q; want the retry to succeed", err, got.Hello)
+			}
+			if len(served) != 2 {
+				t.Fatalf("served %d requests; want the 403 then one retry", len(served))
+			}
+			if tc.rests {
+				if !resting[served[0]] {
+					t.Errorf("the key that drew the headerless rate-limit 403 is not resting (resting: %v)", resting)
+				}
+				if served[1] == served[0] {
+					t.Errorf("the retry reused the throttled key %s; want the other key", served[1])
+				}
+			} else if len(resting) != 0 {
+				t.Errorf("an unauthenticated-body 403 rested %v; it is not the key's throttle", resting)
+			}
+		})
+	}
+}
+
+// TestGitLabGraphQLHeaderless403RestsNothing (PR #218 fix review r1): the
+// GraphQL twin of TestGitLabHeaderless403RateLimitBodyDoesNotRestTheKey — the
+// headerless rate-limit 403 rule is GitHub's (E4), so a GitLab GraphQL 403
+// whose body mentions a rate limit rests no key and stays ErrForbidden after
+// one request.
+func TestGitLabGraphQLHeaderless403RestsNothing(t *testing.T) {
+	restore := SetGraphQLSleepForTest(func(context.Context, time.Duration) error { return nil })
+	defer restore()
+	var mu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(secondaryRateLimitBody))
+	}))
+	defer server.Close()
+	logger, _ := captureLogger()
+	keys := NewKeyPool([]string{"glpat-firstkey00", "glpat-secondkey0"}, logger)
+	client := NewHTTPClient(server.URL, keys, logger, AuthGitLab)
+	err := client.GraphQL(context.Background(), "{ hello }", nil, nil)
+	mu.Lock()
+	n := requests
+	mu.Unlock()
+	if resting := restingKeys(keys); len(resting) != 0 {
+		t.Errorf("a GitLab GraphQL 403 rested %v on GitHub's rule", resting)
+	}
+	if !errors.Is(err, ErrForbidden) || n != 1 {
+		t.Errorf("err=%v after %d requests; want ErrForbidden after one", err, n)
 	}
 }

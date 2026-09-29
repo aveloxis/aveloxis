@@ -3,7 +3,10 @@
 
 package db
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestMatviewsDefinitionDigestTracksTheFile is worklist item 36, option 2
 // (operator decision 2026-09-26): the standard deploy ladder (`migrate
@@ -21,5 +24,13 @@ func TestMatviewsDefinitionDigestTracksTheFile(t *testing.T) {
 	}
 	if MatviewsDefinitionVersion == "" || MatviewsDefinitionDigest == "" {
 		t.Error("MatviewsDefinitionVersion and MatviewsDefinitionDigest must both be set")
+	}
+	// A core.autocrlf checkout hashes the same (review round 1).
+	crlf := strings.ReplaceAll(matviewsSQL, "\n", "\r\n")
+	if crlf == matviewsSQL {
+		t.Fatal("the fixture has no line endings to fold")
+	}
+	if sqlDigest(crlf) != MatviewsDefinitionDigest {
+		t.Error("a CRLF checkout of matviews.sql hashes differently — the digest must fold line endings")
 	}
 }

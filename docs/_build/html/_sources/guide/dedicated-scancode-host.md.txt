@@ -50,8 +50,8 @@ psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer" -c "SEL
 ```bash
 # aveloxis binary (Go 1.25+) — the SAME version the primary runs,
 # never @latest: the worker never migrates, so a newer binary than the
-# schema stamp logs a schema-version ERROR at startup and may read
-# columns the database does not have yet. Release tags are v-prefixed
+# schema stamp refuses to start (v0.29.68; it logged an ERROR and read
+# columns the database did not have yet). Release tags are v-prefixed
 # (v0.29.4), so set the bare number `aveloxis version` prints on the
 # primary and let the @v prefix supply the tag form:
 PRIMARY_VERSION=0.29.4   # what `aveloxis version` prints on the primary

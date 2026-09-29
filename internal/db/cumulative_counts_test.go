@@ -55,7 +55,7 @@ func TestCompleteJobWritesCumulativeIssuesCount(t *testing.T) {
 	// A regression that drops the subquery and goes back to the
 	// per-cycle parameter fires this test.
 	if !strings.Contains(body, "SELECT COUNT(*) FROM aveloxis_data.issues") {
-		t.Error("CompleteJob must write last_issues as SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1 — pre-v0.21.2 this column was per-cycle delta, which produced misleading 'Gathered: 0' dashboard reads on incremental cycles. See CLAUDE.md v0.21.2 entry.")
+		t.Error("CompleteJob must write last_issues as SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1 — pre-v0.21.2 this column was per-cycle delta, which produced misleading 'Gathered: 0' dashboard reads on incremental cycles. See summary/changelog/v0.21.md, the v0.21.2 entry.")
 	}
 	if !strings.Contains(body, "SELECT COUNT(*) FROM aveloxis_data.pull_requests") {
 		t.Error("CompleteJob must write last_prs as SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1. Same rationale as last_issues — match v0.19.11's cumulative-commits pattern.")

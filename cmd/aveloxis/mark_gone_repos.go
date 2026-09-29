@@ -14,14 +14,15 @@
 //
 //   - DEFINITIVE 404/410/451 → MarkRepoGone (repo_archived + repo_gone_at
 //     in one statement).
-//   - DEFINITIVE 200 on an already-gone-stamped repo → ClearRepoGone
-//     + EnqueueRepo, so collection resumes if the org re-publicizes.
+//   - DEFINITIVE 200 on an already-gone-stamped repo → ResurrectRepo
+//     (clear + re-enqueue in one transaction, v0.28.6), so collection
+//     resumes if the org re-publicizes.
 //   - Everything else (transport errors, rate limits, 5xx) SKIPS the
 //     repo (SR-16: only definitive answers decide) — a rerun retries.
 //
-// Re-runnable on operator cadence; the probe uses prelim's own
-// redirect-following ProbeRepoStatus (SR-17: one probe, two
-// consumers).
+// Re-runnable on operator cadence; the probe is prelim's own
+// redirect-following collector.ResolveRedirectTarget (SR-17: one probe,
+// three consumers with reconcile-repos).
 //
 // v0.21.5: store.Migrate(ctx) intentionally NOT called here.
 
@@ -33,12 +34,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
-	"github.com/spf13/cobra"
-
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/spf13/cobra"
 )
 
 func markGoneReposCmd(cfgPath *string) *cobra.Command {
@@ -67,7 +69,12 @@ Since v0.29.7 aveloxis serve re-probes every gone repo on its own every
 collection.gone_repo_recheck_days (default 28); this command remains
 the immediate, whole-cohort form and resets that cadence clock.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			// A signal cancels the in-flight probe or statement and ends
+			// the walk (worklist §4); the summary below says what landed,
+			// and a rerun walks the whole cohort again (every verdict is
+			// idempotent; there is no resume marker).
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			cfg := loadConfig(*cfgPath, logger)
 
@@ -92,7 +99,10 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	}
 	logger.Info("mark-gone-repos starting", "candidates", len(cands), "dry_run", dryRun)
 
-	var stamped, cleared, alreadyGone, alive, skipped, stampFailed, refused int
+	// The tally IS the report's struct (batch 7b review round 8): a
+	// positional literal built from seven locals at the interrupt was one
+	// swapped pair from logging a counter under another's key.
+	var tally markGoneCounts
 	// v0.29.7: a manual run is a verification too. On every gone-stamped
 	// row it probes — definitive-gone OR not definitive — stamp the
 	// check so the scheduler's recheck ticker (the same rule, see
@@ -103,29 +113,46 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 	// is a second event on a row already counted — folding it into
 	// `skipped` double-counted the row.
 	stampChecked := func(c db.GoneProbeCandidate) {
-		if dryRun || !c.GoneStamped {
-			return
+		if dryRun || !c.GoneStamped || ctx.Err() != nil {
+			return // a stamp on a cancelled ctx fails and is not a stamp failure
 		}
 		if err := store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {
+			if ctx.Err() != nil {
+				return // the cancel landed mid-statement: the loop top, or the post-loop check, reports it
+			}
 			logger.Warn("failed to stamp gone check — rerun retries", "repo_id", c.RepoID, "error", err)
-			stampFailed++
+			tally.stampFailed++
 		}
+	}
+	// Interrupted: what landed stays (every stamp is its own statement),
+	// and a rerun walks the whole cohort again. Reached at the loop top,
+	// after the loop (a cancel on the LAST candidate's check stamp has no
+	// next loop top — round 4), from a probe the cancel cut short, and from
+	// every store write it cut short
+	// (batch 7b review rounds 1 and 2: a `context canceled` from the probe
+	// or from an UPDATE fell into that arm's failure WARN and counter — one
+	// row counted as skipped, a second WARN for the stamp on the dead ctx).
+	interrupted := func() error {
+		return markGoneInterruptedReport(logger, tally, len(cands), dryRun, ctx.Err())
 	}
 	for _, c := range cands {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return interrupted()
 		}
 		// The SAME redirect-following probe prelim and reconcile-repos
 		// use (SR-17: one probe, all consumers agree on what "gone"
 		// means).
 		_, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)
+		if perr != nil && ctx.Err() != nil {
+			return interrupted() // the cancel, not the probe, ended this row
+		}
 		if errors.Is(perr, platform.ErrRedirectTargetUserinfo) {
 			// The stored URL is clean; the FORGE's redirect target carries
 			// credentials (round 7). Not the operator's row to correct —
 			// skipped like an indeterminate probe, check stamped.
 			logger.Warn("redirect target carries credentials — not followed; the stored URL is clean, skipping",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
-			skipped++
+			tally.skipped++
 			stampChecked(c)
 			continue
 		}
@@ -135,7 +162,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// corrected, so it has its own counter and fails the run.
 			logger.Error("repo URL carries credentials — not probed; correct repo_git",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
-			refused++
+			tally.refused++
 			stampChecked(c)
 			continue
 		}
@@ -145,37 +172,40 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// a gone row (the ticker's rule).
 			logger.Warn("probe failed — skipping (rerun retries)",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
-			skipped++
+			tally.skipped++
 			stampChecked(c)
 			continue
 		}
 		switch {
 		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			if c.GoneStamped {
-				alreadyGone++
+				tally.alreadyGone++
 				stampChecked(c)
 				continue
 			}
 			if dryRun {
 				logger.Info("would stamp gone", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
-				stamped++
+				tally.stamped++
 				continue
 			}
 			if err := store.MarkRepoGone(ctx, c.RepoID); err != nil {
+				if ctx.Err() != nil {
+					return interrupted()
+				}
 				logger.Warn("failed to stamp gone", "repo_id", c.RepoID, "error", err)
-				skipped++
+				tally.skipped++
 				continue
 			}
-			stamped++
+			tally.stamped++
 		case status >= 200 && status < 300:
 			if !c.GoneStamped {
-				alive++
+				tally.alive++
 				continue
 			}
 			// Resurrection: the forge serves the repo again.
 			if dryRun {
 				logger.Info("would clear gone + re-enqueue", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
-				cleared++
+				tally.cleared++
 				continue
 			}
 			// v0.28.6 (Copilot round): clear + re-enqueue are ONE
@@ -186,32 +216,54 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// committed: the repo stays gone-stamped and queueless,
 			// and a plain rerun retries.
 			if err := store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {
+				if ctx.Err() != nil {
+					return interrupted()
+				}
 				// Counted as skipped ONLY (not alive) so the
 				// completion line's alive_unstamped stays accurate.
 				logger.Warn("failed to resurrect repo — nothing committed, rerun retries",
 					"repo_id", c.RepoID, "error", err)
-				skipped++
+				tally.skipped++
 				continue
 			}
-			cleared++
+			tally.cleared++
 		default:
 			// 3xx that didn't resolve, 403/429/5xx — indeterminate.
 			logger.Warn("indeterminate probe status — skipping (rerun retries)",
 				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "status", status)
-			skipped++
+			tally.skipped++
 			stampChecked(c)
 		}
 	}
+	if ctx.Err() != nil {
+		return interrupted()
+	}
 
 	logger.Info("mark-gone-repos complete",
-		"candidates", len(cands), "stamped_gone", stamped, "already_gone", alreadyGone,
-		"resurrected", cleared, "alive_unstamped", alive, "skipped", skipped,
-		"refused", refused, "check_stamp_failed", stampFailed, "dry_run", dryRun)
-	if skipped > 0 || stampFailed > 0 {
+		"candidates", len(cands), "stamped_gone", tally.stamped, "already_gone", tally.alreadyGone,
+		"resurrected", tally.cleared, "alive_unstamped", tally.alive, "skipped", tally.skipped,
+		"refused", tally.refused, "check_stamp_failed", tally.stampFailed, "dry_run", dryRun)
+	if tally.skipped > 0 || tally.stampFailed > 0 {
 		logger.Info("some candidates were skipped on indeterminate probes or could not be stamped — re-run to retry them")
 	}
-	if refused > 0 {
-		return fmt.Errorf("%d candidate(s) have a repo_git carrying credentials — correct them, then rerun", refused)
+	if tally.refused > 0 {
+		return fmt.Errorf("%d candidate(s) have a repo_git carrying credentials — correct them, then rerun", tally.refused)
 	}
 	return nil
+}
+
+// markGoneCounts is the walk's tally.
+type markGoneCounts struct {
+	stamped, cleared, alreadyGone, alive, skipped, refused, stampFailed int
+}
+
+// markGoneInterruptedReport logs the interruption with every counter and
+// returns the non-zero exit wrapping the cancellation (batch 7b review
+// round 7: the same pure-function shape as reconcile-repos', so the unit
+// test holds the exit status a source pin let become `return nil`).
+func markGoneInterruptedReport(logger *slog.Logger, c markGoneCounts, total int, dryRun bool, cause error) error {
+	logger.Warn("mark-gone-repos interrupted — a rerun walks the whole cohort again",
+		"probed", c.stamped+c.cleared+c.alreadyGone+c.alive+c.skipped+c.refused, "of", total,
+		"stamped", c.stamped, "cleared", c.cleared, "already_gone", c.alreadyGone, "alive", c.alive, "skipped", c.skipped, "refused", c.refused, "stamp_failed", c.stampFailed, "dry_run", dryRun)
+	return fmt.Errorf("mark-gone-repos interrupted: %w", cause)
 }

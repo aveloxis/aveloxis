@@ -53,6 +53,16 @@ func TestLockRecoveryRunsBeforeLeftoverStaging(t *testing.T) {
 			"process are released in milliseconds, not after the multi-minute "+
 			"leftover-staging drain.", lockIdx, leftoverIdx)
 	}
+	// The monthly tool-update check (network legs: GitHub, the module proxy,
+	// PyPI) runs AFTER lock recovery too (batch 4a review round 12: it ran
+	// first, so a stalled leg held the queue's correction).
+	toolsIdx := strings.Index(src, "collector.CheckAndUpdateTools(ctx, s.logger)")
+	if toolsIdx < 0 {
+		t.Fatal("cannot find the bounded collector.CheckAndUpdateTools(ctx, s.logger) call in scheduler.go")
+	}
+	if toolsIdx < lockIdx {
+		t.Errorf("the tool-update check (byte %d) runs before RecoverOtherWorkerLocks (byte %d): a stalled proxy or PyPI would hold the queue's correction", toolsIdx, lockIdx)
+	}
 }
 
 // TestRecoverStaleRunsBeforeLeftoverStaging — same logic for the

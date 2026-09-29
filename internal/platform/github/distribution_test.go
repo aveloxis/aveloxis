@@ -108,8 +108,9 @@ func TestListReleaseAssetExtensionsHandlesEmptyReleases(t *testing.T) {
 	}
 }
 
-// TestListReleaseAssetExtensionsHandles404Gracefully covers the
-// "this repo has releases disabled or is GitHub Generic Git" case.
+// TestListReleaseAssetExtensionsHandles404Gracefully covers the "this repo
+// has releases disabled, or was deleted or made private" case (a generic-git
+// repository never reaches this client: the scanner is GitHub-only).
 // 404 must surface as empty result, not error — matches the rest of
 // the optional-endpoint contract.
 func TestListReleaseAssetExtensionsHandles404Gracefully(t *testing.T) {
@@ -358,9 +359,10 @@ func TestListRootManifestsRecognizesJuliaRCondaManifests(t *testing.T) {
 // TestDistributionCallsBypassETagConditionals pins the v0.25.0
 // silent-data-loss fix. The four distribution-related GitHub
 // functions must call platform.WithoutETag(ctx) at entry so the
-// HTTPClient does NOT send If-None-Match — a 304 response under
-// snapshot-replace semantics would otherwise delete prior rows
-// without ever reinserting them.
+// HTTPClient does NOT send If-None-Match — through v0.29.67 a 304
+// read as "empty" deleted prior rows under snapshot-replace; since
+// v0.29.68 (round 8) a 304 is a non-answer, so a solicited one would
+// fail the scan of an unchanged repository and strike it.
 //
 // Behavioral test: drive each function twice through the same test
 // server. If ETag were active, the second call would carry If-None-
@@ -403,12 +405,13 @@ func TestDistributionCallsBypassETagConditionals(t *testing.T) {
 	}
 
 	if sawIfNoneMatch != 0 {
-		t.Errorf("distribution calls leaked %d If-None-Match headers; ETag MUST be bypassed for these paths to avoid the v0.24.0 snapshot-replace silent-data-loss bug", sawIfNoneMatch)
+		t.Errorf("distribution calls leaked %d If-None-Match headers; ETag MUST be bypassed for these paths (a solicited 304 is a non-answer that fails the scan of an unchanged repository)", sawIfNoneMatch)
 	}
 }
 
-// TestListRootManifestsHandles404 confirms the empty-repo / Generic
-// Git case is graceful.
+// TestListRootManifestsHandles404 confirms a 404 on contents (a repository
+// deleted or made private since its last collection; an empty repository is
+// observed to answer it too) is graceful: empty result, nil error.
 func TestListRootManifestsHandles404(t *testing.T) {
 	client := testGHClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)

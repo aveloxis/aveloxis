@@ -19,15 +19,27 @@ type issueCloserClient interface {
 	FetchIssueClosers(ctx context.Context, owner, repo string, numbers []int) (map[int]model.UserRef, error)
 }
 
+// closedBySweepStore and closerResolver are the slices of the store and the
+// contributor resolver the sweep needs (role interfaces, so the sweep's
+// control flow is testable without a database — PR #218 review A6).
+type closedBySweepStore interface {
+	IssuesNeedingClosedBySweep(ctx context.Context, limit int64) ([]db.SweepIssue, error)
+	SetIssueClosedBy(ctx context.Context, issueID int64, cntrbID string) error
+}
+
+type closerResolver interface {
+	Resolve(ctx context.Context, platformID int16, userID int64, login, name, email, avatarURL, profileURL, nodeID, userType string) (string, error)
+}
+
 // ClosedBySweep is Phase 3 of the identity backfill: for closed GitHub
 // issues whose closer is unreachable via the (history-capped)
 // repo-wide events feed, fetch it from the per-issue timeline in
 // batched GraphQL queries and resolve it through the standard
 // contributor-resolution contract.
 type ClosedBySweep struct {
-	store    *db.PostgresStore
+	store    closedBySweepStore
 	client   issueCloserClient
-	resolver *db.ContributorResolver
+	resolver closerResolver
 	logger   *slog.Logger
 	perQuery int // issues per batched GraphQL query
 }
@@ -61,6 +73,12 @@ func (s *ClosedBySweep) Run(ctx context.Context, limit int64, dryRun bool) (int6
 	var filled int64
 	// Group by repo, chunk by perQuery.
 	for start := 0; start < len(issues); {
+		// A stop is noticed at every chunk, not only when the fetch
+		// happens to see it (PR #218 review A6: a stop during the resolve
+		// step was swallowed and the sweep reported complete).
+		if err := ctx.Err(); err != nil {
+			return filled, err
+		}
 		end := start + 1
 		for end < len(issues) && issues[end].RepoID == issues[start].RepoID && end-start < s.perQuery {
 			end++
@@ -76,6 +94,12 @@ func (s *ClosedBySweep) Run(ctx context.Context, limit int64, dryRun bool) (int6
 		}
 		closers, err := s.client.FetchIssueClosers(ctx, chunk[0].Owner, chunk[0].Repo, numbers)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				// A stop, not a failure (worklist §4): through v0.29.67 a
+				// Ctrl-C mid-sweep WARNed once per remaining chunk, then
+				// reported the sweep complete and exited 0.
+				return filled, err
+			}
 			// One bad repo (deleted, renamed, access lost) must not sink
 			// the sweep — log and continue with the next chunk.
 			s.logger.Warn("closed_by sweep batch failed",
@@ -86,7 +110,18 @@ func (s *ClosedBySweep) Run(ctx context.Context, limit int64, dryRun bool) (int6
 			si := byNumber[num]
 			cid, err := s.resolver.Resolve(ctx, int16(model.PlatformGitHub), ref.PlatformID,
 				ref.Login, ref.Name, ref.Email, ref.AvatarURL, ref.URL, ref.NodeID, ref.Type)
-			if err != nil || cid == "" {
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return filled, err
+				}
+				// A failed resolve is not "no closer" — logged, and the
+				// issue stays a candidate for the next sweep (PR #218
+				// review A6: it was skipped without a line).
+				s.logger.Warn("closed_by sweep resolve failed", "issue_id", si.IssueID,
+					"owner", si.Owner, "repo", si.Repo, "issue_number", si.Number, "error", err)
+				continue
+			}
+			if cid == "" {
 				continue
 			}
 			if err := s.store.SetIssueClosedBy(ctx, si.IssueID, cid); err != nil {
@@ -103,6 +138,9 @@ func (s *ClosedBySweep) Run(ctx context.Context, limit int64, dryRun bool) (int6
 		if filled > 0 && filled%1000 == 0 {
 			s.logger.Info("closed_by sweep progress", "filled", filled)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return filled, err // interrupted after the last chunk: not complete
 	}
 	s.logger.Info("closed_by sweep complete", "candidates", len(issues), "filled", filled)
 	return filled, nil

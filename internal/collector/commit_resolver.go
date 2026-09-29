@@ -24,11 +24,14 @@
 package collector
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os/exec"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -49,18 +52,109 @@ type CommitResolver struct {
 	// Caches to avoid repeated lookups within a run.
 	emailCache map[string]string // email -> gh_login (or "" for not found)
 	hashCache  map[string]string // commit_hash -> gh_login
-	// transient records emails whose API search failed WITHOUT an answer
-	// this run (worklist item 16, review round 1): not a miss — nothing is
-	// cached or stamped — but the next commits by the same author skip the
-	// search instead of re-spending the budget and logging a WARN each.
+	// transient records emails whose API SEARCH (Strategy 4) failed WITHOUT
+	// an answer this run (worklist item 16, review round 1): not a miss —
+	// nothing is cached or stamped — but the next commits by the same author
+	// skip the search instead of re-spending the budget and logging a WARN
+	// each. Decided as a class (review round 2): the memo covers exactly
+	// what failed, the search; the per-commit SHA lookup (Strategy 3) still
+	// runs, since it can answer for a commit the email search never could.
 	// Never persisted; the next run retries.
 	transient map[string]bool
+
+	// bareClone is the repository's bare clone (the facade's, whose HEAD is
+	// the default branch it walks); defaultBranch is that branch's commit
+	// set, listed at most once per run and only after the first 422 — see
+	// loadDefaultBranch. nil until listed; listed says an attempt was made.
+	bareClone     string
+	defaultBranch map[string]bool
+	listed        bool
 }
 
-// errTransientMemo is resolveOne's answer for an email in transient: the
-// loop counts it (TransientSkipped) and moves on, without a WARN, without
-// Errors++ and without recording the email as unresolved.
+// WithBareClone gives the resolver the repository's bare clone, so a run
+// that meets commits no longer on the default branch (history rewritten
+// upstream) can recognise them locally instead of spending a SHA lookup on
+// each and aborting on the 422s (worklist 73). Without it the resolver
+// behaves as before.
+func (r *CommitResolver) WithBareClone(path string) *CommitResolver {
+	r.bareClone = path
+	return r
+}
+
+// loadDefaultBranch lists the bare clone's default-branch commits once per
+// run (`git rev-list HEAD`; the facade walks the same branch) and reports
+// whether a list is available. Called only after a 422, so a repository
+// whose commits all resolve never pays for the listing. A failure is
+// logged and leaves the old behaviour (the 50-in-a-row abort) in place.
+func (r *CommitResolver) loadDefaultBranch(ctx context.Context, repoID int64, unresolved []unresolvedCommit) bool {
+	if r.listed {
+		return r.defaultBranch != nil
+	}
+	r.listed = true
+	if r.bareClone == "" {
+		return false
+	}
+	// Streamed, and only this run's unresolved hashes are kept: the run
+	// asks about nothing else, and holding the whole listing plus a map of
+	// every branch commit cost 100+ MB on a kernel-size repository (PR #218
+	// review A9).
+	want := make(map[string]struct{}, len(unresolved))
+	for _, c := range unresolved {
+		want[c.Hash] = struct{}{}
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.bareClone, "rev-list", "HEAD")
+	stderr := &stderrCapture{}
+	cmd.Stderr = stderr
+	set := make(map[string]bool)
+	err := func() error {
+		// startSweptCommand, not cmd.StdoutPipe: it owns the process group
+		// and the pipe, so a child that outlives git cannot wedge the read
+		// (PR #207).
+		swept, err := startSweptCommand(cmd)
+		if err != nil {
+			return err
+		}
+		defer swept.Close()
+		sc := bufio.NewScanner(swept.Stdout)
+		for sc.Scan() {
+			if h := strings.TrimSpace(sc.Text()); h != "" {
+				if _, ok := want[h]; ok {
+					set[h] = true
+				}
+			}
+		}
+		scanErr := sc.Err()
+		if scanErr != nil {
+			// Drain so git is not blocked on a full pipe before Wait.
+			_, _ = io.Copy(io.Discard, swept.Stdout)
+		}
+		if waitErr := swept.Wait(); waitErr != nil {
+			return waitErr
+		}
+		return scanErr
+	}()
+	if err != nil && ctx.Err() != nil {
+		return false // a stop, not a failed listing: the loop's ctx check ends the run
+	}
+	if err != nil {
+		r.logger.Warn("commit resolution: listing the default branch failed — commits not on it cannot be told apart this run",
+			"repo_id", repoID, "clone", r.bareClone, "error", execErr(ctx, err), "stderr", stderr.String())
+		return false
+	}
+	r.defaultBranch = set
+	return true
+}
+
+// errTransientMemo is resolveOne's answer for a commit whose email is in
+// transient once the SHA lookup has missed: the loop counts it
+// (TransientSkipped) and moves on, without a WARN, without Errors++ and
+// without recording the email as unresolved.
 var errTransientMemo = errors.New("search for this email already failed without an answer this run")
+
+// errNotOnDefaultBranch is resolveOne's answer for a commit that needs an API
+// lookup but is not on the listed default branch (worklist 73): the loop
+// counts it (NotOnDefaultBranch) and moves on, with no WARN and no 422 count.
+var errNotOnDefaultBranch = errors.New("commit is not on the default branch")
 
 // NewCommitResolver creates a resolver using the GitHub API via the given key pool.
 // NewCommitResolver builds a resolver against the GitHub API at baseURL, or
@@ -99,16 +193,39 @@ type ResolveResult struct {
 	Unresolved           int
 	KeyExhausted         int // commits that failed because no API keys were available
 	TransientSkipped     int // commits skipped because an earlier commit's search for the same email failed without an answer this run
+	WriteFailed          int // commits resolved by a strategy whose write then failed (counted in Errors, not as resolved)
 	Consecutive422       int // consecutive 422 "No commit found" errors from GitHub API
+	NotOnDefaultBranch   int // unresolved commits no longer on the default branch (history rewritten upstream): skipped, rows kept
 	ContribsCreated      int
 	ContribsUpdated      int
 	AliasesCreated       int
 	Errors               int
 }
 
+// resolved is every commit a strategy resolved AND whose write landed: a
+// commit whose author was found but whose SetCommitAuthorLogin or
+// contributor upsert failed is an error, not a resolution (WriteFailed;
+// batch-3 review round 3 — counting it under both sent accounted() past
+// the commits visited and KeyExhausted negative).
+func (r *ResolveResult) resolved() int {
+	return r.ResolvedNoreply + r.ResolvedDBHit + r.ResolvedAPI + r.ResolvedSearch + r.ResolvedCommitSearch - r.WriteFailed
+}
+
+// accounted is every commit the run has an outcome for: resolved,
+// unresolved, errored, or skipped on a memoised search failure — each
+// commit once. The two "remaining" formulas (key exhaustion, the 422 abort)
+// subtract it from TotalCommits — one spelling (SR-17; batch-3 review round
+// 2: both omitted TransientSkipped and ResolvedCommitSearch, so a key
+// refusal after a memoised author counted the skipped commits as
+// key-exhausted and flipped the run to FAILED).
+func (r *ResolveResult) accounted() int {
+	return r.resolved() + r.Unresolved + r.Errors + r.TransientSkipped + r.NotOnDefaultBranch
+}
+
 // IsSuccess returns true if the resolution completed meaningfully —
 // i.e., most commits were resolved or legitimately unresolvable, not
-// failed due to key exhaustion or errors.
+// failed due to key exhaustion. It reads KeyExhausted alone; Errors and
+// TransientSkipped reach it only through accounted() at a refusal.
 //
 // v0.20.10 (Fix F) fixes an integer-division bug in the original
 // formulation `r.KeyExhausted < r.TotalCommits/2`. With TotalCommits=1,
@@ -168,10 +285,13 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-
 		login, ghUserID, err := r.resolveOne(ctx, repoID, owner, repo, cmt, result)
 		if errors.Is(err, context.Canceled) {
 			return result, err // shutdown, not a failure (pass 35)
+		}
+		if errors.Is(err, errNotOnDefaultBranch) {
+			result.NotOnDefaultBranch++
+			continue
 		}
 		if errors.Is(err, errTransientMemo) {
 			result.TransientSkipped++
@@ -182,10 +302,10 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			// we should stop trying (all subsequent calls will fail too).
 			errMsg := err.Error()
 			if strings.Contains(errMsg, "no API keys configured") || strings.Contains(errMsg, "invalidated") {
-				result.KeyExhausted = result.TotalCommits - (result.ResolvedNoreply + result.ResolvedDBHit + result.ResolvedAPI + result.ResolvedSearch + result.Unresolved + result.Errors)
+				result.KeyExhausted = result.TotalCommits - result.accounted()
 				r.logger.Error("commit resolution aborted: no API keys available",
 					"repo_id", repoID,
-					"resolved_so_far", result.ResolvedNoreply+result.ResolvedDBHit+result.ResolvedAPI,
+					"resolved_so_far", result.resolved(),
 					"remaining", result.KeyExhausted)
 				break
 			}
@@ -194,9 +314,17 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			// by a stale bare clone that belonged to a different repo). After 50
 			// consecutive 422s, abort — continuing would just waste API calls.
 			if strings.Contains(errMsg, "unprocessable entity") {
+				// A 422 on a commit the default branch no longer has is
+				// rewritten history, not a stale clone (worklist 73: an
+				// upstream rewrite left 359 unresolved rows and the run
+				// aborted at every cycle). List the branch once and skip.
+				if r.loadDefaultBranch(ctx, repoID, commits) && !r.defaultBranch[cmt.Hash] {
+					result.NotOnDefaultBranch++
+					continue
+				}
 				result.Consecutive422++
 				if result.ShouldAbort422() {
-					remaining := result.TotalCommits - (result.ResolvedNoreply + result.ResolvedDBHit + result.ResolvedAPI + result.ResolvedSearch + result.Unresolved + result.Errors)
+					remaining := result.TotalCommits - result.accounted()
 					r.logger.Error("commit resolution aborted: commits do not belong to this repo",
 						"repo_id", repoID, "owner", owner, "repo", repo,
 						"consecutive_422", result.Consecutive422,
@@ -227,14 +355,15 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		// Update commit rows with the resolved login.
 		if err := r.store.SetCommitAuthorLogin(ctx, repoID, cmt.Hash, login); err != nil {
 			// Round-8 class sweep: warn-and-continue per commit, and
-			// result.Errors feeds IsSuccess() — so a shutdown both
-			// flooded the log and could report "commit resolution
-			// FAILED" for a clean stop.
+			// result.Errors reaches the key-exhaustion accounting — so a
+			// shutdown both flooded the log and could report "commit
+			// resolution FAILED" for a clean stop.
 			if errors.Is(err, context.Canceled) {
 				return result, err
 			}
 			r.logger.Warn("failed to set commit author login", "hash", cmt.Hash[:8], "error", err)
 			result.Errors++
+			result.WriteFailed++ // resolved, not recorded: counted once, as an error
 			continue
 		}
 
@@ -245,6 +374,11 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			// Resolved via DB or Search (no user ID). Still create alias.
 			r.ensureAlias(ctx, login, cmt.Email, result)
 		}
+	}
+
+	if result.NotOnDefaultBranch > 0 {
+		r.logger.Info("commit resolution: unresolved commits no longer on the default branch were skipped (history rewritten upstream) — their rows are kept",
+			"repo_id", repoID, "owner", owner, "repo", repo, "skipped", result.NotOnDefaultBranch)
 	}
 
 	// Bulk backfill: connect commits to contributors via cmt_ght_author_id.
@@ -275,6 +409,8 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		"unresolved", result.Unresolved,
 		"key_exhausted", result.KeyExhausted,
 		"transient_skipped", result.TransientSkipped,
+		"not_on_default_branch", result.NotOnDefaultBranch,
+		"write_failed", result.WriteFailed,
 		"errors", result.Errors,
 		"contribs_created", result.ContribsCreated,
 		"contribs_updated", result.ContribsUpdated,
@@ -303,10 +439,6 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 			r.hashCache[cmt.Hash] = login
 		}
 		return login, 0, nil
-	}
-
-	if r.transient[email] {
-		return "", 0, errTransientMemo
 	}
 
 	// Strategy 1: Parse noreply email (free, no API call).
@@ -340,6 +472,14 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 		return login, 0, nil
 	}
 
+	// Once the default branch is listed, a commit not on it gets no API
+	// lookup (worklist 73): the SHA lookup answers 422 for it, and the
+	// email search was never reached for a 422. The free strategies above
+	// still ran (final review F1 of v0.29.69).
+	if r.defaultBranch != nil && !r.defaultBranch[cmt.Hash] {
+		return "", 0, errNotOnDefaultBranch
+	}
+
 	// Strategy 3: GitHub Commits API.
 	info, err := r.githubCommitLookup(ctx, owner, repo, cmt.Hash)
 	if err != nil {
@@ -353,10 +493,15 @@ func (r *CommitResolver) resolveOne(ctx context.Context, repoID int64, owner, re
 	}
 
 	// Strategy 4: shared API tail — GitHub Search API, then global
-	// commit-search (the shared resolver, summary/12 §5g). commit-search
+	// commit-search (the shared resolver, summary/12 §5g). Skipped for an
+	// email whose search already failed without an answer this run (the
+	// memo; the SHA lookup above still had its chance). commit-search
 	// resolves private-profile-email authors that user-search misses, and
 	// it now yields the gh_user_id too (the old githubEmailSearch returned
 	// login only).
+	if r.transient[email] {
+		return "", 0, errTransientMemo
+	}
 	login, ghUserID, source, err := ResolveEmailViaAPI(ctx, r.searchClient, email)
 	if err != nil && !platform.IsDefinitiveAnswer(err) {
 		if !errors.Is(err, context.Canceled) {
@@ -521,13 +666,15 @@ func (r *CommitResolver) ensureContributor(ctx context.Context, login string, gh
 	created, actualID, err := r.store.UpsertContributorFull(ctx, desiredID, login, ghUserID, commitEmail)
 	if err != nil {
 		// Round-8 class sweep: a shutdown must not count as a resolve
-		// error — result.Errors feeds IsSuccess(). The caller's loop-top
-		// ctx guard ends the pass on the next iteration.
+		// error — result.Errors reaches the key-exhaustion accounting.
+		// The caller's loop-top ctx guard ends the pass on the next
+		// iteration.
 		if errors.Is(err, context.Canceled) {
 			return
 		}
 		r.logger.Warn("failed to upsert contributor", "login", login, "error", err)
 		result.Errors++
+		result.WriteFailed++ // resolved, not recorded: counted once, as an error
 		return
 	}
 	if created {
@@ -560,7 +707,15 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 	}
 	// Look up the contributor by login to get their cntrb_id.
 	cntrbID, err := r.store.FindContributorIDByLogin(ctx, login)
-	if err != nil || cntrbID == "" {
+	if err != nil {
+		// Logged (everything that errors is): the login already landed on the
+		// commit, so nothing revisits it — the alias is what this run loses.
+		if !errors.Is(err, context.Canceled) {
+			r.logger.Warn("failed to look the contributor up for its alias", "login", login, "error", err)
+		}
+		return
+	}
+	if cntrbID == "" {
 		return
 	}
 	if err := r.store.EnsureContributorAlias(ctx, cntrbID, commitEmail, "aveloxis-commit-resolver", "GitHub API"); err != nil {

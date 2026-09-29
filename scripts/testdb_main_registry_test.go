@@ -27,7 +27,8 @@ import (
 // one 40P01.
 func TestDBTierPackagesUseTheirOwnDatabase(t *testing.T) {
 	root := srctest.Root(t)
-	byDir := map[string][]*ast.File{}
+	byDir := map[string][]*ast.File{}         // every _test.go: a reader behind a constraint still reads on the CI run where it holds
+	compiledByDir := map[string][]*ast.File{} // the files `go test ./...` compiles everywhere: only these can carry the TestMain credit
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -52,6 +53,13 @@ func TestDBTierPackagesUseTheirOwnDatabase(t *testing.T) {
 		}
 		dir, _ := filepath.Rel(root, filepath.Dir(p))
 		byDir[dir] = append(byDir[dir], f)
+		// Round 10 of the web-half review: the READER side stays over every
+		// file (dropping a constrained reader was the unsafe direction — it
+		// still tests against the shared database wherever its constraint
+		// holds); a TestMain that go test never compiles credits nothing.
+		if srctest.CompiledTestFile(t, root, p) {
+			compiledByDir[dir] = append(compiledByDir[dir], f)
+		}
 		return nil
 	})
 	if err != nil {
@@ -59,11 +67,12 @@ func TestDBTierPackagesUseTheirOwnDatabase(t *testing.T) {
 	}
 	readers := 0
 	for dir, files := range byDir {
-		reads, callsMain := dbTierStatus(files)
+		reads, _ := dbTierStatus(files)
 		if !reads {
 			continue
 		}
 		readers++
+		_, callsMain := dbTierStatus(compiledByDir[dir])
 		if !callsMain {
 			t.Errorf("%s: its tests read AVELOXIS_TEST_DB but it has no TestMain calling testdb.Main(m, prepare, verify) with both hooks — add testmain_test.go (see internal/api/testmain_test.go)", dir)
 		}

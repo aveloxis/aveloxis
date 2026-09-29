@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
 
 // sessionStore is the role interface auth needs from the DB layer
@@ -68,6 +69,10 @@ type authenticator struct {
 
 	mu    sync.Mutex
 	cache map[string]cachedAuth
+	// gen counts invalidateAll calls: a resolve that read the store before a
+	// bust must not cache what it read after it (worklist follow-up 7; the
+	// shape homeCache's setIfGen already had).
+	gen uint64
 }
 
 func newAuthenticator(store sessionStore, require bool, logger *slog.Logger) *authenticator {
@@ -95,6 +100,7 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 		a.mu.Unlock()
 		return c.info, nil
 	}
+	gen := a.gen
 	a.mu.Unlock()
 
 	userID, err := a.store.ValidateSessionToken(ctx, token)
@@ -125,7 +131,9 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 	if len(a.cache) > 10000 {
 		a.cache = map[string]cachedAuth{} // simple reset; tokens revalidate
 	}
-	a.cache[token] = cachedAuth{info: info, expires: now.Add(authCacheTTL)}
+	if a.gen == gen { // no bust since the store was read
+		a.cache[token] = cachedAuth{info: info, expires: now.Add(authCacheTTL)}
+	}
 	a.mu.Unlock()
 	return info, nil
 }
@@ -136,9 +144,9 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 // client that went away mid-lookup (r.Context() cancelled, the store's
 // error wraps context.Canceled) is neither: nothing to serve, nothing to
 // chase — no ERROR (batch-2 review round 2).
-func (a *authenticator) refuseStoreError(w http.ResponseWriter, err error) {
-	if errors.Is(err, context.Canceled) {
-		a.logger.Debug("session lookup abandoned — the request was cancelled", "error", err)
+func (a *authenticator) refuseStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	if httpserver.RequestEnded(r.Context(), err) { // client gone, or http_timeout_seconds fired
+		a.logger.Debug("session lookup abandoned — the request ended", "error", err)
 		return
 	}
 	a.logger.Error("session token could not be resolved — store failure, request refused (503)", "error", err)
@@ -150,11 +158,14 @@ func (a *authenticator) refuseStoreError(w http.ResponseWriter, err error) {
 // Called from the admin mutation handlers (promote/demote, group
 // approve/reject) — without this, a freshly promoted user's own
 // /api/v1/me kept answering is_admin=false for up to 60s, and a user
-// whose group was just approved kept an empty scope. Admin mutations
-// are rare, so re-validating every active token once is cheap.
+// whose group was just approved kept an empty scope — and, since
+// v0.29.68, from a non-admin's add that linked or queued repositories
+// (the caller's own scope changed). Both are human-paced, so
+// re-validating every active token once is cheap.
 func (a *authenticator) invalidateAll() {
 	a.mu.Lock()
 	a.cache = map[string]cachedAuth{}
+	a.gen++
 	a.mu.Unlock()
 }
 
@@ -185,7 +196,7 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 				default:
 					// A presented token the store could not resolve: refuse,
 					// rather than run the request unscoped.
-					a.refuseStoreError(w, err)
+					a.refuseStoreError(w, r, err)
 					return
 				}
 			}
@@ -203,7 +214,7 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			return
 		}
 		if err != nil {
-			a.refuseStoreError(w, err)
+			a.refuseStoreError(w, r, err)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info)))
@@ -278,7 +289,7 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 		case errors.Is(err, db.ErrSharedRepoNotFound):
 			// Nonexistent repo id — fall through to the 403.
 		default:
-			s.logger.Warn("shared-with-me auto-add failed — refusing access (fail closed)",
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "shared-with-me auto-add failed — refusing access (fail closed)",
 				"user_id", info.UserID, "repo_id", repoID, "error", err)
 		}
 	}

@@ -24,9 +24,9 @@ aveloxis serve [flags]
 
 - Uses the **staged collection pipeline** (API -> staging -> processing -> facade -> commit resolution -> analysis).
 - The queue is Postgres-backed (`aveloxis_ops.collection_queue`) and uses `SELECT ... FOR UPDATE SKIP LOCKED` for atomic job claiming.
-- Safe to stop and restart at any time. On shutdown (`Ctrl-C` / `SIGTERM`), active workers finish their current API call, queue locks are released, and staging data is preserved.
-- On startup, automatically processes any leftover staged data from a previous interrupted run.
-- Stale locks from crashed instances are recovered after 1 hour.
+- Safe to stop and restart at any time. On shutdown (`Ctrl-C` / `SIGTERM`), in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released and staging data is preserved.
+- On startup, reclaims a previous serve's locks at once (except a running heal's parked rows), resumes collection, and drains any leftover staged data from an interrupted run in the background.
+- Stale locks from crashed instances are recovered after 1 hour by a running instance, or at once by the next serve start.
 - Multiple instances can share the same queue for horizontal scaling.
 
 ### Periodic tasks
@@ -517,15 +517,15 @@ The merge refuses to start until the v0.28.18 migrate has built the
 `email_message` FK indexes (`idx_email_message_repo_id` /
 `idx_email_message_signaled_repo_id`) — without them every pair would
 sequential-scan that table on the repoints and again at commit. Run the
-new binary's deploy steps first (`aveloxis deploy-checklist` prints them;
-`aveloxis migrate --skip-views` if it prints none); the refusal names the
+pending deploy steps first (`aveloxis deploy-checklist --pending` prints
+them and names the migrate); the refusal names the
 missing index. The precondition checks the indexes, not the schema stamp,
 so a fleet that built them in an earlier release passes it on a binary
 that is not yet deployed: keeping that order is up to you.
 
 ### After the run
 
-Once the binary's deploy steps are done (so the views already carry the
+Once the pending deploy steps are done (so the views already carry the
 release's definitions):
 
 ```bash
@@ -696,6 +696,8 @@ Installs three external analysis tools: [scc](https://github.com/boyter/scc) (pe
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
+Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69).
+
 ---
 
 ## `aveloxis upgrade-tools`
@@ -734,8 +736,20 @@ be started — a pidfile that cannot be read (the command refuses rather
 than risk a second scheduler on the host), a log file that cannot be
 opened, a failed exec — makes the command exit nonzero, naming each
 failure, after every requested component has been attempted. `start all`
-therefore still brings up web and api beside a refused serve, and says
-so. An already-running component is a no-op and exits 0.
+therefore still tries web and api beside a refused serve, and says so.
+Since v0.29.68 `start` writes the child's pidfile at once (the
+"already running" guard reads that file, so a second `start` during the
+child's startup is refused), then waits for the child's readiness signal
+on an inherited pipe and reports a child that exited first. web and api
+signal readiness once the schema gate has passed AND the port is bound (a
+port in use is a refusal the process exits on); the scancode worker once
+the schema gate has passed; serve once its keys are loaded and its startup
+migration is done. web, api and the scancode worker refuse to start while
+the schema stamp is behind their binary, so a `--skip-deploy-check` start
+on an un-migrated fleet reports them as exited; start them again after the
+migrate. A child still starting after 30 seconds (a long migration for
+serve) is reported as started. An already-running component is a no-op
+and exits 0.
 
 Log files are opened in append mode — existing content is preserved across restarts.
 
@@ -760,7 +774,7 @@ aveloxis stop all              # stop serve + web + api (never the scancode work
 aveloxis stop                  # (no args) same as 'all'
 ```
 
-Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. Active workers finish their current API call, queue locks are released, and staging data is preserved. PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, or whose process it could not signal, is left in place for you to inspect. `stop all` names a scancode worker it left running.
+Sends `SIGTERM` to the specified component(s) using PID files in `~/.aveloxis/`. For `serve`: in-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` (default 10) to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then queue locks are released; staging data is preserved. For `web` and `api`: the listener closes, in-flight requests get 10 s to finish, then the pool closes. The scancode worker has its own bounds (`collection.scancode_shutdown_grace_minutes`; see [Graceful shutdown](../architecture/scancode.md#6-graceful-shutdown)). PID files are removed after a successful stop or when they are stale (process no longer running); a file the command could not read, whose process it could not signal, or that it could not remove (the message carries the error) is left in place for you to inspect; a stale file another `start` replaced meanwhile is left to that start. `stop all` names a scancode worker it left running.
 
 Nothing to stop is exit 0 — `stop` is idempotent. A process that was
 found but could not be signaled (typically `operation not permitted` on a
@@ -1037,7 +1051,12 @@ aveloxis reconcile-repos             # everything
 
 The scheduler also logs a startup gauge (`non-archived repos with no
 collection_queue row`) pointing here whenever the count is non-zero.
-Re-run until stranded = 0; healed repos drop out of the set.
+Re-run until stranded = 0; healed repos drop out of the set. Since
+v0.29.68 `Ctrl-C` or a SIGTERM (`kill <pid>`) cancels the in-flight probe
+or statement, ends the walk and prints an interruption summary (what was
+archived, healed, consolidated and enqueued so far, with the dry-run marker
+when set); the exit is nonzero, every outcome is idempotent, and a rerun
+walks the whole cohort again (there is no resume marker).
 
 Both consolidation arms (the dataless heal and the per-pair merge)
 share `dedup-repos`' precondition: the v0.28.18 migrate must have built
@@ -1388,7 +1407,13 @@ aveloxis mark-gone-repos              # stamp / clear / re-enqueue
 aveloxis mark-gone-repos --limit 100  # bounded canary
 ```
 
-Idempotent and re-runnable on any cadence. Dataless stranded rows
+Idempotent and re-runnable on any cadence. Since v0.29.68 `Ctrl-C` or a
+SIGTERM (`kill <pid>`; `aveloxis stop` knows only the four long-running
+components) cancels the in-flight probe or statement, ends the walk and
+prints an interruption summary (what was probed, stamped, cleared and
+skipped so far); every stamp is its own statement, so what landed stays,
+and a rerun walks the whole cohort again — every verdict is idempotent,
+so nothing is lost, only time. Dataless stranded rows
 (no queue row, no data, no archived flag) are not candidates — there
 is nothing to display for them either way. New gone repos are
 stamped automatically by prelim at collection time; this command
@@ -1628,13 +1653,56 @@ one — register a checklist here.
 
 ```bash
 aveloxis deploy-checklist
+aveloxis deploy-checklist --pending         # every step THIS database still needs — the range the start gate enforces — and the migrate to run
+aveloxis deploy-checklist --since 0.29.64   # every release's steps after the last acknowledged deploy, oldest first
+aveloxis deploy-checklist --since 0.29.64 --inclusive   # the same, 0.29.64's own steps included
 ```
+
+`--pending` reads the database's last acknowledged deploy and schema stamp
+and prints the range `aveloxis start serve` enforces, computed by the same
+code: after the acknowledged release; from the stamp, inclusive, when
+nothing was acknowledged or the stamp is behind the acknowledgement; the
+binary's own steps when neither can be used. It prints `nothing pending`
+only when the schema stamp is readable and current and this release's steps
+are acknowledged (or it has none); a missing, unreadable or malformed stamp
+prints the steps, with a first line saying why, and so does a database
+with no collected data yet (the start gate does not require the steps on a
+fresh install). Otherwise its last line is
+the migrate to run. It does not take `--since` or `--inclusive`. Use it for
+upgrades ([Upgrading](../getting-started/upgrading.md)).
+
+`--since` is the offline form: it takes a version you name — typically the
+last acknowledged deploy, the highest version in `aveloxis_ops.deploy_ack`
+compared as a version — and prints every later release's block up to this
+binary, oldest first, without reading the database. It is exclusive: that release's steps already
+ran. When no deploy was ever acknowledged, pass the schema stamp (`SELECT
+schema_version FROM aveloxis_ops.schema_meta`, read before the migrate
+moves it) with `--inclusive`, which prints the stamp release's own block as
+well: its steps were never acknowledged either (PR #218 fix review r1).
+`--inclusive` without `--since` is an error. Consecutive releases with identical steps print as one block
+labelled with the range it covers. When more than one release has steps, a
+header comes first: run `aveloxis stop all`, the migrate and `aveloxis start
+all` **once**, not once per block — the migrate is the strongest any block
+asks for (a plain `aveloxis migrate` if any block needs one and no later
+release in the range lifts it, as 0.29.61 lifts 0.29.60's; otherwise
+`aveloxis migrate --skip-views`) — then every block's checks, heals and
+audits, oldest first, then `aveloxis ack-deploy`, then `aveloxis start all`,
+and a step that needs the running release (such as `adopt-forge-id` or the
+approvals page) after the start. The start gate's refusal names the same
+migrate for the range it prints. A `--since` value
+that is not a version (dotted non-negative numbers such as `0.29.64`) is an
+error: the command names the flag and exits non-zero.
+
+`aveloxis start serve` prints the same accumulated list, with the same
+header and collapsing, when the last acknowledged deploy is behind the
+binary: the heals of a skipped release never ran (v0.29.68).
+[Upgrading](../getting-started/upgrading.md) puts both commands in order.
 
 ## `aveloxis ack-deploy`
 
 Records that the current binary version's deploy/heal steps were run,
 so `aveloxis start serve` / `aveloxis start all` stops prompting for
-them. Run it AFTER completing the `deploy-checklist` steps. It cannot
+them. Run it AFTER completing the steps `deploy-checklist --pending` prints. It cannot
 stand in for step 2: while the schema stamp is behind the binary the
 start gate refuses regardless of the acknowledgement (v0.29.4) — only a
 completed migration of that binary (the checklist's migrate step —
@@ -1887,5 +1955,5 @@ All commands look for `aveloxis.json` in the current working directory. The conf
 
 `aveloxis serve` handles the following signals:
 
-- **`SIGTERM`** / **`SIGINT`** (`Ctrl-C`) -- graceful shutdown. Workers finish current API calls, locks are released, staging data is preserved.
+- **`SIGTERM`** / **`SIGINT`** (`Ctrl-C`) -- graceful shutdown. In-flight API calls and statements are cancelled at once; workers get up to `collection.shutdown_grace_seconds` to unwind (a completion reached at the cancel is stamped on a retry bounded by half the grace, at most 5 s), then locks are released; staging data is preserved.
 - **`SIGTERM`** sent by `aveloxis stop` -- same graceful shutdown.

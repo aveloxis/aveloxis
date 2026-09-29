@@ -7,7 +7,9 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -19,6 +21,8 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
 	"github.com/aveloxis/aveloxis/internal/static"
 )
@@ -126,9 +130,19 @@ const DefaultQueueStatsCacheTTL = 60 * time.Second
 // slowness.
 const DefaultDashboardRefreshSeconds = 60
 
+// monitorStore is the part of *db.PostgresStore the dashboard reads, so a
+// test can fault each call (PR #218 review C5).
+type monitorStore interface {
+	QueueStats(ctx context.Context) (map[string]int, error)
+	ListQueuePage(ctx context.Context, limit, offset int, search, sortKey, sortDir string) ([]db.QueueJob, int, error)
+	GetReposBatch(ctx context.Context, repoIDs []int64) (map[int64]*model.Repo, error)
+	GetRepoStatsBatch(ctx context.Context, repoIDs []int64) (map[int64]*db.RepoStats, error)
+	PrioritizeRepo(ctx context.Context, repoID int64) error
+}
+
 // Server is the monitoring HTTP server.
 type Server struct {
-	store           *db.PostgresStore
+	store           monitorStore
 	logger          *slog.Logger
 	mux             *http.ServeMux
 	queueStatsCache *QueueStatsCache
@@ -155,9 +169,18 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 // NewWithOptions creates a monitor server with explicit configuration.
 // v0.23.0.
 func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) *Server {
+	return newServer(store, logger, opts)
+}
+
+// newServer builds the Server over any monitorStore. A nil
+// *db.PostgresStore stays a (typed) nil store, as it always was.
+func newServer(store monitorStore, logger *slog.Logger, opts Options) *Server {
 	refresh := opts.RefreshSeconds
 	if refresh <= 0 {
 		refresh = DefaultDashboardRefreshSeconds
+	}
+	if logger == nil {
+		logger = slog.Default() // one default layer: the handlers use s.logger unguarded
 	}
 	s := &Server{
 		store:           store,
@@ -209,12 +232,25 @@ func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
+// serverError is the one arm for a store failure (PR #218 review C5): the
+// cause goes to the log at ERROR with the handler's name, the client gets a
+// generic 500 — never the store's text. A request the client abandoned
+// (context.Canceled) is not a failure and logs at Debug.
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, handler string, err error) {
+	if httpserver.RequestEnded(r.Context(), err) { // client gone, or http_timeout_seconds fired (its WARN reports it)
+		s.logger.Debug("request ended before its handler finished", "handler", handler, "error", err)
+		return
+	}
+	s.logger.Error("request failed", "handler", handler, "error", err)
+	http.Error(w, "internal error; try again", http.StatusInternalServerError)
+}
+
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// v0.18.30: route through queueStatsCache so /api/stats polls
 	// don't re-trigger the GROUP BY scan on every call.
 	stats, lastRefreshed, nextRefresh, err := s.queueStatsCache.Get(r.Context(), s.store.QueueStats)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, r, "handleStats", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -235,7 +271,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	params := parsePageParams(r)
 	jobs, total, err := s.store.ListQueuePage(r.Context(), params.PageSize, params.Offset, params.Search, "", "")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.serverError(w, r, "handleQueue", err)
 		return
 	}
 
@@ -297,7 +333,12 @@ func (s *Server) handlePrioritize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, db.ErrRepoNotInQueue) {
+			http.Error(w, "repo not found in queue", http.StatusNotFound)
+			return
+		}
+		// A store failure is not "not found" (SR-5, follow-up 12).
+		s.serverError(w, r, "handlePrioritize", fmt.Errorf("prioritize repo %d: %w", repoID, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -335,8 +376,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// At v0.18.29 every dashboard render fired QueueStats — a `SELECT
 	// status, COUNT(*) … GROUP BY status` against a 100K-row queue
 	// table per browser tab per 10 seconds. Now once per TTL window.
-	stats, lastRefreshed, nextRefresh, _ := s.queueStatsCache.Get(ctx, s.store.QueueStats)
-	jobs, total, _ := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search, "", "")
+	// A failed read is a logged 500, not an empty fleet (PR #218 review C5:
+	// both errors were discarded, so an outage rendered as zero jobs).
+	stats, lastRefreshed, nextRefresh, err := s.queueStatsCache.Get(ctx, s.store.QueueStats)
+	if err != nil {
+		s.serverError(w, r, "handleDashboard", err)
+		return
+	}
+	jobs, total, err := s.store.ListQueuePage(ctx, params.PageSize, params.Offset, params.Search, "", "")
+	if err != nil {
+		s.serverError(w, r, "handleDashboard", err)
+		return
+	}
 
 	// Look up repo details and stats for display.
 	type enrichedJob struct {
@@ -360,8 +411,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, j := range jobs {
 		repoIDs = append(repoIDs, j.RepoID)
 	}
-	repos, _ := s.store.GetReposBatch(ctx, repoIDs)
-	repoStats, _ := s.store.GetRepoStatsBatch(ctx, repoIDs)
+	repos, err := s.store.GetReposBatch(ctx, repoIDs)
+	if err != nil {
+		s.serverError(w, r, "handleDashboard", err)
+		return
+	}
+	repoStats, err := s.store.GetRepoStatsBatch(ctx, repoIDs)
+	if err != nil {
+		s.serverError(w, r, "handleDashboard", err)
+		return
+	}
 
 	enriched := make([]enrichedJob, 0, len(jobs))
 	for _, j := range jobs {

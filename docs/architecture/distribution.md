@@ -71,11 +71,15 @@ A repo with `.whl` and `.deb` in its assets gets two `repo_distribution` rows wi
 
 ### 3.4 GitHub Packages (`GET /users/{o}/packages` → fallback `/orgs/{o}/packages`)
 
-GitHub's own package registry. Best-effort: requires `read:packages` OAuth scope on the token; 403/404 → empty result rather than failure. The endpoint returns ALL packages for the owner; we client-side filter by `repository.name == repo_name`. The six supported `package_type` values (container, docker, maven, npm, nuget, rubygems) get iterated separately because GitHub doesn't support a combined query.
+GitHub's own package registry. Best-effort: requires `read:packages` OAuth scope on the token; 403/404 → empty result rather than failure. The endpoint lists the OWNER's packages and we client-side filter by `repository.name == repo_name`; one page of 100 per package type is read (the same bound as releases, §3.3), so an owner with more than 100 packages of one type may hide this repository's packages past the first page — since v0.29.68 a full page logs a WARN naming the owner and type (review round 6 of items 22–25; the decision, recorded at worklist item 24, is the bound with the warning, not a per-repository walk of a large organisation's whole registry). The six supported `package_type` values (container, docker, maven, npm, nuget, rubygems) get iterated separately because GitHub doesn't support a combined query.
 
 ### 3.5 In-repo manifest walk (`GET /repos/{o}/{r}/contents/`)
 
 Walks the repo root plus every first-level directory (bounded to 50 dirs for pathological monorepos) looking for well-known manifest files. The Phase D parsers extract the **declared package name** when one is present.
+
+The Contents API returns at most 1,000 entries for one directory and says nothing when it stopped (live: `DefinitelyTyped/types`), and through v0.29.67 the partial listing was stored as a complete scan. Since v0.29.68 (worklist item 24) a root listing of 1,000 entries is re-read through the Git Trees API (`GET /repos/{o}/{r}/git/trees/HEAD`, non-recursive, which has no such cap); a tree GitHub truncates (100,000 entries) is a non-answer — the scan fails and keeps its snapshot. The first-level directory reads keep the Contents API by decision (the root tree carries each subtree's SHA, so a capped first-level directory could be re-read the same way; it is not): a first-level directory of 1,000 entries loses at most that directory's manifests — the class boundary, recorded at the worklist item.
+
+GitHub's Git Database and Commits endpoints answer **409** ("Git Repository is empty") for a repository that is empty or unavailable (an empty repository is observed to answer 404 on the Contents API; that status table lists the status, not the cause). Since v0.29.68 (worklist item 23) a 409 on a read is `platform.ErrConflict`, a definitive answer (ClassSkip) taken in one request, where before it spent about 110 s of retries and then struck toward the sideline as a non-answer. The one reader that must NOT take it as "no files" is the trees fallback above: it runs after a Contents listing proved the repository populated, so every error of the tree read — 404, 409, 410 included — is a non-answer there (the scan fails and keeps its snapshot). (451, the item's other status, has been definitive-gone since v0.29.58.)
 
 Recognized manifest files (v0.25.0 adds Julia, R/CRAN/Bioconductor, conda):
 
@@ -175,7 +179,8 @@ When a scan completes with a transient error in any external source — circuit 
 
 ```sql
 WHERE (r.distribution_last_run IS NULL
-       OR COALESCE(r.distribution_scan_complete, TRUE) = FALSE
+       OR (COALESCE(r.distribution_scan_complete, TRUE) = FALSE
+           AND COALESCE(r.distribution_failed_attempts, 0) < 10)
        OR r.distribution_last_run < NOW() - $1::interval)
 ORDER BY
     COALESCE(r.distribution_scan_complete, TRUE) ASC,   -- partials first
@@ -184,6 +189,8 @@ ORDER BY
 ```
 
 This was added because the pre-v0.25.0 behavior would stamp `last_run = NOW()` on a partial scan and then hide that repo behind the 180-day cadence gate. A repo affected by a short ecosyste.ms outage would have stripped-down distribution coverage for half a year. The `scan_complete` column lets the work be re-done as soon as the source recovers.
+
+The partial-reclaim branch applies only below the strike limit (v0.29.68, worklist item 22). The tenth failure stamps `last_run = NOW()` as the sideline's cadence gate (§6.4), and the branch bypassed that gate: a sidelined repository whose last scan was partial came back every time its 200-minute backoff elapsed, forever, instead of resting for the cadence.
 
 ## 6. Worker architecture
 
@@ -219,11 +226,11 @@ This was added because the pre-v0.25.0 behavior would stamp `last_run = NOW()` o
 
 ### 6.2 The lifecycle of a single scan
 
-1. **Dispatcher tick**: every `distribution_tracking_start_interval_s` (default 30s) the dispatcher checks `scanner.Healthy()`. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls `ClaimNextDistributionRepo`.
+1. **Dispatcher pacing**: at least `distribution_tracking_start_interval_s` (default 30s) between successful scan starts — a deadline the one dispatcher stamps after each handoff, whatever the worker count — and before each start the dispatcher checks `scanner.Healthy()`. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls `ClaimNextDistributionRepo`.
 2. **Claim**: SQL acquires the row lock with `FOR UPDATE SKIP LOCKED` and returns a `DistributionJob` carrying the open transaction. Worker death rolls back; row becomes immediately re-claimable.
 3. **Scanner runs**: the CompositeScanner consults all five sources sequentially. Per-source errors are tracked (v0.25.0 per-source-class accounting); the scanner returns a partial result if any sources succeeded, with one exception (v0.29.55): a GitHub source that failed **without an answer** fails the whole scan.
 4. **Mark complete or record failure**:
-   - A GitHub source (release assets, packages, the manifest listing including its first-level directories, or a manifest's content) failed without an answer → the scan fails, and `RecordDistributionFailure` records it as below. Nothing is rotated or replaced. "Without an answer" means anything other than an answer about the repository (404, 410, a 403 that is not a rate limit, 204, the pagination cap, a rejected request) or a 304: for example retries exhausted, a body that did not decode, an empty key pool. Before v0.29.55 these errors were swallowed, so the stored manifest snapshot was replaced by whatever part was seen and the scan stamped complete for the 180-day cadence. Marking such a scan incomplete was rejected, because an incomplete row re-claims immediately with no backoff.
+   - A GitHub source (release assets, packages, the manifest listing including its first-level directories, or a manifest's content) failed without an answer → the scan fails, and `RecordDistributionFailure` records it as below. Nothing is rotated or replaced. "Without an answer" means anything other than an answer about the repository (404, 410, 409 for an empty repository (v0.29.68), a 403 that is not a rate limit, 204, the pagination cap, a rejected request for one manifest's content): for example retries exhausted, a body that did not decode, an empty key pool, a truncated root tree, an unsolicited 304 (the readers never solicit one, so it says nothing about the repository — v0.29.68 review round 8), or ANY answer to the tree read after a capped listing (§3.5). A rejected request (400/422) on a WHOLE source — the root listing, the releases or the packages — is a non-answer since v0.29.68 (worklist item 25): it is the forge's answer about the request, not about the repository's distributions, and as an answer it emptied those GitHub-sourced rows and stamped the scan complete. A rejected listing of ONE first-level directory stays an answer for that directory (it is skipped and the scan completes without it) — the same boundary as item 24's cap: a first-level directory loses at most its own manifests. Before v0.29.55 these errors were swallowed, so the stored manifest snapshot was replaced by whatever part was seen and the scan stamped complete for the 180-day cadence. Marking such a scan incomplete was rejected, because an incomplete row re-claims immediately with no backoff.
    - All sources succeeded OR at least one returned clean data → `MarkDistributionComplete` rotates rows to history, inserts the fresh observations, stamps `scan_complete = TRUE` (or `FALSE` if any source was incomplete), commits.
    - Every enabled source errored AND zero data collected → `RecordDistributionFailure` increments the failure counter, stamps `last_failed_at = NOW()`, commits. On the 10th consecutive failure, also stamps `last_run = NOW()` so the cadence gate sidelines the row. Retries back off quadratically in the failure count.
 
@@ -235,7 +242,7 @@ The ecosyste.ms client carries a source-level circuit breaker:
 - While open, `LookupPackages` short-circuits with `(nil, ErrCircuitOpen)`. The scanner treats this like a 404-class miss for that source — does NOT increment the all-sources-failed counter, just propagates as "ecosyste.ms had nothing to say".
 - `IsCircuitOpen()` exposes the state read-only for the dispatcher's `Healthy()` check.
 
-Per-call short-circuit alone wasn't enough. Under v0.24.x semantics, an outage would let ~480 repos/hour get stamped with permanent "complete scan" cadence locks for the full 180-day window, having seen no ecosyste.ms data. The v0.25.0 dispatcher pause + `distribution_scan_complete` column fix both halves of the problem:
+Per-call short-circuit alone wasn't enough. Under v0.24.x semantics, an outage would let ~120 repos/hour (the dispatcher's 30 s start gap, then as now) get stamped with permanent "complete scan" cadence locks for the full 180-day window, having seen no ecosyste.ms data. The v0.25.0 dispatcher pause + `distribution_scan_complete` column fix both halves of the problem:
 
 - **Pause prevents NEW dispatches** during an outage. The fleet sits still.
 - **`scan_complete = FALSE` makes the trip-cohort immediately re-eligible** once the breaker reopens. The ~10 repos that DID dispatch during the breaker-tripping threshold cohort don't stay broken for six months.
@@ -248,7 +255,7 @@ Per-call short-circuit alone wasn't enough. Under v0.24.x semantics, an outage w
 backoff_window = 120s × max(failed_attempts, 1)²
 ```
 
-Schedule: 2m → 8m → 18m → 32m → 50m → 72m → 98m → 128m → 162m → 200m → sideline at the 10th failure (`distribution_last_run = NOW()` stamped, cadence gate excludes for the full interval).
+Schedule: 2m → 8m → 18m → 32m → 50m → 72m → 98m → 128m → 162m → 200m → sideline at the 10th failure (`distribution_last_run = NOW()` stamped, cadence gate excludes for the full interval — a partial scan included, since v0.29.68).
 
 Operator override to retry sooner:
 
@@ -303,7 +310,7 @@ All under `collection` in `aveloxis.json`:
 }
 ```
 
-Throughput math at defaults: 4 workers × 30s minimum start gap × ~5 HTTP calls/repo ≈ ~480 repos/hour. A 3,300-repo fleet (chaoss.tv `aveloxis` DB) completes its first pass in ~7 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year).
+Throughput math at defaults: the 30 s minimum start gap is enforced by the one dispatcher, whatever the worker count, so at most 120 starts/hour (2,880/day). A 3,300-repo fleet (chaoss.tv `aveloxis` DB) completes its first pass in ~27.5 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year, ≈556 scans/day at 100K repos).
 
 See [`docs/getting-started/configuration.md`](../getting-started/configuration.md) for the per-field operator reference table.
 

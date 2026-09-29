@@ -4,6 +4,7 @@
 package collector
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,7 @@ func TestEnsureScancodeCurrentInstalledUpgradesAndReinjects(t *testing.T) {
 	pipRecorderStub(t, binDir, logFile)
 	t.Setenv("PATH", binDir+":/bin:/usr/bin")
 
-	if err := EnsureScancodeCurrent(true); err != nil {
+	if err := EnsureScancodeCurrent(context.Background(), true); err != nil {
 		t.Fatalf("installed-branch upgrade must succeed with a healthy pipx, got %v", err)
 	}
 	got, _ := os.ReadFile(logFile)
@@ -90,7 +91,7 @@ func TestEnsureScancodeCurrentInstalledUpgradeFailureIsSurfacedNotPipFallback(t 
 	pipRecorderStub(t, binDir, logFile)
 	t.Setenv("PATH", binDir+":/bin:/usr/bin")
 
-	err := EnsureScancodeCurrent(true)
+	err := EnsureScancodeCurrent(context.Background(), true)
 	if err == nil {
 		t.Fatal("a failed pipx upgrade on the installed branch must surface as an error — silently 'fixing' it with pip was the shadow-install bug")
 	}
@@ -105,7 +106,7 @@ func TestEnsureScancodeCurrentFreshInstallsAndInjects(t *testing.T) {
 	binDir := pipxRecorderStub(t, logFile, "")
 	t.Setenv("PATH", binDir+":/bin:/usr/bin")
 
-	if err := EnsureScancodeCurrent(false); err != nil {
+	if err := EnsureScancodeCurrent(context.Background(), false); err != nil {
 		t.Fatalf("fresh install must succeed, got %v", err)
 	}
 	got, _ := os.ReadFile(logFile)
@@ -166,7 +167,7 @@ func TestAllThreePathsRouteThroughEnsureScancodeCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cmdSrc), "EnsureScancodeCurrent(true)") {
-		t.Error("the upgrade-tools CLI must delegate to collector.EnsureScancodeCurrent(true) — a private re-implementation is how the three paths diverged in the first place")
+	if !strings.Contains(string(cmdSrc), "EnsureScancodeCurrent(ctx, true)") {
+		t.Error("the upgrade-tools CLI must delegate to collector.EnsureScancodeCurrent(ctx, true) — a private re-implementation is how the three paths diverged in the first place")
 	}
 }

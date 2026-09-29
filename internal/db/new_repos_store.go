@@ -32,8 +32,8 @@ type NewRepo struct {
 //     is honest-noisy for one window after that deploy, by design),
 //   - archived repos excluded,
 //   - owner ↔ org matching is case-insensitive (GitHub logins are
-//     case-preserving but case-insensitive; org_url casing is
-//     whatever the registrant typed). KNOWN v1 EDGE: GitLab nested
+//     case-preserving but case-insensitive; org_url rows written before
+//     v0.29.68 keep the registrant's case). KNOWN v1 EDGE: GitLab nested
 //     group paths ("group/subgroup") won't equal repo_owner and fall
 //     out of the feed silently — accepted in the plan.
 //

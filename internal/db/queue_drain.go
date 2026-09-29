@@ -39,6 +39,17 @@ func drainLockedBy(workerID string) string {
 	return workerID + drainLockSuffix
 }
 
+// HealWorkerIDPrefix opens every heal-collection-gaps worker ID
+// ("gap-heal:<host>-<pid>-<nanos>"); serve's IDs are "<host>-<HHMMSS>". It is
+// the ONE spelling the heal's ID and the startup reclaim's exemption share
+// (worklist item 54, review round 1: an exemption keyed on any fresh drain
+// owner also matched a serve that crashed within the hour, stranding its
+// parked rows under the dead owner until the stale-lock reclaim — and then
+// routine collection purged their staging). The ":" makes it
+// collision-proof: a hostname (RFC 1123) cannot carry one, so no serve on a
+// host named "gap-heal-…" can ever match it (review round 2).
+const HealWorkerIDPrefix = "gap-heal:"
+
 // DrainRelease says what a drain release does to the row's due_at.
 type DrainRelease int
 
@@ -133,8 +144,9 @@ const drainHeartbeatInterval = 30 * time.Second
 // parks from normal collection locks in the monitor, and matters for
 // crash recovery: on restart, RecoverOtherWorkerLocks releases all
 // locks not held by the current worker, so a drain lock from a prior
-// crashed process gets cleaned up automatically (the dead worker ID
-// won't match the new one).
+// crashed serve gets cleaned up automatically (the dead worker ID
+// won't match the new one) — except a live heal's (HealWorkerIDPrefix
+// owner, fresh heartbeat), which the restart leaves parked.
 //
 // SQL deliberately mentions only queue-mechanics columns. last_collected
 // is not touched. See queue_drain_lock_test.go for the source-contract

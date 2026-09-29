@@ -4,9 +4,12 @@
 package pidfile
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -93,23 +96,6 @@ func TestRead_InvalidContent(t *testing.T) {
 	}
 }
 
-func TestRemove(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.pid")
-	os.WriteFile(path, []byte("12345"), 0o644)
-
-	Remove(path)
-
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("file should be removed")
-	}
-}
-
-func TestRemove_NonexistentIsNoOp(t *testing.T) {
-	// Should not panic or error.
-	Remove("/tmp/nonexistent-aveloxis-test.pid")
-}
-
 func TestPath_DefaultDir(t *testing.T) {
 	p := Path("serve")
 	if p == "" {
@@ -184,5 +170,158 @@ func TestIsRunning_NonPositiveIsNeverRunning(t *testing.T) {
 		if IsRunning(pid) {
 			t.Errorf("IsRunning(%d) = true — a non-positive pid is not a process", pid)
 		}
+	}
+}
+
+// TestRemoveIfOwnLeavesAnotherProcessesFile pins the shared compare-and-remove
+// (review round 5 of the deploy-path batch): a file holding another PID
+// survives, an unreadable file survives, the caller's own file goes.
+func TestRemoveIfOwnLeavesAnotherProcessesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aveloxis-x.pid")
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if r := RemoveIfOwn(path, 4243); r.Removed || r.Err != nil { // another pid is "not own", never a refusal (round 13)
+		t.Fatal("removed a file holding another PID")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the other process's file is gone: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := RemoveIfOwn(path, 4242); r.Removed || r.Err != nil {
+		t.Fatalf("an unreadable file = %+v; want not own, no refusal", r)
+	}
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if r := RemoveIfOwn(path, 4242); !r.Removed || r.Err != nil {
+		t.Fatalf("the caller's own file = %+v; want removed", r)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the caller's own file survived: %v", err)
+	}
+	if r := RemoveIfOwn(path, 4242); r.Removed || r.Err != nil {
+		t.Fatalf("a file already gone = %+v; want not own (removed concurrently), no refusal", r)
+	}
+}
+
+// TestRemoveIfOwnReportsARefusedUnlink (deploy-path review round 8): a file
+// that still holds the caller's pid but cannot be unlinked — a ~/.aveloxis
+// another uid created, a read-only mount — is neither removed nor "not own";
+// stop printed "replaced or removed concurrently" for it, a cause nothing
+// observed. The report carries the unlink error so the caller can name it.
+func TestRemoveIfOwnReportsARefusedUnlink(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "serve.pid")
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	r := RemoveIfOwn(path, 4242)
+	if r.Removed || r.Err == nil {
+		t.Fatalf("a refused unlink = %+v; want Removed=false with the os.Remove error", r)
+	}
+	if p, err := Read(path); err != nil || p != 4242 {
+		t.Fatalf("the file should still hold 4242: %d, %v", p, err)
+	}
+}
+
+// TestRemoveIfOwnReadsAVanishedFileAsNotOwn (deploy-path review round 9):
+// two `stop`s over one dead-pid file both read the pid; the loser's unlink
+// answers ENOENT. That is "removed concurrently" — the file is gone, the
+// caller did nothing wrong — not a refused unlink the operator must delete
+// by hand. The race cannot be driven in-process, so the unlink is seamed
+// (removeFile; its production default is os.Remove, pinned below).
+func TestRemoveIfOwnReadsAVanishedFileAsNotOwn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "serve.pid")
+	if err := Write(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	saved := removeFile
+	t.Cleanup(func() { removeFile = saved })
+	removeFile = func(p string) error {
+		_ = os.Remove(p) // the other stop won
+		return &os.PathError{Op: "remove", Path: p, Err: fs.ErrNotExist}
+	}
+	if r := RemoveIfOwn(path, 4242); r.Removed || r.Err != nil {
+		t.Fatalf("a file another party removed between the read and the unlink = %+v; want not own (removed concurrently), no refusal", r)
+	}
+	if reflect.ValueOf(saved).Pointer() != reflect.ValueOf(os.Remove).Pointer() {
+		t.Fatal("removeFile's production default must be os.Remove")
+	}
+}
+
+// TestWriteIsAtomicForAConcurrentReader — PR #218 review D10: Write used
+// os.WriteFile, which truncates and then writes, so a `stop` or a `start`
+// guard reading the file in between saw an empty file (an unreadable
+// pidfile, which the callers report as UNKNOWN and refuse on). Write now
+// renames a complete temp file over the path: a reader sees the old PID or
+// the new one, never an empty or partial file, and no temp file is left.
+func TestWriteIsAtomicForAConcurrentReader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.pid")
+	pids := []int{7, 123456789}
+	if err := Write(path, pids[0]); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if err := Write(path, pids[i%2]); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	bad := ""
+	for i := 0; i < 20000 && bad == ""; i++ {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			bad = "read error: " + err.Error()
+			break
+		}
+		if s := string(data); s != "7" && s != "123456789" {
+			bad = "content " + strconv.Quote(s)
+		}
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if bad != "" {
+		t.Fatalf("a concurrent reader saw %s while Write rewrote the file; want the old or the new PID only", bad)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "test.pid" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory after Write = %v; want only test.pid (no temp file left behind)", names)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after Write: %v", err) // fi is nil: no mode to read (PR #218 fix review r1)
+	}
+	if fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode after Write = %v; want 0644 as before", fi.Mode().Perm())
 	}
 }

@@ -153,9 +153,11 @@ func TestWorkerSourceFileExists(t *testing.T) {
 
 func TestWorkerUsesMinimumGapPacing(t *testing.T) {
 	// v0.21.3 fix: dispatcher must NOT use time.NewTicker as the
-	// primary throughput gate (that throttles fleet-wide throughput
-	// even when workers are idle). It must use a minimum-gap
-	// deadline variable stamped AFTER each successful claim.
+	// primary throughput gate (a tick is consumed by an empty poll or a
+	// claim error as much as by a start). It must
+	// use a minimum-gap deadline variable stamped AFTER each successful
+	// start — which, with scans of seconds, is still the start-rate cap;
+	// the difference is what consumes the gap.
 	data, err := os.ReadFile("worker.go")
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +182,7 @@ func TestWorkerUsesMinimumGapPacing(t *testing.T) {
 	// status-log heartbeat is fine, so this isn't a fatal global
 	// ban — but the pre-v0.21.3 throttle pattern is.)
 	if strings.Contains(src, "time.NewTicker(w.startInterval") {
-		t.Error("worker.go must not gate primary throughput on a startInterval ticker — that's the v0.21.3 regression (caps fleet rate regardless of worker availability). Use a per-start deadline variable instead.")
+		t.Error("worker.go must not gate primary throughput on a startInterval ticker — that's the v0.21.3 regression (one attempt per tick, consumed by empty polls and claim errors). Use a per-start deadline variable instead.")
 	}
 }
 

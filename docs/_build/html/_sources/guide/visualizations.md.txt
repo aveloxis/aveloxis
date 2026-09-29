@@ -49,9 +49,9 @@ Charts default to the last 2 years of data. They are rendered client-side from J
 
 Below the charts, a table lists all licenses found in the project's dependencies (from `repo_deps_libyear`), with:
 
-- **License name** — the canonical SPDX identifier. Common synonyms are automatically normalized (e.g., "MIT License", "The MIT License (MIT)" → "MIT"; "Apache 2.0", "Apache License, Version 2.0" → "Apache-2.0"; "BSD", "3-Clause BSD License" → "BSD-3-Clause"). This ensures each license appears as a single row with the combined count.
+- **License name** — the canonical SPDX identifier or expression. Common synonyms are automatically normalized (e.g., "MIT License", "The MIT License (MIT)" → "MIT"; "Apache 2.0", "Apache License, Version 2.0" → "Apache-2.0"; "BSD", "3-Clause BSD License" → "BSD-3-Clause"). Expressions are normalized too: `MIT/Apache-2.0` and `mit or apache-2.0` read `MIT OR Apache-2.0`, and the operands of `OR` and `AND` are put in a fixed order, so `Apache-2.0 OR MIT` and `MIT OR Apache-2.0` are one row. The order shown is the table's; the stored value and the SBOMs keep the registry's own order.
 - **Count** — how many dependencies use that license
-- **OSI Compliant** — a green checkmark if the license is [OSI-approved](https://opensource.org/licenses/), a dash otherwise
+- **OSI Compliant** — a green checkmark if the license is [OSI-approved](https://opensource.org/licenses/) according to the SPDX license list's `isOsiApproved`, a dash otherwise. A dual license (`MIT OR Apache-2.0`) is approved when any of its options is, because the licensee may choose that one. An `AND` needs every term approved, and `X WITH exception` follows `X`. Every option must be a recognized license: a string with free text in it (`MIT OR proprietary`) is not read as an expression, so it is not approved. A `LicenseRef-` option counts as recognized (`MIT OR LicenseRef-Proprietary` is approved through MIT). `CC0-1.0` is not OSI-approved (SPDX 3.29.0), and `Unicode-3.0` and `MIT-0` are.
 
 Dependencies with no declared license are grouped under **Unknown** (shown in italic amber). This includes empty licenses, whitespace-only values, and common registry sentinel values like `NOASSERTION` (SPDX), `NONE`, and `N/A`. A high "Unknown" count is a signal to investigate those dependencies manually.
 
@@ -73,7 +73,7 @@ The file table is scrollable (max height 400px) and fits within the page width. 
 
 ### SBOM Downloads
 
-Buttons to download the project's Software Bill of Materials in CycloneDX 1.5 or SPDX 2.3 JSON format.
+Buttons to download the project's Software Bill of Materials in CycloneDX 1.7 or SPDX 2.3 JSON format.
 
 ## Comparison Page
 

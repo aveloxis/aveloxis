@@ -648,13 +648,16 @@ The `migrate` command includes a data cleanup pass that detects and nullifies ga
 
 ---
 
-## Schema version mismatch warning
+## Schema version mismatch: web, api and the scancode worker refuse to start
 
 **Symptom:** `aveloxis web`, `aveloxis api` or `aveloxis scancode-worker`
-logs an ERROR at startup (v0.20.15 raised it from WARN):
+logs an ERROR at startup (v0.20.15 raised it from WARN) and, since
+v0.29.68, exits with `refusing to start …: the database schema is behind
+this binary` instead of serving queries against columns the schema does
+not have yet (`aveloxis start` reports the child as exited):
 
 ```
-level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)"
+level=ERROR msg="schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none), then restart. ..." db_schema_version=0.29.55 binary_version=0.29.57 action="the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none)"
 ```
 
 If the ERROR instead reads `schema version could not be read`, the process
@@ -663,12 +666,12 @@ role without access to it). That is not evidence the schema is behind: check
 the connection and grants first. (Before v0.29.57 a failed read was logged as
 `schema version unknown — … has not run against this database`.)
 
-**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and restart `web` or `api` without running `migrate` (or a foreground `aveloxis serve`, which migrates at startup).
+**Cause:** The binary was updated but the database schema hasn't been migrated yet. This happens when you update the `aveloxis` binary and start `web` or `api` before running `migrate` (or before a foreground `aveloxis serve`, which migrates at startup, has finished).
 
 **Solution:**
 
-Run the release's upgrade ladder. `aveloxis deploy-checklist` prints it; a
-release with no checklist needs only:
+Run the upgrade ladder. `aveloxis deploy-checklist --pending` prints every
+step this database still needs and the migrate to run; with none, it is only:
 
 ```bash
 aveloxis stop all
@@ -960,9 +963,9 @@ aveloxis start all
 
 On startup, Aveloxis automatically:
 
-- Processes any leftover staged data
-- Releases stale queue locks
-- Resumes collection from the queue
+- Reclaims the locks a previous serve left behind, whatever their age (except a running `heal-collection-gaps`' fresh `gap-heal:` rows), then any stale lock, then its own
+- Resumes collection from the queue at once
+- Drains any leftover staged data in the background while collecting
 
 ---
 
@@ -1069,6 +1072,8 @@ grep -a "worker_id\|scheduler started" ~/.aveloxis/aveloxis.log | tail -3
 
 If the current `serve` process has a different worker ID than the one on the stuck row, that row's worker is dead.
 
+One exception (v0.29.68): a row whose `locked_by` is `gap-heal:<host>-<pid>-<nanos>:drain` belongs to a `heal-collection-gaps` run, which parks the repositories it heals and refreshes `locked_at` every 30 seconds. Check `locked_at` first: fresh means the heal is alive and must be left alone (a serve start leaves it alone too); older than the stale-lock window (1 hour) means the heal died and stale-lock recovery returns the row. Never release a fresh `gap-heal:` row by hand.
+
 #### Check `locked_at` freshness
 
 Workers heartbeat every 30 seconds (`HeartbeatJob` in `queue.go`). Anything older than ~1 minute isn't heartbeating:
@@ -1093,7 +1098,7 @@ WHERE application_name LIKE 'aveloxis-%'
 ORDER BY application_name, query_start;
 ```
 
-If you see zero `aveloxis-serve` rows, no scheduler is running and ALL `collecting`-status rows are orphaned. If you see one, that's your active scheduler — compare its PID against your `ps` output to confirm.
+If you see zero `aveloxis-serve` rows, no scheduler is running and every `collecting`-status row is orphaned — except rows a running `heal-collection-gaps` (`aveloxis-heal-gaps` in the same listing) parked, whose `locked_by` starts with `gap-heal:` and whose `locked_at` is fresh (the exception described in Step 5). If you see one, that's your active scheduler — compare its PID against your `ps` output to confirm.
 
 ### Step 6 — recover stuck locks
 
@@ -1151,13 +1156,13 @@ This makes them claimable immediately and ranks them above any non-zero-priority
 
 **Cause (pre-v0.16.6):** `CompleteJob` sets `collection_queue.due_at = NOW() + days_until_recollect` at the moment a collection finishes. That value is *frozen* in the row — changing the config later has no effect on queued rows until each repo next completes a collection under the new setting. With a fleet of thousands of repos that each completed yesterday under `days_until_recollect=1`, the stale `due_at` values are all already due when you restart, and the scheduler picks them right back up regardless of the new `7`.
 
-**Fix (v0.16.6+):** The scheduler now calls `store.RealignDueDates(ctx, recollectAfter)` once on startup, which recomputes `due_at = last_collected + recollectAfter` for every queued row with a non-null `last_collected`. Look for the log line:
+**Fix (v0.16.6+):** The scheduler now calls `store.RealignDueDates(ctx, recollectAfter)` once on startup, which recomputes `due_at = last_collected + recollectAfter` for every queued row with a non-null `last_collected` whose last collection succeeded. Look for the log line:
 
 ```
 realigned queue due_at from current days_until_recollect rows_updated=3079 recollect_after=168h0m0s
 ```
 
-`'collecting'` rows (in-flight) and never-collected rows (`last_collected IS NULL`) are skipped. The operation is idempotent — repeated restarts that don't change the config are no-ops.
+`'collecting'` rows (in-flight), never-collected rows (`last_collected IS NULL`) and rows whose last collection failed (`last_error` set, v0.29.69) are skipped. A failure sets `due_at` to its retry time and leaves `last_collected` at the last success, so realigning it put the failed repository in the past and it re-ran at every restart; such a row picks up a changed interval at its next completion. The operation is idempotent — repeated restarts that don't change the config are no-ops.
 
 **Verifying on a live database:**
 
@@ -1167,7 +1172,7 @@ SELECT repo_id,
        last_collected,
        (due_at - last_collected) AS cooldown
 FROM aveloxis_ops.collection_queue
-WHERE status = 'queued' AND last_collected IS NOT NULL
+WHERE status = 'queued' AND last_collected IS NOT NULL AND last_error IS NULL
 ORDER BY last_collected DESC
 LIMIT 10;
 ```
@@ -1321,6 +1326,49 @@ If the service outage is prolonged, the repo will fail after 10 retries and be r
 
 ---
 
+## Charts or pages time out (504 / 502 in the browser)
+
+**Symptom:** A repository or comparison page for a large repository shows
+no charts, or the browser gets a 504 Gateway Timeout or a 502 Bad Gateway.
+
+**Cause:** Some API queries on large repositories take tens of seconds
+(on the reference fleet, statements from the api reached 60 s). Every hop
+in front of the query has a timeout, and the shortest one answers:
+
+1. **nginx** — `proxy_read_timeout` (and `proxy_send_timeout`,
+   `send_timeout`, `client_header_timeout`, `client_body_timeout`) default
+   to **60 s**. A cut here is a **504** logged in nginx's error log
+   ("upstream timed out").
+2. **The web GUI's `/api` proxy** (when nginx sends `/api/` to the web
+   rather than straight to the api) has no wait of its own: the web's
+   request bound (item 3) governs it, so a slow chart behind the web is
+   a **503** with the WARN in `web.log` (its path is the `/api/…` URL); the
+   api's query is cancelled with it, and `api.log` has no line for it. A **502** "API
+   backend unavailable" with an `api reverse proxy error` WARN in
+   `web.log` means the api is not answering at all (not running, or
+   `web.api_internal_url` points at the wrong port). Before 0.29.69 this
+   proxy gave up after a hard-coded 15 s — the shortest bound in the chain.
+3. **The monitor, api and web servers** bound each request by
+   `http_timeout_seconds` (default **180 s**). Past it the request's
+   database query is cancelled, the client gets a **503** "request exceeded
+   http_timeout_seconds", and a WARN `request exceeded http_timeout_seconds`
+   in `api.log`, `web.log` or `aveloxis.log` (the monitor) names the path
+   and the time it took. A large response (an SBOM download) then gets its
+   own `http_timeout_seconds` to be written; a client that reads it more
+   slowly than that is cut, logged as a WARN `response write timed out`.
+
+**Solution:** Keep Aveloxis's bound the **longest** and tune latency in
+nginx, where a timeout is logged and easy to see: set nginx's timeouts
+for the Aveloxis `location` blocks **below** `http_timeout_seconds` (for
+example `proxy_read_timeout 120s;` against the 180 s default). Raise
+`http_timeout_seconds` in `aveloxis.json` only when a legitimate request
+needs longer than nginx allows, and restart `web`, `api` and `serve` (the
+monitor) to apply it. A query that is regularly this slow is also worth a
+report: the listing surfaces read cached counts, and a slow chart query
+usually means a missing index.
+
+---
+
 ## Deadlock errors
 
 **Symptom:** Log shows `ERROR: deadlock detected (SQLSTATE 40P01)`.
@@ -1459,8 +1507,8 @@ msg="case-variant duplicate repos present; skipping unique index uq_repos_repo_g
 **Fix sequence (v0.25.32+):**
 
 ```bash
-aveloxis deploy-checklist           # first: this binary's deploy steps, if not done
-                                    # yet (its migrate creates the LOWER(repo_git)
+aveloxis deploy-checklist --pending # first: the deploy steps not done yet, if any
+                                    # (the migrate creates the LOWER(repo_git)
                                     # lookup index and WARNs + skips the unique
                                     # index while dups remain; with no checklist,
                                     # `stop all`, `migrate --skip-views`, `start all`)
@@ -1695,7 +1743,7 @@ WHERE datname = 'aveloxis_large'
 
 - Run `aveloxis migrate` (and any schema-changing operation) only when serve is fully stopped, not while it's processing repos. Use `aveloxis stop all` first; resume with `aveloxis start all` after migrate completes.
 - For large-fleet operators, schedule serve restarts during quiet periods rather than mid-collection. Restarting while a 20+ minute commits UPDATE is in flight guarantees an orphan.
-- Filed for v0.20.x: graceful pgx-pool shutdown in the scheduler's ctx-cancel path so backends disconnect cleanly on stop, eliminating the TCP-keepalive-wait window. Tracked alongside two related improvements: a post-stop verification that no aveloxis backends remain in `pg_stat_activity`, and surfacing blocked-startup-DDL with the holder PID in serve's startup log.
+- History: the graceful pool close on stop, the shutdown grace, the post-stop backend verification (`aveloxis stop` reports backends that outlived the process) and the blocked-startup-DDL watcher naming the holder PID all shipped in v0.20.0; v0.27.25 made `SIGTERM` — what `aveloxis stop` and systemd send — reach that path (the callout above). The window this section describes is now the statement in flight when the grace expires.
 
 ---
 
@@ -1808,3 +1856,30 @@ Recovery: upgrade to ≥ v0.27.139 (stops new gaps forming), then run
 candidates and fetches exactly the missing items. See the command's
 section in commands.md.
 
+## GitLab-only deployment: "GitHub key pool has no usable key — GitHub-only background tasks stay idle"
+
+Since v0.29.68 a `serve` configured with GitLab keys only logs this WARN
+once at startup. It is not an error: contributor breadth and enrichment,
+the activity sweeps, search-resolve, the mailing-list sender resolver's API
+tail, org scans and the repository-metadata backfill's GitHub candidates
+(counted as `skipped_no_github_key` on its progress lines) need a GitHub
+key and stay idle. The sender resolver
+still runs the stages that need no forge (a noreply address parses to its
+login; a sender the database already knows is attributed by the sender-ID
+backfill) — and, with no forge to ask, a human sender it cannot resolve
+becomes an email-only contributor without the API ever being asked (if a GitHub key is added later, search-resolve
+converges those rows by email). The distribution scanner is GitHub-only, so
+the distribution worker produces nothing: a GitHub repository's scan fails
+and strikes toward the sideline with its stored snapshot kept (the v0.29.55
+decision — a scan that never asked GitHub must not replace the
+GitHub-sourced rows), and other repositories complete with no evidence, as
+always. Before v0.29.68 the idle tasks ran against the empty
+pool — breadth recorded whole batches as attempted and three tickers logged
+an unanswered WARN each tick. Add a GitHub key (`aveloxis add-key <token>
+--platform github`) and restart to enable them.
+
+The GitHub-only deployment has the mirror case in one place: the
+repository-metadata backfill's GitLab candidates need a usable GitLab key.
+Without one they are skipped, logged once per run and counted as
+`skipped_no_gitlab_key` on its progress lines, not as failures; they stay
+candidates and are asked at the first restart with a GitLab key (v0.29.69).

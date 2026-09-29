@@ -6,6 +6,7 @@ package db
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 )
 
 // MatviewsDefinitionVersion is the release that last changed a materialized
@@ -24,8 +25,14 @@ const MatviewsDefinitionVersion = "0.29.57"
 // MatviewsDefinitionVersion (updated alone for a removal-only change).
 const MatviewsDefinitionDigest = "8fb0f3d26ac7af0914d8b6c7d35d060196cdcf1dc6f8fdfd39fc40880f96c5f0"
 
-// MatviewsSQLDigest is the sha256 of the embedded matviews.sql, hex-encoded.
-func MatviewsSQLDigest() string {
-	sum := sha256.Sum256([]byte(matviewsSQL))
+// MatviewsSQLDigest is the sha256 of the embedded matviews.sql, hex-encoded,
+// with CRLF line endings folded to LF so a core.autocrlf checkout hashes the
+// same bytes as the repository (review round 1); .gitattributes pins the
+// SQL files to LF as well.
+func MatviewsSQLDigest() string { return sqlDigest(matviewsSQL) }
+
+// sqlDigest folds CRLF to LF and hashes.
+func sqlDigest(sql string) string {
+	sum := sha256.Sum256([]byte(strings.ReplaceAll(sql, "\r\n", "\n")))
 	return hex.EncodeToString(sum[:])
 }

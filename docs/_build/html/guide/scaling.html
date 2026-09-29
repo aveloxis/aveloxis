@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scaling &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Scaling &mdash; Aveloxis 0.29.69 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -558,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -603,7 +609,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +660,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +669,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +822,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +925,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1093,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../architecture/column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1197,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1790,7 +1808,7 @@ first pass.</p>
 <hr class="docutils" />
 <section id="horizontal-scaling">
 <h2>Horizontal scaling<a class="headerlink" href="#horizontal-scaling" title="Link to this heading"></a></h2>
-<p>Multiple <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> instances can share the same queue for horizontal scaling. The Postgres-backed queue uses <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming, so no two instances will collect the same repo simultaneously.</p>
+<p>Multiple <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> instances can share the same queue for horizontal scaling. The Postgres-backed queue uses <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">...</span> <span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> for atomic job claiming, so no two instances claim the same repo. One caveat (worklist item 63): a serve START reclaims every other worker’s locked rows at once, whatever their age (except a running heal’s fresh parked rows) — a restarting instance takes a live peer’s in-flight rows, and the peer’s completion later resets that row. Restart instances one at a time, when the others are idle, until that reclaim is liveness-aware.</p>
 <section id="setup">
 <h3>Setup<a class="headerlink" href="#setup" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
@@ -1839,7 +1857,7 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <h3>Considerations<a class="headerlink" href="#considerations" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p><strong>API tokens are shared:</strong> All instances rotate through the same pool of tokens. The total throughput across all instances is still bounded by <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">tokens</span> <span class="pre">*</span> <span class="pre">4985</span> <span class="pre">req/hr</span></code>.</p></li>
-<li><p><strong>Stale lock recovery:</strong> If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance.</p></li>
+<li><p><strong>Stale lock recovery:</strong> If an instance crashes, its locked jobs are automatically re-queued after 1 hour by any running instance, or at once by the next instance that starts (see the caveat above).</p></li>
 <li><p><strong>Materialized view rebuild:</strong> The Saturday rebuild is triggered by each instance independently. The <code class="docutils literal notranslate"><span class="pre">CONCURRENTLY</span></code> option ensures this is safe, though the rebuild may run multiple times.</p></li>
 </ul>
 </section>
@@ -1847,26 +1865,83 @@ aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span clas
 <hr class="docutils" />
 <section id="database-connection-pool">
 <h2>Database connection pool<a class="headerlink" href="#database-connection-pool" title="Link to this heading"></a></h2>
-<p>Aveloxis automatically scales the database connection pool based on the worker count. The formula is <code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">+</span> <span class="pre">15</span></code>, with a minimum of 20. For example, <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">30</span></code> uses a pool of 45 connections. Non-scheduler commands (web, api, migrate) use the default pool of 20.</p>
+<p>Since v0.29.58 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> sizes its pool from the scheduler’s connection
+<strong>demand</strong> — every goroutine class that can hold a pooled connection at once —
+capped by what the server can give it. Non-scheduler commands (web, api,
+migrate, the heals) use the default pool of 20.</p>
+<p>The demand is the sum of:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Consumer</p></th>
+<th class="head"><p>Connections</p></th>
+<th class="head"><p>Where the number comes from</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Collection slots</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">×</span> <span class="pre">5</span></code></p></td>
+<td><p>each slot runs the staged collector’s three concurrent phases (issues, PRs, messages), its heartbeat, and its long-jobs watchdog</p></td>
+</tr>
+<tr class="row-odd"><td><p>Distribution workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">distribution_tracking_workers</span> <span class="pre">+</span> <span class="pre">1</span></code></p></td>
+<td><p>the runners and their dispatcher, when <code class="docutils literal notranslate"><span class="pre">distribution_tracking_enabled</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Mailing-list workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(mailing_list_workers</span> <span class="pre">+</span> <span class="pre">mailing_list_processor_workers)</span> <span class="pre">×</span> <span class="pre">systems</span></code> (+ 2 when at least one system is loaded)</p></td>
+<td><p>one worker set and one drain set per mailing-list system in the catalog, plus the sender-resolve and sender-backfill loops once any system spawned; 0 unless <code class="docutils literal notranslate"><span class="pre">mailing_list_enabled</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Jira workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">jira_workers</span> <span class="pre">+</span> <span class="pre">1</span></code></p></td>
+<td><p>the workers and their drain loop, when <code class="docutils literal notranslate"><span class="pre">jira_enabled</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>ScanCode workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">scancode_workers</span> <span class="pre">+</span> <span class="pre">4</span></code></p></td>
+<td><p>the runners plus the dispatcher, orphan monitor, lock check and startup sweep; 0 when <code class="docutils literal notranslate"><span class="pre">scancode_workers</span></code> is 0 (a separate <code class="docutils literal notranslate"><span class="pre">scancode-worker</span></code> host)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Activity-history workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">activity_history_concurrency</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Breadth fetchers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">breadth_fetch_concurrency</span></code></p></td>
+<td><p>each renames contributors through the store</p></td>
+</tr>
+<tr class="row-odd"><td><p>Background loops</p></td>
+<td><p>one each</p></td>
+<td><p>among them the health probe, stall detector, org refresh, the leftover-staging drain and its heartbeat, the metadata backfill, staging cleanup, the digest, the matview rebuild, the run loop itself, a one-request allowance for the monitor, and each periodic single-flight task (breadth, activity classification and history, enrichment, search resolve, gone recheck, affiliations, user-org scans); the mailing-list, Jira and ScanCode singletons are charged in their own rows, only when enabled — the registry in <code class="docutils literal notranslate"><span class="pre">internal/scheduler/pool_demand.go</span></code>, tripwired against every goroutine label in the scheduler, collector, distribution and db packages</p></td>
+</tr>
+</tbody>
+</table>
+<p>Serve asks the server for <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>, <code class="docutils literal notranslate"><span class="pre">superuser_reserved_connections</span></code>
+and (PostgreSQL 16+) <code class="docutils literal notranslate"><span class="pre">reserved_connections</span></code> before opening the pool and caps
+the demand at:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>budget = max_connections - superuser_reserved_connections - reserved_connections (PostgreSQL 16+) - 2 × 20   (the web and api pools)
+</pre></div>
+</div>
+<p>The decision is logged once at startup with every term
+(<code class="docutils literal notranslate"><span class="pre">database</span> <span class="pre">connection</span> <span class="pre">pool</span> <span class="pre">sized</span> <span class="pre">…</span> <span class="pre">pool_size=…</span> <span class="pre">pool_demand=…</span> <span class="pre">server_budget=…</span></code>).
+When the pool ends up <strong>below</strong> the demand, serve says so in a WARN and the
+consequence is a throttle, not an outage: at peak, workers wait for a
+connection, and the health probe reports <code class="docutils literal notranslate"><span class="pre">connection</span> <span class="pre">pool</span> <span class="pre">exhausted</span></code> (it pings
+through the same pool) rather than <code class="docutils literal notranslate"><span class="pre">database</span> <span class="pre">unavailable</span></code>. Before v0.29.58 the
+pool was a fixed <code class="docutils literal notranslate"><span class="pre">workers</span> <span class="pre">+</span> <span class="pre">15</span></code> and that wait was misreported as a database
+outage, repeatedly, in one production run.</p>
+<p><code class="docutils literal notranslate"><span class="pre">database.pool_max_conns</span></code> overrides the derivation. Set it when the throttle
+is the point: on a disk-bound server, fewer concurrent statements can serve
+the fleet better than more, and an explicit pool is the honest way to choose
+that (the WARN still names the demand it falls short of).</p>
 <section id="postgresql-configuration">
 <h3>PostgreSQL configuration<a class="headerlink" href="#postgresql-configuration" title="Link to this heading"></a></h3>
-<p>For multiple instances or high worker counts, ensure your PostgreSQL <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is sufficient:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">max_connections</span> <span class="o">=</span> <span class="p">(</span><span class="n">workers</span> <span class="o">+</span> <span class="mi">15</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="n">number</span> <span class="n">of</span> <span class="n">Aveloxis</span> <span class="n">instances</span><span class="p">)</span> <span class="o">+</span> <span class="n">connections</span> <span class="k">for</span> <span class="n">other</span> <span class="n">clients</span>
+<p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code> has to cover every instance’s pool plus the other clients:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections = Σ(pool_size per serve instance) + 20 × (web + api instances) + other clients + superuser_reserved_connections + reserved_connections
 </pre></div>
 </div>
-<p>For example, 3 Aveloxis instances plus psql and monitoring tools:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">max_connections</span> <span class="o">=</span> <span class="mi">20</span> <span class="o">*</span> <span class="mi">3</span> <span class="o">+</span> <span class="mi">10</span> <span class="o">=</span> <span class="mi">70</span>
-</pre></div>
-</div>
-<p>Adjust in <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>:</p>
-<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">100</span>
-</pre></div>
-</div>
-<p>That formula gives the <strong>floor</strong> — the number below which Aveloxis cannot
-open its pools. It is not a target: every connection you add above the floor
-is another <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier, so raise <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> and the
-<a class="reference internal" href="#why-work-mem-is-the-dangerous-one"><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> budget</a> together. A large
-fleet runs 300; the <code class="docutils literal notranslate"><span class="pre">100</span></code> above is a small-deployment example.</p>
+<p>Read each serve’s <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> and <code class="docutils literal notranslate"><span class="pre">pool_demand</span></code> from its startup log. A pool
+capped by the budget is fine as long as it is a deliberate choice; a demand far
+above the budget on a server that is not disk-bound is the signal to raise
+<code class="docutils literal notranslate"><span class="pre">max_connections</span></code>. Every connection you add is another <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier,
+so raise <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> and the <a class="reference internal" href="#why-work-mem-is-the-dangerous-one"><code class="docutils literal notranslate"><span class="pre">work_mem</span></code>
+budget</a> together.</p>
 </section>
 </section>
 <hr class="docutils" />
@@ -1898,15 +1973,19 @@ one</a>.</p>
 <td><p>See the budget below — <strong>not</strong> a round number</p></td>
 <td><p>Per <strong>operation</strong>, not per connection. This is the setting that OOMs hosts.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span></code></p></td>
+<td><p>Leave at the default <code class="docutils literal notranslate"><span class="pre">2.0</span></code> and budget for it, or set <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to fit a tighter budget</p></td>
+<td><p>A hash operation may use <code class="docutils literal notranslate"><span class="pre">work_mem</span> <span class="pre">×</span> <span class="pre">hash_mem_multiplier</span></code> (PostgreSQL 15 raised the default from <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to <code class="docutils literal notranslate"><span class="pre">2.0</span></code>), so it enters the <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> budget below.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code></p></td>
 <td><p>2–4 GB</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">VACUUM</span></code>, <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span></code>, <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">TABLE</span></code>. Bounded by <code class="docutils literal notranslate"><span class="pre">autovacuum_max_workers</span></code> running concurrently, so it multiplies too — just by a much smaller number.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jit</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jit</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">off</span></code></p></td>
 <td><p>Aveloxis’s workload is insert- and index-lookup-heavy; JIT compilation buys little and is a known memory sink on wide analytic queries. A host that reports <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">llvm</span> <span class="pre">error:</span> <span class="pre">Unable</span> <span class="pre">to</span> <span class="pre">allocate</span> <span class="pre">section</span> <span class="pre">memory</span></code> is paying for JIT it is not benefiting from.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_connections</span></code></p></td>
 <td><p>Pool floor from <a class="reference internal" href="#postgresql-configuration">PostgreSQL configuration</a>, plus headroom</p></td>
 <td><p>Every connection is a potential <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> multiplier, so this is a memory setting as much as a concurrency one. Raise it only with the budget below recomputed.</p></td>
 </tr>
@@ -1915,10 +1994,13 @@ one</a>.</p>
 </section>
 <section id="why-work-mem-is-the-dangerous-one">
 <h3>Why <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the dangerous one<a class="headerlink" href="#why-work-mem-is-the-dangerous-one" title="Link to this heading"></a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the limit for <strong>one</strong> sort or hash operation. A single query can
-use several; a parallel query multiplies by its worker count; and every
-connection can be running one. So the worst-case allocation is:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem
+<p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> is the limit for <strong>one</strong> sort operation. A hash operation (hash
+join, hash aggregate) may use <code class="docutils literal notranslate"><span class="pre">work_mem</span> <span class="pre">×</span> <span class="pre">hash_mem_multiplier</span></code>, and since
+PostgreSQL 15 that multiplier defaults to <code class="docutils literal notranslate"><span class="pre">2.0</span></code>, so a hash node can use twice
+<code class="docutils literal notranslate"><span class="pre">work_mem</span></code>. A single query can use several such operations; a parallel query
+multiplies by its worker count; and every connection can be running one. So
+the worst-case allocation, when the operations are hash nodes, is:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>max_connections × (1 + max_parallel_workers_per_gather) × ops_per_query × work_mem × hash_mem_multiplier
 </pre></div>
 </div>
 <p>where <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> is the number of sort/hash nodes a plan runs at once
@@ -1929,20 +2011,30 @@ than the denominator, because every connection is never running its
 heaviest plan at once; if yours are, divide by <code class="docutils literal notranslate"><span class="pre">ops_per_query</span></code> too. Budget it
 against roughly 10% of RAM, which leaves the rest for <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and
 the OS page cache:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather))
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (RAM × 0.10) / (max_connections × (1 + max_parallel_workers_per_gather) × hash_mem_multiplier)
 </pre></div>
 </div>
 <p>A worked example on a 1 TB host running 300 connections with
-<code class="docutils literal notranslate"><span class="pre">max_parallel_workers_per_gather</span> <span class="pre">=</span> <span class="pre">4</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (1024 GB × 0.10) / (300 × 5) = 102 GB / 1500 ≈ 70 MB
+<code class="docutils literal notranslate"><span class="pre">max_parallel_workers_per_gather</span> <span class="pre">=</span> <span class="pre">4</span></code> and the default
+<code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">2.0</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>work_mem ≤ (1024 GB × 0.10) / (300 × 5 × 2.0) = 102.4 GB / 3000 ≈ 35 MB
 </pre></div>
 </div>
-<p>…so <code class="docutils literal notranslate"><span class="pre">64MB</span></code> is the right order of magnitude, and <code class="docutils literal notranslate"><span class="pre">2GB</span></code> — a value that looks
-unremarkable next to a 1 TB host — implies a worst case of
-<code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2GB</span> <span class="pre">=</span> <span class="pre">3</span> <span class="pre">TB</span></code>, three times the machine. That is not a hypothetical:
-it is what a real fleet drifted to, and it produced 106 out-of-memory errors
-in a three-second window, failing allocations as small as 40 bytes while
-inserting commits.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">1.0</span></code> the same host gives <code class="docutils literal notranslate"><span class="pre">102.4</span> <span class="pre">GB</span> <span class="pre">/</span> <span class="pre">1500</span> <span class="pre">≈</span> <span class="pre">70</span> <span class="pre">MB</span></code>. So tens of megabytes is the right order of magnitude, and <code class="docutils literal notranslate"><span class="pre">2GB</span></code> — a value
+that looks unremarkable next to a 1 TB host — implies a worst case of
+<code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2GB</span> <span class="pre">×</span> <span class="pre">2.0</span> <span class="pre">=</span> <span class="pre">6000</span> <span class="pre">GB</span></code>, almost six times the machine (3000 GB,
+almost three times it, even with the multiplier at <code class="docutils literal notranslate"><span class="pre">1.0</span></code>). That is not a hypothetical: it is what a
+real fleet drifted to, and it produced 106 out-of-memory errors in a
+three-second window, failing allocations as small as 40 bytes while inserting
+commits.</p>
+<p>The denominator moves with <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>. The same host at 1000
+connections gives <code class="docutils literal notranslate"><span class="pre">(1024</span> <span class="pre">GB</span> <span class="pre">×</span> <span class="pre">0.10)</span> <span class="pre">/</span> <span class="pre">(1000</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">2.0)</span> <span class="pre">≈</span> <span class="pre">10</span> <span class="pre">MB</span></code>, and <code class="docutils literal notranslate"><span class="pre">128MB</span></code>
+there implies a worst case of <code class="docutils literal notranslate"><span class="pre">1000</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">128MB</span> <span class="pre">×</span> <span class="pre">2.0</span> <span class="pre">=</span> <span class="pre">1250</span> <span class="pre">GB</span></code>, more than
+the whole 1024 GB machine (625 GB, more than half of it on top of
+<code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>, with the multiplier at <code class="docutils literal notranslate"><span class="pre">1.0</span></code>). When <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is far above what
+the clients use, lower it to the pool floor first (it needs a restart), then
+recompute <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>; lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> alone makes more operations spill
+to temporary files (see <a class="reference internal" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts</a>).</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>Read <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> recommendations elsewhere — including older revisions of this
@@ -1957,7 +2049,7 @@ connections, and nothing in PostgreSQL warns you about the difference.</p>
 collection workers):</p>
 <div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">shared_buffers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">200GB</span><span class="w">                  </span><span class="c1"># ~20% of RAM</span>
 <span class="na">effective_cache_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">700GB</span><span class="w">            </span><span class="c1"># ~68% of RAM — a hint, not an allocation</span>
-<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">64MB</span><span class="w">                         </span><span class="c1"># per OPERATION; see the budget above</span>
+<span class="na">work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">64MB</span><span class="w">                         </span><span class="c1"># per OPERATION (hash: × hash_mem_multiplier); see the budget above</span>
 <span class="na">maintenance_work_mem</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">4GB</span>
 <span class="na">max_connections</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">300</span>
 <span class="na">jit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">off</span>
@@ -1965,7 +2057,13 @@ collection workers):</p>
 </div>
 <p>Scale <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>, <code class="docutils literal notranslate"><span class="pre">effective_cache_size</span></code> and <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> to your
 host, then recompute <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> from the budget — do not carry the <code class="docutils literal notranslate"><span class="pre">64MB</span></code>
-across unchanged, because it is an output of the formula, not an input.</p>
+across unchanged, because it is an output of the formula, not an input. The
+<code class="docutils literal notranslate"><span class="pre">64MB</span></code> fits the 10% budget with <code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">1.0</span></code> (≈ 70 MB, above).
+With the default <code class="docutils literal notranslate"><span class="pre">2.0</span></code> the formula gives ≈ 35 MB, and <code class="docutils literal notranslate"><span class="pre">64MB</span></code>’s all-hash worst
+case is <code class="docutils literal notranslate"><span class="pre">300</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">64MB</span> <span class="pre">×</span> <span class="pre">2.0</span> <span class="pre">≈</span> <span class="pre">188</span> <span class="pre">GB</span></code>, about 18% of RAM: either set
+<code class="docutils literal notranslate"><span class="pre">hash_mem_multiplier</span> <span class="pre">=</span> <span class="pre">1.0</span></code>, lower <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> to the formula’s value, or
+accept that the 10% headroom is being spent on the rare plan that is all hash
+nodes in every worker at once.</p>
 </section>
 <section id="operating-system-settings">
 <h3>Operating-system settings<a class="headerlink" href="#operating-system-settings" title="Link to this heading"></a></h3>
@@ -1991,18 +2089,126 @@ one thing and the server doing another. Check the server, not the file:</p>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_settings</span>
 <span class="k">WHERE</span><span class="w"> </span><span class="k">name</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(</span><span class="s1">&#39;work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;maintenance_work_mem&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;shared_buffers&#39;</span><span class="p">,</span>
 <span class="w">               </span><span class="s1">&#39;effective_cache_size&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;max_connections&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;jit&#39;</span><span class="p">,</span>
-<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">)</span>
+<span class="w">               </span><span class="s1">&#39;max_parallel_workers_per_gather&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;hash_mem_multiplier&#39;</span><span class="p">)</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">source</span></code> column is the useful one: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">file</span></code> means
-<code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>, while <code class="docutils literal notranslate"><span class="pre">database</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code> or <code class="docutils literal notranslate"><span class="pre">override</span></code> means something has
-set it at runtime and your file is not the whole story.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">source</span></code> column is the useful one: <code class="docutils literal notranslate"><span class="pre">database</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code> or <code class="docutils literal notranslate"><span class="pre">override</span></code>
+means something has set the value at runtime and your file is not the whole
+story. <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">file</span></code> covers more than <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>: a file it
+includes (a <code class="docutils literal notranslate"><span class="pre">conf.d/</span></code> directory) and <code class="docutils literal notranslate"><span class="pre">postgresql.auto.conf</span></code>, which
+<code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">SYSTEM</span></code> writes and which is read last, so it wins over both. The
+<code class="docutils literal notranslate"><span class="pre">sourcefile</span></code> column says which file, but only superusers and roles granted
+<code class="docutils literal notranslate"><span class="pre">pg_read_all_settings</span></code> can see it; for any other role it is blank. Check it
+before changing a value, or an edit to <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code> can be silently
+overridden by an included file or by <code class="docutils literal notranslate"><span class="pre">postgresql.auto.conf</span></code>.</p>
+<p>Settings made with <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">…</span> <span class="pre">SET</span></code>, <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">…</span> <span class="pre">IN</span> <span class="pre">DATABASE</span> <span class="pre">…</span> <span class="pre">SET</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">DATABASE</span> <span class="pre">…</span> <span class="pre">SET</span></code> are applied when a session starts, so they appear in
+<code class="docutils literal notranslate"><span class="pre">pg_settings</span></code> only in sessions of the role and database they name. All three
+are stored in <code class="docutils literal notranslate"><span class="pre">pg_db_role_setting</span></code>; check them there (a <code class="docutils literal notranslate"><span class="pre">setrole</span></code> of <code class="docutils literal notranslate"><span class="pre">0</span></code> means
+every role, a <code class="docutils literal notranslate"><span class="pre">setdatabase</span></code> of <code class="docutils literal notranslate"><span class="pre">0</span></code> every database):</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="k">coalesce</span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">rolname</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;(all roles)&#39;</span><span class="p">)</span><span class="w">     </span><span class="k">AS</span><span class="w"> </span><span class="k">role</span><span class="p">,</span>
+<span class="w">       </span><span class="k">coalesce</span><span class="p">(</span><span class="n">d</span><span class="mf">.</span><span class="n">datname</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;(all databases)&#39;</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">database</span><span class="p">,</span>
+<span class="w">       </span><span class="n">s</span><span class="mf">.</span><span class="n">setconfig</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">pg_db_role_setting</span><span class="w"> </span><span class="n">s</span>
+<span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">pg_roles</span><span class="w"> </span><span class="n">r</span><span class="w">    </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="mf">.</span><span class="n">setrole</span>
+<span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">pg_database</span><span class="w"> </span><span class="n">d</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">d</span><span class="mf">.</span><span class="n">oid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="mf">.</span><span class="n">setdatabase</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">;</span>
+</pre></div>
+</div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sysctl<span class="w"> </span>vm.overcommit_memory<span class="w"> </span>vm.overcommit_ratio<span class="w"> </span>vm.swappiness
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> and <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code> apply with <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">pg_reload_conf();</span></code>.
 <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> require a restart.</p>
+</section>
+<section id="write-heavy-hosts-wal-checkpoints-and-temporary-files">
+<h3>Write-heavy hosts: WAL, checkpoints and temporary files<a class="headerlink" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files" title="Link to this heading"></a></h3>
+<p>Collection is write-heavy, and on storage without a DRAM cache or power-loss
+protection, writes are usually the bottleneck. These settings reduce write
+volume or move it; each is a trade-off, stated with it.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Recommendation</p></th>
+<th class="head"><p>Trade-off and risk</p></th>
+<th class="head"><p>Applies with</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_wal_size</span></code></p></td>
+<td><p>At least the WAL your peak produces per checkpoint interval × (1 + <code class="docutils literal notranslate"><span class="pre">checkpoint_completion_target</span></code>), plus headroom. Measure the rate from <code class="docutils literal notranslate"><span class="pre">pg_stat_wal.wal_bytes</span></code> (or two <code class="docutils literal notranslate"><span class="pre">pg_current_wal_lsn()</span></code> readings) over a peak hour.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pg_wal</span></code> can grow to this size, so check the volume’s free space first. Crash recovery takes longer.</p></td>
+<td><p>reload</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">checkpoint_timeout</span></code></p></td>
+<td><p>15–30 min on a write-heavy host</p></td>
+<td><p>Every checkpoint makes the next change to each page write a full-page image, so fewer checkpoints mean less WAL. Crash recovery takes longer.</p></td>
+<td><p>reload</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wal_compression</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code>, where the server was built <code class="docutils literal notranslate"><span class="pre">--with-lz4</span></code>; otherwise <code class="docutils literal notranslate"><span class="pre">zstd</span></code> (built <code class="docutils literal notranslate"><span class="pre">--with-zstd</span></code>) or <code class="docutils literal notranslate"><span class="pre">pglz</span></code> (always available; <code class="docutils literal notranslate"><span class="pre">on</span></code> means <code class="docutils literal notranslate"><span class="pre">pglz</span></code>)</p></td>
+<td><p>Compresses those full-page images; costs a little CPU. <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">enumvals</span> <span class="pre">FROM</span> <span class="pre">pg_settings</span> <span class="pre">WHERE</span> <span class="pre">name</span> <span class="pre">=</span> <span class="pre">'wal_compression'</span></code> lists the methods this server was built with, and a method it lacks is rejected.</p></td>
+<td><p>reload</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">synchronous_commit</span></code> for the collection role</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">&lt;role&gt;</span> <span class="pre">SET</span> <span class="pre">synchronous_commit</span> <span class="pre">=</span> <span class="pre">off</span></code></p></td>
+<td><p>A COMMIT no longer waits for its WAL to reach disk. An operating-system <strong>or</strong> database crash can lose the most recent transactions already reported as committed — at most three times <code class="docutils literal notranslate"><span class="pre">wal_writer_delay</span></code> (600 ms at the default 200 ms) — with no corruption: the database is as if they had aborted. Collection is idempotent and re-collected, so that loss is recoverable; the same role’s web writes (accounts, groups) would be lost too. <code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">…</span> <span class="pre">SET</span></code> applies when a session starts, and serve, web and api hold pooled connections: an open connection keeps the old value until the pool retires it (after 4 minutes idle or at most 1 hour of age), or restart the three processes to apply it at once.</p></td>
+<td><p>new sessions</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temp_tablespaces</span></code></p></td>
+<td><p>A tablespace on a separate fast device, when the data volume is write-bound, plus <code class="docutils literal notranslate"><span class="pre">GRANT</span> <span class="pre">CREATE</span> <span class="pre">ON</span> <span class="pre">TABLESPACE</span> <span class="pre">&lt;ts&gt;</span> <span class="pre">TO</span> <span class="pre">&lt;role&gt;</span></code> for every role whose queries should spill there</p></td>
+<td><p>Sorts and hashes larger than their memory limit spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>, which increases spills. A value from <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code> (or any previously set value) silently ignores a listed tablespace the role lacks <code class="docutils literal notranslate"><span class="pre">CREATE</span></code> on, and that role’s temporary files stay in its database’s default tablespace; only an interactive <code class="docutils literal notranslate"><span class="pre">SET</span></code> reports the missing privilege as an error. Check with <code class="docutils literal notranslate"><span class="pre">log_temp_files</span></code> or <code class="docutils literal notranslate"><span class="pre">pg_ls_tmpdir()</span></code> that the spills moved.</p></td>
+<td><p>reload (after <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLESPACE</span></code> and the <code class="docutils literal notranslate"><span class="pre">GRANT</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+<p>Forced checkpoints are the signal for <code class="docutils literal notranslate"><span class="pre">max_wal_size</span></code>: with <code class="docutils literal notranslate"><span class="pre">log_checkpoints</span></code>
+on (the default since PostgreSQL 15), a <code class="docutils literal notranslate"><span class="pre">checkpoint</span> <span class="pre">starting:</span> <span class="pre">wal</span></code> line means
+WAL volume forced a checkpoint before <code class="docutils literal notranslate"><span class="pre">checkpoint_timeout</span></code> did.</p>
+<p>A diagnostic that follows from <code class="docutils literal notranslate"><span class="pre">synchronous_commit</span> <span class="pre">=</span> <span class="pre">off</span></code>: a COMMIT from that
+role that still takes seconds is not waiting for its own flush. It is waiting
+on the server itself, typically storage stalling WAL writes for everyone.
+Look at <code class="docutils literal notranslate"><span class="pre">pg_stat_activity.wait_event</span></code> during such a stall.</p>
+</section>
+<section id="diagnostic-settings">
+<h3>Diagnostic settings<a class="headerlink" href="#diagnostic-settings" title="Link to this heading"></a></h3>
+<p>These change what the log and the statistics views can tell you, not
+throughput. All apply with a reload except <code class="docutils literal notranslate"><span class="pre">shared_preload_libraries</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Recommendation</p></th>
+<th class="head"><p>What it answers</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log_lock_waits</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">on</span></code></p></td>
+<td><p>Logs any lock wait longer than <code class="docutils literal notranslate"><span class="pre">deadlock_timeout</span></code> (1 s by default). Without it, lock contention is invisible in the log. The cost is negligible.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log_temp_files</span></code></p></td>
+<td><p>a size threshold, e.g. <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> or larger</p></td>
+<td><p>Logs every temporary file at or above the threshold, with its statement: which queries spill, and how much.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log_min_duration_statement</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">5s</span></code></p></td>
+<td><p>Slow statements, with their parameters.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log_autovacuum_min_duration</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">60s</span></code></p></td>
+<td><p>Long vacuums, including anti-wraparound ones.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">track_io_timing</span></code>, <code class="docutils literal notranslate"><span class="pre">track_wal_io_timing</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">on</span></code></p></td>
+<td><p>I/O time in <code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code>, <code class="docutils literal notranslate"><span class="pre">pg_stat_io</span></code> and <code class="docutils literal notranslate"><span class="pre">pg_stat_wal</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code></p></td>
+<td><p>in <code class="docutils literal notranslate"><span class="pre">shared_preload_libraries</span></code> (restart), plus <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">EXTENSION</span></code> in each database you query</p></td>
+<td><p>Per-statement totals, including temporary-file blocks; see the performance snapshot below.</p></td>
+</tr>
+</tbody>
+</table>
 </section>
 <section id="drift-is-the-failure-mode">
 <h3>Drift is the failure mode<a class="headerlink" href="#drift-is-the-failure-mode" title="Link to this heading"></a></h3>

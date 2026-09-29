@@ -151,8 +151,8 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		// next snapshot replace.
 		//
 		// GitHub source errors do NOT set scanIncomplete. An ANSWER
-		// (403/404/304 — private repos, missing OAuth scope,
-		// archived/empty repos) is routinely benign and changes nothing;
+		// (403/404 — private repos, missing OAuth scope, archived/empty
+		// repos) is routinely benign and changes nothing;
 		// a NON-answer fails the whole scan instead (githubNonAnswers,
 		// below — v0.29.55).
 		scanIncomplete bool
@@ -185,9 +185,11 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 			if class == platform.ClassTransient || class == platform.ClassRateLimit {
 				scanIncomplete = true
 			}
-			s.Logger.Warn("distribution: deps.dev fetch failed",
-				"repo_id", repoID, "owner", owner, "repo", repo,
-				"class", class.String(), "error", err)
+			if !errors.Is(err, context.Canceled) { // a stop serve mid-scan is not a failure (worklist §4)
+				s.Logger.Warn("distribution: deps.dev fetch failed",
+					"repo_id", repoID, "owner", owner, "repo", repo,
+					"class", class.String(), "error", err)
+			}
 		} else {
 			distributions = append(distributions, dd...)
 		}
@@ -227,9 +229,11 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 				if class == platform.ClassTransient || class == platform.ClassRateLimit {
 					scanIncomplete = true
 				}
-				s.Logger.Warn("distribution: ecosyste.ms fetch failed",
-					"repo_id", repoID, "owner", owner, "repo", repo,
-					"class", class.String(), "error", err)
+				if !errors.Is(err, context.Canceled) {
+					s.Logger.Warn("distribution: ecosyste.ms fetch failed",
+						"repo_id", repoID, "owner", owner, "repo", repo,
+						"class", class.String(), "error", err)
+				}
 			}
 		} else {
 			distributions = append(distributions, em...)
@@ -253,9 +257,10 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	}
 
 	// Sources 3, 4, 5: GitHub (release assets, packages, manifests).
-	// Errors here keep WARN level. The client answers a 403/404/304 (a
+	// Errors here keep WARN level. The client answers a 403/404 (a
 	// private repo, a missing OAuth scope, an archived or empty repo)
-	// with nil, nil — those never reach these arms (worklist item 26);
+	// with nil, nil — those never reach these arms (worklist item 26); an
+	// unsolicited 304 does reach them, as a non-answer (round 8);
 	// what does is a rejected request or a NON-answer, and one non-answer
 	// fails the scan (below), so the later GitHub arms are skipped once
 	// one is recorded: their calls would be spent on a scan already lost.
@@ -266,7 +271,7 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
-			if githubErrorIsNonAnswer(err) {
+			if githubListingIsNonAnswer(err) {
 				githubNonAnswers = append(githubNonAnswers, err)
 			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
@@ -290,7 +295,7 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
-			if githubErrorIsNonAnswer(err) {
+			if githubListingIsNonAnswer(err) {
 				githubNonAnswers = append(githubNonAnswers, err)
 			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
@@ -314,7 +319,7 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 		if err != nil {
 			erroredSources++
 			githubErrs = append(githubErrs, err)
-			if githubErrorIsNonAnswer(err) {
+			if githubListingIsNonAnswer(err) {
 				githubNonAnswers = append(githubNonAnswers, err)
 			}
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
@@ -369,6 +374,12 @@ func (s *CompositeScanner) Scan(ctx context.Context, repoID int64, owner, repo, 
 	// with "sources we needed had transient failures" and stuck
 	// legitimate-no-data repos in an indefinite retry loop until
 	// the 10-strike sideline.
+	//
+	// Whenever this gate is reached, githubErrs holds no GitHub non-answer
+	// or rejected listing (those returned above). With the real client the
+	// only GitHub error left is a cancelled context (a `stop serve`), which
+	// githubListingIsNonAnswer leaves out on purpose; the join keeps it so
+	// the worker still sees the cancellation (PR #218 review A4).
 	if enabledSources > 0 && erroredSources == enabledSources && len(distributions) == 0 && len(manifests) == 0 {
 		allErrs := make([]error, 0, 2+len(githubErrs))
 		if depsDevErr != nil {
@@ -412,8 +423,11 @@ func (s *CompositeScanner) Healthy() bool {
 // githubErrorIsNonAnswer reports whether a GitHub source error says nothing
 // about the repository, so the scan must fail rather than be stored: any
 // error that is not an answer (platform.IsDefinitiveAnswer). Answers — 404,
-// 410, a non-rate-limit 403, 204, the pagination cap, a rejected request —
-// and 304 keep the pre-v0.29.55 treatment (routinely benign);
+// 410, a non-rate-limit 403, 204, the pagination cap — keep the
+// pre-v0.29.55 treatment (routinely benign). A rejected request (400/422) is
+// an answer HERE, for one manifest's content fetch; for a whole-source
+// listing it is not (githubListingIsNonAnswer). An unsolicited 304 is
+// a non-answer (review round 8 of items 22–25);
 // a cancelled context is a shutdown, which the worker releases without a
 // strike.
 //
@@ -425,8 +439,24 @@ func (s *CompositeScanner) Healthy() bool {
 // for the full cadence; a refused, rate-limited or quarantined pool never
 // errors here (Acquire waits).
 func githubErrorIsNonAnswer(err error) bool {
-	if errors.Is(err, context.Canceled) || platform.ClassifyError(err) == platform.ClassNotModified {
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
+	// A 304 the readers never solicited is a non-answer too (review round 8
+	// of items 22–25): it says nothing about the repository, and read as
+	// "empty" it wiped the snapshot the ETag bypass exists to protect.
 	return !platform.IsDefinitiveAnswer(err)
+}
+
+// githubListingIsNonAnswer reports whether a WHOLE-SOURCE GitHub listing
+// error (release assets, packages, root manifests) fails the scan: a
+// non-answer (githubErrorIsNonAnswer), or a rejected request (400/422). A
+// rejected listing is the forge's answer about the request, not about the
+// repository's distributions (worklist item 25): as an answer it emptied
+// those rows and stamped the scan complete. A rejected fetch of one
+// manifest's content stays an answer for that file, so that arm uses
+// githubErrorIsNonAnswer alone. One predicate for the three listing arms
+// (PR #218 review A4, SR-17).
+func githubListingIsNonAnswer(err error) bool {
+	return githubErrorIsNonAnswer(err) || errors.Is(err, platform.ErrRequestRejected)
 }

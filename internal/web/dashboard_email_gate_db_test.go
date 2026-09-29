@@ -177,8 +177,11 @@ func TestDashboardEmailGateThroughTheHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		broken.Close()
-		if w := get(t, broken, mailOn("https://aveloxis.io"), false, "aveloxis.io"); toForm(t, w) {
-			t.Errorf("a failed lookup redirected to the form (status %d)", w.Code)
+		// Since batch 5b (worklist follow-up 12) a failed group lookup is a
+		// 500, not an empty dashboard: neither the form nor the page.
+		w := get(t, broken, mailOn("https://aveloxis.io"), false, "aveloxis.io")
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("a failed lookup answered %d Location %q; want a 500 (not the form, not an empty dashboard)", w.Code, w.Header().Get("Location"))
 		}
 	})
 }

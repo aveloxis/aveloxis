@@ -68,6 +68,9 @@ const (
 // ErrNotFound class) is mark-only stamped; any OTHER error stamps
 // nothing so the contributor retries on the next claim.
 func (s *Scheduler) runActivityHistory(ctx context.Context) {
+	if !s.githubKeysAvailable() {
+		return // GitLab-only keys: nothing to ask GitHub with
+	}
 	fetcher, ok := s.ghClient.(contributorHistoryFetcher)
 	if !ok {
 		return // no GitHub GraphQL client (GitLab-only deployment or test fake)

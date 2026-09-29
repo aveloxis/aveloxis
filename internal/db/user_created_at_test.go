@@ -107,18 +107,27 @@ func extractListUsersBody(t *testing.T, src string) string {
 // column degrades right back into last-accessed.
 func TestUpsertOAuthUserNeverTouchesCreatedAt(t *testing.T) {
 	src := readFileForUserCreatedAt(t, "web_store.go")
-	start := strings.Index(src, "func (s *PostgresStore) UpsertOAuthUser(")
+	// The login-time UPDATE is updateOAuthUser since the F1 identity fix
+	// (2026-09-28); UpsertOAuthUser itself must issue none.
+	upsert := strings.Index(src, "func (s *PostgresStore) SignInOAuthUser(")
+	if upsert < 0 {
+		t.Fatal("SignInOAuthUser not found")
+	}
+	if e := strings.Index(src[upsert:], "\n}"); strings.Contains(src[upsert:upsert+e], "UPDATE aveloxis_ops.users") {
+		t.Error("SignInOAuthUser must update through updateOAuthUser, not an UPDATE of its own")
+	}
+	start := strings.Index(src, "func (s *PostgresStore) updateOAuthUser(")
 	if start < 0 {
-		t.Fatal("UpsertOAuthUser not found")
+		t.Fatal("updateOAuthUser not found")
 	}
 	end := strings.Index(src[start:], "\n}")
 	body := src[start : start+end]
 	upd := strings.Index(body, "UPDATE aveloxis_ops.users SET")
 	if upd < 0 {
-		t.Fatal("UpsertOAuthUser UPDATE branch not found")
+		t.Fatal("updateOAuthUser UPDATE not found")
 	}
 	if strings.Contains(body[upd:], "created_at") {
-		t.Error("UpsertOAuthUser's UPDATE branch must NOT touch created_at (insert-only — DEFAULT NOW() covers the INSERT path)")
+		t.Error("updateOAuthUser's UPDATE branch must NOT touch created_at (insert-only — DEFAULT NOW() covers the INSERT path)")
 	}
 }
 

@@ -28,7 +28,7 @@ func TestSenderResolveTickerWiredAndUsesSharedChain(t *testing.T) {
 		t.Error("spawnMailingListWorker must spawn the runMailingListSenderResolve ticker goroutine")
 	}
 
-	body := extractFuncBody(t, src, "func (s *Scheduler) runMailingListSenderResolve(")
+	body := extractFuncBody(t, src, "func (s *Scheduler) senderResolvePass(")
 	for _, needle := range []string{
 		"GetMailingListSenderResolveCandidates(", // candidate selection (>= threshold, cooldown)
 		"collector.ResolveEmailToIdentity(",      // the SHARED chain, not a bespoke one
@@ -55,7 +55,7 @@ func TestSenderResolvePhase4CreatesEmailOnlyForHumans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFuncBody(t, string(data), "func (s *Scheduler) runMailingListSenderResolve(")
+	body := extractFuncBody(t, string(data), "func (s *Scheduler) senderResolvePass(")
 	for _, needle := range []string{
 		"c.HumanClass", // gate on direct-human
 		"!collector.IsAutomationEmail(c.SenderEmail)",                     // never a bot

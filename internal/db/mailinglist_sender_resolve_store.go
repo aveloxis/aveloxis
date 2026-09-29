@@ -114,6 +114,15 @@ const activeAliasOwnerCoreSQL = `FROM aveloxis_data.contributors_aliases a
 		JOIN aveloxis_data.contributors c2 ON c2.cntrb_id = a.cntrb_id
 		WHERE a.alias_email = %s AND COALESCE(c2.cntrb_deleted, 0) = 0`
 
+// SenderResolveAuditSQL counts mailing-list senders stamped resolved with a
+// login but no active alias — a link that never happened (the 0.29.68
+// deploy checklist's audit step). One spelling of "active alias" with the
+// candidate query (activeAliasOwnerCoreSQL, SR-17).
+func SenderResolveAuditSQL() string {
+	return `SELECT count(*) FROM aveloxis_ops.mailing_list_sender_resolve r WHERE r.resolved AND r.resolved_login <> '' AND NOT EXISTS (SELECT 1 ` +
+		strings.Join(strings.Fields(fmt.Sprintf(activeAliasOwnerCoreSQL, "r.sender_email")), " ") + `)`
+}
+
 // ensureAliasTx is the tx-scoped twin of EnsureContributorAlias — it must run
 // INSIDE CreateEmailOnlyContributor's transaction so the alias write is
 // covered by the same advisory lock.
@@ -252,10 +261,16 @@ func (s *PostgresStore) CreateEmailOnlyContributor(ctx context.Context, email st
 }
 
 // MarkSenderResolveAttempt records the outcome of one resolution attempt.
-// resolved=true is terminal (the sender drops out of the candidate set
-// permanently); resolved=false stamps last_attempt_at so the sender exits the
-// candidate pool until the cooldown elapses. source/login are recorded only on
-// a successful resolve.
+// resolved=true is terminal (the candidate query's `COALESCE(r.resolved,
+// FALSE) = FALSE` excludes it; the operator reset, the v0.29.2 re-open
+// heal and — two processes only — a cooldown stamp racing a terminal one
+// write it back); resolved=false stamps last_attempt_at so the sender exits the
+// candidate pool until the cooldown elapses. On a terminal stamp source and
+// login are taken from the stamp, empty or not (a bot, an invalid address
+// and an email-only contributor are terminal too); a cooldown stamp writes
+// resolved = false, advances last_attempt_at and KEEPS the earlier source
+// and login (the DO UPDATE's ELSE arms;
+// TestMarkSenderResolveAttemptCooldownKeepsTheEarlierOutcome).
 func (s *PostgresStore) MarkSenderResolveAttempt(ctx context.Context, email string, resolved bool, source, login string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.mailing_list_sender_resolve
@@ -275,28 +290,49 @@ func (s *PostgresStore) MarkSenderResolveAttempt(ctx context.Context, email stri
 	return nil
 }
 
+// ErrNoStableIdentity is LinkMailingListSender's answer for a login with no
+// contributor row and no forge id: the sender was NOT linked (SR-18).
+var ErrNoStableIdentity = errors.New("no stable identity for the sender's login")
+
 // LinkMailingListSender materializes the contributor for a resolved sender:
 // it upserts the contributor for (login, ghUserID) — reusing UpsertContributorFull
 // so a login already held under a different cntrb_id is updated in place — then
 // records the sender email as an alias and backfills the canonical email. After
 // this, the existing BackfillMailingListSenderIDs ticker stamps the sender's
 // cntrb_id onto their already-written messages rows. Returns the contributor's
-// cntrb_id (or "" when no stable identity could be formed, e.g. a login with no
-// ghUserID and no existing row).
+// cntrb_id. A login with no ghUserID and no existing contributor row is
+// ErrNoStableIdentity: nothing is written, and the caller must not record a
+// link (it may record the 30-day cooldown; the login may gain a row later).
 func (s *PostgresStore) LinkMailingListSender(ctx context.Context, senderEmail, login string, ghUserID int64) (string, error) {
 	if login == "" {
-		return "", nil
+		// The wiring never passes an empty login; typed all the same (review
+		// round 8): a nil error here would be stamped as a link.
+		return "", fmt.Errorf("%w: empty login", ErrNoStableIdentity)
 	}
 	var cntrbID string
 	if ghUserID > 0 {
 		cntrbID = GithubUUID(ghUserID).String()
 	} else {
-		// No numeric id (e.g. global commit-search returned a login but the
-		// author node was null): only proceed if the login already exists, so
-		// we never mint a non-deterministic UUID for a maybe-duplicate person.
+		// No numeric id (an ID-less login@users.noreply.github.com address;
+		// the commit search returns a null author as a no-hit, never as a
+		// login): only proceed if the login already exists, so we never mint
+		// a non-deterministic UUID for a maybe-duplicate person.
+		// A lookup ERROR is not "no identity" (SR-5; review round 5 of the
+		// worklist batch): on a nil error the caller stamps the sender
+		// resolved — TERMINAL, out of the retry pool for good — and counts
+		// it linked, so a swallowed failure recorded a link that never
+		// happened (worse than item 18's 30-day cooldown).
 		existing, err := s.FindContributorIDByLogin(ctx, login)
-		if err != nil || existing == "" {
-			return "", nil //nolint:nilerr // no stable identity → skip, not an error
+		if err != nil {
+			return "", err
+		}
+		if existing == "" {
+			// Nothing was written; the caller must not read this as a link
+			// (review round 7): through v0.29.67 this returned ("", nil), and
+			// the wiring stamped the sender resolved — terminal — with the
+			// login and no alias, and counted it linked. Typed, so the caller
+			// cannot mistake the skip for a link (SR-18).
+			return "", fmt.Errorf("%w: login %q has no contributor row and the forge gave no numeric id", ErrNoStableIdentity, login)
 		}
 		cntrbID = existing
 	}
@@ -308,8 +344,15 @@ func (s *PostgresStore) LinkMailingListSender(ctx context.Context, senderEmail, 
 		if err := s.EnsureContributorAlias(ctx, actualID, senderEmail, MailingListToolSource, "Mailing List"); err != nil {
 			return actualID, err
 		}
-		// Best-effort canonical backfill (COALESCE-guarded inside the method).
-		_ = s.SetContributorCanonical(ctx, actualID, senderEmail)
+		// Best-effort canonical backfill: the method keeps an existing
+		// non-empty canonical (cntrb_canonical IS NULL OR length < 2). A
+		// failure leaves cntrb_canonical empty — attribution still works
+		// through the alias — and is logged the way ensureAlias logs its own
+		// write failures (WARN; review round 6); a cancelled context is a
+		// stop, not a defect.
+		if err := s.SetContributorCanonical(ctx, actualID, senderEmail); err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("mailing-list sender linked but canonical backfill failed", "cntrb_id", actualID, "error", err)
+		}
 	}
 	return actualID, nil
 }

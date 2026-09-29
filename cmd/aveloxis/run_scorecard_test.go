@@ -61,8 +61,12 @@ func TestRunScorecardRefusesWhileServeRunning(t *testing.T) {
 		t.Errorf("refusal message should tell the operator the recovery command, got: %v", err)
 	}
 
-	// Stale pidfile (serve exited without cleanup) → no refusal.
-	pidfile.Remove(pidfile.Path("serve"))
+	// No pidfile (serve exited and removed it) → no refusal. The stale
+	// case — a readable file naming a dead PID — is componentAlreadyRunning's
+	// own tests'.
+	if err := os.Remove(pidfile.Path("serve")); err != nil {
+		t.Fatal(err)
+	}
 	if err := refuseIfServeRunning(); err != nil {
 		t.Fatalf("removed pidfile should not refuse: %v", err)
 	}
@@ -265,5 +269,32 @@ func TestRunScorecardBorrowsTokensPerRepo(t *testing.T) {
 		if d, ok := stmt.(*ast.DeferStmt); ok {
 			t.Errorf("a defer directly in the jobs loop body (line %d) runs only when the worker exits", fset.Position(d.Pos()).Line)
 		}
+	}
+}
+
+// TestRunScorecardPidfileErrorNamesThePathOnce — PR #218 fix review r1
+// (pidfile nit): pidfile.Write began wrapping its errors as "pidfile
+// <path>: …" and this caller wraps as "writing pidfile <path>: …", so the
+// path printed twice. Write's errors no longer name the path; its callers do.
+func TestRunScorecardPidfileErrorNamesThePathOnce(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory's permission bits")
+	}
+	dir := isolateHome(t)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	release, err := acquireRunScorecardPidfile()
+	if err == nil {
+		release()
+		t.Fatal("a pidfile write into a read-only directory must fail")
+	}
+	path := pidfile.Path("run-scorecard")
+	if n := strings.Count(err.Error(), path); n != 1 {
+		t.Errorf("the error names the pidfile path %d times; want once:\n%v", n, err)
 	}
 }

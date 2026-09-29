@@ -4,11 +4,13 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +34,7 @@ type fakeProcStore struct {
 	processed     []int64
 	resolvable    map[string]string // sender email → cntrb_id
 	resolveCalls  map[string]int    // sender email → ResolveContributorIDByEmail call count
+	resolveErr    error             // a STORE failure from ResolveContributorIDByEmail (item 17)
 	primaryRepoID int64
 	primaryRepoOK bool
 	mirrorIssueID *int64
@@ -134,6 +137,9 @@ func (f *fakeProcStore) ResolveContributorIDByEmail(_ context.Context, email str
 		f.resolveCalls = map[string]int{}
 	}
 	f.resolveCalls[email]++
+	if f.resolveErr != nil {
+		return "", false, f.resolveErr
+	}
 	if id, ok := f.resolvable[email]; ok {
 		return id, true, nil
 	}
@@ -438,5 +444,41 @@ func TestDrainOncePassesProcessorSystem(t *testing.T) {
 	}
 	if len(f.listedSystems) == 0 || f.listedSystems[0] != "xsys_probe_system" {
 		t.Fatalf("DrainOnce must claim lists for ITS system; asked for %v", f.listedSystems)
+	}
+}
+
+// TestProcessRowDefersOnASenderLookupFailure pins worklist item 17 at the
+// mailing-list Processor (batch-3 review rounds 1-2): `id, ok, _ :=` read a
+// store failure as "no contributor" and cached nil for the sender. A failed
+// lookup defers the row for the next drain (the retry sentinel), writes no
+// cache entry, and the cause is logged.
+func TestProcessRowDefersOnASenderLookupFailure(t *testing.T) {
+	f := &fakeProcStore{resolveErr: errors.New("connection reset")}
+	var logs bytes.Buffer
+	proc := NewMailingListProcessor(f, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(&logs, nil)))
+	row := db.StagedMailingListRow{Message: model.MailingListStagedMessage{
+		MessageID: "<probe@example.invalid>", ListAddress: "dev@example.invalid", SenderEmail: "someone@example.invalid", Subject: "probe",
+	}}
+	cache := map[string]*string{}
+	err := proc.processRow(context.Background(), 1, 7, row, cache, map[string]int64{}, &drainCounters{})
+	if !errors.Is(err, errMailingListRowRetry) {
+		t.Errorf("processRow = %v; want the row deferred (errMailingListRowRetry)", err)
+	}
+	if _, cached := cache[row.Message.SenderEmail]; cached {
+		t.Error("a failed lookup was cached as the sender's answer")
+	}
+	if !strings.Contains(logs.String(), "sender lookup failed") {
+		t.Errorf("the deferral's cause is not logged:\n%s", logs.String())
+	}
+	// PR #218 review A5: the WARN matches the other deferral sites — the
+	// processor prefix, the list (rgls_id) and the message key — and does
+	// not put the sender's address in a WARN line.
+	for _, want := range []string{"mailing-list processor: sender lookup failed", "rgls_id=7", "message_id=<probe@example.invalid>"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("the deferral WARN lacks %q:\n%s", want, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), row.Message.SenderEmail) {
+		t.Errorf("the deferral WARN carries the sender's email:\n%s", logs.String())
 	}
 }

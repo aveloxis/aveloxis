@@ -76,7 +76,7 @@ Until 2026-09-11 this was not true of one path. `UpsertContributorFull`'s row-ex
 
 **`cntrb_deleted` semantics (v0.20.2):**
 - `0` (default) — active row, returned by lookup queries.
-- `1` — loser of a rename merge. Filtered out of `Resolve`'s lookup-by-login, `FindLoginByEmail`, `FindContributorIDByLogin`, `GetThinContributorLogins`, `GetContributorsNeedingSearch`, `GetContributorsMissingCanonical`, and `PopulateAffiliations` candidate selection. Still visible to analytics queries that JOIN on `cntrb_id` directly (so historical FK references continue to resolve).
+- `1` — loser of a rename merge. Filtered out of `Resolve`'s lookup-by-login, `FindLoginByEmail`, `FindContributorIDByLogin`, `GetThinContributorLogins`, `GetContributorsNeedingSearch`, and `PopulateAffiliations` candidate selection. Still visible to analytics queries that JOIN on `cntrb_id` directly (so historical FK references continue to resolve).
 - The column already existed in the schema (legacy Augur compatibility); v0.20.2 repurposes it for the soft-delete merge semantics. Pre-v0.20.2 rows are all `cntrb_deleted = 0` or NULL — both treated as active by `COALESCE(cntrb_deleted, 0) = 0`.
 
 ### R4: Identity rows are denormalized truth
@@ -99,7 +99,7 @@ A "thin" contributor has empty `cntrb_company` AND empty `cntrb_location`. The p
 
 Two separate cooldown columns track two distinct background tasks:
 
-- `cntrb_last_enriched_at` — `runEnrichment` and `ResolveEmailsToCanonical` cooldown.
+- `cntrb_last_enriched_at` — `runEnrichment` cooldown (the separate `ResolveEmailsToCanonical` pass was removed in v0.29.68; it had not run since v0.19.7).
 - `cntrb_last_search_attempted_at` — `runSearchResolve` (search-by-email) cooldown.
 
 Without these cooldowns, every periodic tick would re-process the same "genuinely empty" rows forever, wasting GitHub Search API and core API quota.
@@ -216,7 +216,7 @@ Three periodic tickers run inside `aveloxis serve`. Each is rate-limited and coo
 | `runMailingListSenderResolve` | 1 hour | ≤N mailing-list senders (≥ message threshold) with no resolved `cntrb_id` → [shared email→identity chain](#shared-emailidentity-resolution) → link/create on hit | `sender_last_resolve_attempt` |
 | `runBreadth` | configurable | Discovers cross-repo contributor activity via Events API; writes `contributor_repo` only | n/a (per-contributor priority) |
 
-The two email-resolve tickers (`runSearchResolve` for contributor rows, `runMailingListSenderResolve` for mailing-list senders) are the **convergence machinery**: an email observed before its owner's platform identity is known gets re-attempted as the DB fills, so email-only rows acquire a `gh_user_id` over days without re-collection. In addition to the tickers, every per-job collection runs the commit resolver (Layer 2) and a `ResolveEmailsToCanonical` pass that fills `cntrb_canonical` for ≤500 contributors per call.
+The two email-resolve tickers (`runSearchResolve` for contributor rows, `runMailingListSenderResolve` for mailing-list senders) are the **convergence machinery**: an email observed before its owner's platform identity is known gets re-attempted as the DB fills, so email-only rows acquire a `gh_user_id` over days without re-collection. In addition to the tickers, every per-job collection runs the commit resolver (Layer 2); `cntrb_canonical` is filled by the enrichment ticker from the public email (there is no separate canonical pass since v0.19.7; its dead code was removed in v0.29.68).
 
 ### Shared email→identity resolution
 
@@ -421,7 +421,7 @@ Duplicates are consolidated by the logical merge shipped in v0.20.2: the loser r
 
 Three legal reasons (post-v0.25.6):
 
-1. The user has set their email to private on GitHub. `EnrichContributor` returns no email; `ResolveEmailsToCanonical` cannot help. After the 30-day cooldown the row is retried in case the user changed their setting, but typically stays empty.
+1. The user has set their email to private on GitHub. `EnrichContributor` returns no email. After the 30-day cooldown the row is retried in case the user changed their setting, but typically stays empty.
 2. The contributor is `email-only` (no `gh_user_id`, no `gl_id`) — created from a commit author with a non-noreply email but no resolvable platform account. `cntrb_canonical` may be set to the commit email itself, or empty if `UpsertContributorFull` was called with `commitEmail = ''`.
 3. The contributor was created very recently and the enrichment ticker has not yet reached them. They appear in the next enrichment cycle.
 

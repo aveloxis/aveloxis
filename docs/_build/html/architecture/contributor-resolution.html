@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contributor Resolution &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Contributor Resolution &mdash; Aveloxis 0.29.69 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -603,7 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +658,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +667,7 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +820,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +923,7 @@
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1091,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1195,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1736,7 +1752,7 @@
 <p><strong><code class="docutils literal notranslate"><span class="pre">cntrb_deleted</span></code> semantics (v0.20.2):</strong></p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">0</span></code> (default) — active row, returned by lookup queries.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">1</span></code> — loser of a rename merge. Filtered out of <code class="docutils literal notranslate"><span class="pre">Resolve</span></code>’s lookup-by-login, <code class="docutils literal notranslate"><span class="pre">FindLoginByEmail</span></code>, <code class="docutils literal notranslate"><span class="pre">FindContributorIDByLogin</span></code>, <code class="docutils literal notranslate"><span class="pre">GetThinContributorLogins</span></code>, <code class="docutils literal notranslate"><span class="pre">GetContributorsNeedingSearch</span></code>, <code class="docutils literal notranslate"><span class="pre">GetContributorsMissingCanonical</span></code>, and <code class="docutils literal notranslate"><span class="pre">PopulateAffiliations</span></code> candidate selection. Still visible to analytics queries that JOIN on <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> directly (so historical FK references continue to resolve).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">1</span></code> — loser of a rename merge. Filtered out of <code class="docutils literal notranslate"><span class="pre">Resolve</span></code>’s lookup-by-login, <code class="docutils literal notranslate"><span class="pre">FindLoginByEmail</span></code>, <code class="docutils literal notranslate"><span class="pre">FindContributorIDByLogin</span></code>, <code class="docutils literal notranslate"><span class="pre">GetThinContributorLogins</span></code>, <code class="docutils literal notranslate"><span class="pre">GetContributorsNeedingSearch</span></code>, and <code class="docutils literal notranslate"><span class="pre">PopulateAffiliations</span></code> candidate selection. Still visible to analytics queries that JOIN on <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> directly (so historical FK references continue to resolve).</p></li>
 <li><p>The column already existed in the schema (legacy Augur compatibility); v0.20.2 repurposes it for the soft-delete merge semantics. Pre-v0.20.2 rows are all <code class="docutils literal notranslate"><span class="pre">cntrb_deleted</span> <span class="pre">=</span> <span class="pre">0</span></code> or NULL — both treated as active by <code class="docutils literal notranslate"><span class="pre">COALESCE(cntrb_deleted,</span> <span class="pre">0)</span> <span class="pre">=</span> <span class="pre">0</span></code>.</p></li>
 </ul>
 </section>
@@ -1756,7 +1772,7 @@
 <p>A “thin” contributor has empty <code class="docutils literal notranslate"><span class="pre">cntrb_company</span></code> AND empty <code class="docutils literal notranslate"><span class="pre">cntrb_location</span></code>. The periodic enrichment ticker calls <code class="docutils literal notranslate"><span class="pre">client.EnrichContributor(login)</span></code> to fill these fields. If the platform profile is genuinely empty (the user has not set company / location), the row’s <code class="docutils literal notranslate"><span class="pre">cntrb_last_enriched_at</span></code> is stamped to <code class="docutils literal notranslate"><span class="pre">NOW()</span></code> to suppress retry for the cooldown window (30 days). A lookup that fails with an answer about the login (not found, gone, not visible, or a request the forge rejects) is stamped the same way. Since v0.29.55, a lookup that fails without such an answer (a rate limit, a transient or auth failure, a shutdown, an empty key pool, a cut-off response, or any other error) is <strong>not</strong> stamped: it is retried on the next tick and counted in one <code class="docutils literal notranslate"><span class="pre">contributor</span> <span class="pre">enrichment:</span> <span class="pre">lookups</span> <span class="pre">failed</span> <span class="pre">without</span> <span class="pre">an</span> <span class="pre">answer</span> <span class="pre">about</span> <span class="pre">the</span> <span class="pre">login</span></code> WARN per run. Search resolution and mailing-list sender resolution follow the same rule for their attempt stamps (<code class="docutils literal notranslate"><span class="pre">search</span> <span class="pre">resolve:</span> <span class="pre">searches</span> <span class="pre">failed</span> <span class="pre">without</span> <span class="pre">an</span> <span class="pre">answer</span></code> and <code class="docutils literal notranslate"><span class="pre">mailing-list:</span> <span class="pre">sender</span> <span class="pre">resolves</span> <span class="pre">failed</span> <span class="pre">without</span> <span class="pre">an</span> <span class="pre">answer</span></code> WARNs), and a search response that does not decode is such a failure, not a “no match”.</p>
 <p>Two separate cooldown columns track two distinct background tasks:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">cntrb_last_enriched_at</span></code> — <code class="docutils literal notranslate"><span class="pre">runEnrichment</span></code> and <code class="docutils literal notranslate"><span class="pre">ResolveEmailsToCanonical</span></code> cooldown.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cntrb_last_enriched_at</span></code> — <code class="docutils literal notranslate"><span class="pre">runEnrichment</span></code> cooldown (the separate <code class="docutils literal notranslate"><span class="pre">ResolveEmailsToCanonical</span></code> pass was removed in v0.29.68; it had not run since v0.19.7).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">cntrb_last_search_attempted_at</span></code> — <code class="docutils literal notranslate"><span class="pre">runSearchResolve</span></code> (search-by-email) cooldown.</p></li>
 </ul>
 <p>Without these cooldowns, every periodic tick would re-process the same “genuinely empty” rows forever, wasting GitHub Search API and core API quota.</p>
@@ -1891,7 +1907,7 @@ After all commits resolved:
 </tr>
 </tbody>
 </table>
-<p>The two email-resolve tickers (<code class="docutils literal notranslate"><span class="pre">runSearchResolve</span></code> for contributor rows, <code class="docutils literal notranslate"><span class="pre">runMailingListSenderResolve</span></code> for mailing-list senders) are the <strong>convergence machinery</strong>: an email observed before its owner’s platform identity is known gets re-attempted as the DB fills, so email-only rows acquire a <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> over days without re-collection. In addition to the tickers, every per-job collection runs the commit resolver (Layer 2) and a <code class="docutils literal notranslate"><span class="pre">ResolveEmailsToCanonical</span></code> pass that fills <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> for ≤500 contributors per call.</p>
+<p>The two email-resolve tickers (<code class="docutils literal notranslate"><span class="pre">runSearchResolve</span></code> for contributor rows, <code class="docutils literal notranslate"><span class="pre">runMailingListSenderResolve</span></code> for mailing-list senders) are the <strong>convergence machinery</strong>: an email observed before its owner’s platform identity is known gets re-attempted as the DB fills, so email-only rows acquire a <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> over days without re-collection. In addition to the tickers, every per-job collection runs the commit resolver (Layer 2); <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> is filled by the enrichment ticker from the public email (there is no separate canonical pass since v0.19.7; its dead code was removed in v0.29.68).</p>
 </section>
 <section id="shared-emailidentity-resolution">
 <h3>Shared email→identity resolution<a class="headerlink" href="#shared-emailidentity-resolution" title="Link to this heading"></a></h3>
@@ -2141,7 +2157,7 @@ After all commits resolved:
 <h3>Why is <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> empty?<a class="headerlink" href="#why-is-cntrb-canonical-empty" title="Link to this heading"></a></h3>
 <p>Three legal reasons (post-v0.25.6):</p>
 <ol class="arabic simple">
-<li><p>The user has set their email to private on GitHub. <code class="docutils literal notranslate"><span class="pre">EnrichContributor</span></code> returns no email; <code class="docutils literal notranslate"><span class="pre">ResolveEmailsToCanonical</span></code> cannot help. After the 30-day cooldown the row is retried in case the user changed their setting, but typically stays empty.</p></li>
+<li><p>The user has set their email to private on GitHub. <code class="docutils literal notranslate"><span class="pre">EnrichContributor</span></code> returns no email. After the 30-day cooldown the row is retried in case the user changed their setting, but typically stays empty.</p></li>
 <li><p>The contributor is <code class="docutils literal notranslate"><span class="pre">email-only</span></code> (no <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code>, no <code class="docutils literal notranslate"><span class="pre">gl_id</span></code>) — created from a commit author with a non-noreply email but no resolvable platform account. <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> may be set to the commit email itself, or empty if <code class="docutils literal notranslate"><span class="pre">UpsertContributorFull</span></code> was called with <code class="docutils literal notranslate"><span class="pre">commitEmail</span> <span class="pre">=</span> <span class="pre">''</span></code>.</p></li>
 <li><p>The contributor was created very recently and the enrichment ticker has not yet reached them. They appear in the next enrichment cycle.</p></li>
 </ol>

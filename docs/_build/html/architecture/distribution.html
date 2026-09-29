@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.57 documentation</title>
+  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.69 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2b77a2cb"></script>
+      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -151,6 +151,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/upgrading.html">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-four-steps">The four steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-two-halves-of-an-upgrade">The two halves of an upgrade</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#the-standard-ladder">The standard ladder</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/upgrading.html#what-to-watch-for-in-the-migrate-output">What to watch for in the migrate output</a></li>
@@ -241,6 +242,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-shadow-diff"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">shadow-diff</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-reconcile-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-generate-showcase"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">generate-showcase</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-adopt-forge-id"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-backfill-repo-metadata"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">backfill-repo-metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-rewalk-whitespace"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">rewalk-whitespace</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
@@ -310,6 +312,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#health-check">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -336,6 +339,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#portal-and-admin-endpoints-v0-27-3">Portal and admin endpoints (v0.27.3)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#collections-v0-27-63">Collections (v0.27.63)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#window-boundary-semantics-v0-27-39">Window-boundary semantics (v0.27.39)</a></li>
@@ -603,7 +607,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-warning">Schema version mismatch warning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#null-byte-errors-in-text-fields">Null byte errors in text fields</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#scancode-produces-no-results-scanned-repo-count-barely-advances-corrupt-libmagic">Scancode produces no results / scanned-repo count barely advances (corrupt libmagic)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#postgresql-restarts-nightly-aveloxis-log-floods-with-database-system-is-shutting-down">PostgreSQL restarts nightly — <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> floods with “database system is shutting down”</a></li>
@@ -654,6 +658,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
 </ul>
 </li>
 </ul>
@@ -662,7 +667,7 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-101-tables-20-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (101 tables + 20 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -815,6 +820,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="facade-commits.html#git-log-parsing">Git log parsing</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="facade-commits.html#empty-repositories-and-git-failures-v0-29-58">Empty repositories and git failures (v0.29.58)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#format-string">Format string</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#parsing-logic">Parsing logic</a></li>
 </ul>
@@ -917,6 +923,7 @@
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#direct-vs-transitive">Direct vs transitive</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lifecycle">Lifecycle</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#caching">Caching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#the-package-centred-views">The package-centred views</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
@@ -1084,6 +1091,15 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="materialized-views.html#cross-references">Cross-references</a></li>
+<li class="toctree-l2"><a class="reference internal" href="materialized-views.html#supply-chain-package-views-aveloxis-owned">Supply-chain package views (Aveloxis-owned)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#what-is-new-here-and-what-is-only-regrouped">What is new here, and what is only regrouped</a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#explorer-package-exposure"><code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#explorer-package-advisory"><code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#live-cohorts-and-a-deployment-without-the-views">Live cohorts, and a deployment without the views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#lifecycle">Lifecycle</a></li>
+<li class="toctree-l3"><a class="reference internal" href="materialized-views.html#dropping-the-8knot-set-on-a-deployment-that-does-not-use-it">Dropping the 8Knot set on a deployment that does not use it</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="column-mapping.html">Column Name Mapping (Augur to Aveloxis)</a><ul>
@@ -1179,7 +1195,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../contributing/code-conventions.html">Code conventions</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#spdx-headers-mandatory">SPDX headers (mandatory)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-identifier-list">Embedded SPDX license identifier list</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#embedded-spdx-license-data">Embedded SPDX license data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#package-layout">Package layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#imports">Imports</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/code-conventions.html#naming">Naming</a></li>
@@ -1768,11 +1784,13 @@ A <code class="docutils literal notranslate"><span class="pre">setup.py</span></
 </section>
 <section id="github-packages-get-users-o-packages-fallback-orgs-o-packages">
 <h3>3.4 GitHub Packages (<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{o}/packages</span></code> → fallback <code class="docutils literal notranslate"><span class="pre">/orgs/{o}/packages</span></code>)<a class="headerlink" href="#github-packages-get-users-o-packages-fallback-orgs-o-packages" title="Link to this heading"></a></h3>
-<p>GitHub’s own package registry. Best-effort: requires <code class="docutils literal notranslate"><span class="pre">read:packages</span></code> OAuth scope on the token; 403/404 → empty result rather than failure. The endpoint returns ALL packages for the owner; we client-side filter by <code class="docutils literal notranslate"><span class="pre">repository.name</span> <span class="pre">==</span> <span class="pre">repo_name</span></code>. The six supported <code class="docutils literal notranslate"><span class="pre">package_type</span></code> values (container, docker, maven, npm, nuget, rubygems) get iterated separately because GitHub doesn’t support a combined query.</p>
+<p>GitHub’s own package registry. Best-effort: requires <code class="docutils literal notranslate"><span class="pre">read:packages</span></code> OAuth scope on the token; 403/404 → empty result rather than failure. The endpoint lists the OWNER’s packages and we client-side filter by <code class="docutils literal notranslate"><span class="pre">repository.name</span> <span class="pre">==</span> <span class="pre">repo_name</span></code>; one page of 100 per package type is read (the same bound as releases, §3.3), so an owner with more than 100 packages of one type may hide this repository’s packages past the first page — since v0.29.68 a full page logs a WARN naming the owner and type (review round 6 of items 22–25; the decision, recorded at worklist item 24, is the bound with the warning, not a per-repository walk of a large organisation’s whole registry). The six supported <code class="docutils literal notranslate"><span class="pre">package_type</span></code> values (container, docker, maven, npm, nuget, rubygems) get iterated separately because GitHub doesn’t support a combined query.</p>
 </section>
 <section id="in-repo-manifest-walk-get-repos-o-r-contents">
 <h3>3.5 In-repo manifest walk (<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/repos/{o}/{r}/contents/</span></code>)<a class="headerlink" href="#in-repo-manifest-walk-get-repos-o-r-contents" title="Link to this heading"></a></h3>
 <p>Walks the repo root plus every first-level directory (bounded to 50 dirs for pathological monorepos) looking for well-known manifest files. The Phase D parsers extract the <strong>declared package name</strong> when one is present.</p>
+<p>The Contents API returns at most 1,000 entries for one directory and says nothing when it stopped (live: <code class="docutils literal notranslate"><span class="pre">DefinitelyTyped/types</span></code>), and through v0.29.67 the partial listing was stored as a complete scan. Since v0.29.68 (worklist item 24) a root listing of 1,000 entries is re-read through the Git Trees API (<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/repos/{o}/{r}/git/trees/HEAD</span></code>, non-recursive, which has no such cap); a tree GitHub truncates (100,000 entries) is a non-answer — the scan fails and keeps its snapshot. The first-level directory reads keep the Contents API by decision (the root tree carries each subtree’s SHA, so a capped first-level directory could be re-read the same way; it is not): a first-level directory of 1,000 entries loses at most that directory’s manifests — the class boundary, recorded at the worklist item.</p>
+<p>GitHub’s Git Database and Commits endpoints answer <strong>409</strong> (“Git Repository is empty”) for a repository that is empty or unavailable (an empty repository is observed to answer 404 on the Contents API; that status table lists the status, not the cause). Since v0.29.68 (worklist item 23) a 409 on a read is <code class="docutils literal notranslate"><span class="pre">platform.ErrConflict</span></code>, a definitive answer (ClassSkip) taken in one request, where before it spent about 110 s of retries and then struck toward the sideline as a non-answer. The one reader that must NOT take it as “no files” is the trees fallback above: it runs after a Contents listing proved the repository populated, so every error of the tree read — 404, 409, 410 included — is a non-answer there (the scan fails and keeps its snapshot). (451, the item’s other status, has been definitive-gone since v0.29.58.)</p>
 <p>Recognized manifest files (v0.25.0 adds Julia, R/CRAN/Bioconductor, conda):</p>
 <table class="docutils align-default">
 <thead>
@@ -1935,7 +1953,8 @@ repo_distribution_manifest_history   — prior manifest snapshots
 <h3>5.4 The v0.25.0 <code class="docutils literal notranslate"><span class="pre">distribution_scan_complete</span></code> column<a class="headerlink" href="#the-v0-25-0-distribution-scan-complete-column" title="Link to this heading"></a></h3>
 <p>When a scan completes with a transient error in any external source — circuit breaker tripped, upstream 500-storm, deps.dev DNS hiccup — <code class="docutils literal notranslate"><span class="pre">scanComplete</span> <span class="pre">=</span> <span class="pre">FALSE</span></code> is stamped along with whatever rows DID arrive. The claim query then re-claims the row on the next dispatcher tick, ahead of any cadence-elapsed rows:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">WHERE</span><span class="w"> </span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">distribution_last_run</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span>
-<span class="w">       </span><span class="k">OR</span><span class="w"> </span><span class="k">COALESCE</span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">distribution_scan_complete</span><span class="p">,</span><span class="w"> </span><span class="k">TRUE</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">FALSE</span>
+<span class="w">       </span><span class="k">OR</span><span class="w"> </span><span class="p">(</span><span class="k">COALESCE</span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">distribution_scan_complete</span><span class="p">,</span><span class="w"> </span><span class="k">TRUE</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">FALSE</span>
+<span class="w">           </span><span class="k">AND</span><span class="w"> </span><span class="k">COALESCE</span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">distribution_failed_attempts</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mf">10</span><span class="p">)</span>
 <span class="w">       </span><span class="k">OR</span><span class="w"> </span><span class="n">r</span><span class="mf">.</span><span class="n">distribution_last_run</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">NOW</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nv">$1</span><span class="o">::</span><span class="nb">interval</span><span class="p">)</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span>
 <span class="w">    </span><span class="k">COALESCE</span><span class="p">(</span><span class="n">r</span><span class="mf">.</span><span class="n">distribution_scan_complete</span><span class="p">,</span><span class="w"> </span><span class="k">TRUE</span><span class="p">)</span><span class="w"> </span><span class="k">ASC</span><span class="p">,</span><span class="w">   </span><span class="c1">-- partials first</span>
@@ -1944,6 +1963,7 @@ repo_distribution_manifest_history   — prior manifest snapshots
 </pre></div>
 </div>
 <p>This was added because the pre-v0.25.0 behavior would stamp <code class="docutils literal notranslate"><span class="pre">last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> on a partial scan and then hide that repo behind the 180-day cadence gate. A repo affected by a short ecosyste.ms outage would have stripped-down distribution coverage for half a year. The <code class="docutils literal notranslate"><span class="pre">scan_complete</span></code> column lets the work be re-done as soon as the source recovers.</p>
+<p>The partial-reclaim branch applies only below the strike limit (v0.29.68, worklist item 22). The tenth failure stamps <code class="docutils literal notranslate"><span class="pre">last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> as the sideline’s cadence gate (§6.4), and the branch bypassed that gate: a sidelined repository whose last scan was partial came back every time its 200-minute backoff elapsed, forever, instead of resting for the cadence.</p>
 </section>
 </section>
 <section id="worker-architecture">
@@ -1981,12 +2001,12 @@ repo_distribution_manifest_history   — prior manifest snapshots
 <section id="the-lifecycle-of-a-single-scan">
 <h3>6.2 The lifecycle of a single scan<a class="headerlink" href="#the-lifecycle-of-a-single-scan" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
-<li><p><strong>Dispatcher tick</strong>: every <code class="docutils literal notranslate"><span class="pre">distribution_tracking_start_interval_s</span></code> (default 30s) the dispatcher checks <code class="docutils literal notranslate"><span class="pre">scanner.Healthy()</span></code>. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls <code class="docutils literal notranslate"><span class="pre">ClaimNextDistributionRepo</span></code>.</p></li>
+<li><p><strong>Dispatcher pacing</strong>: at least <code class="docutils literal notranslate"><span class="pre">distribution_tracking_start_interval_s</span></code> (default 30s) between successful scan starts — a deadline the one dispatcher stamps after each handoff, whatever the worker count — and before each start the dispatcher checks <code class="docutils literal notranslate"><span class="pre">scanner.Healthy()</span></code>. If unhealthy (the ecosyste.ms circuit breaker is open — v0.25.0) the dispatcher sleeps 60s and re-checks; otherwise it calls <code class="docutils literal notranslate"><span class="pre">ClaimNextDistributionRepo</span></code>.</p></li>
 <li><p><strong>Claim</strong>: SQL acquires the row lock with <code class="docutils literal notranslate"><span class="pre">FOR</span> <span class="pre">UPDATE</span> <span class="pre">SKIP</span> <span class="pre">LOCKED</span></code> and returns a <code class="docutils literal notranslate"><span class="pre">DistributionJob</span></code> carrying the open transaction. Worker death rolls back; row becomes immediately re-claimable.</p></li>
 <li><p><strong>Scanner runs</strong>: the CompositeScanner consults all five sources sequentially. Per-source errors are tracked (v0.25.0 per-source-class accounting); the scanner returns a partial result if any sources succeeded, with one exception (v0.29.55): a GitHub source that failed <strong>without an answer</strong> fails the whole scan.</p></li>
 <li><p><strong>Mark complete or record failure</strong>:</p>
 <ul class="simple">
-<li><p>A GitHub source (release assets, packages, the manifest listing including its first-level directories, or a manifest’s content) failed without an answer → the scan fails, and <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> records it as below. Nothing is rotated or replaced. “Without an answer” means anything other than an answer about the repository (404, 410, a 403 that is not a rate limit, 204, the pagination cap, a rejected request) or a 304: for example retries exhausted, a body that did not decode, an empty key pool. Before v0.29.55 these errors were swallowed, so the stored manifest snapshot was replaced by whatever part was seen and the scan stamped complete for the 180-day cadence. Marking such a scan incomplete was rejected, because an incomplete row re-claims immediately with no backoff.</p></li>
+<li><p>A GitHub source (release assets, packages, the manifest listing including its first-level directories, or a manifest’s content) failed without an answer → the scan fails, and <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> records it as below. Nothing is rotated or replaced. “Without an answer” means anything other than an answer about the repository (404, 410, 409 for an empty repository (v0.29.68), a 403 that is not a rate limit, 204, the pagination cap, a rejected request for one manifest’s content): for example retries exhausted, a body that did not decode, an empty key pool, a truncated root tree, an unsolicited 304 (the readers never solicit one, so it says nothing about the repository — v0.29.68 review round 8), or ANY answer to the tree read after a capped listing (§3.5). A rejected request (400/422) on a WHOLE source — the root listing, the releases or the packages — is a non-answer since v0.29.68 (worklist item 25): it is the forge’s answer about the request, not about the repository’s distributions, and as an answer it emptied those GitHub-sourced rows and stamped the scan complete. A rejected listing of ONE first-level directory stays an answer for that directory (it is skipped and the scan completes without it) — the same boundary as item 24’s cap: a first-level directory loses at most its own manifests. Before v0.29.55 these errors were swallowed, so the stored manifest snapshot was replaced by whatever part was seen and the scan stamped complete for the 180-day cadence. Marking such a scan incomplete was rejected, because an incomplete row re-claims immediately with no backoff.</p></li>
 <li><p>All sources succeeded OR at least one returned clean data → <code class="docutils literal notranslate"><span class="pre">MarkDistributionComplete</span></code> rotates rows to history, inserts the fresh observations, stamps <code class="docutils literal notranslate"><span class="pre">scan_complete</span> <span class="pre">=</span> <span class="pre">TRUE</span></code> (or <code class="docutils literal notranslate"><span class="pre">FALSE</span></code> if any source was incomplete), commits.</p></li>
 <li><p>Every enabled source errored AND zero data collected → <code class="docutils literal notranslate"><span class="pre">RecordDistributionFailure</span></code> increments the failure counter, stamps <code class="docutils literal notranslate"><span class="pre">last_failed_at</span> <span class="pre">=</span> <span class="pre">NOW()</span></code>, commits. On the 10th consecutive failure, also stamps <code class="docutils literal notranslate"><span class="pre">last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> so the cadence gate sidelines the row. Retries back off quadratically in the failure count.</p></li>
 </ul>
@@ -2001,7 +2021,7 @@ repo_distribution_manifest_history   — prior manifest snapshots
 <li><p>While open, <code class="docutils literal notranslate"><span class="pre">LookupPackages</span></code> short-circuits with <code class="docutils literal notranslate"><span class="pre">(nil,</span> <span class="pre">ErrCircuitOpen)</span></code>. The scanner treats this like a 404-class miss for that source — does NOT increment the all-sources-failed counter, just propagates as “ecosyste.ms had nothing to say”.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">IsCircuitOpen()</span></code> exposes the state read-only for the dispatcher’s <code class="docutils literal notranslate"><span class="pre">Healthy()</span></code> check.</p></li>
 </ul>
-<p>Per-call short-circuit alone wasn’t enough. Under v0.24.x semantics, an outage would let ~480 repos/hour get stamped with permanent “complete scan” cadence locks for the full 180-day window, having seen no ecosyste.ms data. The v0.25.0 dispatcher pause + <code class="docutils literal notranslate"><span class="pre">distribution_scan_complete</span></code> column fix both halves of the problem:</p>
+<p>Per-call short-circuit alone wasn’t enough. Under v0.24.x semantics, an outage would let ~120 repos/hour (the dispatcher’s 30 s start gap, then as now) get stamped with permanent “complete scan” cadence locks for the full 180-day window, having seen no ecosyste.ms data. The v0.25.0 dispatcher pause + <code class="docutils literal notranslate"><span class="pre">distribution_scan_complete</span></code> column fix both halves of the problem:</p>
 <ul class="simple">
 <li><p><strong>Pause prevents NEW dispatches</strong> during an outage. The fleet sits still.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">scan_complete</span> <span class="pre">=</span> <span class="pre">FALSE</span></code> makes the trip-cohort immediately re-eligible</strong> once the breaker reopens. The ~10 repos that DID dispatch during the breaker-tripping threshold cohort don’t stay broken for six months.</p></li>
@@ -2013,7 +2033,7 @@ repo_distribution_manifest_history   — prior manifest snapshots
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>backoff_window = 120s × max(failed_attempts, 1)²
 </pre></div>
 </div>
-<p>Schedule: 2m → 8m → 18m → 32m → 50m → 72m → 98m → 128m → 162m → 200m → sideline at the 10th failure (<code class="docutils literal notranslate"><span class="pre">distribution_last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> stamped, cadence gate excludes for the full interval).</p>
+<p>Schedule: 2m → 8m → 18m → 32m → 50m → 72m → 98m → 128m → 162m → 200m → sideline at the 10th failure (<code class="docutils literal notranslate"><span class="pre">distribution_last_run</span> <span class="pre">=</span> <span class="pre">NOW()</span></code> stamped, cadence gate excludes for the full interval — a partial scan included, since v0.29.68).</p>
 <p>Operator override to retry sooner:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
 <span class="k">SET</span><span class="w"> </span><span class="n">distribution_failed_attempts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span>
@@ -2064,7 +2084,7 @@ aveloxis<span class="w"> </span>distribution-stats<span class="w"> </span>--repo
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>Throughput math at defaults: 4 workers × 30s minimum start gap × ~5 HTTP calls/repo ≈ ~480 repos/hour. A 3,300-repo fleet (chaoss.tv <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> DB) completes its first pass in ~7 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year).</p>
+<p>Throughput math at defaults: the 30 s minimum start gap is enforced by the one dispatcher, whatever the worker count, so at most 120 starts/hour (2,880/day). A 3,300-repo fleet (chaoss.tv <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> DB) completes its first pass in ~27.5 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year, ≈556 scans/day at 100K repos).</p>
 <p>See <a class="reference internal" href="../getting-started/configuration.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/getting-started/configuration.md</span></code></span></a> for the per-field operator reference table.</p>
 </section>
 <section id="what-the-subsystem-does-not-do">

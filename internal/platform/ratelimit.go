@@ -903,8 +903,13 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	// is a throttle by definition; a 403 is one only with Retry-After
 	// (without it, it is a permission error — ErrForbidden). Secondary
 	// limits are per token across resources, so a search 403 rests the
-	// key too. This is the ONE place the rest is recorded per response;
-	// the clients' branches keep only their logging and pacing.
+	// key too. This is the one place the rest is recorded from a
+	// response's HEADERS; the clients' branches keep only their logging
+	// and pacing. A GitHub 403 with neither Retry-After nor a primary
+	// refusal is decided by its BODY, which this function never reads: the
+	// REST client (httpclient.go Get) and the GraphQL client (graphql.go)
+	// read that body under the same lease and call MarkSecondaryLimited
+	// for a rate-limit body (worklist 67; PR #218 review E2/E3).
 	// A 429 that is a primary refusal (Remaining: 0, no Retry-After) is
 	// recorded above, not here, so the causes stay distinguishable.
 	if (resp.StatusCode == http.StatusTooManyRequests && !refused) ||
@@ -1268,6 +1273,18 @@ func (kp *KeyPool) Len() int {
 	return len(kp.keys)
 }
 
+// HasUsableKey reports whether a request can be made at all: at least one
+// non-invalidated key (benched, secondary-limited or refused keys count —
+// they come back). The ONE spelling every "is GitHub reachable" gate uses
+// (worklist items 40/21): a pool built from GitLab-only keys is non-nil and
+// empty, so a nil check is not this question. This is NOT LendTokens'
+// admission predicate (usableAt): a pool whose every key is quarantined or
+// resting still HAS a usable key here — it comes back — and lends nothing
+// until it does.
+func (kp *KeyPool) HasUsableKey() bool {
+	return kp != nil && kp.AliveCount() > 0
+}
+
 // AliveCount returns the number of non-invalidated keys.
 func (kp *KeyPool) AliveCount() int {
 	kp.mu.Lock()
@@ -1290,9 +1307,10 @@ func (kp *KeyPool) AliveCount() int {
 // (v0.27.5 - 2026-09-12), which gave every token to every subprocess with
 // no record — the one bypass around the pool's accounting.
 //
-// "Usable" is the admission predicate (usableAt): a key that is
-// invalidated, quarantined after repeated 401s, or resting on a
-// secondary limit is NOT lent — Acquire refuses it to every other caller
+// "Usable" is the admission predicate (usableAt) — narrower than
+// HasUsableKey, which asks only whether a non-invalidated key EXISTS: a
+// key that is invalidated, quarantined after repeated 401s, or resting on
+// a secondary limit is NOT lent — Acquire refuses it to every other caller
 // for the same reason. Nor is a key with a standing primary refusal
 // (403/429 + Remaining: 0) on either bucket: that is GitHub's answer, not
 // the pool's estimate. The pool's tracked budget ESTIMATE is deliberately

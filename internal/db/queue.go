@@ -64,6 +64,11 @@ func (s *PostgresStore) EnqueueRepo(ctx context.Context, repoID int64, priority 
 	})
 }
 
+// ErrRepoNotInQueue is PrioritizeRepo's answer for a repository with no
+// queue row: the typed not-found (SR-5), so the handlers answer 404 for it
+// and a store failure as the 500 it is (worklist follow-up 12).
+var ErrRepoNotInQueue = errors.New("repo not found in queue")
+
 // PrioritizeRepo pushes a repo to priority 0 (top of queue) and makes it
 // immediately due. This is the "push to top of stack" operation.
 func (s *PostgresStore) PrioritizeRepo(ctx context.Context, repoID int64) error {
@@ -77,7 +82,7 @@ func (s *PostgresStore) PrioritizeRepo(ctx context.Context, repoID int64) error 
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return errors.New("repo not found in queue")
+			return ErrRepoNotInQueue
 		}
 		return nil
 	})
@@ -318,6 +323,10 @@ func (s *PostgresStore) MakeQueuedReposDue(ctx context.Context) (int64, error) {
 //   - status = 'collecting' — a worker is mid-flight, don't disturb it
 //   - last_collected IS NULL — never-collected repos keep their initial
 //     due_at=NOW() so they collect on first pass
+//   - last_error IS NOT NULL — a failed row's due_at is its retry time and
+//     its last_collected the last success, so realigning it made it due at
+//     once on every restart (worklist 68, v0.29.69); it picks up a changed
+//     interval at its next completion
 //
 // Idempotent: the <> predicate skips rows already in the correct shape, so
 // updated_at stays stable across repeated startups.
@@ -331,6 +340,13 @@ func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time
 	if archivedMultiplier < 1 {
 		archivedMultiplier = 1
 	}
+	// A row whose last attempt FAILED (last_error set; CompleteJob clears it
+	// on success) keeps the due date its failure gave it — NOW() + interval
+	// at the failure (worklist 68, the 2026-09-28 kate log: last_collected
+	// is the last SUCCESS, so realigning a failed row put it in the past and
+	// it re-ran at every start; eight repositories failed within seconds of
+	// each of seven starts). A changed interval reaches such a row at its
+	// next completion.
 	stretch := fmt.Sprintf(archivedStretchCaseSQL, "$2")
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
@@ -338,6 +354,7 @@ func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time
 			updated_at = NOW()
 		WHERE status = 'queued'
 		  AND last_collected IS NOT NULL
+		  AND last_error IS NULL
 		  AND due_at <> last_collected + ($1::interval * `+stretch+`)`,
 		recollectAfter.String(), archivedMultiplier)
 	if err != nil {
@@ -373,24 +390,26 @@ func (s *PostgresStore) HeartbeatJob(ctx context.Context, repoID int64, workerID
 	return err
 }
 
-// RecoverOtherWorkerLocks reclaims all queue locks held by worker IDs other
-// than the current one. Called on startup: a fresh process cannot have any
-// legitimate in-flight work, so all locks from other worker IDs are
-// definitively stale regardless of age.
+// RecoverOtherWorkerLocks reclaims the queue locks held by worker IDs other
+// than the current one. Called on startup: a fresh serve has no in-flight
+// work of its own, so a previous serve's locks are stale whatever their age.
+// The one exception is a live heal's parked rows (third paragraph).
 //
 // This fixes the bug where stopping and restarting aveloxis mid-collection
 // left repos stuck in 'collecting' with a dead worker ID. The normal
 // RecoverStaleLocks (1-hour timeout) wouldn't fire because the lock was
 // too recent, and releaseOurLocks only matches the current worker ID.
 //
-// A drain owner (locked_by ending in the ":drain" suffix) whose lock is
-// fresher than drainStaleAfter is left alone (worklist item 54): a
-// heal-collection-gaps run parks its repositories that way and keeps them
-// fresh with its heartbeat, so a serve started mid-heal must not hand them
-// back to routine collection, which could purge the healer's staging. A
-// drain owner whose heartbeat stopped for longer than the window is dead
-// and reclaimed like any other; serve's own drain set from a previous
-// process is re-identified from staging and re-parked at startup either way.
+// A HEAL's drain-parked rows (locked_by "gap-heal:…:drain", HealWorkerIDPrefix
+// + the drain suffix) whose lock is fresher than drainStaleAfter are left
+// alone (worklist item 54): heal-collection-gaps keeps them fresh with its
+// heartbeat, so a serve started mid-heal must not hand them back to routine
+// collection, which could purge the healer's staging. A heal whose heartbeat
+// stopped for longer than the window is dead and reclaimed like any other.
+// Another SERVE's drain rows — a process that crashed or whose stop could
+// not release — are reclaimed here as before, fresh or not, so the startup
+// drain pass can re-park from staging what still needs draining (review
+// round 1: an exemption on any fresh drain owner stranded those).
 func (s *PostgresStore) RecoverOtherWorkerLocks(ctx context.Context, currentWorkerID string, drainStaleAfter time.Duration) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
@@ -399,8 +418,8 @@ func (s *PostgresStore) RecoverOtherWorkerLocks(ctx context.Context, currentWork
 		WHERE status = 'collecting'
 			AND locked_by IS NOT NULL
 			AND locked_by != $1
-			AND NOT (locked_by LIKE '%' || $3 AND locked_at >= NOW() - $2::interval)`,
-		currentWorkerID, drainStaleAfter, drainLockSuffix)
+			AND NOT (locked_by LIKE $3 || '%' || $4 AND locked_at >= NOW() - $2::interval)`,
+		currentWorkerID, drainStaleAfter, HealWorkerIDPrefix, drainLockSuffix)
 	if err != nil {
 		return 0, err
 	}

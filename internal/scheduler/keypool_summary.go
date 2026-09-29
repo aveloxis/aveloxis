@@ -38,7 +38,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	}
 	keys, inflight := s.ghKeys.Snapshot()
 	if len(keys) == 0 {
-		return
+		return // logIdleGitHubTasks said so once at startup
 	}
 	now := time.Now()
 	var (
@@ -143,4 +143,14 @@ func (s *Scheduler) logKeyPoolSummary() {
 				"quarantine_until", k.QuarantineUntil)
 		}
 	}
+}
+
+// logIdleGitHubTasks logs ONCE, at startup, what an empty GitHub key pool
+// leaves idle (worklist items 40/21), instead of a WARN per tick from each
+// ticker. Called from Run before the tickers start.
+func (s *Scheduler) logIdleGitHubTasks() {
+	if s.githubKeysAvailable() {
+		return
+	}
+	s.logger.Warn("GitHub key pool has no usable key — GitHub-only background tasks stay idle: contributor breadth and enrichment, the activity sweeps, search-resolve and the sender resolver's API tail, org scans, the repository-metadata backfill's GitHub candidates; distribution scans of GitHub repositories fail and sideline (snapshots kept)")
 }

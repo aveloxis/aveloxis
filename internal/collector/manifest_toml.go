@@ -36,7 +36,20 @@ type tomlDepEntry struct {
 	Git      bool   // sourced from git
 	Path     bool   // sourced from a local path
 	Registry bool   // sourced from a registry other than the default
+	URL      bool   // sourced from a direct URL (Poetry's `url =`) or a local archive (`file =`)
 	Raw      string // the declaration as written, comments removed; dotted keys joined with "; "
+}
+
+// pythonTableSection reports a Python dependency table — Poetry/PDM's
+// `[tool.*]` sections and a Pipfile's `[packages]` / `[dev-packages]`. In
+// those an UNQUOTED dotted key is one package (`ruamel.yaml = "^0.18"`
+// declares ruamel.yaml: a strict TOML reader would call it table `ruamel`
+// with key `yaml`, but the file is one Poetry itself rejects, so the author
+// meant the package); in Cargo's tables a dotted key is name.attribute
+// (`serde.version`) and crate names cannot contain dots. Worklist item 42,
+// decided as option (a): the two readers of a Python table now agree.
+func pythonTableSection(section string) bool {
+	return strings.HasPrefix(section, "[tool.") || section == "[packages]" || section == "[dev-packages]"
 }
 
 // scanTOMLDepTables returns the entries declared in the given sections, in
@@ -53,7 +66,12 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 		if !sections[section] {
 			return
 		}
-		name, sub := splitTOMLDottedKey(key)
+		var name, sub string
+		if pythonTableSection(section) {
+			name, sub = tomlDepKeyName(key)
+		} else {
+			name, sub = splitTOMLDottedKey(key)
+		}
 		if name == "" {
 			return
 		}
@@ -92,6 +110,8 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 			e.Git = true
 		case "path":
 			e.Path = true
+		case "url", "file":
+			e.URL = true
 		case "registry", "registry-index":
 			e.Registry = true
 		}
@@ -112,9 +132,10 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 		if depth > 0 {
 			// A value that never closes must not swallow the rest of the
 			// file: a section header ends it, since no inline table can span
-			// one. This scanner is the FIFTH reader that tracks this depth
-			// (the four line readers in analysis.go and analysis_devbuild.go
-			// are the others) and the last to get the escape — without it a
+			// one. This scanner tracks this depth for every table reader
+			// since v0.29.68 (the devbuild kv branch in analysis_devbuild.go
+			// keeps its own count only to skip continuation lines) and was
+			// the last to get the escape — without it a
 			// Cargo.toml with one unclosed table lost every dependency after
 			// it from the inventory, from libyear and from the OSV scan,
 			// and pendingValue grew to hold the rest of the file (v0.29.57).
@@ -169,10 +190,86 @@ func applyTOMLDepTable(e *tomlDepEntry, table string) {
 			e.Git = true
 		case "path":
 			e.Path = true
+		case "url", "file":
+			// Poetry's `file =` and Pipenv's `{file = …}` name a local
+			// archive — no PyPI package (batch 7c review round 1: the
+			// retired per-reader helper knew `file`; the shared table did not).
+			e.URL = true
 		case "registry", "registry-index":
 			e.Registry = true
 		}
 	}
+}
+
+// pythonTOMLDeps reads Python `name = constraint` tables through the shared
+// table scanner — sections maps each header to the scope its dependencies
+// take — so a multi-line inline table's version is recovered (worklist item
+// 43: the four line readers skipped a table's continuation lines and
+// emitted the dependency from its opening line, whose value was just `{`,
+// so `black = {` … `version = "^24.0"` … `}` took the unpinned path) and an
+// unquoted dotted key is one package (item 42, pythonTableSection). A
+// git/path/url/file source names no PyPI package (the rule the retired
+// per-reader table helpers applied, now one place), `python` is the
+// interpreter, and a bare `*` pins nothing.
+func pythonTOMLDeps(content string, sections map[string]string) []libyearDep {
+	want := make(map[string]bool, len(sections))
+	for s := range sections {
+		want[s] = true
+	}
+	var deps []libyearDep
+	for _, e := range scanTOMLDepTables(content, want) {
+		if e.Name == "python" || e.Git || e.Path || e.URL {
+			continue
+		}
+		version := cleanVersion(e.Version)
+		if version == "*" {
+			version = ""
+		}
+		deps = append(deps, libyearDep{Name: e.Name, Version: version, Requirement: e.Raw, Type: sections[e.Section], Manager: "pypi"})
+	}
+	return deps
+}
+
+// pythonTableDeclVersion reads back the version value of a stored Python
+// table declaration — the Raw pythonTOMLDeps stores as the requirement:
+// `name = "spec"`, `name = {version = "spec", ...}`, or quoted dotted keys
+// joined with "; ". ok is false for text that is not such a declaration (a
+// PEP 508 requirement such as `requests == 2.31`, whose `=` is followed by
+// an operator, not a TOML value), so the caller keeps the text as stored.
+// The declaration goes back through scanTOMLDepTables, the one reader of
+// this grammar (SR-17), under a Python table header (PR #218 review A8).
+func pythonTableDeclVersion(requirement string) (string, bool) {
+	_, value, found := strings.Cut(requirement, "=")
+	if !found {
+		return "", false
+	}
+	if v := strings.TrimSpace(value); v == "" || !strings.ContainsAny(v[:1], "{\"'") {
+		return "", false
+	}
+	// The "; " joins sit outside strings and brackets; a marker's own
+	// punctuation sits inside its string.
+	var decls []string
+	depth, start := 0, 0
+	scanOutsideStrings(requirement, func(i int, c byte) bool {
+		switch c {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			depth--
+		case ';':
+			if depth == 0 {
+				decls = append(decls, requirement[start:i])
+				start = i + 1
+			}
+		}
+		return true
+	})
+	decls = append(decls, requirement[start:])
+	entries := scanTOMLDepTables("[packages]\n"+strings.Join(decls, "\n"), map[string]bool{"[packages]": true})
+	if len(entries) != 1 {
+		return "", false
+	}
+	return entries[0].Version, true
 }
 
 // splitTOMLDottedKey splits "serde.version" into ("serde", "version"). A
@@ -340,15 +437,14 @@ func tomlUnquote(v string) string {
 // became zope.interface@true, SR-6). This is the rule scanTOMLDepTables
 // applies through its own `sub` switch.
 //
-// It is the one spelling of the KEY rule for the readers of the
-// `name = constraint` grammar (v0.29.57, Copilot on PR #210; SR-17):
-// parsePoetryVersions, parsePipfileVersions, parsePipfileDeps and the
-// dev/build reader — grep for the callers rather than trusting this list. The
-// dependency-NAME inventory reads the same sections through
-// scanTOMLDepTables, which splits an unquoted dotted key (Cargo's
-// `serde.version`) and so disagrees with this rule on `ruamel.yaml` — that
-// divergence predates this helper and is a worklist item, because settling it
-// changes stored dependency names.
+// It is the one spelling of the KEY rule for a Python `name = constraint`
+// table (v0.29.57, Copilot on PR #210; SR-17), applied by scanTOMLDepTables
+// itself for every pythonTableSection since v0.29.68 (worklist item 42):
+// the dependency-NAME inventory and the libyear/vulnerability readers
+// (parsePoetryVersions, parsePipfileVersions, parsePipfileDeps, the
+// dev/build reader — all through pythonTOMLDeps or scanTOMLDepTables) now
+// read `ruamel.yaml = "^0.18"` the same way. Cargo's tables keep
+// splitTOMLDottedKey (`serde.version` is name.attribute).
 func tomlDepKeyName(key string) (name, sub string) {
 	key = strings.TrimSpace(key)
 	if strings.HasPrefix(key, `"`) || strings.HasPrefix(key, "'") {
@@ -356,11 +452,6 @@ func tomlDepKeyName(key string) (name, sub string) {
 	}
 	return key, ""
 }
-
-// tomlDepKeyVersionable reports whether a key's value is the dependency's
-// version: a bare name, or its `version` sub-key. Every other sub-key
-// (`optional`, `markers`, `extras`, `source`) sets something else.
-func tomlDepKeyVersionable(sub string) bool { return sub == "" || sub == "version" }
 
 // stripHashComment, stripSlashComment, listBrackets, listInner and
 // bracketDelta — some above this block, some below — are

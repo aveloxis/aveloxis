@@ -81,13 +81,54 @@ func (s *PostgresStore) GetContributorsForActivityCheck(ctx context.Context, lim
 // of contributors in one transaction, stamping gh_activity_checked_at
 // alongside the data so a stored classification and its freshness can
 // never drift apart.
+//
+// Deadlock pair (worklist 74, production log 2026-09-23 17:36): this
+// write deadlocked with upsertOneContributor. Two measures, the same two
+// as the contributor batch itself:
+//
+//   - Lock order. The transaction first locks every target row in
+//     cntrb_login byte order (COLLATE "C" is byte order, which is what
+//     sort.Strings gives UpsertContributorBatch over its cntrb_login
+//     keys), so this write and the upsert usually acquire shared rows in
+//     one order, which removes the common cycle. The order is read from
+//     the rows themselves: the update carries only cntrb_id, and gh_login
+//     can differ from cntrb_login after a rename. It does not remove every
+//     cycle (PR #218 review B2): the upsert sorts by the forge's CURRENT
+//     login, so for a renamed contributor whose stored cntrb_login still
+//     differs, the two orders can invert. FOR NO KEY UPDATE is the lock
+//     the UPDATEs take anyway (no key column changes).
+//   - Retry. The whole transaction runs inside withRetry (the one
+//     40P01/40001 classifier, SR-17), the backstop for the cycles the
+//     ordering leaves: a victim retries instead of discarding the tick's
+//     GraphQL results.
+//
+// A non-retryable error returns to the caller, which logs it.
 func (s *PostgresStore) UpdateContributorActivityBatch(ctx context.Context, updates []ContributorActivityUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
-	b := &pgx.Batch{}
-	for _, u := range updates {
-		b.Queue(`
+	ids := make([]string, len(updates))
+	for i, u := range updates {
+		ids[i] = u.CntrbID
+	}
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("update contributor activity batch: begin: %w", err)
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx, `
+			SELECT 1 FROM aveloxis_data.contributors
+			WHERE cntrb_id = ANY($1::uuid[])
+			ORDER BY cntrb_login COLLATE "C"
+			FOR NO KEY UPDATE`, ids); err != nil {
+			return fmt.Errorf("update contributor activity batch: lock rows: %w", err)
+		}
+
+		b := &pgx.Batch{}
+		for _, u := range updates {
+			b.Queue(`
 			UPDATE aveloxis_data.contributors
 			SET gh_public_contribs_year = $2,
 			    gh_restricted_contribs_year = $3,
@@ -95,16 +136,23 @@ func (s *PostgresStore) UpdateContributorActivityBatch(ctx context.Context, upda
 			    gh_activity_class = $5,
 			    gh_activity_checked_at = NOW()
 			WHERE cntrb_id = $1::uuid`,
-			u.CntrbID, u.PublicContribs, u.RestrictedContribs, u.LastContributionYear, u.ActivityClass)
-	}
-	br := s.pool.SendBatch(ctx, b)
-	defer br.Close()
-	for range updates {
-		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("update contributor activity batch: %w", err)
+				u.CntrbID, u.PublicContribs, u.RestrictedContribs, u.LastContributionYear, u.ActivityClass)
 		}
-	}
-	return nil
+		br := tx.SendBatch(ctx, b)
+		for range updates {
+			if _, err := br.Exec(); err != nil {
+				_ = br.Close() // the Exec error is the one returned
+				return fmt.Errorf("update contributor activity batch: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("update contributor activity batch: close: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("update contributor activity batch: commit: %w", err)
+		}
+		return nil
+	})
 }
 
 // MarkActivityCheckedBatch stamps gh_activity_checked_at for

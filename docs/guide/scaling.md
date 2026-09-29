@@ -247,6 +247,14 @@ it is what a real fleet drifted to, and it produced 106 out-of-memory errors
 in a three-second window, failing allocations as small as 40 bytes while
 inserting commits.
 
+The denominator moves with `max_connections`. The same host at 1000
+connections gives `(1024 GB × 0.10) / (1000 × 5) ≈ 21 MB`, and `128MB` there
+implies a worst case of `1000 × 5 × 128MB ≈ 625 GB`, more than half the
+machine on top of `shared_buffers`. When `max_connections` is far above what
+the clients use, lower it to the pool floor first (it needs a restart), then
+recompute `work_mem`; lowering `work_mem` alone makes more operations spill
+to temporary files (see [Write-heavy hosts](#write-heavy-hosts-wal-checkpoints-and-temporary-files)).
+
 :::{warning}
 Read `work_mem` recommendations elsewhere — including older revisions of this
 page, which said `256MB` flat — with the denominator in mind. A value that is
@@ -304,9 +312,22 @@ WHERE name IN ('work_mem', 'maintenance_work_mem', 'shared_buffers',
 ORDER BY name;
 ```
 
-The `source` column is the useful one: `configuration file` means
-`postgresql.conf`, while `database`, `user` or `override` means something has
-set it at runtime and your file is not the whole story.
+The `source` column is the useful one: `database`, `user` or `override`
+means something has set the value at runtime and your file is not the whole
+story. `configuration file` covers more than `postgresql.conf`: a file it
+includes (a `conf.d/` directory) and `postgresql.auto.conf`, which
+`ALTER SYSTEM` writes and which is read last, so it wins over both. The
+`sourcefile` column says which file, but only superusers and roles granted
+`pg_read_all_settings` can see it; for any other role it is blank. Check it
+before changing a value, or an edit to `postgresql.conf` can be silently
+overridden by an included file or by `postgresql.auto.conf`.
+
+Settings made per role do not appear in `pg_settings` for other sessions.
+Check them separately:
+
+```sql
+SELECT rolname, rolconfig FROM pg_roles WHERE rolconfig IS NOT NULL;
+```
 
 ```bash
 sysctl vm.overcommit_memory vm.overcommit_ratio vm.swappiness
@@ -314,6 +335,43 @@ sysctl vm.overcommit_memory vm.overcommit_ratio vm.swappiness
 
 `work_mem` and `maintenance_work_mem` apply with `SELECT pg_reload_conf();`.
 `shared_buffers` and `max_connections` require a restart.
+
+### Write-heavy hosts: WAL, checkpoints and temporary files
+
+Collection is write-heavy, and on storage without a DRAM cache or power-loss
+protection, writes are usually the bottleneck. These settings reduce write
+volume or move it; each is a trade-off, stated with it.
+
+| Setting | Recommendation | Trade-off and risk | Applies with |
+|---|---|---|---|
+| `max_wal_size` | At least the WAL your peak produces per checkpoint interval × (1 + `checkpoint_completion_target`), plus headroom. Measure the rate from `pg_stat_wal.wal_bytes` (or two `pg_current_wal_lsn()` readings) over a peak hour. | `pg_wal` can grow to this size, so check the volume's free space first. Crash recovery takes longer. | reload |
+| `checkpoint_timeout` | 15–30 min on a write-heavy host | Every checkpoint makes the next change to each page write a full-page image, so fewer checkpoints mean less WAL. Crash recovery takes longer. | reload |
+| `wal_compression` | `lz4` | Compresses those full-page images; costs a little CPU. | reload |
+| `synchronous_commit` for the collection role | `ALTER ROLE <role> SET synchronous_commit = off` | A COMMIT no longer waits for its WAL to reach disk. An OS crash (not a PostgreSQL crash) can lose the last fraction of a second of committed work, with no corruption. Collection is idempotent and re-collected, so that loss is recoverable; the same role's web writes (accounts, groups) would be lost too. Applies to new sessions only. | new sessions |
+| `temp_tablespaces` | A tablespace on a separate fast device, when the data volume is write-bound | Sorts and hashes larger than `work_mem` spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering `work_mem`, which increases spills. | reload (after `CREATE TABLESPACE`) |
+
+Forced checkpoints are the signal for `max_wal_size`: with `log_checkpoints`
+on (the default since PostgreSQL 15), a `checkpoint starting: wal` line means
+WAL volume forced a checkpoint before `checkpoint_timeout` did.
+
+A diagnostic that follows from `synchronous_commit = off`: a COMMIT from that
+role that still takes seconds is not waiting for its own flush. It is waiting
+on the server itself, typically storage stalling WAL writes for everyone.
+Look at `pg_stat_activity.wait_event` during such a stall.
+
+### Diagnostic settings
+
+These change what the log and the statistics views can tell you, not
+throughput. All apply with a reload except `shared_preload_libraries`.
+
+| Setting | Recommendation | What it answers |
+|---|---|---|
+| `log_lock_waits` | `on` | Logs any lock wait longer than `deadlock_timeout` (1 s by default). Without it, lock contention is invisible in the log. The cost is negligible. |
+| `log_temp_files` | a size threshold, e.g. `work_mem` or larger | Logs every temporary file at or above the threshold, with its statement: which queries spill, and how much. |
+| `log_min_duration_statement` | `5s` | Slow statements, with their parameters. |
+| `log_autovacuum_min_duration` | `60s` | Long vacuums, including anti-wraparound ones. |
+| `track_io_timing`, `track_wal_io_timing` | `on` | I/O time in `pg_stat_statements`, `pg_stat_io` and `pg_stat_wal`. |
+| `pg_stat_statements` | in `shared_preload_libraries` (restart), plus `CREATE EXTENSION` in each database you query | Per-statement totals, including temporary-file blocks; see the performance snapshot below. |
 
 ### Drift is the failure mode
 

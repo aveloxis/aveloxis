@@ -562,6 +562,8 @@
 <li class="toctree-l3"><a class="reference internal" href="#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -2016,6 +2018,13 @@ unremarkable next to a 1 TB host — implies a worst case of
 it is what a real fleet drifted to, and it produced 106 out-of-memory errors
 in a three-second window, failing allocations as small as 40 bytes while
 inserting commits.</p>
+<p>The denominator moves with <code class="docutils literal notranslate"><span class="pre">max_connections</span></code>. The same host at 1000
+connections gives <code class="docutils literal notranslate"><span class="pre">(1024</span> <span class="pre">GB</span> <span class="pre">×</span> <span class="pre">0.10)</span> <span class="pre">/</span> <span class="pre">(1000</span> <span class="pre">×</span> <span class="pre">5)</span> <span class="pre">≈</span> <span class="pre">21</span> <span class="pre">MB</span></code>, and <code class="docutils literal notranslate"><span class="pre">128MB</span></code> there
+implies a worst case of <code class="docutils literal notranslate"><span class="pre">1000</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">128MB</span> <span class="pre">≈</span> <span class="pre">625</span> <span class="pre">GB</span></code>, more than half the
+machine on top of <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code>. When <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> is far above what
+the clients use, lower it to the pool floor first (it needs a restart), then
+recompute <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>; lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> alone makes more operations spill
+to temporary files (see <a class="reference internal" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts</a>).</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>Read <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> recommendations elsewhere — including older revisions of this
@@ -2068,14 +2077,113 @@ one thing and the server doing another. Check the server, not the file:</p>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">name</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">source</span></code> column is the useful one: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">file</span></code> means
-<code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>, while <code class="docutils literal notranslate"><span class="pre">database</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code> or <code class="docutils literal notranslate"><span class="pre">override</span></code> means something has
-set it at runtime and your file is not the whole story.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">source</span></code> column is the useful one: <code class="docutils literal notranslate"><span class="pre">database</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code> or <code class="docutils literal notranslate"><span class="pre">override</span></code>
+means something has set the value at runtime and your file is not the whole
+story. <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">file</span></code> covers more than <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code>: a file it
+includes (a <code class="docutils literal notranslate"><span class="pre">conf.d/</span></code> directory) and <code class="docutils literal notranslate"><span class="pre">postgresql.auto.conf</span></code>, which
+<code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">SYSTEM</span></code> writes and which is read last, so it wins over both. The
+<code class="docutils literal notranslate"><span class="pre">sourcefile</span></code> column says which file, but only superusers and roles granted
+<code class="docutils literal notranslate"><span class="pre">pg_read_all_settings</span></code> can see it; for any other role it is blank. Check it
+before changing a value, or an edit to <code class="docutils literal notranslate"><span class="pre">postgresql.conf</span></code> can be silently
+overridden by an included file or by <code class="docutils literal notranslate"><span class="pre">postgresql.auto.conf</span></code>.</p>
+<p>Settings made per role do not appear in <code class="docutils literal notranslate"><span class="pre">pg_settings</span></code> for other sessions.
+Check them separately:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">rolname</span><span class="p">,</span><span class="w"> </span><span class="n">rolconfig</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pg_roles</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">rolconfig</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">;</span>
+</pre></div>
+</div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sysctl<span class="w"> </span>vm.overcommit_memory<span class="w"> </span>vm.overcommit_ratio<span class="w"> </span>vm.swappiness
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">work_mem</span></code> and <code class="docutils literal notranslate"><span class="pre">maintenance_work_mem</span></code> apply with <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">pg_reload_conf();</span></code>.
 <code class="docutils literal notranslate"><span class="pre">shared_buffers</span></code> and <code class="docutils literal notranslate"><span class="pre">max_connections</span></code> require a restart.</p>
+</section>
+<section id="write-heavy-hosts-wal-checkpoints-and-temporary-files">
+<h3>Write-heavy hosts: WAL, checkpoints and temporary files<a class="headerlink" href="#write-heavy-hosts-wal-checkpoints-and-temporary-files" title="Link to this heading"></a></h3>
+<p>Collection is write-heavy, and on storage without a DRAM cache or power-loss
+protection, writes are usually the bottleneck. These settings reduce write
+volume or move it; each is a trade-off, stated with it.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Recommendation</p></th>
+<th class="head"><p>Trade-off and risk</p></th>
+<th class="head"><p>Applies with</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_wal_size</span></code></p></td>
+<td><p>At least the WAL your peak produces per checkpoint interval × (1 + <code class="docutils literal notranslate"><span class="pre">checkpoint_completion_target</span></code>), plus headroom. Measure the rate from <code class="docutils literal notranslate"><span class="pre">pg_stat_wal.wal_bytes</span></code> (or two <code class="docutils literal notranslate"><span class="pre">pg_current_wal_lsn()</span></code> readings) over a peak hour.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pg_wal</span></code> can grow to this size, so check the volume’s free space first. Crash recovery takes longer.</p></td>
+<td><p>reload</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">checkpoint_timeout</span></code></p></td>
+<td><p>15–30 min on a write-heavy host</p></td>
+<td><p>Every checkpoint makes the next change to each page write a full-page image, so fewer checkpoints mean less WAL. Crash recovery takes longer.</p></td>
+<td><p>reload</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wal_compression</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code></p></td>
+<td><p>Compresses those full-page images; costs a little CPU.</p></td>
+<td><p>reload</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">synchronous_commit</span></code> for the collection role</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ALTER</span> <span class="pre">ROLE</span> <span class="pre">&lt;role&gt;</span> <span class="pre">SET</span> <span class="pre">synchronous_commit</span> <span class="pre">=</span> <span class="pre">off</span></code></p></td>
+<td><p>A COMMIT no longer waits for its WAL to reach disk. An OS crash (not a PostgreSQL crash) can lose the last fraction of a second of committed work, with no corruption. Collection is idempotent and re-collected, so that loss is recoverable; the same role’s web writes (accounts, groups) would be lost too. Applies to new sessions only.</p></td>
+<td><p>new sessions</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temp_tablespaces</span></code></p></td>
+<td><p>A tablespace on a separate fast device, when the data volume is write-bound</p></td>
+<td><p>Sorts and hashes larger than <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> spill to temporary files, by default on the data volume. Moving them takes that traffic off it. A full device fails the spilling query. Do this before lowering <code class="docutils literal notranslate"><span class="pre">work_mem</span></code>, which increases spills.</p></td>
+<td><p>reload (after <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLESPACE</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+<p>Forced checkpoints are the signal for <code class="docutils literal notranslate"><span class="pre">max_wal_size</span></code>: with <code class="docutils literal notranslate"><span class="pre">log_checkpoints</span></code>
+on (the default since PostgreSQL 15), a <code class="docutils literal notranslate"><span class="pre">checkpoint</span> <span class="pre">starting:</span> <span class="pre">wal</span></code> line means
+WAL volume forced a checkpoint before <code class="docutils literal notranslate"><span class="pre">checkpoint_timeout</span></code> did.</p>
+<p>A diagnostic that follows from <code class="docutils literal notranslate"><span class="pre">synchronous_commit</span> <span class="pre">=</span> <span class="pre">off</span></code>: a COMMIT from that
+role that still takes seconds is not waiting for its own flush. It is waiting
+on the server itself, typically storage stalling WAL writes for everyone.
+Look at <code class="docutils literal notranslate"><span class="pre">pg_stat_activity.wait_event</span></code> during such a stall.</p>
+</section>
+<section id="diagnostic-settings">
+<h3>Diagnostic settings<a class="headerlink" href="#diagnostic-settings" title="Link to this heading"></a></h3>
+<p>These change what the log and the statistics views can tell you, not
+throughput. All apply with a reload except <code class="docutils literal notranslate"><span class="pre">shared_preload_libraries</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Recommendation</p></th>
+<th class="head"><p>What it answers</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log_lock_waits</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">on</span></code></p></td>
+<td><p>Logs any lock wait longer than <code class="docutils literal notranslate"><span class="pre">deadlock_timeout</span></code> (1 s by default). Without it, lock contention is invisible in the log. The cost is negligible.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log_temp_files</span></code></p></td>
+<td><p>a size threshold, e.g. <code class="docutils literal notranslate"><span class="pre">work_mem</span></code> or larger</p></td>
+<td><p>Logs every temporary file at or above the threshold, with its statement: which queries spill, and how much.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log_min_duration_statement</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">5s</span></code></p></td>
+<td><p>Slow statements, with their parameters.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log_autovacuum_min_duration</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">60s</span></code></p></td>
+<td><p>Long vacuums, including anti-wraparound ones.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">track_io_timing</span></code>, <code class="docutils literal notranslate"><span class="pre">track_wal_io_timing</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">on</span></code></p></td>
+<td><p>I/O time in <code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code>, <code class="docutils literal notranslate"><span class="pre">pg_stat_io</span></code> and <code class="docutils literal notranslate"><span class="pre">pg_stat_wal</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code></p></td>
+<td><p>in <code class="docutils literal notranslate"><span class="pre">shared_preload_libraries</span></code> (restart), plus <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">EXTENSION</span></code> in each database you query</p></td>
+<td><p>Per-statement totals, including temporary-file blocks; see the performance snapshot below.</p></td>
+</tr>
+</tbody>
+</table>
 </section>
 <section id="drift-is-the-failure-mode">
 <h3>Drift is the failure mode<a class="headerlink" href="#drift-is-the-failure-mode" title="Link to this heading"></a></h3>

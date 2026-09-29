@@ -1353,7 +1353,9 @@ in front of the query has a timeout, and the shortest one answers:
    database query is cancelled, the client gets a **503** "request exceeded
    http_timeout_seconds", and a WARN `request exceeded http_timeout_seconds`
    in `api.log`, `web.log` or `aveloxis.log` (the monitor) names the path
-   and the time it took.
+   and the time it took. A large response (an SBOM download) then gets its
+   own `http_timeout_seconds` to be written; a client that reads it more
+   slowly than that is cut, logged as a WARN `response write timed out`.
 
 **Solution:** Keep Aveloxis's bound the **longest** and tune latency in
 nginx, where a timeout is logged and easy to see: set nginx's timeouts

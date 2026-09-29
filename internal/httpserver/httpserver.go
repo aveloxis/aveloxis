@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 )
@@ -32,9 +34,12 @@ import (
 // sees first.
 const DefaultTimeout = 180 * time.Second
 
-// WriteMargin is how far the socket write deadline sits past the handler
-// bound, so the 503 the bound answers (one small write) can always be
-// written; ten seconds covers a slow client link for it.
+// WriteMargin is how far the server's WriteTimeout sits past the bound. It
+// is the FALLBACK write deadline: when a response flushes, Bound gives it a
+// fresh window of the bound (statusRecorder.flushStarts, NET-6 review r8
+// F2), so the margin only matters if that window cannot be set — which is
+// logged. Ten seconds covers one small write (the bound's 503) on a slow
+// link.
 const WriteMargin = 10 * time.Second
 
 // timeoutBody is the 503 body a request past the bound gets.
@@ -43,9 +48,11 @@ const timeoutBody = "request exceeded http_timeout_seconds\n"
 // New returns a server bounded by timeout: the header and body reads and
 // the idle keep-alive (which outlasts nginx's 60 s upstream keep-alive at
 // the default, so nginx closes idle upstream connections first) are
-// timeout; each request's handler is bounded by timeout (Bound); the
-// socket write deadline is timeout + WriteMargin. A bare WriteTimeout
-// would neither cancel the handler nor say anything (NET-6 review r1 F1).
+// timeout; each request's handler is bounded by timeout (Bound), and its
+// response, once flushed, gets its own write window of timeout. The
+// server's WriteTimeout (timeout + WriteMargin, counted from the request's
+// headers) is the fallback until the flush. A bare WriteTimeout would
+// neither cancel the handler nor say anything (NET-6 review r1 F1).
 func New(addr string, h http.Handler, timeout time.Duration, logger *slog.Logger, component string) *http.Server {
 	return &http.Server{
 		Addr:              addr,
@@ -66,8 +73,27 @@ func Bound(h http.Handler, timeout time.Duration, logger *slog.Logger, component
 	th := http.TimeoutHandler(h, timeout, timeoutBody)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w}
+		rec := &statusRecorder{ResponseWriter: w, window: timeout}
 		th.ServeHTTP(rec, r)
+		if rec.windowErr != nil {
+			logger.Warn("response write window could not be set — the response had only the server's write timeout, counted from the request's headers",
+				"component", component, "path", truncate(r.URL.Path, 200), "error", rec.windowErr)
+		}
+		if rec.writeErr != nil {
+			// NET-6 review r8 F2: the flush has its own window (see
+			// statusRecorder.flushStarts); a write that still times out
+			// is a client reading too slowly for a large body — said, never
+			// a silently truncated 200. Any other write error is the client
+			// leaving (nobody to tell).
+			var ne net.Error
+			if errors.Is(rec.writeErr, os.ErrDeadlineExceeded) || (errors.As(rec.writeErr, &ne) && ne.Timeout()) {
+				logger.Warn("response write timed out — the client read the response too slowly; it was truncated",
+					"component", component, "method", r.Method, "path", truncate(r.URL.Path, 200),
+					"status", rec.status, "window", timeout, "error", rec.writeErr)
+			} else {
+				logger.Debug("response write failed — the client left", "component", component, "path", truncate(r.URL.Path, 200), "error", rec.writeErr)
+			}
+		}
 		if rec.status == http.StatusServiceUnavailable && rec.timedOut {
 			logger.Warn("request exceeded http_timeout_seconds — tune nginx below it, or raise it if the request is legitimate",
 				"component", component, "method", r.Method, "path", truncate(r.URL.Path, 200),
@@ -110,21 +136,46 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status   int
 	timedOut bool
+	// window is the bound: the fresh write window the flush gets.
+	window   time.Duration
+	flushing bool
+	writeErr error
+	// windowErr is why the flush's own window could not be set (Bound
+	// logs it: the response then has only the server's WriteTimeout).
+	windowErr error
+}
+
+// flushStarts gives the response its own write window when TimeoutHandler
+// begins copying the buffered response out (NET-6 review r8 F2): the
+// server's write deadline counts from the request's headers, so a handler
+// finishing near the bound left only WriteMargin to write a large body.
+func (s *statusRecorder) flushStarts() {
+	if s.flushing {
+		return
+	}
+	s.flushing = true
+	s.windowErr = http.NewResponseController(s.ResponseWriter).SetWriteDeadline(time.Now().Add(s.window))
 }
 
 func (s *statusRecorder) WriteHeader(code int) {
+	s.flushStarts()
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
 
 func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.flushStarts()
 	if s.status == 0 {
 		s.status = http.StatusOK
 	}
 	if s.status == http.StatusServiceUnavailable && string(b) == timeoutBody {
 		s.timedOut = true
 	}
-	return s.ResponseWriter.Write(b)
+	n, err := s.ResponseWriter.Write(b)
+	if err != nil && s.writeErr == nil {
+		s.writeErr = err
+	}
+	return n, err
 }
 
 // truncate bounds a request-derived string for the log (the path is

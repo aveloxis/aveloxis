@@ -53,7 +53,8 @@ type Config struct {
 	// HTTPTimeoutSeconds bounds the monitor, api and web servers (header
 	// and body reads, each request's handler — past it the request's
 	// context, and so its database query, is cancelled, the client gets a
-	// 503 and a WARN names the request — and the idle keep-alive); the web
+	// 503 and a WARN names the request — each flushed response's write
+	// window, and the idle keep-alive); the web
 	// GUI's /api proxy runs under the web's bound (NET-6, 2026-09-29). Default 180
 	// (httpserver.DefaultTimeout): a backstop above nginx's 60 s defaults —
 	// tune nginx shorter, never this below it. Zero, negative or above

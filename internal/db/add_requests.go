@@ -221,10 +221,24 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		// it processed-with-error and goes on, and the add reports the count
 		// (round-23 review: a retryable failure left it and every later item
 		// unprocessed for good).
-		processed, failed, err := s.processAddRequest(context.WithoutCancel(ctx), reqID, true)
+		// detached cannot be cancelled — not by the request, not by a stop —
+		// so the pass's failure below is never a shutdown and needs no
+		// context.Canceled arm (the shutdown-classification ratchet's
+		// producer rule).
+		detached := context.WithoutCancel(ctx)
+		processed, failed, err := s.processAddRequest(detached, reqID, true)
 		out.Enqueued += processed
 		out.Failed = failed
 		if err != nil {
+			// Logged HERE, the layer that detached the pass (SR-18; NET-6
+			// review r8 F1): its failure can never be the caller's request
+			// ending, but the caller logs through httpserver.LogFailure,
+			// which is Debug once nginx or http_timeout_seconds has ended
+			// the request — and an approved request with unprocessed items
+			// is listed for no admin and re-run by nothing (old problem O17
+			// in the operator's to-do list).
+			s.logger.Warn("auto-approved add request: processing failed — its unprocessed items are not retried automatically; the user can add those repositories again",
+				"request_id", reqID, "user_id", userID, "group_id", groupID, "processed", processed, "failed", failed, "error", err)
 			return out, fmt.Errorf("add request %d: %w", reqID, err)
 		}
 		if failed > 0 {

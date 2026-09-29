@@ -11,8 +11,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -267,5 +270,91 @@ func TestLogFailure(t *testing.T) {
 	LogFailure(context.Background(), logger, slog.LevelError, context.DeadlineExceeded, "lookup failed", "error", context.DeadlineExceeded)
 	if !strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a connect timeout on a live request must stay ERROR:\n%s", logs.String())
+	}
+}
+
+// deadlineWriter is a ResponseWriter that records the write deadline set
+// through http.ResponseController and fails its writes with writeErr.
+type deadlineWriter struct {
+	h        http.Header
+	deadline time.Time
+	writeErr error
+	status   int
+}
+
+func (d *deadlineWriter) Header() http.Header {
+	if d.h == nil {
+		d.h = http.Header{}
+	}
+	return d.h
+}
+func (d *deadlineWriter) WriteHeader(code int) { d.status = code }
+func (d *deadlineWriter) Write(b []byte) (int, error) {
+	return len(b) * boolInt(d.writeErr == nil), d.writeErr
+}
+func (d *deadlineWriter) SetWriteDeadline(t time.Time) error { d.deadline = t; return nil }
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// TestFlushGetsItsOwnWriteWindow — NET-6 review r8 F2: the socket write
+// deadline counts from the request's headers, and Bound buffers the whole
+// response, so a handler finishing near the bound left only the margin to
+// write a large body: a slow client got a truncated 200 and nothing was
+// logged. At the flush the response gets a fresh window of the bound, and
+// a write that still times out is a WARN (a client that left is Debug).
+func TestFlushGetsItsOwnWriteWindow(t *testing.T) {
+	const bound = 2 * time.Second
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "big body") })
+	for _, tc := range []struct {
+		name     string
+		writeErr error
+		wantWarn bool
+	}{
+		{"completes", nil, false},
+		{"write timed out", os.ErrDeadlineExceeded, true},
+		{"client reset", syscall.ECONNRESET, false},
+	} {
+		var logs strings.Builder
+		w := &deadlineWriter{writeErr: tc.writeErr}
+		start := time.Now()
+		Bound(h, bound, slog.New(slog.NewTextHandler(&logs, nil)), "api").ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sbom", nil))
+		if d := w.deadline.Sub(start); d < bound || d > bound+time.Second {
+			t.Errorf("%s: the flush must set a write deadline of the bound from now; got %v", tc.name, d)
+		}
+		warned := strings.Contains(logs.String(), "level=WARN") && strings.Contains(logs.String(), "response write")
+		if warned != tc.wantWarn {
+			t.Errorf("%s: WARN about the response write = %v; want %v:\n%s", tc.name, warned, tc.wantWarn, logs.String())
+		}
+	}
+}
+
+// plainWriter supports no write deadline (http.ResponseController returns
+// ErrNotSupported).
+type plainWriter struct{ h http.Header }
+
+func (p *plainWriter) Header() http.Header {
+	if p.h == nil {
+		p.h = http.Header{}
+	}
+	return p.h
+}
+func (p *plainWriter) WriteHeader(int)             {}
+func (p *plainWriter) Write(b []byte) (int, error) { return len(b), nil }
+
+// TestFlushWindowFailureIsSaid — NET-6 review r9 F1: when the flush's
+// fresh write window cannot be set, only the server's WriteTimeout (the
+// bound + WriteMargin, from the request's headers) is left — said, not
+// dropped by `_ =`.
+func TestFlushWindowFailureIsSaid(t *testing.T) {
+	var logs strings.Builder
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") })
+	Bound(h, time.Second, slog.New(slog.NewTextHandler(&logs, nil)), "api").ServeHTTP(&plainWriter{}, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "write window") {
+		t.Errorf("a flush window that could not be set must be a WARN:\n%s", logs.String())
 	}
 }

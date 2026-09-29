@@ -58,7 +58,9 @@ func TestLastActivityAtShape(t *testing.T) {
 	if !strings.Contains(body, "GREATEST(") {
 		t.Error("LastActivityAt must take the GREATEST across issue/PR/commit maxima")
 	}
-	if strings.Contains(body, "FROM aveloxis_data.repos") {
+	// v0.29.70: the commits arm reads repos.last_commit_at (O11 option 2),
+	// so the pin forbids the creation date specifically.
+	if strings.Contains(body, "created_at FROM aveloxis_data.repos") {
 		t.Error("LastActivityAt must NOT read repos.created_at — creation is not activity " +
 			"(FirstActivityAt includes it as a floor; the ceiling must not)")
 	}

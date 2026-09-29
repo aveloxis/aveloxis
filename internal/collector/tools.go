@@ -236,7 +236,11 @@ func installScorecardBinary(ctx context.Context) error {
 				tmp.Close()
 				return fmt.Errorf("writing scorecard binary: %w", err)
 			}
-			tmp.Close()
+			// Checked (old problem O3): a delayed write error surfaces at
+			// Close, and a truncated binary must not be renamed into place.
+			if err := tmp.Close(); err != nil {
+				return fmt.Errorf("writing scorecard binary: %w", err)
+			}
 
 			if err := os.Chmod(tmp.Name(), 0o755); err != nil {
 				return fmt.Errorf("chmod: %w", err)
@@ -690,11 +694,13 @@ func ensurePythonUserBinOnPath(ctx context.Context) {
 		fmt.Printf("  Add manually: %s\n", exportLine)
 		return
 	}
-	defer f.Close()
-
 	_, err = fmt.Fprintf(f, "\n# Added by aveloxis install-tools for scancode\n%s\n", exportLine)
+	if cerr := f.Close(); err == nil {
+		err = cerr // old problem O3: a delayed write error surfaces at Close
+	}
 	if err != nil {
 		fmt.Printf("  Could not write to %s: %v\n", profile, err)
+		fmt.Printf("  Add manually: %s\n", exportLine)
 		return
 	}
 

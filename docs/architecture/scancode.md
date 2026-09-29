@@ -70,7 +70,7 @@ The v0.21.0 worker:
 
 ### 3.2 The lifecycle of a single scan
 
-1. **Dispatcher claim** (paced by `scancode_start_interval_s`, default 90s, as MINIMUM GAP between successful starts — see §3.3 for the v0.21.3 design): the dispatcher calls `ClaimNextScancodeRepo(ctx, cadence)`. The SQL uses `FOR UPDATE SKIP LOCKED` against `aveloxis_data.repos` filtered by:
+1. **Dispatcher claim** (paced by `scancode_start_interval_s`, default 90s, divided by the worker count: successful starts are at least `scancode_start_interval_s / scancode_workers` apart — see §3.3): the dispatcher calls `ClaimNextScancodeRepo(ctx, cadence)`. The SQL uses `FOR UPDATE SKIP LOCKED` against `aveloxis_data.repos` filtered by:
    - `collection_queue.last_collected IS NOT NULL` — the repo has been collected at least once. Newly-added repos collect basic metrics first; scancode runs against them only after the first collection completes.
    - `repo_archived = FALSE` (or NULL).
    - `scancode_last_run IS NULL OR < NOW() - cadence` — cadence gate.
@@ -97,19 +97,32 @@ The pacing semantic for `scancode_start_interval_s` changed between v0.21.0 and 
 
 **v0.21.3 design (correct)**: the dispatcher maintains a `nextStartAllowed time.Time` deadline that's stamped *after* each successful start. It then loops as fast as the runtime allows, gating each claim on `time.Now() >= nextStartAllowed`. The unbuffered jobs channel provides back-pressure — when all N workers are busy, the dispatcher's send blocks naturally and no over-claiming happens.
 
+**v0.29.70: the gap is per worker.** The v0.21.3 gate still stamped ONE
+global gap after every start, so starts per hour were at most
+3600 / `scancode_start_interval_s` — 40 an hour at the 90-second default,
+whether 2 workers or 7. The estimates this section used to give (~140 an
+hour, a ~12-day first pass of 40K repositories) were therefore wrong: the
+real first pass was ~42 days, dispatcher-bound. Since v0.29.70 the spacing
+between starts is `scancode_start_interval_s` **divided by**
+`scancode_workers` (the startup line logs it as `start_gap`).
+
 Operational effect:
-- **Steady-state with idle workers**: claims happen at intervals of exactly `startInterval` between successful starts. Same behavior as before.
-- **Steady-state with busy workers**: dispatcher pauses on the unbuffered send. When a runner frees up, the next claim happens after the `startInterval` window — same as before.
-- **Burst on restart (the throughput-critical case)**: dispatcher claims one repo per `startInterval` seconds until all N worker slots are full. At 90 s × 7 workers = 630 seconds (~10 min) to saturate the pool. Same as before.
-- **First-pass on a large fleet (the regression case)**: workers complete scans in single-digit-to-low-double-digit minutes; the dispatcher refills slots at `startInterval` cadence, so 7 workers stay nearly always busy. Throughput is now bounded by worker capacity, not dispatcher pacing.
+- **Starts per hour** are at most 3600 × workers / `scancode_start_interval_s`:
+  80 at 2 workers, 280 at 7 (90 s default). With ~3-minute scans the
+  workers are the limit — 40/hour at 2, ~140/hour at 7.
+- **Restart**: starts stay evenly spaced, one per `start_gap` (45 s at 2
+  workers, ~13 s at 7) until every worker is busy — no burst of clones.
+- **Steady state**: when all workers are busy the dispatcher waits on the
+  unbuffered send; a freed runner gets the next job after `start_gap`.
 
 For a 40K-repo fleet with `workers=7` and ~3-min average scan time:
-- Worker capacity: 7 × (60 / 3) = ~140 repos/hour
+- Worker capacity: 7 × (60 / 3) = ~140 repos/hour (starts allow up to 280)
 - 40,000 ÷ 140 = ~286 hours ≈ **~12 days first-pass**
 
-(Pre-v0.21.3 same configuration: ~42 days, dispatcher-bound.)
-
-If you want to push further, raise `scancode_workers`. The `scancode_start_interval_s` rarely needs tuning unless you want denser starts on a very high-bandwidth network — the 90-second default works fine for most fleets.
+At ~50 MB per clone, 7 workers average about 7 GB/hour (~16 Mbit/s) of
+clone traffic, the facade's clones on top. To start more slowly, raise
+`scancode_start_interval_s` (the gap per worker); to scan more, raise
+`scancode_workers`.
 
 ## 4. Cadence rationale (180 days default)
 
@@ -177,7 +190,7 @@ All five knobs live under the `collection` block in `aveloxis.json`:
 | Key | Default | Purpose |
 |---|---|---|
 | `scancode_workers` | `2` | Max concurrent scancode subprocesses. Raise on machines with spare CPU cores. |
-| `scancode_start_interval_s` | `90` | Minimum seconds between *successful* claim starts. As of v0.21.3 this is a minimum-gap pacing primitive, NOT a throughput cap — the dispatcher claims as fast as workers free up, with this interval enforced only between consecutive starts. Bounds clone-bandwidth bursts on restart. See §3.3. |
+| `scancode_start_interval_s` | `90` | The start gap **per worker**: successful claim starts are spaced `scancode_start_interval_s / scancode_workers` apart (v0.29.70; logged as `start_gap`), so throughput scales with workers and starts stay evenly spaced after a restart. Through v0.29.69 the whole interval separated every start, capping starts at 3600/interval per hour whatever the worker count. See §3.3. |
 | `scancode_cadence_days` | `180` | Minimum days between successive scans on the same repo. Per-file licenses change rarely. |
 | `scancode_clone_dir` | `/tmp/aveloxis-scancode` | Parent directory for per-run shallow clones. Size for ~50 MB × workers peak. |
 | `scancode_shutdown_grace_minutes` | `0` | Extra wait, on top of the fixed bookkeeping allowance, for the runners' post-kill DB bookkeeping on `aveloxis stop`. It canNOT let a scan finish — every scan dies at cancel (§6 steps 4–5); a lock survives only if the process exits before its bookkeeping does, and the next start's `recoverOrphans` (§5) adopts it. |
@@ -200,7 +213,7 @@ The data flows from `aveloxis_data.repos.scancode_last_run` (written by `MarkSca
 
 | Log line | When it fires | Meaning |
 |---|---|---|
-| `scancode worker started workers=N start_interval=...` | Once at startup | The pool is alive with N runners. If absent, scancode is disabled (binary not installed or `mkdir scancode_clone_dir` failed). |
+| `scancode worker started workers=N start_interval=... start_gap=...` | Once at startup | The pool is alive with N runners; `start_gap` is the effective spacing between starts (start_interval ÷ workers). If absent, scancode is disabled (binary not installed or `mkdir scancode_clone_dir` failed). |
 | `scancode preflight: healthy` | Once at startup | The §13 health check passed — the toolchain works. |
 | `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` | Once at startup (ERROR) | The §13 health check detected a systemic failure (corrupt libmagic, a repeated error, or no JSON). Read the `detail` field; `aveloxis_ops.aveloxis_status` is also set to `broken`. |
 | `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `pipx install scancode-toolkit` then restart serve. |

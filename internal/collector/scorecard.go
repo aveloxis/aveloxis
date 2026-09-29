@@ -262,6 +262,23 @@ func ScorecardTokens(pool *platform.KeyPool, count int) (joined, first string, r
 	return strings.Join(tokens, ","), tokens[0], release
 }
 
+// lentTokenPrefixes names the tokens lent to a scorecard attempt by the key
+// pool's token_prefix, never in full (worklist item 79). joined is the
+// comma-separated GITHUB_TOKEN value.
+func lentTokenPrefixes(joined string) []string {
+	if joined == "" {
+		return nil
+	}
+	parts := strings.Split(joined, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, platform.TokenPrefix(p))
+		}
+	}
+	return out
+}
+
 // RunScorecard executes the OpenSSF Scorecard tool against a repo and
 // stores results in repo_deps_scorecard. Requires the `scorecard` binary
 // on PATH (silently skipped otherwise).
@@ -482,6 +499,7 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 			"timed_out", errors.Is(attemptCtx.Err(), context.DeadlineExceeded),
 			"duration", time.Since(attemptStart),
 			"timeout_cap", timeout,
+			"lent_tokens", lentTokenPrefixes(githubToken), // worklist item 79
 			"error", invokeErr)
 	}()
 

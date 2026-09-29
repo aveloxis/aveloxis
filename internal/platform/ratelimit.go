@@ -135,12 +135,18 @@ func (r Resource) tracksBudget() bool {
 // before collection waits. This maximizes throughput when you have dozens
 // of tokens at 400K+ repos.
 type KeyPool struct {
-	mu         sync.Mutex
-	keys       []*APIKey
-	rrIndex    int // round-robin counter (core checkout)
-	rrIndexGQL int // round-robin counter (graphql checkout — separate so the two dimensions don't skew each other)
-	buffer     int // stop using a key when remaining drops to this
-	logger     *slog.Logger
+	mu sync.Mutex
+	// resetAgreement counts responses' resets against the tracked
+	// windows, drained by the 5-minute summary (Phase 0). Recorded only
+	// once RecordResetAgreement opted in (review round 1 F2: the GitLab
+	// pool, which nothing drains, grew its map for the process lifetime).
+	resetAgreement       map[ResetAgreementKey]ResetAgreementCounts
+	recordResetAgreement bool
+	keys                 []*APIKey
+	rrIndex              int // round-robin counter (core checkout)
+	rrIndexGQL           int // round-robin counter (graphql checkout — separate so the two dimensions don't skew each other)
+	buffer               int // stop using a key when remaining drops to this
+	logger               *slog.Logger
 
 	// ── v0.27.34 fleet-level API-outage circuit breaker ────────────
 	// Every HTTPClient (REST + GraphQL) for a platform shares this
@@ -873,11 +879,13 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 	refused := isPrimaryRefusal(resp)
 	switch resource {
 	case "", "core":
+		kp.noteResetAgreement("core", key.ResetAt, resp, reset) // before the guard moves the window
 		windowedBudgetUpdate(&key.Remaining, &key.ResetAt, remaining, reset)
 		if refused {
 			kp.markRefusedLocked(key, ResourceCore, reset, time.Now(), true)
 		}
 	case "graphql":
+		kp.noteResetAgreement("graphql", key.GraphQLResetAt, resp, reset)
 		windowedBudgetUpdate(&key.GraphQLRemaining, &key.GraphQLResetAt, remaining, reset)
 		if refused {
 			kp.markRefusedLocked(key, ResourceGraphQL, reset, time.Now(), true)
@@ -1256,6 +1264,11 @@ func tokenPrefix(t string) string {
 	return t[:min(8, len(t))] + "..."
 }
 
+// TokenPrefix is the key pool's token_prefix spelling, for other packages
+// that name a token in a log (worklist item 79: scorecard's lent tokens),
+// so the two logs can be matched (SR-17: one spelling).
+func TokenPrefix(t string) string { return tokenPrefix(t) }
+
 // IsEmpty returns true if the pool was created with zero keys.
 func (kp *KeyPool) IsEmpty() bool {
 	kp.mu.Lock()
@@ -1383,6 +1396,10 @@ type KeySnapshot struct {
 	GraphQLRefusedUntil time.Time
 	SearchRefusedUntil  time.Time
 	Refusals            int
+	// The tracked windows (Phase 0 item 2): the reset each bucket's
+	// balance is held against.
+	CoreResetAt    time.Time
+	GraphQLResetAt time.Time
 }
 
 // Snapshot returns per-key admission state plus the pool-wide in-flight
@@ -1400,6 +1417,7 @@ func (kp *KeyPool) Snapshot() ([]KeySnapshot, int) {
 			SecondaryUntil: k.secondaryUntil, QuarantineUntil: k.quarantineUntil, Invalid: k.Invalid,
 			CoreRefusedUntil: k.refusedUntil, GraphQLRefusedUntil: k.graphQLRefusedUntil,
 			SearchRefusedUntil: k.searchRefusedUntil, Refusals: k.refusals,
+			CoreResetAt: k.ResetAt, GraphQLResetAt: k.GraphQLResetAt,
 		})
 	}
 	return out, kp.inflight

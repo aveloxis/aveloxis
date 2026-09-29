@@ -40,6 +40,10 @@ type PrelimResult struct {
 	Redirected bool
 	OldURL     string
 	NewURL     string
+	// Status is the probe's final HTTP status (0 when the probe failed).
+	// The scheduler reads it to fetch a 451's block notice, which the
+	// HEAD probe cannot carry (worklist item 82).
+	Status int
 }
 
 // RunPrelim checks whether a repo has moved, died, or is a duplicate.
@@ -72,6 +76,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		// Network error — don't skip, let collection try and fail naturally.
 		return result, nil
 	}
+	result.Status = statusCode
 
 	// Repo is gone (404, 410) or blocked for legal reasons (451 — a DMCA
 	// takedown, v0.29.58). Sideline it permanently: keep all collected

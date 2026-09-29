@@ -153,7 +153,12 @@ func (w *MailingListWorker) ProcessList(ctx context.Context, job *db.ListJob) er
 					w.logger.Warn("mailing-list: circuit_open — pausing source", "system", w.sys.Name)
 				}
 			}
-			_ = w.store.RecordListFailure(ctx, job.RglsID)
+			if rerr := w.store.RecordListFailure(ctx, job.RglsID); rerr != nil && !errors.Is(rerr, context.Canceled) {
+				// Old problem O2: discarded — the list's failure count (its
+				// backoff) did not advance.
+				w.logger.Warn("mailing-list: could not record the list's fetch failure — its backoff did not advance",
+					"rgls_id", job.RglsID, "error", rerr)
+			}
 			return fmt.Errorf("fetch %s %s: %w", job.ListAddress, month, ferr)
 		}
 		w.pacer.OnSuccess()

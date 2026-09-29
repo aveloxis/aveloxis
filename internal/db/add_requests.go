@@ -353,6 +353,9 @@ func (s *PostgresStore) ListPendingAddRequests(ctx context.Context) ([]AddReques
 			out[i].SampleURLs = append(out[i].SampleURLs, u)
 		}
 		sample.Close()
+		if err := sample.Err(); err != nil {
+			return nil, fmt.Errorf("add request %d sample urls: %w", out[i].RequestID, err)
+		}
 	}
 	return out, nil
 }
@@ -836,6 +839,10 @@ func migrateLegacyPendingGroups(ctx context.Context, pg *PostgresStore, logger *
 		pending = append(pending, p)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		*errs = append(*errs, fmt.Errorf("v0.27.20 legacy pending groups: read: %w", err))
+		return
+	}
 	if len(pending) == 0 {
 		return
 	}

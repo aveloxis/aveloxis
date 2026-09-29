@@ -56,6 +56,15 @@ type FacadeResult struct {
 	Commits        int
 	CommitMessages int
 	Errors         []error
+	// CloneOK is set when the clone or fetch succeeded — the forge answered
+	// whatever the later phases do (review round 1 F4: the scheduler clears
+	// a stored forge notice on it, not on the whole facade's error).
+	CloneOK bool
+	// FirstCommitAt / LastCommitAt bound the author timestamps of the
+	// commit rows this run PROVED written (a batch that succeeded, or each
+	// fallback row that did — SR-3); zero when it wrote none. CollectRepo
+	// folds them into repos.first_commit_at / last_commit_at (O11 option 2).
+	FirstCommitAt, LastCommitAt time.Time
 	// EmptyDefaultBranch is set when the default branch resolved to no
 	// commit (v0.29.58): the numstat pass completed with nothing to walk,
 	// and the whitespace phase has nothing to walk either — CollectRepo
@@ -100,12 +109,21 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 
 	// Clone or fetch.
 	if err := f.ensureClone(ctx, gitURL, clonePath); err != nil {
+		// A repository whose clone keeps failing never reaches the walk;
+		// with no rows written the call only fills an unfilled row from the
+		// table, so its page stops scanning (review round 3 F3).
+		f.recordCommitBounds(ctx, repoID, result)
 		return result, fmt.Errorf("clone/fetch: %w", err)
 	}
+	result.CloneOK = true
 
-	// Parse git log.
-	if err := f.parseGitLog(ctx, repoID, clonePath, result); err != nil {
-		return result, fmt.Errorf("git log: %w", err)
+	// Parse git log (the whole default branch, every run). The commit
+	// bounds are recorded whatever the walk returned: they cover only rows
+	// proven written, and with none the call only fills an unfilled row.
+	parseErr := f.parseGitLog(ctx, repoID, clonePath, result)
+	f.recordCommitBounds(ctx, repoID, result)
+	if parseErr != nil {
+		return result, fmt.Errorf("git log: %w", parseErr)
 	}
 
 	// v0.27.105: whitespace measurement (Augur parity — see
@@ -302,7 +320,7 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: %s", execErr(ctx, err), stderr.String())
+		return withRemoteNotice(fmt.Errorf("%w: %s", execErr(ctx, err), stderr.String()), stderr.String())
 	}
 	return nil
 }
@@ -731,6 +749,9 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		for range built {
 			result.Commits++
 		}
+		for _, r := range rows {
+			result.noteCommitWritten(r.AuthorTimestamp)
+		}
 	}
 
 	// Phase 3 — commit parents, per commit (deliberately outside F2's
@@ -816,8 +837,40 @@ func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID i
 			continue
 		}
 		insertedByHash[commit.Hash] = true
+		result.noteCommitWritten(commit.AuthorTimestamp)
 	}
 	result.Commits += len(insertedByHash)
+}
+
+// noteCommitWritten widens the run's commit bounds by one row proven written
+// (a NULL author timestamp bounds nothing).
+func (r *FacadeResult) noteCommitWritten(ts *time.Time) {
+	if ts == nil {
+		return
+	}
+	if r.FirstCommitAt.IsZero() || ts.Before(r.FirstCommitAt) {
+		r.FirstCommitAt = *ts
+	}
+	if ts.After(r.LastCommitAt) {
+		r.LastCommitAt = *ts
+	}
+}
+
+// recordCommitBounds folds the run's commit bounds into the repository row
+// (O11 option 2; the store fills an unfilled row from the table). A failure
+// is logged and never fails the facade: an unfilled column is read live, and
+// a filled one keeps its previous value until the next collection.
+func (f *FacadeCollector) recordCommitBounds(ctx context.Context, repoID int64, result *FacadeResult) {
+	if ctx.Err() != nil || f.store == nil { // a stop; or a facade built without a store (unit tests)
+		return
+	}
+	if err := f.store.RecordCommitBounds(ctx, repoID, result.FirstCommitAt, result.LastCommitAt); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // a stop, not a failure
+		}
+		f.logger.Warn("could not record the repository's commit bounds — unfilled bounds are read live; filled ones keep their previous value until the next collection",
+			"repo_id", repoID, "error", err)
+	}
 }
 
 // extractDate returns the YYYY-MM-DD portion of an ISO 8601 date string.

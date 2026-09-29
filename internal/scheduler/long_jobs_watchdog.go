@@ -209,9 +209,12 @@ func (w *LongJobsWatchdog) emit(ctx context.Context, kind string, count int64, s
 		}
 		return
 	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil && w.Logger != nil {
-		w.Logger.Warn("long-jobs log write failed", "error", err)
+	_, err = f.Write(append(line, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr // old problem O3: a delayed write error surfaces at Close
+	}
+	if err != nil && w.Logger != nil {
+		w.Logger.Warn("long-jobs log write failed", "path", w.LogPath, "error", err)
 	}
 }
 

@@ -51,8 +51,11 @@ func (s *PostgresStore) CreateSessionToken(ctx context.Context, userID int, life
 	}
 	// Opportunistic hygiene — keeps the table from accumulating
 	// expired rows without a dedicated ticker.
-	_, _ = s.pool.Exec(ctx,
-		`DELETE FROM aveloxis_ops.user_session_tokens WHERE expiration < $1`, now)
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM aveloxis_ops.user_session_tokens WHERE expiration < $1`, now); err != nil && !errors.Is(err, context.Canceled) {
+		// The token was created; only the hygiene failed (old problem O2).
+		s.logger.Warn("expired session tokens could not be deleted — they are removed with the next token", "error", err)
+	}
 	return token, nil
 }
 

@@ -36,6 +36,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
@@ -57,8 +58,14 @@ const goneRecheckTick = time.Hour
 // cadence — 300,000 / (28 × 24) ≈ 446 per hour — so 500 per tick leaves
 // the whole cohort re-verified once per cadence with headroom, PROVIDED
 // the batch finishes inside its tick. Each probe is one unauthenticated
-// HEAD and spends no API-key budget; a batch of answering hosts (~200 ms
-// each) finishes in under two minutes of a single goroutine.
+// HEAD and spends no API-key budget, except that a GitHub row answering
+// 451 also costs one keyed REST request for its block notice (item 82,
+// v0.29.70), which can wait on the key pool when no key has budget; a
+// batch of answering hosts (~200 ms each) finishes in under two minutes
+// of a single goroutine. The first cycles after v0.29.70 also fill each
+// gone repository's stored commit bounds once, reading all of its commit
+// rows; a batch holding giant repositories can then overrun its tick (the
+// WARN reports fill_elapsed apart from the probes).
 //
 // What the design point does NOT cover (Copilot review round 2 on PR
 // #203): a host that never answers costs the probe's full retry ladder
@@ -115,11 +122,20 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 	started := time.Now()
 
 	var resurrected, stillGone, indeterminate, unreachable, failed, refused int
+	var fillElapsed time.Duration
+	// Every still-gone arm goes through here. It also fills the stored
+	// commit bounds (O11 option 2): a gone repository gets no facade run,
+	// whatever its probe answered (review round 4 F2). A first fill reads
+	// the repository's commit rows once; its time is reported apart from
+	// the probes' (round 4 F3).
 	stampChecked := func(c db.GoneProbeCandidate) {
 		if err := s.store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil && !errors.Is(err, context.Canceled) {
 			failed++
 			s.logger.Warn("gone recheck: failed to stamp check", "repo_id", c.RepoID, "error", err)
 		}
+		fillStart := time.Now()
+		s.fillCommitBounds(ctx, c.RepoID)
+		fillElapsed += time.Since(fillStart)
 	}
 	for _, c := range cands {
 		if ctx.Err() != nil {
@@ -178,6 +194,11 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			stillGone++
 			stampChecked(c)
+			if status == http.StatusUnavailableForLegalReasons {
+				if f, ok := s.ghClient.(repoNoticeFetcher); ok {
+					s.recheckBlockNotice(ctx, c.RepoID, f) // item 82, review round 1 F1
+				}
+			}
 		default:
 			indeterminate++
 			s.logger.Warn("gone recheck: indeterminate probe status — repo stays gone, retried next cadence",
@@ -190,12 +211,14 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 	s.logger.Info("gone recheck cycle complete",
 		"candidates", len(cands), "resurrected", resurrected, "still_gone", stillGone,
 		"indeterminate", indeterminate, "unreachable", unreachable, "refused", refused, "failed", failed,
-		"elapsed", elapsed.Round(time.Second))
+		"elapsed", elapsed.Round(time.Second), "fill_elapsed", fillElapsed.Round(time.Second))
 	if overran, perHour := goneRecheckOverrun(len(cands), elapsed); overran {
 		// Observation-only (SR-7): nothing is cancelled or resized.
-		s.logger.Warn("gone recheck cycle overran its tick — this batch ran below the per-tick design rate; slow or unreachable hosts dominated it",
+		// The cause is named from the numbers (round 4 F3): the first cycles
+		// after v0.29.70 also fill each gone repository's commit bounds once.
+		s.logger.Warn("gone recheck cycle overran its tick — this batch ran below the per-tick design rate; fill_elapsed is the time spent filling commit bounds for the first time, the rest is the probes (slow or unreachable hosts)",
 			"candidates", len(cands), "unreachable", unreachable, "indeterminate", indeterminate,
-			"elapsed", elapsed.Round(time.Second), "tick", goneRecheckTick,
+			"elapsed", elapsed.Round(time.Second), "fill_elapsed", fillElapsed.Round(time.Second), "tick", goneRecheckTick,
 			"probes_per_hour", perHour, "design_probes_per_hour", goneRecheckBatch,
 			"recheck_every", s.cfg.Collection.GoneRepoRecheckInterval())
 	}

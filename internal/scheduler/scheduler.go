@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -171,6 +172,7 @@ type Scheduler struct {
 	// pooled connection each) join the single-flight set.
 	orgRefreshActive     atomic.Bool
 	stagingCleanupActive atomic.Bool
+	xidStatusActive      atomic.Bool // worklist item 78
 	vulnDigestActive     atomic.Bool
 	breadthActive        atomic.Bool
 	// v0.29.61: the supply-chain view refresh (its own cadence, apart from
@@ -220,6 +222,8 @@ type Scheduler struct {
 	// Phase C plan requires before any transitive rollout, and an
 	// immediate ~5×/~94× traffic cut on the direct workload.
 	osvCache *collector.OSVCache
+	// slots is each running job's start and phase (worklist item 77).
+	slots jobSlots
 }
 
 // SetDigestMailer injects the operator-notification mailer (v0.27.12).
@@ -265,6 +269,12 @@ func NewWithKeys(store *db.PostgresStore, ghClient, glClient platform.Client, gh
 	if cfg.Collection == nil {
 		defaults := config.DefaultConfig().Collection
 		cfg.Collection = &defaults
+	}
+
+	// Phase 0: the key-pool summary drains the GitHub pool's reset-agreement
+	// counts, so that pool — and only it — records them (review round 1 F2).
+	if ghKeys != nil {
+		ghKeys.RecordResetAgreement()
 	}
 
 	hostname, _ := os.Hostname()
@@ -775,6 +785,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-keyPoolTicker.C:
 			s.logKeyPoolSummary()
+			s.slots.log(s.logger) // worklist item 77: the slot ages, the facade's heartbeat
 
 		case <-matviewCheckTicker.C:
 			now := time.Now()
@@ -793,6 +804,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-stagingCleanupTicker.C:
 			s.singleFlight(&s.stagingCleanupActive, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
+			s.singleFlight(&s.xidStatusActive, "xid-status", func() { s.logXIDStatus(ctx) })
 
 		case <-enrichTicker.C:
 			s.singleFlight(&s.enrichmentActive, "contributor-enrichment", func() { s.runEnrichment(ctx) })
@@ -947,6 +959,7 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	// cycle; one WARN after the loop.
 	unanswered := 0
 	var firstUnanswered error
+	var stamps stampFailures // old problem O2: attempt stamps were discarded
 	for _, c := range candidates {
 		if ctx.Err() != nil {
 			return
@@ -967,16 +980,14 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 			}
 			// The forge rejected the query for this email: stamp it so the
 			// same query is not re-sent before the cooldown.
-			if mErr := s.store.MarkContributorSearchAttempted(ctx, c.CntrbID); mErr != nil {
-				s.logger.Debug("search resolve: failed to stamp the attempt", "cntrb_id", c.CntrbID, "error", mErr)
-			}
+			stamps.record(s.store.MarkContributorSearchAttempted(ctx, c.CntrbID))
 			s.logger.Debug("search resolve: search rejected", "email", c.Email, "error", err)
 			continue
 		}
 		if login == "" || ghUserID == 0 {
 			// No hit — stamp so we don't re-search the same email
 			// every cycle until the cooldown.
-			_ = s.store.MarkContributorSearchAttempted(ctx, c.CntrbID)
+			stamps.record(s.store.MarkContributorSearchAttempted(ctx, c.CntrbID))
 			continue
 		}
 		err = s.store.LinkContributorToGitHubUser(ctx, c.CntrbID, login, ghUserID)
@@ -994,6 +1005,9 @@ func (s *Scheduler) runSearchResolve(ctx context.Context) {
 	if unanswered > 0 && ctx.Err() == nil {
 		s.logger.Warn("search resolve: searches failed without an answer — not stamped, retried next cycle",
 			"failed", unanswered, "of", len(candidates), "first_error", firstUnanswered)
+	}
+	if ctx.Err() == nil {
+		stamps.warn(s.logger, "search resolve: contributor", len(candidates))
 	}
 	if resolved > 0 {
 		s.logger.Info("search resolve cycle complete",
@@ -1207,6 +1221,8 @@ type jobOutcome struct {
 
 func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	start := time.Now()
+	s.slots.beginAt(job.RepoID, start) // worklist item 77
+	defer s.slots.end(job.RepoID)
 
 	// Start a heartbeat goroutine that keeps locked_at fresh every 30 seconds.
 	// Without this, RecoverStaleLocks (1-hour timeout) steals active jobs from
@@ -1292,6 +1308,13 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 	if prelim != nil && prelim.Skip {
 		s.logger.Warn("skipping repo", "repo_id", job.RepoID, "reason", prelim.SkipReason)
+		// Item 82: the HEAD probe carries no body, so a legal block's
+		// notice is fetched with one REST request (GitHub only).
+		if prelim.Status == http.StatusUnavailableForLegalReasons && repo.Platform == model.PlatformGitHub {
+			if f, ok := s.ghClient.(repoNoticeFetcher); ok {
+				s.captureBlockNotice(ctx, repo, f)
+			}
+		}
 		s.skipJob(ctx, job.RepoID, prelim.SkipReason)
 		return
 	}
@@ -1329,6 +1352,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 				}
 			}
 		}
+		s.slots.setPhase(job.RepoID, "api collection")
 		since := s.determineSince(job)
 		if since.IsZero() {
 			s.logger.Info("full collection (since=zero)", "repo_id", job.RepoID,
@@ -1338,6 +1362,9 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 				"since", since.Format(time.RFC3339), "last_collected", job.LastCollected)
 		}
 		result, err = s.collectAndProcess(ctx, job.RepoID, repo, client, since)
+		// Item 82: a REST answer carrying the forge's block object — on
+		// the phase's error or on a per-endpoint one it collected.
+		s.recordForgeNotice(ctx, repo, firstNoticeErr(err, result))
 
 		// Refresh open items: re-fetch all open issues and PRs to capture
 		// status changes (closed, merged), new labels, assignees, reviews, etc.
@@ -1393,6 +1420,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 
 	// Phase 3+4: facade then analysis (sequential — analysis needs bare clone).
+	s.slots.setPhase(job.RepoID, "facade/analysis")
 	facadeResult, analysisResult := s.runFacadeAndAnalysis(ctx, job.RepoID, repo)
 	if ctx.Err() != nil {
 		s.jobInterrupted(job.RepoID, "facade/analysis")
@@ -1402,6 +1430,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// Phase 5: commit resolution.
 	// For generic git repos, attempt resolution on both GitHub and GitLab
 	// since we don't know where the contributor identities live.
+	s.slots.setPhase(job.RepoID, "commit resolution")
 	s.runCommitResolution(ctx, job.RepoID, repo)
 	if ctx.Err() != nil {
 		s.jobInterrupted(job.RepoID, "commit resolution")
@@ -1415,6 +1444,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// changelog for the production diagnostic that drove the move.
 
 	// Phase 6: SBOM generation.
+	s.slots.setPhase(job.RepoID, "sbom")
 	s.generateSBOMs(ctx, job.RepoID)
 	if ctx.Err() != nil {
 		s.jobInterrupted(job.RepoID, "sbom")
@@ -1423,6 +1453,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 
 	// Phase 7: Vulnerability scanning via OSV.dev.
 	// Uses purls from libyear data to query for known CVEs.
+	s.slots.setPhase(job.RepoID, "vulnerability scan")
 	vulnResult, vulnErr := collector.ScanVulnerabilities(ctx, s.store, job.RepoID, s.logger,
 		s.osvCache, s.cfg.Collection.VulnScanTransitiveValue())
 	if errors.Is(vulnErr, context.Canceled) {
@@ -1467,7 +1498,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		// failure detail; deliberately not the "error" key — this is
 		// the classified-shutdown arm, not a failure log.
 		s.logger.Info("job interrupted by shutdown and the stamp retry also failed — the row re-queues via the shutdown lock release",
-			"repo_id", job.RepoID, "cause", err)
+			"repo_id", job.RepoID, "elapsed", s.slots.elapsed(job.RepoID).Round(time.Second), "cause", err)
 		return
 	}
 	if err != nil {
@@ -1618,7 +1649,7 @@ func (s *Scheduler) goTracked(name string, fn func()) {
 // "only line" is the scheduler's promise, not a proof.
 func (s *Scheduler) jobInterrupted(repoID int64, phase string) {
 	s.logger.Info("job interrupted by shutdown — nothing recorded; the row re-queues via the shutdown lock release",
-		"repo_id", repoID, "phase", phase)
+		"repo_id", repoID, "phase", phase, "elapsed", s.slots.elapsed(repoID).Round(time.Second)) // elapsed: worklist item 77
 }
 
 // skipJob marks a job as successfully completed with zero counts and a reason.
@@ -1755,6 +1786,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	if errors.Is(err, context.Canceled) {
 		return nil, nil // shutdown mid-facade: runJob's guard ends the job unrecorded
 	}
+	s.noteCloneOutcome(ctx, repo, result != nil && result.CloneOK, err) // item 82: record a refusal's notice, clear it once the clone succeeds
 	if err != nil {
 		s.logger.Warn("facade collection failed", "repo_id", repoID, "error", err)
 		// nil facadeResult is the "facade errored" signal buildOutcome

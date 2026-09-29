@@ -1782,7 +1782,17 @@ func (s *Server) handleRemoveRepo(w http.ResponseWriter, r *http.Request) {
 	repoID, _ := strconv.ParseInt(r.FormValue("repo_id"), 10, 64)
 
 	if groupID > 0 && repoID > 0 {
-		_ = s.store.RemoveRepoFromGroup(r.Context(), sess.UserID, groupID, repoID)
+		// The error was discarded and the page redirected as if the
+		// repository had been removed (old problem O2).
+		err := s.store.RemoveRepoFromGroup(r.Context(), sess.UserID, groupID, repoID)
+		if errors.Is(err, db.ErrGroupNotOwned) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			s.serverError(w, r, "handleRemoveRepo", err)
+			return
+		}
 	}
 	http.Redirect(w, r, fmt.Sprintf("/groups/%d", groupID), http.StatusFound)
 }

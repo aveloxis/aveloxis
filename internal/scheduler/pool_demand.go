@@ -47,6 +47,7 @@ var backgroundDBLoops = []string{
 	"db-health-monitor",      // runDBHealthMonitor (Ping goes through the pool)
 	"stall-detector",         // runStallDetector
 	"staging-cleanup",        // runStagingCleanup (single-flight since review round 5)
+	"xid-status",             // logXIDStatus: the hourly transaction-ID line (v0.29.70, worklist item 78)
 	"vuln-digest",            // runVulnDigest (single-flight since review round 5)
 	"supply-chain-refresh",   // runSupplyChainRefresh (v0.29.61; single-flight off its own ticker)
 	"matview-rebuild",        // rebuildMatviews

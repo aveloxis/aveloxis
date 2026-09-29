@@ -772,6 +772,9 @@ func buildResolvers(ctx context.Context, pool *pgxpool.Pool, cols []resolvedColu
 			m[fmt.Sprintf("%v", vals[0])] = fmt.Sprintf("%v", vals[1])
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("loading resolver for %s: %w", c.LocalColumn, err)
+		}
 		out[c.LocalColumn] = m
 	}
 	return out, nil

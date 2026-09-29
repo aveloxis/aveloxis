@@ -99,9 +99,12 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 		}
 		switch sub {
 		case "":
-			if strings.HasPrefix(value, "{") {
+			switch {
+			case strings.HasPrefix(value, "{"):
 				applyTOMLDepTable(e, value)
-			} else {
+			case strings.HasPrefix(value, "["):
+				applyTOMLDepArray(e, value)
+			default:
 				e.Version = tomlUnquote(value)
 			}
 		case "version":
@@ -201,6 +204,45 @@ func applyTOMLDepTable(e *tomlDepEntry, table string) {
 	}
 }
 
+// applyTOMLDepArray reads Poetry's multiple-constraint dependency — an array
+// of inline tables, one per Python version range:
+//
+//	multi = [ {version = "^1", python = "<3.11"}, {version = "^2"} ]
+//
+// Worklist item 64(a): the whole array was read as the version "[". One
+// entry is taken (operator's rule, 2026-09-28): the entry WITHOUT a python
+// marker when there is exactly one (the one a current interpreter
+// installs), otherwise the first. Its keys apply as a single table's would;
+// the python marker itself is never version material.
+func applyTOMLDepArray(e *tomlDepEntry, array string) {
+	body := strings.TrimSpace(array)
+	body = strings.TrimSuffix(strings.TrimPrefix(body, "["), "]")
+	var tables, unmarked []string
+	for _, item := range splitTOMLTopLevel(body) {
+		item = strings.TrimSpace(item)
+		if !strings.HasPrefix(item, "{") {
+			continue
+		}
+		tables = append(tables, item)
+		marked := false
+		inner := strings.TrimSuffix(strings.TrimPrefix(item, "{"), "}")
+		for _, kv := range splitTOMLTopLevel(inner) {
+			if k, _, ok := strings.Cut(kv, "="); ok && strings.TrimSpace(k) == "python" {
+				marked = true
+			}
+		}
+		if !marked {
+			unmarked = append(unmarked, item)
+		}
+	}
+	switch {
+	case len(unmarked) == 1:
+		applyTOMLDepTable(e, unmarked[0])
+	case len(tables) > 0:
+		applyTOMLDepTable(e, tables[0])
+	}
+}
+
 // pythonTOMLDeps reads Python `name = constraint` tables through the shared
 // table scanner — sections maps each header to the scope its dependencies
 // take — so a multi-line inline table's version is recovered (worklist item
@@ -243,7 +285,7 @@ func pythonTableDeclVersion(requirement string) (string, bool) {
 	if !found {
 		return "", false
 	}
-	if v := strings.TrimSpace(value); v == "" || !strings.ContainsAny(v[:1], "{\"'") {
+	if v := strings.TrimSpace(value); v == "" || !strings.ContainsAny(v[:1], "{[\"'") { // [: Poetry's multiple-constraint array (item 64)
 		return "", false
 	}
 	// The "; " joins sit outside strings and brackets; a marker's own

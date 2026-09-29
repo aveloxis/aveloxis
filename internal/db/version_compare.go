@@ -47,6 +47,7 @@ func CompareVersionish(a, b string) int {
 // compared as a digit string (leading zeros dropped, then length, then
 // text), so no segment can overflow an integer.
 func compareVersionSegment(a, b string) int {
+	a, b = canonicalVersionSegment(a), canonicalVersionSegment(b)
 	ad, ar := splitLeadingDigits(a)
 	bd, br := splitLeadingDigits(b)
 	switch {
@@ -135,6 +136,49 @@ func isPreReleaseSuffix(rest string) bool {
 		}
 	}
 	return false
+}
+
+// releaseWords name the release itself (Maven's -final/-GA/-RELEASE), not a
+// pre-release: "1.0.0-final" is "1.0.0" (worklist item 64(b)).
+var releaseWords = map[string]bool{"final": true, "ga": true, "release": true}
+
+// pep440Aliases are PEP 440's alternative pre-release spellings, longest
+// first so "preview" is not read as "pre" (worklist item 64(b)).
+var pep440Aliases = []struct{ from, to string }{
+	{"preview", "rc"}, {"alpha", "a"}, {"beta", "b"}, {"pre", "rc"}, {"c", "rc"},
+}
+
+// canonicalVersionSegment rewrites one segment to the spelling the
+// comparison keys on, so every branch of compareVersionSegment compares
+// the same key (a total order): a release word — whole segment or suffix —
+// is the release ("RELEASE" as a segment is the filled-in "0"; "0-final" is
+// "0"), and a PEP 440 alias is its canonical tag ("0c1" is "0rc1",
+// "0alpha2" is "0a2"). A SemVer "-" suffix is otherwise kept as written:
+// "-alpha" and "-a" are different SemVer identifiers.
+func canonicalVersionSegment(seg string) string {
+	digits, rest := splitLeadingDigits(seg)
+	low := strings.ToLower(rest)
+	if releaseWords[strings.TrimLeft(low, "-._")] {
+		if digits == "" {
+			return "0"
+		}
+		return digits
+	}
+	if rest == "" || rest[0] == '-' {
+		return seg
+	}
+	sep := rest[:len(rest)-len(strings.TrimLeft(rest, "._"))]
+	tag := low[len(sep):]
+	for _, al := range pep440Aliases {
+		if strings.HasPrefix(tag, al.from) {
+			after := tag[len(al.from):]
+			if after == "" || strings.TrimLeft(after, "0123456789") == "" {
+				return digits + sep + al.to + after
+			}
+			break
+		}
+	}
+	return seg
 }
 
 func splitLeadingDigits(s string) (digits, rest string) {

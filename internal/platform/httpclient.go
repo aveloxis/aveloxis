@@ -690,13 +690,20 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		// endpoint of the repository, every cycle (log review finding 3).
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		reason, notice := legalBlockReason(body)
+		notice, hasBlock := blockNotice(body)
 		c.logger.Warn("resource blocked for legal reasons (451) — not retried; prelim sidelines the repository",
-			"url", RedactURLUserinfo(url), "reason", reason, "notice_url", RedactURLUserinfo(notice))
+			"url", RedactURLUserinfo(url), "reason", notice.Reason, "notice_url", RedactURLUserinfo(notice.URL))
+		reason := notice.Reason
 		if reason == "" {
 			reason = "unspecified"
 		}
-		return respDone, nil, fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, url, reason)
+		err := fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, url, reason)
+		if hasBlock {
+			// Item 82: the forge's own words ride the error to the
+			// repository page (the scheduler stores them).
+			err = &NoticeError{Notice: notice, Err: err}
+		}
+		return respDone, nil, err
 	case resp.StatusCode == http.StatusConflict:
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -918,7 +925,16 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return respRetry, nil, nil
 		}
 		// 403 for other reasons (private repo, no permission) — not a key problem.
-		return respDone, nil, fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
+		err := fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
+		if notice, ok := blockNotice(body); ok {
+			// A 403 carrying GitHub's block object (a repository disabled
+			// by staff): the classification is unchanged — whether it
+			// sidelines waits for the one-repository probe (summary/40
+			// §9) — but the forge's words ride the error for the
+			// repository page (item 82).
+			err = &NoticeError{Notice: notice, Err: err}
+		}
+		return respDone, nil, err
 	case resp.StatusCode == http.StatusTooManyRequests:
 		resp.Body.Close()
 		if isPrimaryRefusal(resp) {

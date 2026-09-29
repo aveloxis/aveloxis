@@ -96,7 +96,8 @@ func (s *PostgresStore) GetGoneRecheckCandidates(ctx context.Context, olderThan 
 func (s *PostgresStore) ClearRepoGone(ctx context.Context, repoID int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos
-		SET repo_gone_at = NULL, repo_gone_checked_at = NULL
+		SET repo_gone_at = NULL, repo_gone_checked_at = NULL,
+		    repo_unavailable_reason = NULL, repo_unavailable_url = NULL
 		WHERE repo_id = $1 AND repo_gone_at IS NOT NULL`, repoID)
 	return err
 }
@@ -122,7 +123,8 @@ func (s *PostgresStore) ResurrectRepo(ctx context.Context, repoID int64, priorit
 		defer func() { _ = tx.Rollback(ctx) }()
 		if _, err := tx.Exec(ctx, `
 			UPDATE aveloxis_data.repos
-			SET repo_gone_at = NULL, repo_gone_checked_at = NULL
+			SET repo_gone_at = NULL, repo_gone_checked_at = NULL,
+			    repo_unavailable_reason = NULL, repo_unavailable_url = NULL
 			WHERE repo_id = $1 AND repo_gone_at IS NOT NULL`, repoID); err != nil {
 			return err
 		}

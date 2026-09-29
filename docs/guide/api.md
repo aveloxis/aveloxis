@@ -128,7 +128,8 @@ GET /api/v1/repos/stats?ids=1,2,3,42
 Returns stats for multiple repos in one call. Response is a map keyed by repo ID.
 
 Since v0.28.7 the batch rows carry the same `gone_at` and
-`metadata_as_of` fields as the single-repo endpoint, and requested ids
+`metadata_as_of` fields as the single-repo endpoint (and, since
+v0.29.70, `unavailable_reason` and `unavailable_url`), and requested ids
 with no collection-queue row (the prelim-dequeued "gone" cohort) fall
 back to live gathered counts instead of serving zeros — the two
 endpoints can no longer disagree about a vanished repository. The
@@ -960,6 +961,16 @@ Token semantics:
   row — the prelim-dequeued gone cohort) the gathered counts fall
   back to live row counts instead of fabricated zeros; tracked
   repos keep the cached-count read.
+  v0.29.70 adds `unavailable_reason` and `unavailable_url` (both
+  omitted when empty): the forge's own message for a blocked or
+  disabled repository, repeated on the repository page — GitHub's
+  block answer on a 451 or 403 ("Repository access blocked (dmca)")
+  with its notice link, or the text git prints when the forge refuses a
+  clone ("Access to this repository has been disabled by GitHub
+  staff."). At most 500 characters; the link is present only when it
+  is an https URL. Independent of `gone_at`: a repository disabled by
+  staff is not marked gone. Cleared when a clone succeeds again or the
+  gone state is lifted. The batch endpoint carries the same two fields.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo

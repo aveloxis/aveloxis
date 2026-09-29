@@ -446,7 +446,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				// machinery.
 				c.logger.Info("graphql in-body rate limit — rotating to a fresh key",
 					"url", RedactURLUserinfo(url), "attempt", attempt+1, "error", parsed,
-					"token_prefix", tokenPrefix(key.Token))
+					"token_prefix", tokenPrefix(key.Token),
+					"reset", resetHeaderTime(resp)) // Phase 0
 				noteCause(parsed, attempt)
 				if rotations < maxRotations {
 					// A key rotation, not a transport retry — undo this
@@ -520,7 +521,8 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// on PR #209).
 			if isPrimaryRefusal(resp) {
 				c.logger.Info("graphql rate limit exhausted", "url", RedactURLUserinfo(url),
-					"token_prefix", tokenPrefix(key.Token))
+					"token_prefix", tokenPrefix(key.Token),
+					"reset", resetHeaderTime(resp)) // Phase 0: when GitHub says the refusal ends
 				// Copilot round 7 on PR #193: a 403 carrying
 				// Remaining: 0 WITHOUT X-RateLimit-Resource (the older
 				// GitHub response shape the pool explicitly supports)

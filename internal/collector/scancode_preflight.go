@@ -162,8 +162,13 @@ func (w *ScancodeWorker) probeScancodeHealth(ctx context.Context) (status, detai
 	// One trivial file with a recognizable license/copyright line so scancode
 	// has something to do — but the libmagic load (where the corruption surfaces)
 	// happens regardless of content.
-	_ = os.WriteFile(filepath.Join(dir, "preflight.txt"),
-		[]byte("// Copyright 2026 Aveloxis\n// SPDX-License-Identifier: MIT\nhello\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "preflight.txt"),
+		[]byte("// Copyright 2026 Aveloxis\n// SPDX-License-Identifier: MIT\nhello\n"), 0o644); err != nil {
+		// Old problem O3: discarded. Without its input file the check would
+		// scan an empty directory and prove nothing.
+		w.logger.Warn("scancode preflight: could not write the probe file; skipping health check", "error", err)
+		return "", "", false
+	}
 	outputPath := filepath.Join(dir, "out.json")
 
 	pctx, cancel := context.WithTimeout(ctx, scancodePreflightTimeout)

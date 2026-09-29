@@ -275,7 +275,11 @@ func (w *Worker) dispatcher(ctx context.Context, jobs chan<- *db.DistributionJob
 			// ctx canceled while waiting for a runner: release the
 			// claim so the row becomes immediately re-claimable.
 			relCtx, relCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = w.store.ReleaseDistributionClaim(relCtx, job) // a release, not a strike (pass 39)
+			if err := w.store.ReleaseDistributionClaim(relCtx, job); err != nil { // a release, not a strike (pass 39)
+				// Best-effort on stop; said, not silent (old problem O2).
+				w.logger.Warn("distribution: releasing an unstarted claim on stop failed — its row lock is released when the connection closes",
+					"repo_id", job.RepoID, "error", err)
+			}
 			relCancel()
 			return
 		case jobs <- job:

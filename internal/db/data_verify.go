@@ -303,6 +303,9 @@ func (s *PostgresStore) verifyBatchSingleAgreement(ctx context.Context, sample i
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return VerifyResult{Check: "batch vs single stats", Severity: "FAIL", Detail: fmt.Sprintf("probe read failed: %v", err)}
+	}
 	if len(ids) == 0 {
 		return VerifyResult{Check: "batch vs single stats", Severity: "OK", Detail: "no repos with findings to compare"}
 	}

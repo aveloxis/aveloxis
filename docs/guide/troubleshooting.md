@@ -149,6 +149,32 @@ hundreds of calls used. `scripts/check-keys.sh` reads `/rate_limit`, so a
 `refused_search_now` and `refusals_lifetime` next to the tracked
 `core_remaining_*` balances.
 
+### Observation lines added in 0.29.70
+
+These only report; nothing acts on them.
+
+- **`collection slots`** (INFO, with every key pool summary): how many jobs
+  are running (`active`), the oldest one's `oldest_repo_id`, `oldest_phase`
+  and `oldest_age`, and a `per_phase` count. A job stuck in one phase for
+  hours shows up here before its own completion line exists.
+- **`key pool reset agreement`** (INFO, with every key pool summary): for
+  each bucket (`core`, `graphql`), how many responses reported a rate-limit
+  reset `earlier` than, `equal` to or `later` than the window the pool was
+  tracking, or had no tracked window (`untracked`), plus the endpoints that
+  disagreed. It is the data worklist item 28 needs before the pool's
+  window model changes.
+- **`transaction-ID status`** (INFO, hourly): `frozen_xid_age` (the age
+  of the database's `datfrozenxid`), `autovacuum_freeze_max_age`,
+  `pct_of_freeze_max_age` and the current transaction ID. A percentage climbing toward
+  100 means anti-wraparound vacuums are due.
+- **Commit resolution's completion line** now carries `duration`,
+  `backfill_duration` (the author-ID backfill, which ran for over an hour
+  on large repositories), `search_attempts` and `search_time`.
+- **Scorecard's attempt line** carries `lent_tokens`: the prefixes of the
+  keys lent to that run.
+- **`forge notice recorded`** (INFO): a forge's own message about a
+  blocked or disabled repository was stored; the repository page shows it.
+
 ---
 
 ## FK constraint violations

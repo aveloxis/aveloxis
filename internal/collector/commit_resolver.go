@@ -309,8 +309,9 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 		if err != nil {
 			// Distinguish key exhaustion from other errors — key exhaustion means
 			// we should stop trying (all subsequent calls will fail too).
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "no API keys configured") || strings.Contains(errMsg, "invalidated") {
+			// Typed (v0.29.70): the error text carries the request URL, so a
+			// text match read a repository named "…invalidated…" as exhaustion.
+			if isKeyExhaustion(err) {
 				result.KeyExhausted = result.TotalCommits - result.accounted()
 				r.logger.Error("commit resolution aborted: no API keys available",
 					"repo_id", repoID,
@@ -322,7 +323,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 			// commit SHAs in the database don't exist in this repo (usually caused
 			// by a stale bare clone that belonged to a different repo). After 50
 			// consecutive 422s, abort — continuing would just waste API calls.
-			if strings.Contains(errMsg, "unprocessable entity") {
+			if errors.Is(err, platform.ErrUnprocessableEntity) {
 				// A 422 on a commit the default branch no longer has is
 				// rewritten history, not a stale clone (worklist 73: an
 				// upstream rewrite left 359 unresolved rows and the run
@@ -768,4 +769,11 @@ func (r *CommitResolver) ensureAlias(ctx context.Context, login, commitEmail str
 			r.logger.Warn("failed to backfill canonical", "cntrb_id", cntrbID, "email", commitEmail, "error", err)
 		}
 	}
+}
+
+// isKeyExhaustion reports whether err means the key pool can serve no
+// request: empty (ErrNoKeys) or every key invalidated. Decided on the
+// pool's typed errors, never on text (SR-5).
+func isKeyExhaustion(err error) bool {
+	return errors.Is(err, platform.ErrNoKeys) || errors.Is(err, platform.ErrAllKeysInvalidated)
 }

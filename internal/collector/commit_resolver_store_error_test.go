@@ -171,7 +171,8 @@ func (f *byEmailSearchClient) SearchUserByEmail(_ context.Context, email string)
 	f.calls++
 	switch {
 	case f.refused[email]:
-		return "", 0, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+		// The shape KeyPool.Acquire returns (v0.29.70: typed ErrNoKeys, same text).
+		return "", 0, fmt.Errorf("%w — add keys via 'aveloxis add-key' or the database", platform.ErrNoKeys)
 	case f.transient[email]:
 		return "", 0, fmt.Errorf("search/users timed out: %w", platform.ErrTransient)
 	}

@@ -122,7 +122,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 	started := time.Now()
 
 	var resurrected, stillGone, indeterminate, unreachable, failed, refused int
-	var fillElapsed time.Duration
+	var fillElapsed, noticeElapsed time.Duration
 	// Every still-gone arm goes through here. It also fills the stored
 	// commit bounds (O11 option 2): a gone repository gets no facade run,
 	// whatever its probe answered (review round 4 F2). A first fill reads
@@ -196,7 +196,9 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			stampChecked(c)
 			if status == http.StatusUnavailableForLegalReasons {
 				if f, ok := s.ghClient.(repoNoticeFetcher); ok {
+					noticeStart := time.Now()
 					s.recheckBlockNotice(ctx, c.RepoID, f) // item 82, review round 1 F1
+					noticeElapsed += time.Since(noticeStart)
 				}
 			}
 		default:
@@ -211,14 +213,16 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 	s.logger.Info("gone recheck cycle complete",
 		"candidates", len(cands), "resurrected", resurrected, "still_gone", stillGone,
 		"indeterminate", indeterminate, "unreachable", unreachable, "refused", refused, "failed", failed,
-		"elapsed", elapsed.Round(time.Second), "fill_elapsed", fillElapsed.Round(time.Second))
+		"elapsed", elapsed.Round(time.Second), "fill_elapsed", fillElapsed.Round(time.Second),
+		"notice_elapsed", noticeElapsed.Round(time.Second))
 	if overran, perHour := goneRecheckOverrun(len(cands), elapsed); overran {
 		// Observation-only (SR-7): nothing is cancelled or resized.
 		// The cause is named from the numbers (round 4 F3): the first cycles
 		// after v0.29.70 also fill each gone repository's commit bounds once.
-		s.logger.Warn("gone recheck cycle overran its tick — this batch ran below the per-tick design rate; fill_elapsed is the time spent filling commit bounds for the first time, the rest is the probes (slow or unreachable hosts)",
+		s.logger.Warn("gone recheck cycle overran its tick — this batch ran below the per-tick design rate; fill_elapsed is the time spent filling commit bounds for the first time, notice_elapsed the keyed block-notice requests (which wait when no key has budget), the rest is the probes (slow or unreachable hosts)",
 			"candidates", len(cands), "unreachable", unreachable, "indeterminate", indeterminate,
-			"elapsed", elapsed.Round(time.Second), "fill_elapsed", fillElapsed.Round(time.Second), "tick", goneRecheckTick,
+			"elapsed", elapsed.Round(time.Second), "fill_elapsed", fillElapsed.Round(time.Second),
+			"notice_elapsed", noticeElapsed.Round(time.Second), "tick", goneRecheckTick,
 			"probes_per_hour", perHour, "design_probes_per_hour", goneRecheckBatch,
 			"recheck_every", s.cfg.Collection.GoneRepoRecheckInterval())
 	}

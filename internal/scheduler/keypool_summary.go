@@ -193,5 +193,5 @@ func (s *Scheduler) logIdleGitHubTasks() {
 	if s.githubKeysAvailable() {
 		return
 	}
-	s.logger.Warn("GitHub key pool has no usable key — GitHub-only background tasks stay idle: contributor breadth and enrichment, the activity sweeps, search-resolve and the sender resolver's API tail, org scans, the repository-metadata backfill's GitHub candidates; distribution scans of GitHub repositories fail and sideline (snapshots kept)")
+	s.logger.Warn("GitHub key pool has no usable key — GitHub-only background tasks stay idle: contributor breadth and enrichment, the activity sweeps, search-resolve and the sender resolver's API tail, org scans, the repository-metadata backfill's GitHub candidates, legally blocked repositories' block notices; distribution scans of GitHub repositories fail and sideline (snapshots kept)")
 }

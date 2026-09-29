@@ -24,8 +24,8 @@ import "strings"
 // of 1.0.2 < 1.0.10 < 1.0.1b1 < 1.0.2). On plain numeric segments the two
 // rules agree.
 func CompareVersionish(a, b string) int {
-	as := strings.Split(strings.TrimPrefix(a, "v"), ".")
-	bs := strings.Split(strings.TrimPrefix(b, "v"), ".")
+	as := releaseWordLast(strings.Split(strings.TrimPrefix(a, "v"), "."))
+	bs := releaseWordLast(strings.Split(strings.TrimPrefix(b, "v"), "."))
 	n := max(len(as), len(bs))
 	for i := 0; i < n; i++ {
 		av, bv := "0", "0"
@@ -148,22 +148,36 @@ var pep440Aliases = []struct{ from, to string }{
 	{"preview", "rc"}, {"alpha", "a"}, {"beta", "b"}, {"pre", "rc"}, {"c", "rc"},
 }
 
+// releaseWordLast drops a release word where it ENDS the version — the
+// whole last segment ("2.1.0.RELEASE") or its suffix ("1.0.0-final") —
+// because there it names the release itself (worklist 64(b)). Anywhere else
+// it is ordinary text: SemVer "1.0.0-release.1" stays a pre-release of
+// 1.0.0 (whole-branch review).
+func releaseWordLast(segs []string) []string {
+	last := segs[len(segs)-1]
+	digits, rest := splitLeadingDigits(last)
+	if !releaseWords[strings.ToLower(strings.TrimLeft(rest, "-._"))] {
+		return segs
+	}
+	out := append([]string(nil), segs...)
+	if digits == "" {
+		out[len(out)-1] = "0"
+	} else {
+		out[len(out)-1] = digits
+	}
+	return out
+}
+
 // canonicalVersionSegment rewrites one segment to the spelling the
 // comparison keys on, so every branch of compareVersionSegment compares
-// the same key (a total order): a release word — whole segment or suffix —
-// is the release ("RELEASE" as a segment is the filled-in "0"; "0-final" is
-// "0"), and a PEP 440 alias is its canonical tag ("0c1" is "0rc1",
-// "0alpha2" is "0a2"). A SemVer "-" suffix is otherwise kept as written:
-// "-alpha" and "-a" are different SemVer identifiers.
+// the same key (a total order): a PEP 440 tag is lowercased (PEP 440 is
+// case-insensitive — "1.0RC1" is "1.0rc1", whole-branch review) and an
+// alias is its canonical tag ("0c1" is "0rc1", "0alpha2" is "0a2"). A
+// SemVer "-" suffix is kept as written: "-alpha" and "-a" are different
+// SemVer identifiers, and SemVer compares them as ASCII, case included.
 func canonicalVersionSegment(seg string) string {
 	digits, rest := splitLeadingDigits(seg)
 	low := strings.ToLower(rest)
-	if releaseWords[strings.TrimLeft(low, "-._")] {
-		if digits == "" {
-			return "0"
-		}
-		return digits
-	}
 	if rest == "" || rest[0] == '-' {
 		return seg
 	}
@@ -178,7 +192,7 @@ func canonicalVersionSegment(seg string) string {
 			break
 		}
 	}
-	return seg
+	return digits + low
 }
 
 func splitLeadingDigits(s string) (digits, rest string) {

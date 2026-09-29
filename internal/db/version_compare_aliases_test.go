@@ -21,16 +21,32 @@ func TestCompareVersionishAliases(t *testing.T) {
 		{"1.0-GA", "1.0"},
 		{"2.1.0-release", "2.1.0"},
 		{"2.1.0.RELEASE", "2.1.0"},
+		// Whole-branch review: PEP 440 is case-insensitive — a plain tag's
+		// case must not split one version into two.
+		{"1.0RC1", "1.0rc1"},
+		{"1.0B1", "1.0b1"},
+		{"1.0RC1", "1.0C1"},
+		{"1.0A1", "1.0alpha1"},
 	} {
 		if c := CompareVersionish(tc.a, tc.b); c != 0 {
 			t.Errorf("CompareVersionish(%q, %q) = %d; want equal", tc.a, tc.b, c)
 		}
 	}
+	// A release word names the release only where it ENDS the version:
+	// SemVer 1.0.0-release.1 is a pre-release of 1.0.0 (whole-branch review).
+	if CompareVersionish("1.0.0-release.1", "1.0.0") >= 0 {
+		t.Error("1.0.0-release.1 is a pre-release: it must sort before 1.0.0")
+	}
+	// A SemVer suffix keeps its case (SemVer compares identifiers as ASCII).
+	if CompareVersionish("1.0.0-RC.1", "1.0.0-rc.1") == 0 {
+		t.Error("a SemVer pre-release identifier's case is significant")
+	}
 	// Still ordered as pre-releases, and still a total order.
 	if CompareVersionish("1.0c1", "1.0") >= 0 || CompareVersionish("1.0beta1", "1.0rc1") >= 0 {
 		t.Error("aliases must keep their pre-release order (b before rc, before the release)")
 	}
-	set := []string{"1.0a1", "1.0alpha2", "1.0b1", "1.0beta2", "1.0c1", "1.0rc2", "1.0", "1.0-final", "1.0.post1", "1.0-rc.1", "1.0.1"}
+	set := []string{"1.0a1", "1.0alpha2", "1.0b1", "1.0beta2", "1.0c1", "1.0rc2", "1.0", "1.0-final", "1.0.post1", "1.0-rc.1", "1.0.1",
+		"1.0RC1", "1.0B2", "1.0-release.1", "1.0.RELEASE"}
 	for i := range set {
 		for j := range set {
 			if CompareVersionish(set[i], set[j]) != -CompareVersionish(set[j], set[i]) {

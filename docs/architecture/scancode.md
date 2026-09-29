@@ -89,13 +89,13 @@ The v0.21.0 worker:
 
 On any failure path (clone error, scancode crash, JSON parse error, ingest error), the runner calls `store.ClearScancodeLock(repoID)` to release the lock without setting `scancode_last_run`. The row becomes eligible for re-claim on the next dispatcher tick.
 
-### 3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap
+### 3.3 Dispatcher pacing: a start gap per worker (v0.21.3, v0.29.70)
 
-The pacing semantic for `scancode_start_interval_s` changed between v0.21.0 and v0.21.3. The change is invisible to operators in steady state but materially affects first-pass throughput.
+The pacing semantic for `scancode_start_interval_s` changed twice: v0.21.3 replaced a ticker with a minimum gap between starts, and v0.29.70 made that gap per worker. Both changes matter for first-pass throughput.
 
-**Pre-v0.21.3 design (broken at scale)**: the dispatcher was driven by `time.NewTicker(startInterval)` — one claim attempt per tick, regardless of how many workers were idle. At 90 s/tick × 7 workers × ~3-min average scan time, the fleet-wide claim rate capped at 40 claims/hour while runners had capacity for ~140. On a 40K-repo fleet this produced ~42-day first-pass estimates when actual capacity was ~12 days. 6 of 7 workers sat idle on average.
+**Pre-v0.21.3 design (broken at scale)**: the dispatcher was driven by `time.NewTicker(startInterval)` — one claim attempt per tick, regardless of how many workers were idle. At 90 s/tick the claim rate capped at 40 claims/hour while 7 workers with ~3-minute scans had capacity for ~140.
 
-**v0.21.3 design (correct)**: the dispatcher maintains a `nextStartAllowed time.Time` deadline that's stamped *after* each successful start. It then loops as fast as the runtime allows, gating each claim on `time.Now() >= nextStartAllowed`. The unbuffered jobs channel provides back-pressure — when all N workers are busy, the dispatcher's send blocks naturally and no over-claiming happens.
+**v0.21.3 design**: the dispatcher maintains a `nextStartAllowed time.Time` deadline that's stamped *after* each successful start. It then loops as fast as the runtime allows, gating each claim on `time.Now() >= nextStartAllowed`. The unbuffered jobs channel provides back-pressure — when all N workers are busy, the dispatcher's send blocks naturally and no over-claiming happens. It did not lift the 40/hour cap, though (below).
 
 **v0.29.70: the gap is per worker.** The v0.21.3 gate still stamped ONE
 global gap after every start, so starts per hour were at most

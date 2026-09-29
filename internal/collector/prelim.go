@@ -22,8 +22,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -381,13 +383,22 @@ func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
 }
 
 // isTransientNetError returns true for DNS resolution failures and connection
-// refused errors that are likely to resolve on retry.
+// refused errors that are likely to resolve on retry. Decided on the net
+// package's typed errors (v0.29.70 whole-branch review, SR-5): the text
+// carries the probed URL. Same classes the old text match took — a host
+// not found, a refused or unreachable connect, a socket i/o timeout — and
+// no more: a per-hop deadline (context.DeadlineExceeded) or a
+// response-header timeout is still not retried.
 func isTransientNetError(err error) bool {
-	s := err.Error()
-	return strings.Contains(s, "no such host") ||
-		strings.Contains(s, "connection refused") ||
-		strings.Contains(s, "network is unreachable") ||
-		strings.Contains(s, "i/o timeout")
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Timeout()
 }
 
 // normalizeRepoURL strips protocol, trailing slashes, and .git suffix for comparison.

@@ -856,6 +856,9 @@ Token semantics:
   dependency exposure: `current`, `critical`, `direct`,
   `transitive`, `dev` and `runtime` exclude them, and they are
   counted apart as `unknown_version` (with `unknown_version_critical`).
+  Except GitHub Actions dependencies (`ecosystem` `githubactions`): a
+  floating ref (`@v4`, `@main`) is stored `unpinned` too, but its
+  advisories were matched against the ref, so they stay exposure.
   The rows themselves stay in `vulnerabilities`. The same definition
   applies to the repository stats (`vulnerabilities`,
   `critical_vulns`, and the new `vulnerabilities_version_unknown`),
@@ -907,8 +910,8 @@ Token semantics:
   | `locked` | A committed lockfile resolved this package — the purl is the LOCKED version, not the range floor. Go dependencies are `locked` by construction (go.mod versions are exact under MVS). |
   | `exact` | `==X` or a bare version: the manifest names exactly one version. |
   | `bounded-range` | The requirement has an upper bound (`~=`, `^`, `~`, or a compound containing `<`/`<=`). The purl is the range FLOOR. |
-  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits. UIs should render e.g. "≥2.20 declared — floor shown". |
-  | `unpinned` | No version declared (produces no findings today). |
+  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits, not the installed version. UIs should say so, e.g. "lowest allowed" beside the version, with the declared requirement. |
+  | `unpinned` | No version declared: OSV.dev was queried without one and returned every advisory for the package, so exposure is unknown — counted apart as `unknown_version` (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in `current`. |
 
   Both fields are absent (`""`) on findings last touched by a
   pre-v0.27.11 scan and heal on the repo's next scan.

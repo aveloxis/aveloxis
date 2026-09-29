@@ -51,6 +51,13 @@ type repoNoticeFetcher interface {
 // sideline (a sidelined repository leaves the queue). A request that gets
 // no answer is logged and stores nothing (SR-16).
 func (s *Scheduler) captureBlockNotice(ctx context.Context, repo *model.Repo, f repoNoticeFetcher) {
+	// A keyed GitHub request: with no usable key (a GitLab-only deployment,
+	// or every key invalidated) it would fail at once for every blocked row,
+	// every cadence (whole-branch review). Skipped like every GitHub-only
+	// task; logIdleGitHubTasks says so once at startup.
+	if !s.githubKeysAvailable() {
+		return
+	}
 	n, ok, err := f.FetchRepoNotice(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

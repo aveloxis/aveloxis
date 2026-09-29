@@ -24,11 +24,18 @@ import (
 // `remote:` text a server prints, and a server can print any amount.
 const MaxUnavailableReasonRunes = 500
 
+// MaxUnavailableURLBytes caps the stored notice link: 2,048, the practical
+// URL limit browsers and the sitemaps protocol use (GitHub's notice links
+// are ~100 bytes). A longer link is dropped, not truncated — a cut URL
+// points somewhere else (whole-branch review).
+const MaxUnavailableURLBytes = 2048
+
 // SetRepoUnavailable stores the forge's message and notice link. The
 // store enforces the limits (SR-18), so no caller can store more: the
 // text is trimmed and capped on a character boundary (blank text is
 // NULL), and the link is kept only as an absolute https URL with a host,
-// because the page renders it as a link. A notice without a link keeps the
+// at most MaxUnavailableURLBytes long, because the page renders it as a
+// link. A notice without a link keeps the
 // stored one (review round 1 F5: the refused clone's remote text follows
 // the API phase's block object in the same job and carries no link).
 // Blank text still writes NULL for the message: nothing to show.
@@ -40,7 +47,7 @@ func (s *PostgresStore) SetRepoUnavailable(ctx context.Context, repoID int64, te
 	if r := []rune(text); len(r) > MaxUnavailableReasonRunes {
 		text = string(r[:MaxUnavailableReasonRunes])
 	}
-	if u, err := url.Parse(noticeURL); err != nil || u.Scheme != "https" || u.Host == "" {
+	if u, err := url.Parse(noticeURL); err != nil || u.Scheme != "https" || u.Host == "" || len(noticeURL) > MaxUnavailableURLBytes {
 		noticeURL = ""
 	}
 	_, err := s.pool.Exec(ctx, `

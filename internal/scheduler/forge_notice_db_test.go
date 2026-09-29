@@ -38,7 +38,8 @@ func forgeNoticeFixture(t *testing.T) (*Scheduler, *db.PostgresStore, *bytes.Buf
 	}
 	t.Cleanup(store.Close)
 	var logs bytes.Buffer
-	s := &Scheduler{store: store, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	s := &Scheduler{store: store, logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		ghKeys: platform.NewKeyPool([]string{"k"}, slog.New(slog.NewTextHandler(io.Discard, nil)))}
 	n := 0
 	seed := func(platformID int) *model.Repo {
 		t.Helper()
@@ -218,5 +219,33 @@ func TestFillCommitBounds(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "level=WARN") {
 		t.Errorf("unexpected WARN:\n%s", logs.String())
+	}
+}
+
+type countingNoticeFetcher struct{ calls int }
+
+func (f *countingNoticeFetcher) FetchRepoNotice(context.Context, string, string) (platform.ForgeNotice, bool, error) {
+	f.calls++
+	return platform.ForgeNotice{}, false, nil
+}
+
+// TestCaptureBlockNoticeNeedsAUsableGitHubKey — whole-branch review: the
+// notice fetch is a keyed GitHub request. With an empty GitHub pool (a
+// GitLab-only deployment) or every key invalidated, Acquire fails at once
+// and every blocked row WARNed every cadence; like every GitHub-only task,
+// the fetch is skipped instead (logIdleGitHubTasks says so once).
+func TestCaptureBlockNoticeNeedsAUsableGitHubKey(t *testing.T) {
+	s, _, logs, seed := forgeNoticeFixture(t)
+	ctx := context.Background()
+	s.ghKeys = platform.NewKeyPool(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	f := &countingNoticeFetcher{}
+	r := seed(1)
+	s.captureBlockNotice(ctx, r, f)
+	s.recheckBlockNotice(ctx, r.ID, f)
+	if f.calls != 0 {
+		t.Errorf("the fetcher was called %d time(s) with no usable GitHub key", f.calls)
+	}
+	if strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("no WARN without a usable key:\n%s", logs.String())
 	}
 }

@@ -244,3 +244,25 @@ func TestRepoUnavailableKeepsTheLinkWhenTheNewNoticeHasNone(t *testing.T) {
 		t.Errorf("link = %v, want the newer one", u)
 	}
 }
+
+// TestRepoUnavailableLinkIsLengthCapped — whole-branch review: the store
+// claimed to enforce every limit but capped only the text; a link longer
+// than MaxUnavailableURLBytes is dropped (a truncated URL points elsewhere).
+func TestRepoUnavailableLinkIsLengthCapped(t *testing.T) {
+	store, ctx := unavailableStore(t)
+	id := seedUnavailableRepo(ctx, t, store, "longlink", false)
+	long := "https://github.com/" + strings.Repeat("a", MaxUnavailableURLBytes)
+	if err := store.SetRepoUnavailable(ctx, id, "m", long); err != nil {
+		t.Fatal(err)
+	}
+	if _, u := unavailableCols(ctx, t, store, id); u != nil {
+		t.Errorf("a %d-byte link was stored; want NULL", len(long))
+	}
+	exact := "https://github.com/" + strings.Repeat("b", MaxUnavailableURLBytes-len("https://github.com/"))
+	if err := store.SetRepoUnavailable(ctx, id, "m", exact); err != nil {
+		t.Fatal(err)
+	}
+	if _, u := unavailableCols(ctx, t, store, id); u == nil || *u != exact {
+		t.Error("a link of exactly the cap must be kept")
+	}
+}

@@ -6,7 +6,10 @@ package collector
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -17,7 +20,9 @@ type refusingTransport struct{ attempts int }
 
 func (t *refusingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	t.attempts++
-	return nil, errors.New("dial tcp 127.0.0.1:1: connection refused")
+	// The shape a real transport returns (v0.29.70: isTransientNetError is
+	// typed, so a text-only fake no longer reads as a refused connect).
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 }
 
 // TestHeadWithRetryBackoffStopsOnCancel pins batch 7b review round 4: the

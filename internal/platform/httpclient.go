@@ -847,7 +847,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		c.logger.Warn("unprocessable entity (not retrying)",
 			"url", RedactURLUserinfo(url), "status", 422, "body_snippet", truncateBody(bodyStr, 200))
-		return respDone, nil, fmt.Errorf("unprocessable entity: %s: %w", url, ErrRequestRejected)
+		return respDone, nil, fmt.Errorf("%w: %s: %w", ErrUnprocessableEntity, url, ErrRequestRejected)
 	case resp.StatusCode == http.StatusForbidden:
 		// 403 can mean rate limit, secondary rate limit, or resource not
 		// accessible. Header signals are authoritative — they carry the

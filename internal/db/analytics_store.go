@@ -268,29 +268,6 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 	return out, rows.Err()
 }
 
-// FirstActivityAt returns the earliest known activity across a repo
-// set (v0.27.24): the LEAST of first issue, first PR, first commit
-// (author timestamp), and the forge's repo creation date. It is the
-// per-entity floor the compare endpoint clamps chart windows to, so a
-// young repo's series starts when its data starts instead of at the
-// requested window's beginning.
-//
-// ok=false means the set has no dateable activity at all (nothing
-// collected yet) — callers fall back to the unclamped window.
-//
-// Fail-safe by construction: a repo with imported ancient history (or
-// a bogus 1970 git timestamp) yields a floor BEFORE the window start,
-// making the clamp a no-op — never hidden data inside the window.
-// Postgres LEAST ignores NULL operands.
-//
-// Cost note: the issues/PR arms ride idx_issues_repo_created /
-// idx_pull_requests_repo_created one row per repository. The commits
-// arm reads the stored repos.first_commit_at (v0.29.70, O11 option 2)
-// and scans the repository's per-file rows only while that column is
-// unfilled — there is still deliberately no (repo_id,
-// cmt_author_timestamp) index on the fleet's largest table. The API
-// layer also memoizes per entity for the process lifetime (first
-// activity is immutable — history does not grow backward).
 // LastActivityAt returns the most recent observed activity across the
 // repo set — the MAX of last issue, last PR, and last commit (author
 // timestamp). Unlike FirstActivityAt it deliberately omits
@@ -337,6 +314,29 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 	return la.UTC(), true, nil
 }
 
+// FirstActivityAt returns the earliest known activity across a repo
+// set (v0.27.24): the LEAST of first issue, first PR, first commit
+// (author timestamp), and the forge's repo creation date. It is the
+// per-entity floor the compare endpoint clamps chart windows to, so a
+// young repo's series starts when its data starts instead of at the
+// requested window's beginning.
+//
+// ok=false means the set has no dateable activity at all (nothing
+// collected yet) — callers fall back to the unclamped window.
+//
+// Fail-safe by construction: a repo with imported ancient history (or
+// a bogus 1970 git timestamp) yields a floor BEFORE the window start,
+// making the clamp a no-op — never hidden data inside the window.
+// Postgres LEAST ignores NULL operands.
+//
+// Cost note: the issues/PR arms ride idx_issues_repo_created /
+// idx_pull_requests_repo_created one row per repository. The commits
+// arm reads the stored repos.first_commit_at (v0.29.70, O11 option 2)
+// and scans the repository's per-file rows only while that column is
+// unfilled — there is still deliberately no (repo_id,
+// cmt_author_timestamp) index on the fleet's largest table. The API
+// layer also memoizes per entity for the process lifetime (first
+// activity is immutable — history does not grow backward).
 func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil

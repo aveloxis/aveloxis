@@ -84,6 +84,9 @@ func TestGitHubOnlyTasksGateOnUsableKeys(t *testing.T) {
 		"internal/scheduler/distribution_wiring.go":     {"func (s *Scheduler) spawnDistributionWorker("},
 		"internal/scheduler/keypool_summary.go":         {"func (s *Scheduler) logIdleGitHubTasks("},
 		"internal/scheduler/repo_metadata_backfill.go":  {"func (s *Scheduler) runRepoMetadataBackfill("},
+		// v0.29.70 whole-branch review: the block-notice fetch (runJob's 451
+		// sideline and the gone recheck both reach it through here).
+		"internal/scheduler/forge_notice.go": {"func (s *Scheduler) captureBlockNotice("},
 	}
 	examined := 0
 	for file, sigs := range sites {
@@ -96,7 +99,7 @@ func TestGitHubOnlyTasksGateOnUsableKeys(t *testing.T) {
 			}
 		}
 	}
-	srctest.MinCount(t, "GitHub-only entry points", examined, 11)
+	srctest.MinCount(t, "GitHub-only entry points", examined, 12)
 }
 
 // TestGitHubGatesKeepTheirDecidedShapes pins the three shapes review round 1

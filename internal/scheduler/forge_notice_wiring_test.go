@@ -68,7 +68,7 @@ func TestForgeNoticeIsWiredIntoTheJob(t *testing.T) {
 func TestGoneRecheckCapturesTheBlockNotice(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/gone_recheck.go"))
 	body := srctest.FuncBody(t, src, "func (s *Scheduler) runGoneRecheck(")
-	re := regexp.MustCompile(`case platform\.IsRepoGoneStatus\(status\):[^\n]*\n\s*stillGone\+\+\s*stampChecked\(c\)\s*if status == http\.StatusUnavailableForLegalReasons \{\s*if f, ok := s\.ghClient\.\(repoNoticeFetcher\); ok \{\s*s\.recheckBlockNotice\(ctx, c\.RepoID, f\)`)
+	re := regexp.MustCompile(`case platform\.IsRepoGoneStatus\(status\):[^\n]*\n\s*stillGone\+\+\s*stampChecked\(c\)\s*if status == http\.StatusUnavailableForLegalReasons \{\s*if f, ok := s\.ghClient\.\(repoNoticeFetcher\); ok \{\s*noticeStart := time\.Now\(\)\s*s\.recheckBlockNotice\(ctx, c\.RepoID, f\)`)
 	if !re.MatchString(body) {
 		t.Error("runGoneRecheck's gone arm must fetch the block notice on a 451 (review round 1 F1)")
 	}
@@ -122,5 +122,8 @@ func TestGoneRecheckFillsTheCommitBounds(t *testing.T) {
 	}
 	if !strings.Contains(body, `"fill_elapsed", fillElapsed.Round(time.Second)`) {
 		t.Error("the overrun WARN must report the time spent filling commit bounds")
+	}
+	if strings.Count(body, `"notice_elapsed", noticeElapsed.Round(time.Second)`) != 2 {
+		t.Error("the cycle line and the overrun WARN must both report the block-notice time (whole-branch review)")
 	}
 }

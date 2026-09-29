@@ -13,10 +13,11 @@ import (
 // analytics). schema.sql's CREATE OR REPLACE already declares it (v0.29.8),
 // but where that did not apply — a function owned by another role, a
 // database migrated before v0.29.8 — Postgres keeps the default PARALLEL
-// UNSAFE and every query calling the function runs serially. The effective
-// marker is read back: a change is logged, and a marker that is still not
-// SAFE is a WARN naming why (usually ownership). Never fails the migrate: it
-// is a plan-quality setting, not an integrity rule.
+// UNSAFE and every query calling the function runs serially. The current
+// marker is read first and the ALTER runs only when it is not SAFE; a
+// change is logged with the previous marker, and a failed ALTER is a WARN
+// naming why (usually ownership). Never fails the migrate: it is a
+// plan-quality setting, not an integrity rule.
 func ensureAutomationEmailParallelSafe(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	const fn = "aveloxis_data.is_automation_email(text)"
 	var before string

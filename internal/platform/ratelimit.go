@@ -359,7 +359,7 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 			return nil, nil, err
 		}
 		if len(kp.keys) == 0 {
-			return nil, nil, fmt.Errorf("no API keys configured — add keys via 'aveloxis add-key' or the database")
+			return nil, nil, fmt.Errorf("%w — add keys via 'aveloxis add-key' or the database", ErrNoKeys)
 		}
 		now := time.Now()
 		kp.refillLocked(now, res)

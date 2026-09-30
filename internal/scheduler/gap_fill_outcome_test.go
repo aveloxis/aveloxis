@@ -5,12 +5,14 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // makeSuccessfulCollectResult returns a CollectResult that mimics a
@@ -29,12 +31,15 @@ func makeSuccessfulCollectResult() *collector.CollectResult {
 	}
 }
 
-// makeGapFillError returns an error shaped like the production logs:
-// the prefix "PR gap fill error" wraps "gap fill PR batch" which wraps
-// "graphql PR batch". shouldForceFullRecollect matches on the
-// "graphql PR batch" substring so any of these wrappers triggers it.
+// makeGapFillError returns an error shaped like the production chain: "PR
+// gap fill error" wraps "gap fill PR batch", which wraps platform.ErrPRBatch
+// — and errors.Is on that sentinel is what arms force_full (v0.29.71; it
+// used to match the text).
 func makeGapFillError() error {
-	return errors.New("PR gap fill error: gap fill PR batch: graphql PR batch: graphql: exhausted 10 retries for https://api.github.com/graphql")
+	// The production chain (v0.29.71: typed, so the chain matters, not the
+	// text): gap fill's PR batch wraps the platform's platform.ErrPRBatch.
+	return errors.Join(fmt.Errorf("PR gap fill error: %w", fmt.Errorf("gap fill PR batch: %w",
+		fmt.Errorf("%w: graphql: exhausted 10 retries for https://api.github.com/graphql", platform.ErrPRBatch))))
 }
 
 // callBuildOutcome is the test indirection that lets us update the
@@ -45,8 +50,8 @@ func callBuildOutcome(s *Scheduler, result *collector.CollectResult, facadeResul
 }
 
 // v0.20.5: Gap fill errors were previously logged at WARN and dropped on
-// the floor — they never reached outcome.errMsg, so shouldForceFullRecollect
-// could not fire and last_error stayed NULL in collection_queue. The result:
+// the floor — they never reached the outcome, so force_full could not be
+// armed and last_error stayed NULL in collection_queue. The result:
 // repos with PR gaps got stuck in a perpetual loop where each incremental
 // cycle re-detected the same gap, gap fill failed the same way, and the
 // queue carried no SQL-queryable signal. These tests pin the new
@@ -55,9 +60,9 @@ func callBuildOutcome(s *Scheduler, result *collector.CollectResult, facadeResul
 // TestBuildOutcomeFoldsGapFillError pins the behavioral contract: when a
 // gap-fill error is passed in and the main collection error is nil, the
 // outcome must reflect it as a failure with the gap-fill error message
-// captured. Otherwise shouldForceFullRecollect — which matches on
-// "graphql PR batch" substring — never fires for the gap-fill failure
-// class.
+// captured. Otherwise force_full — errors.Is(err, platform.ErrPRBatch) on
+// the recorded error since v0.29.71 — is never armed for the gap-fill
+// failure class.
 func TestBuildOutcomeFoldsGapFillError(t *testing.T) {
 	data, err := os.ReadFile("scheduler.go")
 	if err != nil {
@@ -139,7 +144,7 @@ func TestRunJobFoldsGapFillErrorIntoOutcome(t *testing.T) {
 // error, buildOutcome must produce outcome.success=false and
 // outcome.errMsg containing the gap-fill error message (which always
 // starts with "PR gap fill error:" or "gap fill PR batch:" in
-// production). This is what makes shouldForceFullRecollect fire.
+// production). Its platform.ErrPRBatch is what arms force_full.
 func TestBuildOutcomeBehavior_GapFillErrorPopulatesErrMsg(t *testing.T) {
 	// This test exercises the real buildOutcome method via the package's
 	// jobOutcome internal type. The Scheduler instance doesn't need any
@@ -161,10 +166,13 @@ func TestBuildOutcomeBehavior_GapFillErrorPopulatesErrMsg(t *testing.T) {
 	outcome := callBuildOutcome(&s, successResult, nil, nil, nil, gapErr)
 
 	if outcome.success {
-		t.Error("buildOutcome must mark success=false when the gap-fill error is non-nil — without this, shouldForceFullRecollect (which is gated on !outcome.success) cannot trigger force_full_collect")
+		t.Error("buildOutcome must mark success=false when the gap-fill error is non-nil — without this force_full (gated on !outcome.success) cannot be armed")
 	}
-	if !strings.Contains(outcome.errMsg, "gap fill") && !strings.Contains(outcome.errMsg, "graphql PR batch") {
-		t.Errorf("buildOutcome must populate errMsg with the gap-fill error text so shouldForceFullRecollect can substring-match it. Got errMsg=%q", outcome.errMsg)
+	if !strings.Contains(outcome.errMsg, "gap fill") {
+		t.Errorf("buildOutcome must record the gap-fill error as errMsg (last_error). Got errMsg=%q", outcome.errMsg)
+	}
+	if !outcome.forceFull {
+		t.Error("a gap-fill error wrapping platform.ErrPRBatch must arm force_full")
 	}
 }
 

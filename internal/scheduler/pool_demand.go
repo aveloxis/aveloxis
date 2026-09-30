@@ -48,6 +48,8 @@ var backgroundDBLoops = []string{
 	"stall-detector",         // runStallDetector
 	"staging-cleanup",        // runStagingCleanup (single-flight since review round 5)
 	"xid-status",             // logXIDStatus: the hourly transaction-ID line (v0.29.70, worklist item 78)
+	"add-request-retry",      // retryApprovedAddRequests: the hourly approved-add retry (v0.29.71, O17)
+	"migrate-blocker-watch",  // db.watchBlockers: polls pg_stat_activity while serve's startup migrate runs (safego since v0.29.71, O6)
 	"vuln-digest",            // runVulnDigest (single-flight since review round 5)
 	"supply-chain-refresh",   // runSupplyChainRefresh (v0.29.61; single-flight off its own ticker)
 	"matview-rebuild",        // rebuildMatviews

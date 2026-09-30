@@ -1191,8 +1191,8 @@ func runPrioritize(cfgPath, target string) error {
 //     up on the repo's next scheduled DequeueNext and determineSince
 //     returns zero time for a full pass.
 //   - Automatic: the scheduler flips the flag itself when a job ends
-//     with a GraphQL-batch error class (see shouldForceFullRecollect in
-//     internal/scheduler/scheduler.go).
+//     with a GraphQL-batch error (errors.Is(err, platform.ErrPRBatch) in
+//     internal/scheduler/scheduler.go's buildOutcome).
 //
 // The flag is cleared by CompleteJob on the next successful collection.
 // This command does NOT prioritize the repo — operators who want it
@@ -2256,14 +2256,14 @@ Common failures and what they mean:
 				return fmt.Errorf("mail config invalid — fix aveloxis.json and try again: %w", err)
 			}
 			m := mailer.New(mc, logger)
-			logger.Info("sending test email", "to", recipient, "from", mc.GmailUser)
+			logger.Info("sending test email", "to", platform.RedactEmail(recipient), "from", platform.RedactEmail(mc.GmailUser))
 			if err := m.Send(recipient, "Aveloxis SMTP test",
 				"This is a test email from `aveloxis test-mail`.\n\n"+
 					"If you received this, your Gmail SMTP credentials are working.\n"+
 					"— Aveloxis"); err != nil {
 				return fmt.Errorf("send failed: %w", err)
 			}
-			logger.Info("test email sent successfully", "to", recipient)
+			logger.Info("test email sent successfully", "to", platform.RedactEmail(recipient))
 			return nil
 		},
 	}
@@ -2425,6 +2425,9 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		Mailer:              mailer.New(mailerConfigFrom(cfg), logger),
 		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
 		GitHubAPIBase:       cfg.GitHub.GitHubAPIBase(),
+		// O11 option 4 (v0.29.71): a per-repository answer is reused within
+		// its collection generation for at most one enrichment interval.
+		ResponseCacheMaxAge: cfg.Collection.EnrichIntervalDuration(),
 	}
 }
 

@@ -3,7 +3,12 @@
 
 package collector
 
-import "context"
+import (
+	"context"
+	"errors"
+	"os/exec"
+	"syscall"
+)
 
 // execErr maps a subprocess failure under a canceled context to the
 // context's own error. exec.CommandContext kills the child on cancel
@@ -20,4 +25,17 @@ func execErr(ctx context.Context, err error) error {
 		return ctx.Err()
 	}
 	return err
+}
+
+// killedBySIGKILL reports whether err is a subprocess exit by SIGKILL —
+// what cmd.Wait returns when a wall-clock context fires cmd.Cancel. It
+// reads the exit's wait status (v0.29.71); the scancode classifier used to
+// compare the error TEXT with "signal: killed" (the error-text class).
+func killedBySIGKILL(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	ws, ok := ee.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL
 }

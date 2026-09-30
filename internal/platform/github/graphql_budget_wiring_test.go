@@ -31,13 +31,13 @@ func TestBackgroundSweepsCarryBackgroundBudget(t *testing.T) {
 }
 
 // TestChildPaginationErrorCarriesForceFullNeedle: the pagination wrap must
-// carry the "graphql PR batch" substring shouldForceFullRecollect keys on
-// (v0.18.24) — pytorch's shard-41 pagination failure never armed
+// carry platform.ErrPRBatch, which arms force_full (v0.18.24; typed since
+// v0.29.71) — pytorch's shard-41 pagination failure never armed
 // force_full while its batch-fetch siblings did.
 func TestChildPaginationErrorCarriesForceFullNeedle(t *testing.T) {
 	src := srctest.Read(t, "internal/platform/github/graphql_pr_batch.go")
-	if !strings.Contains(src, `"graphql PR batch: paginating children for PR #%d: %w"`) {
-		t.Error(`the paginating-children wrap must start with "graphql PR batch: " (the shouldForceFullRecollect needle)`)
+	if !strings.Contains(src, `fmt.Errorf("%w: paginating children for PR #%d: %w", platform.ErrPRBatch, n, err)`) {
+		t.Error("the paginating-children wrap must wrap platform.ErrPRBatch (the typed force_full signal, v0.29.71)")
 	}
 	if strings.Contains(srctest.StripGoComments(src), `"paginating children for PR #%d: %w"`) {
 		t.Error("the needle-less wrap form must not return")

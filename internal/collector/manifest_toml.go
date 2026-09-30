@@ -37,7 +37,10 @@ type tomlDepEntry struct {
 	Path     bool   // sourced from a local path
 	Registry bool   // sourced from a registry other than the default
 	URL      bool   // sourced from a direct URL (Poetry's `url =`) or a local archive (`file =`)
-	Raw      string // the declaration as written, comments removed; dotted keys joined with "; "
+	// Workspace: inherited from the workspace root (Cargo's `workspace = true`);
+	// the root's [workspace.dependencies] says its source (cargoWorkspaceIndex).
+	Workspace bool
+	Raw       string // the declaration as written, comments removed; dotted keys joined with "; "
 }
 
 // pythonTableSection reports a Python dependency table — Poetry/PDM's
@@ -117,17 +120,13 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 			e.URL = true
 		case "registry", "registry-index":
 			e.Registry = true
+		case "workspace":
+			e.Workspace = tomlUnquote(value) == "true"
 		}
-		// A workspace-inherited dep ("name.workspace = true") needs no case:
-		// it declares no version here, so it takes the unpinned pathway and
-		// is looked up by name, exactly as the inline form
-		// ({ workspace = true }) has always been (the manifest corpus pins
-		// that). ASSUMPTION, not a verified fact: that the workspace root
-		// declares it from crates.io. If the root declares it as a path or
-		// git dependency, this looks up whatever crates.io package shares
-		// the name — the SR-6 class. Closing it means reading the root's
-		// [workspace.dependencies], which this per-file scanner does not
-		// see; it is on the worklist rather than guessed at here.
+		// A workspace-inherited dep ("name.workspace = true", or the inline
+		// { workspace = true }) is marked Workspace; its source and version
+		// come from the workspace root (cargoWorkspaceIndex, v0.29.71), not
+		// from a crates.io lookup by name (the SR-6 class it used to be).
 	}
 
 	for _, raw := range strings.Split(content, "\n") {
@@ -200,6 +199,8 @@ func applyTOMLDepTable(e *tomlDepEntry, table string) {
 			e.URL = true
 		case "registry", "registry-index":
 			e.Registry = true
+		case "workspace":
+			e.Workspace = tomlUnquote(v) == "true"
 		}
 	}
 }

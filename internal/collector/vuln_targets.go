@@ -303,8 +303,9 @@ func purlSplitVersion(purl string) (base, version string) {
 	return cut[:at], cut[at+1:]
 }
 
-// purlScopeAwareBase returns a purl without its version, treating an '@'
-// followed by a '/' as a scope marker. See the note on purlSplitVersion.
+// purlScopeAwareBase returns a purl HEAD (no qualifiers or subpath; see
+// purlSetVersion) without its version, treating an '@' followed by a '/' as
+// a scope marker. See the note on purlSplitVersion.
 func purlScopeAwareBase(purl string) string {
 	if at := strings.LastIndex(purl, "@"); at > 0 && !strings.Contains(purl[at:], "/") {
 		return purl[:at]
@@ -312,10 +313,31 @@ func purlScopeAwareBase(purl string) string {
 	return purl
 }
 
-// purlWithVersion swaps the version suffix of a purl
+// purlSetVersion is the ONE version replacement both rebuilders use (SR-17,
+// v0.29.71): the version is replaced in the purl's head — everything before
+// the qualifiers ("?") and subpath ("#") — and the tail is kept as written.
+// Before, the scope-aware base read the whole purl, so a qualifier value
+// with a "/" (repository_url=https://…) left the old version in place and
+// appended the new one after the qualifiers, and one with an "@" (a vcs_url
+// at a commit) cut the purl inside the qualifier — the defect v0.29.57
+// fixed in purlSplitVersion, which the v0.29.58 review found here too. An
+// empty version drops it.
+func purlSetVersion(purl, version string) string {
+	head, tail := purl, ""
+	if i := strings.IndexAny(purl, "?#"); i >= 0 {
+		head, tail = purl[:i], purl[i:]
+	}
+	base := purlScopeAwareBase(head)
+	if version == "" {
+		return base + tail
+	}
+	return base + "@" + version + tail
+}
+
+// purlWithVersion swaps the version of a purl
 // ("pkg:npm/express@4.18.0" → "pkg:npm/express@4.19.2").
 func purlWithVersion(purl, version string) string {
-	return purlScopeAwareBase(purl) + "@" + version
+	return purlSetVersion(purl, version)
 }
 
 // wireValidPurl (v0.27.73) is the last-line syntactic gate before a
@@ -398,9 +420,8 @@ func purlReplaceVersion(purl, version string) string {
 	if purl == "" {
 		return ""
 	}
-	base := purlScopeAwareBase(purl)
 	if version == "" {
-		return base
+		return purlSetVersion(purl, "")
 	}
-	return base + "@" + purlEscapeSegment(version)
+	return purlSetVersion(purl, purlEscapeSegment(version))
 }

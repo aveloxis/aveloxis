@@ -137,6 +137,15 @@ func TestRedactURLUserinfo(t *testing.T) {
 		{"s3cret@github.com/o/n", "***@github.com/o/n"},
 		{"git@github.com:org/repo.git", "***@github.com:org/repo.git"},
 		{"https://u@s3cret@host/p", "https://***@host/p"},
+		// v0.29.71 (personal data in INFO logs): a query value carrying an
+		// address — the GitHub user and commit searches put an author's
+		// email in q — is blanked; the rest of the URL stays readable.
+		{"https://api.github.com/search/users?q=s3cret%40example.org+in:email&per_page=1", "https://api.github.com/search/users?q=***&per_page=1"},
+		{"https://api.github.com/search/commits?q=author-email:s3cret@example.org&per_page=1", "https://api.github.com/search/commits?q=***&per_page=1"},
+		{"/search/users?q=s3cret%40example.org+in:email", "/search/users?q=***"},
+		{"https://u:s3cret@h/x?q=a@b&page=2#frag", "https://***@h/x?q=***&page=2#frag"},
+		{"https://github.com/o/n?ref=main&page=2", "https://github.com/o/n?ref=main&page=2"},
+		{"https://h/x?flag&q=s3cret@x.org", "https://h/x?flag&q=***"},
 	} {
 		if got := RedactURLUserinfo(tc.in); got != tc.want {
 			t.Errorf("RedactURLUserinfo(%q) = %q, want %q", tc.in, got, tc.want)
@@ -149,7 +158,8 @@ func TestRedactURLUserinfo(t *testing.T) {
 
 // Refusal and redaction share userinfoBounds; this pins the consequence for
 // every input: never a panic, and when the refusal fires the redaction
-// replaces EXACTLY the span the refusal found (round 2: as two spellings, the
+// replaces EXACTLY the span the refusal found, then blanks the query values
+// that hold an address (v0.29.71; redactQueryAddresses) (round 2: as two spellings, the
 // redaction returned a scheme-relative URL verbatim and panicked on 569 of
 // 300k random inputs). A constructed secret in authority position never
 // survives redaction, and is always refused when the authority has a scheme.
@@ -182,7 +192,7 @@ func TestRedactNeverPanicsAndAgreesWithRefusal(t *testing.T) {
 		if !ok {
 			t.Fatalf("refused %q but userinfoBounds found nothing", in)
 		}
-		if want := trimmed[:start] + "***" + trimmed[end:]; out != want {
+		if want := redactQueryAddresses(trimmed[:start] + "***" + trimmed[end:]); out != want {
 			t.Fatalf("RedactURLUserinfo(%q) = %q, want %q (the refusal's span)", in, out, want)
 		}
 	}

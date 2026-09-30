@@ -98,3 +98,30 @@ func TestPurlSplitVersionStripsQualifiersAndSubpath(t *testing.T) {
 		}
 	}
 }
+
+// TestPurlRebuildersKeepQualifiersAndSubpath — v0.29.71 (the v0.29.58
+// follow-up): purlSplitVersion stopped reading qualifiers and subpath as
+// the version in v0.29.57, but its sibling purlScopeAwareBase, which both
+// rebuilders use, kept the defect. A qualifier value with a "/" left the old
+// version in place and appended the new one after the qualifiers; one with
+// an "@" cut the purl inside the qualifier. The version is replaced in the
+// purl's head; qualifiers and subpath stay as written.
+func TestPurlRebuildersKeepQualifiersAndSubpath(t *testing.T) {
+	for _, c := range []struct{ purl, version, want string }{
+		{"pkg:maven/org.x/lib@1.0?repository_url=https://repo.example/maven2", "2.0", "pkg:maven/org.x/lib@2.0?repository_url=https://repo.example/maven2"},
+		{"pkg:golang/github.com/x/y@v1.2.3#sub/dir", "v1.3.0", "pkg:golang/github.com/x/y@v1.3.0#sub/dir"},
+		{"pkg:npm/%40scope/name@1.0.0?vcs_url=git%2Bhttps://github.com/x/y@abc", "", "pkg:npm/%40scope/name?vcs_url=git%2Bhttps://github.com/x/y@abc"},
+		{"pkg:pypi/flask?x=y", "2.0", "pkg:pypi/flask@2.0?x=y"},
+		{"pkg:npm/@scope/name?q=1#p", "3.0.0", "pkg:npm/@scope/name@3.0.0?q=1#p"},
+		{"pkg:npm/express@4.18.0", "4.19.2", "pkg:npm/express@4.19.2"},
+	} {
+		if got := purlReplaceVersion(c.purl, c.version); got != c.want {
+			t.Errorf("purlReplaceVersion(%q, %q) = %q, want %q", c.purl, c.version, got, c.want)
+		}
+		if c.version != "" {
+			if got := purlWithVersion(c.purl, c.version); got != c.want {
+				t.Errorf("purlWithVersion(%q, %q) = %q, want %q", c.purl, c.version, got, c.want)
+			}
+		}
+	}
+}

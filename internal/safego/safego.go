@@ -49,6 +49,30 @@ func Recover(logger *slog.Logger, name string) {
 	}
 }
 
+// RecoverWith is Recover for work whose caller must learn it failed (O6,
+// v0.29.71): it logs the panic exactly as Recover does, then hands the
+// recovered value to onPanic — which records an error, answers a waiting
+// channel, cancels siblings. Recovering and carrying on would otherwise
+// read as success (a history window silently missing, a Wait that never
+// returns). Insert as `defer safego.RecoverWith(logger, name, onPanic)`;
+// recover() works because RecoverWith itself is the deferred call.
+func RecoverWith(logger *slog.Logger, name string, onPanic func(r any)) {
+	if r := recover(); r != nil {
+		buf := make([]byte, 64<<10)
+		n := runtime.Stack(buf, false)
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Error("goroutine panic recovered (safego)",
+			"name", name,
+			"panic", r,
+			"stack", string(buf[:n]))
+		if onPanic != nil {
+			onPanic(r)
+		}
+	}
+}
+
 // Go runs fn in a new goroutine. If fn panics, the panic is recovered
 // and logged at ERROR with the given name and a stack trace; fn's own
 // deferred functions run normally during the unwind (worker pools rely

@@ -536,6 +536,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		}
 
 		resp, err := c.inner.Do(req)
+		err = RedactTransportError(err)
 		if err != nil {
 			// A failed Do has no response state to apply, so release
 			// at once.
@@ -579,7 +580,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		// documented rule, and a GitLab 403 must not bench a key on it.
 		if c.authStyle == AuthGitHub && resp.StatusCode == http.StatusForbidden &&
 			resp.Header.Get("Retry-After") == "" && !isPrimaryRefusal(resp) {
-			body, readErr := io.ReadAll(resp.Body)
+			body, readErr := ReadErrorBody(resp.Body)
 			resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(body))
 			if readErr == nil && isRateLimitBody(body) && !isAnonymousRateLimitBody(body) {
@@ -634,7 +635,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	// ClassFatal. Callers can then make informed retry/skip
 	// decisions (e.g. fetchPRBatchWithSubdivide subdivides
 	// the batch on transient classifications).
-	return nil, fmt.Errorf("exhausted %d retries for %s: %w", maxRetries, url, ErrTransient)
+	return nil, fmt.Errorf("exhausted %d retries for %s: %w", maxRetries, RedactURLUserinfo(url), ErrTransient)
 }
 
 // respAction is handleResponse's verdict for one attempt.
@@ -665,6 +666,9 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	_ = url
 	switch {
 	case resp.StatusCode == http.StatusOK:
+		// The data body's size is noted when the caller closes it
+		// (response-size high-water marks, operator 2026-09-30).
+		resp.Body = CountResponseBody(resp.Body, c.logger, c.sizeSource("rest"), url)
 		return respDone, resp, nil
 	case resp.StatusCode == http.StatusNoContent:
 		// 204: legitimate "empty result" response. GitHub returns
@@ -682,13 +686,13 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		return respDone, nil, ErrNotModified
 	case resp.StatusCode == http.StatusNotFound:
 		resp.Body.Close()
-		return respDone, nil, fmt.Errorf("%w: %s", ErrNotFound, url)
+		return respDone, nil, fmt.Errorf("%w: %s", ErrNotFound, RedactURLUserinfo(url))
 	case resp.StatusCode == http.StatusUnavailableForLegalReasons:
 		// 451 — blocked for legal reasons (a DMCA takedown on GitHub).
 		// Definitive, like 404/410: never retried. v0.29.58 — before this
 		// arm the status took the default ten-attempt backoff on EVERY
 		// endpoint of the repository, every cycle (log review finding 3).
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		notice, hasBlock := blockNotice(body)
 		c.logger.Warn("resource blocked for legal reasons (451) — not retried; prelim sidelines the repository",
@@ -697,7 +701,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if reason == "" {
 			reason = "unspecified"
 		}
-		err := fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, url, reason)
+		err := fmt.Errorf("%w: %w: %s (reason %s)", ErrGone, ErrLegallyBlocked, RedactURLUserinfo(url), reason)
 		if hasBlock {
 			// Item 82: the forge's own words ride the error to the
 			// repository page (the scheduler stores them).
@@ -705,20 +709,20 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		return respDone, nil, err
 	case resp.StatusCode == http.StatusConflict:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
-		return respDone, nil, fmt.Errorf("%w: %s: %s", ErrConflict, url, truncateBody(string(body), 200))
+		return respDone, nil, fmt.Errorf("%w: %s: %s", ErrConflict, RedactURLUserinfo(url), truncateBody(string(body), 200))
 	case resp.StatusCode == http.StatusGone:
 		// 410 — the resource existed but was deliberately removed (e.g.,
 		// a deleted GitHub issue). Never retryable; distinct from 404 so
 		// callers can tell "never existed / can't see it" apart from
 		// "existed and was deleted". isOptionalEndpointSkip treats
 		// ErrGone like ErrNotFound so the containing job continues.
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		c.logger.Warn("resource is gone (410)",
 			"url", RedactURLUserinfo(url), "body_snippet", truncateBody(string(body), 200))
-		return respDone, nil, fmt.Errorf("%w: %s", ErrGone, url)
+		return respDone, nil, fmt.Errorf("%w: %s", ErrGone, RedactURLUserinfo(url))
 	case resp.StatusCode == http.StatusMovedPermanently ||
 		resp.StatusCode == http.StatusFound ||
 		resp.StatusCode == http.StatusTemporaryRedirect ||
@@ -730,7 +734,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		// all cases the contract is: re-issue the request against the
 		// URL in the Location header.
 		location := resp.Header.Get("Location")
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		if location == "" {
 			// GitHub returns 3xx with no Location when it cannot determine
@@ -741,14 +745,14 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			c.logger.Warn("redirect with empty Location header — treating as gone",
 				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"body_snippet", truncateBody(string(body), 200))
-			return respDone, nil, fmt.Errorf("%w: %s (redirect with empty Location)", ErrGone, url)
+			return respDone, nil, fmt.Errorf("%w: %s (redirect with empty Location)", ErrGone, RedactURLUserinfo(url))
 		}
 		if *hopsp >= maxRedirectHops {
 			c.logger.Warn("redirect hop cap exceeded — treating as gone",
 				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
 				"location", RedactURLUserinfo(location), "hops", *hopsp)
 			return respDone, nil, fmt.Errorf("%w: %s (redirect loop or chain longer than %d)",
-				ErrGone, url, maxRedirectHops)
+				ErrGone, RedactURLUserinfo(url), maxRedirectHops)
 		}
 		*hopsp++
 		// v0.29.12: the next attempt re-sets the pool key's auth header, so
@@ -767,7 +771,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 				c.logger.Warn("redirect with an unparseable Location — treating as gone",
 					"url", RedactURLUserinfo(url), "status", resp.StatusCode, "location", RedactURLUserinfo(location), "error", rerr)
 			}
-			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, url)
+			return respDone, nil, fmt.Errorf("%w (redirected from %s)", rerr, RedactURLUserinfo(url))
 		}
 		// v0.29.58 (2026-09-22 log review, finding 5): an issue-scoped
 		// request answered with a redirect into ANOTHER repository is an
@@ -784,7 +788,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		if issueScopedRedirectLeavesRepository(c.basePath(), url, newURL) {
 			c.logger.Info("issue-level redirect leaves the repository — the issue or merge request was transferred; not followed",
 				"from", RedactURLUserinfo(url), "to", RedactURLUserinfo(newURL), "status", resp.StatusCode)
-			return respDone, nil, fmt.Errorf("%w: %s (transferred to %s)", ErrGone, url, newURL)
+			return respDone, nil, fmt.Errorf("%w: %s (transferred to %s)", ErrGone, RedactURLUserinfo(url), RedactURLUserinfo(newURL))
 		}
 		c.logger.Info("following redirect",
 			"from", RedactURLUserinfo(url), "to", RedactURLUserinfo(newURL),
@@ -822,11 +826,11 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 	case resp.StatusCode == http.StatusBadRequest:
 		// 400 = malformed request. GitHub returns HTML "Whoa there!" for
 		// invalid queries (e.g., bad search syntax). Not retryable.
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		c.logger.Warn("bad request (not retrying)",
 			"url", RedactURLUserinfo(url), "status", 400, "body_snippet", truncateBody(string(body), 200))
-		return respDone, nil, fmt.Errorf("bad request: %s: %w", url, ErrRequestRejected)
+		return respDone, nil, fmt.Errorf("bad request: %s: %w", RedactURLUserinfo(url), ErrRequestRejected)
 	case resp.StatusCode == http.StatusUnprocessableEntity:
 		// 422 = validation failed. Not retryable for the same
 		// request shape. v0.20.19 (Fix K) carves out one
@@ -837,17 +841,17 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		// available." That's end-of-data, not a fatal
 		// validation problem — the paginator should stop
 		// cleanly via the ClassSkip path.
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		bodyStr := string(body)
 		if strings.Contains(bodyStr, "Only the first 1000") {
 			c.logger.Info("pagination limit reached (GitHub serves at most 1000 results)",
 				"url", RedactURLUserinfo(url), "body_snippet", truncateBody(bodyStr, 200))
-			return respDone, nil, fmt.Errorf("%w: %s", ErrPaginationLimitExceeded, url)
+			return respDone, nil, fmt.Errorf("%w: %s", ErrPaginationLimitExceeded, RedactURLUserinfo(url))
 		}
 		c.logger.Warn("unprocessable entity (not retrying)",
 			"url", RedactURLUserinfo(url), "status", 422, "body_snippet", truncateBody(bodyStr, 200))
-		return respDone, nil, fmt.Errorf("%w: %s: %w", ErrUnprocessableEntity, url, ErrRequestRejected)
+		return respDone, nil, fmt.Errorf("%w: %s: %w", ErrUnprocessableEntity, RedactURLUserinfo(url), ErrRequestRejected)
 	case resp.StatusCode == http.StatusForbidden:
 		// 403 can mean rate limit, secondary rate limit, or resource not
 		// accessible. Header signals are authoritative — they carry the
@@ -882,7 +886,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		// Headers said nothing definitive. Read the body and check whether
 		// the message text reveals a rate limit anyway.
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		if isAnonymousRateLimitBody(body) {
 			// Unauthenticated request reached us. Every code path that
@@ -925,7 +929,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 			return respRetry, nil, nil
 		}
 		// 403 for other reasons (private repo, no permission) — not a key problem.
-		err := fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, url)
+		err := fmt.Errorf("%w: %s (not a rate limit — may be a private repo or insufficient scope)", ErrForbidden, RedactURLUserinfo(url))
 		if notice, ok := blockNotice(body); ok {
 			// A 403 carrying GitHub's block object (a repository disabled
 			// by staff): the classification is unchanged — whether it
@@ -982,7 +986,7 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		}
 		return respRetry, nil, nil
 	default:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := ReadErrorBody(resp.Body)
 		resp.Body.Close()
 		c.logger.Warn("unexpected status",
 			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "body_snippet", truncateBody(string(body), 200), "attempt", attempt+1)

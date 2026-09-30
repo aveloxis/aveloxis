@@ -136,8 +136,9 @@ func (s *PostgresStore) DequeueNext(ctx context.Context, workerID string, exclud
 // Successful completions clear the force_full_collect flag so a repo that
 // was previously auto/manually flagged returns to normal incremental
 // collection after a good pass. Failed completions leave the flag as-is
-// — the scheduler decides separately (via shouldForceFullRecollect) if
-// the error class warrants setting it via SetForceFullCollect.
+// — the scheduler decides separately, with errors.Is(err,
+// platform.ErrPRBatch) on the recorded error, whether to set it via
+// SetForceFullCollect.
 // v0.27.139 — last_collected semantics (the blind-window fix):
 //   - startedAt is the JOB START time; on a successful pass
 //     last_collected = startedAt (NOT completion NOW()). determineSince

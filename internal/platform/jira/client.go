@@ -194,6 +194,10 @@ func (c *Client) SearchPage(ctx context.Context, jql string, fields []string, st
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
+	err = platform.RedactTransportError(err)
+	if err == nil && resp.StatusCode == http.StatusOK { // a data body; error bodies are not sizes (review F5)
+		resp.Body = platform.CountResponseBody(resp.Body, nil, "jira", req.URL.String())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("jira search: %w: %w", platform.ErrTransient, err)
 	}
@@ -249,6 +253,10 @@ func (c *Client) IssueCommentsPage(ctx context.Context, issueKey string, startAt
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
+	err = platform.RedactTransportError(err)
+	if err == nil && resp.StatusCode == http.StatusOK { // a data body; error bodies are not sizes (review F5)
+		resp.Body = platform.CountResponseBody(resp.Body, nil, "jira", req.URL.String())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("jira comments: %w: %w", platform.ErrTransient, err)
 	}

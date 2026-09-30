@@ -358,6 +358,15 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
+**Caching (since 0.29.71).** This endpoint, `/timeseries` and each entity's
+series on `/compare` are cached under the repositories' collection state: an
+answer is reused until a collection job over one of them starts or ends, and
+for at most `collection.enrich_interval_minutes` (default 30), the cadence at
+which contributor names can change between collections. A cached response
+from this endpoint or `/timeseries` carries `X-Cache: hit`; on `/compare` the
+per-entity series are reused inside the response, and only a whole-response
+hit (below) carries the header.
+
 `?bots=hide` (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types
 `gh_type IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`
@@ -731,7 +740,11 @@ scope-granting auto-add.
 - `GET /api/v1/compare?entities=repo:1,org:github.com/chaoss&metric=contributors&since=2023-07-01&until=2026-07-01&bucket=week`
   — temporal metrics; window defaults to the trailing 3 years; bucket
   week (default) or month; buckets are densified (aligned x-axes).
-  Responses are cached 60s per (user, query).
+  Whole responses are cached 60s per (user, query) (`X-Cache: hit`); each
+  entity's series is also reused under its repositories' collection state,
+  for at most `collection.enrich_interval_minutes` (see the caching note
+  under the top-contributors endpoint). The default window starts on the
+  bucket boundary three years before the last complete bucket.
   - **Per-entity window clamp (v0.27.24):** each entity's series is
     densified from `max(since, its first activity)` — the least of
     first issue, first PR, first commit, and the forge's repo

@@ -53,3 +53,15 @@ jobs:
           version: v2.12.2
           args: --timeout 10m
           skip-cache: true
+
+      # O13 (v0.29.71): a newly reachable known vulnerability and an untidy
+      # go.mod used to merge unnoticed. govulncheck reports only
+      # vulnerabilities in code the module actually calls; PINNED like
+      # golangci-lint, so a new release cannot fail builds by surprise.
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+      # `go mod tidy -diff` prints the change tidy would make and exits
+      # nonzero instead of editing go.mod / go.sum.
+      - name: Check go.mod is tidy
+        run: go mod tidy -diff

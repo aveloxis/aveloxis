@@ -170,11 +170,12 @@ type Scheduler struct {
 	// v0.29.58 review round 5: the three ticker arms that spawned bare
 	// (and could stack a second run over a long first one — a second
 	// pooled connection each) join the single-flight set.
-	orgRefreshActive     atomic.Bool
-	stagingCleanupActive atomic.Bool
-	xidStatusActive      atomic.Bool // worklist item 78
-	vulnDigestActive     atomic.Bool
-	breadthActive        atomic.Bool
+	orgRefreshActive      atomic.Bool
+	stagingCleanupActive  atomic.Bool
+	xidStatusActive       atomic.Bool // worklist item 78
+	addRequestRetryActive atomic.Bool // O17
+	vulnDigestActive      atomic.Bool
+	breadthActive         atomic.Bool
 	// v0.29.61: the supply-chain view refresh (its own cadence, apart from
 	// the weekly 8Knot rebuild).
 	supplyChainRefreshActive atomic.Bool
@@ -605,7 +606,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// (PurgeStagedProcessed was defined but wired to nothing),
 	// enough to visibly slow every staging INSERT and DELETE.
 	// Hourly keeps the bloat bounded with negligible overhead.
-	stagingCleanupTicker := time.NewTicker(1 * time.Hour)
+	stagingCleanupTicker := time.NewTicker(hourlyMaintenanceInterval)
 	defer stagingCleanupTicker.Stop()
 
 	// Thin contributor enrichment: runs on a single goroutine at a
@@ -805,6 +806,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-stagingCleanupTicker.C:
 			s.singleFlight(&s.stagingCleanupActive, "staging-cleanup", func() { s.runStagingCleanup(ctx) })
 			s.singleFlight(&s.xidStatusActive, "xid-status", func() { s.logXIDStatus(ctx) })
+			s.singleFlight(&s.addRequestRetryActive, "add-request-retry", func() { s.retryApprovedAddRequests(ctx) })
 
 		case <-enrichTicker.C:
 			s.singleFlight(&s.enrichmentActive, "contributor-enrichment", func() { s.runEnrichment(ctx) })
@@ -1217,6 +1219,9 @@ type jobOutcome struct {
 	commits      int
 	success      bool
 	errMsg       string
+	// forceFull: the recorded error wraps platform.ErrPRBatch, so PR child
+	// data is incomplete and the next cycle re-collects from since=zero.
+	forceFull bool
 }
 
 func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
@@ -1391,7 +1396,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 					s.logger.Warn("gap fill error", "repo_id", job.RepoID, "error", gfErr)
 					// v0.20.5: hoist into runJob scope so buildOutcome
 					// records it as outcome.errMsg → last_error in the
-					// queue + shouldForceFullRecollect fires.
+					// queue + force_full is armed (errors.Is(err, platform.ErrPRBatch)).
 					gapFillErr = gfErr
 				} else if filled > 0 {
 					s.logger.Info("gap fill completed", "repo_id", job.RepoID, "filled", filled)
@@ -1511,10 +1516,10 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// but keep ordering explicit). The flag is picked up on the repo's
 	// next DequeueNext and causes determineSince to return zero for a
 	// full re-collection. See v0.18.24 troubleshooting docs.
-	if !outcome.success && shouldForceFullRecollect(outcome.errMsg) {
+	if !outcome.success && outcome.forceFull {
 		err = s.store.SetForceFullCollect(ctx, job.RepoID, true)
 		if errors.Is(err, context.Canceled) {
-			return // shutdown: the flag is re-derived from last_error on the next failure
+			return // shutdown: armed again only if a later job fails with a PR-batch error (errors.Is on that error)
 		}
 		if err != nil {
 			s.logger.Warn("failed to set force_full_collect flag", "repo_id", job.RepoID, "error", err)
@@ -1720,29 +1725,6 @@ func (s *Scheduler) determineSince(job *db.QueueJob) time.Time {
 		return *job.LastCollected
 	}
 	return time.Time{} // zero = full collection
-}
-
-// shouldForceFullRecollect returns true when an error message indicates
-// the completed job likely left PR child data incomplete (reviews,
-// commits, files, comments, assignees, etc. for some subset of PRs). The
-// scheduler sets the force_full_collect flag on the repo so the next
-// cycle re-collects everything from since=zero, which backfills what the
-// failed batch missed.
-//
-// Pinned to the specific string shapes the GraphQL PR batch path emits —
-// intentionally case-sensitive and substring-narrow so unrelated errors
-// don't trigger expensive full re-collections. See
-// TestShouldForceFullRecollect and TestShouldForceFullRecollect_CaseSensitive
-// for the contract.
-func shouldForceFullRecollect(errMsg string) bool {
-	if errMsg == "" {
-		return false
-	}
-	// All three production shapes share the "graphql PR batch" prefix
-	// which the collector and platform layer produce when wrapping the
-	// underlying transport/validation/rate failure. Checking this single
-	// substring keeps the matcher narrow.
-	return strings.Contains(errMsg, "graphql PR batch")
 }
 
 // collectAndProcess runs the two-phase staged pipeline: stage raw JSON from
@@ -2053,7 +2035,8 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 //
 // gapFillErr (v0.20.5) is folded into the outcome separately from the
 // main-collection error so a gap-fill failure produces:
-//   - success=false  → shouldForceFullRecollect can fire on the errMsg
+//   - success=false, and forceFull from errors.Is(gapFillErr,
+//     platform.ErrPRBatch) — the error itself, not errMsg
 //   - errMsg populated with the gap-fill error text → last_error in
 //     aveloxis_ops.collection_queue is non-NULL so operators can
 //     SQL-query for the affected repos
@@ -2069,21 +2052,23 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	if collectionErr != nil {
 		out.success = false
 		out.errMsg = collectionErr.Error()
+		out.forceFull = errors.Is(collectionErr, platform.ErrPRBatch)
 	} else if result != nil && len(result.Errors) > 0 {
 		out.success = false
 		out.errMsg = result.Errors[0].Error()
+		out.forceFull = errors.Is(result.Errors[0], platform.ErrPRBatch)
 	}
 
 	// Gap-fill error takes effect only when the main collection
 	// succeeded (otherwise the main error message is the more
-	// informative one to record). The substring "graphql PR batch"
-	// inside gapFillErr.Error() is what shouldForceFullRecollect
-	// matches on, so the next cycle re-collects with since=zero and
-	// the main collection picks up the historical PRs that gap fill
-	// could not.
+	// informative one to record). A gap-fill error wrapping
+	// platform.ErrPRBatch arms force_full, so the next cycle re-collects
+	// with since=zero and the main collection picks up the historical PRs
+	// that gap fill could not.
 	if gapFillErr != nil && out.errMsg == "" {
 		out.success = false
 		out.errMsg = gapFillErr.Error()
+		out.forceFull = errors.Is(gapFillErr, platform.ErrPRBatch)
 	}
 
 	if result != nil {
@@ -2267,11 +2252,14 @@ func (s *Scheduler) drainOneRepo(ctx context.Context, repoID int64) {
 
 // releaseOurLocks releases all queue locks held by this worker instance,
 // returning repos to 'queued' status so they can be picked up immediately
-// on restart instead of waiting for stale lock timeout.
+// on restart instead of waiting for stale lock timeout. It stamps
+// updated_at like every other re-queue: the API's collection generation
+// digests it, and a stopped job wrote rows after its claim (v0.29.71
+// review round 2).
 func (s *Scheduler) releaseOurLocks(ctx context.Context) {
 	tag, err := s.store.Pool().Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue
-		SET status = 'queued', locked_by = NULL, locked_at = NULL, due_at = NOW()
+		SET status = 'queued', locked_by = NULL, locked_at = NULL, due_at = NOW(), updated_at = NOW()
 		WHERE locked_by = $1 AND status = 'collecting'`, s.workerID)
 	if errors.Is(err, context.Canceled) {
 		return // the startup call under a ctx canceled before it ran; the shutdown call uses Background

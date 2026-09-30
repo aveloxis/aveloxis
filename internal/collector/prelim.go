@@ -220,6 +220,17 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// New URL is not yet tracked — update the old repo's URL and fix all stored
 	// URLs (issue html_urls, PR urls, etc.) that contain the old org/repo path.
 	if err := store.UpdateRepoURLs(ctx, repo.ID, repo.GitURL, finalURL); err != nil {
+		if errors.Is(err, db.ErrURLTooLong) {
+			// O9 (v0.29.71): the store refuses a target longer than
+			// MaxAddURLBytes. Like a credentialed target: not followed,
+			// the row keeps its URL and collection goes on against it,
+			// instead of the job failing every cycle.
+			logger.Error("prelim: redirect target is longer than the stored-URL limit — not followed, repo URL unchanged",
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target_bytes", len(finalURL), "limit_bytes", db.MaxAddURLBytes)
+			result.Redirected = false
+			result.NewURL = ""
+			return result, nil
+		}
 		return result, fmt.Errorf("updating repo URLs: %w", err)
 	}
 	logger.Info("prelim: updated repo URL to canonical",

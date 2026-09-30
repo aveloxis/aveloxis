@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.23.8 — adaptive per-repo scancode wall-clock timeout.
@@ -41,16 +43,14 @@ func TestRunOneGatesTimeoutFailureOnSignalKilled(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := string(src)
-	// The classifier must inspect err.Error() for the "signal: killed"
-	// substring that Go's exec package emits when a subprocess is
-	// SIGKILL'd. That's the cmd.Cancel signature when scanCtx times out.
-	if !strings.Contains(code, `"signal: killed"`) {
-		t.Error("classifyScanOutcome must gate the timeout-vs-real-failure routing on " +
-			"the literal substring `signal: killed` (Go's exec.ExitError " +
-			"text for a SIGKILL'd subprocess). Without the gate, a " +
-			"genuine scancode crash (`exit status 1`) would get treated " +
-			"as a timeout and get a bigger timeout next cycle — wasting " +
-			"budget for nothing. v0.23.8.")
+	// The classifier gates timeout-vs-real-failure on a SIGKILL exit —
+	// cmd.Cancel's signature when scanCtx times out (v0.23.8). Since
+	// v0.29.71 it reads the wait status (killedBySIGKILL), not the error
+	// text; TestKilledBySIGKILLReadsTheWaitStatus proves the helper on
+	// real subprocess errors and scancode_policy_test the routing.
+	code = srctest.StripGoComments(code)
+	if !strings.Contains(code, "killedBySIGKILL(waitErr)") || strings.Contains(code, `"signal: killed"`) {
+		t.Error("classifyScanOutcome must gate the timeout routing on killedBySIGKILL(waitErr), not on the error text")
 	}
 }
 

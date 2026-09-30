@@ -407,5 +407,7 @@ func fetchJSON(ctx context.Context, client *http.Client, url string) ([]byte, er
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching %s: status %d", url, resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	platform.NoteResponseSize(nil, "importer-apache", url, int64(len(b)))
+	return b, err
 }

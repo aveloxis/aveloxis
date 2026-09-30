@@ -400,6 +400,23 @@ func (s *PostgresStore) DecideAddRequest(ctx context.Context, requestID int64, a
 		return req, false, fmt.Errorf("decide add request: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// A rejected group takes no approval (v0.29.71 review round 2): the pass
+	// would refuse its items, so approving would tell the requester
+	// "approved" and leave the request approved and unprocessed for good.
+	// Checked INSIDE the flip's transaction with the group row share-locked
+	// (review round 3): a RejectGroup committing between a separate check
+	// and the flip approved anyway; now it waits for the flip to commit.
+	if approve {
+		var groupStatus string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(status, '') FROM aveloxis_ops.user_groups WHERE group_id = $1 FOR SHARE`,
+			req.GroupID).Scan(&groupStatus); err != nil {
+			return req, false, fmt.Errorf("decide add request: read group %d: %w", req.GroupID, err)
+		}
+		if groupStatus == "rejected" {
+			return req, false, fmt.Errorf("add request %d: %w", requestID, ErrGroupRejected)
+		}
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_add_requests
 		SET status = $2, decided_by = $3, decided_at = NOW()
@@ -623,6 +640,53 @@ func (s *PostgresStore) ProcessApprovedAddRequest(ctx context.Context, requestID
 	return s.processAddRequest(ctx, requestID, false)
 }
 
+// groupRejected reports whether an administrator has rejected the group.
+func (s *PostgresStore) groupRejected(ctx context.Context, groupID int64) (bool, error) {
+	var rejected bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(status, '') = 'rejected' FROM aveloxis_ops.user_groups WHERE group_id = $1`, groupID).Scan(&rejected); err != nil {
+		return false, fmt.Errorf("read group %d status: %w", groupID, err)
+	}
+	return rejected, nil
+}
+
+// ApprovedAddRequestsToRetry lists the approved 'repos' requests that still
+// have an unprocessed item and were decided more than olderThan ago (O17,
+// v0.29.71). Such a request's pass stopped early — a failed stamp or read,
+// a process stopped mid-pass — and nothing re-ran it: the admin page lists
+// pending requests only, so no administrator sees an approved request to
+// re-approve (re-approving would resume it). A rejected group's requests
+// are left out. serve retries them through ProcessApprovedAddRequest. The age
+// keeps a pass still running in web or api from being raced (overlapping
+// passes are safe, only wasted).
+func (s *PostgresStore) ApprovedAddRequestsToRetry(ctx context.Context, olderThan time.Duration) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.request_id FROM aveloxis_ops.collection_add_requests r
+		JOIN aveloxis_ops.user_groups g ON g.group_id = r.group_id
+		WHERE r.status = 'approved' AND r.kind = 'repos'
+		  AND g.status IS DISTINCT FROM 'rejected'
+		  AND COALESCE(r.decided_at, r.created_at) < NOW() - $1::interval
+		  AND EXISTS (SELECT 1 FROM aveloxis_ops.collection_add_request_items i
+		              WHERE i.request_id = r.request_id AND i.repo_id IS NULL)
+		ORDER BY r.request_id`, olderThan.String())
+	if err != nil {
+		return nil, fmt.Errorf("list approved add requests to retry: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("list approved add requests to retry: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list approved add requests to retry: %w", err)
+	}
+	return ids, nil
+}
+
 // processAddRequest is the processing pass. With everyFailureFinal, used for
 // an auto-approved add that nobody re-approves, every failed item is stamped
 // processed-with-error and the pass goes on; failed counts those items.
@@ -633,14 +697,23 @@ func (s *PostgresStore) processAddRequest(ctx context.Context, requestID int64, 
 	defer s.finishAddRequestPass(requestID)
 
 	var groupID int64
-	var status string
+	var status, groupStatus string
 	if err := s.pool.QueryRow(ctx, `
-		SELECT group_id, status FROM aveloxis_ops.collection_add_requests WHERE request_id = $1`,
-		requestID).Scan(&groupID, &status); err != nil {
+		SELECT r.group_id, r.status, COALESCE(g.status, '')
+		FROM aveloxis_ops.collection_add_requests r
+		LEFT JOIN aveloxis_ops.user_groups g ON g.group_id = r.group_id
+		WHERE r.request_id = $1`,
+		requestID).Scan(&groupID, &status, &groupStatus); err != nil {
 		return 0, 0, fmt.Errorf("load add request: %w", err)
 	}
 	if status != "approved" {
 		return 0, 0, fmt.Errorf("request %d is %s, not approved", requestID, status)
+	}
+	// A group an administrator rejected after the approval takes no more
+	// collection (v0.29.71 review round 1): the pass refuses, whoever calls
+	// it — serve's hourly retry or an admin's re-approve (SR-18).
+	if groupStatus == "rejected" {
+		return 0, 0, fmt.Errorf("request %d: %w", requestID, ErrGroupRejected)
 	}
 
 	rows, err := s.pool.Query(ctx, `
@@ -670,6 +743,16 @@ func (s *PostgresStore) processAddRequest(ctx context.Context, requestID int64, 
 
 	processed, failed := 0, 0
 	for _, it := range items {
+		// A group rejected while the pass runs takes no further item
+		// (v0.29.71 review round 2): re-read before each one. A failed read
+		// is not "not rejected" (SR-5); it stops the pass like any error.
+		rejected, err := s.groupRejected(ctx, groupID)
+		if err != nil {
+			return processed, failed, err
+		}
+		if rejected {
+			return processed, failed, fmt.Errorf("request %d: %w", requestID, ErrGroupRejected)
+		}
 		repoID, err := s.ensureRepoCollectedInGroup(ctx, groupID, it.url)
 		if errors.Is(err, context.Canceled) {
 			// A stopped process, not a failure: leave the item unprocessed.

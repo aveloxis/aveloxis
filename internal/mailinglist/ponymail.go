@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // PonyMail is the apache_ponymail ArchiveSource backend. lists.apache.org
@@ -133,6 +135,7 @@ func (p *PonyMail) get(ctx context.Context, u string) ([]byte, error) {
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		body, rerr := io.ReadAll(resp.Body)
+		platform.NoteResponseSize(nil, "ponymail", u, int64(len(body)))
 		if rerr != nil {
 			// A mid-body reset is the same transport class as a failed
 			// Do: classify it the same way and keep the cause visible
@@ -181,6 +184,7 @@ func (p *PonyMail) FetchMonth(ctx context.Context, listAddress, yyyymm string) (
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		body, rerr := io.ReadAll(resp.Body)
+		platform.NoteResponseSize(nil, "ponymail-mbox", u, int64(len(body)))
 		if rerr != nil {
 			return nil, 0, fmt.Errorf("read mbox %s: %w: %w", listAddress, ErrTransient, rerr)
 		}

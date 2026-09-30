@@ -117,7 +117,7 @@ func ParseRepoURLWithHints(rawURL string, gitlabHosts map[string]bool) (RepoURL,
 	}
 
 	if result.Owner == "" || result.Repo == "" {
-		return RepoURL{}, fmt.Errorf("%w: could not extract owner/repo from %q", ErrInvalidRepoURL, rawURL)
+		return RepoURL{}, fmt.Errorf("%w: could not extract owner/repo from %q", ErrInvalidRepoURL, RedactURLUserinfo(rawURL))
 	}
 
 	return result, nil

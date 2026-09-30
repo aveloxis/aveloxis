@@ -92,6 +92,12 @@ func (s *Server) decideAddRequest(ctx context.Context, requestID int64, adminID 
 					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
 					return
 				}
+				if errors.Is(err, db.ErrGroupRejected) {
+					// v0.29.71: the pass refuses a rejected group's items;
+					// re-approving the request cannot change that.
+					s.logger.Info("approved add-request not processed — its group was rejected", "request_id", req.RequestID, "group_id", req.GroupID)
+					return
+				}
 				if err != nil {
 					s.logger.Warn("processing approved add-request failed — re-approving resumes it",
 						"request_id", req.RequestID, "processed", n, "failed", failed, "error", err)
@@ -131,6 +137,11 @@ func (s *Server) handleApproveAddRequest(w http.ResponseWriter, r *http.Request)
 	err = s.decideAddRequest(r.Context(), requestID, sess.UserID, true)
 	if errors.Is(err, db.ErrAddRequestNotFound) {
 		http.Error(w, "no such add request", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, db.ErrGroupRejected) {
+		// v0.29.71 review round 2: a rejected group takes no approval.
+		http.Error(w, "Cannot approve: the group has been rejected", http.StatusConflict)
 		return
 	}
 	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) || errors.Is(err, db.ErrURLTooLong) {
@@ -288,7 +299,7 @@ func (s *Server) handleApproveGroup(w http.ResponseWriter, r *http.Request) {
 			defer safego.Recover(s.logger, "group-approved-email")
 			if err := s.mailer.SendGroupApproved(approval.RequesterEmail, approval.RequesterLogin, approval.GroupName, groupID); err != nil && !mailer.IsSkip(err) {
 				s.logger.Warn("failed to send group-approved email",
-					"group_id", groupID, "to", approval.RequesterEmail, "error", err)
+					"group_id", groupID, "to", platform.RedactEmail(approval.RequesterEmail), "error", err)
 			}
 		}()
 	}

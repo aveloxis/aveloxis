@@ -184,25 +184,17 @@ func TestPackageJSONParsesAllDepTypes(t *testing.T) {
 // --- Cargo missing tables ---
 
 // TestCargoParsesBuildDependencies verifies parseCargoVersions handles
-// [build-dependencies] in addition to [dependencies] and [dev-dependencies].
+// [build-dependencies] in addition to [dependencies] and [dev-dependencies]
+// (build deps are needed for an accurate SBOM and vulnerability scan). A
+// behavior test since v0.29.71, when the parser moved; it used to read
+// analysis.go's source for the table name.
 func TestCargoParsesBuildDependencies(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
+	deps := parseCargoVersions(writeManifest(t, "Cargo.toml", "[dependencies]\na = \"1\"\n[dev-dependencies]\nb = \"2\"\n[build-dependencies]\nc = \"3\"\n"))
+	scope := map[string]string{}
+	for _, d := range deps {
+		scope[d.Name] = d.Type
 	}
-	code := string(src)
-
-	idx := strings.Index(code, "func parseCargoVersions")
-	if idx < 0 {
-		t.Fatal("cannot find parseCargoVersions")
-	}
-	fnBody := code[idx:]
-	if len(fnBody) > 1500 {
-		fnBody = fnBody[:1500]
-	}
-
-	if !strings.Contains(fnBody, "build-dependencies") {
-		t.Error("parseCargoVersions must handle [build-dependencies] table — " +
-			"build deps are needed for accurate SBOM and vuln scanning")
+	if scope["a"] != "runtime" || scope["b"] != "dev" || scope["c"] != "build" {
+		t.Errorf("scopes = %v, want a runtime, b dev, c build", scope)
 	}
 }

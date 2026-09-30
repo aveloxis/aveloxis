@@ -200,7 +200,7 @@ func TestClassifyScanOutcomeSalvagePrecedesTimeout(t *testing.T) {
 	// SIGKILL'd run that still left valid JSON is salvaged (data over
 	// bookkeeping) — the timeout branch never fires.
 	path := writeSalvageableJSON(t)
-	out := classifyScanOutcome(errors.New("signal: killed"), path,
+	out := classifyScanOutcome(sigkilledExitError(t), path,
 		24*time.Hour, 2*time.Hour, 24*time.Hour, 10, 3)
 	if out.kind != outcomeSalvaged {
 		t.Errorf("salvage must take precedence over the timeout gate (pre-v0.27.6 branch order), got kind %v", out.kind)
@@ -211,7 +211,7 @@ func TestClassifyScanOutcomeTimeoutBelowCap(t *testing.T) {
 	// Below-cap timeout: v0.23.8 semantics exactly — timeout kind, no
 	// strikes, never sidelined (the next attempt gets a bigger
 	// timeout).
-	out := classifyScanOutcome(errors.New("signal: killed"), "/nonexistent",
+	out := classifyScanOutcome(sigkilledExitError(t), "/nonexistent",
 		4*time.Hour, 2*time.Hour, 24*time.Hour, 1, 3)
 	if out.kind != outcomeTimeout {
 		t.Fatalf("signal: killed without salvageable output must classify as timeout, got %v", out.kind)
@@ -224,14 +224,14 @@ func TestClassifyScanOutcomeTimeoutBelowCap(t *testing.T) {
 func TestClassifyScanOutcomeAtCapSidelinesAtThreshold(t *testing.T) {
 	base, capT := 2*time.Hour, 24*time.Hour
 	// Attempt 5 = second consecutive at-cap timeout: strikes 2 < 3.
-	out := classifyScanOutcome(errors.New("signal: killed"), "/nonexistent",
+	out := classifyScanOutcome(sigkilledExitError(t), "/nonexistent",
 		capT, base, capT, 5, 3)
 	if out.kind != outcomeTimeout || out.capStrikes != 2 || out.sideline {
 		t.Errorf("attempt 5 at cap: want strikes=2 sideline=false, got strikes=%d sideline=%v", out.capStrikes, out.sideline)
 	}
 	// Attempt 6 = third consecutive at-cap timeout: sideline fires —
 	// this is what ends the pytorch/docs 27-claim loop.
-	out = classifyScanOutcome(errors.New("signal: killed"), "/nonexistent",
+	out = classifyScanOutcome(sigkilledExitError(t), "/nonexistent",
 		capT, base, capT, 6, 3)
 	if out.kind != outcomeTimeout || out.capStrikes != 3 || !out.sideline {
 		t.Errorf("attempt 6 at cap: want strikes=3 sideline=true, got strikes=%d sideline=%v", out.capStrikes, out.sideline)

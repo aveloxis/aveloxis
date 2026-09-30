@@ -517,6 +517,11 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 		http.Error(w, "no such add request", http.StatusNotFound)
 		return
 	}
+	if errors.Is(err, db.ErrGroupRejected) {
+		// v0.29.71 review round 2: a rejected group takes no approval.
+		http.Error(w, "Cannot approve: the group has been rejected", http.StatusConflict)
+		return
+	}
 	if errors.Is(err, db.ErrOrgOffGitHubHost) || errors.Is(err, platform.ErrURLUserinfo) || errors.Is(err, db.ErrURLTooLong) {
 		// A pending org that is not on this deployment's GitHub host cannot
 		// be approved: nothing would ever enumerate it (round 2).
@@ -544,6 +549,12 @@ func (s *Server) handleAdminAddRequestDecision(w http.ResponseWriter, r *http.Re
 				n, failed, err := s.store.ProcessApprovedAddRequest(context.Background(), req.RequestID)
 				if errors.Is(err, db.ErrAddRequestInProgress) {
 					s.logger.Info("add-request is already being processed", "request_id", req.RequestID)
+					return
+				}
+				if errors.Is(err, db.ErrGroupRejected) {
+					// v0.29.71: the pass refuses a rejected group's items;
+					// re-approving the request cannot change that.
+					s.logger.Info("approved add-request not processed — its group was rejected", "request_id", req.RequestID, "group_id", req.GroupID)
 					return
 				}
 				if err != nil {

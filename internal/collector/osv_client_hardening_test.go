@@ -12,9 +12,11 @@ package collector
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -99,3 +101,39 @@ func TestOSVClientSourceContract(t *testing.T) {
 		t.Error("osvHTTPClient must declare an explicit Timeout")
 	}
 }
+
+// TestOSVBatchLogsItsResponseSize — v0.29.71 review round 1 (F6): the OSV
+// batch answer is the largest data body the vulnerability scan reads, and
+// the operator's rule (2026-09-30) is no size limit but the largest sizes
+// logged. The body is padded to 64 MiB, plus one byte per earlier run in
+// this process, so it is a new high-water mark whatever an earlier test or
+// run served (the marks are process-wide; whole-branch review F1).
+func TestOSVBatchLogsItsResponseSize(t *testing.T) {
+	osvSizeTestRuns++
+	size := 64<<20 + osvSizeTestRuns
+	// Padded INSIDE the JSON value: a decoder stops reading at the value's
+	// end, so trailing padding would never be read (or counted).
+	body := `{"results":[],"pad":"` + strings.Repeat("x", size-len(`{"results":[],"pad":""}`)) + `"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	origURL := osvBatchURL
+	osvBatchURL = srv.URL
+	t.Cleanup(func() { osvBatchURL = origURL })
+	var buf lockedBuffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	if _, err := queryOSVBatch(context.Background(), osvBatchRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); !strings.Contains(got, "response size high-water mark") || !strings.Contains(got, "source=osv-batch") || !strings.Contains(got, "bytes="+strconv.Itoa(size)) {
+		t.Errorf("the OSV batch body's size must be logged as a high-water mark; log:\n%s", got)
+	}
+}
+
+// osvSizeTestRuns counts TestOSVBatchLogsItsResponseSize's runs in this
+// process (-count=N).
+var osvSizeTestRuns int

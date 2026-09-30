@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 //go:embed schema.sql
@@ -2341,7 +2343,11 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// backfilled 'runtime' with the fine value. kind='self' rows
 	// deliberately stay the empty string — scope vocabulary does not apply to a
 	// project's own advisories. Idempotent by predicate.
-	execMigrationStep(ctx, pg, logger, errs,
+	// v0.29.71: ledgered. It scanned the whole table on every migrate
+	// (7–61 s on kate) because the rule lived in the callers; the store now
+	// applies it on every write (storedFindingScope), so no empty-scope row can
+	// reappear and one run is enough.
+	runOnceStep(ctx, pg, logger, errs,
 		"v0.27.51 backfill dependency_scope '' -> 'runtime' on dependency findings",
 		`UPDATE aveloxis_data.repo_deps_vulnerabilities
 		 SET dependency_scope = 'runtime'
@@ -2368,6 +2374,33 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_contributors_canonical_lookup",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_lookup
 		 ON aveloxis_data.contributors (cntrb_canonical)`)
+
+	// v0.29.71 (O11, operator go-ahead 2026-09-30; measured on kate,
+	// summary/43 §2 item 9): the API's per-repository windowed reads. The
+	// top-contributors messages arm read every message row of a repository
+	// to keep the window's (pytorch: 1.24M rows for 347k, 788k buffers), the
+	// reviews arm likewise (549k for 224k); INCLUDE (cntrb_id) makes both
+	// index-only. The weekly merged/closed series read every PR/issue row of
+	// the repository; the partial indexes hold only merged/closed rows.
+	// Fleet-scale tables: CONCURRENTLY, migration-only (SR-2); new names
+	// (SR-4). Sizes on kate: messages 143M rows (~5-6 GB), reviews 49M
+	// (~2 GB), the two partials under 1 GB each.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_messages_repo_ts_cntrb",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_repo_ts_cntrb
+		 ON aveloxis_data.messages (repo_id, msg_timestamp) INCLUDE (cntrb_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pr_reviews_repo_submitted_cntrb",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pr_reviews_repo_submitted_cntrb
+		 ON aveloxis_data.pull_request_reviews (repo_id, submitted_at) INCLUDE (cntrb_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_pull_requests_repo_merged",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_merged
+		 ON aveloxis_data.pull_requests (repo_id, merged_at) WHERE merged_at IS NOT NULL`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_issues_repo_closed",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_repo_closed
+		 ON aveloxis_data.issues (repo_id, closed_at) WHERE closed_at IS NOT NULL`)
 
 	// v0.27.57: GitHub contribution-activity classification columns
 	// (GraphQL contributionsCollection — distinguishes publicly-active
@@ -2723,6 +2756,9 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 // 30 seconds (ignoring fast migrations) and subsequent polls every
 // 60 seconds.
 func watchBlockers(ctx context.Context, pg *PostgresStore, logger *slog.Logger, done <-chan struct{}) {
+	// Observation only: a panic on a pg_stat_activity row must not take
+	// the migrate down with it (O6, v0.29.71).
+	defer safego.Recover(logger, "migrate-blocker-watch")
 	first := time.NewTimer(30 * time.Second)
 	defer first.Stop()
 	select {

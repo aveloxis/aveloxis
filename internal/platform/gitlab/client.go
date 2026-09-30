@@ -60,7 +60,7 @@ func (c *Client) ParseRepoURL(rawURL string) (owner, repo string, err error) {
 		return "", "", err
 	}
 	if parsed.Platform != model.PlatformGitLab {
-		return "", "", fmt.Errorf("URL %q is not a GitLab URL", rawURL)
+		return "", "", fmt.Errorf("URL %q is not a GitLab URL", platform.RedactURLUserinfo(rawURL))
 	}
 	return parsed.Owner, parsed.Repo, nil
 }

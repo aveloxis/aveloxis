@@ -31,6 +31,8 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 const gmailSMTPHost = "smtp.gmail.com:587"
@@ -361,7 +363,7 @@ func (m *Mailer) Send(to, subject, body string) error {
 		if m != nil && m.logger != nil {
 			if errors.Is(err, ErrNotConfigured) {
 				m.logger.Debug("mailer.Send skipped — gmail_user not configured",
-					"to", scrubUntrusted(to), "subject", subject)
+					"to", platform.RedactEmail(scrubUntrusted(to)), "subject", subject)
 			} else {
 				m.logger.Warn("mailer.Send skipped — recipient is not deliverable",
 					"subject", subject, "error", err)
@@ -412,7 +414,7 @@ func (m *Mailer) Send(to, subject, body string) error {
 			// The parsed address, not the raw parameter: a display name
 			// or comment in `to` is unbounded.
 			m.logger.Warn("mailer.Send failed",
-				"to", recipient, "subject", subject, "error", err)
+				"to", platform.RedactEmail(recipient), "subject", subject, "error", err)
 		}
 		return fmt.Errorf("smtp send: %w", err)
 	}

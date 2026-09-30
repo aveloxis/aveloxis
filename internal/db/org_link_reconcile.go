@@ -42,7 +42,14 @@ func (s *PostgresStore) ReconcileOrgRepoLinks(ctx context.Context) (int64, error
 		FROM aveloxis_ops.user_org_requests o
 		JOIN aveloxis_ops.user_groups g ON g.group_id = o.group_id
 		JOIN aveloxis_data.repos r
-		  ON starts_with(LOWER(r.repo_git), LOWER(rtrim(o.org_url, '/')) || '/')
+		  -- v0.29.71: the host/owner key both URLs share turns this into a
+		  -- hash join; starts_with alone was a nested loop of every org x
+		  -- every repository (kate: 323-338 s per run; keyed 0.7 s, the same
+		  -- 222,699 rows). Every repository the prefix matches has the org's
+		  -- key, so the key only prunes; starts_with still decides.
+		  ON split_part(LOWER(r.repo_git), '/', 3) || '/' || split_part(LOWER(r.repo_git), '/', 4)
+		   = split_part(LOWER(rtrim(o.org_url, '/')), '/', 3) || '/' || split_part(LOWER(rtrim(o.org_url, '/')), '/', 4)
+		 AND starts_with(LOWER(r.repo_git), LOWER(rtrim(o.org_url, '/')) || '/')
 		JOIN aveloxis_ops.collection_queue q ON q.repo_id = r.repo_id
 		WHERE COALESCE(g.status, 'approved') <> 'rejected'
 		ON CONFLICT DO NOTHING`)

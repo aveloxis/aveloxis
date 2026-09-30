@@ -1462,6 +1462,9 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	}
 
 	var allDeps []libyearDep
+	// One index per scan: every Cargo.toml of a workspace inherits from the
+	// same root, read once and never above the clone (v0.29.71).
+	cargoWS := newCargoWorkspaceIndex(workDir, ac.logger)
 
 	// v0.27.36: a root-stat failure makes Walk return without visiting
 	// anything — silently producing ZERO dependencies for the repo.
@@ -1528,7 +1531,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			deps := parseGoModVersions(path)
 			allDeps = append(allDeps, deps...)
 		case "Cargo.toml":
-			deps := parseCargoVersions(path)
+			deps := parseCargoVersionsIn(cargoWS, path)
 			allDeps = append(allDeps, deps...)
 		case "Gemfile":
 			deps := parseGemfileVersions(path)
@@ -1824,7 +1827,9 @@ func fetchRegistryJSON(ctx context.Context, url string, headers ...string) ([]by
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	platform.NoteResponseSize(registryLoggerFrom(ctx), "registry", url, int64(len(b)))
+	return b, err
 }
 
 func parsePackageJSONVersions(path string) ([]libyearDep, error) {
@@ -2276,29 +2281,9 @@ func parseGoModVersions(path string) []libyearDep {
 // path dep counts only with the version it is published as, so none of
 // them is looked up on crates.io.
 func parseCargoVersions(path string) []libyearDep {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil
-	}
-	scopes := map[string]string{
-		"[dependencies]":       "runtime",
-		"[dev-dependencies]":   model.ScopeDev,
-		"[build-dependencies]": model.ScopeBuild,
-	}
-	sections := map[string]bool{}
-	for s := range scopes {
-		sections[s] = true
-	}
-	var deps []libyearDep
-	for _, e := range scanTOMLDepTables(string(data), sections) {
-		// A git or alternative-registry dep is not the crates.io crate of
-		// that name; a path dep is only when it declares the version it
-		// publishes as.
-		nonRegistry := e.Git || e.Registry || (e.Path && e.Version == "")
-		deps = append(deps, libyearDep{Name: e.Name, Version: cleanVersion(e.Version), Requirement: e.Raw,
-			Type: scopes[e.Section], Manager: "cargo", NonRegistry: nonRegistry})
-	}
-	return deps
+	// A lone manifest: its own directory is the only workspace root in
+	// scope (scanLibyear passes one index for the whole clone instead).
+	return parseCargoVersionsIn(newCargoWorkspaceIndex(filepath.Dir(path), nil), path)
 }
 
 // parseGemfileVersions extracts deps with versions from Gemfile.

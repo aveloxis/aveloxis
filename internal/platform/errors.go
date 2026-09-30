@@ -145,6 +145,14 @@ var ErrNoKeys = errors.New("no API keys configured")
 // a 422 apart decides with errors.Is rather than on the text (v0.29.70).
 var ErrUnprocessableEntity = errors.New("unprocessable entity")
 
+// ErrPRBatch marks a failed GraphQL pull-request batch — the fetch or its
+// child pagination — which leaves PR child data incomplete, so the job arms
+// force_full (v0.18.24). The scheduler decides with errors.Is on the error
+// it records; before v0.29.71 it searched the error TEXT for this message,
+// the error-text class the ratchet cannot see across a function boundary.
+// Its message keeps the recorded last_error text unchanged.
+var ErrPRBatch = errors.New("graphql PR batch")
+
 // ErrWrongEntityKind is returned when the API responds with the right
 // status code (200 OK) but the wrong shape — specifically, when
 // FetchIssueByNumber receives a 200 for a number that turns out to be a

@@ -44,6 +44,12 @@ type Options struct {
 	TrustedProxy   string   // peer IP whose X-Forwarded-For is believed
 	RequireAuth    bool     // v0.27.1: gate all data endpoints behind Bearer sessions
 
+	// ResponseCacheMaxAge is the longest a per-repository answer is reused
+	// within one collection generation (collection_cache.go): the
+	// contributor enrichment interval, collection.enrich_interval_minutes
+	// (v0.29.71, O11 option 4). Zero keeps the 60 s TTL.
+	ResponseCacheMaxAge time.Duration
+
 	// GitHubAPIBase is github.base_url — the host an org registered through
 	// the portal must be on (db.ErrOrgOffGitHubHost); empty means public
 	// GitHub (v0.29.57 round 2).

@@ -486,6 +486,26 @@ var deployChecklists = map[string][]deployStep{
 	// is_automation_email marked PARALLEL SAFE, and the scancode start
 	// interval now counted per worker (65).
 	"0.29.70": v02970DeployChecklist,
+	// v0.29.71: summary/43 §2 — personal data out of logs, Cargo workspace
+	// sources, purl rebuilders, bounded error bodies, add-request retry, URL
+	// length on renames, typed escalation — and O11: four CONCURRENTLY
+	// indexes, the API collection cache, response-size high-water marks. No
+	// new columns.
+	"0.29.71": v02971DeployChecklist,
+}
+
+// 0.29.71 adds no columns: its migrate builds four CONCURRENTLY indexes
+// (O11), sets vacuum_truncate = false on staging, and runs the v0.27.51
+// dependency_scope backfill one last time (now ledgered); it carries
+// 0.29.70's notes for a fleet that skipped it.
+var v02971DeployChecklist = []deployStep{
+	v02967DeployChecklist[0],
+	{"aveloxis migrate --skip-views", "builds four indexes CONCURRENTLY for the API's slow shapes (O11) — idx_messages_repo_ts_cntrb (~5-6 GB on kate), idx_pr_reviews_repo_submitted_cntrb (~2 GB) and the partial idx_pull_requests_repo_merged / idx_issues_repo_closed (under 1 GB each); expect the migrate to take noticeably longer than usual, reads and writes continue while they build; no new columns; aveloxis_ops.staging and its TOAST table get vacuum_truncate = false (instant; autovacuum stops trying to truncate them under a lock that stalled staging writers); the v0.27.51 dependency_scope backfill (which scanned repo_deps_vulnerabilities on every migrate, 7–61 s on kate) runs one last time and is then recorded in the migration ledger; otherwise as 0.29.70 — re-creates the two supply-chain views from Go (--skip-views skips only the 8Knot batch), and adds 0.29.70's four nullable columns and PARALLEL SAFE marking, 0.29.69's two columns and 0.29.62's repo_forge_id_changes for a fleet that skipped them"},
+	v02967DeployChecklist[2],
+	v02969DeployChecklist[3],
+	v02969DeployChecklist[4],
+	v02969DeployChecklist[5],
+	{"aveloxis start all", "the mailer's startup line masks its addresses (user=o***@example.com, operator_email the same; an unset operator_email still shows as empty), as do the mail-failure WARNs, the vulnerability digest's lines and test-mail's, and search URLs and the client's error text no longer carry an author's email. serve retries approved add requests whose processing stopped early, hourly ('approved add requests retried'; a WARN names the ones still unfinished). A Cargo dependency inherited from its workspace (workspace = true) takes the root's source and version: one the root declares by path or git, or no root declares, is no longer looked up on crates.io under someone else's name, so some Rust libyear rows disappear and others gain a pinned version at each repository's next analysis. A forge redirect to a URL longer than the stored-URL limit is not followed (an ERROR names the repository) instead of failing the job every cycle. npm lockfiles that record a registry tarball URL as the version store the tarball's version. The whitespace phase no longer misattributes counts after a file whose type changed (a symlink replaced by a regular file) and fails loudly on any other misalignment; a repository that refused before (LadybirdBrowser/ladybird) heals on its next walk; the walk's git log now ignores the host's diff settings (submodule format, color, textconv drivers), which could otherwise misalign, hide or rewrite sections. A Cargo workspace root that is a symlink is not followed (a WARN names it; its members' inherited dependencies stay unresolved). An npm tarball URL gives its version only when the file name is the package's own. ReconcileOrgRepoLinks runs in about a second instead of five and a half minutes. The API caches top contributors, the weekly time series and each compare series per repository until its next collection, for at most collection.enrich_interval_minutes (logged at start-up as 'API collection cache'; X-Cache: hit on the repository endpoints), so repeat page views of large repositories are fast; the compare page's default window now starts on a bucket boundary. New INFO line 'response size high-water mark' (source, bytes, previous_max, url): one line each time a data response is the largest yet from its source — data responses have no size limit. If 0.29.70 was skipped, its start-up notes apply as well: " + v02970DeployChecklist[6].desc},
 }
 
 // 0.29.70 adds four nullable columns and marks one function PARALLEL SAFE

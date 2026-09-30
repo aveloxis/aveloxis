@@ -28,12 +28,12 @@ import (
 // at a time): an error's text is followed through local variables (:=, =,
 // var), chains of them, and the normalising strings calls in
 // derivesFromErrorText, into strings.Contains / HasPrefix / HasSuffix /
-// EqualFold / Index / ContainsAny. Out of scope, and known: text carried
-// across a function boundary or in a struct field (scheduler.go's
-// outcome.errMsg reaching shouldForceFullRecollect — pre-existing, its
-// needle has spaces no repository path can hold), fmt.Sprint(err), and
-// `==` / switch on the text (scancode_policy.go:217, pre-existing). Those
-// are review-lens territory, recorded in the v0.29.70 ledger.
+// EqualFold / Index / ContainsAny. Out of scope: text carried across a
+// function boundary or in a struct field, fmt.Sprint(err), and `==` /
+// switch on the text — review-lens territory. The two known sites of those
+// shapes (the scheduler's force_full matcher on outcome.errMsg, and
+// scancode's `== "signal: killed"`) were made typed in v0.29.71
+// (platform.ErrPRBatch, killedBySIGKILL).
 func TestNoDecisionsOnErrorTextThroughAVariable(t *testing.T) {
 	root := srctest.Root(t)
 	examined := 0

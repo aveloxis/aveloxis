@@ -626,6 +626,8 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GitHub user fetch failed", http.StatusBadGateway)
 		return
 	}
+	// A 200 is the data answer; an error body is not a size (fix review V3).
+	platform.NoteResponseSize(s.logger, "oauth-github-user", userReq.URL.String(), int64(len(body)))
 
 	var ghUser struct {
 		ID        int64  `json:"id"`
@@ -895,6 +897,8 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GitLab user fetch failed", http.StatusBadGateway)
 		return
 	}
+	// A 200 is the data answer; an error body is not a size (fix review V3).
+	platform.NoteResponseSize(s.logger, "oauth-gitlab-user", glBase+"/api/v4/user", int64(len(body)))
 
 	var glUser struct {
 		ID        int64  `json:"id"`
@@ -1159,7 +1163,7 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmatio
 			// The send takes no context: its failure is never the
 			// request's end (NET-6 review r6 F2), so no LogFailure.
 			logger.Warn("failed to send confirmation email",
-				"user_id", sess.UserID, "email", email, "error", err)
+				"user_id", sess.UserID, "email", platform.RedactEmail(email), "error", err)
 		}
 		// Don't leave the dashboard announcing "we sent a confirmation
 		// link" (operator decision, v0.29.29) — but the mail may still have

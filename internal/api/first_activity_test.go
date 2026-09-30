@@ -34,10 +34,15 @@ import (
 func TestHandleCompareUsesEntityFloor(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
 	body := extractFuncBody(t, src, "handleCompare")
-	for _, needle := range []string{"entityFirstActivity(", "entitySince", "metricSeriesAndParts(r, ids, metric, bucket, entitySince"} {
+	for _, needle := range []string{"entityFirstActivity(", "entitySince", "cachedMetricSeries(r, ids, metric, bucket, entitySince"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("handleCompare must clamp each entity's window via %q — young repos otherwise chart fabricated zeros back to the window start", needle)
 		}
+	}
+	// v0.29.71: the series is read through its collection-generation cache,
+	// which must hand the clamped start to the computation.
+	if cached := extractFuncBody(t, src, "cachedMetricSeries"); !strings.Contains(cached, "s.metricSeriesAndParts(r, ids, metric, bucket, since, until") {
+		t.Error("cachedMetricSeries must compute with the since it was given (the entity's clamped start)")
 	}
 }
 

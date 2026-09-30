@@ -65,10 +65,20 @@ type Server struct {
 	publicStats *publicStatsCache
 
 	// v0.27.61: general 60s body cache for per-repo read endpoints
-	// (top contributors, contributor elsewhere). Same shape as
-	// cmpCache; separate instance so a compare-traffic flood can't
-	// evict the repo-page bodies (both maps are bounded at 1000).
+	// (contributor elsewhere, new repos; top contributors moved to
+	// repoCache in v0.29.71). Same shape as cmpCache; separate instance
+	// so a compare-traffic flood can't evict these bodies (both maps are
+	// bounded at 1000).
 	respCache *compareCache
+
+	// v0.29.71 (O11 option 4): per-repository answers cached under the
+	// repositories' collection generation (collection_cache.go): the
+	// repository page's top contributors and weekly time series in
+	// repoCache, each compare entity's series in seriesCache — separate
+	// instances so a compare flood cannot evict the repository-page
+	// answers (review round 1).
+	repoCache   *collectionCache
+	seriesCache *collectionCache
 }
 
 // New creates an API server with default middleware options
@@ -89,6 +99,12 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		ghAPIBase:    platform.GitHubAPIBaseOrPublic(opts.GitHubAPIBase),
 		sharedWithMe: store}
 	s.homeLoader = store.GetHomeRepos
+	s.repoCache = newCollectionCache(opts.ResponseCacheMaxAge)
+	s.seriesCache = newCollectionCache(opts.ResponseCacheMaxAge)
+	if logger != nil { // SR-10: the TTL in effect, after the zero default
+		logger.Info("API collection cache", "ttl", s.repoCache.ttl, "configured", opts.ResponseCacheMaxAge,
+			"source", "collection.enrich_interval_minutes")
+	}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
 	// the publicPaths allowlist (auth.go); 60s stale-on-error cache.
@@ -389,7 +405,9 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	// Default window: last 2 years to now. Both endpoints overridable via
 	// ?since=YYYY-MM-DD and ?until=YYYY-MM-DD. An invalid value falls back
 	// to the default rather than erroring, so charts keep rendering.
-	since := time.Now().AddDate(-2, 0, 0)
+	// Day-aligned (v0.29.71) so the answer can be cached for the day: an
+	// instant-precise default start gave every request its own window.
+	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
 	if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
 		if t, err := time.Parse("2006-01-02", sinceParam); err == nil {
 			since = t
@@ -406,10 +424,23 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
 		return
 	}
+	// O11 option 4 (v0.29.71): cached under the collection generation.
+	key, cacheable := s.generationKey(r.Context(), r, "handleTimeSeries",
+		fmt.Sprintf("timeseries|%d|%s|%s", repoID, since.Format(time.RFC3339), until.Format(time.RFC3339)), []int64{repoID})
+	if cacheable {
+		if v, ok := s.repoCache.get(key); ok {
+			w.Header().Set("X-Cache", "hit")
+			jsonResponse(w, v)
+			return
+		}
+	}
 	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {
 		s.serverError(w, r, "handleTimeSeries", err)
 		return
+	}
+	if cacheable {
+		s.repoCache.put(key, ts)
 	}
 	jsonResponse(w, ts)
 }

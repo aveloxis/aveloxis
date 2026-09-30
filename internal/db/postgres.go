@@ -864,6 +864,21 @@ func (s *PostgresStore) ArchiveRepo(ctx context.Context, repoID int64) error {
 	return err
 }
 
+// refuseRenameTarget is the rename writers' one check of a new repo_git
+// (SR-18, the store owns the column): no credentials (v0.29.57 round 6) and
+// no longer than MaxAddURLBytes once normalized — the bound UpsertRepo
+// applies to every add (O9, v0.29.71: a forge redirect target past the
+// index's limit failed the UPDATE, and the job, every cycle).
+func refuseRenameTarget(newURL string) error {
+	if err := platform.RefuseURLUserinfo(newURL); err != nil {
+		return err
+	}
+	if len(model.NormalizeRepoGitURL(newURL)) > MaxAddURLBytes {
+		return ErrURLTooLong
+	}
+	return nil
+}
+
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
@@ -871,7 +886,7 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 	// The store owns repo_git (SR-18): the rename path is a WRITER of it
 	// too, and a redirect target carrying credentials reached it (v0.29.57
 	// fix-review round 6). Refused before anything else, like UpsertRepo.
-	if err := platform.RefuseURLUserinfo(newURL); err != nil {
+	if err := refuseRenameTarget(newURL); err != nil {
 		return fmt.Errorf("repo %d rename: %w", repoID, err)
 	}
 	// v0.27.113 (Copilot round 9): normalize the stored URL exactly like
@@ -970,7 +985,7 @@ func extractRepoPath(u string) string {
 // UpdateRepoURL changes the git URL, owner, and name of a repo (e.g., after a redirect).
 // Extracts the new owner/name from the URL so the dashboard and API show correct values.
 func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL string) error {
-	if err := platform.RefuseURLUserinfo(newURL); err != nil { // as UpdateRepoURLs (round 6)
+	if err := refuseRenameTarget(newURL); err != nil { // as UpdateRepoURLs (round 6)
 		return fmt.Errorf("repo %d rename: %w", repoID, err)
 	}
 	// Parse owner/name from the new URL via the shared parser (v0.25.32

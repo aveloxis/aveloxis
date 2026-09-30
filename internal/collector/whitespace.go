@@ -115,6 +115,13 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 		curFile      *whitespaceFileStat
 		inHunk       bool
 		resetRemoval bool
+		// The current section's "diff --git" header and whether its
+		// headers said "deleted file mode": a type change (a symlink
+		// replaced by a regular file) is ONE numstat line but TWO patch
+		// sections, a delete then a new file under the same header
+		// (v0.29.71; LadybirdBrowser/ladybird).
+		sectionHeader  string
+		sectionDeleted bool
 	)
 	// wsCheck is an occurrence-count MULTISET of the current removal
 	// run's stripped lines (v0.27.113, Copilot round 9): the original
@@ -166,17 +173,30 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 			// Preamble noise before the first commit — skip.
 
 		case strings.HasPrefix(line, "diff --git "):
+			header := strings.TrimPrefix(line, "diff --git ")
+			if curFile != nil && sectionDeleted && header == sectionHeader {
+				// The second half of a type change: the same file,
+				// counted on the same numstat line.
+				inHunk = false
+				clear(wsCheck)
+				resetRemoval = true
+				sectionDeleted = false
+				continue
+			}
 			flushFile()
 			fileIdx++
-			name := ""
-			if fileIdx < len(numstatNames) {
-				name = numstatNames[fileIdx]
-			} else if i := strings.Index(line, " b/"); i >= 0 {
-				// Positional pairing should always hold (numstat and
-				// patch follow the same diff order); the b-side path is
-				// a last-resort fallback so a surprise never drops data
-				// silently.
-				name = line[i+3:]
+			sectionHeader, sectionDeleted = header, false
+			// Pairing is positional (numstat and patch follow the same
+			// diff order) and every pairing is verified: a section whose
+			// header is not its numstat name's would write its counts to
+			// another file's row. Before v0.29.71 an unpaired section
+			// fell back to its b-side path, and nothing checked the rest.
+			if fileIdx >= len(numstatNames) {
+				return fmt.Errorf("commit %s: patch section %d (%s) has no numstat line — refusing to pair the rest of the commit", cur.Hash, fileIdx+1, header)
+			}
+			name := numstatNames[fileIdx]
+			if !numstatNameMatchesHeader(name, header) {
+				return fmt.Errorf("commit %s: patch section %d (%s) does not match numstat line %q — refusing to pair the rest of the commit", cur.Hash, fileIdx+1, header, name)
 			}
 			curFile = &whitespaceFileStat{Filename: name}
 
@@ -192,6 +212,9 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 
 		case !inHunk:
 			// Per-file headers (---/+++/index/rename/mode/Binary...).
+			if strings.HasPrefix(line, "deleted file mode ") {
+				sectionDeleted = true
+			}
 
 		case strings.HasPrefix(line, "+"):
 			content := strings.TrimSpace(line[1:])
@@ -238,10 +261,171 @@ func parseWhitespaceLog(r io.Reader, emit func(whitespaceCommit) error) error {
 	}
 }
 
+// numstatNameMatchesHeader reports whether a "diff --git" header (without
+// its prefix) names the file of a numstat line. The header gives the old and
+// new paths ("a/<old> b/<new>", either side C-quoted by git; a plain header's
+// split point is ambiguous when a path holds a space, so every split is
+// tried). The name matches when it is:
+//   - the literal path, both sides (a file may be NAMED "a => b.txt" or
+//     "{p => q}"), unquoted when git C-quoted it;
+//   - "<old> => <new>" with each side unquoted on its own — git's form when
+//     either path needs quoting (no braces then);
+//   - git's brace rendering of the two paths (gitRenameMatches, pprint_rename).
+//
+// Comparing against git's rendering keeps the cost low; the
+// previous search built every "{", " => ", "}" triple first, and one hostile
+// path made that hundreds of GB (v0.29.71 review round 3). A wrong rejection
+// fails the walk for good, so every form git emits is accepted (round 1).
+func numstatNameMatchesHeader(name, header string) bool {
+	literal, literalOK := unquoteGitPath(name)
+	// Both rename forms carry " => "; without one only the literal reading
+	// can match (review round 4: skip the rest).
+	renamed := strings.Contains(name, " => ")
+	var arrows map[[2]string]bool
+	if renamed {
+		arrows = numstatArrowReadings(name)
+	}
+	for _, p := range diffHeaderPaths(header) {
+		oldPath, newPath := p[0], p[1]
+		if literalOK && oldPath == literal && newPath == literal {
+			return true
+		}
+		if renamed && (arrows[[2]string{oldPath, newPath}] || gitRenameMatches(oldPath, newPath, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+// unquoteGitPath returns a path as git wrote it, unquoted when the whole
+// string is one C-quoted token.
+func unquoteGitPath(s string) (string, bool) {
+	if !strings.HasPrefix(s, `"`) {
+		return s, true
+	}
+	q, err := strconv.QuotedPrefix(s)
+	if err != nil || len(q) != len(s) {
+		return "", false
+	}
+	u, err := strconv.Unquote(q)
+	return u, err == nil
+}
+
+// numstatArrowReadings is every "<old> => <new>" split of a numstat name,
+// each side unquoted on its own (one entry per " => " occurrence).
+func numstatArrowReadings(name string) map[[2]string]bool {
+	out := map[[2]string]bool{}
+	for i := 0; ; {
+		j := strings.Index(name[i:], " => ")
+		if j < 0 {
+			return out
+		}
+		at := i + j
+		if o, ok := unquoteGitPath(name[:at]); ok {
+			if n, ok := unquoteGitPath(name[at+len(" => "):]); ok {
+				out[[2]string{o, n}] = true
+			}
+		}
+		i = at + 1
+	}
+}
+
+// diffHeaderPaths lists the (old, new) paths a "diff --git" header can name:
+// "a/<old> b/<new>", each side a C-quoted token or plain text, split at a
+// space (every space is tried; a quoted side has one split).
+func diffHeaderPaths(header string) [][2]string {
+	side := func(s, prefix string) (string, bool) {
+		p, ok := unquoteGitPath(s)
+		if !ok || !strings.HasPrefix(p, prefix) {
+			return "", false
+		}
+		return p[len(prefix):], true
+	}
+	var out [][2]string
+	for i := strings.IndexByte(header, ' '); i >= 0; {
+		if o, ok := side(header[:i], "a/"); ok {
+			if n, ok := side(header[i+1:], "b/"); ok {
+				out = append(out, [2]string{o, n})
+			}
+		}
+		next := strings.IndexByte(header[i+1:], ' ')
+		if next < 0 {
+			break
+		}
+		i = i + 1 + next
+	}
+	return out
+}
+
+// gitRenameMatches reports whether name is how git's diff.c pprint_rename
+// renders the rename a → b for paths that need no quoting: the common prefix
+// up to and including a "/", the common suffix from a "/", and
+// "{<old mid> => <new mid>}" between them; with neither, "<old> => <new>".
+// It compares piece by piece and builds no string (review round 4: one
+// rendered string per header split was quadratic in a path of many
+// " b/" components).
+func gitRenameMatches(a, b, name string) bool {
+	lenA, lenB := len(a), len(b)
+	pfx := 0
+	for i := 0; i < lenA && i < lenB && a[i] == b[i]; i++ {
+		if a[i] == '/' {
+			pfx = i + 1
+		}
+	}
+	// The suffix scan starts at the terminating NUL (equal on both sides)
+	// and may run one byte into a slash-ending prefix, exactly as in git.
+	adj := 0
+	if pfx > 0 {
+		adj = 1
+	}
+	at := func(s string, i int) byte {
+		if i >= len(s) {
+			return 0
+		}
+		return s[i]
+	}
+	sfx := 0
+	for i, j := lenA, lenB; pfx-adj <= i && pfx-adj <= j && i >= 0 && j >= 0 && at(a, i) == at(b, j); i, j = i-1, j-1 {
+		if at(a, i) == '/' {
+			sfx = lenA - i
+		}
+	}
+	const arrow = " => "
+	if pfx+sfx == 0 {
+		return len(name) == lenA+len(arrow)+lenB && name[:lenA] == a && name[lenA:lenA+len(arrow)] == arrow && name[lenA+len(arrow):] == b
+	}
+	aMid, bMid := max(lenA-pfx-sfx, 0), max(lenB-pfx-sfx, 0)
+	pieces := [...]string{a[:pfx], "{", a[pfx : pfx+aMid], arrow, b[pfx : pfx+bMid], "}", a[lenA-sfx:]}
+	rest := name
+	for _, piece := range pieces {
+		if !strings.HasPrefix(rest, piece) {
+			return false
+		}
+		rest = rest[len(piece):]
+	}
+	return rest == ""
+}
+
 // whitespaceFlushEvery bounds how many file stats accumulate before a
 // batched DB flush (the v0.27.97 multi-row pattern; only rows whose
 // values actually change are touched — IS DISTINCT guard in the store).
 var whitespaceFlushEvery = 5000
+
+// whitespaceLogArgs is the whitespace walk's git log argument list, one
+// spelling for the walk and its tests. Every flag that host config could
+// override is pinned (v0.29.71), because every section is verified against
+// "a/<old> b/<new>" in numstat order: the prefixes (diff.noprefix,
+// diff.mnemonicPrefix); --submodule=short (diff.submodule=log|diff prints a
+// submodule change with no "diff --git" header, or adds sections, so every
+// later section pairs with the wrong numstat line); --no-color
+// (color.ui=always hides every header, and nothing matches); and
+// --no-textconv (the counted lines must be the file's own). --no-ext-diff is
+// belt and braces: git log runs an external diff only with --ext-diff.
+func whitespaceLogArgs(clonePath, target string) []string {
+	return []string{"-C", clonePath, "log",
+		target, "--numstat", "-p", "--src-prefix=a/", "--dst-prefix=b/",
+		"--submodule=short", "--no-color", "--no-ext-diff", "--no-textconv", "--format=%x1e%H"}
+}
 
 // runWhitespaceWalk streams git log over rangeSpec ("" = the default
 // branch's full history; "old..branch" = incremental) and applies the
@@ -278,8 +462,7 @@ func (f *FacadeCollector) runWhitespaceWalk(ctx context.Context, repoID int64, c
 	// context on the error path SIGKILLs git's group so the wait returns.
 	walkCtx, cancelWalk := context.WithCancel(ctx)
 	defer cancelWalk()
-	cmd := exec.CommandContext(walkCtx, "git", "-C", clonePath, "log",
-		target, "--numstat", "-p", "--format=%x1e%H")
+	cmd := exec.CommandContext(walkCtx, "git", whitespaceLogArgs(clonePath, target)...)
 	// v0.29.58: keep git's diagnostic for the exit-error path (bounded;
 	// see stderrCapture) — the facade's git log had the same gap.
 	walkStderr := &stderrCapture{}

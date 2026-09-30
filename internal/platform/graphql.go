@@ -256,6 +256,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := c.inner.Do(req)
+		err = RedactTransportError(err)
 		if err != nil {
 			// A failed Do has no response state to apply, so release
 			// at once.
@@ -317,6 +318,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		case resp.StatusCode == http.StatusOK:
 			respBody, readErr = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+			NoteResponseSize(c.logger, c.sizeSource("graphql"), url, int64(len(respBody)))
 			// v0.23.9: GitHub's GraphQL gateway has been observed
 			// returning HTTP 200 with a zero-byte body when the
 			// upstream resolver times out AFTER headers have been
@@ -368,7 +370,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			// the key for GitHub's documented floor (parseRetryAfter's
 			// default) before any waiter can re-lease it. The unauthenticated
 			// shape is a key-leak bug, not this key's throttle: no rest.
-			respBody, readErr = io.ReadAll(resp.Body)
+			respBody, readErr = ReadErrorBody(resp.Body)
 			_ = resp.Body.Close()
 			if readErr == nil && isRateLimitBody(respBody) && !isAnonymousRateLimitBody(respBody) {
 				c.keys.MarkSecondaryLimited(key, parseRetryAfter(resp))
@@ -574,7 +576,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				}
 				continue
 			}
-			return fmt.Errorf("%w: %s (graphql 403, not a rate limit)", ErrForbidden, url)
+			return fmt.Errorf("%w: %s (graphql 403, not a rate limit)", ErrForbidden, RedactURLUserinfo(url))
 
 		case resp.StatusCode == http.StatusTooManyRequests && isPrimaryRefusal(resp):
 			// GitHub also spells primary exhaustion as a 429 (Remaining: 0,
@@ -624,7 +626,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 			continue
 
 		default:
-			respBody, _ := io.ReadAll(resp.Body)
+			respBody, _ := ReadErrorBody(resp.Body)
 			_ = resp.Body.Close()
 			c.logger.Warn("graphql unexpected status",
 				"url", RedactURLUserinfo(url), "status", resp.StatusCode,
@@ -650,9 +652,9 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 		// for their next claim; an execution timeout classifies
 		// ClassTransient so they halve instead. Reporting the wrong one
 		// sends the caller down the wrong path.
-		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, lastCause)
+		return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, RedactURLUserinfo(url), lastCause)
 	}
-	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, url, ErrTransient)
+	return fmt.Errorf("graphql: exhausted %d retries for %s: %w", budget, RedactURLUserinfo(url), ErrTransient)
 }
 
 // markBudgetExhausted benches the bucket THIS client's GraphQL checkout

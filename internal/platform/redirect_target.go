@@ -124,7 +124,9 @@ func extractNextLink(resp *http.Response, clientBase string) (string, error) {
 	}
 	ref, err := url.Parse(matches[1])
 	if err != nil {
-		return "", fmt.Errorf("the Link continuation %q does not parse: %w", matches[1], err)
+		// Neither the continuation nor url.Parse's error (which quotes it)
+		// is logged raw: it can carry a searched address (v0.29.71).
+		return "", fmt.Errorf("the Link continuation %q does not parse: %w", RedactURLUserinfo(matches[1]), RedactTransportError(err))
 	}
 	target := ref
 	if resp.Request != nil && resp.Request.URL != nil {

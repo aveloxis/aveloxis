@@ -158,7 +158,9 @@ func ValidateAndLog(cfg Config, logger *slog.Logger) error {
 			} else {
 				// operator_email too: a lost one silences the add-request
 				// notices and the digest, and nothing else would say so.
-				logger.Info("mailer configured", "user", cfg.GmailUser, "from_name", cfg.FromName, "site_url", platform.RedactURLUserinfo(cfg.SiteURL), "operator_email", cfg.OperatorEmail)
+				// Both addresses are masked (v0.29.71, personal data in INFO
+				// logs): an empty operator_email still shows as empty.
+				logger.Info("mailer configured", "user", platform.RedactEmail(cfg.GmailUser), "from_name", cfg.FromName, "site_url", platform.RedactURLUserinfo(cfg.SiteURL), "operator_email", platform.RedactEmail(cfg.OperatorEmail))
 			}
 		}
 		return nil

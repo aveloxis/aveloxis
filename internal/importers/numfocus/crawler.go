@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // URLs we crawl. Stable since numfocus.org launched the current
@@ -127,6 +129,7 @@ func crawlURL(ctx context.Context, client *http.Client, url string, parse func(s
 		return nil, fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
+	platform.NoteResponseSize(nil, "importer-numfocus", url, int64(len(body)))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", url, err)
 	}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/importers"
+	"github.com/aveloxis/aveloxis/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -120,6 +121,7 @@ func Fetch(ctx context.Context, url string) ([]Project, error) {
 		return nil, fmt.Errorf("fetching %s: status %d", url, resp.StatusCode)
 	}
 	data, err := io.ReadAll(resp.Body)
+	platform.NoteResponseSize(nil, "importer-cncf", url, int64(len(data)))
 	if err != nil {
 		return nil, err
 	}

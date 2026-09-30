@@ -5,10 +5,13 @@ package collector
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
 	"syscall"
+
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // sweptWaitDelay is the post-cancel allowance groupKilled sets on every
@@ -133,12 +136,26 @@ func startSweptCommand(cmd *exec.Cmd) (*sweptCommand, error) {
 
 	pid := cmd.Process.Pid
 	s := &sweptCommand{Stdout: pr, waitCh: make(chan error, 1)}
-	go func() {
-		werr := cmd.Wait()
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		s.waitCh <- werr
-	}()
+	go waitAndSweep(cmd.Wait, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) }, s.waitCh)
 	return s, nil
+}
+
+// waitAndSweep waits for the subprocess, kills what is left of its process
+// group, and answers ch — exactly once, also when wait panics (O6,
+// v0.29.71): an unrecovered panic took the process down, and a recovered
+// one that sent nothing would leave Wait blocked forever.
+func waitAndSweep(wait func() error, sweep func(), ch chan<- error) {
+	answered := false
+	defer safego.RecoverWith(nil, "swept-command-wait", func(r any) {
+		sweep()
+		if !answered {
+			ch <- fmt.Errorf("waiting for the subprocess panicked: %v", r)
+		}
+	})
+	werr := wait()
+	sweep()
+	answered = true
+	ch <- werr
 }
 
 // Wait returns the subprocess's exit status. It is safe to call more than

@@ -212,9 +212,10 @@ func classifyScanOutcome(waitErr error, outputPath string,
 		}
 	}
 
-	// v0.23.8: "signal: killed" is Go's exec.ExitError text when the
-	// wall-clock scanCtx fired cmd.Cancel's SIGKILL.
-	if waitErr.Error() == "signal: killed" {
+	// v0.23.8: a SIGKILL exit is the wall-clock scanCtx firing
+	// cmd.Cancel. Read from the wait status since v0.29.71 (it compared
+	// the error text with "signal: killed").
+	if killedBySIGKILL(waitErr) {
 		out := scanOutcome{kind: outcomeTimeout}
 		if effectiveTimeout >= capTimeout {
 			out.capStrikes = timeoutCapStrikes(base, capTimeout, attemptsAtClaim)

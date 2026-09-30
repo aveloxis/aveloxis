@@ -97,8 +97,14 @@ func TestProcessMailWiring(t *testing.T) {
 	// passed every test).
 	logsTo := func(t *testing.T, process string, logs *bytes.Buffer) {
 		t.Helper()
-		if !strings.Contains(logs.String(), "mailer configured") || !strings.Contains(logs.String(), "operator_email=operator@example.com") {
+		if !strings.Contains(logs.String(), "mailer configured") || !strings.Contains(logs.String(), "operator_email=o***@example.com") ||
+			!strings.Contains(logs.String(), "user=o***@example.com") {
 			t.Errorf("%s: the mailer did not log its startup line to the process logger; log:\n%s", process, logs.String())
+		}
+		// v0.29.71 (personal data in INFO logs): the addresses are shown
+		// masked — enough to see which account is set, not the address.
+		if strings.Contains(logs.String(), "operator@example.com") || strings.Contains(logs.String(), "ops@example.com") {
+			t.Errorf("%s: the startup line logs an address in full; log:\n%s", process, logs.String())
 		}
 	}
 	var webLogs, apiLogs bytes.Buffer

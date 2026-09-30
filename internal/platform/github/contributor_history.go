@@ -7,11 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 // SetHistoryWindowConcurrency bounds how many history windows fetch
@@ -186,6 +188,51 @@ type historyRepoEntry struct {
 	} `json:"contributions"`
 }
 
+// runHistoryWindows fetches the windows with at most conc in flight; the
+// first error cancels the rest and is returned. A window whose fetch
+// PANICS (malformed answer data) is a failed fetch too (O6, v0.29.71):
+// before, the panic took down serve; recovering it silently would leave
+// that window's days missing while the contributor was stamped backfilled.
+func runHistoryWindows(ctx context.Context, logger *slog.Logger, windows []HistoryWindow, conc int, fetch func(context.Context, HistoryWindow) error) error {
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	record := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+		cancel()
+	}
+	for _, w := range windows {
+		wg.Add(1)
+		go func(w HistoryWindow) {
+			defer wg.Done()
+			defer safego.RecoverWith(logger, "contributor-history-window", func(r any) {
+				record(fmt.Errorf("contributor history window %s..%s panicked: %v", w.From.Format(time.DateOnly), w.To.Format(time.DateOnly), r))
+			})
+			select {
+			case sem <- struct{}{}:
+			case <-wctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			if wctx.Err() != nil {
+				return
+			}
+			if err := fetch(wctx, w); err != nil {
+				record(err)
+			}
+		}(w)
+	}
+	wg.Wait()
+	return firstErr
+}
+
 // FetchContributorDailyHistory fetches and merges every window,
 // subdividing on cap hits. Errors abort (nothing is fabricated); the
 // caller retries the contributor on its next claim.
@@ -214,38 +261,10 @@ func (c *Client) FetchContributorDailyHistory(ctx context.Context, login string,
 	if conc < 1 {
 		conc = 1
 	}
-	wctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	sem := make(chan struct{}, conc)
-	var wg sync.WaitGroup
-	var errMu sync.Mutex
-	var firstErr error
-	for _, w := range windows {
-		wg.Add(1)
-		go func(w HistoryWindow) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-wctx.Done():
-				return
-			}
-			defer func() { <-sem }()
-			if wctx.Err() != nil {
-				return
-			}
-			if err := c.fetchHistoryWindow(wctx, login, w, acc); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
-				cancel()
-			}
-		}(w)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return nil, nil, firstErr
+	if err := runHistoryWindows(ctx, c.logger, windows, conc, func(wctx context.Context, w HistoryWindow) error {
+		return c.fetchHistoryWindow(wctx, login, w, acc)
+	}); err != nil {
+		return nil, nil, err
 	}
 	// v0.28.5 (Copilot round): a canceled PARENT context can drain
 	// every worker at the semaphore/entry checks without any fetch

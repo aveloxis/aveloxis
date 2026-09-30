@@ -145,8 +145,18 @@ func TestValidateAndLogNamesTheOperatorAddress(t *testing.T) {
 	if err := ValidateAndLog(cfg, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(logs.String(), "operator_email=operator@example.com") {
-		t.Errorf("the configured-mailer line must name operator_email; log:\n%s", logs.String())
+	// v0.29.71: masked (personal data in INFO logs), still recognisable.
+	if !strings.Contains(logs.String(), "operator_email=o***@example.com") || strings.Contains(logs.String(), "operator@example.com") {
+		t.Errorf("the configured-mailer line must name operator_email, masked; log:\n%s", logs.String())
+	}
+	// A lost operator_email still reads as empty on the line.
+	logs.Reset()
+	cfg.OperatorEmail = ""
+	if err := ValidateAndLog(cfg, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `operator_email=""`) {
+		t.Errorf("an unset operator_email must show as empty; log:\n%s", logs.String())
 	}
 }
 

@@ -196,6 +196,7 @@ func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 			if idx := strings.LastIndex(path, "node_modules/"); idx >= 0 {
 				name = path[idx+len("node_modules/"):]
 			}
+			pkg.Version = npmLockVersion(name, pkg.Version)
 			if name == "" {
 				continue
 			}
@@ -234,6 +235,7 @@ func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 			if err := json.Unmarshal(raw, &node); err != nil {
 				continue
 			}
+			node.Version = npmLockVersion(name, node.Version)
 			if node.Version != "" && !seen[name+"@"+node.Version] {
 				seen[name+"@"+node.Version] = true
 				out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: node.Version})
@@ -291,7 +293,7 @@ func parseYarnLockV1(data []byte) (parsedLockfileData, error) {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case currentName != "" && strings.HasPrefix(trimmed, "version "):
-			currentVersion = strings.Trim(strings.TrimPrefix(trimmed, "version "), `" `)
+			currentVersion = npmLockVersion(currentName, strings.Trim(strings.TrimPrefix(trimmed, "version "), `" `))
 			if currentVersion != "" {
 				out.Entries = append(out.Entries, LockfileEntry{Name: currentName, Version: currentVersion})
 			}
@@ -344,7 +346,7 @@ func parseYarnBerry(data []byte) (parsedLockfileData, error) {
 		}
 		switch {
 		case strings.HasPrefix(trimmed, "version:"):
-			currentVersion = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "version:")), `"`)
+			currentVersion = npmLockVersion(currentName, strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "version:")), `"`))
 			if flushable && currentVersion != "" {
 				out.Entries = append(out.Entries, LockfileEntry{Name: currentName, Version: currentVersion})
 			}
@@ -536,9 +538,44 @@ func npmNameFromPathSegments(segs []string) string {
 // not match.
 var npmRegistryVersionRe = regexp.MustCompile(`^\d+\.\d+`)
 
-// npmTarballVersionRe reads the version from a registry tarball URL
-// (".../-/utils-2.4.2.tgz").
-var npmTarballVersionRe = regexp.MustCompile(`/-/[^/]+?-(\d+\.\d+[^/]*)\.tgz$`)
+// npmTarballRe reads a registry tarball URL's package path (the segments
+// before "/-/", a scope's "/" possibly encoded as %2f) and its file-name
+// stem (".../@s/utils/-/utils-2.4.2.tgz" → "@s/utils", "utils-2.4.2").
+var npmTarballRe = regexp.MustCompile(`/((?:@[^/]+(?:/|%2[fF]))?[^/@]+)/-/([^/]+)\.tgz$`)
+
+// npmSemverRe is a whole semver version (prerelease and build metadata
+// allowed): what remains of a tarball stem after "<name>-".
+var npmSemverRe = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+// npmLockVersion is the ONE reading (SR-17) of an npm lockfile's version
+// field: a dependency installed from a registry tarball URL is locked with
+// the URL as its version (package-lock.json v1 and v3, yarn.lock v1 and
+// berry, bun.lock), and its version is the tarball's file name
+// (v0.29.71: the URL became the purl's version — the 2026-09-28 log's
+// malformed npm purls). The tarball must be the package's own (whole-branch
+// review C3, fix review V1): the package path in the URL equals name, and
+// the file name is its unscoped name, "-", then a whole version — a package
+// installed from another package's tarball (another scope's, or a name that
+// merely shares the stem) is not that version of itself (SR-6). Any other
+// value is returned unchanged, and the wire gate drops it.
+func npmLockVersion(name, v string) string {
+	m := npmTarballRe.FindStringSubmatch(v)
+	if m == nil || name == "" {
+		return v
+	}
+	pkg := strings.NewReplacer("%2f", "/", "%2F", "/").Replace(m[1])
+	if pkg != name {
+		return v
+	}
+	unscoped := name
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		unscoped = name[i+1:]
+	}
+	if rest, ok := strings.CutPrefix(m[2], unscoped+"-"); ok && npmSemverRe.MatchString(rest) {
+		return rest
+	}
+	return v
+}
 
 // splitNPMSpec splits an npm package reference "name@ref" (a yarn
 // selector, a bun tuple head). A package name's only '@' is a scope's, at
@@ -609,9 +646,7 @@ func parseBunLock(data []byte) (parsedLockfileData, error) {
 		// A package fetched by tarball URL carries its version in the file
 		// name; any other non-registry reference (file:, link:, git) has no
 		// registry version and is skipped.
-		if m := npmTarballVersionRe.FindStringSubmatch(version); m != nil {
-			version = m[1]
-		}
+		version = npmLockVersion(name, version)
 		if !npmRegistryVersionRe.MatchString(version) {
 			continue
 		}

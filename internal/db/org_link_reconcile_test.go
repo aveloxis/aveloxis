@@ -30,6 +30,7 @@ func TestReconcileOrgRepoLinksShape(t *testing.T) {
 		"starts_with(":                        "prefix match must be starts_with, not LIKE — org names can contain LIKE metacharacters (_ is legal in GitLab paths)",
 		"LOWER(":                              "URL prefix match must be case-insensitive (v0.25.32)",
 		"ON CONFLICT DO NOTHING":              "idempotent — re-running each pass must be a no-op for existing links",
+		"split_part(LOWER(r.repo_git), '/', 3) || '/' || split_part(LOWER(r.repo_git), '/', 4)": "v0.29.71: the host/owner key both sides share makes the join a hash join; with starts_with alone it was a nested loop of every org × every repository (kate: 323–338 s per run, 0.7 s keyed, identical 222,699 rows)",
 	}
 	for needle, why := range needles {
 		if !strings.Contains(src, needle) {

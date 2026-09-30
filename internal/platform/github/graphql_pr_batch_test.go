@@ -6,6 +6,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -539,6 +540,10 @@ func TestFetchPRBatch_GraphQLErrorPropagates(t *testing.T) {
 	}
 	if got := platform.ClassifyError(err); got != platform.ClassRateLimit {
 		t.Errorf("expected ClassRateLimit, got %v (err=%v)", got, err)
+	} // v0.29.71: the batch's failure is typed, so the scheduler arms
+	// force_full with errors.Is, not by matching this text.
+	if !errors.Is(err, platform.ErrPRBatch) {
+		t.Errorf("a failed batch must wrap platform.ErrPRBatch: %v", err)
 	}
 }
 

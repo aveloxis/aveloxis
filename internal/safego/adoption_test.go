@@ -30,6 +30,10 @@ func TestSafegoAdoptionAtAuditedSites(t *testing.T) {
 		"../collector/distribution/worker.go": 2,
 		"../web/server.go":                    1, // org-repo-scan
 		"../web/admin.go":                     1, // group-approved-email
+		// O6 (v0.29.71): goroutines on external data or a subprocess.
+		"../platform/github/contributor_history.go": 1, // per-window fetch (RecoverWith: a panic fails the contributor)
+		"../collector/swept_command.go":             1, // the subprocess waiter (RecoverWith: Wait still answers)
+		"../db/migrate.go":                          1, // watchBlockers
 	}
 	if sched, err := os.ReadFile("../scheduler/scheduler.go"); err == nil {
 		body := string(sched)
@@ -47,7 +51,8 @@ func TestSafegoAdoptionAtAuditedSites(t *testing.T) {
 		// s.goTracked (pass 38) delegates to safego.Go — the scheduler's
 		// tracked-pool launcher counts as a recovered site; its own
 		// delegation is pinned below so the count cannot rot.
-		got := strings.Count(string(src), "safego.Go(") + strings.Count(string(src), "safego.Recover(") + strings.Count(string(src), "s.goTracked(")
+		got := strings.Count(string(src), "safego.Go(") + strings.Count(string(src), "safego.Recover(") +
+			strings.Count(string(src), "safego.RecoverWith(") + strings.Count(string(src), "s.goTracked(")
 		if got < min {
 			t.Errorf("%s has %d safego call sites, expected >= %d — a goroutine "+
 				"launch lost its panic recovery. Wrap degrade-not-die goroutines "+

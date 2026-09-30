@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSchedulerRunsPeriodicStagingCleanup — source-contract test
@@ -81,6 +82,7 @@ func TestStagingCleanupIntervalIsReasonable(t *testing.T) {
 	// should be tight enough to catch "1 * time.Second" mistakes
 	// but loose enough to allow future tuning.
 	reasonable := []string{
+		"hourlyMaintenanceInterval", // v0.29.71: the named hourly tick (pinned to time.Hour below)
 		"30 * time.Minute",
 		"1 * time.Hour",
 		"time.Hour",
@@ -117,5 +119,13 @@ func TestStagingCleanupIntervalIsReasonable(t *testing.T) {
 		t.Errorf("stagingCleanupTicker interval looks unreasonable (expected one of %v "+
 			"within ~200 chars of the ticker declaration).\n  window: %q",
 			reasonable, window)
+	}
+}
+
+// TestHourlyMaintenanceIntervalIsAnHour pins the named tick the staging
+// cleanup, the XID line and the add-request retry share (v0.29.71).
+func TestHourlyMaintenanceIntervalIsAnHour(t *testing.T) {
+	if hourlyMaintenanceInterval != time.Hour {
+		t.Errorf("hourlyMaintenanceInterval = %v, want one hour", hourlyMaintenanceInterval)
 	}
 }

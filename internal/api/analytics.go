@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -327,10 +328,12 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 		}
 	}
 	since = until.AddDate(-3, 0, 0)
+	sinceGiven := false
 	if s := r.URL.Query().Get("since"); s != "" {
 		if since, err = time.Parse("2006-01-02", s); err != nil {
 			return since, until, "", fmt.Errorf("invalid since %q", s)
 		}
+		sinceGiven = true
 	}
 	if !since.Before(until) {
 		return since, until, "", fmt.Errorf("since must be before until")
@@ -350,6 +353,15 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 	// emitted bucket is fully covered by the query window ([since,
 	// until) is exclusive on the right).
 	until = truncBucket(until, bucket)
+	// The default since is the bucket start three years before the
+	// TRUNCATED until (v0.29.71 review rounds 1-2): measured from now it
+	// was a new instant every second, and the per-entity series cache keys
+	// on it, so the default window (what the GUI sends) never hit; and a
+	// mid-bucket start made the first point a partial bucket, the droop
+	// v0.27.39 removed at the right edge.
+	if !sinceGiven {
+		since = truncBucket(until.AddDate(-3, 0, 0), bucket)
+	}
 	return since, until, bucket, nil
 }
 
@@ -547,7 +559,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		// so multi-series metrics deliver named component series;
 		// single-series metrics behave exactly as before (densified
 		// points, nil parts).
-		points, parts, err := s.metricSeriesAndParts(r, ids, metric, bucket, entitySince, until, retentionThreshold)
+		points, parts, err := s.cachedMetricSeries(r, ids, metric, bucket, entitySince, until, retentionThreshold)
 		if err != nil {
 			httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "series computation failed", http.StatusInternalServerError)
@@ -573,6 +585,39 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// entitySeries is one compare entity's computed series, as cached.
+type entitySeries struct {
+	points []db.WeeklyPoint
+	parts  map[string][]db.WeeklyPoint
+}
+
+// cachedMetricSeries is metricSeriesAndParts under the entity's collection
+// generation (O11 option 4, v0.29.71): the compare page's per-entity series
+// — the contributors, retention and merged/closed metrics among them — are
+// computed once per collection instead of per page view. The whole-body
+// compare cache keeps its 60 s (its responses carry per-request notices).
+func (s *Server) cachedMetricSeries(r *http.Request, ids []int64, metric, bucket string, since, until time.Time, retentionThreshold int) ([]db.WeeklyPoint, map[string][]db.WeeklyPoint, error) {
+	// sha256, not a 64-bit hash (review round 1): the key carries no user,
+	// so two id sets that collided would serve one scope the other's series.
+	h := sha256.New()
+	for _, id := range ids {
+		_, _ = fmt.Fprintf(h, "%d,", id)
+	}
+	key, cacheable := s.generationKey(r.Context(), r, "handleCompare",
+		fmt.Sprintf("series|%s|%s|%s|%s|rt%d|ids=%d:%x", metric, bucket, since.Format(time.RFC3339), until.Format(time.RFC3339), retentionThreshold, len(ids), h.Sum(nil)), ids)
+	if cacheable {
+		if v, ok := s.seriesCache.get(key); ok {
+			e := v.(entitySeries)
+			return e.points, e.parts, nil
+		}
+	}
+	points, parts, err := s.metricSeriesAndParts(r, ids, metric, bucket, since, until, retentionThreshold)
+	if err == nil && cacheable {
+		s.seriesCache.put(key, entitySeries{points: points, parts: parts})
+	}
+	return points, parts, err
 }
 
 // metricSeries computes base series from SQL and derives the two

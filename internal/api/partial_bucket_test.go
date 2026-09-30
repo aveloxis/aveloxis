@@ -52,3 +52,29 @@ func TestCompareWindowTruncatesPartialBucket(t *testing.T) {
 		t.Errorf("month bucket until must truncate to the 1st, got %v", until)
 	}
 }
+
+// TestCompareWindowDefaultSinceIsBucketAligned — v0.29.71 review round 1
+// (F1): the default since was now minus three years, a new instant every
+// second, and the per-entity series cache keys on since; the GUI omits
+// since at its default window, so every compare and repo-page series
+// request missed and each miss filled the shared cache. Round 2 (R2-4):
+// three years before a Monday is mid-week, so the first point was a
+// partial bucket. The default is the bucket start three years before the
+// truncated until: aligned, and stable for a whole bucket.
+func TestCompareWindowDefaultSinceIsBucketAligned(t *testing.T) {
+	for _, q := range []string{"bucket=week", "bucket=month", "until=2026-07-09&bucket=week"} {
+		r := httptest.NewRequest("GET", "/api/v1/compare?"+q, nil)
+		since, until, bucket, err := compareWindow(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := truncBucket(until.AddDate(-3, 0, 0), bucket); !since.Equal(want) {
+			t.Errorf("%s: default since = %v, want the bucket start three years before the truncated until (%v)", q, since, want)
+		}
+	}
+	// An explicit since is kept as given.
+	r := httptest.NewRequest("GET", "/api/v1/compare?since=2024-01-03&bucket=week", nil)
+	if since, _, _, err := compareWindow(r); err != nil || !since.Equal(time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("explicit since = %v, %v", since, err)
+	}
+}

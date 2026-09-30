@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // digestWindow decides whether a digest is due and what window it
@@ -83,7 +85,7 @@ func (s *Scheduler) runVulnDigest(ctx context.Context) {
 			}
 			return
 		}
-		s.logger.Info("vuln digest sent", "to", s.cfg.Mail.OperatorEmail,
+		s.logger.Info("vuln digest sent", "to", platform.RedactEmail(s.cfg.Mail.OperatorEmail),
 			"findings", len(items), "window_since", since)
 	}
 	if err := writeDigestStamp(stampPath, now); err != nil {
@@ -151,14 +153,14 @@ func (s *Scheduler) startVulnDigest() (<-chan time.Time, func()) {
 	ready, err := s.vulnDigestReady()
 	if err != nil {
 		s.logger.Error("operator vulnerability digest NOT started: no digest could be delivered — fix the mail block or mail.operator_email, then restart serve",
-			"operator_email", s.cfg.Mail.OperatorEmail, "error", err)
+			"operator_email", platform.RedactEmail(s.cfg.Mail.OperatorEmail), "error", err)
 	}
 	if !ready {
 		return nil, func() {}
 	}
 	ticker := time.NewTicker(1 * time.Hour)
 	s.logger.Info("operator vulnerability digest enabled",
-		"operator_email", s.cfg.Mail.OperatorEmail,
+		"operator_email", platform.RedactEmail(s.cfg.Mail.OperatorEmail),
 		"min_severity", s.cfg.Mail.VulnDigestMinSeverityOrDefault(),
 		"interval", s.cfg.Mail.VulnDigestInterval())
 	return ticker.C, ticker.Stop

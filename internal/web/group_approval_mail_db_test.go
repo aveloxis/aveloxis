@@ -216,8 +216,9 @@ func TestAdminAddRequestReapproveResumesProcessing(t *testing.T) {
 // TestAdminOrgReapproveDoesNotRescan (AVELOXIS_TEST_DB): an org approval scans
 // the org once; re-approving it (registration present, nothing to complete)
 // neither scans again nor mails again (round-12 review: nothing pinned
-// "scan only on a real decision"). The group is rejected so the scan stops
-// at its logged rejected-group gate, before any network use.
+// "scan only on a real decision"). The web process has no GitHub key, so
+// the scan stops at its logged key gate, before any network use (v0.29.71:
+// it used a rejected group, which no longer takes an approval).
 func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
@@ -260,10 +261,6 @@ func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 	if err != nil || out.RequestID == 0 {
 		t.Fatalf("AddOrgToGroup = %+v, %v; want a pending request", out, err)
 	}
-	if _, err := p.Exec(ctx, `UPDATE aveloxis_ops.user_groups SET status = 'rejected' WHERE group_id = $1`, gid); err != nil {
-		t.Fatal(err)
-	}
-
 	sent := make(chan string, 8)
 	m := mailer.New(mailer.Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop"}, nil).
 		WithSendFunc(func(_ string, _ smtp.Auth, _ string, to []string, _ []byte) error {
@@ -271,9 +268,8 @@ func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 			return nil
 		})
 	logs := &lockedBuffer{}
-	// An empty key pool: the rejected-group gate runs before the key gate
-	// (v0.29.68), so the scan is refused for the rejection and logged as such;
-	// a nil pool would reach the same gate.
+	// An empty key pool: the scan is refused at the key gate and logged as
+	// such, before any network use.
 	s := New(store, config.WebConfig{}, platform.NewKeyPool(nil, discard), "", slog.New(slog.NewTextHandler(logs, nil))).WithMailer(m)
 	s.sessions["admin"] = &Session{UserID: uid, LoginName: login, IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)}
 	approve := func() {
@@ -286,7 +282,7 @@ func TestAdminOrgReapproveDoesNotRescan(t *testing.T) {
 			t.Fatalf("approve = %d %s", w.Code, w.Body.String())
 		}
 	}
-	const scanned = "org scan skipped — owning group is rejected"
+	const scanned = "org scan skipped — this web process has no usable GitHub API key"
 
 	approve()
 	waitForLog(t, logs, scanned)

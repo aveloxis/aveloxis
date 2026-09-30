@@ -17,11 +17,11 @@ import (
 // semantics as the other contributions endpoints), ?limit rows
 // (default 20, capped at 100).
 //
-// Computed live from the base tables (repo_id-leading index slices —
-// the same cost class as the per-request /contributors metric), behind
-// the 60s response cache: the underlying data only changes per
-// collection cycle, so a shared dashboard hitting the same repo
-// repeatedly costs one query per minute. ORDER MATTERS: authorizeRepo
+// Computed from the base tables (repo_id-leading index slices), cached
+// under the repository's collection generation (repoCache, v0.29.71): the
+// underlying data changes per collection, so a repository page costs one
+// query per collection (or per enrichment interval, the TTL). ORDER
+// MATTERS: authorizeRepo
 // runs BEFORE the cache lookup — a cached body must never leak past
 // repo scope (pinned by test).
 func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
@@ -52,11 +52,18 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 	// the k8s-ci-robot and pytorchmergebot class; db.displayBotLoginSQL).
 	excludeBots := r.URL.Query().Get("bots") == "hide"
 
-	key := fmt.Sprintf("topcontrib|%d|%s|%s|%d|%t", repoID, since.Format("2006-01-02"), until.Format("2006-01-02"), limit, excludeBots)
-	if body, ok := s.respCache.get(key); ok {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-		return
+	// O11 option 4 (v0.29.71): cached under the repository's collection
+	// generation — the heaviest API shape on kate (13 s mean, 589 s max).
+	key, cacheable := s.generationKey(r.Context(), r, "handleTopContributors",
+		fmt.Sprintf("topcontrib|%d|%s|%s|%d|%t", repoID, since.Format("2006-01-02"), until.Format("2006-01-02"), limit, excludeBots),
+		[]int64{repoID})
+	if cacheable {
+		if v, ok := s.repoCache.get(key); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "hit")
+			_, _ = w.Write(v.([]byte))
+			return
+		}
 	}
 
 	rows, err := s.store.TopContributors(r.Context(), repoID, since, until, limit, excludeBots)
@@ -76,7 +83,9 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, "handleTopContributors", err)
 		return
 	}
-	s.respCache.put(key, body)
+	if cacheable {
+		s.repoCache.put(key, body)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
 }

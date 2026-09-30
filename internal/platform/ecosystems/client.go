@@ -305,6 +305,10 @@ func (c *Client) LookupPackages(ctx context.Context, repositoryURL string) ([]mo
 	}
 
 	resp, err := c.http.Do(req)
+	err = platform.RedactTransportError(err)
+	if err == nil && resp.StatusCode == http.StatusOK { // a data body; error bodies are not sizes (review F5)
+		resp.Body = platform.CountResponseBody(resp.Body, c.logger, "ecosystems", req.URL.String())
+	}
 	if err != nil {
 		// Transport-level errors (connection refused, DNS, TLS
 		// handshake failure, context cancellation while reading) all
@@ -327,7 +331,7 @@ func (c *Client) LookupPackages(ctx context.Context, repositoryURL string) ([]mo
 		// being rate-limited). Let it bubble as a rate-limit
 		// class error; the DistributionWorker's quadratic backoff
 		// handles it per-repo.
-		return nil, &rateLimitError{msg: fmt.Sprintf("ecosyste.ms rate limited (HTTP 429) for %s", repositoryURL)}
+		return nil, &rateLimitError{msg: fmt.Sprintf("ecosyste.ms rate limited (HTTP 429) for %s", platform.RedactURLUserinfo(repositoryURL))}
 	case resp.StatusCode >= 500:
 		c.noteTransientFailure()
 		return nil, fmt.Errorf("ecosyste.ms server error (HTTP %d): %w", resp.StatusCode, platform.ErrTransient)

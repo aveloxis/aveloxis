@@ -4,7 +4,7 @@
 // summary/18 Phase 1c (v0.27.37): AssessAndFillGaps must RETURN fill
 // errors. Pre-fix, fillIssueGaps/fillPRGaps errors were Warn'd and
 // dropped, so the entire v0.20.5 force_full_collect recovery pipeline
-// — wired through runJob → buildOutcome → shouldForceFullRecollect —
+// — wired through runJob → buildOutcome → errors.Is(err, platform.ErrPRBatch) —
 // was unreachable for the exact failure class it was built for
 // (graphql retry exhaustion inside a fill). Repos with historical gaps
 // looped incompletely forever. The existing v0.20.5 tests pin the

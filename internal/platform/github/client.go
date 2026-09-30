@@ -87,7 +87,7 @@ func (c *Client) ParseRepoURL(url string) (owner, repo string, err error) {
 		return "", "", err
 	}
 	if parsed.Platform != model.PlatformGitHub {
-		return "", "", fmt.Errorf("URL %q is not a GitHub URL", url)
+		return "", "", fmt.Errorf("URL %q is not a GitHub URL", platform.RedactURLUserinfo(url))
 	}
 	return parsed.Owner, parsed.Repo, nil
 }

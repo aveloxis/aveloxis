@@ -161,6 +161,10 @@ func (c *Client) GetPackageVersions(ctx context.Context, owner, repo string) ([]
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
+	err = platform.RedactTransportError(err)
+	if err == nil && resp.StatusCode == http.StatusOK { // a data body; error bodies are not sizes (review F5)
+		resp.Body = platform.CountResponseBody(resp.Body, nil, "depsdev", req.URL.String())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("deps.dev GET: %w", err)
 	}
@@ -274,6 +278,10 @@ func (c *Client) fetchPackageTimestamps(ctx context.Context, rawSystem, name str
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
+	err = platform.RedactTransportError(err)
+	if err == nil && resp.StatusCode == http.StatusOK { // a data body; error bodies are not sizes (review F5)
+		resp.Body = platform.CountResponseBody(resp.Body, nil, "depsdev", req.URL.String())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("deps.dev package-detail GET: %w", err)
 	}

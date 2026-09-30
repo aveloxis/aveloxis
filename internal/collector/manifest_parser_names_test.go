@@ -141,12 +141,16 @@ func TestParseCargoVersionsRealShapes(t *testing.T) {
 			t.Errorf("syn scope = %q, want build", d.Type)
 		}
 	}
-	for _, name := range []string{"zenoh", "zenoh-flat", "local-crate", "private"} {
+	// oci-spec is `oci-spec.workspace = true`: this lone manifest has no
+	// workspace root to say where it comes from, so it is not guessed at
+	// (v0.29.71; TestCargoWorkspaceInheritedDepsTakeTheRootsSource covers
+	// the root that answers).
+	for _, name := range []string{"zenoh", "zenoh-flat", "local-crate", "private", "oci-spec"} {
 		if !nonRegistry[name] {
 			t.Errorf("%s must be marked non-registry", name)
 		}
 	}
-	for _, name := range []string{"jni", "published-member", "serde", "oci-spec"} {
+	for _, name := range []string{"jni", "published-member", "serde"} {
 		if nonRegistry[name] {
 			t.Errorf("%s is a crates.io dependency and must be looked up", name)
 		}

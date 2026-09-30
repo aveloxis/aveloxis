@@ -173,6 +173,16 @@ These only report; nothing acts on them.
 - **Commit resolution's completion line** now carries `duration`,
   `backfill_duration` (the author-ID backfill, which ran for over an hour
   on large repositories), `search_attempts` and `search_time`.
+- **`response size high-water mark`** (INFO, since 0.29.71): one line each
+  time a data response is larger than any earlier one from the same source
+  (`source`: `github-rest`, `gitlab-rest`, `github-graphql`,
+  `gitlab-graphql`, `registry`, `osv-batch`, `osv-detail`, `ponymail`,
+  `ponymail-mbox`, `depsdev`, `ecosystems`, `jira`, `oauth-github-user`,
+  `oauth-gitlab-user`, the importers), with `bytes`, `previous_max` and the
+  redacted `url`. Only successful (200) answers count. Data responses have no
+  size limit; these lines are how the largest ones are measured. A line
+  appears only when a new maximum is set: a handful per source in practice,
+  one per request only if a source's sizes keep rising.
 - **Scorecard's attempt line** carries `lent_tokens`: the `token_hash` of
   each key lent to that run.
 - **Keys are named by `token_hash`** (0.29.70; it replaces `token_prefix`,
@@ -408,9 +418,9 @@ is NULL and `force_full_collect` is FALSE for the affected rows.
 
 **Cause:** `Scheduler.runJob` captured the gap-fill error in a
 block-local variable, logged a WARN, and dropped it. The
-`shouldForceFullRecollect` auto-flag mechanism (which exists
-precisely for this error class — the substring `"graphql PR
-batch"` matches the gap-fill error wrapper) was unreachable
+force-full auto-flag (which exists precisely for this error
+class — since 0.29.71 it is typed: the error wraps the PR-batch
+failure, which the gap-fill error does too) was unreachable
 because `outcome.errMsg` stayed empty. The repo went back into
 incremental cadence, where the next pass collected only PRs
 updated in the last cooldown window — historical missing PRs
@@ -422,8 +432,8 @@ the same large batch with the same flaky network conditions.
 1. `runJob` hoists `gapFillErr` to function scope and passes it
    into a new 5-argument `buildOutcome(..., gapFillErr)`.
    `buildOutcome` records it as `outcome.errMsg` when the main
-   collection succeeded, which makes `shouldForceFullRecollect`
-   fire and `SetForceFullCollect(true)` get called. The next
+   collection succeeded, which arms the force-full flag
+   (`SetForceFullCollect(true)`). The next
    cycle for that repo runs `since=zero`, which collects all PRs
    via the main path instead of going through gap fill.
 2. An idempotent migration step backfills `force_full_collect =

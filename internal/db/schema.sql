@@ -2273,6 +2273,14 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.staging (
     processed    BOOLEAN DEFAULT FALSE
 );
 
+-- v0.29.71: no vacuum truncation on staging (kate, 2026-09-26..30: 19
+-- autovacuum runs on it and its TOAST cancelled "while truncating
+-- relation"). Truncation takes an ACCESS EXCLUSIVE lock, so each attempt
+-- stalled a staging writer until PostgreSQL cancelled it, and the file never
+-- shrank anyway; staging churns, so freed space is reused by the next
+-- inserts. Idempotent; takes only SHARE UPDATE EXCLUSIVE (inserts proceed).
+ALTER TABLE aveloxis_ops.staging SET (vacuum_truncate = false, toast.vacuum_truncate = false);
+
 CREATE INDEX IF NOT EXISTS idx_staging_unprocessed
     ON aveloxis_ops.staging (repo_id, entity_type)
     WHERE NOT processed;

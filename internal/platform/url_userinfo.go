@@ -6,6 +6,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -59,13 +60,44 @@ func RefuseURLUserinfo(raw string) error {
 // and a miss put a token in the server log (fix-review round 2). Textual on
 // purpose: url.URL.String() percent-escapes the marker and re-spells the
 // rest.
+//
+// v0.29.71 (personal data in INFO logs): a query value that carries an
+// address ("@" or "%40") is blanked too — GitHub's user and commit searches
+// put an author's email in q, and those URLs reached the rate-limit lines
+// and, through the client's errors, the resolver's log. The key and every
+// other parameter stay, so the line still says which request it was.
 func RedactURLUserinfo(raw string) string {
 	raw = strings.TrimSpace(raw)
-	start, end, ok := userinfoBounds(raw, true)
-	if !ok {
+	if start, end, ok := userinfoBounds(raw, true); ok {
+		raw = raw[:start] + "***" + raw[end:]
+	}
+	return redactQueryAddresses(raw)
+}
+
+// redactQueryAddresses blanks every query value of raw that holds an
+// address, leaving the keys, the other values and any fragment as written.
+func redactQueryAddresses(raw string) string {
+	q := strings.IndexByte(raw, '?')
+	if q < 0 {
 		return raw
 	}
-	return raw[:start] + "***" + raw[end:]
+	end := len(raw)
+	if h := strings.IndexByte(raw[q:], '#'); h >= 0 {
+		end = q + h
+	}
+	params := strings.Split(raw[q+1:end], "&")
+	changed := false
+	for i, p := range params {
+		k, v, ok := strings.Cut(p, "=")
+		if ok && (strings.Contains(v, "@") || strings.Contains(strings.ToLower(v), "%40")) {
+			params[i] = k + "=***"
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	return raw[:q+1] + strings.Join(params, "&") + raw[end:]
 }
 
 // userinfoBounds locates the userinfo of raw: [start, end) covers it
@@ -171,4 +203,19 @@ func allDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// RedactTransportError is the transport-failure form of RedactURLUserinfo
+// (v0.29.71 review round 1): a request that fails before an answer returns
+// a *url.Error whose text quotes the full request URL, query included — a
+// search's author email, a URL's credentials — and it reaches retry WARNs
+// and returned errors. It is rebuilt with the redacted URL; Op and the
+// cause are kept, so errors.Is/As on the cause still work. Applied to every
+// Do in internal/platform, right where the request returns.
+func RedactTransportError(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) || ue != err {
+		return err
+	}
+	return &url.Error{Op: ue.Op, URL: RedactURLUserinfo(ue.URL), Err: ue.Err}
 }

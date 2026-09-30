@@ -44,6 +44,24 @@ func TestV02971ChecklistNamesItsOperatorVisibleChanges(t *testing.T) {
 			t.Errorf("the migrate step must name %q", want)
 		}
 	}
+	// The indexes are built CONCURRENTLY: a failed build leaves an INVALID
+	// index that only the next migrate repairs, so the ladder checks all
+	// four are valid before start (deploy checklist, 2026-09-30).
+	var validity string
+	for _, s := range steps {
+		if strings.Contains(s.cmd, "indisvalid") {
+			validity = s.cmd + " " + s.desc
+		}
+	}
+	// Deploy-checklist review F1: an interrupted migrate (Ctrl-C logs
+	// nothing) leaves the build RUNNING in PostgreSQL; rerunning migrate
+	// then drops the finishing index and starts over. The step must send
+	// the operator to pg_stat_activity first.
+	for _, want := range []string{"idx_messages_repo_ts_cntrb", "idx_pr_reviews_repo_submitted_cntrb", "idx_pull_requests_repo_merged", "idx_issues_repo_closed", "must print 4", "pg_stat_activity", "CREATE INDEX CONCURRENTLY", "datname = current_database()", "state = 'active'"} {
+		if !strings.Contains(validity, want) {
+			t.Errorf("the ladder must check the four indexes are valid (%q missing from the check step)", want)
+		}
+	}
 	for _, want := range []string{"o***@", "approved add requests retried", "workspace", "token_hash", "X-Cache", "response size high-water mark"} {
 		if !strings.Contains(start, want) {
 			t.Errorf("the start step must name %q", want)

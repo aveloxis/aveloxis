@@ -492,6 +492,24 @@ var deployChecklists = map[string][]deployStep{
 	// indexes, the API collection cache, response-size high-water marks. No
 	// new columns.
 	"0.29.71": v02971DeployChecklist,
+	// v0.29.72: the review-comment listings step their page size down when
+	// a page exceeds GitHub's request time budget (the five large
+	// repositories that failed every cycle on /pulls/comments). No schema
+	// change.
+	"0.29.72": v02972DeployChecklist,
+}
+
+// 0.29.72 has no schema change; its migrate is 0.29.71's, which a fleet
+// that skipped 0.29.71 still needs, and it carries 0.29.71's start-up notes.
+var v02972DeployChecklist = []deployStep{
+	v02971DeployChecklist[0],
+	{"aveloxis migrate --skip-views", "no schema change in 0.29.72; otherwise as 0.29.71 — " + v02971DeployChecklist[1].desc},
+	v02971DeployChecklist[2],
+	v02971DeployChecklist[3],
+	v02971DeployChecklist[4],
+	v02971DeployChecklist[5],
+	v02971DeployChecklist[6],
+	{"aveloxis start all", "the GitHub review-comment listings (/pulls/comments, repo-wide and per pull request) now step their page size down (100, 50, 25, 5, 1 at the same item offset) when a page draws two 502/504 answers that each came back only after GitHub's 10 s request limit, instead of spending ten retries on a page GitHub cannot serve inside it; a fast 502/504 (an outage) keeps the ten retries at the normal page size. The repositories that failed every cycle with 'review comments: exhausted 10 retries for .../pulls/comments...' (on kate: microsoft/winget-pkgs, NixOS/nixpkgs, Azure/azure-powershell, zephyrproject-rtos/zephyr, freeCodeCamp/freeCodeCamp) should log 'listing page exceeded the forge's time budget — stepping the page size down' and then 'job complete ... success=true' at their next run; that success clears force_full_collect, so the run after it is incremental. An ERROR 'listing page exceeded the forge's time budget at the smallest page size' means a page failed even at one item: report it. If 0.29.71 was skipped, its start-up notes apply as well: " + v02971DeployChecklist[7].desc},
 }
 
 // 0.29.71 adds no columns: its migrate builds four CONCURRENTLY indexes

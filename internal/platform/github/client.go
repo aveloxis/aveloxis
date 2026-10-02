@@ -662,6 +662,12 @@ func (c *Client) ListPRComments(ctx context.Context, owner, repo string, since t
 	}
 }
 
+// reviewCommentRequestBudget is the request budget the review-comment
+// listings step their page size down against (v0.29.72): GitHub's
+// documented limit. A package var only so tests can use a millisecond
+// budget; TestReviewCommentRequestBudgetIsGitHubsLimit pins the value.
+var reviewCommentRequestBudget = platform.GitHubRequestBudget
+
 func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, since time.Time) iter.Seq2[platform.ReviewCommentWithRef, error] {
 	if since.IsZero() {
 		// A full-snapshot listing is a truth set (the gap filler's set-diff,
@@ -669,6 +675,11 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, sin
 		// repeat walk in one process with "nothing new" (v0.28.18).
 		ctx = platform.WithoutETag(ctx)
 	}
+	// Old review comments are expensive for GitHub to render: a page of
+	// 100 can exceed its ~10 s request budget and 502 on every attempt
+	// (v0.29.72, the 2026-10-02 stuck-repos review), so this listing
+	// steps its page size down rather than failing the whole collection.
+	ctx = platform.WithPageSizeStepDown(ctx, reviewCommentRequestBudget)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/comments?sort=updated&direction=desc", owner, repo)
 	if !since.IsZero() {
 		path += "&since=" + since.Format(time.RFC3339)
@@ -809,6 +820,9 @@ func (c *Client) ListReviewCommentsForPR(ctx context.Context, owner, repo string
 	// ETag would 304 page 1 and end the walk before it (pass 31,
 	// v0.28.18). Never conditional.
 	ctx = platform.WithoutETag(ctx)
+	// The same review-comment objects as the repo-wide listing, so the
+	// same page-size step-down (v0.29.72).
+	ctx = platform.WithPageSizeStepDown(ctx, reviewCommentRequestBudget)
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?sort=created&direction=asc", owner, repo, prNumber)
 	return func(yield func(platform.ReviewCommentWithRef, error) bool) {
 		for raw, err := range platform.PaginateGitHub[ghReviewComment](ctx, c.http, path) {

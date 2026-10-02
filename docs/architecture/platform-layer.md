@@ -45,7 +45,7 @@ Shared by both GitHub and GitLab implementations. Features:
 
 - **Platform-aware authentication**: `AuthStyle` parameter controls the auth header format. GitHub uses `Authorization: token <key>` (PATs). GitLab uses `PRIVATE-TOKEN: <key>`. Set at construction via `NewHTTPClient(..., AuthGitHub)` or `NewHTTPClient(..., AuthGitLab)`.
 - **Connection pooling**: HTTP/2 enabled, 20 idle connections per host for high-throughput collection.
-- **Automatic retries**: Up to 10 retries with exponential backoff for transient errors (502/503/504).
+- **Automatic retries**: Up to 10 retries with exponential backoff for transient errors (502/503/504). A listing that opts into the page-size step-down (see Pagination) stops after two 502/504 answers to the same page that each came back only after the forge's request budget, and asks for fewer items instead; a fast 502/504 keeps the full retry budget.
 - **Rate limit awareness**: Reads `X-RateLimit-*` (GitHub) and `RateLimit-*` (GitLab) headers, waits for reset when exhausted.
 - **Secondary rate limit handling**: Respects `Retry-After` headers from GitHub's secondary rate limits.
 - **Conditional requests (ETags)**: for paginated listings (`Get` via `paginate`), the client caches ETags and sends `If-None-Match` on subsequent requests; a 304 means "nothing new since last time" and ends pagination cleanly, and GitHub does not count 304s against the rate limit. Single-object reads (`GetJSON` — one PR, one issue, one user, one project) are **always ETag-free** (v0.28.17): a body-decoding reader cannot use a 304, and before the change a repeat read of the same URL in one process either errored (`not modified (304)`) or silently returned empty children — the GitLab MR batch and every REST child waterfall were affected. A job that fetched listing pages and then failed forgets its repo's cached ETags (`ForgetRepoETags`, v0.28.18) so the retry re-reads every page; the paginator rebases GitHub's `/repositories/{id}/…` Link-header continuations onto the listing's `/repos/{owner}/{repo}/` namespace so page 2 onward is forgotten with page 1.
@@ -146,6 +146,18 @@ Both GitHub and GitLab use 100-item pages. The pagination engine is shared, with
 | GitLab | `X-Next-Page` header | `Link` header `rel="next"` |
 
 The pagination functions (`PaginateGitHub`, `PaginateGitLab`) are generic and work with any JSON-decodable type.
+
+### Page-size step-down (v0.29.72)
+
+A forge answers each request within a fixed time budget (GitHub's is about 10 seconds), and a page costs the sum of its items. Old review comments are expensive for GitHub to render: on the largest repositories a page of 100 from `/repos/{o}/{r}/pulls/comments` returns 502 after about 10 seconds on every attempt, while the same items at 50 or 25 per page return in 3–8 seconds. Retrying the same URL cannot succeed.
+
+A listing opts in with `platform.WithPageSizeStepDown(ctx, budget)`, naming the forge's request budget (`platform.GitHubRequestBudget`, GitHub's documented 10 seconds). Under it:
+
+- `Get` times each request. A 502/504 counts against the page only when it arrived after at least the budget: a page over budget fails only when the forge's timer runs out, while an outage or a gateway blip answers fast. After two such answers to the same page `Get` returns `ErrPageTooSlow`; one is retried, because a single slow 502 can be a passing gateway error. A fast 502/504, a 500 and a 503 keep the full retry budget at the page's own size.
+- `paginate` requests the **same item offset** at the next size on the ladder 100 → 50 → 25 → 5 → 1. Each size divides the one before it, so the walk resumes on exactly the item that failed, with no gap and no duplicate. The smaller size is kept for the rest of the walk (GitLab continuations included). The step logs `listing page exceeded the forge's time budget — stepping the page size down` with the old and new size and the item offset.
+- At per_page=1 a page that still fails is a real failure: it logs at ERROR (`… at the smallest page size`, with the page size) and returns `ErrPageTooSlow` wrapped with `ErrTransient`, which classifies like any exhausted retry. A page whose path carries no usable `per_page` cannot be stepped and logs `… its path has no page size to step down` instead. The step-down WARN carries the error, so the status (502 or 504) is in the log.
+
+The GitHub review-comment listings opt in: the repo-wide `/pulls/comments` and the per-PR `/pulls/{n}/comments`. The mechanism lives in the shared engine and works for GitLab listings too, but no GitLab listing opts in, because no GitLab endpoint has shown the failure.
 
 ---
 

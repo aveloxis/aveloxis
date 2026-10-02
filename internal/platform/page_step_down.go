@@ -35,9 +35,13 @@ import (
 // backends hang answers EVERY request after its timer (review round 2). So
 // the step is not permanent: after a step the walk probes the next larger
 // size at the first offset that size divides, and each probe that is still
-// over budget doubles the pages the walk waits before the next (an incident
-// that passed climbs back at once; a region that really is over budget
-// costs a number of failed probes that grows with the log of its length).
+// over budget doubles the pages the walk waits before probing that size
+// again. The wait is kept per size: a successful probe to one size resets
+// only that size's wait (review round 3). An incident that passed is
+// climbed out of at once; for each size, a region where it is really over
+// budget costs failed probes that grow with the log of the region's length,
+// so a region of mixed density still costs a few failed probes per size,
+// not one every few pages.
 // And a page still over budget at the floor gets the ordinary retry budget
 // before the listing fails, so a long incident cannot fail the walk sooner
 // than it did before the step-down existed.

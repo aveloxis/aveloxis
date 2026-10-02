@@ -539,8 +539,8 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 
 		doStart := time.Now()
 		resp, err := c.inner.Do(req)
-		doElapsed := time.Since(doStart)
 		err = RedactTransportError(err)
+		doElapsed := time.Since(doStart)
 		if err != nil {
 			// A failed Do has no response state to apply, so release
 			// at once.
@@ -1160,15 +1160,20 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 		pastFirstPage := false
 		_, stepDown := pageStepDownBudget(ctx)
 		// Step-down state (v0.29.72; see page_step_down.go). startSize is
-		// the size a stepped walk climbs back to; probeWait is how many
-		// successful pages at a stepped size the walk waits before probing
-		// the next larger one, doubled by each probe still over budget and
-		// reset by one that succeeds; floorPlain sends the per_page=1 page
-		// with the ordinary retry budget.
+		// the size a stepped walk climbs back to; probeWaits[size] is how
+		// many successful pages the walk waits before probing size again,
+		// doubled by each probe of that size still over budget and reset by
+		// one that succeeds — per rung, because a probe that succeeds to one
+		// size says nothing about the size above it (review round 3: one
+		// shared wait re-probed a size that never fit every few pages);
+		// probedSize is the size of the probe in flight, 0 when none;
+		// floorPlain sends the per_page=1 page with the ordinary retry
+		// budget.
 		startSize, _, _ := parsePage(currentPath)
-		probeWait := 1
+		probeWaits := map[int]int{}
+		waitFor := func(size int) int { return max(probeWaits[size], 1) }
 		pagesAtSize := 0
-		probing := false
+		probedSize := 0
 		floorPlain := false
 
 		for currentPath != "" {
@@ -1236,41 +1241,55 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				// v0.29.72: a page over the forge's request budget is asked
 				// for again at the same item offset with fewer items.
 				if stepDown && errors.Is(err, ErrPageTooSlow) {
-					wasProbe := probing
-					if probing {
-						// The larger size is still over budget here: wait
-						// twice as long before the next probe.
-						probing = false
-						probeWait *= 2
+					wasProbe := probedSize > 0
+					if wasProbe {
+						// That size is still over budget here: wait twice as
+						// long before probing it again.
+						probeWaits[probedSize] = waitFor(probedSize) * 2
+						probedSize = 0
 					}
 					next, from, to, offset, ok, atFloor := stepDownPage(currentPath)
 					if !ok {
-						if atFloor {
+						if atFloor && !floorPlain {
 							// A degraded forge answers every request slowly,
 							// so the floor gets the ordinary retry budget
 							// before the listing fails (review round 2).
 							c.logger.Warn("listing page exceeded the forge's time budget at the smallest page size — retrying it with the ordinary retry budget",
 								"path", currentPath, "per_page", from, "error", err)
+							// pageReadRetries is NOT reset: the read budget
+							// belongs to this item offset, whatever the size
+							// (review round 3: resetting it let a floor page
+							// alternating slow 502s and cut-off bodies be
+							// re-fetched without bound).
 							floorPlain = true
-							pageReadRetries = 0
 							continue
 						}
-						c.logger.Error("listing page exceeded the forge's time budget but its path has no page size to step down — the listing is incomplete",
-							"path", currentPath, "error", err)
+						if atFloor {
+							// Unreachable while the fallback request runs
+							// with the step-down off; a guard so a change
+							// that breaks that fails the listing instead of
+							// looping on the floor page forever.
+							c.logger.Error("listing page exceeded the forge's time budget at the smallest page size, also on the ordinary retry budget — the listing is incomplete",
+								"path", currentPath, "per_page", from, "error", err)
+						} else {
+							c.logger.Error("listing page exceeded the forge's time budget but its path has no page size to step down — the listing is incomplete",
+								"path", currentPath, "error", err)
+						}
 						var zero T
 						yield(zero, err)
 						return
 					}
 					c.logger.Warn("listing page exceeded the forge's time budget — stepping the page size down",
 						"path", currentPath, "per_page_from", from, "per_page_to", to, "item_offset", offset,
-						"step_up_probe", wasProbe, "next_probe_after_pages", probeWait, "error", err)
+						"step_up_probe", wasProbe, "next_probe_after_pages", waitFor(from), "error", err)
 					currentPath = next
 					pagesAtSize = 0
 					// GitLab continuations are built from basePath
 					// (X-Next-Page), so the new size must live there too.
 					basePath = setQueryParam(basePath, "per_page", strconv.Itoa(to))
 					pastFirstPage = offset > 0
-					pageReadRetries = 0
+					// pageReadRetries is kept: the read budget belongs to
+					// this item offset, whatever the size (review round 3).
 					continue
 				}
 				if floorPlain && errors.Is(err, ErrTransient) {
@@ -1283,9 +1302,9 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				return
 			}
 			floorPlain = false
-			if probing {
-				probing = false
-				probeWait = 1 // the larger size is served again
+			if probedSize > 0 {
+				delete(probeWaits, probedSize) // that size is served again
+				probedSize = 0
 			}
 
 			// v0.27.37 (summary/18 Phase 1g): the body decode runs
@@ -1346,18 +1365,18 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				return
 			}
 			// A stepped walk probes the next larger size at the first
-			// offset that size divides, once it has waited probeWait pages.
+			// offset that size divides, once it has waited waitFor(size) pages.
 			if stepDown && next != "" {
 				pagesAtSize++
 				cur, _, _ := parsePage(currentPath)
-				if up := stepUpSize(cur, startSize); up > 0 && pagesAtSize >= probeWait {
+				if up := stepUpSize(cur, startSize); up > 0 && pagesAtSize >= waitFor(up) {
 					if upPath, offset, ok := resizePage(next, up); ok {
 						c.logger.Info("listing walk is stepping the page size back up — probing the next larger size",
 							"path", upPath, "per_page_from", cur, "per_page_to", up, "item_offset", offset,
 							"pages_waited", pagesAtSize)
 						next = upPath
 						basePath = setQueryParam(basePath, "per_page", strconv.Itoa(up))
-						probing = true
+						probedSize = up
 						pagesAtSize = 0
 					}
 				}

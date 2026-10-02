@@ -134,7 +134,8 @@ type slowListing struct {
 	total, slowLo, slowHi, maxSlow int
 	failStatus                     int
 	gitlab                         bool
-	fast                           bool // fail at once instead of after slowAnswer
+	fast                           bool              // fail at once instead of after slowAnswer
+	isSlow                         func(id int) bool // overrides [slowLo,slowHi] when set
 
 	mu       sync.Mutex
 	requests []string // every request's query, in order
@@ -157,7 +158,7 @@ func (s *slowListing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hi := min(lo+pp-1, s.total)
 	slow := 0
 	for id := lo; id <= hi; id++ {
-		if id >= s.slowLo && id <= s.slowHi {
+		if s.isSlow != nil && s.isSlow(id) || s.isSlow == nil && id >= s.slowLo && id <= s.slowHi {
 			slow++
 		}
 	}
@@ -185,6 +186,33 @@ func (s *slowListing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		items = append(items, prItem{ID: id})
 	}
 	_ = json.NewEncoder(w).Encode(items)
+}
+
+// overBudgetRequests counts the requests the fake answered over budget.
+func (s *slowListing) overBudgetRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	failed := 0
+	for _, raw := range s.requests {
+		v, _ := url.ParseQuery(raw)
+		pp, _ := strconv.Atoi(v.Get("per_page"))
+		page, _ := strconv.Atoi(v.Get("page"))
+		if page == 0 {
+			page = 1
+		}
+		lo := (page-1)*pp + 1
+		hi := min(lo+pp-1, s.total)
+		slow := 0
+		for id := lo; id <= hi; id++ {
+			if s.isSlow != nil && s.isSlow(id) || s.isSlow == nil && id >= s.slowLo && id <= s.slowHi {
+				slow++
+			}
+		}
+		if slow > s.maxSlow {
+			failed++
+		}
+	}
+	return failed
 }
 
 func (s *slowListing) perPagesRequested() map[string]int {
@@ -611,29 +639,7 @@ func TestStepUpProbesBackOffInsideASlowRegion(t *testing.T) {
 		t.Fatalf("walk failed: %v", err)
 	}
 	assertEveryIDOnceInOrder(t, ids, fake.total)
-	// Count over-budget answers: requests whose window held >20 old items.
-	failed := 0
-	fake.mu.Lock()
-	for _, raw := range fake.requests {
-		v, _ := url.ParseQuery(raw)
-		pp, _ := strconv.Atoi(v.Get("per_page"))
-		page, _ := strconv.Atoi(v.Get("page"))
-		if page == 0 {
-			page = 1
-		}
-		lo := (page-1)*pp + 1
-		hi := min(lo+pp-1, fake.total)
-		slow := 0
-		for id := lo; id <= hi; id++ {
-			if id >= fake.slowLo && id <= fake.slowHi {
-				slow++
-			}
-		}
-		if slow > fake.maxSlow {
-			failed++
-		}
-	}
-	fake.mu.Unlock()
+	failed := fake.overBudgetRequests()
 	// 6 on the way down (100, 50, 25 twice each), then 2 per failed probe:
 	// with doubling, no more than ~2*log2(600 pages) of them.
 	if failed > 6+2*12 {
@@ -683,5 +689,147 @@ func TestServerErrorWarnCarriesElapsed(t *testing.T) {
 	}
 	if !strings.Contains(line, " elapsed=") {
 		t.Errorf("5xx WARN has no elapsed attribute: %q", line)
+	}
+}
+
+// GitLab parity for the step UP: GitLab's X-Next-Page counts pages at the
+// size it was asked for, and the continuation is built from basePath, so a
+// step-up must carry into basePath as the step-down does — or the page
+// after a probe is built at the old size and items are skipped.
+func TestStepUpCarriesIntoGitLabContinuations(t *testing.T) {
+	noServerErrorSleep(t)
+	fake := &slowListing{total: 2000, slowLo: 101, slowHi: 160, maxSlow: 20, failStatus: http.StatusBadGateway, gitlab: true}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitLab)
+	ids, err := walk(t, PaginateGitLab[prItem](stepCtx(), c, "/projects/1/merge_requests/1/notes?sort=asc"))
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, fake.total)
+	fake.mu.Lock()
+	last, _ := url.ParseQuery(fake.requests[len(fake.requests)-1])
+	fake.mu.Unlock()
+	if last.Get("per_page") != "100" {
+		t.Errorf("the GitLab walk ended at per_page=%s, want 100", last.Get("per_page"))
+	}
+}
+
+// A probe that succeeds ends the slow region, so its doubled wait must not
+// carry into the next one: after a long first region (many failed probes)
+// and a short second one, the walk must climb back soon after the second
+// ends instead of sitting at a small size for the first region's wait.
+func TestSuccessfulProbeResetsTheWait(t *testing.T) {
+	noServerErrorSleep(t)
+	fake := &slowListing{total: 8000, maxSlow: 20, failStatus: http.StatusBadGateway,
+		isSlow: func(id int) bool { return id > 1000 && id <= 4000 || id > 6000 && id <= 6100 }}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, fake.total)
+	// Requests that started past id 6200 (well after the second region):
+	// at 100 per page that tail is 18 pages; a carried-over wait leaves it
+	// at per_page=5 for dozens of pages.
+	tail := 0
+	fake.mu.Lock()
+	for _, raw := range fake.requests {
+		v, _ := url.ParseQuery(raw)
+		pp, _ := strconv.Atoi(v.Get("per_page"))
+		page, _ := strconv.Atoi(v.Get("page"))
+		if page == 0 {
+			page = 1
+		}
+		if (page-1)*pp >= 6200 {
+			tail++
+		}
+	}
+	fake.mu.Unlock()
+	if tail > 40 {
+		t.Errorf("%d requests after the second slow region ended; the first region's probe wait carried over", tail)
+	}
+}
+
+// Review round 3, finding 1: one shared probe wait let a SUCCESSFUL probe
+// to one rung (5->25) erase the backoff learned for the rung above it
+// (25->50), so a slow region whose density varies re-probed a size that
+// never fits every few pages. Fixture (the reviewer's): 800 pages where 25
+// fits, 50 never does, and one 25-window in ten is too dense for 25. With
+// one shared wait: 642 over-budget requests; with a wait per rung: 172; a
+// uniform region of the same length: 22. The bound sits between the two
+// designs.
+func TestProbeWaitIsKeptPerRung(t *testing.T) {
+	noServerErrorSleep(t)
+	isSlow := func(id int) bool {
+		if id <= 1000 {
+			return false
+		}
+		w, pos := (id-1)/25, (id-1)%25
+		if w%10 == 0 {
+			return pos < 22 // dense: 22 > 20 even at 25
+		}
+		return pos < 15 // 15 per 25 fits, 30 per 50 does not
+	}
+	fake := &slowListing{total: 1000 + 25*800, maxSlow: 20, failStatus: http.StatusBadGateway, isSlow: isSlow}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, fake.total)
+	if failed := fake.overBudgetRequests(); failed > 300 {
+		t.Errorf("%d over-budget requests; a successful probe to a lower rung reset the wait of the rung above", failed)
+	}
+}
+
+// Review round 3, finding 2: the body-read retry budget belongs to the
+// item offset, not the page size. The floor fallback reset it, so a floor
+// page that alternated slow 502s with truncated bodies was re-fetched
+// without bound (97 broken bodies before the reviewer's cutoff). It must
+// end after maxPageReadRetries read retries, as a transient error.
+func TestFloorFallbackKeepsTheReadRetryBudget(t *testing.T) {
+	noServerErrorSleep(t)
+	var mu sync.Mutex
+	floorN, broken, total := 0, 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		total++
+		tot := total
+		k := 0
+		if r.URL.Query().Get("per_page") == "1" {
+			floorN++
+			k = floorN
+		}
+		mu.Unlock()
+		if tot > 300 { // the cutoff: the walk must have ended long before
+			_, _ = io.WriteString(w, `[{"id":1}]`)
+			return
+		}
+		if r.URL.Query().Get("per_page") != "1" || k%3 != 0 {
+			time.Sleep(slowAnswer)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		mu.Lock()
+		broken++
+		mu.Unlock()
+		w.Header().Set("Content-Length", "100")
+		_, _ = io.WriteString(w, `[{"id":1`)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	_, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err == nil || ClassifyError(err) != ClassTransient {
+		t.Fatalf("err = %v, want a transient read-retry failure", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if broken > maxPageReadRetries+1 {
+		t.Errorf("%d broken bodies served; the read-retry budget (%d) did not bound the floor page", broken, maxPageReadRetries)
 	}
 }

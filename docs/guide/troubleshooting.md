@@ -1390,9 +1390,14 @@ limit, twice (see the platform layer's Pagination section); a fast 502 is
 still an outage and is retried as above. Look
 for `listing page exceeded the forge's time budget — stepping the page size
 down` in the log, then `job complete … success=true`. The next run of that
-repository is incremental. An ERROR saying `listing page exceeded the
-forge's time budget at the smallest page size` means a page failed even at
-one item per page; report it.
+repository is incremental. After a step the walk returns to larger pages
+on its own (`listing walk is stepping the page size back up`). An ERROR
+saying `listing page exceeded the forge's time budget at the smallest page
+size` means a page failed even at one item per page and on the ordinary
+retry budget; report it. If the WARN never appears for a repository that
+keeps failing this way, compare the `elapsed` on its `server error,
+retrying with backoff` lines with 10 s: the step-down counts only answers
+that took at least that long.
 
 ---
 

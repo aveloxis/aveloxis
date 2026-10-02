@@ -787,9 +787,11 @@ func TestProbeWaitIsKeptPerRung(t *testing.T) {
 	}
 }
 
-// Review round 3, finding 2: the body-read retry budget belongs to the
-// item offset, not the page size. The floor fallback reset it, so a floor
-// page that alternated slow 502s with truncated bodies was re-fetched
+// Review round 3, finding 2: at the floor the body-read retry budget is not
+// reset (a step-down above the floor does reset it — round 4 — because the
+// smaller page is a different request; at the floor the size cannot
+// change). The floor fallback reset it, so a floor page that alternated
+// slow 502s with truncated bodies was re-fetched
 // without bound (97 broken bodies before the reviewer's cutoff). It must
 // end after maxPageReadRetries read retries, as a transient error.
 func TestFloorFallbackKeepsTheReadRetryBudget(t *testing.T) {
@@ -879,4 +881,71 @@ func TestStepDownGivesTheSmallerPageAFreshReadBudget(t *testing.T) {
 		t.Fatalf("walk failed: %v — the per_page=50 page inherited the spent read budget", err)
 	}
 	assertEveryIDOnceInOrder(t, ids, 50)
+}
+
+// Review round 5, finding 1: a probe counts as served only once its body
+// decodes. Its bookkeeping ran when Get returned 200, so a probe answered
+// with a cut body — then over budget on the re-fetch — cleared its size's
+// wait instead of doubling it, and the walk re-probed at every aligned
+// offset. Fixture (the reviewer's): at per_page=100 every offset's first
+// request is a cut body and later ones are over budget; 50 always serves.
+// Counted: offsets requested at per_page=100, page 1 included. With
+// doubling waits 1, 2, 4, 8, 16 (the first stretched to 2 pages, because
+// a probe of 100 needs an offset 100 divides) the five failed probes take
+// 32 of the 40 pages at 50, and a sixth would need 32 more: page 1 plus
+// 5 failed probes = 6; the defect requested 20. The bound of 10 is a
+// margin between the two, not a derived value.
+func TestCutProbeBodyCountsAsAFailedProbe(t *testing.T) {
+	noServerErrorSleep(t)
+	const total = 2000
+	var mu sync.Mutex
+	seen100 := map[string]int{}
+	probes100 := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		pp, _ := strconv.Atoi(q.Get("per_page"))
+		page, _ := strconv.Atoi(q.Get("page"))
+		if page == 0 {
+			page = 1
+		}
+		if pp == 100 {
+			mu.Lock()
+			seen100[q.Get("page")]++
+			n := seen100[q.Get("page")]
+			if n == 1 {
+				probes100++
+			}
+			mu.Unlock()
+			if n == 1 {
+				w.Header().Set("Content-Length", "1000")
+				_, _ = io.WriteString(w, `[{"id":1},`)
+				return
+			}
+			time.Sleep(slowAnswer)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		lo := (page-1)*pp + 1
+		hi := min(page*pp, total)
+		items := []prItem{}
+		for id := lo; id <= hi; id++ {
+			items = append(items, prItem{ID: id})
+		}
+		if hi < total {
+			w.Header().Set("Link", fmt.Sprintf(`</repos/o/r/pulls/comments?per_page=%d&page=%d>; rel="next"`, pp, page+1))
+		}
+		_ = json.NewEncoder(w).Encode(items)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, total)
+	mu.Lock()
+	defer mu.Unlock()
+	if probes100 > 10 {
+		t.Errorf("%d offsets requested at per_page=100; a probe with a cut body reset the wait instead of doubling it", probes100)
+	}
 }

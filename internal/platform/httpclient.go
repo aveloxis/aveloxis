@@ -1291,8 +1291,8 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 					// fraction of the size: it gets a fresh read budget
 					// (review round 4). Bounded: at one offset the size
 					// only goes down, so at most one budget per rung. The
-					// floor keeps its budget (below), because there the
-					// size cannot change.
+					// floor fallback (above) keeps its budget, because
+					// there the size cannot change.
 					pageReadRetries = 0
 					continue
 				}
@@ -1306,10 +1306,6 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				return
 			}
 			floorPlain = false
-			if probedSize > 0 {
-				delete(probeWaits, probedSize) // that size is served again
-				probedSize = 0
-			}
 
 			// v0.27.37 (summary/18 Phase 1g): the body decode runs
 			// OUTSIDE Get's retry loop, so a mid-body RST_STREAM/
@@ -1342,6 +1338,13 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				return
 			}
 			pageReadRetries = 0
+			// A probe counts as served only once its body decodes: a cut
+			// body re-fetched into an over-budget answer is a failed probe
+			// and must double its size's wait (review round 5).
+			if probedSize > 0 {
+				delete(probeWaits, probedSize) // that size is served again
+				probedSize = 0
+			}
 
 			for _, item := range page {
 				if !yield(item, nil) {

@@ -39,9 +39,10 @@ import (
 // again. The wait is kept per size: a successful probe to one size resets
 // only that size's wait (review round 3). An incident that passed is
 // climbed out of at once; for each size, a region where it is really over
-// budget costs failed probes that grow with the log of the region's length,
-// so a region of mixed density still costs a few failed probes per size,
-// not one every few pages.
+// budget costs failed probes that grow with the log of the region's length.
+// Only the probes are logarithmic: in a region of mixed density each window
+// too dense for the current size still costs one step-down (two over-budget
+// answers) when the walk reaches it (review round 4).
 // And a page still over budget at the floor gets the ordinary retry budget
 // before the listing fails, so a long incident cannot fail the walk sooner
 // than it did before the step-down existed.

@@ -1256,11 +1256,10 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 							// before the listing fails (review round 2).
 							c.logger.Warn("listing page exceeded the forge's time budget at the smallest page size — retrying it with the ordinary retry budget",
 								"path", currentPath, "per_page", from, "error", err)
-							// pageReadRetries is NOT reset: the read budget
-							// belongs to this item offset, whatever the size
-							// (review round 3: resetting it let a floor page
+							// pageReadRetries is NOT reset here: the floor's
+							// size cannot change, so a reset would let a page
 							// alternating slow 502s and cut-off bodies be
-							// re-fetched without bound).
+							// re-fetched without bound (review round 3).
 							floorPlain = true
 							continue
 						}
@@ -1288,8 +1287,13 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 					// (X-Next-Page), so the new size must live there too.
 					basePath = setQueryParam(basePath, "per_page", strconv.Itoa(to))
 					pastFirstPage = offset > 0
-					// pageReadRetries is kept: the read budget belongs to
-					// this item offset, whatever the size (review round 3).
+					// A smaller page is a different request, with a body a
+					// fraction of the size: it gets a fresh read budget
+					// (review round 4). Bounded: at one offset the size
+					// only goes down, so at most one budget per rung. The
+					// floor keeps its budget (below), because there the
+					// size cannot change.
+					pageReadRetries = 0
 					continue
 				}
 				if floorPlain && errors.Is(err, ErrTransient) {

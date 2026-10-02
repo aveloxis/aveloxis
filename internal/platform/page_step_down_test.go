@@ -833,3 +833,50 @@ func TestFloorFallbackKeepsTheReadRetryBudget(t *testing.T) {
 		t.Errorf("%d broken bodies served; the read-retry budget (%d) did not bound the floor page", broken, maxPageReadRetries)
 	}
 }
+
+// Review round 4, finding 1: above the floor a step-down gives the smaller
+// page a fresh body-read budget. A page whose stream is cut three times at
+// per_page=100 (the read budget spent) and then answers over budget is
+// asked for at 50, where the body is half the size; one cut there must be
+// retried, not end the listing. (Round 3 removed this reset together with
+// the floor's, which needed it gone: there the size cannot change, so a
+// reset let the page be re-fetched without bound —
+// TestFloorFallbackKeepsTheReadRetryBudget.)
+func TestStepDownGivesTheSmallerPageAFreshReadBudget(t *testing.T) {
+	noServerErrorSleep(t)
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pp := r.URL.Query().Get("per_page")
+		mu.Lock()
+		hits[pp]++
+		n := hits[pp]
+		mu.Unlock()
+		cut := func() {
+			w.Header().Set("Content-Length", "1000")
+			_, _ = io.WriteString(w, `[{"id":1},`)
+		}
+		switch {
+		case pp == "100" && n <= maxPageReadRetries:
+			cut()
+		case pp == "100":
+			time.Sleep(slowAnswer)
+			w.WriteHeader(http.StatusBadGateway)
+		case pp == "50" && n == 1:
+			cut()
+		default:
+			items := make([]prItem, 0, 50)
+			for id := 1; id <= 50; id++ {
+				items = append(items, prItem{ID: id})
+			}
+			_ = json.NewEncoder(w).Encode(items)
+		}
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err != nil {
+		t.Fatalf("walk failed: %v — the per_page=50 page inherited the spent read budget", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, 50)
+}

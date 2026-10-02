@@ -1329,6 +1329,34 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 						"path", currentPath, "attempt", pageReadRetries, "error", decodeErr)
 					continue
 				}
+				// PR #224 review: a probe is optional — the size the walk
+				// came from was serving — so a probe whose body cannot be
+				// read (a cut body is a size-related failure, like an
+				// over-budget answer) is a failed probe: back to that size
+				// at the same offset, with the probed size's wait doubled.
+				// A malformed body, or a cut body with no probe in flight,
+				// stays terminal as before.
+				if probedSize > 0 && isRetryableReadError(decodeErr) {
+					if back, from, to, offset, ok, _ := stepDownPage(currentPath); ok {
+						probeWaits[probedSize] = waitFor(probedSize) * 2
+						c.logger.Warn("listing walk's larger-page probe's body could not be read — the probe failed; back to the smaller page size",
+							"path", currentPath, "per_page_from", from, "per_page_to", to, "item_offset", offset,
+							"read_retries", pageReadRetries, "next_probe_after_pages", waitFor(probedSize), "error", decodeErr)
+						probedSize = 0
+						// Get cached the probe's ETag when its headers
+						// arrived; its body was never stored, and a walk
+						// that succeeds never runs the failed job's
+						// ForgetRepoETags, so forget it here (re-review of
+						// this fix: a replay would 304 and truncate).
+						c.forgetETag(currentPath)
+						currentPath = back
+						basePath = setQueryParam(basePath, "per_page", strconv.Itoa(to))
+						// pagesAtSize is already 0: the probe was issued
+						// with it reset, and nothing counts before decode.
+						pageReadRetries = 0 // a smaller page is a different request (round 4)
+						continue
+					}
+				}
 				var zero T
 				if isRetryableReadError(decodeErr) {
 					yield(zero, fmt.Errorf("decoding page after %d read retries: %w: %w", maxPageReadRetries, decodeErr, ErrTransient))

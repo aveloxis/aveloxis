@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -948,4 +949,255 @@ func TestCutProbeBodyCountsAsAFailedProbe(t *testing.T) {
 	if probes100 > 10 {
 		t.Errorf("%d offsets requested at per_page=100; a probe with a cut body reset the wait instead of doubling it", probes100)
 	}
+}
+
+// PR #224 Copilot review: a probe is optional — the size the walk came from
+// was serving — so a probe whose body cannot be read (cut every time, read
+// retries spent) is a failed probe, not the end of the listing: the walk
+// goes back to that size at the same offset and the probed size's wait
+// doubles. Fixture: page 1 at 100 is over budget (the walk steps to 50);
+// every later per_page=100 request is a cut body; 50 always serves. Before
+// the fix the first probe ended the walk with "decoding page after 3 read
+// retries".
+func TestProbeWithUnreadableBodyFallsBack(t *testing.T) {
+	noServerErrorSleep(t)
+	const total = 2000
+	var mu sync.Mutex
+	offsets100 := map[string]bool{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		pp, _ := strconv.Atoi(q.Get("per_page"))
+		page, _ := strconv.Atoi(q.Get("page"))
+		if page == 0 {
+			page = 1
+		}
+		if pp == 100 {
+			mu.Lock()
+			offsets100[q.Get("page")] = true
+			mu.Unlock()
+			if page == 1 {
+				time.Sleep(slowAnswer)
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Length", "1000")
+			_, _ = io.WriteString(w, `[{"id":1},`)
+			return
+		}
+		lo := (page-1)*pp + 1
+		hi := min(page*pp, total)
+		items := []prItem{}
+		for id := lo; id <= hi; id++ {
+			items = append(items, prItem{ID: id})
+		}
+		if hi < total {
+			w.Header().Set("Link", fmt.Sprintf(`</repos/o/r/pulls/comments?per_page=%d&page=%d>; rel="next"`, pp, page+1))
+		}
+		_ = json.NewEncoder(w).Encode(items)
+	}))
+	defer srv.Close()
+	logger, buf := captureLogger()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, logger), logger, AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err != nil {
+		t.Fatalf("walk failed: %v — a failed probe ended a listing the smaller size was serving", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, total)
+	if !strings.Contains(buf.String(), "probe's body could not be read") {
+		t.Errorf("no WARN for the failed probe; log:\n%s", buf.String())
+	}
+	// The failed probes back off like over-budget ones: page 1 plus about
+	// log2 of the 40 pages at 50, not one per aligned offset (20).
+	mu.Lock()
+	defer mu.Unlock()
+	if len(offsets100) > 10 {
+		t.Errorf("%d offsets requested at per_page=100; failed probes did not double their wait", len(offsets100))
+	}
+}
+
+// The other half of the same review: with no probe in flight, a page whose
+// body cannot be read is still the end of the listing (transient), as it
+// was before the step-down existed — the fallback is only for probes.
+func TestUnreadableBodyWithoutAProbeStaysTerminal(t *testing.T) {
+	noServerErrorSleep(t)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, `[{"id":1},`)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	_, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err == nil || ClassifyError(err) != ClassTransient {
+		t.Fatalf("err = %v, want the transient read-retry failure", err)
+	}
+	if n := hits.Load(); n != int32(maxPageReadRetries+1) {
+		t.Errorf("%d requests, want %d (one plus the read retries, no step-down)", n, maxPageReadRetries+1)
+	}
+}
+
+// probeFallbackFixture serves ids 1..total. Page 1 at per_page=100 is over
+// budget, so the walk steps to 50; every later per_page=100 request (a
+// probe) gets probeBody: "cut" (a truncated body, a retryable read error)
+// or "malformed" (complete but not JSON). Every response carries an ETag.
+// cutFirst50AfterProbe cuts the body of the first per_page=50 request that
+// follows each probe, once. gitlab answers with X-Next-Page.
+type probeFallbackFixture struct {
+	total                int
+	probeBody            string
+	cutFirst50AfterProbe bool
+	gitlab               bool
+
+	mu     sync.Mutex
+	probed bool
+	probes int // per_page=100 requests past page 1
+}
+
+// probed100 reports whether the walk probed per_page=100 past page 1, so a
+// test whose subject is the probe fallback cannot pass with no probe at all
+// (re-review: a change that stopped probing would leave these tests green).
+func (f *probeFallbackFixture) probed100(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Counted from the parsed page number: the walk's first request
+	// carries no page parameter at all, so a check on the raw value
+	// ("not 1") counted page 1 as a probe and passed with probing off.
+	if f.probes == 0 {
+		t.Fatal("the walk never probed per_page=100 past page 1 — the fallback was not exercised")
+	}
+}
+
+func (f *probeFallbackFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	pp, _ := strconv.Atoi(q.Get("per_page"))
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page == 0 {
+		page = 1
+	}
+	w.Header().Set("ETag", fmt.Sprintf(`"%d-%d"`, pp, page))
+	if pp == 100 {
+		f.mu.Lock()
+		if page > 1 {
+			f.probed = true
+			f.probes++
+		}
+		f.mu.Unlock()
+		if page == 1 {
+			time.Sleep(slowAnswer)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		if f.probeBody == "malformed" {
+			_, _ = io.WriteString(w, `{"not":"a list"`+"}")
+			return
+		}
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, `[{"id":1},`)
+		return
+	}
+	f.mu.Lock()
+	cut := f.cutFirst50AfterProbe && f.probed
+	f.probed = false
+	f.mu.Unlock()
+	if cut {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, `[{"id":1},`)
+		return
+	}
+	lo := (page-1)*pp + 1
+	hi := min(page*pp, f.total)
+	items := []prItem{}
+	for id := lo; id <= hi; id++ {
+		items = append(items, prItem{ID: id})
+	}
+	if hi < f.total {
+		if f.gitlab {
+			w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		} else {
+			q.Set("page", strconv.Itoa(page+1))
+			w.Header().Set("Link", fmt.Sprintf(`<%s?%s>; rel="next"`, r.URL.Path, q.Encode()))
+		}
+	}
+	_ = json.NewEncoder(w).Encode(items)
+}
+
+// Re-review of the PR #224 fix, finding 1: Get caches a 200's ETag when its
+// headers arrive, before the body is read; the read-retry path forgets it
+// before each re-fetch, but after the last failed read the fallback walked
+// on — and a walk that succeeds never runs the failed job's
+// ForgetRepoETags — so the probe path kept an ETag for content never
+// stored. Replayed on the same URL, a 304 ends the walk quietly: the
+// truncation forgetETag exists to prevent. (The incremental repo-wide
+// listing is the ETag-enabled one, hence the since path.)
+func TestProbeFallbackForgetsTheProbesETag(t *testing.T) {
+	noServerErrorSleep(t)
+	fake := &probeFallbackFixture{total: 600, probeBody: "cut"}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments?since=2020-01-01T00:00:00Z"))
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, fake.total)
+	fake.probed100(t)
+	c.etagMu.RLock()
+	defer c.etagMu.RUnlock()
+	for path := range c.etagCache {
+		if pp, page, ok := parsePage(path); ok && pp == 100 && page > 1 {
+			t.Errorf("ETag still cached for the failed probe %s — a replay would 304 and truncate the walk", path)
+		}
+	}
+}
+
+// Finding 2: GitLab continuations are built from basePath, so the fallback
+// must carry the smaller size there, as the step-down and step-up do.
+func TestProbeFallbackCarriesIntoGitLabContinuations(t *testing.T) {
+	noServerErrorSleep(t)
+	fake := &probeFallbackFixture{total: 600, probeBody: "cut", gitlab: true}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitLab)
+	ids, err := walk(t, PaginateGitLab[prItem](stepCtx(), c, "/projects/1/merge_requests/1/notes?sort=asc"))
+	if err != nil {
+		t.Fatalf("walk failed: %v — a GitLab continuation after the fallback went back to per_page=100", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, fake.total)
+	fake.probed100(t)
+}
+
+// Finding 3: only a size-related failure falls back. A probe body that is
+// complete but malformed would be malformed at any size: the listing ends
+// with the decode error, as with no probe in flight.
+func TestMalformedProbeBodyStaysTerminal(t *testing.T) {
+	noServerErrorSleep(t)
+	fake := &probeFallbackFixture{total: 600, probeBody: "malformed"}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	_, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) || ClassifyError(err) == ClassTransient {
+		t.Fatalf("err = %v, want the terminal (non-transient) JSON decode error", err)
+	}
+	fake.probed100(t)
+}
+
+// Finding 4: the page the fallback returns to is a smaller request and gets
+// a fresh read budget (the round-4 rule); with the probe's spent budget it
+// would end the walk on its first cut body.
+func TestProbeFallbackGivesTheSmallerPageAFreshReadBudget(t *testing.T) {
+	noServerErrorSleep(t)
+	fake := &probeFallbackFixture{total: 600, probeBody: "cut", cutFirst50AfterProbe: true}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, NewKeyPool([]string{"tok"}, silentLogger()), silentLogger(), AuthGitHub)
+	ids, err := walk(t, PaginateGitHub[prItem](stepCtx(), c, "/repos/o/r/pulls/comments"))
+	if err != nil {
+		t.Fatalf("walk failed: %v — the page after the fallback inherited the probe's spent read budget", err)
+	}
+	assertEveryIDOnceInOrder(t, ids, fake.total)
+	fake.probed100(t)
 }

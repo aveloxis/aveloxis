@@ -1364,10 +1364,40 @@ ORDER BY repo_owner, repo_name;
 
 - Base delays: 1s, 2s, 4s, 8s, 16s, 32s, 64s
 - Random jitter added to each delay
-- Up to 10 retries before giving up on that request
+- Up to 10 retries before giving up on that request (the review-comment
+  listings step their page size down instead when the 502/504 came back
+  only after GitHub's 10-second limit; see below)
 - Context-aware (respects shutdown signals)
 
 If the service outage is prolonged, the repo will fail after 10 retries and be re-queued for the next collection cycle.
+
+### The same `pulls/comments` page fails every cycle on a large repository
+
+**Symptom:** A large GitHub repository stays in `collecting` for hours and
+never completes. Each run ends with `job complete … success=false
+error="review comments: exhausted 10 retries for …/pulls/comments?…&page=N:
+transient"`, at about the same page each time.
+
+**Cause:** The page is over GitHub's ~10-second request budget, not a
+GitHub outage. Old review comments are slow for GitHub to render, and 100
+of them do not fit. A repository with `force_full_collect` set re-walks
+the whole listing every cycle, and the flag clears only on success, so the
+repository loops.
+
+**Solution:** Since v0.29.72 the review-comment listings step the page size
+down when a page's 502 or 504 came back only after GitHub's 10-second
+limit, twice (see the platform layer's Pagination section); a fast 502 is
+still an outage and is retried as above. Look
+for `listing page exceeded the forge's time budget — stepping the page size
+down` in the log, then `job complete … success=true`. The next run of that
+repository is incremental. After a step the walk returns to larger pages
+on its own (`listing walk is stepping the page size back up`). An ERROR
+saying `listing page exceeded the forge's time budget at the smallest page
+size` means a page failed even at one item per page and on the ordinary
+retry budget; report it. If the WARN never appears for a repository that
+keeps failing this way, compare the `elapsed` on its `server error,
+retrying with backoff` lines with 10 s: the step-down counts only answers
+that took at least that long.
 
 ---
 

@@ -458,6 +458,8 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	// exhaust the retry budget, and a loop doesn't run forever.
 	redirectHops := 0
 	skipETag := bypassETag(ctx)
+	stepDownBudget, stepDown := pageStepDownBudget(ctx)
+	budgetFailures := 0 // over-budget 502/504 answers to this URL (WithPageSizeStepDown)
 	// 2026-09-17: a primary refusal (403/429 + Remaining: 0) is a key
 	// ROTATION, not a transport retry. The pool has benched the refused key
 	// for every collector, so the next Acquire returns a different key, or
@@ -535,8 +537,10 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			c.etagMu.RUnlock()
 		}
 
+		doStart := time.Now()
 		resp, err := c.inner.Do(req)
 		err = RedactTransportError(err)
+		doElapsed := time.Since(doStart)
 		if err != nil {
 			// A failed Do has no response state to apply, so release
 			// at once.
@@ -618,7 +622,26 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 			}
 		}
 
-		verdict, out, err := c.handleResponse(ctx, resp, &url, path, attempt, &redirectHops, key, res)
+		// v0.29.72: under WithPageSizeStepDown a page the forge keeps
+		// answering 502/504 only after running out its request budget is
+		// over that budget, not down — report it so paginate can ask for
+		// fewer items at the same offset instead of spending the whole retry
+		// budget on a URL that cannot succeed. A FAST 502/504 is an outage
+		// or a blip and takes the ordinary retry path (review round 1).
+		// Answers in between (a rate-limit wait, a dropped connection, a
+		// fast 502) do not reset the count: two budget failures on this URL
+		// are the evidence whatever came between them.
+		if stepDown && isRequestBudgetStatus(resp.StatusCode) && doElapsed >= stepDownBudget {
+			budgetFailures++
+			if budgetFailures >= stepDownAfterGatewayErrors {
+				resp.Body.Close()
+				c.keys.NoteServerError() // the outage breaker still sees every 5xx
+				return nil, fmt.Errorf("%w: status %d on %d attempts for %s: %w",
+					ErrPageTooSlow, resp.StatusCode, budgetFailures, RedactURLUserinfo(url), ErrTransient)
+			}
+		}
+
+		verdict, out, err := c.handleResponse(ctx, resp, &url, path, attempt, &redirectHops, key, res, doElapsed)
 		switch verdict {
 		case respDone:
 			return out, err
@@ -661,7 +684,7 @@ const (
 // summary/18 Phase 4); behavior identical — the case arms below are
 // the accumulated production knowledge of five versions of retry
 // hardening and every line is load-bearing.
-func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, urlp *string, path string, attempt int, hopsp *int, key *APIKey, res Resource) (respAction, *http.Response, error) {
+func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, urlp *string, path string, attempt int, hopsp *int, key *APIKey, res Resource, elapsed time.Duration) (respAction, *http.Response, error) {
 	url := *urlp
 	_ = url
 	switch {
@@ -977,12 +1000,14 @@ func (c *HTTPClient) handleResponse(ctx context.Context, resp *http.Response, ur
 		backoff := time.Duration(1<<min(attempt, 6)) * time.Second // 1s, 2s, 4s, 8s, 16s, 32s, 64s
 		jitter := time.Duration(rand.IntN(int(backoff/2) + 1))
 		wait := backoff + jitter
+		// elapsed (v0.29.72, review round 2): how long the answer took, so
+		// the step-down's request-budget boundary can be checked against
+		// what the forge actually does.
 		c.logger.Warn("server error, retrying with backoff",
-			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "wait", wait, "attempt", attempt+1)
-		select {
-		case <-ctx.Done():
-			return respDone, nil, ctx.Err()
-		case <-time.After(wait):
+			"url", RedactURLUserinfo(url), "status", resp.StatusCode, "wait", wait, "attempt", attempt+1,
+			"elapsed", elapsed.Round(time.Millisecond))
+		if err := serverErrorRetrySleep(ctx, wait); err != nil {
+			return respDone, nil, err
 		}
 		return respRetry, nil, nil
 	default:
@@ -1129,9 +1154,34 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 		currentPath := ensurePerPage(path)
 		basePath := currentPath
 		pageReadRetries := 0
+		// pastFirstPage: the walk has moved beyond item offset 0. Tracked
+		// apart from basePath because a page-size step-down (v0.29.72)
+		// rewrites both paths, and a stepped first page is still page 1.
+		pastFirstPage := false
+		_, stepDown := pageStepDownBudget(ctx)
+		// Step-down state (v0.29.72; see page_step_down.go). startSize is
+		// the size a stepped walk climbs back to; probeWaits[size] is how
+		// many successful pages the walk waits before probing size again,
+		// doubled by each probe of that size still over budget and reset by
+		// one that succeeds — per rung, because a probe that succeeds to one
+		// size says nothing about the size above it (review round 3: one
+		// shared wait re-probed a size that never fit every few pages);
+		// probedSize is the size of the probe in flight, 0 when none;
+		// floorPlain sends the per_page=1 page with the ordinary retry
+		// budget.
+		startSize, _, _ := parsePage(currentPath)
+		probeWaits := map[int]int{}
+		waitFor := func(size int) int { return max(probeWaits[size], 1) }
+		pagesAtSize := 0
+		probedSize := 0
+		floorPlain := false
 
 		for currentPath != "" {
-			resp, err := c.Get(ctx, currentPath)
+			reqCtx := ctx
+			if floorPlain {
+				reqCtx = WithPageSizeStepDown(ctx, 0) // the ordinary retry budget
+			}
+			resp, err := c.Get(reqCtx, currentPath)
 			if err != nil {
 				// 304 Not Modified means the data hasn't changed since our last
 				// FETCH of this URL (ETag match) — not since last_collected. This
@@ -1146,7 +1196,7 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				// GitHub's /repositories/{id}/ Link targets onto the listing's
 				// /repos/o/r/ namespace (pass 34).
 				if errors.Is(err, ErrNotModified) {
-					if currentPath != basePath {
+					if pastFirstPage {
 						// A 304 MID-pagination is unusual (per-page ETag matched
 						// on page N≥2 while earlier pages changed) and ends the
 						// iteration with pages 1..N-1 only — leave a trace so a
@@ -1185,13 +1235,77 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				}
 				// v0.29.12: an off-host refusal on page ≥ 2 (a redirect
 				// refused mid-walk) truncates the listing — not a skip.
-				if currentPath != basePath && errors.Is(err, ErrOffHostRefused) {
+				if pastFirstPage && errors.Is(err, ErrOffHostRefused) {
 					err = fmt.Errorf("%w after page 1: %w", ErrListingTruncated, err)
+				}
+				// v0.29.72: a page over the forge's request budget is asked
+				// for again at the same item offset with fewer items.
+				if stepDown && errors.Is(err, ErrPageTooSlow) {
+					wasProbe := probedSize > 0
+					if wasProbe {
+						// That size is still over budget here: wait twice as
+						// long before probing it again.
+						probeWaits[probedSize] = waitFor(probedSize) * 2
+						probedSize = 0
+					}
+					next, from, to, offset, ok, atFloor := stepDownPage(currentPath)
+					if !ok {
+						if atFloor && !floorPlain {
+							// A degraded forge answers every request slowly,
+							// so the floor gets the ordinary retry budget
+							// before the listing fails (review round 2).
+							c.logger.Warn("listing page exceeded the forge's time budget at the smallest page size — retrying it with the ordinary retry budget",
+								"path", currentPath, "per_page", from, "error", err)
+							// pageReadRetries is NOT reset here: the floor's
+							// size cannot change, so a reset would let a page
+							// alternating slow 502s and cut-off bodies be
+							// re-fetched without bound (review round 3).
+							floorPlain = true
+							continue
+						}
+						if atFloor {
+							// Unreachable while the fallback request runs
+							// with the step-down off; a guard so a change
+							// that breaks that fails the listing instead of
+							// looping on the floor page forever.
+							c.logger.Error("listing page exceeded the forge's time budget at the smallest page size, also on the ordinary retry budget — the listing is incomplete",
+								"path", currentPath, "per_page", from, "error", err)
+						} else {
+							c.logger.Error("listing page exceeded the forge's time budget but its path has no page size to step down — the listing is incomplete",
+								"path", currentPath, "error", err)
+						}
+						var zero T
+						yield(zero, err)
+						return
+					}
+					c.logger.Warn("listing page exceeded the forge's time budget — stepping the page size down",
+						"path", currentPath, "per_page_from", from, "per_page_to", to, "item_offset", offset,
+						"step_up_probe", wasProbe, "next_probe_after_pages", waitFor(from), "error", err)
+					currentPath = next
+					pagesAtSize = 0
+					// GitLab continuations are built from basePath
+					// (X-Next-Page), so the new size must live there too.
+					basePath = setQueryParam(basePath, "per_page", strconv.Itoa(to))
+					pastFirstPage = offset > 0
+					// A smaller page is a different request, with a body a
+					// fraction of the size: it gets a fresh read budget
+					// (review round 4). Bounded: at one offset the size
+					// only goes down, so at most one budget per rung. The
+					// floor fallback (above) keeps its budget, because
+					// there the size cannot change.
+					pageReadRetries = 0
+					continue
+				}
+				if floorPlain && errors.Is(err, ErrTransient) {
+					c.logger.Error("listing page exceeded the forge's time budget at the smallest page size, and the ordinary retry budget too — the listing is incomplete",
+						"path", currentPath, "error", err)
+					err = fmt.Errorf("%w at the smallest page size: %w", ErrPageTooSlow, err)
 				}
 				var zero T
 				yield(zero, err)
 				return
 			}
+			floorPlain = false
 
 			// v0.27.37 (summary/18 Phase 1g): the body decode runs
 			// OUTSIDE Get's retry loop, so a mid-body RST_STREAM/
@@ -1215,6 +1329,34 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 						"path", currentPath, "attempt", pageReadRetries, "error", decodeErr)
 					continue
 				}
+				// PR #224 review: a probe is optional — the size the walk
+				// came from was serving — so a probe whose body cannot be
+				// read (a cut body is a size-related failure, like an
+				// over-budget answer) is a failed probe: back to that size
+				// at the same offset, with the probed size's wait doubled.
+				// A malformed body, or a cut body with no probe in flight,
+				// stays terminal as before.
+				if probedSize > 0 && isRetryableReadError(decodeErr) {
+					if back, from, to, offset, ok, _ := stepDownPage(currentPath); ok {
+						probeWaits[probedSize] = waitFor(probedSize) * 2
+						c.logger.Warn("listing walk's larger-page probe's body could not be read — the probe failed; back to the smaller page size",
+							"path", currentPath, "per_page_from", from, "per_page_to", to, "item_offset", offset,
+							"read_retries", pageReadRetries, "next_probe_after_pages", waitFor(probedSize), "error", decodeErr)
+						probedSize = 0
+						// Get cached the probe's ETag when its headers
+						// arrived; its body was never stored, and a walk
+						// that succeeds never runs the failed job's
+						// ForgetRepoETags, so forget it here (re-review of
+						// this fix: a replay would 304 and truncate).
+						c.forgetETag(currentPath)
+						currentPath = back
+						basePath = setQueryParam(basePath, "per_page", strconv.Itoa(to))
+						// pagesAtSize is already 0: the probe was issued
+						// with it reset, and nothing counts before decode.
+						pageReadRetries = 0 // a smaller page is a different request (round 4)
+						continue
+					}
+				}
 				var zero T
 				if isRetryableReadError(decodeErr) {
 					yield(zero, fmt.Errorf("decoding page after %d read retries: %w: %w", maxPageReadRetries, decodeErr, ErrTransient))
@@ -1224,6 +1366,13 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				return
 			}
 			pageReadRetries = 0
+			// A probe counts as served only once its body decodes: a cut
+			// body re-fetched into an over-budget answer is a failed probe
+			// and must double its size's wait (review round 5).
+			if probedSize > 0 {
+				delete(probeWaits, probedSize) // that size is served again
+				probedSize = 0
+			}
 
 			for _, item := range page {
 				if !yield(item, nil) {
@@ -1250,7 +1399,25 @@ func paginate[T any](ctx context.Context, c *HTTPClient, path string, nextPage n
 				yield(zero, nerr)
 				return
 			}
+			// A stepped walk probes the next larger size at the first
+			// offset that size divides, once it has waited waitFor(size) pages.
+			if stepDown && next != "" {
+				pagesAtSize++
+				cur, _, _ := parsePage(currentPath)
+				if up := stepUpSize(cur, startSize); up > 0 && pagesAtSize >= waitFor(up) {
+					if upPath, offset, ok := resizePage(next, up); ok {
+						c.logger.Info("listing walk is stepping the page size back up — probing the next larger size",
+							"path", upPath, "per_page_from", cur, "per_page_to", up, "item_offset", offset,
+							"pages_waited", pagesAtSize)
+						next = upPath
+						basePath = setQueryParam(basePath, "per_page", strconv.Itoa(up))
+						probedSize = up
+						pagesAtSize = 0
+					}
+				}
+			}
 			currentPath = next
+			pastFirstPage = true
 		}
 	}
 }

@@ -165,7 +165,7 @@ func TestPageCacheAnswers304WithoutRunningTheHandler(t *testing.T) {
 		t.Errorf("after a restart an exact ETag must still revalidate without the handler: %d runs %d", w.Code, hn.runs.Load())
 	}
 	// A list form and a weak form of the same tag both match.
-	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(`"x", W/`+etag)); w.Code != http.StatusNotModified {
+	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(`"x", `+etag)); w.Code != http.StatusNotModified {
 		t.Errorf("a list naming the tag must 304, got %d", w.Code)
 	}
 	// A stale tag gets the body.
@@ -590,5 +590,92 @@ func TestPageCacheServesNonCanonicalIdsUncached(t *testing.T) {
 	}
 	if n := len(hn.s.pageCache.repoIDs()); n != 0 {
 		t.Errorf("nothing may be stored for a non-canonical id, %d repositories cached", n)
+	}
+}
+
+// PR #226 Copilot review — If-None-Match: * matches an answer that exists.
+// With nothing in memory the representation is unknown (the handler might
+// refuse the parameters with a 400), so a wildcard must reach the handler.
+func TestPageCacheWildcardMatchesOnlyAStoredAnswer(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("a") == "bad" {
+			http.Error(w, "format must be 'cyclonedx' or 'spdx'", http.StatusBadRequest)
+			return
+		}
+		okBody(hn, w, r)
+	})
+	if w := hn.get("/api/v1/repos/7/thing?a=bad", ifNoneMatch("*")); w.Code != http.StatusBadRequest {
+		t.Errorf("a wildcard on a cold, invalid request: %d, want the handler's 400", w.Code)
+	}
+	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != 200 {
+		t.Errorf("a wildcard with nothing stored: %d, want the body", w.Code)
+	}
+	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != http.StatusNotModified {
+		t.Errorf("a wildcard on a stored answer: %d, want 304", w.Code)
+	}
+}
+
+// PR #226 Copilot review — an exact answer's ETag names the repository's
+// state, not the bytes (an SBOM carries a fresh serial and timestamp per
+// generation), so it is a WEAK validator; If-None-Match compares weakly.
+func TestPageCacheExactETagsAreWeak(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	if !strings.HasPrefix(etag, `W/"`) {
+		t.Fatalf("exact ETag %q must be weak", etag)
+	}
+	strong := strings.TrimPrefix(etag, "W/")
+	for _, inm := range []string{etag, strong} {
+		if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(inm)); w.Code != http.StatusNotModified {
+			t.Errorf("If-None-Match %s: %d, want 304 (weak comparison)", inm, w.Code)
+		}
+	}
+	en := newPageCacheHarness(t, pageEnriched, 1<<20, okBody)
+	if e := en.get("/api/v1/repos/7/thing").Header().Get("ETag"); strings.HasPrefix(e, "W/") {
+		t.Errorf("an enriched ETag names the body: it stays strong, got %q", e)
+	}
+}
+
+// PR #226 Copilot review — only the run that computed an answer stores it:
+// followers that shared it must not replace the entry (cost 0, hits reset),
+// which made the re-warm's order and its "asked for again" signal depend on
+// the scheduler.
+func TestPageCacheFollowersDoNotReplaceTheEntry(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		time.Sleep(5 * time.Millisecond) // a measurable cost
+		okBody(hn, w, r)
+	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); hn.get("/api/v1/repos/7/thing") }()
+	<-started
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); hn.get("/api/v1/repos/7/thing") }()
+	}
+	time.Sleep(30 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	hn.get("/api/v1/repos/7/thing") // one hit after the flight
+	hn.s.pageCache.mu.Lock()
+	defer hn.s.pageCache.mu.Unlock()
+	if len(hn.s.pageCache.m) != 1 {
+		t.Fatalf("%d entries, want 1", len(hn.s.pageCache.m))
+	}
+	for _, el := range hn.s.pageCache.m {
+		e := el.Value.(*pageEntry)
+		if e.cost < 5*time.Millisecond {
+			t.Errorf("entry cost %v: a follower replaced the leader's measured entry", e.cost)
+		}
+		if e.hits != 1 {
+			t.Errorf("entry hits %d, want 1 (the request after the flight)", e.hits)
+		}
 	}
 }

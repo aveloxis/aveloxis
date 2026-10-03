@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -249,5 +250,139 @@ func TestRewarmDropsAnswersNobodyAskedForAgain(t *testing.T) {
 	}
 	if fps := hn.s.pageCache.fingerprints(7); len(fps) != 1 {
 		t.Errorf("the one-off answer must be dropped, not kept under the old state: %v", fps)
+	}
+}
+
+// PR #226 Copilot review — a replay that answers 200 but stores nothing (a
+// degraded answer: partialAnswer) is a failed re-warm: logged as not
+// cached, the outdated entry kept, retried at the next state change and
+// not on every pass.
+func TestRewarmCountsAnUnstoredAnswerAsFailedAndRetriesItOncePerState(t *testing.T) {
+	var degrade atomic.Bool
+	hn, logs, runs := rewarmHarness(t, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if degrade.Load() {
+			hn.s.partialAnswer(r, &net.OpError{Op: "read", Err: errBrokenPipeForTest}, "lookup failed — served without it")
+		}
+		okBody(hn, w, r)
+	})
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	runs()
+	degrade.Store(true)
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	if repos, reqs := hn.s.rewarmOnce(context.Background()); repos != 1 || reqs != 1 {
+		t.Fatalf("first pass: repos %d requests %d", repos, reqs)
+	}
+	if !strings.Contains(logs.String(), "request not cached") {
+		t.Errorf("a replay that stored nothing must be logged as not cached; log:\n%s", logs.String())
+	}
+	if _, reqs := hn.s.rewarmOnce(context.Background()); reqs != 0 {
+		t.Errorf("the same state must not be retried every pass, replayed %d", reqs)
+	}
+	degrade.Store(false)
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	runs()
+	if _, reqs := hn.s.rewarmOnce(context.Background()); reqs != 1 {
+		t.Errorf("a new state retries the failed answer once, replayed %d", reqs)
+	}
+	if w := hn.get("/api/v1/repos/7/thing?a=1"); w.Header().Get("X-Cache") != "hit" {
+		t.Error("the retried answer must now be stored")
+	}
+}
+
+// PR #226 Copilot review — a collection that starts between the pass's
+// state read and a replay must not get its half-written repository cached:
+// the replay carries the state it expects, the cache refuses to store under
+// any other, and the outdated entries wait for the next pass.
+func TestRewarmNeverStoresUnderAStateItDidNotExpect(t *testing.T) {
+	hn, logs, _ := rewarmHarness(t, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		okBody(hn, w, r)
+	})
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	// The collection starts after the pass read the state: the harness's
+	// reader answers the pass's read normally, then reports collecting.
+	reads := 0
+	inner := hn.s.repoStates
+	hn.s.repoStates = func(ctx context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
+		reads++
+		m, err := inner(ctx, ids)
+		if reads > 1 {
+			for id, st := range m {
+				st.Collecting = true
+				st.QueueUpdatedAt = st.QueueUpdatedAt.Add(time.Minute)
+				m[id] = st
+			}
+		}
+		return m, err
+	}
+	hn.s.rewarmOnce(context.Background())
+	hn.s.pageCache.mu.Lock()
+	n := 0
+	for _, el := range hn.s.pageCache.m {
+		if el.Value.(*pageEntry).fingerprint != "" {
+			n++
+		}
+	}
+	hn.s.pageCache.mu.Unlock()
+	if n != 1 {
+		t.Errorf("%d entries after the pass, want only the outdated one kept (nothing stored mid-collection)", n)
+	}
+	if !strings.Contains(logs.String(), "state moved") {
+		t.Errorf("the abandoned replay is logged; log:\n%s", logs.String())
+	}
+}
+
+// Fix-review round (PR #226): when a visitor stores the current answer
+// before the re-warm gets to it, the outdated copy of that URI is removed
+// on the next pass — it was kept (neither replayed nor dropped) until the
+// LRU evicted it, and blocked the pass's early skip for the repository.
+func TestRewarmDropsOutdatedCopiesAVisitorAlreadyReplaced(t *testing.T) {
+	hn, _, runs := rewarmHarness(t, okBody)
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	hn.get("/api/v1/repos/7/thing?a=1") // a visitor computes the current answer first
+	runs()
+	hn.s.rewarmOnce(context.Background())
+	if got := runs(); len(got) != 0 {
+		t.Errorf("an answer a visitor already replaced must not be replayed: %v", got)
+	}
+	if fps := hn.s.pageCache.fingerprints(7); len(fps) != 1 {
+		t.Errorf("the outdated copy must be removed, fingerprints %v", fps)
+	}
+}
+
+// Fix-review round (PR #226): the 409 log's remaining count is this
+// repository's, not the pass's (it read negative for the second repository).
+func TestRewarmReportsRemainingPerRepository(t *testing.T) {
+	hn, logs, _ := rewarmHarness(t, okBody)
+	for _, id := range []string{"7", "8"} {
+		for _, q := range []string{"a=1", "b=1", "fast=1"} {
+			hn.get("/api/v1/repos/" + id + "/thing?" + q)
+			hn.get("/api/v1/repos/" + id + "/thing?" + q)
+		}
+	}
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	// After repository 7's three replays, the state moves for repository 8.
+	inner := hn.s.repoStates
+	replays := 0
+	hn.s.repoStates = func(ctx context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
+		m, err := inner(ctx, ids)
+		if len(ids) == 1 {
+			replays++
+			if replays > 3 {
+				for id, st := range m {
+					st.Collecting = true
+					m[id] = st
+				}
+			}
+		}
+		return m, err
+	}
+	hn.s.rewarmOnce(context.Background())
+	if !strings.Contains(logs.String(), "remaining=2") || strings.Contains(logs.String(), "remaining=-") {
+		t.Errorf("the abandoned repository's remaining count must be 2; log:\n%s", logs.String())
 	}
 }

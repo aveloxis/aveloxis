@@ -131,7 +131,8 @@ type pageEntry struct {
 	computed    time.Time
 	cost        time.Duration // handler run time, orders the re-warm
 	enriched    bool
-	hits        int // served from the cache since computed; the re-warm replays only answers asked for again
+	hits        int    // served from the cache since computed; the re-warm replays only answers asked for again
+	triedFor    string // the state a failed re-warm of this answer was attempted for: retried only under a newer one
 }
 
 func (e *pageEntry) size() int64 {
@@ -151,8 +152,9 @@ type pageResult struct {
 }
 
 type pageFlight struct {
-	done chan struct{}
-	res  pageResult
+	done  chan struct{}
+	res   pageResult
+	entry *pageEntry // what the run stored (nil: nothing cacheable); followers share it, never store
 }
 
 // repoPageCache is the byte-bounded LRU. A zero maxBytes stores nothing
@@ -244,14 +246,17 @@ func (c *repoPageCache) repoIDs() []int64 {
 	return ids
 }
 
-// takeOutdated removes every entry of repoID computed under a state other
-// than fingerprint and returns the request URIs worth recomputing: those of
-// entries asked for again after they were computed (a returning visitor, a
-// front end revalidating), costliest first, each once. An answer requested
-// once — a one-off, or a crafted URL — is dropped without being replayed, so
-// the re-warm's work after a collection is bounded by what visitors come
-// back to. Entries already under the current state stay.
-func (c *repoPageCache) takeOutdated(repoID int64, fingerprint string) []string {
+// outdatedToReplay returns the request URIs of repoID worth recomputing
+// under fingerprint: answers computed under another state that were asked
+// for again after they were computed (a returning visitor, a front end
+// revalidating), not yet current, and not already tried under this state —
+// costliest first, each once. Outdated answers requested only once (a
+// one-off, or a crafted URL) are dropped without a replay, so the re-warm's
+// work is bounded by what visitors come back to. The outdated entries that
+// are returned stay until a replay stores their successor
+// (completeReplay), so a failed replay can be tried again under a later
+// state (PR #226 review).
+func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	type item struct {
@@ -260,19 +265,22 @@ func (c *repoPageCache) takeOutdated(repoID int64, fingerprint string) []string 
 	}
 	best := map[string]time.Duration{}
 	current := map[string]bool{}
+	tried := map[string]bool{}
 	var drop []*list.Element
 	for el := range c.byRepo[repoID] {
 		e := el.Value.(*pageEntry)
-		if e.fingerprint == fingerprint {
+		switch {
+		case e.fingerprint == fingerprint:
 			current[e.uri] = true
-			continue
-		}
-		drop = append(drop, el)
-		if e.hits == 0 {
-			continue
-		}
-		if prev, seen := best[e.uri]; !seen || e.cost > prev {
-			best[e.uri] = e.cost
+		case e.hits == 0:
+			drop = append(drop, el)
+		default:
+			if e.triedFor == fingerprint {
+				tried[e.uri] = true
+			}
+			if prev, seen := best[e.uri]; !seen || e.cost > prev {
+				best[e.uri] = e.cost
+			}
 		}
 	}
 	for _, el := range drop {
@@ -280,7 +288,7 @@ func (c *repoPageCache) takeOutdated(repoID int64, fingerprint string) []string 
 	}
 	items := make([]item, 0, len(best))
 	for uri, cost := range best {
-		if !current[uri] {
+		if !current[uri] && !tried[uri] {
 			items = append(items, item{uri, cost})
 		}
 	}
@@ -295,6 +303,37 @@ func (c *repoPageCache) takeOutdated(repoID int64, fingerprint string) []string 
 		uris[i] = it.uri
 	}
 	return uris
+}
+
+// completeReplay records one replay of uri under fingerprint: when an
+// answer under that state is now stored, the outdated ones it replaces are
+// removed and true is returned; otherwise (a degraded answer, an error, a
+// refusal — nothing stored) the outdated ones stay, marked tried for this
+// state, and false is returned.
+func (c *repoPageCache) completeReplay(repoID int64, uri, fingerprint string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	stored := false
+	var outdated []*list.Element
+	for el := range c.byRepo[repoID] {
+		e := el.Value.(*pageEntry)
+		if e.uri != uri {
+			continue
+		}
+		if e.fingerprint == fingerprint {
+			stored = true
+		} else {
+			outdated = append(outdated, el)
+		}
+	}
+	for _, el := range outdated {
+		if stored {
+			c.removeLocked(el)
+		} else {
+			el.Value.(*pageEntry).triedFor = fingerprint
+		}
+	}
+	return stored
 }
 
 // dropRepo removes every entry of a repository that no longer exists.
@@ -341,15 +380,19 @@ func pageKey(pattern string, repoID int64, query string, st db.RepoCacheState, p
 	return hex.EncodeToString(sum[:16])
 }
 
-// etagMatches reports whether an If-None-Match header names etag.
-func etagMatches(header, etag string) bool {
+// etagMatches reports whether an If-None-Match header names etag, by the
+// weak comparison If-None-Match uses (W/ ignored on both sides). "*"
+// matches only when the caller knows the representation exists (an entry
+// in memory): with nothing stored, the request might be one the handler
+// refuses (PR #226 review: /sbom?format=invalid answered 304).
+func etagMatches(header, etag string, stored bool) bool {
 	if header == "" || etag == "" {
 		return false
 	}
+	want := strings.TrimPrefix(etag, "W/")
 	for _, part := range strings.Split(header, ",") {
-		p := strings.TrimSpace(part)
-		p = strings.TrimPrefix(p, "W/")
-		if p == etag || p == "*" {
+		p := strings.TrimPrefix(strings.TrimSpace(part), "W/")
+		if p == want || (p == "*" && stored) {
 			return true
 		}
 	}
@@ -443,6 +486,21 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 		h(w, r)
 		return
 	}
+	// A re-warm replay carries the state its pass read; if the repository
+	// moved since — a collection started, another writer stamped — nothing
+	// is computed or stored under a state the pass did not choose, and the
+	// re-warm keeps the outdated answers for its next pass (PR #226 review).
+	// Visitors are NOT held to this: an answer computed while a collection
+	// runs is keyed to that collection's start (the claim stamps the queue
+	// row), so it is never served once the collection ends; answering
+	// visitors live instead would recompute the heaviest pages of the
+	// largest repositories on every view during their hours-long
+	// collections — the load this cache exists to remove (declined with
+	// this reason, PR #226).
+	if exp, ok := r.Context().Value(rewarmExpectKey{}).(string); ok && (st.Collecting || st.Fingerprint() != exp) {
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
 	params, listed := pageParams[r.Pattern]
 	if !listed {
 		h(w, r) // a route without a parameter list is never keyed (untagged, no-store)
@@ -457,7 +515,7 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 			setNoStoreHeaders(w.Header())
 		} else {
 			setShareableHeaders(w.Header(), e.etag)
-			if etagMatches(r.Header.Get("If-None-Match"), e.etag) {
+			if etagMatches(r.Header.Get("If-None-Match"), e.etag, true) {
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
@@ -469,14 +527,30 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 	// holding it needs no body even when this process has none (a
 	// restart, an eviction). An enriched answer's ETag also names the
 	// body, which is known only after computing.
-	if !pol.enriched && !perCaller && etagMatches(r.Header.Get("If-None-Match"), exactETag(key)) {
+	if !pol.enriched && !perCaller && etagMatches(r.Header.Get("If-None-Match"), exactETag(key), false) {
 		setShareableHeaders(w.Header(), exactETag(key))
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 
-	res, cost := s.runOnce(c, key, r, h)
-	if !res.cacheable {
+	uri := r.URL.EscapedPath()
+	if query != "" {
+		uri += "?" + query
+	}
+	res, e := s.runOnce(c, key, r, h, func(res pageResult, cost time.Duration) *pageEntry {
+		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(),
+			body: res.body, contentType: res.contentType, disposition: res.disposition,
+			computed: c.now(), cost: cost, enriched: pol.enriched}
+		if pol.enriched {
+			sum := sha256.Sum256(res.body)
+			e.etag = `"` + key + "." + hex.EncodeToString(sum[:6]) + `"`
+		} else {
+			e.etag = exactETag(key)
+		}
+		c.put(e)
+		return e
+	})
+	if !res.cacheable || e == nil {
 		// Partial, an error, or a refusal: passed through untagged,
 		// with every header the handler set.
 		for k, v := range res.header {
@@ -489,20 +563,6 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 		_, _ = w.Write(res.body)
 		return
 	}
-	uri := r.URL.EscapedPath()
-	if query != "" {
-		uri += "?" + query
-	}
-	e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(),
-		body: res.body, contentType: res.contentType, disposition: res.disposition,
-		computed: c.now(), cost: cost, enriched: pol.enriched}
-	if pol.enriched {
-		sum := sha256.Sum256(res.body)
-		e.etag = `"` + key + "." + hex.EncodeToString(sum[:6]) + `"`
-	} else {
-		e.etag = exactETag(key)
-	}
-	c.put(e)
 	if perCaller {
 		setNoStoreHeaders(w.Header())
 	} else {
@@ -511,7 +571,11 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 	writeEntry(w, e.contentType, e.disposition, e.body, "")
 }
 
-func exactETag(key string) string { return `"` + key + `"` }
+// exactETag is an exact answer's validator: a pure function of the key (the
+// repository's state), not of the bytes — an SBOM carries a fresh serial
+// number and timestamp per generation — so it is WEAK: "equivalent", which
+// is what it can promise (PR #226 review).
+func exactETag(key string) string { return `W/"` + key + `"` }
 
 func writeEntry(w http.ResponseWriter, contentType, disposition string, body []byte, xcache string) {
 	if contentType != "" {
@@ -527,23 +591,31 @@ func writeEntry(w http.ResponseWriter, contentType, disposition string, body []b
 }
 
 // runOnce runs h for key, once across concurrent callers: the first caller
-// runs it, the others wait for that run and share an answer it could cache.
-// A follower whose leader produced nothing cacheable (the leader's client
-// left, a partial answer, an error) runs h itself, so one caller's failure
-// never becomes another's.
-func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.HandlerFunc) (pageResult, time.Duration) {
+// runs it and, when the answer is cacheable, stores it through store before
+// releasing the others, who share that answer and its entry without storing
+// anything (PR #226 review: followers replaced the entry, resetting its
+// measured cost and its hits). A follower whose leader produced nothing
+// cacheable (the leader's client left, a partial answer, an error) runs h
+// itself — and stores what it computed — so one caller's failure never
+// becomes another's.
+func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.HandlerFunc,
+	store func(pageResult, time.Duration) *pageEntry) (pageResult, *pageEntry) {
 	c.mu.Lock()
 	if f, ok := c.inflight[key]; ok {
 		c.mu.Unlock()
 		select {
 		case <-f.done:
-			if f.res.cacheable {
-				return f.res, 0
+			if f.res.cacheable && f.entry != nil {
+				return f.res, f.entry
 			}
 		case <-r.Context().Done():
-			return pageResult{status: http.StatusServiceUnavailable}, 0
+			return pageResult{status: http.StatusServiceUnavailable}, nil
 		}
-		return s.runHandler(r, h)
+		res, cost := s.runHandler(r, h)
+		if res.cacheable {
+			return res, store(res, cost)
+		}
+		return res, nil
 	}
 	f := &pageFlight{done: make(chan struct{})}
 	c.inflight[key] = f
@@ -559,8 +631,12 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.H
 		close(f.done)
 	}()
 	res, cost := s.runHandler(r, h)
-	f.res = res // written before close(f.done), read only after it
-	return res, cost
+	var e *pageEntry
+	if res.cacheable {
+		e = store(res, cost) // before close(f.done): followers find it stored
+	}
+	f.res, f.entry = res, e // written before close(f.done), read only after it
+	return res, e
 }
 
 func (s *Server) runHandler(r *http.Request, h http.HandlerFunc) (pageResult, time.Duration) {
@@ -637,3 +713,8 @@ func (s *Server) frontEndAuthorized(r *http.Request) bool {
 	_, cached := pageParams[pattern]
 	return cached
 }
+
+// rewarmExpectKey carries, on a re-warm replay, the RepoCacheState
+// fingerprint its pass read (servePageCached refuses to compute under any
+// other).
+type rewarmExpectKey struct{}

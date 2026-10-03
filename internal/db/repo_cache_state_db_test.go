@@ -175,6 +175,32 @@ func TestRepoCacheStateSeesWritersOutsideTheJob(t *testing.T) {
 	if fp(other) != otherBefore {
 		t.Error("a repository without the rescored vector must not move")
 	}
+	// PR #226 review: a repository without a queue row — a gone repository,
+	// dequeued with its data kept — must move too: the stamp lives on its
+	// repos row, which always exists.
+	var gone int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avrcsw/gone', 'gone', '_avrcsw', 1) RETURNING repo_id`).Scan(&gone); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, gone)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, gone)
+	})
+	const goneVector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.repo_deps_vulnerabilities (repo_id, vuln_id, package_name, cvss_vector, cvss_score)
+		VALUES ($1, 'GHSA-avrcsw-gone', 'pkg', $2, 0)`, gone, goneVector); err != nil {
+		t.Fatal(err)
+	}
+	goneBefore := fp(gone)
+	if n, err := store.UpdateCVSSScoreForVector(ctx, goneVector, 7.5); err != nil || n != 1 {
+		t.Fatalf("rescore of the gone repository: %d rows, %v", n, err)
+	}
+	if fp(gone) == goneBefore {
+		t.Error("a rescore of a repository with no queue row (gone, data kept) must change its cache state")
+	}
+
 	before = fp(a)
 	if n, err := store.UpdateCVSSScoreForVector(ctx, vector, 9.8); err != nil || n != 0 {
 		t.Fatalf("an unchanged rescore: %d rows, %v", n, err)

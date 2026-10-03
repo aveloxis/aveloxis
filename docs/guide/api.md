@@ -364,7 +364,8 @@ inclusive); `limit` defaults to 20 and is capped at 100.
 `/contributions/*`) are reused until the repository is collected again or
 scanned. Answers that name contributors are also recomputed after
 `collection.enrich_interval_minutes` (default 30). These answers carry an
-`ETag`; a request whose `If-None-Match` names the current one gets
+`ETag` (weak for answers that depend only on the repository's state); a
+request whose `If-None-Match` names the current one gets
 `304 Not Modified`. A response served from the cache carries `X-Cache: hit`.
 Each entity's series on `/compare` is reused inside the response, and only a
 whole-response hit (below) carries the header.

@@ -753,6 +753,10 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// and a date on a zero-finding repo means "scanned, clean".
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "vuln_scan_last_run", "TIMESTAMPTZ")
 
+	// v0.29.73: the repository-page cache's out-of-job change stamp
+	// (stampRepoCacheStateSQL). Nullable, no default: an instant ALTER.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "data_changed_at", "TIMESTAMPTZ")
+
 	// v0.28.1 (A6): the distinct "gone" state — prelim's 404/410
 	// sideline stamps it alongside repo_archived so the GUI can say
 	// "no longer publicly available" instead of misreading the

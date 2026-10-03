@@ -502,12 +502,12 @@ var deployChecklists = map[string][]deployStep{
 
 // 0.29.72 has no schema change; its migrate is 0.29.71's, which a fleet
 // that skipped 0.29.71 still needs, and it carries 0.29.71's start-up notes.
-// 0.29.73 changes the API only (no schema change): repository answers are
-// cached until the repository changes; it carries 0.29.72's notes for a
-// fleet that skipped it.
+// 0.29.73 adds one nullable column (repos.data_changed_at, an instant
+// ALTER): repository answers are cached until the repository changes; it
+// carries 0.29.72's notes for a fleet that skipped it.
 var v02973DeployChecklist = []deployStep{
 	v02972DeployChecklist[0],
-	{"aveloxis migrate --skip-views", "no schema change in 0.29.73; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},
+	{"aveloxis migrate --skip-views", "adds repos.data_changed_at (nullable, no default: an instant ALTER), which run-scorecard and heal-vulnerabilities --rescore-only stamp so the API replaces its cached answers for that repository; aveloxis api refuses to start until this migrate has run; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},
 	v02972DeployChecklist[2],
 	v02972DeployChecklist[3],
 	v02972DeployChecklist[4],

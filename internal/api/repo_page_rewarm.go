@@ -76,7 +76,7 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 		if fps := s.pageCache.fingerprints(id); len(fps) == 1 && fps[fp] {
 			continue // every answer is current
 		}
-		uris := s.pageCache.takeOutdated(id, fp)
+		uris := s.pageCache.outdatedToReplay(id, fp)
 		if len(uris) == 0 {
 			continue
 		}
@@ -86,14 +86,29 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 			if ctx.Err() != nil {
 				return repos, requests
 			}
-			if status, reason := s.replay(ctx, uri); reason != "" {
+			status, reason := s.replay(ctx, uri, fp)
+			requests++
+			if status == http.StatusConflict {
+				// The repository moved after this pass read its state (a
+				// collection started): stop here; the outdated answers
+				// stay for the pass that reads the new state.
+				failed++
+				s.logger.Info("repository page cache re-warm: repository state moved — the rest waits for the next pass",
+					"repo_id", id, "remaining", len(uris)-requests)
+				break
+			}
+			// A replay succeeded only if it stored the answer: a degraded
+			// 200 (partialAnswer) is served no-store and stores nothing.
+			if stored := s.pageCache.completeReplay(id, uri, fp); !stored {
+				if reason == "" {
+					reason = "answer not cacheable (degraded, or refused)"
+				}
 				failed++
 				if ctx.Err() == nil {
 					s.logger.Warn("repository page cache re-warm: request not cached", "repo_id", id, "uri", logSafe(uri),
 						"status", status, "reason", reason)
 				}
 			}
-			requests++
 		}
 		repos++
 		s.logger.Info("repository page cache re-warmed", "repo_id", id, "requests", len(uris), "failed", failed,
@@ -109,8 +124,8 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 // reported here, because the handler's error helper drops a request's end
 // to Debug and writes nothing. A panic is recovered here too: the re-warm
 // runs handlers outside net/http's per-connection recover.
-func (s *Server) replay(ctx context.Context, uri string) (status int, reason string) {
-	rctx := context.WithValue(ctx, authCtxKey{}, authInfo{IsAdmin: true})
+func (s *Server) replay(ctx context.Context, uri, fingerprint string) (status int, reason string) {
+	rctx := context.WithValue(context.WithValue(ctx, authCtxKey{}, authInfo{IsAdmin: true}), rewarmExpectKey{}, fingerprint)
 	if s.requestTimeout > 0 {
 		var cancel context.CancelFunc
 		rctx, cancel = context.WithTimeout(rctx, s.requestTimeout)

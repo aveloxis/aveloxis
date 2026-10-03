@@ -18,7 +18,8 @@ import (
 //     the collection job;
 //   - vuln_scan_last_run, stamped at the scan's completed exits;
 //   - data_changed_at, stamped through stampRepoCacheStateSQL by writers
-//     outside the job: ReplaceScorecard (`aveloxis run-scorecard`) and
+//     that can run outside the job: ReplaceScorecard (every scorecard write —
+//     the job's phase and `aveloxis run-scorecard`) and
 //     UpdateCVSSScoreForVector (`heal-vulnerabilities --rescore-only`). A
 //     new writer of repository-page data outside the job must do the same,
 //     or the page serves its old answer until the next collection.

@@ -385,4 +385,8 @@ func TestRewarmReportsRemainingPerRepository(t *testing.T) {
 	if !strings.Contains(logs.String(), "remaining=2") || strings.Contains(logs.String(), "remaining=-") {
 		t.Errorf("the abandoned repository's remaining count must be 2; log:\n%s", logs.String())
 	}
+	// The summary counts the requests attempted, not the ones planned.
+	if !strings.Contains(logs.String(), `msg="repository page cache re-warmed" repo_id=8 requests=1 failed=1`) {
+		t.Errorf("repository 8's summary must report 1 request attempted, 1 failed; log:\n%s", logs.String())
+	}
 }

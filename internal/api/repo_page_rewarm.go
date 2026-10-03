@@ -81,20 +81,21 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 			continue
 		}
 		start := time.Now()
-		failed := 0
-		for _, uri := range uris {
+		failed, attempted := 0, 0
+		for i, uri := range uris {
 			if ctx.Err() != nil {
 				return repos, requests
 			}
 			status, reason := s.replay(ctx, uri, fp)
 			requests++
+			attempted++
 			if status == http.StatusConflict {
 				// The repository moved after this pass read its state (a
 				// collection started): stop here; the outdated answers
 				// stay for the pass that reads the new state.
 				failed++
 				s.logger.Info("repository page cache re-warm: repository state moved — the rest waits for the next pass",
-					"repo_id", id, "remaining", len(uris)-requests)
+					"repo_id", id, "remaining", len(uris)-(i+1))
 				break
 			}
 			// A replay succeeded only if it stored the answer: a degraded
@@ -111,7 +112,7 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 			}
 		}
 		repos++
-		s.logger.Info("repository page cache re-warmed", "repo_id", id, "requests", len(uris), "failed", failed,
+		s.logger.Info("repository page cache re-warmed", "repo_id", id, "requests", attempted, "failed", failed,
 			"duration", time.Since(start).Round(time.Millisecond))
 	}
 	return repos, requests

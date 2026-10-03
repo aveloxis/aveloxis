@@ -370,9 +370,10 @@ func (s *PostgresStore) ReplaceScorecard(ctx context.Context, repoID int64, mode
 			}
 		}
 		// The repository page's cached /scorecard answer is valid against
-		// RepoCacheState (v0.29.73); `aveloxis run-scorecard` writes outside
-		// any job, so the writer stamps repos.data_changed_at, in the same
-		// transaction.
+		// RepoCacheState (v0.29.73). Every scorecard write stamps
+		// repos.data_changed_at, in the same transaction: the job's phase
+		// (whose end also moves the queue row) and `aveloxis run-scorecard`,
+		// which writes outside any job and is the reason the stamp exists.
 		if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
 			return fmt.Errorf("stamp repository cache state for repo %d: %w", repoID, err)
 		}

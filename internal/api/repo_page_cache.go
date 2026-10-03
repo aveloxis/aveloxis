@@ -252,8 +252,9 @@ func (c *repoPageCache) repoIDs() []int64 {
 // revalidating), not yet current, and not already tried under this state —
 // costliest first, each once. Outdated answers requested only once (a
 // one-off, or a crafted URL) are dropped without a replay, so the re-warm's
-// work is bounded by what visitors come back to. The outdated entries that
-// are returned stay until a replay stores their successor
+// work is bounded by what visitors come back to; outdated copies whose
+// current successor is already stored are removed too. The outdated entries
+// that are returned stay until a replay stores their successor
 // (completeReplay), so a failed replay can be tried again under a later
 // state (PR #226 review).
 func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []string {
@@ -281,6 +282,14 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []str
 			if prev, seen := best[e.uri]; !seen || e.cost > prev {
 				best[e.uri] = e.cost
 			}
+		}
+	}
+	// An outdated copy whose current successor is already stored (a visitor
+	// computed it first) has nothing left to replay: remove it now, or it
+	// would stay until the LRU evicted it (fix-review round, PR #226).
+	for el := range c.byRepo[repoID] {
+		if e := el.Value.(*pageEntry); e.fingerprint != fingerprint && e.hits > 0 && current[e.uri] {
+			drop = append(drop, el)
 		}
 	}
 	for _, el := range drop {

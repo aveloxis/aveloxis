@@ -507,7 +507,7 @@ var deployChecklists = map[string][]deployStep{
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02973DeployChecklist = []deployStep{
 	v02972DeployChecklist[0],
-	{"aveloxis migrate --skip-views", "adds repos.data_changed_at (nullable, no default: an instant ALTER), which every scorecard write (the collection job's and run-scorecard's) and heal-vulnerabilities --rescore-only (on the repositories whose scores it changes) stamp so the API replaces its cached answers for that repository; aveloxis api refuses to start until this migrate has run; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},
+	{"aveloxis migrate --skip-views", "adds repos.data_changed_at (nullable, no default: an instant ALTER), which every scorecard write, scancode snapshot and vulnerability insert or resolution, and heal-vulnerabilities --rescore-only (on the repositories whose scores it changes), stamp in the same transaction as their data so the API replaces its cached answers for that repository; aveloxis api refuses to start until this migrate has run; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},
 	v02972DeployChecklist[2],
 	v02972DeployChecklist[3],
 	v02972DeployChecklist[4],

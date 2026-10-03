@@ -17,12 +17,17 @@ import (
 //   - scancode_last_run, stamped by the decoupled ScancodeWorker outside
 //     the collection job;
 //   - vuln_scan_last_run, stamped at the scan's completed exits;
-//   - data_changed_at, stamped through stampRepoCacheStateSQL by writers
-//     that can run outside the job: ReplaceScorecard (every scorecard write —
-//     the job's phase and `aveloxis run-scorecard`) and
-//     UpdateCVSSScoreForVector (`heal-vulnerabilities --rescore-only`). A
-//     new writer of repository-page data outside the job must do the same,
-//     or the page serves its old answer until the next collection.
+//   - data_changed_at, stamped through stampRepoCacheStateSQL, in the same
+//     transaction as the data, by the writers that can run outside the job:
+//     ReplaceScorecard (the job's phase and `aveloxis run-scorecard`),
+//     ReplaceScancodeSnapshot (the decoupled scancode worker),
+//     InsertVulnerabilityBatch and MarkStaleVulnerabilitiesResolved (a
+//     vulnerability scan, `heal-vulnerabilities` included) and
+//     UpdateCVSSScoreForVector (`--rescore-only`). The completion stamps
+//     above are separate statements that can fail after the data commits
+//     (PR #226 review), so the data writers stamp themselves. A new writer
+//     of repository-page data outside the job must do the same, or the page
+//     serves its old answer until the next collection.
 //
 // Heartbeats stamp only locked_at, so a running job does not churn it.
 // Collecting is the queue status, read so a re-warm waits for the job's end

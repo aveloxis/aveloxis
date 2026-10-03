@@ -209,3 +209,76 @@ func TestRepoCacheStateSeesWritersOutsideTheJob(t *testing.T) {
 		t.Error("a rescore that changes nothing must not move the cache state")
 	}
 }
+
+// PR #226 review 5402109493: the data writers outside a collection job —
+// the decoupled scancode worker's snapshot and a vulnerability scan's
+// inserts and resolutions (heal-vulnerabilities) — move the cache state in
+// the SAME transaction as the data, through data_changed_at. Their own
+// completion stamps (scancode_last_run via MarkScancodeComplete,
+// vuln_scan_last_run via SetVulnScanLastRun) are separate statements that
+// can fail after the data committed, leaving it under the old fingerprint.
+func TestRepoCacheStateMovesWithTheDataWrite(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	var id int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avrcsdata/r', 'r', '_avrcsdata', 1) RETURNING repo_id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_scan.scancode_file_results WHERE repo_id = $1`, id)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_scan.scancode_scans WHERE repo_id = $1`, id)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, id)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+	})
+	fp := func() string {
+		t.Helper()
+		m, err := store.RepoCacheStates(ctx, []int64{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[id].Fingerprint()
+	}
+	moves := func(name string, write func() error) {
+		t.Helper()
+		before := fp()
+		if err := write(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if fp() == before {
+			t.Errorf("%s must move the cache state by itself, before any completion stamp", name)
+		}
+	}
+	moves("a scancode snapshot", func() error {
+		_, err := store.ReplaceScancodeSnapshot(ctx, id, ScancodeScanMeta{Version: "32.0.0", FilesScanned: 1},
+			[]*ScancodeFileRow{{Path: "LICENSE", DetectedLicenseExpressionSPDX: "MIT"}})
+		return err
+	})
+	row := &VulnerabilityRow{VulnID: "GHSA-avrcsdata", PackageName: "flask", PackagePurl: "pkg:pypi/flask@2.0.0",
+		Severity: "HIGH", Source: "osv.dev"}
+	moves("a vulnerability insert", func() error { return store.InsertVulnerabilityBatch(ctx, id, []*VulnerabilityRow{row}) })
+	moves("a vulnerability resolution", func() error {
+		n, err := store.MarkStaleVulnerabilitiesResolved(ctx, id, nil, nil)
+		if err == nil && n != 1 {
+			t.Errorf("resolved %d rows, want 1", n)
+		}
+		return err
+	})
+	before := fp()
+	if n, err := store.MarkStaleVulnerabilitiesResolved(ctx, id, nil, nil); err != nil || n != 0 {
+		t.Fatalf("a resolution with nothing to resolve: %d, %v", n, err)
+	}
+	if fp() != before {
+		t.Error("a resolution that changes nothing must not move the cache state")
+	}
+}

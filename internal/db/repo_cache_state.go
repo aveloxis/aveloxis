@@ -62,8 +62,10 @@ func (st RepoCacheState) Fingerprint() string {
 // the repository-page cache its data changed: it moves repos.data_changed_at,
 // which RepoCacheState reads. On repos, not the queue row (PR #226 review): a
 // gone repository is dequeued with its data kept, so a queue stamp missed
-// it. Used by ReplaceScorecard and UpdateCVSSScoreForVector; the caller
-// appends the WHERE clause on repo_id.
+// it. Used, in the same transaction as their data, by every writer listed
+// on RepoCacheState (ReplaceScorecard, ReplaceScancodeSnapshot,
+// InsertVulnerabilityBatch, MarkStaleVulnerabilitiesResolved,
+// UpdateCVSSScoreForVector); the caller appends the WHERE clause on repo_id.
 const stampRepoCacheStateSQL = `UPDATE aveloxis_data.repos SET data_changed_at = NOW()`
 
 // RepoCacheStates reads the cache state of each repository in repoIDs. An id

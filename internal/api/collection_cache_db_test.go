@@ -18,9 +18,10 @@ import (
 )
 
 // TestRepoEndpointsCacheByCollectionGeneration — O11 option 4 (v0.29.71),
-// through the handlers: top contributors and the weekly time series are
-// served from the cache minutes later (the old 60 s cache had expired by
-// then) and recomputed once the repository is collected again.
+// served since v0.29.73 by the repository-page cache (cachedRepoGET) on the
+// real routes and the real state read: top contributors and the weekly
+// time series are served from the cache minutes later and recomputed once
+// the repository is collected again.
 func TestRepoEndpointsCacheByCollectionGeneration(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
@@ -44,18 +45,21 @@ func TestRepoEndpointsCacheByCollectionGeneration(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
+	s, err := NewWithOptions(store, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 1 << 20, ResponseCacheMaxAge: 30 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
-	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), repoCache: newCollectionCache(30 * time.Minute)}
-	s.repoCache.now = func() time.Time { return now }
-	for name, serve := range map[string]func(*Server, http.ResponseWriter, *http.Request){
-		"top contributors": (*Server).handleTopContributors,
-		"time series":      (*Server).handleTimeSeries,
+	s.pageCache.now = func() time.Time { return now }
+	for name, path := range map[string]string{
+		"top contributors": "/contributors/top?limit=20",
+		"time series":      "/timeseries?since=2024-01-01",
 	} {
 		call := func() string {
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			r.SetPathValue("repoID", strconv.FormatInt(repoID, 10))
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/"+strconv.FormatInt(repoID, 10)+path, nil)
 			w := httptest.NewRecorder()
-			serve(s, w, r)
+			s.Handler().ServeHTTP(w, r)
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s: %d %s", name, w.Code, w.Body.String())
 			}

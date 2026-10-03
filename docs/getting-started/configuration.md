@@ -187,7 +187,10 @@ a half against its own reference table below:
     "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     "cors_origins": [],
     "trusted_proxy": "",
-    "require_auth": false
+    "require_auth": false,
+    "response_cache_mb": 2048,
+    "cache_rewarm_seconds": 60,
+    "front_end_secret": ""
   },
   "log_level": "info",
   "http_timeout_seconds": 180
@@ -499,6 +502,9 @@ same-box and same-LAN traffic is never limited.
 | `cors_origins` | `[]` | Browser origins allowed to call the API (the separate-repo aveloxis-gui). Empty = no cross-origin access. |
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
+| `response_cache_mb` | `2048` | Memory for the API's per-repository response cache, in megabytes. `0` keeps no response bodies in memory. Negative values are refused at load. |
+| `front_end_secret` | `""` | A shared secret a front end sends in `X-Aveloxis-Authorized` on requests it forwards after checking `/api/v1/authz/repos/{id}`, so the visitor's rate limit counts them once. Believed only from `trusted_proxy`. Empty: every request is counted. At least 32 characters; shorter is refused at load. |
+| `cache_rewarm_seconds` | `60` | How often the API recomputes cached repository answers after their repository is collected again. `0` turns this off. Negative values are refused at load. |
 
 ### Reaching the API from another host
 

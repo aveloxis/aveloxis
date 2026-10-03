@@ -84,6 +84,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- per-finding last_seen_at cannot, since a clean scan touches
     -- zero vuln rows.
     vuln_scan_last_run      TIMESTAMPTZ,
+    -- v0.29.73: stamped by writers that change what the repository's pages
+    -- show outside a collection job (ReplaceScorecard, the CVSS rescore), so
+    -- the API's cached answers are replaced. On repos, which every
+    -- repository has: a gone repository keeps its data but has no queue row.
+    data_changed_at         TIMESTAMPTZ,
     -- v0.28.1 (A6): the repo no longer resolves on its forge —
     -- prelim's probe got a DEFINITIVE 404/410 (privatized or deleted
     -- upstream; the department-of-veterans-affairs class). Distinct

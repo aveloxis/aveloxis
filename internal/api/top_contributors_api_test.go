@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.27.61 — GET /repos/{repoID}/contributors/top: route registration,
@@ -27,29 +25,19 @@ func TestTopContributorsRouteRegistered(t *testing.T) {
 	}
 }
 
-// The response cache must NEVER be consulted before authorizeRepo: a
-// cached body for an authorized user must not leak to an unauthorized
-// one. Pin the ordering at the source level (authorizeRepo appears
-// before the first cache get inside the handler body).
+// The response cache must NEVER be consulted before authorizeRepo: since
+// v0.29.73 the route's cachedRepoGET does the lookup, pinned by
+// TestCachedRepoGETAuthorizesBeforeAnyLookup; the route must go through it.
 func TestTopContributorsAuthzBeforeCache(t *testing.T) {
-	// v0.29.71: both repository-page handlers now read the collection-
-	// generation cache (repoCache); the time series joined the pin then
-	// (review round 1 F3 — the retargeted pin had been left failing).
-	for _, h := range []struct{ file, fn string }{
-		{"top_contributors.go", "handleTopContributors"},
-		{"server.go", "handleTimeSeries"},
-	} {
-		body := srctest.StripGoComments(extractFuncBody(t, mustReadFile(t, h.file), h.fn))
-		authz := strings.Index(body, "s.authorizeRepo(")
-		cacheGet := strings.Index(body, "s.repoCache.get(")
-		if authz < 0 || cacheGet < 0 {
-			t.Errorf("%s must call s.authorizeRepo (%d) and read s.repoCache.get (%d)", h.fn, authz, cacheGet)
-			continue
-		}
-		if cacheGet < authz {
-			t.Errorf("%s: the cache lookup must come AFTER authorizeRepo — a cached body must never bypass repo scope", h.fn)
+	for _, reg := range repoGETRegistrations(t) {
+		if reg.handler == "handleTopContributors" {
+			if !reg.cached || reg.policy != "pageEnriched" {
+				t.Errorf("contributors/top must be served through s.cachedRepoGET(pageEnriched, …), got cached=%t policy=%q", reg.cached, reg.policy)
+			}
+			return
 		}
 	}
+	t.Error("contributors/top registration not found")
 }
 
 // Limit: default 20, hard cap 100 (an unbounded limit walks the whole

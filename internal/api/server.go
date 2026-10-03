@@ -71,14 +71,19 @@ type Server struct {
 	// bounded at 1000).
 	respCache *compareCache
 
-	// v0.29.71 (O11 option 4): per-repository answers cached under the
-	// repositories' collection generation (collection_cache.go): the
-	// repository page's top contributors and weekly time series in
-	// repoCache, each compare entity's series in seriesCache — separate
-	// instances so a compare flood cannot evict the repository-page
-	// answers (review round 1).
-	repoCache   *collectionCache
+	// v0.29.71 (O11 option 4): each compare entity's series cached under
+	// the entities' collection generation (collection_cache.go). The
+	// repository page's own answers moved to pageCache in v0.29.73.
 	seriesCache *collectionCache
+
+	// v0.29.73: the repository-page response cache (repo_page_cache.go)
+	// and the state read it is validated against (store.RepoCacheStates;
+	// a seam so the cache is testable without a database).
+	pageCache      *repoPageCache
+	repoStates     func(ctx context.Context, repoIDs []int64) (map[int64]db.RepoCacheState, error)
+	rewarmInterval time.Duration
+	requestTimeout time.Duration // http_timeout_seconds, bounds each re-warm request
+	frontEndSecret string        // api.front_end_secret; empty = every request counted
 }
 
 // New creates an API server with default middleware options
@@ -99,11 +104,24 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		ghAPIBase:    platform.GitHubAPIBaseOrPublic(opts.GitHubAPIBase),
 		sharedWithMe: store}
 	s.homeLoader = store.GetHomeRepos
-	s.repoCache = newCollectionCache(opts.ResponseCacheMaxAge)
 	s.seriesCache = newCollectionCache(opts.ResponseCacheMaxAge)
+	s.pageCache = newRepoPageCache(opts.ResponseCacheBytes, opts.ResponseCacheMaxAge)
+	// A method value of a nil store is a non-nil func that panics when
+	// called: a Server without a database has no state reader, so the
+	// cache answers live (cachedRepoGET's guard).
+	if store != nil {
+		s.repoStates = store.RepoCacheStates
+	}
+	s.rewarmInterval = opts.RewarmInterval
+	s.requestTimeout = opts.RequestTimeout
+	s.frontEndSecret = opts.FrontEndSecret
 	if logger != nil { // SR-10: the TTL in effect, after the zero default
-		logger.Info("API collection cache", "ttl", s.repoCache.ttl, "configured", opts.ResponseCacheMaxAge,
+		logger.Info("API collection cache", "ttl", s.seriesCache.ttl, "configured", opts.ResponseCacheMaxAge,
 			"source", "collection.enrich_interval_minutes")
+		logger.Info("API repository page cache", "max_bytes", s.pageCache.maxBytes,
+			"enriched_ttl", s.pageCache.ttl, "rewarm_interval", s.rewarmInterval,
+			"front_end_secret_set", s.frontEndSecret != "", // never the value
+			"source", "api.response_cache_mb, api.cache_rewarm_seconds")
 	}
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
@@ -115,11 +133,11 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/mailing-list/stats", s.handleMailingListStats)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/stats", s.handleRepoStats)
 	s.mux.HandleFunc("GET /api/v1/repos/stats", s.handleRepoStatsBatch)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/sbom", s.handleSBOMDownload)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.handleTimeSeries)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.handleLicenses)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.handleScancodeLicenses)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.handleScancodeFiles)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/sbom", s.cachedRepoGET(pageExact, s.handleSBOMDownload))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.cachedRepoGET(pageDated, s.handleTimeSeries))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.cachedRepoGET(pageExact, s.handleLicenses))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.cachedRepoGET(pageExact, s.handleScancodeLicenses))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.cachedRepoGET(pageExact, s.handleScancodeFiles))
 	// v0.29.60: the supply-chain package view (package-centred findings).
 	s.mux.HandleFunc("GET /api/v1/supply-chain/packages", s.handleSupplyChainPackages)
 	s.mux.HandleFunc("GET /api/v1/supply-chain/packages/{ecosystem}/{name...}", s.handleSupplyChainPackage)
@@ -130,10 +148,12 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	// aggregated counts per Augur's swagger spec). The two endpoints
 	// share a single SQL CTE on the store side (contributorsInWindowCTE)
 	// so they can never drift on the definition of "contribution."
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/identities", s.handleRepoContributors)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/affiliations", s.handleRepoAffiliations)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.handleRepoContributionsCoverage)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/identities", s.cachedRepoGET(pageEnriched, s.handleRepoContributors))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/affiliations", s.cachedRepoGET(pageEnriched, s.handleRepoAffiliations))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributions/coverage", s.cachedRepoGET(pageEnriched, s.handleRepoContributionsCoverage))
 	s.mux.HandleFunc("GET /api/v1/repos/search", s.handleRepoSearch)
+	// v0.29.73: may this caller read this repository? (204/401/403, no data)
+	s.mux.HandleFunc("GET /api/v1/authz/repos/{repoID}", s.handleRepoAuthz)
 	// v0.27.2 — comparison analytics (plan §4): metric catalog
 	// (docs-as-data), ≤7-entity temporal + snapshot comparison,
 	// three-class entity picker search.
@@ -168,7 +188,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	// v0.27.14 — SPA monitor "Boost": pure reuse of store.PrioritizeRepo.
 	s.mux.HandleFunc("POST /api/v1/admin/monitor/queue/{repoID}/prioritize", s.handleAdminPrioritizeRepo)
 	// v0.27.4 — per-repo vulnerabilities + home-tab stars/activity.
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/vulnerabilities", s.handleRepoVulnerabilities)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/vulnerabilities", s.cachedRepoGET(pageExact, s.handleRepoVulnerabilities))
 	s.mux.HandleFunc("PUT /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	s.mux.HandleFunc("DELETE /api/v1/repos/{repoID}/star", s.handleStarRepo)
 	// v0.27.85 — the repo page's star toggle reads its current state.
@@ -191,10 +211,10 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/delete", s.handleAdminCollectionDelete)
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/groups", s.handleAdminCollectionAddGroup)
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove", s.handleAdminCollectionRemoveGroup)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scorecard", s.handleRepoScorecard)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scorecard", s.cachedRepoGET(pageExact, s.handleRepoScorecard))
 	// v0.27.61 — ranked per-contributor activity for the repo page's
 	// "Top contributors" card.
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/top", s.handleTopContributors)
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/top", s.cachedRepoGET(pageEnriched, s.handleTopContributors))
 	// v0.27.64 — cross-repo contributor history (the v0.27.58 daily
 	// tables): where-else matrix + person-level monthly view.
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/elsewhere", s.handleContributorsElsewhere)
@@ -205,6 +225,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		return nil, err
 	}
 	s.limiter = rl
+	rl.uncounted = s.frontEndAuthorized
 	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
@@ -424,23 +445,12 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
 		return
 	}
-	// O11 option 4 (v0.29.71): cached under the collection generation.
-	key, cacheable := s.generationKey(r.Context(), r, "handleTimeSeries",
-		fmt.Sprintf("timeseries|%d|%s|%s", repoID, since.Format(time.RFC3339), until.Format(time.RFC3339)), []int64{repoID})
-	if cacheable {
-		if v, ok := s.repoCache.get(key); ok {
-			w.Header().Set("X-Cache", "hit")
-			jsonResponse(w, v)
-			return
-		}
-	}
+	// Cached by the route's cachedRepoGET (pageDated; v0.29.73), which
+	// replaced the v0.29.71 collection-generation cache here.
 	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {
 		s.serverError(w, r, "handleTimeSeries", err)
 		return
-	}
-	if cacheable {
-		s.repoCache.put(key, ts)
 	}
 	jsonResponse(w, ts)
 }
@@ -497,7 +507,11 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 	}
 	// v0.27.4: `scanned` lets the GUI distinguish "dependency analysis
 	// hasn't run yet" from "this repository declares no dependencies".
-	scanned, _ := s.store.HasDependencyData(r.Context(), repoID)
+	scanned, err := s.store.HasDependencyData(r.Context(), repoID)
+	if err != nil {
+		// Served as "not scanned"; never cached (v0.29.73).
+		s.partialAnswer(r, err, "dependency-data probe failed — licenses served as not scanned", "repo_id", repoID, "error", err)
+	}
 	jsonResponse(w, map[string]any{
 		"scanned":  scanned,
 		"scope":    map[bool]string{true: "runtime", false: "all"}[runtimeOnly],
@@ -519,11 +533,11 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 
 	licenses, err := s.store.GetScancodeSourceLicenses(r.Context(), repoID)
 	if err != nil {
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode licenses", "repo_id", repoID, "error", err)
+		s.partialAnswer(r, err, "failed to get scancode licenses", "repo_id", repoID, "error", err)
 	}
 	copyrights, err := s.store.GetScancodeCopyrights(r.Context(), repoID)
 	if err != nil {
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode copyrights", "repo_id", repoID, "error", err)
+		s.partialAnswer(r, err, "failed to get scancode copyrights", "repo_id", repoID, "error", err)
 	}
 
 	// v0.21.0 — Freshness fields surface the cadence/run state of
@@ -534,7 +548,7 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 	// of "Loading...".
 	lastRun, scancodeVer, err := s.store.ScancodeFreshness(r.Context(), repoID)
 	if err != nil {
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode freshness", "repo_id", repoID, "error", err)
+		s.partialAnswer(r, err, "failed to get scancode freshness", "repo_id", repoID, "error", err)
 	}
 	var lastRunStr string
 	if !lastRun.IsZero() {
@@ -569,7 +583,7 @@ func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := s.store.GetScancodeFileEntries(r.Context(), repoID)
 	if err != nil {
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to get scancode file entries", "repo_id", repoID, "error", err)
+		s.partialAnswer(r, err, "failed to get scancode file entries", "repo_id", repoID, "error", err)
 	}
 	if files == nil {
 		files = []db.ScancodeFileEntry{}

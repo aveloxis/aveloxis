@@ -34,6 +34,9 @@ func TestSafegoAdoptionAtAuditedSites(t *testing.T) {
 		"../platform/github/contributor_history.go": 1, // per-window fetch (RecoverWith: a panic fails the contributor)
 		"../collector/swept_command.go":             1, // the subprocess waiter (RecoverWith: Wait still answers)
 		"../db/migrate.go":                          1, // watchBlockers
+		// v0.29.73: the repository page cache re-warm — each pass, and each
+		// replayed request (handlers run outside net/http's recover).
+		"../api/repo_page_rewarm.go": 2,
 	}
 	if sched, err := os.ReadFile("../scheduler/scheduler.go"); err == nil {
 		body := string(sched)

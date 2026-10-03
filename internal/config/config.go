@@ -1520,6 +1520,15 @@ func (c *Config) validate() error {
 	if h := c.Collection.SupplyChainRefreshHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
+	if mb := c.API.ResponseCacheMB; mb != nil && (*mb < 0 || int64(*mb) > MaxResponseCacheMB) {
+		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d, 0 to keep no bodies in memory, or omit it for the %d MB default", *mb, MaxResponseCacheMB, DefaultResponseCacheMB)
+	}
+	if n := len(c.API.FrontEndSecret); n > 0 && n < MinFrontEndSecretLen {
+		return fmt.Errorf("api.front_end_secret is %d characters — use at least %d (openssl rand -hex 32), or omit it to count every request", n, MinFrontEndSecretLen)
+	}
+	if sec := c.API.CacheRewarmSeconds; sec != nil && (*sec < 0 || int64(*sec) > MaxCacheRewarmSeconds) {
+		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
+	}
 	return nil
 }
 
@@ -1877,6 +1886,76 @@ type APIConfig struct {
 	// breaks the server-rendered GUI's browser-side chart fetches.
 	// Exempt-CIDR clients bypass auth even when enabled.
 	RequireAuth bool `json:"require_auth,omitempty"`
+
+	// ResponseCacheMB bounds the API's repository-page response cache in
+	// megabytes (v0.29.73). Absent → DefaultResponseCacheMB; an explicit 0
+	// keeps no bodies in memory (answers are still tagged and revalidated);
+	// negative or past MaxResponseCacheMB → refused at load.
+	ResponseCacheMB *int `json:"response_cache_mb,omitempty"`
+
+	// CacheRewarmSeconds is how often the API looks for cached repository
+	// pages a finished collection made outdated and recomputes them
+	// (v0.29.73). Absent → DefaultCacheRewarmSeconds; an explicit 0 turns
+	// the re-warm off; negative or past MaxCacheRewarmSeconds → refused at
+	// load.
+	CacheRewarmSeconds *int `json:"cache_rewarm_seconds,omitempty"`
+
+	// FrontEndSecret is the value a front end sends in X-Aveloxis-Authorized
+	// on a request it forwards after GET /api/v1/authz/repos/{id} admitted
+	// the visitor, so that request is not counted against the visitor's rate
+	// limit a second time (v0.29.73). Believed only from trusted_proxy.
+	// Empty (the default): every request is counted. Shorter than
+	// MinFrontEndSecretLen → refused at load. Never logged.
+	FrontEndSecret string `json:"front_end_secret,omitempty"`
+}
+
+// MinFrontEndSecretLen is the shortest api.front_end_secret accepted: 32
+// characters, 128 bits as hex (openssl rand -hex 16 prints 32; -hex 32
+// prints 64). A guessable value would let any visitor skip the rate limit.
+const MinFrontEndSecretLen = 32
+
+// DefaultResponseCacheMB is the repository-page cache's default budget:
+// about a hundred of the largest repository pages (a 56,000-file scancode
+// listing is ~7 MB of JSON, a 600-finding vulnerability list ~1 MB) plus
+// ten thousand typical ones (~100 KB) — 2 GB.
+const DefaultResponseCacheMB = 2048
+
+// MaxResponseCacheMB keeps the byte count inside an int64 (an int64
+// constant: on a 32-bit build it does not fit an int, and the int field
+// cannot exceed it there anyway).
+const MaxResponseCacheMB int64 = math.MaxInt64 >> 20
+
+// DefaultCacheRewarmSeconds is the re-warm's default cadence: a visitor who
+// arrives within a minute of a collection's end may still pay for the
+// recomputation; each pass costs one primary-key read per cached
+// repository.
+const DefaultCacheRewarmSeconds = 60
+
+// MaxCacheRewarmSeconds is the largest cadence a time.Duration can hold
+// (int64, as MaxResponseCacheMB).
+const MaxCacheRewarmSeconds int64 = math.MaxInt64 / int64(time.Second)
+
+// ResponseCacheBytes is the effective budget in bytes (the single default
+// layer).
+func (a APIConfig) ResponseCacheBytes() int64 {
+	if a.ResponseCacheMB == nil {
+		return int64(DefaultResponseCacheMB) << 20
+	}
+	if *a.ResponseCacheMB <= 0 {
+		return 0
+	}
+	return int64(*a.ResponseCacheMB) << 20
+}
+
+// CacheRewarmInterval is the effective re-warm cadence; zero means off.
+func (a APIConfig) CacheRewarmInterval() time.Duration {
+	if a.CacheRewarmSeconds == nil {
+		return DefaultCacheRewarmSeconds * time.Second
+	}
+	if *a.CacheRewarmSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(*a.CacheRewarmSeconds) * time.Second
 }
 
 // AddrOrDefault returns the configured listen address, or the

@@ -429,6 +429,8 @@ var snippetValueAccessors = map[string]snippetAccessor{
 	"api.RateLimitBurst":           {"RateLimitBurstOrDefault", func(c *Config) any { return c.API.RateLimitBurstOrDefault() }},
 	"api.RateLimitDaily":           {"RateLimitDailyOrDefault", func(c *Config) any { return c.API.RateLimitDailyOrDefault() }},
 	"api.ExemptCIDRs":              {"ExemptCIDRsOrDefault", func(c *Config) any { return c.API.ExemptCIDRsOrDefault() }},
+	"api.ResponseCacheMB":          {"ResponseCacheBytes", func(c *Config) any { return c.API.ResponseCacheBytes() }},
+	"api.CacheRewarmSeconds":       {"CacheRewarmInterval", func(c *Config) any { return c.API.CacheRewarmInterval() }},
 	"monitor.RefreshSeconds":       {"MonitorRefreshSecondsOrDefault", func(c *Config) any { return c.Monitor.MonitorRefreshSecondsOrDefault() }},
 	"mail.VulnDigestMinSeverity":   {"VulnDigestMinSeverityOrDefault", func(c *Config) any { return c.Mail.VulnDigestMinSeverityOrDefault() }},
 	"mail.VulnDigestIntervalHours": {"VulnDigestInterval", func(c *Config) any { return c.Mail.VulnDigestInterval() }},

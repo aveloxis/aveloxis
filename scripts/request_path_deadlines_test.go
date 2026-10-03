@@ -33,6 +33,11 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 		// The home-repos background refresh runs on context.Background(),
 		// outside any request; it logs its own WARN.
 		"internal/api/portal.go": 1,
+		// The re-warm's replay bound (http_timeout_seconds, v0.29.73): the
+		// replayed handler's error helper drops its expiry to Debug and
+		// writes nothing, so replay itself reports the expiry ("request
+		// deadline exceeded") in the re-warm's WARN.
+		"internal/api/repo_page_rewarm.go": 1,
 	}
 	derived := regexp.MustCompile(`context\.With(Timeout|Deadline)(Cause)?\(`)
 	root := srctest.Root(t)

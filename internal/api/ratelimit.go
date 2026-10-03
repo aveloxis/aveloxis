@@ -50,6 +50,27 @@ type Options struct {
 	// (v0.29.71, O11 option 4). Zero keeps the 60 s TTL.
 	ResponseCacheMaxAge time.Duration
 
+	// ResponseCacheBytes bounds the repository-page response cache
+	// (repo_page_cache.go, v0.29.73): api.response_cache_mb in bytes. Zero
+	// stores no bodies; ETags and 304s still work.
+	ResponseCacheBytes int64
+
+	// RewarmInterval is how often the API looks for repositories whose
+	// cached answers a finished collection made outdated, and recomputes
+	// them (api.cache_rewarm_seconds). Zero turns the re-warm off.
+	RewarmInterval time.Duration
+
+	// RequestTimeout is http_timeout_seconds: the bound every request runs
+	// under, applied to each re-warm request too (they run inside the
+	// process, past the HTTP server's bound).
+	RequestTimeout time.Duration
+
+	// FrontEndSecret is api.front_end_secret: the value a front end sends in
+	// X-Aveloxis-Authorized on a request it forwards after the
+	// authorization route admitted the visitor, so the limiter does not
+	// count that request twice. Empty: every request is counted.
+	FrontEndSecret string
+
 	// GitHubAPIBase is github.base_url — the host an org registered through
 	// the portal must be on (db.ErrOrgOffGitHubHost); empty means public
 	// GitHub (v0.29.57 round 2).
@@ -108,6 +129,10 @@ type rateLimiter struct {
 
 	mu       sync.Mutex
 	visitors map[string]*bucket
+
+	// uncounted reports a request the visitor already paid for
+	// (Server.frontEndAuthorized, v0.29.73); nil counts everything.
+	uncounted func(*http.Request) bool
 }
 
 func newRateLimiter(opts Options) (*rateLimiter, error) {
@@ -177,7 +202,7 @@ func (rl *rateLimiter) isExempt(ip net.IP) bool {
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := rl.clientIP(r)
-		if rl.isExempt(ip) {
+		if rl.isExempt(ip) || (rl.uncounted != nil && rl.uncounted(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -245,13 +270,17 @@ func (rl *rateLimiter) evictOldestLocked() {
 func (rl *rateLimiter) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		// Every answer depends on the request's Origin (the headers below),
+		// so a shared cache in front of the API must keep one copy per
+		// Origin value — also for a request without one, whose stored copy
+		// carries no CORS headers (v0.29.73).
+		w.Header().Set("Vary", "Origin")
 		if origin != "" && len(rl.origins) == 0 {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		} else if origin != "" && rl.origins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Max-Age", "600")

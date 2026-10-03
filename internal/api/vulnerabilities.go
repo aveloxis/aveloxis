@@ -20,14 +20,12 @@ package api
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
-	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
@@ -140,7 +138,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		if v.DependencyKind == "transitive" && v.ResolvedAt == nil {
 			edges, eerr := s.store.GetRepoLockfileEdges(r.Context(), repoID)
 			if eerr != nil {
-				httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, eerr, "lockfile edge lookup failed — findings served without attribution", "repo_id", repoID, "error", eerr)
+				s.partialAnswer(r, eerr, "lockfile edge lookup failed — findings served without attribution", "repo_id", repoID, "error", eerr)
 				break
 			}
 			if len(edges) == 0 {
@@ -148,7 +146,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 			}
 			directSets, derr := s.store.GetRepoDirectPackageSets(r.Context(), repoID)
 			if derr != nil {
-				httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, derr, "direct-set lookup failed — findings served without attribution", "repo_id", repoID, "error", derr)
+				s.partialAnswer(r, derr, "direct-set lookup failed — findings served without attribution", "repo_id", repoID, "error", derr)
 				break
 			}
 			chains = buildChainIndex(edges, directSets)
@@ -194,7 +192,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	// error degrades to "none" rather than failing the finding list.
 	certainty, cerr := s.store.GetRepoLockfileCertainty(r.Context(), repoID)
 	if cerr != nil {
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, cerr, "lockfile certainty lookup failed", "repo_id", repoID, "error", cerr)
+		s.partialAnswer(r, cerr, "lockfile certainty lookup failed", "repo_id", repoID, "error", cerr)
 		certainty = &db.LockfileCertainty{Overall: "none", Ecosystems: []db.LockfileEcosystemCertainty{}}
 	}
 	// v0.28.1 (A4): the completed-scan stamp. null = never scanned —
@@ -202,7 +200,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	// Best-effort: a lookup failure degrades to null, never a 500.
 	scannedAt, serr := s.store.GetVulnScanLastRun(r.Context(), repoID)
 	if serr != nil {
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, serr, "vuln scan stamp lookup failed", "repo_id", repoID, "error", serr)
+		s.partialAnswer(r, serr, "vuln scan stamp lookup failed", "repo_id", repoID, "error", serr)
 		scannedAt = nil
 	}
 	jsonResponse(w, map[string]any{

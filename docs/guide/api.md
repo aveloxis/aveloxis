@@ -358,14 +358,20 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-**Caching (since 0.29.71).** This endpoint, `/timeseries` and each entity's
-series on `/compare` are cached under the repositories' collection state: an
-answer is reused until a collection job over one of them starts or ends, and
-for at most `collection.enrich_interval_minutes` (default 30), the cadence at
-which contributor names can change between collections. A cached response
-from this endpoint or `/timeseries` carries `X-Cache: hit`; on `/compare` the
-per-entity series are reused inside the response, and only a whole-response
-hit (below) carries the header.
+**Caching (since 0.29.71; 0.29.73).** A repository's own GET answers
+(this endpoint, `/timeseries`, `/licenses`, `/deps`, `/libyear`,
+`/scancode-*`, `/vulnerabilities`, `/scorecard`, `/sbom` and
+`/contributions/*`) are reused until the repository is collected again or
+scanned. Answers that name contributors are also recomputed after
+`collection.enrich_interval_minutes` (default 30). These answers carry an
+`ETag`; a request whose `If-None-Match` names the current one gets
+`304 Not Modified`. A response served from the cache carries `X-Cache: hit`.
+Each entity's series on `/compare` is reused inside the response, and only a
+whole-response hit (below) carries the header.
+
+`GET /api/v1/authz/repos/{repoID}` (0.29.73) returns `204` when the caller
+may read that repository, otherwise the same `401`/`403` the data endpoints
+return. It returns no data.
 
 `?bots=hide` (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types

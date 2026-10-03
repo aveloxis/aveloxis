@@ -38,6 +38,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/platform/github"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
+	"github.com/aveloxis/aveloxis/internal/safego"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
 	"github.com/aveloxis/aveloxis/internal/web"
 	"github.com/spf13/cobra"
@@ -445,6 +446,9 @@ func runAPI(cfgPath, addr string) error {
 	}
 	defer pidfile.RemoveIfOwn(pidPath, os.Getpid())
 	signalReady(logger)
+
+	// v0.29.73: recompute cached repository pages after their collections.
+	safego.Go(logger, "repository page cache re-warm", func() { apiServer.RunRewarm(ctx) })
 
 	srv := newAPIServer(cfg, addr, apiServer.Handler(), logger)
 	return serveUntilDone(ctx, srv, ln, logger, "API server")
@@ -2428,6 +2432,12 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		// O11 option 4 (v0.29.71): a per-repository answer is reused within
 		// its collection generation for at most one enrichment interval.
 		ResponseCacheMaxAge: cfg.Collection.EnrichIntervalDuration(),
+		// v0.29.73: the repository-page cache's budget, its re-warm
+		// cadence, and the request bound each re-warm request runs under.
+		ResponseCacheBytes: cfg.API.ResponseCacheBytes(),
+		RewarmInterval:     cfg.API.CacheRewarmInterval(),
+		RequestTimeout:     cfg.HTTPTimeout(),
+		FrontEndSecret:     cfg.API.FrontEndSecret,
 	}
 }
 

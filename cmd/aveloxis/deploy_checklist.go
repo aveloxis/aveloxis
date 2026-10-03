@@ -496,11 +496,26 @@ var deployChecklists = map[string][]deployStep{
 	// a page exceeds GitHub's request time budget (the five large
 	// repositories that failed every cycle on /pulls/comments). No schema
 	// change.
+	"0.29.73": v02973DeployChecklist,
 	"0.29.72": v02972DeployChecklist,
 }
 
 // 0.29.72 has no schema change; its migrate is 0.29.71's, which a fleet
 // that skipped 0.29.71 still needs, and it carries 0.29.71's start-up notes.
+// 0.29.73 changes the API only (no schema change): repository answers are
+// cached until the repository changes; it carries 0.29.72's notes for a
+// fleet that skipped it.
+var v02973DeployChecklist = []deployStep{
+	v02972DeployChecklist[0],
+	{"aveloxis migrate --skip-views", "no schema change in 0.29.73; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},
+	v02972DeployChecklist[2],
+	v02972DeployChecklist[3],
+	v02972DeployChecklist[4],
+	v02972DeployChecklist[5],
+	v02972DeployChecklist[6],
+	{"aveloxis start all", "the API keeps each repository's own answers (time series, licenses, dependencies, scancode, vulnerabilities, scorecard, SBOM, top contributors, contributions) until that repository is collected or scanned again — answers naming contributors at most collection.enrich_interval_minutes — in a memory budget of api.response_cache_mb (default 2048), and recomputes a viewed repository's answers after its collection ends (every api.cache_rewarm_seconds, default 60; 'repository page cache re-warmed'); the start-up line 'API repository page cache' shows the values in effect. These answers carry an ETag and answer If-None-Match with 304. The v0.29.71 cache of top contributors and the time series is replaced by this one (the compare series keep theirs). New route GET /api/v1/authz/repos/{repoID} (204/401/403, no data). New optional api.front_end_secret (at least 32 characters; empty by default, which counts every request): a front end that checks that route before forwarding a cached request may send it in X-Aveloxis-Authorized so the visitor's rate limit counts the request once; it is believed only from api.trusted_proxy, and the start-up line reports front_end_secret_set, never the value. The first visit to each repository after the upgrade computes its answers once. If 0.29.72 was skipped, its start-up notes apply as well: " + v02972DeployChecklist[7].desc},
+}
+
 var v02972DeployChecklist = []deployStep{
 	v02971DeployChecklist[0],
 	{"aveloxis migrate --skip-views", "no schema change in 0.29.72; otherwise as 0.29.71 — " + v02971DeployChecklist[1].desc},

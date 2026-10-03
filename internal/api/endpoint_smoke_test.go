@@ -70,6 +70,7 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/repos/{repoID}/contributions/coverage":     {},
 	"GET /api/v1/repos/{repoID}/contributors/top":           {},
 	"GET /api/v1/repos/{repoID}/contributors/elsewhere":     {},
+	"GET /api/v1/authz/repos/{repoID}":                      {wantStatus: []int{204}},
 	"GET /api/v1/contributors/{cntrbID}/activity":           {auth: "user"},
 	"GET /api/v1/compare":                                   {query: "entities=repo:{repoID}&metric=contributors"},
 	"GET /api/v1/compare/snapshot":                          {query: "entities=repo:{repoID}&metric=labor_investment"},

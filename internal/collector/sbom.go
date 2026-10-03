@@ -74,8 +74,15 @@ func GenerateSBOMWithOptions(ctx context.Context, store *db.PostgresStore, repoI
 	}
 
 	// ScanCode enrichment: concluded license + copyrights from source analysis.
-	// Non-fatal — if no scancode data exists, we proceed without it.
-	scanData, _ := store.GetScancodeForSBOM(ctx, repoID)
+	// A repository never scanned is an empty result, not an error; a lookup
+	// ERROR is fatal like the lockfile reads below (SR-5) — it used to be
+	// discarded, emitting a document without the evidence that nothing
+	// explained (v0.29.73: the API now keeps an SBOM until the repository
+	// changes, so that document would have been served until then).
+	scanData, err := store.GetScancodeForSBOM(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("loading scancode evidence: %w", err)
+	}
 
 	// v0.27.134 (C2 follow-through): the lockfile closure joins the
 	// document when it exists. The effective gate is DATA PRESENCE —
@@ -997,7 +1004,13 @@ func GenerateAndStoreSBOMs(ctx context.Context, store *db.PostgresStore, repoID 
 	} {
 		data, err := GenerateSBOM(ctx, store, repoID, spec.format)
 		if err != nil {
-			logger.Debug("SBOM generation skipped", "repo_id", repoID, "format", spec.name, "error", err)
+			if errors.Is(err, context.Canceled) || errors.Is(err, db.ErrRepoNotFound) {
+				logger.Debug("SBOM generation skipped", "repo_id", repoID, "format", spec.name, "error", err)
+			} else {
+				// A store error (the scancode evidence read included): no SBOM
+				// is stored for this format until the next collection.
+				logger.Warn("SBOM generation failed — none stored for this format", "repo_id", repoID, "format", spec.name, "error", err)
+			}
 			continue
 		}
 		err = store.InsertSBOMWithFormat(ctx, repoID, data, spec.name, spec.version)

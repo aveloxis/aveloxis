@@ -607,8 +607,12 @@ func TestPageCacheWildcardMatchesOnlyAStoredAnswer(t *testing.T) {
 	if w := hn.get("/api/v1/repos/7/thing?a=bad", ifNoneMatch("*")); w.Code != http.StatusBadRequest {
 		t.Errorf("a wildcard on a cold, invalid request: %d, want the handler's 400", w.Code)
 	}
-	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != 200 {
-		t.Errorf("a wildcard with nothing stored: %d, want the body", w.Code)
+	// A valid request with nothing stored is computed first; the answer then
+	// exists, so the wildcard matches it (RFC 9110: * names any current
+	// representation) — what it must never do is answer before the handler
+	// has established the request is valid (the 400 above).
+	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != http.StatusNotModified || hn.runs.Load() != 2 {
+		t.Errorf("a wildcard on a valid request: %d after %d runs, want a 304 after computing it", w.Code, hn.runs.Load())
 	}
 	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != http.StatusNotModified {
 		t.Errorf("a wildcard on a stored answer: %d, want 304", w.Code)
@@ -676,6 +680,50 @@ func TestPageCacheFollowersDoNotReplaceTheEntry(t *testing.T) {
 		}
 		if e.hits != 1 {
 			t.Errorf("entry hits %d, want 1 (the request after the flight)", e.hits)
+		}
+	}
+}
+
+// PR #226 review 5403078495: parseWindow's default start is the UTC day
+// boundary two years back — the same granularity as the cache key's UTC day
+// (pageEnriched) — so every request of a day computes, and is served, the
+// same window. An instant-precise default made the first request of the
+// day fix the window for the rest of it.
+func TestParseWindowDefaultStartsOnAUTCDay(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/7/contributors/top", nil)
+	since, _, ok := parseWindow(r)
+	if !ok {
+		t.Fatal("the default window must be valid")
+	}
+	if since.Location() != time.UTC || since.Hour() != 0 || since.Minute() != 0 || since.Second() != 0 || since.Nanosecond() != 0 {
+		t.Errorf("default since %v must be a UTC midnight", since)
+	}
+	want := time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
+	if !since.Equal(want) && !since.Equal(want.AddDate(0, 0, -1)) { // a test running across midnight
+		t.Errorf("default since %v, want %v", since, want)
+	}
+}
+
+// Whole-branch review: an enriched answer recomputed after its TTL (or an
+// eviction, a restart, a zero budget) whose ETag equals the client's is a
+// 304, not the same body again — top contributors, the heaviest route,
+// re-shipped its body to every revalidating client after each TTL.
+func TestPageCacheRecomputedAnswerMatchingTheClientsTagIs304(t *testing.T) {
+	for name, budget := range map[string]int64{"cached": 1 << 20, "zero budget": 0} {
+		hn := newPageCacheHarness(t, pageEnriched, budget, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"same":"body"}`)) // identical on every computation
+		})
+		etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+		hn.mu.Lock()
+		hn.now = hn.now.Add(31 * time.Minute) // past the enrichment TTL
+		hn.mu.Unlock()
+		w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+		if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
+			t.Errorf("%s: a recomputed identical answer for a client holding its tag: %d (%d bytes), want a bodyless 304", name, w.Code, w.Body.Len())
+		}
+		if hn.runs.Load() != 2 {
+			t.Errorf("%s: runs %d, want 2 (it was recomputed)", name, hn.runs.Load())
 		}
 	}
 }

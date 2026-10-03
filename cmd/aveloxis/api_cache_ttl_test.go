@@ -40,9 +40,9 @@ func TestAPICacheMaxAgeFollowsTheEnrichmentInterval(t *testing.T) {
 func TestAPIRepositoryPageCacheFollowsTheConfig(t *testing.T) {
 	for json, want := range map[string][]string{
 		`{}`: {"max_bytes=2147483648", "rewarm_interval=1m0s", "enriched_ttl=30m0s"},
-		`{"api": {"response_cache_mb": 64, "cache_rewarm_seconds": 15}}`:    {"max_bytes=67108864", "rewarm_interval=15s"},
-		`{"api": {"response_cache_mb": 0, "cache_rewarm_seconds": 0}}`:      {"max_bytes=0", "rewarm_interval=0s", "front_end_secret_set=false"},
-		`{"api": {"front_end_secret": "0123456789abcdef0123456789abcdef"}}`: {"front_end_secret_set=true"},
+		`{"api": {"response_cache_mb": 64, "cache_rewarm_seconds": 15}}`:                                  {"max_bytes=67108864", "rewarm_interval=15s"},
+		`{"api": {"response_cache_mb": 0, "cache_rewarm_seconds": 0}}`:                                    {"max_bytes=0", "rewarm_interval=0s", "front_end_secret_set=false"},
+		`{"api": {"trusted_proxy": "127.0.0.1", "front_end_secret": "0123456789abcdef0123456789abcdef"}}`: {"front_end_secret_set=true"},
 	} {
 		cfg := loadConfigJSON(t, json)
 		var logs bytes.Buffer
@@ -72,7 +72,10 @@ func TestAPIRepositoryPageCacheFollowsTheConfig(t *testing.T) {
 		if strings.Contains(json, `"cache_rewarm_seconds": 0`) {
 			logs.Reset()
 			srv.RunRewarm(context.Background()) // returns at once when off
-			if !strings.Contains(logs.String(), "re-warm off") {
+			// The off line must report the zero interval: a server without a
+			// database also says "off" (no state reader), so the bare phrase
+			// would pass for any interval (whole-branch review).
+			if !strings.Contains(logs.String(), "re-warm off") || !strings.Contains(logs.String(), "rewarm_interval=0s") {
 				t.Errorf("%s: an explicit 0 must turn the re-warm off; log %q", json, logs.String())
 			}
 		}

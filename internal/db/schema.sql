@@ -84,8 +84,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- per-finding last_seen_at cannot, since a clean scan touches
     -- zero vuln rows.
     vuln_scan_last_run      TIMESTAMPTZ,
-    -- v0.29.73: stamped by writers that change what the repository's pages
-    -- show outside a collection job (ReplaceScorecard, the CVSS rescore), so
+    -- v0.29.73: stamped, in the same transaction as their data, by writers
+    -- that change what the repository's pages show outside a collection job
+    -- (the full list: pageCacheWriters in page_cache_writers_test.go), so
     -- the API's cached answers are replaced. On repos, which every
     -- repository has: a gone repository keeps its data but has no queue row.
     data_changed_at         TIMESTAMPTZ,

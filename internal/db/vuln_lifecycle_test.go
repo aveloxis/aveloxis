@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestVulnSchemaHasLifecycleColumns(t *testing.T) {
@@ -40,9 +42,11 @@ func TestVulnSchemaHasLifecycleColumns(t *testing.T) {
 
 func TestVulnUpsertRefreshesLifecycle(t *testing.T) {
 	src := mustReadFileStr(t, "vulnerability_store.go")
-	// Both upserts must un-resolve a reappearing vuln and stamp last_seen.
-	if strings.Count(src, "last_seen_at = NOW()") < 2 || strings.Count(src, "resolved_at = NULL") < 2 {
-		t.Error("both vulnerability upserts must SET last_seen_at = NOW(), resolved_at = NULL on conflict — a reappearing vuln is current again")
+	// The upsert (one spelling since PR #226) must un-resolve a reappearing
+	// vuln and stamp last_seen.
+	upsert := srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch(")
+	if !strings.Contains(upsert, "last_seen_at = NOW()") || !strings.Contains(upsert, "resolved_at = NULL") {
+		t.Error("the vulnerability upsert must SET last_seen_at = NOW(), resolved_at = NULL on conflict — a reappearing vuln is current again")
 	}
 	// Counts feed dashboards — they must show live exposure only. Since
 	// v0.29.70 the counting statement is CountRepoVulnerabilityClasses

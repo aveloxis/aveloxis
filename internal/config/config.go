@@ -1526,6 +1526,24 @@ func (c *Config) validate() error {
 	if n := len(c.API.FrontEndSecret); n > 0 && n < MinFrontEndSecretLen {
 		return fmt.Errorf("api.front_end_secret is %d characters — use at least %d (openssl rand -hex 32), or omit it to count every request", n, MinFrontEndSecretLen)
 	}
+	if tp := c.API.TrustedProxy; tp != "" {
+		// Compared byte for byte with the peer address, which Go reports in
+		// canonical form: anything else (stray spaces, a host name, a CIDR,
+		// ::ffff:127.0.0.1 for 127.0.0.1) never matches, and X-Forwarded-For
+		// and the front-end secret would silently be ignored.
+		if ip := net.ParseIP(tp); ip == nil || ip.String() != tp {
+			canonical := ""
+			if ip != nil {
+				canonical = " (written " + ip.String() + ")"
+			}
+			return fmt.Errorf("api.trusted_proxy is %q — use the proxy's IP address in canonical form%s, e.g. 127.0.0.1 for nginx on the same host, or omit it", tp, canonical)
+		}
+	}
+	if c.API.FrontEndSecret != "" && c.API.TrustedProxy == "" {
+		// The API believes the mark only from trusted_proxy: without one the
+		// secret would be logged as set and never take effect.
+		return fmt.Errorf("api.front_end_secret is set but api.trusted_proxy is empty — the secret is believed only from the trusted proxy; set api.trusted_proxy (127.0.0.1 for nginx on the same host) or omit api.front_end_secret")
+	}
 	if sec := c.API.CacheRewarmSeconds; sec != nil && (*sec < 0 || int64(*sec) > MaxCacheRewarmSeconds) {
 		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
 	}

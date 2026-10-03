@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // ---------- source pins ----------
@@ -57,18 +59,21 @@ func TestSchemaDeclaresLockfileTables(t *testing.T) {
 	}
 }
 
-// The classification must track the CURRENT manifest — both upserts
-// write declared_requirement/version_resolution unconditionally from
+// The classification must track the CURRENT manifest — the vulnerability
+// upsert (one spelling since PR #226: InsertVulnerability delegates to
+// InsertVulnerabilityBatch, pinned by TestOneVulnerabilityUpsertSpelling)
+// writes declared_requirement/version_resolution unconditionally from
 // EXCLUDED, never prefer-nonempty. A prefer-nonempty regression would
 // freeze a finding's class at whatever the first post-v0.27.11 scan
 // saw (e.g. 'range-floor' forever after the repo adds a lockfile).
 func TestVulnUpsertAlwaysRefreshesClassification(t *testing.T) {
 	src := mustReadFileStr(t, "vulnerability_store.go")
-	if n := strings.Count(src, "declared_requirement = EXCLUDED.declared_requirement"); n < 2 {
-		t.Errorf("both vulnerability upserts must SET declared_requirement = EXCLUDED.declared_requirement (found %d)", n)
+	upsert := srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch(")
+	if !strings.Contains(upsert, "declared_requirement = EXCLUDED.declared_requirement") {
+		t.Error("the vulnerability upsert must SET declared_requirement = EXCLUDED.declared_requirement")
 	}
-	if n := strings.Count(src, "version_resolution = EXCLUDED.version_resolution"); n < 2 {
-		t.Errorf("both vulnerability upserts must SET version_resolution = EXCLUDED.version_resolution (found %d)", n)
+	if !strings.Contains(upsert, "version_resolution = EXCLUDED.version_resolution") {
+		t.Error("the vulnerability upsert must SET version_resolution = EXCLUDED.version_resolution")
 	}
 	for _, forbidden := range []string{
 		"NULLIF(EXCLUDED.declared_requirement",

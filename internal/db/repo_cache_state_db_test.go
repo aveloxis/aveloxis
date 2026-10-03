@@ -282,3 +282,90 @@ func TestRepoCacheStateMovesWithTheDataWrite(t *testing.T) {
 		t.Error("a resolution that changes nothing must not move the cache state")
 	}
 }
+
+// PR #226 review 5403078495: the single-row InsertVulnerability writes the
+// same rows the repository page shows, so it moves the cache state too (it
+// delegates to the stamped batch writer: one upsert spelling, SR-17).
+func TestSingleVulnerabilityInsertMovesTheCacheState(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	var id int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avrcsone/r', 'r', '_avrcsone', 1) RETURNING repo_id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, id)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+	})
+	fp := func() string {
+		m, err := store.RepoCacheStates(ctx, []int64{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[id].Fingerprint()
+	}
+	before := fp()
+	if err := store.InsertVulnerability(ctx, id, &VulnerabilityRow{VulnID: "GHSA-avrcsone", PackageName: "p",
+		PackagePurl: "pkg:npm/p@1.0.0", Severity: "HIGH", Source: "osv.dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if fp() == before {
+		t.Error("a single-row vulnerability insert must move the cache state")
+	}
+}
+
+// StampRepoDataChanged is the stamp for a whole run that writes outside the
+// queue (the one-shot `aveloxis collect`): it moves the cache state of that
+// repository only.
+func TestStampRepoDataChanged(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	var a, b int64
+	for i, id := range []*int64{&a, &b} {
+		if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+			VALUES ($1, 'r', '_avstamp', 1) RETURNING repo_id`, "https://github.com/_avstamp/r"+string(rune('a'+i))).Scan(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id IN ($1, $2)`, a, b)
+	})
+	states := func() map[int64]RepoCacheState {
+		m, err := store.RepoCacheStates(ctx, []int64{a, b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	before := states()
+	if err := store.StampRepoDataChanged(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	after := states()
+	if after[a].Fingerprint() == before[a].Fingerprint() {
+		t.Error("the stamped repository's cache state must move")
+	}
+	if after[b].Fingerprint() != before[b].Fingerprint() {
+		t.Error("another repository must not move")
+	}
+}

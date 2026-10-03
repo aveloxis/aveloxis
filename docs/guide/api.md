@@ -393,9 +393,9 @@ talbot) stay visible. Deliberately
 broader than the `contributor_retention` metric's bot exclusion,
 which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
-same repo scope as every other per-repo endpoint; responses are served
-from a 60-second cache (the underlying data only changes per
-collection cycle).
+same repo scope as every other per-repo endpoint. This endpoint's answers
+are cached as the caching paragraph above describes; `/contributors/elsewhere`
+reads other repositories' activity and keeps a 60-second cache.
 
 Response:
 

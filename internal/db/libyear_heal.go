@@ -56,9 +56,19 @@ func (s *PostgresStore) HealUnknownLibyear(ctx context.Context, apply bool) (can
 	countSQL := `SELECT count(*) FROM aveloxis_data.repo_deps_libyear
 	              WHERE repo_deps_libyear_id > $1 AND repo_deps_libyear_id <= $2
 	                AND ` + libyearUnknownPredicate
-	updateSQL := `UPDATE aveloxis_data.repo_deps_libyear SET libyear = NULL
-	               WHERE repo_deps_libyear_id > $1 AND repo_deps_libyear_id <= $2
-	                 AND ` + libyearUnknownPredicate
+	// One statement per window: the rows healed, and the cache state of
+	// their repositories stamped with them (v0.29.73 — the repository
+	// page's /deps, /libyear and SBOM answers read these rows, and the heal
+	// runs outside any collection job).
+	updateSQL := `WITH healed AS (
+	                  UPDATE aveloxis_data.repo_deps_libyear SET libyear = NULL
+	                  WHERE repo_deps_libyear_id > $1 AND repo_deps_libyear_id <= $2
+	                    AND ` + libyearUnknownPredicate + `
+	                  RETURNING repo_id
+	              ), stamped AS (
+	                  ` + stampRepoCacheStateSQL + ` WHERE repo_id IN (SELECT repo_id FROM healed)
+	              )
+	              SELECT count(*) FROM healed`
 
 	for lo := int64(0); lo < maxPK; lo += LibyearHealWindowSize {
 		if err := ctx.Err(); err != nil {
@@ -77,11 +87,11 @@ func (s *PostgresStore) HealUnknownLibyear(ctx context.Context, apply bool) (can
 		if !apply || n == 0 {
 			continue
 		}
-		tag, err := s.pool.Exec(ctx, updateSQL, lo, hi)
-		if err != nil {
+		var healed int64
+		if err := s.pool.QueryRow(ctx, updateSQL, lo, hi).Scan(&healed); err != nil {
 			return candidates, updated, fmt.Errorf("heal libyear: update window (%d,%d]: %w", lo, hi, err)
 		}
-		updated += tag.RowsAffected()
+		updated += healed
 	}
 	return candidates, updated, nil
 }

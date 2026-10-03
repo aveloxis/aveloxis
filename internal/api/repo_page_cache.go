@@ -39,6 +39,23 @@ import (
 // of the state, without running the handler. Bodies are kept in a
 // byte-bounded LRU; concurrent misses for one answer run the handler once.
 
+// Adding or changing a repository-scoped GET route — the checklist, each
+// step enforced by a test:
+//  1. Decide: does the answer depend only on the repository and the query
+//     (not on who asks)? Then register it through s.cachedRepoGET with its
+//     policy (pageExact, pageDated for a default window anchored at today,
+//     pageEnriched for contributor identities); otherwise add it to
+//     uncachedRepoGETs with the reason (TestEveryRepoScopedGETIsCachedOrReviewed).
+//  2. List the query parameters its handler reads in pageParams
+//     (TestPageParamsMatchTheHandlers).
+//  3. A failure the handler serves past goes through s.partialAnswer, never
+//     a bare log (TestCachedHandlersDegradeOnlyThroughPartialAnswer).
+//  4. If a pageExact answer reads a new table, add the table to
+//     pageCacheTables in internal/db and classify its writers
+//     (TestPageCacheTableWritersAreCovered): a writer that can run outside
+//     a queued collection job stamps data_changed_at in the same
+//     transaction as its data (stampRepoCacheStateSQL).
+
 // pagePolicy is how one route's answers age.
 type pagePolicy struct {
 	// enriched: the body carries contributor names, logins or affiliations,
@@ -391,9 +408,10 @@ func pageKey(pattern string, repoID int64, query string, st db.RepoCacheState, p
 
 // etagMatches reports whether an If-None-Match header names etag, by the
 // weak comparison If-None-Match uses (W/ ignored on both sides). "*"
-// matches only when the caller knows the representation exists (an entry
-// in memory): with nothing stored, the request might be one the handler
-// refuses (PR #226 review: /sbom?format=invalid answered 304).
+// matches only when the caller knows the representation exists — an entry in
+// memory, or a cacheable 200 just computed: before the handler has run, the
+// request might be one it refuses (PR #226 review: /sbom?format=invalid
+// answered 304).
 func etagMatches(header, etag string, stored bool) bool {
 	if header == "" || etag == "" {
 		return false
@@ -576,6 +594,14 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 		setNoStoreHeaders(w.Header())
 	} else {
 		setShareableHeaders(w.Header(), e.etag)
+		// The answer was just computed, so its ETag is known: a client
+		// already holding it gets a 304 instead of the same body again (an
+		// enriched answer recomputed after its TTL, an eviction or a restart;
+		// whole-branch review).
+		if etagMatches(r.Header.Get("If-None-Match"), e.etag, true) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 	writeEntry(w, e.contentType, e.disposition, e.body, "")
 }

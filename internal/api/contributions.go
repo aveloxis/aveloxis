@@ -27,7 +27,11 @@ import (
 // Returns ok=false if since >= until after parsing — the caller
 // surfaces a 400 in that case.
 func parseWindow(r *http.Request) (since, until time.Time, ok bool) {
-	since = time.Now().AddDate(-2, 0, 0)
+	// The UTC day boundary, as handleTimeSeries: the repository-page cache
+	// keys these answers by the UTC day (pageEnriched), so an instant-precise
+	// default let the first request of a day fix the window for the rest of
+	// it (PR #226 review).
+	since = time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
 	if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
 		if t, err := time.Parse("2006-01-02", sinceParam); err == nil {
 			since = t

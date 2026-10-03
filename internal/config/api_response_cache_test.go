@@ -86,8 +86,17 @@ func TestAPIFrontEndSecret(t *testing.T) {
 		t.Fatalf("absent: %q, %v; want empty (off)", cfg.API.FrontEndSecret, err)
 	}
 	good := strings.Repeat("a1", MinFrontEndSecretLen/2)
-	if cfg, err := Load(write(`{"api": {"front_end_secret": "` + good + `"}}`)); err != nil || cfg.API.FrontEndSecret != good {
-		t.Errorf("a %d-character secret must load: %v", len(good), err)
+	if cfg, err := Load(write(`{"api": {"trusted_proxy": "127.0.0.1", "front_end_secret": "` + good + `"}}`)); err != nil || cfg.API.FrontEndSecret != good {
+		t.Errorf("a %d-character secret with a trusted proxy must load: %v", len(good), err)
+	}
+	// Whole-branch review: the API believes the mark only from
+	// trusted_proxy, so a secret without one would be logged as set and do
+	// nothing — refused at load, naming both keys and not the value.
+	if _, err := Load(write(`{"api": {"front_end_secret": "` + good + `"}}`)); err == nil ||
+		!strings.Contains(err.Error(), "front_end_secret") || !strings.Contains(err.Error(), "trusted_proxy") {
+		t.Errorf("a secret without api.trusted_proxy must be refused naming both keys, got %v", err)
+	} else if strings.Contains(err.Error(), good) {
+		t.Error("the refusal must not echo the secret")
 	}
 	// The shipped nginx placeholder (aveloxis-gui deploy/nginx-cache) is
 	// short on purpose, so a copied placeholder is refused, never a secret
@@ -101,5 +110,31 @@ func TestAPIFrontEndSecret(t *testing.T) {
 		t.Errorf("a %d-character secret must be refused naming the key, got %v", len(short), err)
 	} else if strings.Contains(err.Error(), short) {
 		t.Error("the refusal must not echo the secret")
+	}
+}
+
+// Whole-branch review: api.trusted_proxy is compared byte for byte with the
+// peer address at runtime, so a value that is not a bare IP (stray spaces, a
+// host name, a CIDR) would never match — the secret and X-Forwarded-For would
+// silently be ignored. Refused at load, naming the key.
+func TestAPITrustedProxyMustBeABareIP(t *testing.T) {
+	write := func(body string) string {
+		p := filepath.Join(t.TempDir(), "aveloxis.json")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, ok := range []string{"", "127.0.0.1", "::1", "10.1.2.3"} {
+		if _, err := Load(write(`{"api": {"trusted_proxy": "` + ok + `"}}`)); err != nil {
+			t.Errorf("trusted_proxy %q must load: %v", ok, err)
+		}
+	}
+	// Non-canonical spellings parse, but the peer address is compared in
+	// its canonical form, byte for byte: they would never match.
+	for _, bad := range []string{" 127.0.0.1", "127.0.0.1 ", "localhost", "127.0.0.0/8", "nginx", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1"} {
+		if _, err := Load(write(`{"api": {"trusted_proxy": "` + bad + `"}}`)); err == nil || !strings.Contains(err.Error(), "trusted_proxy") {
+			t.Errorf("trusted_proxy %q must be refused naming the key, got %v", bad, err)
+		}
 	}
 }

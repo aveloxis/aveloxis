@@ -100,6 +100,18 @@ func TestHealUnknownLibyearIntegration(t *testing.T) {
 		return val
 	}
 
+	// v0.29.73: the heal writes what the repository's /deps, /libyear and
+	// SBOM answers read, outside any job, so it moves the repository's
+	// cache state — and a dry run does not.
+	cacheFP := func() string {
+		m, err := store.RepoCacheStates(ctx, []int64{repoID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[repoID].Fingerprint()
+	}
+	fpBefore := cacheFP()
+
 	// A DRY RUN must change nothing at all.
 	candidates, updated, err := store.HealUnknownLibyear(ctx, false)
 	if err != nil {
@@ -116,6 +128,9 @@ func TestHealUnknownLibyearIntegration(t *testing.T) {
 			t.Errorf("%s was NULLed by a DRY RUN", name)
 		}
 	}
+	if cacheFP() != fpBefore {
+		t.Error("a dry run must not move the cache state")
+	}
 
 	// --apply NULLs exactly the uncomputable rows.
 	_, updated, err = store.HealUnknownLibyear(ctx, true)
@@ -124,6 +139,9 @@ func TestHealUnknownLibyearIntegration(t *testing.T) {
 	}
 	if updated < 2 {
 		t.Errorf("apply updated %d rows, want at least the 2 unpinned ones", updated)
+	}
+	if fpAfter := cacheFP(); fpAfter == fpBefore {
+		t.Error("an applied heal must move the repository's cache state")
 	}
 	for _, name := range []string{"unpinned-zero", "unpinned-nonzero"} {
 		if libyearOf(name) != nil {

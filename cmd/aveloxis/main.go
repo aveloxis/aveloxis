@@ -544,6 +544,19 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
+		// Outside the queue no CompleteJob marks the end of this run: stamp
+		// the repository so the API replaces its cached answers (v0.29.73).
+		// Also after a failure — the run may have written part of its data.
+		// On a context the interrupt cannot cancel (Ctrl-C is the commonest
+		// failure of a one-shot run, after part of the data was written),
+		// bounded so a dead database cannot hold the command.
+		stampCtx, stampCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		stampErr := store.StampRepoDataChanged(stampCtx, repoID)
+		stampCancel()
+		if stampErr != nil {
+			logger.Warn("could not stamp the repository's cache state — its cached API answers may stay until its next collection",
+				"url", platform.RedactURLUserinfo(repoURL), "error", stampErr)
+		}
 		if err != nil {
 			logger.Error("collection failed", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue

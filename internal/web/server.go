@@ -1026,10 +1026,12 @@ func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bo
 // (it confirms through the API), this process's /account/email/confirm
 // otherwise (2026-10-04). The token is hex, so it needs no escaping. On
 // the front end it rides in the FRAGMENT: a fragment is never sent to the
-// static server (so never in its access log or the analytics tag), and a
-// signed-out click keeps it through the login round trip, where the front
-// end carries location.hash in ?next= (review 2026-10-04). spa_url is
-// taken as written: config refuses a non-canonical value at load.
+// static server (so never in its access log), the front end's analytics
+// tag excludes it, and the page moves it into the tab's session storage
+// and drops it from the URL before any response is handled, so a
+// signed-out click's login round trip carries a token-free ?next=
+// (reviews 2026-10-04). spa_url is taken as written: config refuses a
+// non-canonical value at load.
 func confirmationLink(base, spaURL, token string) string {
 	if spaURL != "" {
 		return spaURL + "/profile.html#token=" + token

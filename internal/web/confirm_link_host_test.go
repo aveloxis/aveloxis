@@ -503,12 +503,14 @@ func TestWithMailerWarnsWithoutSiteURL(t *testing.T) {
 // With web.spa_url set the mailed link lands on the front end's profile
 // page, which confirms through the API; without it, on this process's
 // /account/email/confirm (2026-10-04). The token rides unchanged. On the
-// front end it travels in the FRAGMENT, not the query (review 2026-10-04):
-// a fragment never reaches nginx's access log or the analytics tag, and a
-// signed-out click keeps it through login.html?next=… (lib/api.js carries
-// location.hash) where a query consumed before the 401 was lost. The
-// value is taken as written: config refuses a non-canonical spa_url at
-// load (TestWebSPAURLRefusedAtLoadUnlessCanonical), so no reader trims.
+// front end it travels in the FRAGMENT, not the query (reviews
+// 2026-10-04): a fragment never reaches nginx's access log, the front
+// end's analytics tag excludes it, and the page moves it into the tab's
+// session storage and drops it from the URL before any response is
+// handled, so a signed-out click's login round trip carries a token-free
+// ?next=. The value is taken as written: config refuses a non-canonical
+// spa_url at load (TestWebSPAURLRefusedAtLoadUnlessCanonical), so no
+// reader trims.
 func TestConfirmationLinkFollowsTheFrontEnd(t *testing.T) {
 	for _, c := range []struct{ base, spa, want string }{
 		{"https://x.example", "", "https://x.example/account/email/confirm?token=abc"},

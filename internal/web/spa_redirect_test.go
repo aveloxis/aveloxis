@@ -51,9 +51,10 @@ func TestPostLoginRedirectValidation(t *testing.T) {
 		{"/groups/5/repos/9", "/groups/5/repos/9"},                               // deeper relative path still ok
 		{"http://localhost:8000/login.html", "http://localhost:8000/login.html"}, // configured SPA origin ok
 		{"http://localhost:8000", "http://localhost:8000"},                       // bare origin ok
-		// The mailed confirmation link carries its token in the fragment and
-		// a signed-out click threads it through ?next= (2026-10-04): the
-		// fragment must come back with the page.
+		// A fragment in a trusted next must survive the prefix check
+		// (2026-10-04; the front end's own ?next= is token-free today — it
+		// moves the mailed token into session storage first — but a page
+		// anchor is an ordinary part of a return address).
 		{"http://localhost:8000/profile.html#token=abc", "http://localhost:8000/profile.html#token=abc"},
 		{"http://localhost:80001/x", ""},        // prefix trick (extra digit) BLOCKED
 		{"https://evil.example/login.html", ""}, // arbitrary origin BLOCKED

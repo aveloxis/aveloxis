@@ -1,11 +1,14 @@
 # Multi-stage build for Aveloxis.
 # Stage 1: Build the Go binary.
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git
 
-# go.mod requires go 1.25+ but the latest Docker image is 1.24.
-# GOTOOLCHAIN=auto tells Go to download the required toolchain version.
+# go.mod requires go 1.26+ and the image carries it. The official images
+# set GOTOOLCHAIN=local (no downloads); auto lets the build fetch a newer
+# release when go.mod's toolchain line asks for one the image predates.
+# scripts/go_minimum_version_test.go holds this comment and the image tag
+# to go.mod.
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src

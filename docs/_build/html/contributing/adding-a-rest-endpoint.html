@@ -1712,7 +1712,7 @@ SPDX-License-Identifier: MIT
 └── scancode_freshness_test.go
 </pre></div>
 </div>
-<p>The server uses Go 1.22+ ServeMux pattern matching (<code class="docutils literal notranslate"><span class="pre">{repoID}</span></code> path params). It’s intentionally plain — no router library, no middleware stack beyond CORS.</p>
+<p>The server uses the standard-library ServeMux pattern matching Go added in 1.22 (<code class="docutils literal notranslate"><span class="pre">{repoID}</span></code> path params). It’s intentionally plain — no router library, no middleware stack beyond CORS.</p>
 </section>
 <section id="existing-endpoints">
 <h2>Existing endpoints<a class="headerlink" href="#existing-endpoints" title="Link to this heading"></a></h2>
@@ -1907,7 +1907,7 @@ SPDX-License-Identifier: MIT
 <h2>Patterns to follow<a class="headerlink" href="#patterns-to-follow" title="Link to this heading"></a></h2>
 <section id="path-parameters-via-r-pathvalue-name">
 <h3>Path parameters via <code class="docutils literal notranslate"><span class="pre">r.PathValue(&quot;name&quot;)</span></code><a class="headerlink" href="#path-parameters-via-r-pathvalue-name" title="Link to this heading"></a></h3>
-<p>Go 1.22+ ServeMux pattern matching. Mux registration uses <code class="docutils literal notranslate"><span class="pre">{name}</span></code> placeholders; the handler reads via <code class="docutils literal notranslate"><span class="pre">r.PathValue(&quot;name&quot;)</span></code>. Always parse + validate immediately and return 400 on parse failure.</p>
+<p>ServeMux pattern matching (standard library since Go 1.22). Mux registration uses <code class="docutils literal notranslate"><span class="pre">{name}</span></code> placeholders; the handler reads via <code class="docutils literal notranslate"><span class="pre">r.PathValue(&quot;name&quot;)</span></code>. Always parse + validate immediately and return 400 on parse failure.</p>
 </section>
 <section id="query-params-via-r-url-query-get">
 <h3>Query params via <code class="docutils literal notranslate"><span class="pre">r.URL.Query().Get</span></code><a class="headerlink" href="#query-params-via-r-url-query-get" title="Link to this heading"></a></h3>

@@ -1703,7 +1703,7 @@ SPDX-License-Identifier: MIT
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p><strong>Go 1.25 or later.</strong> Aveloxis uses Go 1.25 iterator syntax (<code class="docutils literal notranslate"><span class="pre">iter.Seq2</span></code>) in the platform layer.</p></li>
+<li><p><strong>Go 1.26 or later</strong> (the <code class="docutils literal notranslate"><span class="pre">go</span></code> directive in <code class="docutils literal notranslate"><span class="pre">go.mod</span></code>; a newer <code class="docutils literal notranslate"><span class="pre">go</span></code> downloads the pinned toolchain itself). The platform layer uses iterator syntax (<code class="docutils literal notranslate"><span class="pre">iter.Seq2</span></code>).</p></li>
 <li><p><strong>PostgreSQL 14 or later.</strong> 18.x is what the maintainers use; anything 14+ should work (the schema uses <code class="docutils literal notranslate"><span class="pre">gen_random_uuid()</span></code> and <code class="docutils literal notranslate"><span class="pre">pg_trgm</span></code>).</p></li>
 <li><p><strong>git</strong> (obviously).</p></li>
 <li><p><strong>scc</strong> and <strong>scorecard</strong> — installed automatically via <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code>, see below.</p></li>

@@ -48,7 +48,7 @@ psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer" -c "SEL
 ## 2. Install aveloxis + the scancode toolchain
 
 ```bash
-# aveloxis binary (Go 1.25+) — the SAME version the primary runs,
+# aveloxis binary (Go 1.26+) — the SAME version the primary runs,
 # never @latest: the worker never migrates, so a newer binary than the
 # schema stamp refuses to start (v0.29.68; it logged an ERROR and read
 # columns the database did not have yet). Release tags are v-prefixed

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -104,6 +105,16 @@ func TestMeEmailSubmission(t *testing.T) {
 			if w.Code != http.StatusServiceUnavailable {
 				t.Errorf("%s without a store: %d, want 503", route, w.Code)
 			}
+			// The body is JSON, so the media type says so (Copilot review
+			// 5407390534: http.Error forced text/plain).
+			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("%s 503 Content-Type = %q, want application/json", route, ct)
+			}
+			// An absent key is a nil interface, which == "" never is (review:
+			// the first spelling could not fail); the text is pinned.
+			if m := decodeJSON(t, w); m["error"] != "accounts unavailable" {
+				t.Errorf("%s 503 body must carry the error text: %v", route, m)
+			}
 		})
 	}
 	t.Run("bad body", func(t *testing.T) {
@@ -113,6 +124,12 @@ func TestMeEmailSubmission(t *testing.T) {
 		srv.Handler().ServeHTTP(w, accountRequest(http.MethodPost, "/api/v1/me/email", `{"email": 5`))
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("bad JSON: %d", w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("bad JSON 400 Content-Type = %q, want application/json", ct)
+		}
+		if m := decodeJSON(t, w); !strings.HasPrefix(fmt.Sprint(m["error"]), "invalid JSON body") {
+			t.Errorf("bad JSON 400 body must say so: %v", m)
 		}
 	})
 	t.Run("mail not configured", func(t *testing.T) {
@@ -187,6 +204,12 @@ func TestMeEmailConfirm(t *testing.T) {
 			if c.wantResult == "" {
 				if w.Code != c.wantStatus {
 					t.Errorf("%s: %d, want %d", c.name, w.Code, c.wantStatus)
+				}
+				if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+					t.Errorf("%s: Content-Type = %q, want application/json", c.name, ct)
+				}
+				if m := decodeJSON(t, w); !strings.HasPrefix(fmt.Sprint(m["error"]), "invalid JSON body") {
+					t.Errorf("%s: body must say so: %v", c.name, m)
 				}
 				return
 			}

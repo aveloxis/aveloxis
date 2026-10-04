@@ -9,7 +9,7 @@ This chapter gets you from an empty machine to a working aveloxis dev environmen
 
 ## Prerequisites
 
-- **Go 1.25 or later.** Aveloxis uses Go 1.25 iterator syntax (`iter.Seq2`) in the platform layer.
+- **Go 1.26 or later** (the `go` directive in `go.mod`; a newer `go` downloads the pinned toolchain itself). The platform layer uses iterator syntax (`iter.Seq2`).
 - **PostgreSQL 14 or later.** 18.x is what the maintainers use; anything 14+ should work (the schema uses `gen_random_uuid()` and `pg_trgm`).
 - **git** (obviously).
 - **scc** and **scorecard** — installed automatically via `aveloxis install-tools`, see below.

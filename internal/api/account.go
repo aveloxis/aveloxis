@@ -62,14 +62,14 @@ func (s *Server) handleMeEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.accounts == nil {
-		http.Error(w, `{"error":"accounts unavailable"}`, http.StatusServiceUnavailable)
+		writeAuthError(w, http.StatusServiceUnavailable, "accounts unavailable")
 		return
 	}
 	var req struct {
 		Email string `json:"email"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, accountEmailBodyLimit)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON body: expected {\"email\": \"…\"}"}`, http.StatusBadRequest)
+		writeAuthError(w, http.StatusBadRequest, `invalid JSON body: expected {"email": "…"}`)
 		return
 	}
 	login, _, _, err := s.accounts.GetUserIdentity(r.Context(), info.UserID)
@@ -99,14 +99,14 @@ func (s *Server) handleMeEmailConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.accounts == nil {
-		http.Error(w, `{"error":"accounts unavailable"}`, http.StatusServiceUnavailable)
+		writeAuthError(w, http.StatusServiceUnavailable, "accounts unavailable")
 		return
 	}
 	var req struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, accountEmailBodyLimit)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON body: expected {\"token\": \"…\"}"}`, http.StatusBadRequest)
+		writeAuthError(w, http.StatusBadRequest, `invalid JSON body: expected {"token": "…"}`)
 		return
 	}
 	switch web.ConfirmAccountEmail(r.Context(), s.accounts, s.logger, strings.TrimSpace(req.Token), info.UserID) {

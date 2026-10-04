@@ -1802,7 +1802,7 @@ psql<span class="w"> </span>-h<span class="w"> </span>localhost<span class="w"> 
 <h2>Dockerfile<a class="headerlink" href="#dockerfile" title="Link to this heading"></a></h2>
 <p>The multi-stage <code class="docutils literal notranslate"><span class="pre">Dockerfile</span></code> in the repo root:</p>
 <ol class="arabic simple">
-<li><p><strong>Builder stage</strong> — <code class="docutils literal notranslate"><span class="pre">golang:1.25-alpine</span></code>, downloads dependencies, builds a static binary</p></li>
+<li><p><strong>Builder stage</strong> — <code class="docutils literal notranslate"><span class="pre">golang:1.26-alpine</span></code> (the Go 1.26+ <code class="docutils literal notranslate"><span class="pre">go.mod</span></code> requires), downloads dependencies, builds a static binary</p></li>
 <li><p><strong>Runtime stage</strong> — <code class="docutils literal notranslate"><span class="pre">alpine:3.20</span></code>, copies the binary, includes git/curl/ca-certificates for facade and libyear phases</p></li>
 </ol>
 <p>Exposed ports: 5555 (monitor), 8082 (web), 8383 (API).</p>

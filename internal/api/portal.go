@@ -85,13 +85,24 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	// before). v0.27.84: name + avatar_url added — the home greeting
 	// and nav avatar render from here, never from mocks. Best-effort —
 	// a lookup failure yields empty strings, never an error for /me.
-	login, name, avatarURL, _ := s.store.GetUserIdentity(r.Context(), info.UserID)
+	var login, name, avatarURL string
+	if s.accounts != nil { // a Server without a store answers the identity it has: none
+		login, name, avatarURL, _ = s.accounts.GetUserIdentity(r.Context(), info.UserID)
+	}
+	// 2026-10-04: the account fields the profile page shows — the forge
+	// signed in with, the confirmed email (the forge's own, or one confirmed
+	// through the link) and a confirmation still pending. Best-effort like
+	// the identity, but a failed read is logged.
+	provider, email, pending := s.accountFields(r, info.UserID)
 	jsonResponse(w, map[string]any{
-		"user_id":    info.UserID,
-		"login":      login,
-		"name":       name,
-		"avatar_url": avatarURL,
-		"is_admin":   info.IsAdmin,
+		"user_id":       info.UserID,
+		"login":         login,
+		"name":          name,
+		"avatar_url":    avatarURL,
+		"provider":      provider,
+		"email":         email,
+		"email_pending": pending,
+		"is_admin":      info.IsAdmin,
 		"scope_repo_count": func() int {
 			if info.IsAdmin {
 				return -1 // unscoped

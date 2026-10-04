@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/httpserver"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -1521,7 +1522,19 @@ func (c *Config) validate() error {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
 	if mb := c.API.ResponseCacheMB; mb != nil && (*mb < 0 || int64(*mb) > MaxResponseCacheMB) {
-		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d, 0 to keep no bodies in memory, or omit it for the %d MB default", *mb, MaxResponseCacheMB, DefaultResponseCacheMB)
+		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep no bodies in memory", *mb, MaxResponseCacheMB)
+	}
+	if spa := c.Web.SPAURL; spa != "" {
+		// With it set, spa_url starts every mailed link (group, pending
+		// approvals, email confirmation) and the OAuth return: the rule
+		// mail.site_url has, plus the canonical form, because every reader
+		// appends "/page.html" to the value as written (2026-10-04).
+		if err := mailer.ValidateSiteURL("web.spa_url", spa); err != nil {
+			return err
+		}
+		if strings.HasSuffix(spa, "/") {
+			return errors.New("web.spa_url ends with a slash — use the front end's origin as is, such as https://gui.example (each link appends /page.html to it)")
+		}
 	}
 	if n := len(c.API.FrontEndSecret); n > 0 && n < MinFrontEndSecretLen {
 		return fmt.Errorf("api.front_end_secret is %d characters — use at least %d (openssl rand -hex 32), or omit it to count every request", n, MinFrontEndSecretLen)
@@ -1545,7 +1558,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("api.front_end_secret is set but api.trusted_proxy is empty — the secret is believed only from the trusted proxy; set api.trusted_proxy (127.0.0.1 for nginx on the same host) or omit api.front_end_secret")
 	}
 	if sec := c.API.CacheRewarmSeconds; sec != nil && (*sec < 0 || int64(*sec) > MaxCacheRewarmSeconds) {
-		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
+		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default (it applies only while api.response_cache_mb is set)", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
 	}
 	return nil
 }
@@ -1877,8 +1890,9 @@ type APIConfig struct {
 	// ExemptCIDRs lists client networks that bypass limiting
 	// entirely. Default: loopback + RFC1918 (+ ::1).
 	ExemptCIDRs []string `json:"exempt_cidrs,omitempty"`
-	// CORSOrigins lists browser origins allowed to call the API
-	// (the separate-repo GUI). Empty = no cross-origin access.
+	// CORSOrigins lists browser origins allowed to call the API. Empty
+	// sends Access-Control-Allow-Origin: * (any origin); a list is a
+	// strict allowlist (ratelimit.go cors).
 	CORSOrigins []string `json:"cors_origins,omitempty"`
 	// TrustedProxy is the peer IP whose X-Forwarded-For header is
 	// believed when resolving the client address (the nginx-on-
@@ -1906,7 +1920,8 @@ type APIConfig struct {
 	RequireAuth bool `json:"require_auth,omitempty"`
 
 	// ResponseCacheMB bounds the API's repository-page response cache in
-	// megabytes (v0.29.73). Absent → DefaultResponseCacheMB; an explicit 0
+	// megabytes (v0.29.73; off by default — an advanced option a deployment
+	// turns on by setting it). Absent → DefaultResponseCacheMB (0); an explicit 0
 	// keeps no bodies in memory (answers are still tagged and revalidated);
 	// negative or past MaxResponseCacheMB → refused at load.
 	ResponseCacheMB *int `json:"response_cache_mb,omitempty"`
@@ -1932,21 +1947,25 @@ type APIConfig struct {
 // prints 64). A guessable value would let any visitor skip the rate limit.
 const MinFrontEndSecretLen = 32
 
-// DefaultResponseCacheMB is the repository-page cache's default budget:
-// about a hundred of the largest repository pages (a 56,000-file scancode
-// listing is ~7 MB of JSON, a 600-finding vulnerability list ~1 MB) plus
-// ten thousand typical ones (~100 KB) — 2 GB.
-const DefaultResponseCacheMB = 2048
+// DefaultResponseCacheMB is 0: the repository-page response cache is an
+// advanced option, off unless api.response_cache_mb is set (operator
+// decision 2026-10-04 — a fresh deployment should not reserve gigabytes
+// for a cache it did not ask for). Sizing, for a deployment that turns it
+// on: about a hundred of the largest repository pages (a 56,000-file
+// scancode listing is ~7 MB of JSON, a 600-finding vulnerability list
+// ~1 MB) plus ten thousand typical ones (~100 KB) is 2 GB.
+const DefaultResponseCacheMB = 0
 
 // MaxResponseCacheMB keeps the byte count inside an int64 (an int64
 // constant: on a 32-bit build it does not fit an int, and the int field
 // cannot exceed it there anyway).
 const MaxResponseCacheMB int64 = math.MaxInt64 >> 20
 
-// DefaultCacheRewarmSeconds is the re-warm's default cadence: a visitor who
-// arrives within a minute of a collection's end may still pay for the
-// recomputation; each pass costs one primary-key read per cached
-// repository.
+// DefaultCacheRewarmSeconds is the re-warm's default cadence while the
+// cache is on: a visitor who arrives within a minute of a collection's end
+// may still pay for the recomputation; each pass costs one primary-key
+// read per cached repository. With the cache off (ResponseCacheBytes 0)
+// the effective cadence is 0: there is nothing to re-warm.
 const DefaultCacheRewarmSeconds = 60
 
 // MaxCacheRewarmSeconds is the largest cadence a time.Duration can hold
@@ -1965,8 +1984,13 @@ func (a APIConfig) ResponseCacheBytes() int64 {
 	return int64(*a.ResponseCacheMB) << 20
 }
 
-// CacheRewarmInterval is the effective re-warm cadence; zero means off.
+// CacheRewarmInterval is the effective re-warm cadence; zero means off —
+// and it is off whenever the cache keeps no bodies (one knob,
+// response_cache_mb, turns the feature on).
 func (a APIConfig) CacheRewarmInterval() time.Duration {
+	if a.ResponseCacheBytes() == 0 {
+		return 0
+	}
 	if a.CacheRewarmSeconds == nil {
 		return DefaultCacheRewarmSeconds * time.Second
 	}

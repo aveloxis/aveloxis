@@ -127,10 +127,36 @@ up against a database you thought it had left.
 Re-enable with `sudo systemctl enable --now aveloxis.target`.
 ```
 
-Only `serve` (and `aveloxis migrate`) run schema migrations — the ordering
-among the three units doesn't matter for correctness; `web` and `api` log an
-ERROR and serve degraded responses until the schema is current, then recover
-on their next queries.
+Only `serve` (and `aveloxis migrate`) run schema migrations. `web` and
+`api` never do: each **refuses to start** (logging the migrate it needs)
+until the schema stamp is current, so under systemd they restart every
+`RestartSec` until `serve`'s startup migrate — or an `aveloxis migrate`
+you ran first — has finished. The ordering among the units therefore
+costs only those retries.
+
+## Upgrading under systemd
+
+`aveloxis start` asks whether a release's deploy steps were completed and,
+without a terminal, refuses until `aveloxis ack-deploy` has recorded them.
+The units run `aveloxis serve` directly, so that gate never fires here, and
+`serve`'s startup migrate is the slow form (the materialized views
+included). Run the four steps of [Upgrading](../getting-started/upgrading.md)
+by hand and start the target last:
+
+```bash
+AVELOXIS_SRC=/home/aveloxis/aveloxis
+cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version
+aveloxis deploy-checklist --pending     # read it now; it names the migrate step 3 runs
+sudo systemctl stop aveloxis.target     # nothing runs against the schema while it changes
+aveloxis migrate --skip-views           # or the plain form when the checklist asks for it
+# ... the checklist's checks and heals, oldest first ...
+aveloxis ack-deploy
+sudo systemctl start aveloxis.target
+```
+
+Run `aveloxis migrate` and `ack-deploy` as the service user against the
+service's config (`-c /etc/aveloxis/aveloxis.json`), so the stamp and the
+acknowledgement land in the same database the units read.
 
 ## The PATH trap
 

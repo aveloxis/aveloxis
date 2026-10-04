@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quick Start &mdash; Aveloxis 0.29.69 documentation</title>
+  <title>Quick Start &mdash; Aveloxis 0.29.73 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,13 +14,13 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
+      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Augur Migration" href="augur-migration.html" />
+    <link rel="next" title="Production Deployment" href="deployment.html" />
     <link rel="prev" title="Configuration" href="configuration.html" /> 
 </head>
 
@@ -90,6 +90,7 @@
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#clone-directory">Clone directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#public-analytics-api-api">Public analytics API (<code class="docutils literal notranslate"><span class="pre">api</span></code>)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="configuration.html#reaching-the-api-from-another-host">Reaching the API from another host</a></li>
+<li class="toctree-l3"><a class="reference internal" href="configuration.html#response-caching-advanced-off-by-default">Response caching (advanced, off by default)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#email-gmail-smtp-optional">Email (Gmail SMTP, optional)</a><ul>
@@ -124,11 +125,26 @@
 <li class="toctree-l3"><a class="reference internal" href="#add-all-repos-from-a-github-organization">Add all repos from a GitHub organization</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#step-5-start-the-scheduler">Step 5: Start the scheduler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#step-5-start-the-processes">Step 5: Start the processes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#check-the-monitoring-dashboard">Check the monitoring dashboard</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#verify-data-in-the-database">Verify data in the database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#what-happens-next">What happens next</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="deployment.html">Production Deployment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#the-three-processes">The three processes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#requirements">1. Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#install">2. Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#postgresql">3. PostgreSQL</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#configuration">4. Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#schema">5. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#api-keys">6. API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#oauth-applications-and-the-first-admin">7. OAuth applications and the first admin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#running">8. Running</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#reverse-proxy">9. Reverse proxy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#verify">10. Verify</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#upgrading">11. Upgrading</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="augur-migration.html">Augur Migration</a><ul>
@@ -463,6 +479,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#pick-one-manager">Pick one manager</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#unit-files">Unit files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#enable-and-manage">Enable and manage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#upgrading-under-systemd">Upgrading under systemd</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#the-path-trap">The PATH trap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#logs">Logs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#automatic-restarts-unattended-upgrades-and-needrestart">Automatic restarts, unattended upgrades, and needrestart</a></li>
@@ -562,6 +579,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -590,6 +609,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#observation-lines-added-in-0-29-70">Observation lines added in 0.29.70</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -646,7 +666,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#list-all-sidelined-repos">List all sidelined repos</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository">The same <code class="docutils literal notranslate"><span class="pre">pulls/comments</span></code> page fails every cycle on a large repository</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#charts-or-pages-time-out-504-502-in-the-browser">Charts or pages time out (504 / 502 in the browser)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#deadlock-errors">Deadlock errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#prepared-statement-stmtcache-does-not-exist-sqlstate-26000"><code class="docutils literal notranslate"><span class="pre">prepared</span> <span class="pre">statement</span> <span class="pre">&quot;stmtcache_...&quot;</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span> <span class="pre">(SQLSTATE</span> <span class="pre">26000)</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-appears-to-take-days-before-collection-resumes">Restart appears to take days before collection resumes</a></li>
@@ -893,7 +917,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#architecture">3. Architecture</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#components">3.1 Components</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#the-lifecycle-of-a-single-scan">3.2 The lifecycle of a single scan</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-v0-21-3-minimum-gap-not-throughput-cap">3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-a-start-gap-per-worker-v0-21-3-v0-29-70">3.3 Dispatcher pacing: a start gap per worker (v0.21.3, v0.29.70)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#cadence-rationale-180-days-default">4. Cadence rationale (180 days default)</a></li>
@@ -1134,7 +1158,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#page-size-step-down-v0-29-72">Page-size step-down (v0.29.72)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#design-notes">Design notes</a></li>
@@ -1770,12 +1797,16 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 </section>
 </section>
 <hr class="docutils" />
-<section id="step-5-start-the-scheduler">
-<h2>Step 5: Start the scheduler<a class="headerlink" href="#step-5-start-the-scheduler" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>serve<span class="w"> </span>--monitor<span class="w"> </span>:5555
+<section id="step-5-start-the-processes">
+<h2>Step 5: Start the processes<a class="headerlink" href="#step-5-start-the-processes" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>start<span class="w"> </span>all<span class="w">        </span><span class="c1"># serve + web (:8082) + api (127.0.0.1:8383), logs under ~/.aveloxis/</span>
 </pre></div>
 </div>
-<p>This starts the long-running scheduler that:</p>
+<p>Or only the scheduler, in the foreground:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>serve<span class="w"> </span>--monitor<span class="w"> </span><span class="m">127</span>.0.0.1:5555
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">serve</span></code> is the long-running scheduler that:</p>
 <ul class="simple">
 <li><p>Continuously polls the queue for repos due for collection</p></li>
 <li><p>Runs the full staged pipeline (API collection, processing, facade, commit resolution, analysis)</p></li>
@@ -1786,7 +1817,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 <section id="check-the-monitoring-dashboard">
 <h2>Check the monitoring dashboard<a class="headerlink" href="#check-the-monitoring-dashboard" title="Link to this heading"></a></h2>
 <p>Open your browser to:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="n">localhost</span><span class="p">:</span><span class="mi">5555</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="mf">127.0.0.1</span><span class="p">:</span><span class="mi">5555</span>
 </pre></div>
 </div>
 <p>The dashboard shows:</p>
@@ -1794,7 +1825,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 <li><p><strong>Queue statistics</strong> – total repos, queued, currently collecting</p></li>
 <li><p><strong>Repo table</strong> – every repo with status, priority, due time, and last run results</p></li>
 <li><p><strong>Boost button</strong> – push any repo to the front of the queue</p></li>
-<li><p>Auto-refreshes every 10 seconds</p></li>
+<li><p>Auto-refreshes every <code class="docutils literal notranslate"><span class="pre">monitor.refresh_seconds</span></code> (default 60)</p></li>
 </ul>
 </section>
 <hr class="docutils" />
@@ -1856,8 +1887,12 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github.com/kubernetes/kubernetes
 </pre></div>
 </div>
-</section>
 <hr class="docutils" />
+<p>The web GUI is at <code class="docutils literal notranslate"><span class="pre">http://localhost:8082</span></code> once OAuth is configured
+(<a class="reference internal" href="../guide/web-gui.html"><span class="std std-doc">Web GUI</span></a>); the first account to sign in becomes
+the admin. For a host other people reach, see
+<a class="reference internal" href="deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
+</section>
 <section id="next-steps">
 <h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading"></a></h2>
 <ul class="simple">
@@ -1874,7 +1909,7 @@ aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-your_gitlab
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="configuration.html" class="btn btn-neutral float-left" title="Configuration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="augur-migration.html" class="btn btn-neutral float-right" title="Augur Migration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="deployment.html" class="btn btn-neutral float-right" title="Production Deployment" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

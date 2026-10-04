@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.69 documentation</title>
+  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.73 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
+      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -90,6 +90,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#clone-directory">Clone directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#public-analytics-api-api">Public analytics API (<code class="docutils literal notranslate"><span class="pre">api</span></code>)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#reaching-the-api-from-another-host">Reaching the API from another host</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#response-caching-advanced-off-by-default">Response caching (advanced, off by default)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#email-gmail-smtp-optional">Email (Gmail SMTP, optional)</a><ul>
@@ -124,11 +125,26 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/quickstart.html#add-all-repos-from-a-github-organization">Add all repos from a GitHub organization</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#step-5-start-the-scheduler">Step 5: Start the scheduler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#step-5-start-the-processes">Step 5: Start the processes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#check-the-monitoring-dashboard">Check the monitoring dashboard</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#verify-data-in-the-database">Verify data in the database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#what-happens-next">What happens next</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/deployment.html">Production Deployment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#the-three-processes">The three processes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#requirements">1. Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#install">2. Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#postgresql">3. PostgreSQL</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#configuration">4. Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#schema">5. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#api-keys">6. API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#oauth-applications-and-the-first-admin">7. OAuth applications and the first admin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#running">8. Running</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#reverse-proxy">9. Reverse proxy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#verify">10. Verify</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#upgrading">11. Upgrading</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a><ul>
@@ -463,6 +479,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#pick-one-manager">Pick one manager</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#unit-files">Unit files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#enable-and-manage">Enable and manage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#upgrading-under-systemd">Upgrading under systemd</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#the-path-trap">The PATH trap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#logs">Logs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#automatic-restarts-unattended-upgrades-and-needrestart">Automatic restarts, unattended upgrades, and needrestart</a></li>
@@ -592,6 +609,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#observation-lines-added-in-0-29-70">Observation lines added in 0.29.70</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -648,7 +666,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#list-all-sidelined-repos">List all sidelined repos</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository">The same <code class="docutils literal notranslate"><span class="pre">pulls/comments</span></code> page fails every cycle on a large repository</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#charts-or-pages-time-out-504-502-in-the-browser">Charts or pages time out (504 / 502 in the browser)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#deadlock-errors">Deadlock errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#prepared-statement-stmtcache-does-not-exist-sqlstate-26000"><code class="docutils literal notranslate"><span class="pre">prepared</span> <span class="pre">statement</span> <span class="pre">&quot;stmtcache_...&quot;</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span> <span class="pre">(SQLSTATE</span> <span class="pre">26000)</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-appears-to-take-days-before-collection-resumes">Restart appears to take days before collection resumes</a></li>
@@ -895,7 +917,7 @@
 <li class="toctree-l2"><a class="reference internal" href="scancode.html#architecture">3. Architecture</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="scancode.html#components">3.1 Components</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scancode.html#the-lifecycle-of-a-single-scan">3.2 The lifecycle of a single scan</a></li>
-<li class="toctree-l3"><a class="reference internal" href="scancode.html#dispatcher-pacing-v0-21-3-minimum-gap-not-throughput-cap">3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scancode.html#dispatcher-pacing-a-start-gap-per-worker-v0-21-3-v0-29-70">3.3 Dispatcher pacing: a start gap per worker (v0.21.3, v0.29.70)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="scancode.html#cadence-rationale-180-days-default">4. Cadence rationale (180 days default)</a></li>
@@ -1136,7 +1158,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#pagination">Pagination</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#page-size-step-down-v0-29-72">Page-size step-down (v0.29.72)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-new-platform">Adding a new platform</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#design-notes">Design notes</a></li>
@@ -1711,7 +1736,7 @@
 <ul class="simple">
 <li><p><strong>Platform-aware authentication</strong>: <code class="docutils literal notranslate"><span class="pre">AuthStyle</span></code> parameter controls the auth header format. GitHub uses <code class="docutils literal notranslate"><span class="pre">Authorization:</span> <span class="pre">token</span> <span class="pre">&lt;key&gt;</span></code> (PATs). GitLab uses <code class="docutils literal notranslate"><span class="pre">PRIVATE-TOKEN:</span> <span class="pre">&lt;key&gt;</span></code>. Set at construction via <code class="docutils literal notranslate"><span class="pre">NewHTTPClient(...,</span> <span class="pre">AuthGitHub)</span></code> or <code class="docutils literal notranslate"><span class="pre">NewHTTPClient(...,</span> <span class="pre">AuthGitLab)</span></code>.</p></li>
 <li><p><strong>Connection pooling</strong>: HTTP/2 enabled, 20 idle connections per host for high-throughput collection.</p></li>
-<li><p><strong>Automatic retries</strong>: Up to 10 retries with exponential backoff for transient errors (502/503/504).</p></li>
+<li><p><strong>Automatic retries</strong>: Up to 10 retries with exponential backoff for transient errors (502/503/504). A listing that opts into the page-size step-down (see Pagination) stops after two 502/504 answers to the same page that each came back only after the forge’s request budget, and asks for fewer items instead; a fast 502/504 keeps the full retry budget.</p></li>
 <li><p><strong>Rate limit awareness</strong>: Reads <code class="docutils literal notranslate"><span class="pre">X-RateLimit-*</span></code> (GitHub) and <code class="docutils literal notranslate"><span class="pre">RateLimit-*</span></code> (GitLab) headers, waits for reset when exhausted.</p></li>
 <li><p><strong>Secondary rate limit handling</strong>: Respects <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> headers from GitHub’s secondary rate limits.</p></li>
 <li><p><strong>Conditional requests (ETags)</strong>: for paginated listings (<code class="docutils literal notranslate"><span class="pre">Get</span></code> via <code class="docutils literal notranslate"><span class="pre">paginate</span></code>), the client caches ETags and sends <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> on subsequent requests; a 304 means “nothing new since last time” and ends pagination cleanly, and GitHub does not count 304s against the rate limit. Single-object reads (<code class="docutils literal notranslate"><span class="pre">GetJSON</span></code> — one PR, one issue, one user, one project) are <strong>always ETag-free</strong> (v0.28.17): a body-decoding reader cannot use a 304, and before the change a repeat read of the same URL in one process either errored (<code class="docutils literal notranslate"><span class="pre">not</span> <span class="pre">modified</span> <span class="pre">(304)</span></code>) or silently returned empty children — the GitLab MR batch and every REST child waterfall were affected. A job that fetched listing pages and then failed forgets its repo’s cached ETags (<code class="docutils literal notranslate"><span class="pre">ForgetRepoETags</span></code>, v0.28.18) so the retry re-reads every page; the paginator rebases GitHub’s <code class="docutils literal notranslate"><span class="pre">/repositories/{id}/…</span></code> Link-header continuations onto the listing’s <code class="docutils literal notranslate"><span class="pre">/repos/{owner}/{repo}/</span></code> namespace so page 2 onward is forgotten with page 1.</p></li>
@@ -1845,6 +1870,18 @@ the first response.</p>
 </tbody>
 </table>
 <p>The pagination functions (<code class="docutils literal notranslate"><span class="pre">PaginateGitHub</span></code>, <code class="docutils literal notranslate"><span class="pre">PaginateGitLab</span></code>) are generic and work with any JSON-decodable type.</p>
+<section id="page-size-step-down-v0-29-72">
+<h3>Page-size step-down (v0.29.72)<a class="headerlink" href="#page-size-step-down-v0-29-72" title="Link to this heading"></a></h3>
+<p>A forge answers each request within a fixed time budget (GitHub’s is about 10 seconds), and a page costs the sum of its items. Old review comments are expensive for GitHub to render: on the largest repositories a page of 100 from <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/pulls/comments</span></code> returns 502 after about 10 seconds on every attempt, while the same items at 50 or 25 per page return in 3–8 seconds. Retrying the same URL cannot succeed.</p>
+<p>A listing opts in with <code class="docutils literal notranslate"><span class="pre">platform.WithPageSizeStepDown(ctx,</span> <span class="pre">budget)</span></code>, naming the forge’s request budget (<code class="docutils literal notranslate"><span class="pre">platform.GitHubRequestBudget</span></code>, GitHub’s documented 10 seconds). Under it:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Get</span></code> times each request. A 502/504 counts against the page only when it arrived after at least the budget: a page over budget fails only when the forge’s timer runs out, while a hard outage or a gateway blip answers fast. (A degraded forge whose backends hang also answers slowly; the step-up and the floor fallback below bound what that costs.) After two such answers to the same page <code class="docutils literal notranslate"><span class="pre">Get</span></code> returns <code class="docutils literal notranslate"><span class="pre">ErrPageTooSlow</span></code>; one is retried, because a single slow 502 can be a passing gateway error. A fast 502/504, a 500 and a 503 keep the full retry budget at the page’s own size.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">paginate</span></code> requests the <strong>same item offset</strong> at the next size on the ladder 100 → 50 → 25 → 5 → 1. Each size divides the one before it, so the walk resumes on exactly the item that failed, with no gap and no duplicate. GitLab continuations are built at the new size. The step logs <code class="docutils literal notranslate"><span class="pre">listing</span> <span class="pre">page</span> <span class="pre">exceeded</span> <span class="pre">the</span> <span class="pre">forge's</span> <span class="pre">time</span> <span class="pre">budget</span> <span class="pre">—</span> <span class="pre">stepping</span> <span class="pre">the</span> <span class="pre">page</span> <span class="pre">size</span> <span class="pre">down</span></code> with the old and new size and the item offset.</p></li>
+<li><p><strong>Stepping back up.</strong> After a step-down the walk probes the next larger size at the first offset that size divides (<code class="docutils literal notranslate"><span class="pre">listing</span> <span class="pre">walk</span> <span class="pre">is</span> <span class="pre">stepping</span> <span class="pre">the</span> <span class="pre">page</span> <span class="pre">size</span> <span class="pre">back</span> <span class="pre">up</span></code>, INFO). A probe that is still over budget steps down again and doubles the number of successful pages the walk waits before probing that size again; a probe that succeeds resets that size’s wait. The wait is kept per size, so a probe that succeeds to one size does not erase what the walk learned about the size above it. An incident that has passed is climbed out of at once; for each size, a region where it really is over budget costs a number of failed probes that grows with the logarithm of the region’s length, even when the region’s density varies. Only the probes are logarithmic: each stretch too dense for the current size still costs one step-down (two over-budget answers) when the walk reaches it. A probe is optional, since the size the walk came from was serving: a probe whose body cannot be read (cut off on every read retry) is a failed probe like an over-budget one, and the walk goes back to the smaller size at the same offset (<code class="docutils literal notranslate"><span class="pre">listing</span> <span class="pre">walk's</span> <span class="pre">larger-page</span> <span class="pre">probe's</span> <span class="pre">body</span> <span class="pre">could</span> <span class="pre">not</span> <span class="pre">be</span> <span class="pre">read</span></code>, WARN); with no probe in flight an unreadable body still ends the listing, as before. A step to a smaller page gives it a fresh body-read budget (<code class="docutils literal notranslate"><span class="pre">maxPageReadRetries</span></code>), since it is a smaller request; the floor’s fallback does not, because there the size cannot change and a reset would let one page be re-fetched without bound. The step-down WARN says whether it was a failed probe (<code class="docutils literal notranslate"><span class="pre">step_up_probe</span></code>) and the next wait (<code class="docutils literal notranslate"><span class="pre">next_probe_after_pages</span></code>).</p></li>
+<li><p><strong>The floor.</strong> At per_page=1 a page still over budget gets the ordinary retry budget (<code class="docutils literal notranslate"><span class="pre">…</span> <span class="pre">at</span> <span class="pre">the</span> <span class="pre">smallest</span> <span class="pre">page</span> <span class="pre">size</span> <span class="pre">—</span> <span class="pre">retrying</span> <span class="pre">it</span> <span class="pre">with</span> <span class="pre">the</span> <span class="pre">ordinary</span> <span class="pre">retry</span> <span class="pre">budget</span></code>, WARN), so a long incident does not fail the walk sooner than before the step-down existed. If that is exhausted too it is a real failure: it logs at ERROR and returns <code class="docutils literal notranslate"><span class="pre">ErrPageTooSlow</span></code> wrapped with <code class="docutils literal notranslate"><span class="pre">ErrTransient</span></code>, which classifies like any exhausted retry. A page whose path carries no usable <code class="docutils literal notranslate"><span class="pre">per_page</span></code> cannot be stepped and logs <code class="docutils literal notranslate"><span class="pre">…</span> <span class="pre">its</span> <span class="pre">path</span> <span class="pre">has</span> <span class="pre">no</span> <span class="pre">page</span> <span class="pre">size</span> <span class="pre">to</span> <span class="pre">step</span> <span class="pre">down</span></code> instead. The step-down WARN carries the error, so the status (502 or 504) is in the log, and every <code class="docutils literal notranslate"><span class="pre">server</span> <span class="pre">error,</span> <span class="pre">retrying</span> <span class="pre">with</span> <span class="pre">backoff</span></code> WARN carries <code class="docutils literal notranslate"><span class="pre">elapsed</span></code>, how long the answer took, so the 10-second boundary can be checked against production.</p></li>
+</ul>
+<p>The GitHub review-comment listings opt in: the repo-wide <code class="docutils literal notranslate"><span class="pre">/pulls/comments</span></code> and the per-PR <code class="docutils literal notranslate"><span class="pre">/pulls/{n}/comments</span></code>. The mechanism lives in the shared engine and works for GitLab listings too, but no GitLab listing opts in, because no GitLab endpoint has shown the failure.</p>
+</section>
 </section>
 <hr class="docutils" />
 <section id="url-parsing-repourl">

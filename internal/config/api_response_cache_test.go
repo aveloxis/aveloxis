@@ -29,9 +29,15 @@ func TestAPIResponseCacheKnobs(t *testing.T) {
 		wantBytes int64
 		wantEvery time.Duration
 	}{
-		{`{}`, 2048 << 20, time.Minute},
+		// Off by default (operator decision 2026-10-04: an advanced option,
+		// not what a fresh deployment gets); one knob turns it on, and the
+		// re-warm cadence applies only while the cache holds anything.
+		{`{}`, 0, 0},
+		{`{"api": {"response_cache_mb": 64}}`, 64 << 20, time.Minute},
+		{`{"api": {"cache_rewarm_seconds": 5}}`, 0, 0},
 		{`{"api": {"response_cache_mb": 1, "cache_rewarm_seconds": 1}}`, 1 << 20, time.Second},
 		{`{"api": {"response_cache_mb": 0, "cache_rewarm_seconds": 0}}`, 0, 0},
+		{`{"api": {"response_cache_mb": 64, "cache_rewarm_seconds": 0}}`, 64 << 20, 0},
 	}
 	for _, c := range cases {
 		cfg, err := Load(write(c.json))
@@ -62,7 +68,7 @@ func TestAPIResponseCacheKnobs(t *testing.T) {
 		if b := (APIConfig{ResponseCacheMB: intPtr(int(mb))}).ResponseCacheBytes(); b <= 0 {
 			t.Errorf("MaxResponseCacheMB overflows: %d", b)
 		}
-		if d := (APIConfig{CacheRewarmSeconds: intPtr(int(sec))}).CacheRewarmInterval(); d <= 0 {
+		if d := (APIConfig{ResponseCacheMB: intPtr(1), CacheRewarmSeconds: intPtr(int(sec))}).CacheRewarmInterval(); d <= 0 {
 			t.Errorf("MaxCacheRewarmSeconds overflows: %v", d)
 		}
 	}

@@ -50,6 +50,39 @@ type Config struct {
 	// Populated from config.MailConfig.OperatorEmail by main.go;
 	// empty = those notifications are silently skipped.
 	OperatorEmail string `json:"operator_email"`
+
+	// SPAURL is the origin of the separate-repo front end (config
+	// web.spa_url), populated by main.go. When set, the links in the group
+	// emails and the confirmation link point at that front end's pages;
+	// empty — a plain aveloxis deployment — keeps the web process's own
+	// pages (2026-10-04).
+	SPAURL string `json:"spa_url"`
+}
+
+// groupPageLink is the link a group email carries to the group's page:
+// the front end's group.html when web.spa_url is set, the web process's
+// /groups/{id} otherwise; with no site configured at all, the placeholder
+// the body always showed (no path: there is nothing to append it to).
+func (m *Mailer) groupPageLink(groupID int64) string {
+	if spa := m.cfg.SPAURL; spa != "" {
+		return fmt.Sprintf("%s/group.html?group=%d", spa, groupID)
+	}
+	if m.cfg.SiteURL != "" {
+		return fmt.Sprintf("%s/groups/%d", m.cfg.SiteURL, groupID)
+	}
+	return "(your Aveloxis site URL)"
+}
+
+// pendingApprovalsLink is the link the operator's add-request notification
+// carries to the approvals queue (groupPageLink's rule).
+func (m *Mailer) pendingApprovalsLink() string {
+	if spa := m.cfg.SPAURL; spa != "" {
+		return spa + "/pending-groups.html"
+	}
+	if m.cfg.SiteURL != "" {
+		return m.cfg.SiteURL + "/admin/groups/pending"
+	}
+	return "(your Aveloxis site URL)/admin/groups/pending"
 }
 
 // OperatorEmail exposes the configured operator address so callers
@@ -138,6 +171,10 @@ func New(cfg Config, logger *slog.Logger) *Mailer {
 	// internal/web (confirmation links, the startup WARN): a stray space
 	// or trailing slash used to break some links and not others.
 	cfg.SiteURL = normalizeSiteURL(cfg.SiteURL)
+	// spa_url is NOT normalized here or at any reader: config.Load refuses
+	// a non-canonical value (trailing slash, spaces, query) naming the key,
+	// so every reader — the two link builders below, internal/web's
+	// confirmation link and OAuth return — takes it as written (SR-17).
 	if err := ValidateAndLog(cfg, logger); err != nil {
 		// Validation failed: drop the bad config and behave as
 		// if email were unconfigured. Send will hit its empty-
@@ -531,11 +568,7 @@ ignore this email — your account email won't change without confirming.
 // started and points at the group's detail page.
 func (m *Mailer) SendGroupApproved(toEmail, login, groupName string, groupID int64) error {
 	subject := fmt.Sprintf("Your Aveloxis group '%s' has been approved", sanitizeBodyValue(groupName))
-	siteURL := m.cfg.SiteURL
-	link := "(your Aveloxis site URL)"
-	if siteURL != "" {
-		link = fmt.Sprintf("%s/groups/%d", siteURL, groupID)
-	}
+	link := m.groupPageLink(groupID)
 	body := fmt.Sprintf(`Hello %s,
 
 An administrator has approved your group '%s'. Aveloxis will begin
@@ -572,11 +605,7 @@ func (m *Mailer) SendAddRequestSubmitted(to, requesterLogin, groupName, kind str
 	if len(sample) > addRequestSampleMax {
 		sample = sample[:addRequestSampleMax]
 	}
-	siteURL := m.cfg.SiteURL
-	link := "(your Aveloxis site URL)/admin/groups/pending"
-	if siteURL != "" {
-		link = siteURL + "/admin/groups/pending"
-	}
+	link := m.pendingApprovalsLink()
 	body := fmt.Sprintf(`User %s asked to add %s to their group '%s'
 (request #%d). None of it is currently collected, so collection will
 not start until an administrator approves the request.

@@ -59,14 +59,20 @@ type Server struct {
 	// test Servers, which fail closed to the 403).
 	sharedWithMe sharedWithMeStore
 
+	// accounts serves the profile routes (/me's account fields, the
+	// account-email submission and confirmation); the store, or a fake.
+	accounts accountStore
+	spaURL   string // web.spa_url, for the confirmation link
+
 	// v0.27.59 (repo count) → v0.27.77 (full fleet payload): 60s
 	// stale-on-error cache for GET /public/stats — repos, commits,
 	// issues, PRs, contributors.
 	publicStats *publicStatsCache
 
 	// v0.27.61: general 60s body cache for per-repo read endpoints
-	// (contributor elsewhere, new repos; top contributors moved to
-	// repoCache in v0.29.71). Same shape as cmpCache; separate instance
+	// (contributor elsewhere, new repos; top contributors moved to the
+	// collection-generation cache in v0.29.71, then to pageCache in
+	// v0.29.73). Same shape as cmpCache; separate instance
 	// so a compare-traffic flood can't evict these bodies (both maps are
 	// bounded at 1000).
 	respCache *compareCache
@@ -111,7 +117,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	// cache answers live (cachedRepoGET's guard).
 	if store != nil {
 		s.repoStates = store.RepoCacheStates
+		s.accounts = store
 	}
+	s.spaURL = opts.SPAURL
 	s.rewarmInterval = opts.RewarmInterval
 	s.requestTimeout = opts.RequestTimeout
 	s.frontEndSecret = opts.FrontEndSecret
@@ -165,6 +173,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	// require a Bearer identity (admin routes require admin), even
 	// while api.require_auth is off for the read endpoints.
 	s.mux.HandleFunc("GET /api/v1/me", s.handleMe)
+	s.mux.HandleFunc("POST /api/v1/me/email", s.handleMeEmail)
+	s.mux.HandleFunc("POST /api/v1/me/email/confirm", s.handleMeEmailConfirm)
 	s.mux.HandleFunc("GET /api/v1/groups", s.handleGroupsList)
 	s.mux.HandleFunc("POST /api/v1/groups", s.handleGroupCreate)
 	s.mux.HandleFunc("GET /api/v1/groups/{groupID}/repos", s.handleGroupRepos)

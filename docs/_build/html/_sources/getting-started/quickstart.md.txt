@@ -118,13 +118,19 @@ https://gitlab.com/group/subgroup/project
 
 ---
 
-## Step 5: Start the scheduler
+## Step 5: Start the processes
 
 ```bash
-aveloxis serve --monitor :5555
+aveloxis start all        # serve + web (:8082) + api (127.0.0.1:8383), logs under ~/.aveloxis/
 ```
 
-This starts the long-running scheduler that:
+Or only the scheduler, in the foreground:
+
+```bash
+aveloxis serve --monitor 127.0.0.1:5555
+```
+
+`serve` is the long-running scheduler that:
 
 - Continuously polls the queue for repos due for collection
 - Runs the full staged pipeline (API collection, processing, facade, commit resolution, analysis)
@@ -137,7 +143,7 @@ This starts the long-running scheduler that:
 Open your browser to:
 
 ```
-http://localhost:5555
+http://127.0.0.1:5555
 ```
 
 The dashboard shows:
@@ -145,7 +151,7 @@ The dashboard shows:
 - **Queue statistics** -- total repos, queued, currently collecting
 - **Repo table** -- every repo with status, priority, due time, and last run results
 - **Boost button** -- push any repo to the front of the queue
-- Auto-refreshes every 10 seconds
+- Auto-refreshes every `monitor.refresh_seconds` (default 60)
 
 ---
 
@@ -214,6 +220,11 @@ aveloxis prioritize https://github.com/kubernetes/kubernetes
 ```
 
 ---
+
+The web GUI is at `http://localhost:8082` once OAuth is configured
+([Web GUI](../guide/web-gui.md)); the first account to sign in becomes
+the admin. For a host other people reach, see
+[Production Deployment](deployment.md).
 
 ## Next steps
 

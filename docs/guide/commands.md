@@ -57,11 +57,11 @@ See [`configuration.md` -> scancode worker](../getting-started/configuration.md)
 ### Examples
 
 ```bash
-# Start with defaults (1 worker, dashboard on :5555)
+# Start with defaults (collection.workers, default 12; dashboard on 127.0.0.1:5555)
 aveloxis serve
 
-# Start with 4 workers and a custom dashboard port
-aveloxis serve --workers 4 --monitor :8082
+# Start with 4 workers and a custom dashboard address (8082 is the web GUI's port)
+aveloxis serve --workers 4 --monitor 127.0.0.1:5556
 
 # Start using Augur's API keys
 aveloxis serve --workers 4 --augur-keys
@@ -85,7 +85,11 @@ The `web` command has no CLI flags. All settings come from the `web` section of 
 |---|---|---|---|
 | `web.addr` | string | `":8082"` | Listen address for the web server. |
 | `web.base_url` | string | `"http://localhost:8082"` | External URL used to construct OAuth callback URLs. |
-| `web.session_secret` | string | (required) | Secret key for signing session cookies. |
+| `web.session_secret` | string | `""` | Reserved; not read today (sessions are random in-process tokens). Set a random string anyway. |
+| `web.dev_mode` | bool | `false` | Local HTTP development: cookies without `Secure`, loopback confirmation links. Never in production. |
+| `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Where `web` proxies `/api/*`; must follow `api.addr`. |
+| `web.spa_url` | string | `""` | The origin of a separate front end whose `?next=` the login flow may honor; empty otherwise. |
+| `web.auto_approve_add_limit` | int | `0` | Ordinary users' repository batches up to this size are approved automatically; `0` means every addition waits for an admin; organizations always do. |
 | `web.github_client_id` | string | `""` | GitHub OAuth app client ID. |
 | `web.github_client_secret` | string | `""` | GitHub OAuth app client secret. |
 | `web.gitlab_client_id` | string | `""` | GitLab OAuth app client ID (Application ID). |
@@ -1131,10 +1135,9 @@ sitemap, and the prune pass with it). If a run still times out, raise
 `--timeout` — the first run on a cold Postgres cache is the slowest;
 subsequent hourly runs benefit from warm buffers.
 
-Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
-in the aveloxis-gui repo's `deploy/` directory). Read-only on the
-schema; does not run migrations (v0.21.5 policy). Safe alongside an
-active `aveloxis serve`.
+Runs hourly from a systemd timer (the Aveloxis project's own site keeps
+its unit with the site). Read-only on the schema; does not run migrations
+(v0.21.5 policy). Safe alongside an active `aveloxis serve`.
 
 ## `aveloxis adopt-forge-id`
 

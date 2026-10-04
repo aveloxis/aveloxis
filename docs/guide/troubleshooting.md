@@ -223,7 +223,7 @@ These only report; nothing acts on them.
 
 4. Restart:
    ```bash
-   aveloxis serve --workers 4 --monitor :5555
+   aveloxis serve --workers 4 --monitor 127.0.0.1:5555
    ```
 
 ```{note}

@@ -511,9 +511,11 @@ func assertSnippetAccessorsAreComplete(t *testing.T) {
 // staleness reverse-check as every other exemption here.
 var exampleBlockAllowlist = map[string]map[string]string{
 	exampleDockerFile: {
-		"database.Host":    "compose service name — the container reaches Postgres as `postgres`, not localhost",
-		"database.SSLMode": "intra-compose network; TLS terminates outside the container",
-		"web.DevMode":      "the compose stack serves plain HTTP on localhost, so Secure cookies would never be sent",
+		"database.Host":      "compose service name — the container reaches Postgres as `postgres`, not localhost",
+		"database.SSLMode":   "intra-compose network; TLS terminates outside the container",
+		"web.DevMode":        "the compose stack serves plain HTTP on localhost, so Secure cookies would never be sent",
+		"api.Addr":           "every interface inside the api container: the web container and the published port reach it by name, not loopback (docker-compose.yml passes the same --addr)",
+		"web.APIInternalURL": "compose service name — the web container proxies /api/* to `api`, not to its own loopback",
 	},
 }
 

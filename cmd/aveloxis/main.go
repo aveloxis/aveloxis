@@ -2402,6 +2402,7 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config {
 		FromName:         cfg.Mail.FromName,
 		SiteURL:          cfg.Mail.SiteURL,
 		OperatorEmail:    cfg.Mail.OperatorEmail,
+		SPAURL:           cfg.Web.SPAURL,
 	}
 }
 
@@ -2451,6 +2452,7 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		RewarmInterval:     cfg.API.CacheRewarmInterval(),
 		RequestTimeout:     cfg.HTTPTimeout(),
 		FrontEndSecret:     cfg.API.FrontEndSecret,
+		SPAURL:             cfg.Web.SPAURL,
 	}
 }
 

@@ -60,7 +60,10 @@ is an error and exits non-zero, rather than printing an empty list.
 deploy steps, `aveloxis start serve` (and `start all`) asks at a terminal
 whether they were completed and, without a terminal — a script, systemd,
 an SSH command — **refuses to start** until they are acknowledged. Run it
-after the heals, not before: it records that the steps ran. If the schema
+after the heals, not before: it records that the steps ran. The gate is
+`aveloxis start`'s: a systemd unit runs `aveloxis serve` directly, which
+migrates at its own start with no gate, so under systemd run the ladder
+by hand and start the target last ([Production Deployment](deployment.md#11-upgrading)). If the schema
 stamp cannot be read, `--pending` says so and starts the range from the
 acknowledgements (the new binary's own steps if there are none); the
 section below says how to find the version you are
@@ -201,8 +204,11 @@ no-op once their work is done):
 
 An older `aveloxis.json` keeps working: unknown keys are ignored and
 every new key takes its documented default (see
-[Configuration](configuration.md)). Defaults that **changed** — check
-whether you relied on the old value:
+[Configuration](configuration.md)) — with one class of exception: a value
+a release starts to **validate** is refused at load, by `aveloxis migrate`
+and every process alike, so check the table before step 3. Defaults that
+**changed**, and values now refused — check whether you relied on the old
+behavior:
 
 | Key | Old default | New default | Since |
 |---|---|---|---|
@@ -211,6 +217,8 @@ whether you relied on the old value:
 | `collection.matview_rebuild_day` = `"disable"` | silently fell back to Saturday | honored (alias of `disabled`) | v0.27.96 |
 | `collection.vuln_scan_transitive` | off | on — lockfile closures + transitive findings + real SBOM graphs | v0.27.136 |
 | `collection.archived_recollect_multiplier` | (every repo on the same cadence) | 6 — archived repos recollect six times less often | v0.28.1 |
+| `api.trusted_proxy` | any text; a host name, a CIDR or a non-canonical spelling silently never matched | must be an IP address in canonical form (`127.0.0.1`, lowercase compressed IPv6); anything else is **refused at load**, naming the canonical spelling | v0.29.73 |
+| `api.front_end_secret` | — | a value without `api.trusted_proxy`, or shorter than 32 characters, is **refused at load** | v0.29.73 |
 
 Two behavior changes that need no configuration but are worth knowing:
 since v0.27.139 incremental collection anchors `since` on the previous

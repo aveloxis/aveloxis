@@ -3,10 +3,10 @@
 Aveloxis includes a REST API server for programmatic access to collected data, repository statistics, time-series metrics, SBOM downloads, and vulnerability information. Start it with:
 
 ```bash
-aveloxis api --addr :8383
+aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr overrides it
 ```
 
-The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database.
+The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
 ## Endpoints
 
@@ -19,8 +19,10 @@ GET /api/v1/health
 Returns the server status and version.
 
 ```json
-{"status": "ok", "version": "0.9.0"}
+{"status": "ok", "version": "0.29.73"}
 ```
+
+`version` is the running binary's.
 
 ### Public fleet stats
 
@@ -698,16 +700,22 @@ origin (and the web GUI origin if its pages fetch the API cross-port).
 
 ## Deployment
 
-The API server is stateless — it reads directly from PostgreSQL. You can run multiple instances behind a load balancer for high availability.
+The three processes are started together with `aveloxis start all` (pidfiles
+and logs under `~/.aveloxis/`) or, on a production host, as systemd units
+([Running as a Service](running-as-a-service.md)); the whole layout — proxy,
+OAuth, the first admin, upgrades — is
+[Production Deployment](../getting-started/deployment.md).
 
-```bash
-# Typical 3-process deployment
-(nohup aveloxis serve --workers 40 --monitor :5555 >> aveloxis.log &)
-(nohup aveloxis web >> web.log &)
-(nohup aveloxis api --addr :8383 >> api.log &)
-```
+Each `api` process keeps its own state: the per-repository response cache
+(up to `api.response_cache_mb`), its rate-limit buckets and a short
+authorization cache. Several instances behind a load balancer each compute
+and hold their own answers, and the per-IP limits are per instance; run one
+per host unless that is what you want.
 
-The web GUI's Chart.js visualizations fetch data from the API server. The API URL is configured as `http://localhost:8383` by default. If running on a different host or port, update the API base URL in the web templates.
+The web GUI's charts fetch the API through the web process, which proxies
+`/api/*` to `web.api_internal_url` (`http://127.0.0.1:8383` by default);
+when the API moves, that URL must follow. Behind a reverse proxy, send
+`/api/` to the API directly so its per-visitor limits see the visitor.
 
 ## Comparison analytics (v0.27.2)
 
@@ -1172,12 +1180,30 @@ require the caller's user to be an administrator (403 otherwise).
 
 Per-user:
 
-- `GET /api/v1/me` — `{user_id, login, name, avatar_url, is_admin,
-  scope_repo_count}` (`login` added v0.27.77; `name` + `avatar_url`
-  added v0.27.84 — the home greeting and nav avatar render the REAL
-  signed-in identity, stored from OAuth and refreshed on every
-  login). `scope_repo_count` is `-1` for admins (unscoped). The GUI
-  uses `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/me` — `{user_id, login, name, avatar_url, provider, email,
+  email_pending, is_admin, scope_repo_count}` (`login` added v0.27.77;
+  `name` + `avatar_url` added v0.27.84 — the home greeting and nav avatar
+  render the REAL signed-in identity, stored from OAuth and refreshed on
+  every login; `provider` (`github` or `gitlab`), `email` and
+  `email_pending` added 2026-10-04 for the profile page: `email` is the
+  forge's own address taken at sign-in, or one confirmed through the
+  mailed link; `email_pending` is an address awaiting confirmation, or
+  empty). `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
+  `is_admin` to decide whether to render the admin navigation.
+- `POST /api/v1/me/email` — body `{"email": "…"}`: stores the address as
+  pending and mails the confirmation link, for an account whose forge gave
+  no email (a private GitHub address). `200 {"sent": true}`, or `422
+  {"sent": false, "message": "…"}` with the reason (not a deliverable
+  address; mail not configured — `mail.site_url` and the Gmail settings
+  are required; a failed save or send). The link lands on the front end's
+  profile page when `web.spa_url` is set, on the web process's
+  `/account/email/confirm` otherwise. The same submission the web
+  process's `/account/email` form runs.
+- `POST /api/v1/me/email/confirm` — body `{"token": "…"}` from that link,
+  for the signed-in account: `200 {"status": "confirmed"}`; `200 {"status":
+  "invalid"}` for a token that is not live for this account (unknown,
+  expired, already used, another account's — nothing changes); `500
+  {"status": "error"}` when the database failed (the link still works).
 - `GET /api/v1/groups` — the caller's groups:
   `{groups: [{group_id, name, status, repo_count, favorited,
   pending_adds}]}`. `status` is `approved`, `pending`, or `rejected`

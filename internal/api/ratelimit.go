@@ -71,6 +71,11 @@ type Options struct {
 	// count that request twice. Empty: every request is counted.
 	FrontEndSecret string
 
+	// SPAURL is web.spa_url: the separate-repo front end's origin. The
+	// account-email confirmation link lands on its profile page when set
+	// (web.ConfirmationPolicy); empty keeps the web process's own page.
+	SPAURL string
+
 	// GitHubAPIBase is github.base_url — the host an org registered through
 	// the portal must be on (db.ErrOrgOffGitHubHost); empty means public
 	// GitHub (v0.29.57 round 2).

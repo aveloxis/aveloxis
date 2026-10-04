@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.69 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.73 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
+      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -90,6 +90,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#clone-directory">Clone directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#public-analytics-api-api">Public analytics API (<code class="docutils literal notranslate"><span class="pre">api</span></code>)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#reaching-the-api-from-another-host">Reaching the API from another host</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#response-caching-advanced-off-by-default">Response caching (advanced, off by default)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#email-gmail-smtp-optional">Email (Gmail SMTP, optional)</a><ul>
@@ -124,11 +125,26 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/quickstart.html#add-all-repos-from-a-github-organization">Add all repos from a GitHub organization</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#step-5-start-the-scheduler">Step 5: Start the scheduler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#step-5-start-the-processes">Step 5: Start the processes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#check-the-monitoring-dashboard">Check the monitoring dashboard</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#verify-data-in-the-database">Verify data in the database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#what-happens-next">What happens next</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/deployment.html">Production Deployment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#the-three-processes">The three processes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#requirements">1. Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#install">2. Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#postgresql">3. PostgreSQL</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#configuration">4. Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#schema">5. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#api-keys">6. API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#oauth-applications-and-the-first-admin">7. OAuth applications and the first admin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#running">8. Running</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#reverse-proxy">9. Reverse proxy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#verify">10. Verify</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#upgrading">11. Upgrading</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a><ul>
@@ -463,6 +479,7 @@
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#pick-one-manager">Pick one manager</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#unit-files">Unit files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#enable-and-manage">Enable and manage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#upgrading-under-systemd">Upgrading under systemd</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#the-path-trap">The PATH trap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#logs">Logs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#automatic-restarts-unattended-upgrades-and-needrestart">Automatic restarts, unattended upgrades, and needrestart</a></li>
@@ -592,6 +609,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#observation-lines-added-in-0-29-70">Observation lines added in 0.29.70</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#fk-constraint-violations">FK constraint violations</a></li>
@@ -648,7 +666,11 @@
 <li class="toctree-l3"><a class="reference internal" href="#list-all-sidelined-repos">List all sidelined repos</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#gateway-errors-502-503-504">Gateway errors (502/503/504)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository">The same <code class="docutils literal notranslate"><span class="pre">pulls/comments</span></code> page fails every cycle on a large repository</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#charts-or-pages-time-out-504-502-in-the-browser">Charts or pages time out (504 / 502 in the browser)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#deadlock-errors">Deadlock errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#prepared-statement-stmtcache-does-not-exist-sqlstate-26000"><code class="docutils literal notranslate"><span class="pre">prepared</span> <span class="pre">statement</span> <span class="pre">&quot;stmtcache_...&quot;</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span> <span class="pre">(SQLSTATE</span> <span class="pre">26000)</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#restart-appears-to-take-days-before-collection-resumes">Restart appears to take days before collection resumes</a></li>
@@ -895,7 +917,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#architecture">3. Architecture</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#components">3.1 Components</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#the-lifecycle-of-a-single-scan">3.2 The lifecycle of a single scan</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-v0-21-3-minimum-gap-not-throughput-cap">3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-a-start-gap-per-worker-v0-21-3-v0-29-70">3.3 Dispatcher pacing: a start gap per worker (v0.21.3, v0.29.70)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#cadence-rationale-180-days-default">4. Cadence rationale (180 days default)</a></li>
@@ -1136,7 +1158,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#page-size-step-down-v0-29-72">Page-size step-down (v0.29.72)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#design-notes">Design notes</a></li>
@@ -1773,7 +1798,8 @@ psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> <
 </section>
 <section id="rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget">
 <h3><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget<a class="headerlink" href="#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget" title="Link to this heading"></a></h3>
-<p><strong>Symptom:</strong> Many <code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> lines carry the same <code class="docutils literal notranslate"><span class="pre">token_prefix</span></code>,
+<p><strong>Symptom:</strong> Many <code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> lines carry the same <code class="docutils literal notranslate"><span class="pre">token_hash</span></code>
+(<code class="docutils literal notranslate"><span class="pre">token_prefix</span></code> before 0.29.70),
 often the same URL several times in a row. Collection steps fail with
 <code class="docutils literal notranslate"><span class="pre">exhausted</span> <span class="pre">10</span> <span class="pre">retries</span> <span class="pre">…</span> <span class="pre">transient</span></code>.</p>
 <p><strong>Cause (fixed in v0.29.55):</strong> the key pool kept one tracked window per key
@@ -1791,10 +1817,55 @@ resource, or on a budget that does not match the request, logs
 GitHub recommends the headers. On 2026-09-17, for the same token,
 <code class="docutils literal notranslate"><span class="pre">/rate_limit</span></code> reported an unused budget while its response headers showed
 hundreds of calls used. <code class="docutils literal notranslate"><span class="pre">scripts/check-keys.sh</span></code> reads <code class="docutils literal notranslate"><span class="pre">/rate_limit</span></code>, so a
-<code class="docutils literal notranslate"><span class="pre">5000</span> <span class="pre">/</span> <span class="pre">5000</span></code> row there does not prove a key is unused. The 5-minute
+<code class="docutils literal notranslate"><span class="pre">5000</span> <span class="pre">/</span> <span class="pre">5000</span></code> row there does not prove a key is unused. Since 0.29.70 it
+names each key by the same <code class="docutils literal notranslate"><span class="pre">token_hash</span></code> the logs use, so a row matches a
+log line directly. The 5-minute
 <code class="docutils literal notranslate"><span class="pre">key</span> <span class="pre">pool</span> <span class="pre">summary</span></code> line reports <code class="docutils literal notranslate"><span class="pre">refused_core_now</span></code>, <code class="docutils literal notranslate"><span class="pre">refused_graphql_now</span></code>,
 <code class="docutils literal notranslate"><span class="pre">refused_search_now</span></code> and <code class="docutils literal notranslate"><span class="pre">refusals_lifetime</span></code> next to the tracked
 <code class="docutils literal notranslate"><span class="pre">core_remaining_*</span></code> balances.</p>
+</section>
+<section id="observation-lines-added-in-0-29-70">
+<h3>Observation lines added in 0.29.70<a class="headerlink" href="#observation-lines-added-in-0-29-70" title="Link to this heading"></a></h3>
+<p>These only report; nothing acts on them.</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">collection</span> <span class="pre">slots</span></code></strong> (INFO, with every key pool summary): how many jobs
+are running (<code class="docutils literal notranslate"><span class="pre">active</span></code>), the oldest one’s <code class="docutils literal notranslate"><span class="pre">oldest_repo_id</span></code>, <code class="docutils literal notranslate"><span class="pre">oldest_phase</span></code>
+and <code class="docutils literal notranslate"><span class="pre">oldest_age</span></code>, and a <code class="docutils literal notranslate"><span class="pre">per_phase</span></code> count. A job stuck in one phase for
+hours shows up here before its own completion line exists.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">key</span> <span class="pre">pool</span> <span class="pre">reset</span> <span class="pre">agreement</span></code></strong> (INFO, with every key pool summary): for
+each bucket (<code class="docutils literal notranslate"><span class="pre">core</span></code>, <code class="docutils literal notranslate"><span class="pre">graphql</span></code>), how many responses reported a rate-limit
+reset <code class="docutils literal notranslate"><span class="pre">earlier</span></code> than, <code class="docutils literal notranslate"><span class="pre">equal</span></code> to or <code class="docutils literal notranslate"><span class="pre">later</span></code> than the window the pool was
+tracking, or had no tracked window (<code class="docutils literal notranslate"><span class="pre">untracked</span></code>), plus the endpoints that
+disagreed. It is the data worklist item 28 needs before the pool’s
+window model changes.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">transaction-ID</span> <span class="pre">status</span></code></strong> (INFO, hourly): <code class="docutils literal notranslate"><span class="pre">frozen_xid_age</span></code> (the age
+of the database’s <code class="docutils literal notranslate"><span class="pre">datfrozenxid</span></code>), <code class="docutils literal notranslate"><span class="pre">autovacuum_freeze_max_age</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pct_of_freeze_max_age</span></code> and the current transaction ID. A percentage climbing toward
+100 means anti-wraparound vacuums are due.</p></li>
+<li><p><strong>Commit resolution’s completion line</strong> now carries <code class="docutils literal notranslate"><span class="pre">duration</span></code>,
+<code class="docutils literal notranslate"><span class="pre">backfill_duration</span></code> (the author-ID backfill, which ran for over an hour
+on large repositories), <code class="docutils literal notranslate"><span class="pre">search_attempts</span></code> and <code class="docutils literal notranslate"><span class="pre">search_time</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">response</span> <span class="pre">size</span> <span class="pre">high-water</span> <span class="pre">mark</span></code></strong> (INFO, since 0.29.71): one line each
+time a data response is larger than any earlier one from the same source
+(<code class="docutils literal notranslate"><span class="pre">source</span></code>: <code class="docutils literal notranslate"><span class="pre">github-rest</span></code>, <code class="docutils literal notranslate"><span class="pre">gitlab-rest</span></code>, <code class="docutils literal notranslate"><span class="pre">github-graphql</span></code>,
+<code class="docutils literal notranslate"><span class="pre">gitlab-graphql</span></code>, <code class="docutils literal notranslate"><span class="pre">registry</span></code>, <code class="docutils literal notranslate"><span class="pre">osv-batch</span></code>, <code class="docutils literal notranslate"><span class="pre">osv-detail</span></code>, <code class="docutils literal notranslate"><span class="pre">ponymail</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ponymail-mbox</span></code>, <code class="docutils literal notranslate"><span class="pre">depsdev</span></code>, <code class="docutils literal notranslate"><span class="pre">ecosystems</span></code>, <code class="docutils literal notranslate"><span class="pre">jira</span></code>, <code class="docutils literal notranslate"><span class="pre">oauth-github-user</span></code>,
+<code class="docutils literal notranslate"><span class="pre">oauth-gitlab-user</span></code>, the importers), with <code class="docutils literal notranslate"><span class="pre">bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">previous_max</span></code> and the
+redacted <code class="docutils literal notranslate"><span class="pre">url</span></code>. Only successful (200) answers count. Data responses have no
+size limit; these lines are how the largest ones are measured. A line
+appears only when a new maximum is set: a handful per source in practice,
+one per request only if a source’s sizes keep rising.</p></li>
+<li><p><strong>Scorecard’s attempt line</strong> carries <code class="docutils literal notranslate"><span class="pre">lent_tokens</span></code>: the <code class="docutils literal notranslate"><span class="pre">token_hash</span></code> of
+each key lent to that run.</p></li>
+<li><p><strong>Keys are named by <code class="docutils literal notranslate"><span class="pre">token_hash</span></code></strong> (0.29.70; it replaces <code class="docutils literal notranslate"><span class="pre">token_prefix</span></code>,
+which showed the first 8 characters of the token): the token’s public
+type (<code class="docutils literal notranslate"><span class="pre">ghp_</span></code>, <code class="docutils literal notranslate"><span class="pre">github_pat_</span></code>, <code class="docutils literal notranslate"><span class="pre">glpat-</span></code>, …), <code class="docutils literal notranslate"><span class="pre">#</span></code>, and the first 8 hex
+digits of its SHA-256 — no character of the secret. To find which key a
+log line names, hash the token you hold:
+<code class="docutils literal notranslate"><span class="pre">printf</span> <span class="pre">'%s'</span> <span class="pre">&quot;$TOKEN&quot;</span> <span class="pre">|</span> <span class="pre">shasum</span> <span class="pre">-a</span> <span class="pre">256</span> <span class="pre">|</span> <span class="pre">cut</span> <span class="pre">-c1-8</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">forge</span> <span class="pre">notice</span> <span class="pre">recorded</span></code></strong> (INFO): a forge’s own message about a
+blocked or disabled repository was stored; the repository page shows it.</p></li>
+</ul>
 </section>
 </section>
 <hr class="docutils" />
@@ -1822,7 +1893,7 @@ hundreds of calls used. <code class="docutils literal notranslate"><span class="
 </div>
 </li>
 <li><p>Restart:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span>:5555
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span><span class="m">127</span>.0.0.1:5555
 </pre></div>
 </div>
 </li>
@@ -1998,8 +2069,9 @@ repo on consecutive days. <code class="docutils literal notranslate"><span class
 is NULL and <code class="docutils literal notranslate"><span class="pre">force_full_collect</span></code> is FALSE for the affected rows.</p>
 <p><strong>Cause:</strong> <code class="docutils literal notranslate"><span class="pre">Scheduler.runJob</span></code> captured the gap-fill error in a
 block-local variable, logged a WARN, and dropped it. The
-<code class="docutils literal notranslate"><span class="pre">shouldForceFullRecollect</span></code> auto-flag mechanism (which exists
-precisely for this error class — the substring <code class="docutils literal notranslate"><span class="pre">&quot;graphql</span> <span class="pre">PR</span> <span class="pre">batch&quot;</span></code> matches the gap-fill error wrapper) was unreachable
+force-full auto-flag (which exists precisely for this error
+class — since 0.29.71 it is typed: the error wraps the PR-batch
+failure, which the gap-fill error does too) was unreachable
 because <code class="docutils literal notranslate"><span class="pre">outcome.errMsg</span></code> stayed empty. The repo went back into
 incremental cadence, where the next pass collected only PRs
 updated in the last cooldown window — historical missing PRs
@@ -2010,8 +2082,8 @@ the same large batch with the same flaky network conditions.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">runJob</span></code> hoists <code class="docutils literal notranslate"><span class="pre">gapFillErr</span></code> to function scope and passes it
 into a new 5-argument <code class="docutils literal notranslate"><span class="pre">buildOutcome(...,</span> <span class="pre">gapFillErr)</span></code>.
 <code class="docutils literal notranslate"><span class="pre">buildOutcome</span></code> records it as <code class="docutils literal notranslate"><span class="pre">outcome.errMsg</span></code> when the main
-collection succeeded, which makes <code class="docutils literal notranslate"><span class="pre">shouldForceFullRecollect</span></code>
-fire and <code class="docutils literal notranslate"><span class="pre">SetForceFullCollect(true)</span></code> get called. The next
+collection succeeded, which arms the force-full flag
+(<code class="docutils literal notranslate"><span class="pre">SetForceFullCollect(true)</span></code>). The next
 cycle for that repo runs <code class="docutils literal notranslate"><span class="pre">since=zero</span></code>, which collects all PRs
 via the main path instead of going through gap fill.</p></li>
 <li><p>An idempotent migration step backfills <code class="docutils literal notranslate"><span class="pre">force_full_collect</span> <span class="pre">=</span> <span class="pre">TRUE</span></code> for all queue rows whose <code class="docutils literal notranslate"><span class="pre">last_prs</span></code> is below 95% of the
@@ -2241,7 +2313,7 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 logs an ERROR at startup (v0.20.15 raised it from WARN) and, since
 v0.29.68, exits with <code class="docutils literal notranslate"><span class="pre">refusing</span> <span class="pre">to</span> <span class="pre">start</span> <span class="pre">…:</span> <span class="pre">the</span> <span class="pre">database</span> <span class="pre">schema</span> <span class="pre">is</span> <span class="pre">behind</span> <span class="pre">this</span> <span class="pre">binary</span></code> instead of serving queries against columns the schema does
 not have yet (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code> reports the child as exited):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none), then restart. ...&quot;</span> <span class="n">db_schema_version</span><span class="o">=</span><span class="mf">0.29.55</span> <span class="n">binary_version</span><span class="o">=</span><span class="mf">0.29.57</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;the steps `aveloxis deploy-checklist` prints (`aveloxis migrate --skip-views` if it prints none)&quot;</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">level</span><span class="o">=</span><span class="n">ERROR</span> <span class="n">msg</span><span class="o">=</span><span class="s2">&quot;schema version mismatch — `aveloxis migrate` is required before this process can function correctly. Run the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none), then restart. ...&quot;</span> <span class="n">db_schema_version</span><span class="o">=</span><span class="mf">0.29.55</span> <span class="n">binary_version</span><span class="o">=</span><span class="mf">0.29.57</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;the steps `aveloxis deploy-checklist --pending` prints, with the migrate its last line names (`aveloxis migrate --skip-views` if it prints none)&quot;</span>
 </pre></div>
 </div>
 <p>If the ERROR instead reads <code class="docutils literal notranslate"><span class="pre">schema</span> <span class="pre">version</span> <span class="pre">could</span> <span class="pre">not</span> <span class="pre">be</span> <span class="pre">read</span></code>, the process
@@ -2251,8 +2323,8 @@ the connection and grants first. (Before v0.29.57 a failed read was logged as
 <code class="docutils literal notranslate"><span class="pre">schema</span> <span class="pre">version</span> <span class="pre">unknown</span> <span class="pre">—</span> <span class="pre">…</span> <span class="pre">has</span> <span class="pre">not</span> <span class="pre">run</span> <span class="pre">against</span> <span class="pre">this</span> <span class="pre">database</span></code>.)</p>
 <p><strong>Cause:</strong> The binary was updated but the database schema hasn’t been migrated yet. This happens when you update the <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> binary and start <code class="docutils literal notranslate"><span class="pre">web</span></code> or <code class="docutils literal notranslate"><span class="pre">api</span></code> before running <code class="docutils literal notranslate"><span class="pre">migrate</span></code> (or before a foreground <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>, which migrates at startup, has finished).</p>
 <p><strong>Solution:</strong></p>
-<p>Run the release’s upgrade ladder. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">deploy-checklist</span></code> prints it; a
-release with no checklist needs only:</p>
+<p>Run the upgrade ladder. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">deploy-checklist</span> <span class="pre">--pending</span></code> prints every
+step this database still needs and the migrate to run; with none, it is only:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>stop<span class="w"> </span>all
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">     </span><span class="c1"># moves the schema stamp</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
@@ -2817,10 +2889,82 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <ul class="simple">
 <li><p>Base delays: 1s, 2s, 4s, 8s, 16s, 32s, 64s</p></li>
 <li><p>Random jitter added to each delay</p></li>
-<li><p>Up to 10 retries before giving up on that request</p></li>
+<li><p>Up to 10 retries before giving up on that request (the review-comment
+listings step their page size down instead when the 502/504 came back
+only after GitHub’s 10-second limit; see below)</p></li>
 <li><p>Context-aware (respects shutdown signals)</p></li>
 </ul>
 <p>If the service outage is prolonged, the repo will fail after 10 retries and be re-queued for the next collection cycle.</p>
+<section id="the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository">
+<h3>The same <code class="docutils literal notranslate"><span class="pre">pulls/comments</span></code> page fails every cycle on a large repository<a class="headerlink" href="#the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository" title="Link to this heading"></a></h3>
+<p><strong>Symptom:</strong> A large GitHub repository stays in <code class="docutils literal notranslate"><span class="pre">collecting</span></code> for hours and
+never completes. Each run ends with <code class="docutils literal notranslate"><span class="pre">job</span> <span class="pre">complete</span> <span class="pre">…</span> <span class="pre">success=false</span> <span class="pre">error=&quot;review</span> <span class="pre">comments:</span> <span class="pre">exhausted</span> <span class="pre">10</span> <span class="pre">retries</span> <span class="pre">for</span> <span class="pre">…/pulls/comments?…&amp;page=N:</span> <span class="pre">transient&quot;</span></code>, at about the same page each time.</p>
+<p><strong>Cause:</strong> The page is over GitHub’s ~10-second request budget, not a
+GitHub outage. Old review comments are slow for GitHub to render, and 100
+of them do not fit. A repository with <code class="docutils literal notranslate"><span class="pre">force_full_collect</span></code> set re-walks
+the whole listing every cycle, and the flag clears only on success, so the
+repository loops.</p>
+<p><strong>Solution:</strong> Since v0.29.72 the review-comment listings step the page size
+down when a page’s 502 or 504 came back only after GitHub’s 10-second
+limit, twice (see the platform layer’s Pagination section); a fast 502 is
+still an outage and is retried as above. Look
+for <code class="docutils literal notranslate"><span class="pre">listing</span> <span class="pre">page</span> <span class="pre">exceeded</span> <span class="pre">the</span> <span class="pre">forge's</span> <span class="pre">time</span> <span class="pre">budget</span> <span class="pre">—</span> <span class="pre">stepping</span> <span class="pre">the</span> <span class="pre">page</span> <span class="pre">size</span> <span class="pre">down</span></code> in the log, then <code class="docutils literal notranslate"><span class="pre">job</span> <span class="pre">complete</span> <span class="pre">…</span> <span class="pre">success=true</span></code>. The next run of that
+repository is incremental. After a step the walk returns to larger pages
+on its own (<code class="docutils literal notranslate"><span class="pre">listing</span> <span class="pre">walk</span> <span class="pre">is</span> <span class="pre">stepping</span> <span class="pre">the</span> <span class="pre">page</span> <span class="pre">size</span> <span class="pre">back</span> <span class="pre">up</span></code>). An ERROR
+saying <code class="docutils literal notranslate"><span class="pre">listing</span> <span class="pre">page</span> <span class="pre">exceeded</span> <span class="pre">the</span> <span class="pre">forge's</span> <span class="pre">time</span> <span class="pre">budget</span> <span class="pre">at</span> <span class="pre">the</span> <span class="pre">smallest</span> <span class="pre">page</span> <span class="pre">size</span></code> means a page failed even at one item per page and on the ordinary
+retry budget; report it. If the WARN never appears for a repository that
+keeps failing this way, compare the <code class="docutils literal notranslate"><span class="pre">elapsed</span></code> on its <code class="docutils literal notranslate"><span class="pre">server</span> <span class="pre">error,</span> <span class="pre">retrying</span> <span class="pre">with</span> <span class="pre">backoff</span></code> lines with 10 s: the step-down counts only answers
+that took at least that long.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="charts-or-pages-time-out-504-502-in-the-browser">
+<h2>Charts or pages time out (504 / 502 in the browser)<a class="headerlink" href="#charts-or-pages-time-out-504-502-in-the-browser" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> A repository or comparison page for a large repository shows
+no charts, or the browser gets a 504 Gateway Timeout or a 502 Bad Gateway.</p>
+<p><strong>Cause:</strong> Some API queries on large repositories take tens of seconds
+(on the reference fleet, statements from the api reached 60 s). Every hop
+in front of the query has a timeout, and the shortest one answers:</p>
+<ol class="arabic simple">
+<li><p><strong>nginx</strong> — <code class="docutils literal notranslate"><span class="pre">proxy_read_timeout</span></code> (and <code class="docutils literal notranslate"><span class="pre">proxy_send_timeout</span></code>,
+<code class="docutils literal notranslate"><span class="pre">send_timeout</span></code>, <code class="docutils literal notranslate"><span class="pre">client_header_timeout</span></code>, <code class="docutils literal notranslate"><span class="pre">client_body_timeout</span></code>) default
+to <strong>60 s</strong>. A cut here is a <strong>504</strong> logged in nginx’s error log
+(“upstream timed out”).</p></li>
+<li><p><strong>The web GUI’s <code class="docutils literal notranslate"><span class="pre">/api</span></code> proxy</strong> (when nginx sends <code class="docutils literal notranslate"><span class="pre">/api/</span></code> to the web
+rather than straight to the api) has no wait of its own: the web’s
+request bound (item 3) governs it, so a slow chart behind the web is
+a <strong>503</strong> with the WARN in <code class="docutils literal notranslate"><span class="pre">web.log</span></code> (its path is the <code class="docutils literal notranslate"><span class="pre">/api/…</span></code> URL); the
+api’s query is cancelled with it, and <code class="docutils literal notranslate"><span class="pre">api.log</span></code> has no line for it. A <strong>502</strong> “API
+backend unavailable” with an <code class="docutils literal notranslate"><span class="pre">api</span> <span class="pre">reverse</span> <span class="pre">proxy</span> <span class="pre">error</span></code> WARN in
+<code class="docutils literal notranslate"><span class="pre">web.log</span></code> means the api is not answering at all (not running, or
+<code class="docutils literal notranslate"><span class="pre">web.api_internal_url</span></code> points at the wrong port). Before 0.29.69 this
+proxy gave up after a hard-coded 15 s — the shortest bound in the chain.</p></li>
+<li><p><strong>The monitor, api and web servers</strong> bound each request by
+<code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> (default <strong>180 s</strong>). Past it the request’s
+database query is cancelled, the client gets a <strong>503</strong> “request exceeded
+http_timeout_seconds”, and a WARN <code class="docutils literal notranslate"><span class="pre">request</span> <span class="pre">exceeded</span> <span class="pre">http_timeout_seconds</span></code>
+in <code class="docutils literal notranslate"><span class="pre">api.log</span></code>, <code class="docutils literal notranslate"><span class="pre">web.log</span></code> or <code class="docutils literal notranslate"><span class="pre">aveloxis.log</span></code> (the monitor) names the path
+and the time it took. A large response (an SBOM download) then gets its
+own <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> to be written; a client that reads it more
+slowly than that is cut, logged as a WARN <code class="docutils literal notranslate"><span class="pre">response</span> <span class="pre">write</span> <span class="pre">timed</span> <span class="pre">out</span></code>.</p></li>
+</ol>
+<p><strong>A maintenance page can hide which hop answered.</strong> An nginx line such as
+<code class="docutils literal notranslate"><span class="pre">error_page</span> <span class="pre">500</span> <span class="pre">502</span> <span class="pre">503</span> <span class="pre">504</span> <span class="pre">=503</span> <span class="pre">&#64;maintenance;</span></code> rewrites every gateway
+error into a 503, so an nginx timeout (really a 504) reaches the browser
+as “503 Service Temporarily Unavailable” and looks like item 3. Tell them
+apart by the logs, not the status: nginx’s error log has “upstream timed
+out” for its own cut, while item 3 always leaves the WARN above in the
+Aveloxis log. If neither log has a line, check which hop’s timeout is
+shortest before suspecting the database.</p>
+<p><strong>Solution:</strong> Keep Aveloxis’s bound the <strong>longest</strong> and tune latency in
+nginx, where a timeout is logged and easy to see: set nginx’s timeouts
+for the Aveloxis <code class="docutils literal notranslate"><span class="pre">location</span></code> blocks <strong>below</strong> <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> (for
+example <code class="docutils literal notranslate"><span class="pre">proxy_read_timeout</span> <span class="pre">120s;</span></code> against the 180 s default). Raise
+<code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> only when a legitimate request
+needs longer than nginx allows, and restart <code class="docutils literal notranslate"><span class="pre">web</span></code>, <code class="docutils literal notranslate"><span class="pre">api</span></code> and <code class="docutils literal notranslate"><span class="pre">serve</span></code> (the
+monitor) to apply it. A query that is regularly this slow is also worth a
+report: the listing surfaces read cached counts, and a slow chart query
+usually means a missing index.</p>
 </section>
 <hr class="docutils" />
 <section id="deadlock-errors">
@@ -2923,8 +3067,8 @@ state: while duplicates remain it logs</p>
 </pre></div>
 </div>
 <p><strong>Fix sequence (v0.25.32+):</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>deploy-checklist<span class="w">           </span><span class="c1"># first: this binary&#39;s deploy steps, if not done</span>
-<span class="w">                                    </span><span class="c1"># yet (its migrate creates the LOWER(repo_git)</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w"> </span><span class="c1"># first: the deploy steps not done yet, if any</span>
+<span class="w">                                    </span><span class="c1"># (the migrate creates the LOWER(repo_git)</span>
 <span class="w">                                    </span><span class="c1"># lookup index and WARNs + skips the unique</span>
 <span class="w">                                    </span><span class="c1"># index while dups remain; with no checklist,</span>
 <span class="w">                                    </span><span class="c1"># `stop all`, `migrate --skip-views`, `start all`)</span>

@@ -25,7 +25,7 @@ Each worker makes sustained API calls for its repo. With round-robin key rotatio
 
 ```bash
 # Example: 8 tokens, 4 workers
-aveloxis serve --workers 4 --monitor :5555
+aveloxis serve --workers 4 --monitor 127.0.0.1:5555
 ```
 
 ### Too many workers
@@ -106,14 +106,16 @@ Multiple `aveloxis serve` instances can share the same queue for horizontal scal
 
 1. All instances must point to the same PostgreSQL database (same `aveloxis.json` database settings).
 2. Each instance should have its own `repo_clone_dir` on local storage (bare clones are not shared).
-3. Start each instance normally:
+3. Start each instance; from the second one on, say so explicitly — a
+   second `serve` against a database that already has a live scheduler
+   refuses to start without the flag:
 
 ```bash
 # Instance 1 (on server A)
-aveloxis serve --workers 4 --monitor :5555
+aveloxis serve --workers 4 --monitor 127.0.0.1:5555
 
 # Instance 2 (on server B)
-aveloxis serve --workers 4 --monitor :5556
+aveloxis serve --workers 4 --monitor 127.0.0.1:5555 --allow-second-serve
 ```
 
 ### What is shared
@@ -483,6 +485,7 @@ curl -X POST http://localhost:5555/api/prioritize/42
 | Clone disk | 50 GB | 5 TB | 50+ TB |
 | DB connections | 20 | 20 | 60 (3 instances) |
 | PostgreSQL RAM | 2 GB | 8 GB | 32+ GB |
+| `api` process RAM | baseline + `api.response_cache_mb` (0 = off, the default; counts only if you turn the cache on) | same | same, per API instance |
 
 ---
 

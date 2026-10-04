@@ -47,15 +47,23 @@ func normalizeSiteURL(site string) string {
 // (round 25). The errors do not repeat the value, which could carry a
 // password.
 func validateSiteURL(site string) error {
+	return ValidateSiteURL("mail.site_url", site)
+}
+
+// ValidateSiteURL is validateSiteURL's rule for any config key whose value
+// starts mailed links — web.spa_url takes it at config load (2026-10-04,
+// review: the sibling was unguarded). key names the setting in the error;
+// the value is never repeated.
+func ValidateSiteURL(key, site string) error {
 	if site == "" {
 		return nil
 	}
 	u, err := url.Parse(site)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !siteHost(u.Hostname()) || strings.Count(site, "://") > 1 {
-		return errors.New("mail.site_url must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
+		return errors.New(key + " must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
 	}
 	if u.User != nil || strings.ContainsAny(site, "?#") || strings.IndexFunc(site, unicode.IsSpace) >= 0 {
-		return errors.New("mail.site_url must not contain a query (?), a fragment (#), a user name or spaces")
+		return errors.New(key + " must not contain a query (?), a fragment (#), a user name or spaces")
 	}
 	return nil
 }

@@ -116,7 +116,7 @@ func TestEmailConfirmBase(t *testing.T) {
 			if !ok || got != tc.want {
 				t.Fatalf("emailConfirmBase(site_url=%q, Host=%q) = %q, %v; want %q", tc.siteURL, tc.host, got, ok, tc.want)
 			}
-			got = confirmationLink(got, token)
+			got = confirmationLink(got, "", token)
 			if tc.siteURL != "" {
 				return
 			}
@@ -345,7 +345,13 @@ func TestAccountEmailSubmissionHasOneEntryPoint(t *testing.T) {
 	if n := strings.Count(handler, call); n != 1 {
 		t.Errorf("handleAccountEmail contains %q %d times, want exactly once", call, n)
 	}
-	submit := srctest.StripGoComments(srctest.FuncBody(t, src, "func submitAccountEmail("))
+	// The form reader delegates to the address-taking core exactly once;
+	// the API's SubmitAccountEmail is the other caller of that core.
+	wrapper := srctest.StripGoComments(srctest.FuncBody(t, src, "func submitAccountEmail("))
+	if n := strings.Count(wrapper, "submitAccountEmailAddress("); n != 1 || !strings.Contains(wrapper, `r.FormValue("email")`) {
+		t.Errorf("submitAccountEmail must read the form once and delegate to submitAccountEmailAddress once; got %d delegations", n)
+	}
+	submit := srctest.StripGoComments(srctest.FuncBody(t, src, "func submitAccountEmailAddress(")) + wrapper
 	files := srctest.PackageFiles(t, "internal/web", 4)
 	if _, ok := files["internal/web/server.go"]; !ok {
 		t.Fatalf("package scan did not include server.go (found %d files) — the derived call-site count would be vacuous", len(files))
@@ -491,5 +497,26 @@ func TestWithMailerWarnsWithoutSiteURL(t *testing.T) {
 				t.Errorf("startup WARN = %v, want %v; log:\n%s", warned, tc.wantWarn, logs.String())
 			}
 		})
+	}
+}
+
+// With web.spa_url set the mailed link lands on the front end's profile
+// page, which confirms through the API; without it, on this process's
+// /account/email/confirm (2026-10-04). The token rides unchanged. On the
+// front end it travels in the FRAGMENT, not the query (review 2026-10-04):
+// a fragment never reaches nginx's access log or the analytics tag, and a
+// signed-out click keeps it through login.html?next=… (lib/api.js carries
+// location.hash) where a query consumed before the 401 was lost. The
+// value is taken as written: config refuses a non-canonical spa_url at
+// load (TestWebSPAURLRefusedAtLoadUnlessCanonical), so no reader trims.
+func TestConfirmationLinkFollowsTheFrontEnd(t *testing.T) {
+	for _, c := range []struct{ base, spa, want string }{
+		{"https://x.example", "", "https://x.example/account/email/confirm?token=abc"},
+		{"https://x.example", "https://x.example", "https://x.example/profile.html#token=abc"},
+		{"https://x.example", "https://gui.example/gui", "https://gui.example/gui/profile.html#token=abc"},
+	} {
+		if got := confirmationLink(c.base, c.spa, "abc"); got != c.want {
+			t.Errorf("confirmationLink(%q, %q) = %q, want %q", c.base, c.spa, got, c.want)
+		}
 	}
 }

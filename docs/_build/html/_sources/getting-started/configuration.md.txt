@@ -187,9 +187,13 @@ a half against its own reference table below:
     "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     "cors_origins": [],
     "trusted_proxy": "",
-    "require_auth": false
+    "require_auth": false,
+    "response_cache_mb": 0,
+    "cache_rewarm_seconds": 60,
+    "front_end_secret": ""
   },
-  "log_level": "info"
+  "log_level": "info",
+  "http_timeout_seconds": 180
 }
 ```
 
@@ -273,7 +277,7 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `collection.enrich_interval_minutes` | integer | `30` | Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via `GET /users/{login}`. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. |
+| `collection.enrich_interval_minutes` | integer | `30` | Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via `GET /users/{login}`. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. Since 0.29.71 it also bounds `aveloxis api`'s per-repository cache: an answer (top contributors, the weekly time series, each compare series) is reused within one collection of the repository for at most this long, because contributor names and logins can change between collections at this cadence. |
 | `collection.search_resolve_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.2 search-resolve ticker. Each tick takes 100 contributors with email-but-no-`gh_user_id` and calls GitHub's search API to backfill the identity. GitHub search is rate-limited to 30/min/token (separate budget from the 5000/hour core API), so this runs at a deliberately low cadence. |
 | `collection.affiliation_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.7 affiliation-population ticker. Recomputes the global domain→company map from `contributor_affiliations`. Pre-v0.19.7 this fired from every worker after every repo and caused `UNIQUE (ca_domain)` ShareLock contention. |
 | `collection.breadth_interval_minutes` | integer | `15` | Cadence (minutes) of the v0.20.17 contributor breadth ticker. Each tick calls `/users/{login}/events` for up to `breadth_batch_size` contributors past their cooldown window and stamps `contributors.cntrb_last_breadth_at`. Pre-v0.20.17 this was hardcoded to 6 hours / 100 batch / no cooldown (400 contributors/day — 9.6 years for one pass over a 1.4M fleet). At 15-min interval × 2000 batch a cycle-per-tick cadence targets ~192K contributors/day → first pass over a 2.3M-contributor fleet in ~12 days, provided each cycle actually finishes within the interval — which is what `breadth_fetch_concurrency` controls (a sequential cycle over 2000 contributors at HTTP-RTT speed takes ~15–30 min; 8 concurrent fetchers bring it to ~2–4 min). |
@@ -294,7 +298,7 @@ The scancode per-file license + copyright + package scan is run by a dedicated `
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `collection.scancode_workers` | integer | `2` | Maximum concurrent scancode invocations. Pre-v0.21.0 the limit was hardcoded to 2; the default matches that so upgrading operators don't see a sudden change in scancode CPU load. Operators with spare CPU cores should raise this (the user running the fleet that surfaced the 2026-05-14 incident has tested 12 against 64 cores). v0.27.6: an EXPLICIT `0` disables the scancode pool on `aveloxis serve` entirely — the dedicated-scancode-host recipe (an adjacent machine runs `aveloxis scancode-worker` against the shared DB; see the [dedicated scancode host guide](../guide/dedicated-scancode-host.md)). An absent key keeps the default of 2; pre-v0.27.6 an explicit 0 was silently clamped to 2. |
-| `collection.scancode_start_interval_s` | integer | `90` | Minimum seconds between *successful* scancode claim starts (v0.21.3+). As of v0.21.3 this is a minimum-gap pacing primitive, not a throughput cap — the dispatcher claims as fast as workers free up, with this interval enforced only between consecutive successful starts. Bounds clone-bandwidth bursts on restart. Pre-v0.21.3 this was a `time.NewTicker` rate cap and limited first-pass throughput to one claim per interval regardless of worker availability; that bug is documented in the v0.21.3 release notes. |
+| `collection.scancode_start_interval_s` | integer | `90` | The scancode start gap **per worker**: successful claim starts are spaced `scancode_start_interval_s / scancode_workers` apart (v0.29.70; the startup line logs it as `start_gap`) — 45 s at 2 workers, ~13 s at 7 — so throughput scales with the workers while starts stay evenly spaced after a restart (no burst of clones). Through v0.29.69 the whole interval separated every start, capping starts at 3600/interval per hour whatever the worker count (40/hour at the default). |
 | `collection.scancode_cadence_days` | integer | `180` | Minimum days between successive scancode runs on the same repo. Pre-v0.21.0 was 30 days; the change reflects that per-file license + copyright headers in source files change rarely on the timescale that matters, and the I/O cost of scanning a Linux-kernel-scale mirror doesn't justify monthly re-scans. Dependency-level licenses (which DO change as packages update) still flow through the per-cycle Phase 4 dependency scan + Phase 6 SBOM generation. |
 | `collection.scancode_clone_dir` | string | `"/tmp/aveloxis-scancode"` | Parent directory for per-run shallow clones. Each scan creates `<dir>/repo_<id>_<unix_ts>` and removes it on completion (success or failure). Size budget: each clone is the working tree only (`git clone --depth 1`), so ≈ checked-out repo size. With default 2 workers and average ~50 MB clones, ~100 MB peak; raise expectations for big-repo / many-worker installs. |
 | `collection.scancode_shutdown_grace_minutes` | integer | `0` | Extra time the `ScancodeWorker` waits, on top of the fixed bookkeeping allowance, for the runners' POST-kill DB bookkeeping on `aveloxis stop` — it cannot let a scan finish (every scan is killed at cancel since v0.23.3). v0.23.7 flipped the default from 30 minutes to 0. Rationale: a scancode subprocess that outlives `aveloxis stop` cannot deliver its output back — the JSON file is read by Go code inside aveloxis. The v0.21.0 `recoverOrphans` path on next startup notices orphaned lock rows and either ingests from disk if a usable file exists or clears the lock; either way, lingering past stop buys nothing. Since v0.23.3 the scan subprocess is killed at cancel regardless of this value — it cannot let a scan finish; it only lengthens the wait for the runners' post-kill bookkeeping (lock clear / completion-stamp retry), and `aveloxis stop`, the `serve` process join and the documented systemd `TimeoutStopSec` size their budgets from it (v0.28.18). |
@@ -337,7 +341,7 @@ The worker's claim query orders `NULLS FIRST`, so cleared repos move to the fron
 | `collection.distribution_tracking_enabled` | bool | `false` | v0.24.0. Master switch for the DistributionWorker — the periodic worker pool that records evidence of where each repo is *published* (deps.dev, ecosyste.ms, GitHub Packages, GitHub release assets) and which manifests it carries (intent). **Off by default**: the subsystem makes outbound calls to deps.dev + ecosyste.ms and operators should explicitly opt in. Independent of every other collection setting; flipping this on does not affect the per-repo collection pipeline. |
 | `collection.distribution_tracking_interval_days` | integer | `180` | v0.24.0. Per-repo cadence (in days) between successive distribution scans. Default 180 (6 months) — package-distribution mappings are stable on this timescale; re-scanning more frequently buys little signal at the cost of registry API load. The next scan picks up: new ecosystems the repo was published to, deprecated packages no longer in the registry, and updated `latest_published_at` timestamps. The prior snapshot rotates into `repo_distribution_history` so analysts can observe drift over time. |
 | `collection.distribution_tracking_workers` | integer | `4` | v0.24.0. Concurrent runner goroutines fetching against deps.dev / ecosyste.ms / GitHub. Each runner performs ~5 cheap HTTP calls per claimed repo; concurrency is bounded primarily to keep total outbound traffic predictable. Workers set concurrency, not the scan rate (the start interval does); raise this only when scans run long enough that the 30 s start gap is no longer the binding limit. |
-| `collection.distribution_tracking_start_interval_s` | integer | `30` | v0.24.0. Minimum gap between successful scan STARTS, enforced by the one dispatcher whatever the worker count: at most 120 starts/hour (2,880/day) at the default, comfortably under any known external rate limit. The same minimum-gap primitive as scancode (post-v0.21.3); a gap binds while the average scan is shorter than gap × workers (3 min at scancode's defaults of 90 s and 2 workers) — here scans take seconds, so at the default (30 s × 4 workers = 2 min) it is the binding start-rate cap. |
+| `collection.distribution_tracking_start_interval_s` | integer | `30` | v0.24.0. Minimum gap between successful scan STARTS, enforced by the one dispatcher whatever the worker count: at most 120 starts/hour (2,880/day) at the default, comfortably under any known external rate limit. A single gap for the whole pool — unlike scancode, whose gap is per worker since v0.29.70; the gap binds while the average scan is shorter than gap × workers, and here scans take seconds, so at the default (30 s × 4 workers = 2 min) it is the binding start-rate cap. |
 | `collection.distribution_tracking_polite_email` | string | `""` | v0.24.0. Value sent in the `From:` HTTP request header to ecosyste.ms so the operator's traffic lands in their "polite pool" priority queue. Optional but recommended: ecosyste.ms documents the polite-pool contract at https://ecosyste.ms — provide a real email address so they can contact you should rate-limit discussions be needed. Missing value falls back to the lower-priority "common pool". |
 | `collection.distribution_tracking_user_agent` | string | `""` | v0.24.0. Overrides the User-Agent header sent to deps.dev / ecosyste.ms / GitHub. When empty the client uses `aveloxis/<tool_version>`. Operators behind shared egress IPs may want a more identifying string so registry operators can route diagnostics. |
 | `collection.distribution_tracking_cross_check_sources` | bool | `true` | v0.25.0. When true (the default), guarantees BOTH deps.dev AND ecosyste.ms are queried for every repo even when one returns non-empty data. Each source persists its own rows into `repo_distribution` (UNIQUE constraint includes the `source` column so two rows for the same package coexist). The trade-off is ~2× external-registry API calls per scan, but at 180-day cadence the absolute budget is tiny (~5K calls/hour on a 100K-repo fleet). Operator-mandated lock-in for v0.25.0 — set to false only when you explicitly want to halve registry traffic at the cost of single-source-of-truth dependence. The field is a JSON boolean; when omitted from `aveloxis.json`, the v0.25.0 default of `true` applies (pointer-to-bool internally so the decoder distinguishes "absent" from "explicit false"). **v0.25.x-era escape hatch** — see [v0.25.x distribution-tracking knobs](#v025x-distribution-tracking-knobs) for the planned deprecation horizon. |
@@ -376,7 +380,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.gitlab_client_secret` | string | (none) | GitLab OAuth Application secret. |
 | `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. Accounts signed in through GitLab belong to this instance (v0.29.69): after moving to another instance, the same people sign in as new accounts, and a name the old instance's accounts hold is refused until an administrator frees it (see [Login Flow](../guide/web-gui.md#login-flow)). GitLab accounts from before v0.29.69 carry no instance; `aveloxis web` records this value on them at every start with GitLab sign-in configured (`web.gitlab_client_id` set), so start 0.29.69 once that way, with the instance those accounts came from, before you change this setting or turn GitLab sign-in on under another instance. |
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
-| `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). |
+| `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). When set, the emails the web AND api processes send link to that front end's pages (its group, pending-approvals and profile pages; the confirmation link carries its token in the URL fragment) instead of the web process's own — restart both processes after changing it; empty keeps the web process's pages. Must be the origin as written, with no trailing slash, query or fragment: the loader refuses anything else and names the key. |
 | `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
 
 ### Monitor (dashboard, v0.23.0)
@@ -410,6 +414,7 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `log_level` | string | `"info"` | Log verbosity level. Options: `debug`, `info`, `warn`, `error`. |
+| `http_timeout_seconds` | int | `180` | Bounds the monitor, api and web servers: reading a request's headers and body, each request's handling (past the bound its database query is cancelled, the client gets a **503** "request exceeded http_timeout_seconds", and a WARN in that process's log names the request), and idle keep-alive connections. The web GUI's `/api` proxy runs under the web's bound, with no wait of its own. A **backstop**, not the latency knob: keep every nginx timeout in front of Aveloxis (`proxy_read_timeout`, `proxy_send_timeout`, `send_timeout`, `client_header_timeout`, `client_body_timeout`) **below** it, so nginx answers first with a 504 you can see in its log. Raise it only if a legitimate request (a large repository's charts, an SBOM download) needs longer than nginx allows. Zero, negative or too large is refused at startup. |
 
 Log level descriptions:
 
@@ -494,9 +499,12 @@ same-box and same-LAN traffic is never limited.
 | `rate_limit_burst` | `10` | Per-IP burst capacity. |
 | `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
 | `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
-| `cors_origins` | `[]` | Browser origins allowed to call the API (the separate-repo aveloxis-gui). Empty = no cross-origin access. |
-| `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). |
-| `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
+| `cors_origins` | `[]` | Browser origins allowed to call the API. Empty sends `Access-Control-Allow-Origin: *` (any origin); a list makes it a strict allowlist — set it on a public host, naming the origins whose pages fetch the API. |
+| `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set it to the address the API sees the proxy connect from (`127.0.0.1` for nginx on the same host) — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). |
+| `require_auth` | `false` | Gate every data endpoint (all but `/health` and `/public/stats`) behind the Bearer session tokens the web process mints at `/auth/token`. Keep it `false` with the built-in web GUI, whose pages call the API from the browser without a token; turn it on only for a front end that holds the token. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
+| `response_cache_mb` | `0` | **Advanced, off by default.** Memory for the API's per-repository response cache, in megabytes, on top of the process's baseline; set it to turn the cache on (see "Response caching" below). `0` keeps no response bodies in memory. Negative values, and values above the maximum, are refused at load. |
+| `front_end_secret` | `""` | A shared secret for a separate front end that documents it; leave it empty otherwise (every request is then counted against its visitor). At least 32 characters, and `trusted_proxy` must be set with it; shorter, or without `trusted_proxy`, is refused at load. The start-up line reports `front_end_secret_set`, never the value. |
+| `cache_rewarm_seconds` | `60` | With the cache on: how often the API recomputes cached repository answers after their repository is collected again. `0` turns the re-warm off; it is off whenever `response_cache_mb` is `0`. Negative values, and values above the maximum, are refused at load. |
 
 ### Reaching the API from another host
 
@@ -538,9 +546,10 @@ web process warns at startup when the URL names a loopback port the
 API is not listening on — but it cannot detect the case where the URL
 names a different host, so check that one yourself.
 
-For the full public-GUI deployment runbook (nginx layout, OAuth
-callbacks, when to flip `require_auth`), see the aveloxis-gui
-repository's README "Production deployment" section.
+The end-to-end layout for a public host — proxy, OAuth callbacks, the
+first admin, systemd, upgrades — is [Production Deployment](deployment.md).
+A separate front end with its own token flow documents the settings it
+needs (`cors_origins`, `require_auth`, `front_end_secret`) itself.
 
 ```jsonc
 "api": {
@@ -549,10 +558,30 @@ repository's README "Production deployment" section.
   "rate_limit_burst": 10,
   "rate_limit_daily": 1000,
   "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
-  "cors_origins": ["https://your-gui.example.org"],
-  "trusted_proxy": "127.0.0.1"
+  "cors_origins": ["https://aveloxis.example.org"],
+  "trusted_proxy": "127.0.0.1",
+  "require_auth": false,
+  "response_cache_mb": 0,
+  "cache_rewarm_seconds": 60,
+  "front_end_secret": ""
 }
 ```
+
+### Response caching (advanced, off by default)
+
+With `response_cache_mb` set, the `api` process keeps each repository's
+own answers (time series, licenses, dependencies, scancode, vulnerabilities,
+scorecard, SBOM, contributors) in memory, up to that many megabytes, until
+that repository is collected or scanned again — answers naming contributors
+for at most `collection.enrich_interval_minutes` — and recomputes a viewed
+repository's answers after its collection ends, every
+`cache_rewarm_seconds`. The start-up line `API repository page cache`
+shows the values in effect. Cached GETs carry an `ETag` and answer
+`If-None-Match` with 304 whether or not the cache is on; the cache only
+decides whether a body is kept. Size it from the largest repositories you
+want held (a 56,000-file scancode listing is about 7 MB of JSON, a
+600-finding vulnerability list about 1 MB, a typical page about 100 KB);
+the Aveloxis project's own site uses 2048.
 
 ## Email (Gmail SMTP, optional)
 
@@ -585,7 +614,7 @@ Aveloxis can send transactional emails (welcome on first signup, group-approval 
 
 ### Validation at startup
 
-`aveloxis web`, `aveloxis api` and `aveloxis serve` each run `mailer.ValidateConfig` against the supplied block when they start, and log the result: `mailer configured` (with `operator_email`), `mailer disabled`, or a WARN. If validation fails, the WARN line is emitted before any user can sign up:
+`aveloxis web`, `aveloxis api` and `aveloxis serve` each run `mailer.ValidateConfig` against the supplied block when they start, and log the result: `mailer configured` (with `operator_email`; since 0.29.71 both addresses on that line are masked to their first character and domain, e.g. `o***@example.com`), `mailer disabled`, or a WARN. If validation fails, the WARN line is emitted before any user can sign up:
 
 - `mail.gmail_user "aveloxis.io" is not an email address` — you set the bare domain. Use the full address (`ops@aveloxis.io`).
 - `mail.gmail_app_password is N character(s) after removing display-format spaces but Google App Passwords are exactly 16 lowercase letters` — you pasted a regular password or something else. Generate an actual App Password.

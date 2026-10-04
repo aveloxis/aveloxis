@@ -10,16 +10,16 @@ Before installing Aveloxis, ensure you have the following:
 
 | Dependency | Minimum Version | Purpose |
 |---|---|---|
-| **Go** | 1.23+ | Compiles and runs Aveloxis |
+| **Go** | 1.26+ | Compiles and runs Aveloxis |
 | **PostgreSQL** | 14+ | Stores all collected data and operational state |
 | **git** | Any recent version | Used by the facade phase for bare clones and `git log` parsing |
 
-You also need at least one **GitHub personal access token** (with `repo` or `read` scope) and/or a **GitLab personal access token** (with `read_api` scope) to collect data from those platforms.
+You also need at least one **GitHub personal access token** (with `repo` scope, or `public_repo` for public repositories only) and/or a **GitLab personal access token** (with `read_api` scope) to collect data from those platforms.
 
 ### Verify prerequisites
 
 ```bash
-go version        # Should print go1.25 or later
+go version        # Should print go1.26 or later
 psql --version    # Should print 14.x or later
 git --version     # Any recent version
 ```
@@ -161,12 +161,10 @@ go mod tidy
 go install ./cmd/aveloxis    # or: go build -o bin/aveloxis ./cmd/aveloxis
 ```
 
-Then restart any running `aveloxis serve` instances:
-
-```bash
-aveloxis stop
-aveloxis serve --monitor :5555
-```
+A new binary is an upgrade: follow the four steps in
+[Upgrading](upgrading.md) (`deploy-checklist --pending`, stop, migrate with
+the release's heals, `ack-deploy`, start) rather than restarting the
+processes on the new binary. A production host: [Production Deployment](deployment.md).
 
 ---
 

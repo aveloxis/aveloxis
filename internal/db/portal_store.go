@@ -165,3 +165,16 @@ func (s *PostgresStore) GetPortalGroupOrgsForUser(ctx context.Context, userID in
 	}
 	return s.loadGroupOrgs(ctx, groupID)
 }
+
+// GetUserAccount is the account identity the profile page shows: the
+// forge the account signed in with ("github" or "gitlab"; a row from
+// before oauth_provider existed is a GitHub row, as the OAuth upsert
+// treats it) and the confirmed email — the forge's own address, taken at
+// sign-in, or one confirmed through the click-to-confirm link. Empty
+// email: the forge gave none and nothing was confirmed since (2026-10-04).
+func (s *PostgresStore) GetUserAccount(ctx context.Context, userID int) (provider, email string, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(oauth_provider, ''), 'github'), COALESCE(email, '')
+		FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&provider, &email)
+	return provider, email, err
+}

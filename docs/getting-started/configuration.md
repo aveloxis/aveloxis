@@ -188,7 +188,7 @@ a half against its own reference table below:
     "cors_origins": [],
     "trusted_proxy": "",
     "require_auth": false,
-    "response_cache_mb": 2048,
+    "response_cache_mb": 0,
     "cache_rewarm_seconds": 60,
     "front_end_secret": ""
   },
@@ -380,7 +380,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.gitlab_client_secret` | string | (none) | GitLab OAuth Application secret. |
 | `web.gitlab_base_url` | string | `"https://gitlab.com"` | GitLab base URL for OAuth (the HTML site, NOT the API URL). Override for self-hosted GitLab. Accounts signed in through GitLab belong to this instance (v0.29.69): after moving to another instance, the same people sign in as new accounts, and a name the old instance's accounts hold is refused until an administrator frees it (see [Login Flow](../guide/web-gui.md#login-flow)). GitLab accounts from before v0.29.69 carry no instance; `aveloxis web` records this value on them at every start with GitLab sign-in configured (`web.gitlab_client_id` set), so start 0.29.69 once that way, with the instance those accounts came from, before you change this setting or turn GitLab sign-in on under another instance. |
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
-| `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). |
+| `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). When set, the emails the web AND api processes send link to that front end's pages (its group, pending-approvals and profile pages; the confirmation link carries its token in the URL fragment) instead of the web process's own — restart both processes after changing it; empty keeps the web process's pages. Must be the origin as written, with no trailing slash, query or fragment: the loader refuses anything else and names the key. |
 | `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
 
 ### Monitor (dashboard, v0.23.0)
@@ -499,12 +499,12 @@ same-box and same-LAN traffic is never limited.
 | `rate_limit_burst` | `10` | Per-IP burst capacity. |
 | `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
 | `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
-| `cors_origins` | `[]` | Browser origins allowed to call the API (the separate-repo aveloxis-gui). Empty = no cross-origin access. |
-| `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set this to your nginx host when proxying — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). |
-| `require_auth` | `false` | Gate every data endpoint (all but `/health`) behind Bearer session tokens minted by the web process's `/auth/token`. Flip on once the aveloxis-gui token flow is deployed. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
-| `response_cache_mb` | `2048` | Memory for the API's per-repository response cache, in megabytes. `0` keeps no response bodies in memory. Negative values are refused at load. |
-| `front_end_secret` | `""` | A shared secret a front end sends in `X-Aveloxis-Authorized` on requests it forwards after checking `/api/v1/authz/repos/{id}`, so the visitor's rate limit counts them once. Believed only from `trusted_proxy`, which must be set with it (refused at load otherwise). Empty: every request is counted. At least 32 characters; shorter is refused at load. |
-| `cache_rewarm_seconds` | `60` | How often the API recomputes cached repository answers after their repository is collected again. `0` turns this off. Negative values are refused at load. |
+| `cors_origins` | `[]` | Browser origins allowed to call the API. Empty sends `Access-Control-Allow-Origin: *` (any origin); a list makes it a strict allowlist — set it on a public host, naming the origins whose pages fetch the API. |
+| `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set it to the address the API sees the proxy connect from (`127.0.0.1` for nginx on the same host) — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). |
+| `require_auth` | `false` | Gate every data endpoint (all but `/health` and `/public/stats`) behind the Bearer session tokens the web process mints at `/auth/token`. Keep it `false` with the built-in web GUI, whose pages call the API from the browser without a token; turn it on only for a front end that holds the token. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
+| `response_cache_mb` | `0` | **Advanced, off by default.** Memory for the API's per-repository response cache, in megabytes, on top of the process's baseline; set it to turn the cache on (see "Response caching" below). `0` keeps no response bodies in memory. Negative values, and values above the maximum, are refused at load. |
+| `front_end_secret` | `""` | A shared secret for a separate front end that documents it; leave it empty otherwise (every request is then counted against its visitor). At least 32 characters, and `trusted_proxy` must be set with it; shorter, or without `trusted_proxy`, is refused at load. The start-up line reports `front_end_secret_set`, never the value. |
+| `cache_rewarm_seconds` | `60` | With the cache on: how often the API recomputes cached repository answers after their repository is collected again. `0` turns the re-warm off; it is off whenever `response_cache_mb` is `0`. Negative values, and values above the maximum, are refused at load. |
 
 ### Reaching the API from another host
 
@@ -546,9 +546,10 @@ web process warns at startup when the URL names a loopback port the
 API is not listening on — but it cannot detect the case where the URL
 names a different host, so check that one yourself.
 
-For the full public-GUI deployment runbook (nginx layout, OAuth
-callbacks, when to flip `require_auth`), see the aveloxis-gui
-repository's README "Production deployment" section.
+The end-to-end layout for a public host — proxy, OAuth callbacks, the
+first admin, systemd, upgrades — is [Production Deployment](deployment.md).
+A separate front end with its own token flow documents the settings it
+needs (`cors_origins`, `require_auth`, `front_end_secret`) itself.
 
 ```jsonc
 "api": {
@@ -557,10 +558,30 @@ repository's README "Production deployment" section.
   "rate_limit_burst": 10,
   "rate_limit_daily": 1000,
   "exempt_cidrs": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
-  "cors_origins": ["https://your-gui.example.org"],
-  "trusted_proxy": "127.0.0.1"
+  "cors_origins": ["https://aveloxis.example.org"],
+  "trusted_proxy": "127.0.0.1",
+  "require_auth": false,
+  "response_cache_mb": 0,
+  "cache_rewarm_seconds": 60,
+  "front_end_secret": ""
 }
 ```
+
+### Response caching (advanced, off by default)
+
+With `response_cache_mb` set, the `api` process keeps each repository's
+own answers (time series, licenses, dependencies, scancode, vulnerabilities,
+scorecard, SBOM, contributors) in memory, up to that many megabytes, until
+that repository is collected or scanned again — answers naming contributors
+for at most `collection.enrich_interval_minutes` — and recomputes a viewed
+repository's answers after its collection ends, every
+`cache_rewarm_seconds`. The start-up line `API repository page cache`
+shows the values in effect. Cached GETs carry an `ETag` and answer
+`If-None-Match` with 304 whether or not the cache is on; the cache only
+decides whether a body is kept. Size it from the largest repositories you
+want held (a 56,000-file scancode listing is about 7 MB of JSON, a
+600-finding vulnerability list about 1 MB, a typical page about 100 KB);
+the Aveloxis project's own site uses 2048.
 
 ## Email (Gmail SMTP, optional)
 

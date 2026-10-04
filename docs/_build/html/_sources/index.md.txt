@@ -28,6 +28,7 @@ Aveloxis is a high-performance open source community health data collection plat
 getting-started/installation
 getting-started/configuration
 getting-started/quickstart
+getting-started/deployment
 getting-started/augur-migration
 getting-started/upgrading
 ```

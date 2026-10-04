@@ -20,10 +20,10 @@ Copyright © 2026 University of Missouri, Sean Goggins, and Derek Howard. This s
 
 ## Requirements
 **Note: RHEL/CentOS installations are based on internet searches, as we do not have access to a machine with those OS's**
-- **Go 1.23+** ([install](https://go.dev/doc/install))
+- **Go 1.26+** ([install](https://go.dev/doc/install))
 - **PostgreSQL 14+** (local, Docker, or remote)
 - **git** (for the facade/commit collection phase)
-- **GitHub and/or GitLab API tokens** (personal access tokens with repo/read scope)
+- **GitHub and/or GitLab API tokens** (personal access tokens with `repo` scope, or `public_repo` for public repositories only)
 - **Python 3.10+** and **libmagic** (optional, for ScanCode license/copyright scanning — installed automatically by `aveloxis install-tools`)
   - macOS: `brew install libmagic`
   - Debian/Ubuntu: `sudo apt-get install libmagic1`
@@ -327,16 +327,17 @@ aveloxis add-key glpat-your_gitlab_token --platform gitlab
 # 4. Add repos to the collection queue (CLI method)
 aveloxis add-repo https://github.com/chaoss/augur https://gitlab.com/fdroid/fdroidclient
 
-# -- OR use the web GUI to add repos and orgs via browser --
-# Configure OAuth credentials in aveloxis.json (see Configuration),
-# then run: aveloxis web
-# Open http://localhost:8082, log in with GitHub/GitLab, create a group,
+# -- OR add repos and orgs through the web GUI after step 5: configure
+# OAuth credentials in aveloxis.json (see Configuration), open
+# http://localhost:8082, log in with GitHub/GitLab, create a group,
 # and add repos or orgs through the UI.
 
-# 5. Start the scheduler
-aveloxis start serve
+# 5. Start the three processes (logs under ~/.aveloxis/)
+aveloxis start all
 
-# Open http://localhost:8082/monitor to watch collection progress
+# Open http://localhost:8082 (the web GUI; the first account to sign in is the admin)
+# and http://127.0.0.1:5555 (the scheduler's monitor) to watch collection progress.
+# A public host: docs/getting-started/deployment.md
 ```
 
 ## Configuration

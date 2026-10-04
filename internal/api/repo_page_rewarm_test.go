@@ -6,6 +6,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -419,5 +420,84 @@ func TestRewarmShutdownDuringAReplayIsNotAFailure(t *testing.T) {
 	runs()
 	if _, reqs := hn.s.rewarmOnce(context.Background()); reqs != 1 {
 		t.Errorf("after the shutdown the answer must still be replayed (not marked tried), replayed %d", reqs)
+	}
+}
+
+// PR #226 review 5404268512: a collection that claims the repository WHILE a
+// replay's handler runs (after the wrapper's state check) let the replay
+// store under the old state; completeReplay counted that as success and
+// removed the earlier, asked-for entry, and the new one (never asked for)
+// was then skipped by the next pass — the answer lost its re-warm for the
+// collection's final state. The pass re-reads the state after each replay:
+// moved, and the earlier entry stays eligible.
+func TestRewarmKeepsTheAskedForEntryWhenTheStateMovesDuringAReplay(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// move runs inside the replay's handler (after the wrapper's check).
+		move func(hn *pageCacheHarness, failNextRead *atomic.Bool)
+		log  string
+	}{
+		{"a collection claims the repository", func(hn *pageCacheHarness, _ *atomic.Bool) {
+			hn.setState(func(st *db.RepoCacheState) {
+				st.QueueUpdatedAt = st.QueueUpdatedAt.Add(time.Minute)
+				st.Collecting = true
+			})
+		}, "state moved during a replay"},
+		// A writer outside the queue (scorecard, scancode, a vulnerability
+		// stamp, a rename): the state moves with Collecting false.
+		{"a writer outside the queue stamps", func(hn *pageCacheHarness, _ *atomic.Bool) {
+			hn.setState(func(st *db.RepoCacheState) { st.DataChangedAt = st.DataChangedAt.Add(time.Minute) })
+		}, "state moved during a replay"},
+		// SR-5: an unreadable state is not "unchanged"; the error is logged.
+		{"the state cannot be read after the replay", func(_ *pageCacheHarness, failNextRead *atomic.Bool) {
+			failNextRead.Store(true)
+		}, "state unreadable after a replay"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var flip, failNextRead atomic.Bool
+			hn, logs, runs := rewarmHarness(t, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+				if flip.CompareAndSwap(true, false) {
+					c.move(hn, &failNextRead)
+				}
+				okBody(hn, w, r)
+			})
+			inner := hn.s.repoStates
+			hn.s.repoStates = func(ctx context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
+				if failNextRead.CompareAndSwap(true, false) {
+					return nil, errors.New("connection reset by peer")
+				}
+				return inner(ctx, ids)
+			}
+			hn.get("/api/v1/repos/7/thing?a=1")
+			hn.get("/api/v1/repos/7/thing?a=1") // asked for again
+			hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+			runs()
+
+			flip.Store(true)
+			hn.s.rewarmOnce(context.Background())
+			if got := runs(); len(got) != 1 {
+				t.Fatalf("the pass must replay the answer once, ran %v", got)
+			}
+			if !strings.Contains(logs.String(), c.log) {
+				t.Errorf("the abandoned replay is logged (%q); log:\n%s", c.log, logs.String())
+			}
+			if c.log == "state unreadable after a replay" && !strings.Contains(logs.String(), "connection reset by peer") {
+				t.Errorf("the read error itself is logged; log:\n%s", logs.String())
+			}
+
+			// The state settles (the collection ends, or nothing else moves):
+			// the asked-for answer is replayed for it, and the visitor hits.
+			hn.setState(func(st *db.RepoCacheState) {
+				st.Collecting = false
+				st.LastCollected = st.LastCollected.Add(time.Hour)
+			})
+			hn.s.rewarmOnce(context.Background())
+			if got := runs(); len(got) != 1 || got[0] != "/api/v1/repos/7/thing?a=1" {
+				t.Fatalf("the answer must be re-warmed for the settled state, ran %v", got)
+			}
+			if w := hn.get("/api/v1/repos/7/thing?a=1"); w.Header().Get("X-Cache") != "hit" {
+				t.Error("the visitor after the re-warm must hit")
+			}
+		})
 	}
 }

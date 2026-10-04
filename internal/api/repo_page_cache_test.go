@@ -921,3 +921,46 @@ func TestParseSBOMArgs(t *testing.T) {
 		}
 	}
 }
+
+// The auto-add on a COLD key (whole-branch review): the first visitor
+// through a shared link computes the answer itself, so the miss path — not
+// only the hit path above — must answer it no-store, and a client's
+// If-None-Match must not turn its notice into a cold 304.
+func TestPageCacheAutoAddOnAColdKeyIsNeverShared(t *testing.T) {
+	scoped := func(r *http.Request) {
+		*r = *r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: 7}))
+	}
+	for _, c := range []struct {
+		name string
+		opts []func(*http.Request)
+	}{
+		{"miss", []func(*http.Request){scoped}},
+		{"miss with If-None-Match", []func(*http.Request){scoped, func(r *http.Request) {
+			r.Header.Set("If-None-Match", "*")
+		}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+			hn.s.sharedWithMe = &fakeSharedWithMe{added: true}
+			hn.s.auth = newAuthenticator(nil, false, nil)
+			w := hn.get("/api/v1/repos/7/thing", c.opts...)
+			sent := w.Result().Header
+			if w.Code != http.StatusOK || sent.Get(sharedWithMeHeader) == "" {
+				t.Fatalf("the auto-add answers 200 with its notice: %d %v", w.Code, sent)
+			}
+			if sent.Get("Cache-Control") != "private, no-store" || sent.Get("X-Accel-Expires") != "0" || sent.Get("ETag") != "" {
+				t.Errorf("a cold-key answer carrying the one-time notice must not be stored downstream: %v", sent)
+			}
+		})
+	}
+	// The exact-ETag cold 304 arm, with that answer's own ETag.
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	hn2 := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	hn2.s.sharedWithMe = &fakeSharedWithMe{added: true}
+	hn2.s.auth = newAuthenticator(nil, false, nil)
+	w := hn2.get("/api/v1/repos/7/thing", scoped, func(r *http.Request) { r.Header.Set("If-None-Match", etag) })
+	if w.Code == http.StatusNotModified || w.Result().Header.Get(sharedWithMeHeader) == "" {
+		t.Errorf("a cold 304 would drop the one-time notice: %d %v", w.Code, w.Result().Header)
+	}
+}

@@ -9,6 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // TestRepoCacheStates — v0.29.73: the state the API's repository-page cache
@@ -367,5 +370,117 @@ func TestStampRepoDataChanged(t *testing.T) {
 	}
 	if after[b].Fingerprint() != before[b].Fingerprint() {
 		t.Error("another repository must not move")
+	}
+}
+
+// PR #226 review 5404268512: the SBOM names the repository (repo_name,
+// repo_owner, repo_git), so a rename must move the cache state — through
+// both rename writers, whatever the queue does afterwards (a failed
+// follow-up enqueue, a repository with no queue row). The identity is part
+// of the state itself, so a future rename writer is covered without a stamp.
+func TestRepoRenameMovesTheCacheState(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	var id int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avren/old', 'old', '_avren', 1) RETURNING repo_id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+	})
+	fp := func() string {
+		t.Helper()
+		m, err := store.RepoCacheStates(ctx, []int64{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[id].Fingerprint()
+	}
+	f0 := fp()
+	if err := store.UpdateRepoURL(ctx, id, "https://github.com/_avren/new"); err != nil {
+		t.Fatal(err)
+	}
+	f1 := fp()
+	if f1 == f0 {
+		t.Error("UpdateRepoURL renamed the repository but the cache state did not move: the old SBOM stays valid")
+	}
+	if err := store.UpdateRepoURLs(ctx, id, "https://github.com/_avren/new", "https://github.com/_avren2/new"); err != nil {
+		t.Fatal(err)
+	}
+	if fp() == f1 {
+		t.Error("UpdateRepoURLs renamed the repository but the cache state did not move")
+	}
+}
+
+// Whole-branch review: the SBOM's license comes from the latest repo_info
+// row, and the staged processor writes it outside any job too
+// (heal-messages, heal-collection-gaps, the leftover drain) — so both
+// repo_info writers move the cache state themselves.
+func TestRepoInfoWritersMoveTheCacheState(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	testMigrate(ctx, t, store)
+	var id, other int64
+	for _, c := range []struct {
+		dst  *int64
+		name string
+	}{{&id, "r"}, {&other, "bystander"}} {
+		if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+			VALUES ('https://github.com/_avrinfo/'||$1, $1, '_avrinfo', 1) RETURNING repo_id`, c.name).Scan(c.dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repo_info_history WHERE repo_id = $1`, id)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repo_info WHERE repo_id = $1`, id)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repos WHERE repo_id IN ($1, $2)`, id, other)
+	})
+	changedOf := func(repo int64) time.Time {
+		t.Helper()
+		m, err := store.RepoCacheStates(ctx, []int64{repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[repo].DataChangedAt
+	}
+	changed := func() time.Time { return changedOf(id) }
+	bystander := changedOf(other)
+	before := changed()
+	if err := store.InsertRepoInfo(ctx, &model.RepoInfo{RepoID: id, License: "MIT"}); err != nil {
+		t.Fatal(err)
+	}
+	afterInsert := changed()
+	if !afterInsert.After(before) {
+		t.Errorf("InsertRepoInfo must stamp data_changed_at: before %v after %v", before, afterInsert)
+	}
+	if err := store.RotateRepoInfoToHistory(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if after := changed(); !after.After(afterInsert) {
+		t.Errorf("RotateRepoInfoToHistory must stamp data_changed_at: before %v after %v", afterInsert, after)
+	}
+	// Only that repository: a stamp that reached every row would drop every
+	// cached page of the fleet on each collection.
+	if got := changedOf(other); !got.Equal(bystander) {
+		t.Errorf("another repository must not move: %v -> %v", bystander, got)
 	}
 }

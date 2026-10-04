@@ -2588,7 +2588,12 @@ func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo
 			}
 			return "false"
 		}
+		// The SBOM's license is read from this row: the insert stamps the
+		// repository-page cache state in the same statement (whole-branch
+		// review: heal-messages, heal-collection-gaps and the leftover drain
+		// reach this writer outside any job, and outside a queue move).
 		_, err := s.pool.Exec(ctx, `
+			WITH ins AS (
 			INSERT INTO aveloxis_data.repo_info
 				(repo_id, last_updated, issues_enabled, prs_enabled, wiki_enabled, pages_enabled,
 				 fork_count, star_count, watcher_count, open_issues, committer_count,
@@ -2598,7 +2603,10 @@ func (s *PostgresStore) InsertRepoInfo(ctx context.Context, info *model.RepoInfo
 				 code_of_conduct_file, security_issue_file, security_audit_file,
 				 status, keywords, data_source)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-				$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
+				$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+			RETURNING repo_id
+			)
+			`+stampRepoCacheStateSQL+` WHERE repo_id IN (SELECT repo_id FROM ins)`,
 			info.RepoID, info.LastUpdated,
 			boolStr(info.IssuesEnabled), boolStr(info.PRsEnabled),
 			boolStr(info.WikiEnabled), boolStr(info.PagesEnabled),

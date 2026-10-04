@@ -5,6 +5,8 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -12,11 +14,15 @@ import (
 
 // RepoCacheState is what a cached repository-page answer is valid against
 // (v0.29.73). Each field is a writer the page can observe:
+//
 //   - the queue row: updated_at (claim, CompleteJob success and failure,
 //     re-queue, gap-heal — see CollectionGeneration) and last_collected;
+//
 //   - scancode_last_run, stamped by the decoupled ScancodeWorker outside
 //     the collection job;
+//
 //   - vuln_scan_last_run, stamped at the scan's completed exits;
+//
 //   - data_changed_at, stamped through stampRepoCacheStateSQL, in the same
 //     transaction as the data, by the writers that can run outside the job
 //     (scorecard, scancode snapshot, vulnerability insert/resolve/rescore,
@@ -28,6 +34,10 @@ import (
 //     of repository-page data outside the job must do the same, or the page
 //     serves its old answer until the next collection.
 //
+//   - the repository's identity (repo_owner, repo_name, repo_git), which
+//     the SBOM and the time series name: a rename moves the state through any writer, with or
+//     without a queue transition after it (PR #226 review 5404268512).
+//
 // Heartbeats stamp only locked_at, so a running job does not churn it.
 // Collecting is the queue status, read so a re-warm waits for the job's end
 // instead of caching a half-written repository.
@@ -37,8 +47,10 @@ type RepoCacheState struct {
 	ScancodeLastRun time.Time
 	VulnScanLastRun time.Time
 	DataChangedAt   time.Time
-	HasQueueRow     bool
-	Collecting      bool
+	// Identity is a digest of repo_owner, repo_name and repo_git.
+	Identity    string
+	HasQueueRow bool
+	Collecting  bool
 }
 
 // Fingerprint is the state as one string: equal fingerprints mean no
@@ -53,7 +65,7 @@ func (st RepoCacheState) Fingerprint() string {
 	}
 	return strings.Join([]string{
 		fmt.Sprint(st.HasQueueRow), f(st.QueueUpdatedAt), f(st.LastCollected),
-		f(st.ScancodeLastRun), f(st.VulnScanLastRun), f(st.DataChangedAt),
+		f(st.ScancodeLastRun), f(st.VulnScanLastRun), f(st.DataChangedAt), st.Identity,
 	}, "|")
 }
 
@@ -76,7 +88,8 @@ func (s *PostgresStore) RepoCacheStates(ctx context.Context, repoIDs []int64) (m
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.repo_id, q.repo_id IS NOT NULL, q.updated_at, q.last_collected,
-		       COALESCE(q.status = 'collecting', FALSE), r.scancode_last_run, r.vuln_scan_last_run, r.data_changed_at
+		       COALESCE(q.status = 'collecting', FALSE), r.scancode_last_run, r.vuln_scan_last_run, r.data_changed_at,
+		       COALESCE(r.repo_owner, ''), COALESCE(r.repo_name, ''), COALESCE(r.repo_git, '')
 		FROM aveloxis_data.repos r
 		LEFT JOIN aveloxis_ops.collection_queue q ON q.repo_id = r.repo_id
 		WHERE r.repo_id = ANY($1::bigint[])`, repoIDs)
@@ -89,8 +102,10 @@ func (s *PostgresStore) RepoCacheStates(ctx context.Context, repoIDs []int64) (m
 			id                                             int64
 			st                                             RepoCacheState
 			updated, collected, scancode, vulnRun, changed *time.Time
+			owner, name, git                               string
 		)
-		if err := rows.Scan(&id, &st.HasQueueRow, &updated, &collected, &st.Collecting, &scancode, &vulnRun, &changed); err != nil {
+		if err := rows.Scan(&id, &st.HasQueueRow, &updated, &collected, &st.Collecting, &scancode, &vulnRun, &changed,
+			&owner, &name, &git); err != nil {
 			return nil, fmt.Errorf("repo cache states: %w", err)
 		}
 		for _, p := range []struct {
@@ -101,6 +116,7 @@ func (s *PostgresStore) RepoCacheStates(ctx context.Context, repoIDs []int64) (m
 				*p.dst = *p.src
 			}
 		}
+		st.Identity = repoIdentityDigest(owner, name, git)
 		out[id] = st
 	}
 	if err := rows.Err(); err != nil {
@@ -117,4 +133,12 @@ func (s *PostgresStore) StampRepoDataChanged(ctx context.Context, repoID int64) 
 		return fmt.Errorf("stamp repository data changed (repo %d): %w", repoID, err)
 	}
 	return nil
+}
+
+// repoIdentityDigest is the repository's identity as one fixed-width token
+// for the fingerprint: NUL-separated (no field can contain NUL), so two
+// identities never read alike, and no URL text lands in a key.
+func repoIdentityDigest(owner, name, git string) string {
+	sum := sha256.Sum256([]byte(owner + "\x00" + name + "\x00" + git))
+	return hex.EncodeToString(sum[:8])
 }

@@ -103,6 +103,29 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 					"repo_id", id, "remaining", len(uris)-(i+1))
 				break
 			}
+			// The state may have moved WHILE the handler ran, after the
+			// wrapper's check (a collection claimed the repository): the
+			// answer was then stored under the old state, and completing it
+			// would drop the earlier, asked-for entry for one nobody asked
+			// for, which the next pass skips (PR #226 review 5404268512).
+			// Read after the store, an unchanged state proves the store was
+			// made under it; changed or unreadable (SR-5), the earlier entry
+			// stays eligible and the rest waits for the next pass.
+			after, aerr := s.repoStates(ctx, []int64{id})
+			if cur, known := after[id]; aerr != nil || !known || cur.Collecting || cur.Fingerprint() != fp {
+				if ctx.Err() != nil {
+					return repos, requests
+				}
+				failed++
+				if aerr != nil {
+					s.logger.Warn("repository page cache re-warm: state unreadable after a replay — the rest waits for the next pass",
+						"repo_id", id, "remaining", len(uris)-(i+1), "error", aerr)
+				} else {
+					s.logger.Info("repository page cache re-warm: repository state moved during a replay — the rest waits for the next pass",
+						"repo_id", id, "remaining", len(uris)-(i+1))
+				}
+				break
+			}
 			// A replay succeeded only if it stored the answer: a degraded
 			// 200 (partialAnswer) is served no-store and stores nothing.
 			if stored := s.pageCache.completeReplay(id, uri, fp); !stored {

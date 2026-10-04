@@ -92,6 +92,11 @@ func (s *PostgresStore) RotateRepoInfoToHistory(ctx context.Context, repoID int6
 		if err != nil {
 			return err
 		}
+		// The SBOM reads the latest repo_info row: stamp the repository-page
+		// cache state with the rotation (see InsertRepoInfo).
+		if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
+			return fmt.Errorf("stamp repository cache state for repo %d: %w", repoID, err)
+		}
 
 		return tx.Commit(ctx)
 	})

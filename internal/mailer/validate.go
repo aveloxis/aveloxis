@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -64,6 +65,13 @@ func ValidateSiteURL(key, site string) error {
 	}
 	if u.User != nil || strings.ContainsAny(site, "?#") || strings.IndexFunc(site, unicode.IsSpace) >= 0 {
 		return errors.New(key + " must not contain a query (?), a fragment (#), a user name or spaces")
+	}
+	// url.Parse accepts any digits as a port; a browser cannot open a link
+	// outside 1-65535 (Copilot review 5407929995).
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return errors.New(key + " has a port outside 1-65535")
+		}
 	}
 	return nil
 }

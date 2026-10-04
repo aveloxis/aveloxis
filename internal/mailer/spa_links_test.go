@@ -18,10 +18,11 @@ func TestGroupLinksFollowTheFrontEnd(t *testing.T) {
 		{"https://x.example", "", "https://x.example/groups/7", "https://x.example/admin/groups/pending"},
 		{"https://x.example/", "", "https://x.example/groups/7", "https://x.example/admin/groups/pending"},
 		{"https://x.example", "https://x.example", "https://x.example/group.html?group=7", "https://x.example/pending-groups.html"},
-		// A path prefix composes; a trailing slash never arrives (config
-		// refuses it at load, TestWebSPAURLRefusedAtLoadUnlessCanonical), so
-		// the readers take the value as written.
-		{"https://x.example", "https://gui.example/gui", "https://gui.example/gui/group.html?group=7", "https://gui.example/gui/pending-groups.html"},
+		// A port composes; a trailing slash or a path never arrives (config
+		// refuses them at load, TestWebSPAURLRefusedAtLoadUnlessCanonical: the
+		// front end is served at its origin), so the readers take the value
+		// as written.
+		{"https://x.example", "https://gui.example:8443", "https://gui.example:8443/group.html?group=7", "https://gui.example:8443/pending-groups.html"},
 		// No site at all: the placeholder the body already carried.
 		{"", "", "(your Aveloxis site URL)", "(your Aveloxis site URL)/admin/groups/pending"},
 	} {

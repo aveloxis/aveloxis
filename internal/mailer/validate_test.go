@@ -211,6 +211,10 @@ func TestValidateConfigSiteURL(t *testing.T) {
 		"https://aveloxis.io/,https://rule.aveloxis.io/",
 		"https://aveloxis.io/aveloxis,https://rule.aveloxis.io",
 		"https://aveloxis.io/;https://rule.aveloxis.io/",
+		// Copilot review 5407929995: url.Parse accepts any digits as a port.
+		"https://aveloxis.example:99999",
+		"https://aveloxis.example:0",
+		"https://aveloxis.example:65536",
 	} {
 		err := ValidateConfig(Config{GmailUser: "ops@example.com", GmailAppPassword: "abcdefghijklmnop", SiteURL: site})
 		if err == nil || !strings.Contains(err.Error(), "mail.site_url") {

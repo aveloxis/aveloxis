@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/idna"
+
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -1536,6 +1538,22 @@ func (c *Config) validate() error {
 		if strings.HasSuffix(spa, "/") {
 			return errors.New("web.spa_url ends with a slash — use the front end's origin as is, such as https://gui.example (each link appends /page.html to it)")
 		}
+		// The OAuth return compares the front end's next (built from the
+		// browser's location.origin) against this value as written, and the
+		// front end is served at its origin's root, so the value must be
+		// exactly what the address bar shows: one normaliser computes that
+		// origin and anything else is refused (reviews 2026-10-04: a default
+		// port, a leading zero, a trailing colon, uppercase, a Unicode host,
+		// an uncompressed IPv6 literal or a path each sent every SPA sign-in
+		// to /dashboard with only a WARN). Parsed once more here rather than
+		// inside the helper so no url.Parse error can echo the value.
+		u, err := url.Parse(spa)
+		if err != nil {
+			return errors.New("web.spa_url is not a URL")
+		}
+		if origin, err := browserOrigin(u); err != nil || origin != spa {
+			return errors.New("web.spa_url is not the origin as the browser's address bar shows it (lowercase scheme and ASCII host, an IPv4 address in dotted-decimal form, no default port, no leading zero, no path), such as https://gui.example or http://localhost:8000")
+		}
 	}
 	if n := len(c.API.FrontEndSecret); n > 0 && n < MinFrontEndSecretLen {
 		return fmt.Errorf("api.front_end_secret is %d characters — use at least %d (openssl rand -hex 32), or omit it to count every request", n, MinFrontEndSecretLen)
@@ -1568,6 +1586,71 @@ func (c *Config) validate() error {
 // hold: above it the hours-to-Duration product overflows and the ticker
 // panics at serve start on a value Load had accepted (review round 1).
 const MaxSupplyChainRefreshHours = int(math.MaxInt64 / int64(time.Hour))
+
+// browserIDNA is the WHATWG domain-to-ASCII profile (UTS 46, nontransitional,
+// no STD3 rules, no hyphen placement check): browsers accept an underscore
+// or a hyphen anywhere in a label, and the spa_url rule must accept what a
+// browser shows (idna.Lookup refuses both; round-3 review).
+var browserIDNA = idna.New(idna.MapForLookup(), idna.BidiRule(), idna.CheckJoiners(true), idna.StrictDomainName(false), idna.CheckHyphens(false), idna.Transitional(false))
+
+// ipv4Candidate is WHATWG's "ends in a number" test: a host whose last
+// label (a trailing dot stripped) is all digits or 0x-hex is parsed as an
+// IPv4 address, so 127.1, 010.1.2.3 and 0xa.1.2.3 are rewritten.
+func ipv4Candidate(host string) bool {
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	last := labels[len(labels)-1]
+	if last == "" {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(last), "0x") {
+		return strings.Trim(strings.ToLower(last[2:]), "0123456789abcdef") == ""
+	}
+	return strings.Trim(last, "0123456789") == ""
+}
+
+// browserOrigin is the origin a browser reports as location.origin for u
+// (WHATWG URL serialisation): lowercase scheme; the host as a browser shows
+// it — a bracketed IPv6 literal compressed, an IPv4 candidate only in its
+// dotted-decimal form, a name through browserIDNA; the port only when it is
+// not the scheme's default; and nothing else — no path, no trailing colon.
+// The one normaliser the spa_url rule compares against (SR-17).
+func browserOrigin(u *url.URL) (string, error) {
+	scheme := strings.ToLower(u.Scheme)
+	host := u.Hostname()
+	switch {
+	case strings.HasPrefix(u.Host, "["):
+		// Declined for the IPv4-mapped form ([::ffff:10.1.2.3]): Go prints
+		// the embedded address dotted, a browser prints ::ffff:a01:203, so
+		// the two can never agree and the value is refused — nobody serves a
+		// front end at that literal (round-3 review).
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return "", errors.New("not an IPv6 literal")
+		}
+		host = "[" + ip.String() + "]"
+	case ipv4Candidate(host):
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil || ip.String() != host {
+			return "", errors.New("an IPv4 address a browser rewrites")
+		}
+	default:
+		ascii, err := browserIDNA.ToASCII(host)
+		if err != nil {
+			return "", err
+		}
+		host = ascii
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return "", err
+		}
+		if !((scheme == "https" && n == 443) || (scheme == "http" && n == 80)) {
+			host += ":" + strconv.Itoa(n)
+		}
+	}
+	return scheme + "://" + host, nil
+}
 
 // SlogLevel returns the slog.Level corresponding to the LogLevel string.
 func (c *Config) SlogLevel() slog.Level {

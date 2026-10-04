@@ -44,11 +44,11 @@ func TestMailerConfigFromCarriesEveryField(t *testing.T) {
 		"spa_url": "web", // the front end's origin is web.spa_url; the mailer links to its pages when set (2026-10-04)
 	}
 	// The value each key carries: distinct per key so a crossed wire shows,
-	// and loadable — web.spa_url is refused at load unless it is a canonical
-	// URL, so its marker rides in the path.
+	// and loadable — web.spa_url is refused at load unless it is the origin
+	// as a browser writes it (no path), so its marker rides in the host.
 	valueOf := func(key string) string {
 		if key == "spa_url" {
-			return "https://gui.example/value-of-" + key
+			return "https://value-of-" + strings.ReplaceAll(key, "_", "-") + ".example"
 		}
 		return "value-of-" + key
 	}

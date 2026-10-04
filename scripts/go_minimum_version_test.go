@@ -29,12 +29,16 @@ func TestDocsNameTheGoMinimumFromGoMod(t *testing.T) {
 		t.Fatal("go.mod has no go directive")
 	}
 	want := m[1]
-	minimum := regexp.MustCompile(`(?i)\b(?:go ?(1\.\d+)(?:\.\d+)? ?(?:\+|or later)|requires go (1\.\d+)|golang:(1\.\d+)-)`)
+	// Prose ("Go 1.NN+", "Go 1.NN or later", "requires go 1.NN"), the image
+	// tag ("golang:1.NN-") and the installation guide's table cell
+	// ("| **Go** | 1.NN+ |" — Copilot review 5407929995: the cell spelling
+	// escaped the prose pattern).
+	minimum := regexp.MustCompile(`(?i)\b(?:go ?(1\.\d+)(?:\.\d+)? ?(?:\+|or later)|requires go (1\.\d+)|golang:(1\.\d+)-)|\*\*go\*\* \| (1\.\d+)\+`)
 	var files []string
 	for _, f := range []string{"README.md", "Dockerfile"} {
 		files = append(files, filepath.Join(repoRootFromScripts(t), f))
 	}
-	_ = filepath.WalkDir(filepath.Join(repoRootFromScripts(t), "docs"), func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(filepath.Join(repoRootFromScripts(t), "docs"), func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -46,6 +50,11 @@ func TestDocsNameTheGoMinimumFromGoMod(t *testing.T) {
 		}
 		return nil
 	})
+	if err != nil {
+		// A partial walk would leave part of docs unchecked while the count
+		// stayed above the floor (Copilot review 5407929995).
+		t.Fatal(err)
+	}
 	sites := 0
 	for _, f := range files {
 		b, err := os.ReadFile(f)
@@ -54,7 +63,7 @@ func TestDocsNameTheGoMinimumFromGoMod(t *testing.T) {
 		}
 		for i, line := range strings.Split(string(b), "\n") {
 			for _, hit := range minimum.FindAllStringSubmatch(line, -1) {
-				got := hit[1] + hit[2] + hit[3] // one group matches
+				got := hit[1] + hit[2] + hit[3] + hit[4] // one group matches
 				sites++
 				if got != want {
 					rel, _ := filepath.Rel(repoRootFromScripts(t), f)
@@ -64,9 +73,11 @@ func TestDocsNameTheGoMinimumFromGoMod(t *testing.T) {
 		}
 	}
 	// The denominator: README, the contributor setup, the scancode-host
-	// guide, installation, deployment, the Dockerfile (comment and image
-	// tag) and the CI guide's image tag each state it.
-	if sites < 8 {
+	// guide, installation (prose and table cell), deployment, the Dockerfile
+	// (comment and image tag) and the CI guide (image tag and prose, one
+	// line) — ten statements; one fewer means a site stopped reading as a
+	// minimum (review: with slack, the table cell could lose its "+" unseen).
+	if sites < 10 {
 		t.Errorf("only %d minimum-version statements found; the pattern no longer matches the docs", sites)
 	}
 }

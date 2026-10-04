@@ -515,7 +515,7 @@ func TestConfirmationLinkFollowsTheFrontEnd(t *testing.T) {
 	for _, c := range []struct{ base, spa, want string }{
 		{"https://x.example", "", "https://x.example/account/email/confirm?token=abc"},
 		{"https://x.example", "https://x.example", "https://x.example/profile.html#token=abc"},
-		{"https://x.example", "https://gui.example/gui", "https://gui.example/gui/profile.html#token=abc"},
+		{"https://x.example", "https://gui.example:8443", "https://gui.example:8443/profile.html#token=abc"},
 	} {
 		if got := confirmationLink(c.base, c.spa, "abc"); got != c.want {
 			t.Errorf("confirmationLink(%q, %q) = %q, want %q", c.base, c.spa, got, c.want)

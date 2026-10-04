@@ -506,9 +506,9 @@ func TestWithMailerWarnsWithoutSiteURL(t *testing.T) {
 // front end it travels in the FRAGMENT, not the query (reviews
 // 2026-10-04): a fragment never reaches nginx's access log, the front
 // end's analytics tag excludes it, and the page moves it into the tab's
-// session storage and drops it from the URL before any response is
-// handled, so a signed-out click's login round trip carries a token-free
-// ?next=. The value is taken as written: config refuses a non-canonical
+// session storage and drops it from the URL while its script loads,
+// before any request is issued, so a signed-out click's login round trip
+// carries a token-free ?next=. The value is taken as written: config refuses a non-canonical
 // spa_url at load (TestWebSPAURLRefusedAtLoadUnlessCanonical), so no
 // reader trims.
 func TestConfirmationLinkFollowsTheFrontEnd(t *testing.T) {

@@ -1525,8 +1525,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep no bodies in memory", *mb, MaxResponseCacheMB)
 	}
 	if spa := c.Web.SPAURL; spa != "" {
-		// With it set, spa_url starts every mailed link (group, pending
-		// approvals, email confirmation) and the OAuth return: the rule
+		// With it set, spa_url starts the mailed page links (group, pending
+		// approvals, email confirmation; welcome and digest links stay on
+		// mail.site_url) and the OAuth return: the rule
 		// mail.site_url has, plus the canonical form, because every reader
 		// appends "/page.html" to the value as written (2026-10-04).
 		if err := mailer.ValidateSiteURL("web.spa_url", spa); err != nil {

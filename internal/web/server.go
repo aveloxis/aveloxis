@@ -1028,9 +1028,9 @@ func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bo
 // the front end it rides in the FRAGMENT: a fragment is never sent to the
 // static server (so never in its access log), the front end's analytics
 // tag excludes it, and the page moves it into the tab's session storage
-// and drops it from the URL before any response is handled, so a
-// signed-out click's login round trip carries a token-free ?next=
-// (reviews 2026-10-04). spa_url is taken as written: config refuses a
+// and drops it from the URL while its script loads, before any request
+// is issued, so a signed-out click's login round trip carries a
+// token-free ?next= (reviews 2026-10-04). spa_url is taken as written: config refuses a
 // non-canonical value at load.
 func confirmationLink(base, spaURL, token string) string {
 	if spaURL != "" {

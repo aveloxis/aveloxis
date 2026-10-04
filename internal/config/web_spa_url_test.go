@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// web.spa_url starts every mailed link when it is set (2026-10-04: the
-// group, pending-approvals and confirmation links), exactly as mail.site_url
-// does without it — so it takes the same rule, at load, naming the key:
+// web.spa_url starts the mailed page links when it is set (2026-10-04: the
+// group, pending-approvals and confirmation links; welcome and digest links
+// stay on mail.site_url), exactly as mail.site_url does without it — so it takes the same rule, at load, naming the key:
 // absolute http(s), a host, no query/fragment/user/spaces, and the canonical
 // form with no trailing slash (every reader appends "/page.html"; one
 // spelling, SR-17, instead of a trim at each reader). The review found the

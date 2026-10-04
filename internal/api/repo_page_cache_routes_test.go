@@ -223,6 +223,17 @@ func TestCachedRepoRoutesServeFromTheCache(t *testing.T) {
 	}
 }
 
+// helperFiles lists the parse helpers a cached handler may read its query
+// through, and their files. TestPageParamsMatchTheHandlers derives what each
+// reads from its body; TestEveryQueryReaderIsScannedOrReviewed requires
+// every other query reader to be reviewed as serving uncached routes.
+var helperFiles = map[string]string{
+	"parseWindow":              "contributions.go",
+	"parseDateRange":           "metrics.go",
+	"parseTopContributorsArgs": "page_query.go",
+	"parseSBOMArgs":            "page_query.go",
+}
+
 // TestPageParamsMatchTheHandlers — the cache keys a route on the query
 // parameters pageParams lists for it (review round 1, finding 5). A
 // parameter the handler reads but the list lacks would share one answer
@@ -239,14 +250,14 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 	// reads is taken from its own body (and the helpers it calls), never
 	// from a list here: a parameter added inside a helper is a parameter the
 	// route reads (review round on 5403959037: a fixed list let one escape).
-	helperFiles := map[string]string{
-		"parseWindow":              "contributions.go",
-		"parseDateRange":           "metrics.go",
-		"parseTopContributorsArgs": "page_query.go",
-		"parseSBOMArgs":            "page_query.go",
-	}
 	helperGet := regexp.MustCompile(`(?:\bq|Query\(\))\.Get\("([a-z_]+)"\)`)
-	helperOther := regexp.MustCompile(`\.FormValue\(|RawQuery|Query\(\)\.(Has|Encode)\(|\bq\.(Has|Encode)\(|\bq\[`)
+	helperAnyGet := regexp.MustCompile(`(?:\bq|Query\(\))\.Get\(`)
+	// A binding of the whole query (nothing chained after Query()), or a
+	// url.Values parameter.
+	helperBind := regexp.MustCompile(`\b(\w+)\s*:?=\s*\w+\.URL\.Query\(\)[ \t]*(?:\n|;|$)|\b(\w+)\s+url\.Values\b`)
+	qWord := regexp.MustCompile(`\bq\b`)
+	qLitGet := regexp.MustCompile(`\bq\.Get\("[a-z_]+"\)`)
+	helperOther := regexp.MustCompile(`\.FormValue\(|RawQuery|Query\(\)\.(Has|Encode)\(|Query\(\)\[|\bq\.(Has|Encode)\(|\bq\[`)
 	var readsOf func(name string, seen map[string]bool) []string
 	readsOf = func(name string, seen map[string]bool) []string {
 		if seen[name] {
@@ -257,12 +268,41 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 		if m := helperOther.FindString(body); m != "" {
 			t.Errorf("%s reads the query another way (%q): pageParams cannot be checked against it", name, m)
 		}
+		// Only reads it can account for: the query is bound or passed as q,
+		// and every Get names a lowercase literal (a camelCase name or a
+		// constant would otherwise be silently skipped).
+		for _, m := range helperBind.FindAllStringSubmatch(body, -1) {
+			if m[1] != "q" && m[2] != "q" {
+				t.Errorf("%s holds the query as %q: name it q, so its reads are seen", name, m[0])
+			}
+		}
 		var out []string
-		for _, m := range helperGet.FindAllStringSubmatch(body, -1) {
+		lits := helperGet.FindAllStringSubmatch(body, -1)
+		if n := len(helperAnyGet.FindAllString(body, -1)); n != len(lits) {
+			t.Errorf("%s has %d query Get calls but %d with a lowercase literal name: every read must name its parameter literally", name, n, len(lits))
+		}
+		for _, m := range lits {
 			out = append(out, m[1])
 		}
+		// Guard the denominator: every use of q is accounted for — its
+		// binding or parameter, a literal Get, or q handed to another
+		// scanned helper (whose reads are followed below). Anything else
+		// (range q, len(q), an alias) reads parameters this scan cannot name.
+		accounted := len(qLitGet.FindAllString(body, -1))
+		for _, m := range helperBind.FindAllStringSubmatch(body, -1) {
+			if m[1] == "q" || m[2] == "q" {
+				accounted++
+			}
+		}
 		for other := range helperFiles {
-			if other != name && strings.Contains(body, other+"(r)") {
+			accounted += len(regexp.MustCompile(`\b`+other+`\(q\)`).FindAllString(body, -1))
+		}
+		if n := len(qWord.FindAllString(body, -1)); n != accounted {
+			t.Errorf("%s uses q %d times but only %d are its binding, a literal q.Get or a scanned helper call: read the query only through q.Get(\"name\")", name, n, accounted)
+		}
+		for other := range helperFiles {
+			// Any call, whatever it passes (r, or q url.Values).
+			if other != name && regexp.MustCompile(`\b`+other+`\(`).MatchString(body) {
 				out = append(out, readsOf(other, seen)...)
 			}
 		}
@@ -274,7 +314,7 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 		if len(reads) == 0 {
 			t.Errorf("found no query reads in %s: the helper scan is broken", name)
 		}
-		helpers[name+"(r)"] = reads
+		helpers[name] = reads
 	}
 	get := regexp.MustCompile(`Query\(\)\.Get\("([a-z_]+)"\)`)
 	other := regexp.MustCompile(`URL\.Query\(\)[^.]|\.FormValue\(|URL\.RawQuery|Query\(\)\.(Has|Encode)\(`)
@@ -301,11 +341,15 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 		}
 		examined++
 		reads := map[string]bool{}
-		for _, m := range get.FindAllStringSubmatch(body, -1) {
+		lits := get.FindAllStringSubmatch(body, -1)
+		if n := strings.Count(body, "Query().Get("); n != len(lits) {
+			t.Errorf("%s has %d query Get calls but %d with a lowercase literal name: every read must name its parameter literally", reg.handler, n, len(lits))
+		}
+		for _, m := range lits {
 			reads[m[1]] = true
 		}
 		for call, ps := range helpers {
-			if strings.Contains(body, call) {
+			if regexp.MustCompile(`\b` + call + `\(`).MatchString(body) {
 				for _, p := range ps {
 					reads[p] = true
 				}
@@ -330,4 +374,98 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 		}
 	}
 	srctest.MinCount(t, "cached routes checked against their parameters", examined, 13)
+}
+
+// Every function in the package that reads the query, other than a route
+// handler, is either a parse helper TestPageParamsMatchTheHandlers scans
+// (its reads count as the calling route's) or reviewed here as serving
+// uncached routes only. And nothing a cached handler can reach, through any
+// chain of calls (a route handler it delegates to, a helper named handleX,
+// an intermediate that calls a reviewed reader), reads the query unless it
+// is a scanned helper. A new parser a cached handler calls
+// (vulnSeverityFilter(r) reading ?severity) would otherwise be read by no
+// test, and its parameter would never reach the key: ?severity=critical and
+// ?severity=low would share one answer (review rounds on 5403959037).
+var uncachedQueryReaders = map[string]string{
+	"compareWindow":           "the /compare routes, which are not repository-page cached",
+	"parsePeriod":             "the metrics routes (period=), not repository-page cached",
+	"parsePortalPage":         "the portal list pages, per caller",
+	"parseRetentionThreshold": "the retention admin route",
+	"resolveSupplyChainScope": "the supply-chain routes, not repository-page cached",
+	"canonicalQuery":          "the cache key itself (reads only the listed parameters)",
+}
+
+func TestEveryQueryReaderIsScannedOrReviewed(t *testing.T) {
+	// url.Values: a function handed the parsed query (q) reads it too.
+	reads := regexp.MustCompile(`Query\(\)|\.FormValue\(|RawQuery|url\.Values`)
+	// The name of a function or method, generic ones included (name[T ...]).
+	name := regexp.MustCompile(`^(?:\([^)]*\)\s*)?(\w+)[\[(]`)
+	bodies := map[string]string{}
+	found := map[string]bool{}
+	examined := 0
+	for file, src := range srctest.PackageFiles(t, "internal/api", 20) {
+		src = srctest.StripGoComments(src)
+		for _, part := range strings.Split(src, "\nfunc ")[1:] {
+			m := name.FindStringSubmatch(part)
+			if m == nil {
+				t.Errorf("%s: cannot read the name of the function starting %q", file, strings.SplitN(part, "\n", 2)[0])
+				continue
+			}
+			examined++
+			fn := m[1]
+			// Same-named functions (methods on several types) are merged:
+			// deterministic, and errs toward reporting.
+			bodies[fn] += part
+			if !reads.MatchString(part) || strings.HasPrefix(fn, "handle") {
+				continue
+			}
+			found[fn] = true
+			if _, scanned := helperFiles[fn]; !scanned && uncachedQueryReaders[fn] == "" {
+				t.Errorf("%s: %s reads the query but is neither a parse helper TestPageParamsMatchTheHandlers scans (add it to helperFiles there) nor reviewed in uncachedQueryReaders", file, fn)
+			}
+		}
+	}
+	srctest.MinCount(t, "functions examined", examined, 100)
+	for fn := range uncachedQueryReaders {
+		if !found[fn] {
+			t.Errorf("uncachedQueryReaders lists %s, which no longer reads the query: remove it", fn)
+		}
+	}
+	// Everything a cached handler can reach, through any chain of calls
+	// (another route handler it delegates to, a helper named handleX, an
+	// intermediate that calls a reviewed reader): a reached function that
+	// reads the query and is not a scanned helper reads a parameter the key
+	// cannot see.
+	callRE := map[string]*regexp.Regexp{}
+	for fn := range bodies {
+		callRE[fn] = regexp.MustCompile(`\b` + fn + `[\[(]`)
+	}
+	cachedHandlers := 0
+	for _, reg := range repoGETRegistrations(t) {
+		if !reg.cached {
+			continue
+		}
+		cachedHandlers++
+		if bodies[reg.handler] == "" {
+			t.Errorf("cannot find cached handler %s", reg.handler)
+			continue
+		}
+		seen := map[string]bool{reg.handler: true}
+		queue := []string{reg.handler}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for fn, re := range callRE {
+				if seen[fn] || !re.MatchString(bodies[cur]) {
+					continue
+				}
+				seen[fn] = true
+				queue = append(queue, fn)
+				if _, scanned := helperFiles[fn]; !scanned && reads.MatchString(bodies[fn]) {
+					t.Errorf("cached handler %s reaches %s (through %s), which reads the query: its reads are not in the key — make it a scanned helper (helperFiles) and list what it reads in pageParams, or stop calling it from a cached route", reg.handler, fn, cur)
+				}
+			}
+		}
+	}
+	srctest.MinCount(t, "cached handlers checked", cachedHandlers, 13)
 }

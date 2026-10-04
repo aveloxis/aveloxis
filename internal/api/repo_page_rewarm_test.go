@@ -390,3 +390,34 @@ func TestRewarmReportsRemainingPerRepository(t *testing.T) {
 		t.Errorf("repository 8's summary must report 1 request attempted, 1 failed; log:\n%s", logs.String())
 	}
 }
+
+// PR #226 review 5403516185: a shutdown that cancels the pass while a replay
+// runs is not a failed re-warm — nothing is logged as not cached or
+// re-warmed, and the answer is not marked tried for this state, so the next
+// run replays it.
+func TestRewarmShutdownDuringAReplayIsNotAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var stop atomic.Bool
+	hn, logs, runs := rewarmHarness(t, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if stop.Load() {
+			cancel()             // shutdown arrives mid-replay
+			<-r.Context().Done() // the store call ends with it
+			return               // serverError writes nothing
+		}
+		okBody(hn, w, r)
+	})
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	runs()
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	stop.Store(true)
+	hn.s.rewarmOnce(ctx)
+	if strings.Contains(logs.String(), "request not cached") || strings.Contains(logs.String(), "repository page cache re-warmed") {
+		t.Errorf("a shutdown must not be reported as a failed or completed re-warm; log:\n%s", logs.String())
+	}
+	stop.Store(false)
+	runs()
+	if _, reqs := hn.s.rewarmOnce(context.Background()); reqs != 1 {
+		t.Errorf("after the shutdown the answer must still be replayed (not marked tried), replayed %d", reqs)
+	}
+}

@@ -263,6 +263,11 @@ func (rl *rateLimiter) evictOldestLocked() {
 	}
 }
 
+// corsAllowHeaders are the request headers a cross-origin caller may send:
+// its token, a JSON body, and If-None-Match, which revalidates an answer
+// against the ETag the API exposes (v0.29.73).
+const corsAllowHeaders = "Authorization, Content-Type, If-None-Match"
+
 // cors is the SINGLE CORS authority (v0.27.1 removed the per-handler
 // wildcard/echo headers that predated it). Empty cors_origins =
 // legacy-compatible `*` (the server-rendered GUI's cross-port fetches
@@ -278,11 +283,11 @@ func (rl *rateLimiter) cors(next http.Handler) http.Handler {
 		if origin != "" && len(rl.origins) == 0 {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 		} else if origin != "" && rl.origins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {

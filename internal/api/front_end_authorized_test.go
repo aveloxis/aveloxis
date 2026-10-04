@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,27 @@ func TestEveryAnswerVariesByOrigin(t *testing.T) {
 			if vary := w.Result().Header.Values("Vary"); len(vary) != 1 || vary[0] != "Origin" {
 				t.Errorf("%s mode, Origin %q: Vary = %v, want exactly [Origin]", name, origin, vary)
 			}
+		}
+	}
+}
+
+// PR #226 review 5403516185: a cross-origin browser sending If-None-Match
+// (the ETag the API exposes) must pass its preflight, in both CORS modes.
+func TestCORSPreflightAllowsConditionalRequests(t *testing.T) {
+	for name, origins := range map[string][]string{"allowlist": {"https://gui.example"}, "open": nil} {
+		s, err := NewWithOptions(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{CORSOrigins: origins, ExemptCIDRs: DefaultExemptCIDRs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodOptions, "/api/v1/repos/7/licenses", nil)
+		r.RemoteAddr = "127.0.0.1:1"
+		r.Header.Set("Origin", "https://gui.example")
+		r.Header.Set("Access-Control-Request-Method", "GET")
+		r.Header.Set("Access-Control-Request-Headers", "authorization, if-none-match")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if allow := w.Result().Header.Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(allow), "if-none-match") {
+			t.Errorf("%s mode: preflight Allow-Headers %q must include If-None-Match", name, allow)
 		}
 	}
 }

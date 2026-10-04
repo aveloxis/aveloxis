@@ -87,6 +87,11 @@ func (s *Server) rewarmOnce(ctx context.Context) (repos, requests int) {
 				return repos, requests
 			}
 			status, reason := s.replay(ctx, uri, fp)
+			if ctx.Err() != nil {
+				// Shutdown ended the pass during this replay: not a failure,
+				// and not tried for this state — the next run replays it.
+				return repos, requests
+			}
 			requests++
 			attempted++
 			if status == http.StatusConflict {

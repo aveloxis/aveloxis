@@ -31,26 +31,14 @@ func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	since, until, ok := parseWindow(r)
+	args, ok := parseTopContributorsArgs(r)
 	if !ok {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
 		return
 	}
-	limit := 20
-	if lp := r.URL.Query().Get("limit"); lp != "" {
-		if n, err := strconv.Atoi(lp); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	// v0.27.69 — the "hide bots" checkbox: ?bots=hide filters bot
-	// identities (App accounts, [bot] logins, logins ending in "bot" —
-	// the k8s-ci-robot and pytorchmergebot class; db.displayBotLoginSQL).
-	excludeBots := r.URL.Query().Get("bots") == "hide"
+	since, until, limit := args.since, args.until, args.limit
 
-	rows, err := s.store.TopContributors(r.Context(), repoID, since, until, limit, excludeBots)
+	rows, err := s.store.TopContributors(r.Context(), repoID, since, until, limit, args.excludeBots)
 	if err != nil {
 		s.serverError(w, r, "handleTopContributors", err)
 		return

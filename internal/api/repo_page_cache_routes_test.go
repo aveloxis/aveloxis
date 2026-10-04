@@ -234,9 +234,47 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 	for _, f := range []string{"server.go", "metrics.go", "vulnerabilities.go", "contributions.go", "top_contributors.go"} {
 		files[f] = srctest.StripGoComments(srctest.Read(t, "internal/api/"+f))
 	}
-	helpers := map[string][]string{
-		"parseWindow(r)":    {"since", "until"},
-		"parseDateRange(r)": {"begin_date", "end_date"},
+	files["page_query.go"] = srctest.StripGoComments(srctest.Read(t, "internal/api/page_query.go"))
+	// The parse helpers a handler may read its query through. What each
+	// reads is taken from its own body (and the helpers it calls), never
+	// from a list here: a parameter added inside a helper is a parameter the
+	// route reads (review round on 5403959037: a fixed list let one escape).
+	helperFiles := map[string]string{
+		"parseWindow":              "contributions.go",
+		"parseDateRange":           "metrics.go",
+		"parseTopContributorsArgs": "page_query.go",
+		"parseSBOMArgs":            "page_query.go",
+	}
+	helperGet := regexp.MustCompile(`(?:\bq|Query\(\))\.Get\("([a-z_]+)"\)`)
+	helperOther := regexp.MustCompile(`\.FormValue\(|RawQuery|Query\(\)\.(Has|Encode)\(|\bq\.(Has|Encode)\(|\bq\[`)
+	var readsOf func(name string, seen map[string]bool) []string
+	readsOf = func(name string, seen map[string]bool) []string {
+		if seen[name] {
+			return nil
+		}
+		seen[name] = true
+		body := srctest.FuncBody(t, files[helperFiles[name]], "func "+name+"(")
+		if m := helperOther.FindString(body); m != "" {
+			t.Errorf("%s reads the query another way (%q): pageParams cannot be checked against it", name, m)
+		}
+		var out []string
+		for _, m := range helperGet.FindAllStringSubmatch(body, -1) {
+			out = append(out, m[1])
+		}
+		for other := range helperFiles {
+			if other != name && strings.Contains(body, other+"(r)") {
+				out = append(out, readsOf(other, seen)...)
+			}
+		}
+		return out
+	}
+	helpers := map[string][]string{}
+	for name := range helperFiles {
+		reads := readsOf(name, map[string]bool{})
+		if len(reads) == 0 {
+			t.Errorf("found no query reads in %s: the helper scan is broken", name)
+		}
+		helpers[name+"(r)"] = reads
 	}
 	get := regexp.MustCompile(`Query\(\)\.Get\("([a-z_]+)"\)`)
 	other := regexp.MustCompile(`URL\.Query\(\)[^.]|\.FormValue\(|URL\.RawQuery|Query\(\)\.(Has|Encode)\(`)

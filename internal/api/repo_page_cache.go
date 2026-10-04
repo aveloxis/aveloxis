@@ -99,15 +99,21 @@ var pageParams = map[string][]string{
 	"GET /api/v1/repos/{repoID}/libyear":                    {"license", "scope"},
 }
 
-// canonicalQuery is the request's query reduced to params, one value each
-// (the first, which is what the handlers' Query().Get reads), in sorted
-// order.
+// canonicalQuery is the request's query reduced to params, each as the
+// effective value its handler acts on (pageParamValue, applied to the first
+// value, which is what the handlers' Query().Get reads; a parameter at its
+// default is left out), in sorted order. A name without a rule keys on its
+// first value as spelled.
 func canonicalQuery(r *http.Request, params []string) string {
 	q := r.URL.Query()
 	keep := url.Values{}
 	for _, p := range params {
-		if vs, ok := q[p]; ok && len(vs) > 0 {
-			keep.Set(p, vs[0])
+		v := q.Get(p)
+		if rule, ok := pageParamValue[p]; ok {
+			v = rule(v)
+		}
+		if v != "" {
+			keep.Set(p, v)
 		}
 	}
 	return keep.Encode()

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // pageCacheHarness is a Server whose repository-page cache is fed by a fake
@@ -724,6 +725,199 @@ func TestPageCacheRecomputedAnswerMatchingTheClientsTagIs304(t *testing.T) {
 		}
 		if hn.runs.Load() != 2 {
 			t.Errorf("%s: runs %d, want 2 (it was recomputed)", name, hn.runs.Load())
+		}
+	}
+}
+
+// PR #226 review 5403959037: the key holds each parameter's EFFECTIVE value
+// — the value the handler acts on — not its spelling. Every spelling a
+// handler folds into one value (an invalid date into the default window,
+// an invalid limit into 20, any bots value but "hide" into "show them")
+// shares that value's entry, so junk spellings cannot each recompute the
+// heaviest route, fill the LRU and become re-warm candidates.
+func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
+	const top = "GET /api/v1/repos/{repoID}/contributors/top"
+	const ts = "GET /api/v1/repos/{repoID}/timeseries"
+	const sbom = "GET /api/v1/repos/{repoID}/sbom"
+	const deps = "GET /api/v1/repos/{repoID}/deps"
+	key := func(pattern, q string) string {
+		r := httptest.NewRequest(http.MethodGet, "/x?"+q, nil)
+		return canonicalQuery(r, pageParams[pattern])
+	}
+	same := []struct{ pattern, a, b string }{
+		{top, "", "limit=20"},
+		{top, "", "limit=abc"},
+		{top, "", "limit=0"},
+		{top, "", "limit=-3"},
+		{top, "limit=100", "limit=500"},
+		{top, "limit=7", "limit=07"},
+		{top, "", "bots=x"},
+		{top, "", "bots=HIDE"},
+		{top, "", "since=yesterday"},
+		{top, "", "since=2024-1-1"},
+		{top, "", "until=2024-02-30"},
+		{top, "bots=hide&limit=10", "limit=10&bots=hide&limit=99"},
+		{ts, "", "since=2024-13-01"},
+		{ts, "", "since="},
+		{sbom, "", "vulns=true"},
+		{sbom, "", "vulns=0"},
+		{deps, "", "license="},
+	}
+	for _, c := range same {
+		if ka, kb := key(c.pattern, c.a), key(c.pattern, c.b); ka != kb {
+			t.Errorf("%s: ?%s and ?%s are the same answer but key %q vs %q", c.pattern, c.a, c.b, ka, kb)
+		}
+	}
+	differ := []struct{ pattern, a, b string }{
+		{top, "limit=10", "limit=20"},
+		{top, "limit=99", "limit=100"},
+		{top, "", "bots=hide"},
+		{top, "", "since=2024-01-01"},
+		{top, "until=2024-01-01", "until=2024-01-02"},
+		{ts, "since=2024-01-01", "since=2024-01-02"},
+		{sbom, "", "vulns=1"},
+		{sbom, "format=spdx", "format=cyclonedx"},
+		// The legacy full list (no parameters) and the filtered list
+		// (?scope=all) are different answers on /deps.
+		{deps, "", "scope=all"},
+		{deps, "license=MIT", "license=GPL-3.0"},
+	}
+	for _, c := range differ {
+		if ka, kb := key(c.pattern, c.a), key(c.pattern, c.b); ka == kb {
+			t.Errorf("%s: ?%s and ?%s are different answers but share key %q", c.pattern, c.a, c.b, ka)
+		}
+	}
+}
+
+// Every parameter a cached route reads has an effective-value rule, chosen
+// on purpose (identity included): a new parameter cannot silently key on
+// its spelling.
+func TestEveryPageParamHasAnEffectiveValueRule(t *testing.T) {
+	for pattern, names := range pageParams {
+		if pattern == testPagePattern {
+			continue
+		}
+		for _, n := range names {
+			if _, ok := pageParamValue[n]; !ok {
+				t.Errorf("%s reads ?%s, which has no rule in pageParamValue", pattern, n)
+			}
+		}
+	}
+}
+
+// The invariant the key exists for: two requests a cached route keys alike
+// get the same answer. For the routes whose key folds spellings (dates,
+// limit, bots, vulns), the handler acts only on what its parse function
+// returns (pinned below), so "same key ⇒ same parsed arguments" over a
+// corpus of spellings is that invariant, tested on behavior: a handler-side
+// extra rule (bots=1 also hiding bots) has to live in the parse function,
+// and this test then fails for it.
+func TestSameKeyMeansSameHandlerArguments(t *testing.T) {
+	days := []string{"", "since=2024-01-01", "since=yesterday", "since=2024-1-1", "since=2024-02-30", "since=",
+		"until=2024-06-01", "until=bad", "until=2024-6-1", "since=2024-01-01&until=2024-06-01", "since=2024-01-01&until=2023-01-01"}
+	type route struct {
+		pattern string
+		corpus  []string
+		args    func(*http.Request) any
+	}
+	var top []string
+	for _, d := range days {
+		for _, extra := range []string{"", "limit=20", "limit=abc", "limit=0", "limit=10", "limit=100", "limit=500", "limit=07",
+			"bots=hide", "bots=x", "bots=1", "bots=HIDE", "limit=10&bots=hide"} {
+			top = append(top, strings.Trim(d+"&"+extra, "&"))
+		}
+	}
+	window := func(r *http.Request) any { s, u, ok := parseWindow(r); return [3]any{s, u, ok} }
+	routes := []route{
+		{"GET /api/v1/repos/{repoID}/contributors/top", top, func(r *http.Request) any {
+			a, ok := parseTopContributorsArgs(r)
+			return [2]any{a, ok}
+		}},
+		{"GET /api/v1/repos/{repoID}/timeseries", days, window},
+		{"GET /api/v1/repos/{repoID}/contributions/identities", days, window},
+		{"GET /api/v1/repos/{repoID}/contributions/affiliations", days, window},
+		{"GET /api/v1/repos/{repoID}/contributions/coverage", days, window},
+		{"GET /api/v1/repos/{repoID}/sbom", []string{"", "vulns=1", "vulns=true", "vulns=0", "format=spdx", "format=spdx&vulns=1",
+			"format=spdx&vulns=yes", "scope=runtime", "scope=runtime&vulns=1", "scope=runtime&vulns=2"}, func(r *http.Request) any {
+			return parseSBOMArgs(r)
+		}},
+	}
+	for _, rt := range routes {
+		type parsed struct {
+			q    string
+			args any
+		}
+		byKey := map[string]parsed{}
+		for _, q := range rt.corpus {
+			r := httptest.NewRequest(http.MethodGet, "/x?"+q, nil)
+			k, a := canonicalQuery(r, pageParams[rt.pattern]), rt.args(r)
+			if prev, ok := byKey[k]; ok && fmt.Sprint(prev.args) != fmt.Sprint(a) {
+				t.Errorf("%s: ?%s and ?%s share key %q but the handler acts on %v vs %v", rt.pattern, prev.q, q, k, prev.args, a)
+			}
+			byKey[k] = parsed{q, a}
+		}
+	}
+}
+
+// The handlers of those routes read the query only through their parse
+// function (ban the operation: no other Query() in the body), so the test
+// above covers everything they act on.
+func TestFoldingHandlersReadTheQueryOnlyThroughTheirParser(t *testing.T) {
+	for _, c := range []struct{ file, handler, parser string }{
+		{"top_contributors.go", "handleTopContributors", "parseTopContributorsArgs(r)"},
+		{"server.go", "handleTimeSeries", "parseWindow(r)"},
+		{"server.go", "handleSBOMDownload", "parseSBOMArgs(r)"},
+		{"contributions.go", "handleRepoContributors", "parseWindow(r)"},
+		{"contributions.go", "handleRepoAffiliations", "parseWindow(r)"},
+		{"contributions.go", "handleRepoContributionsCoverage", "parseWindow(r)"},
+	} {
+		body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/api/"+c.file)), "func (s *Server) "+c.handler+"(")
+		if !strings.Contains(body, c.parser) {
+			t.Errorf("%s must parse its query with %s", c.handler, c.parser)
+		}
+		if strings.Contains(body, "Query()") || strings.Contains(body, "FormValue(") || strings.Contains(body, "RawQuery") {
+			t.Errorf("%s reads the query outside %s: the key cannot see that read", c.handler, c.parser)
+		}
+	}
+}
+
+// The re-warm replays an entry's canonical URI and matches the replayed
+// entry by that URI, so the canonical query must map to itself: a rule that
+// did not would store each replay under a new URI and never refresh the
+// entry (completeReplay false on every pass).
+func TestCanonicalQueryIsItsOwnCanonicalForm(t *testing.T) {
+	for pattern, params := range pageParams {
+		if pattern == testPagePattern {
+			continue
+		}
+		for _, q := range []string{"", "limit=500", "limit=07", "limit=abc", "bots=x", "bots=hide", "since=2024-01-01", "since=bad",
+			"until=2024-02-29", "vulns=true", "vulns=1", "format=spdx", "scope=all", "scope=runtime", "license=Apache-2.0%20OR%20MIT",
+			"license=a%2Bb", "limit=10&bots=hide&since=2024-01-01&until=2024-06-01"} {
+			once := canonicalQuery(httptest.NewRequest(http.MethodGet, "/x?"+q, nil), params)
+			twice := canonicalQuery(httptest.NewRequest(http.MethodGet, "/x?"+once, nil), params)
+			if once != twice {
+				t.Errorf("%s: ?%s canonicalizes to %q, which canonicalizes to %q", pattern, q, once, twice)
+			}
+		}
+	}
+}
+
+// parseSBOMArgs: the defaults; a format or scope outside the handler's
+// switches is passed through for it to refuse with 400.
+func TestParseSBOMArgs(t *testing.T) {
+	for q, want := range map[string]sbomArgs{
+		"":                             {format: "cyclonedx"},
+		"format=spdx":                  {format: "spdx"},
+		"format=pdf":                   {format: "pdf"},
+		"vulns=1":                      {format: "cyclonedx", withVulns: true},
+		"vulns=true":                   {format: "cyclonedx"},
+		"scope=runtime&vulns=1":        {format: "cyclonedx", scope: "runtime", withVulns: true},
+		"scope=all":                    {format: "cyclonedx", scope: "all"},
+		"scope=everything":             {format: "cyclonedx", scope: "everything"},
+		"format=spdx&format=cyclonedx": {format: "spdx"},
+	} {
+		if a := parseSBOMArgs(httptest.NewRequest(http.MethodGet, "/x?"+q, nil)); a != want {
+			t.Errorf("parseSBOMArgs(?%s) = %+v, want %+v", q, a, want)
 		}
 	}
 }

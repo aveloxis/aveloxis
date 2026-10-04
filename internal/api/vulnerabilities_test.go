@@ -125,7 +125,7 @@ func TestV0274RoutesRegistered(t *testing.T) {
 	}
 	// The licenses handler must ship the scanned flag (GUI empty-state
 	// disambiguation) and the SBOM handler the vulns=1 annotation path.
-	for _, needle := range []string{`"scanned":`, `HasDependencyData`, `annotateCycloneDXWithVulns`, `Get("vulns")`} {
+	for _, needle := range []string{`"scanned":`, `HasDependencyData`, `annotateCycloneDXWithVulns`, `args.withVulns`} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("server.go missing v0.27.4 wiring %q", needle)
 		}

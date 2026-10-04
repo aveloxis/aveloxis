@@ -335,14 +335,11 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	format := r.URL.Query().Get("format")
-	if format == "" {
-		format = "cyclonedx"
-	}
+	args := parseSBOMArgs(r)
 
 	var sbomFormat collector.SBOMFormat
 	var filename string
-	switch format {
+	switch args.format {
 	case "cyclonedx":
 		sbomFormat = collector.FormatCycloneDX
 		// *.cdx.json is CycloneDX's recognized filename convention.
@@ -357,12 +354,12 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	withVulns := r.URL.Query().Get("vulns") == "1"
+	withVulns := args.withVulns
 
 	// v0.27.46 (summary/19 P3, decision #3): the full scoped document
 	// is the default; ?scope=runtime filters to the shipped surface.
 	var sbomOpts collector.SBOMOptions
-	switch scope := r.URL.Query().Get("scope"); scope {
+	switch args.scope {
 	case "", "all":
 	case "runtime":
 		sbomOpts.RuntimeOnly = true
@@ -423,25 +420,14 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	// Default window: last 2 years to now. Both endpoints overridable via
-	// ?since=YYYY-MM-DD and ?until=YYYY-MM-DD. An invalid value falls back
-	// to the default rather than erroring, so charts keep rendering.
-	// Day-aligned (v0.29.71) so the answer can be cached for the day: an
-	// instant-precise default start gave every request its own window.
-	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
-	if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
-		if t, err := time.Parse("2006-01-02", sinceParam); err == nil {
-			since = t
-		}
-	}
-	var until time.Time
-	if untilParam := r.URL.Query().Get("until"); untilParam != "" {
-		if t, err := time.Parse("2006-01-02", untilParam); err == nil {
-			// Treat the date as inclusive by advancing one day (store uses < upper).
-			until = t.AddDate(0, 0, 1)
-		}
-	}
-	if !until.IsZero() && !since.Before(until) {
+	// Default window: last 2 years to now, day-aligned (v0.29.71) so the
+	// answer can be cached for the day. Both ends overridable via
+	// ?since=YYYY-MM-DD and ?until=YYYY-MM-DD (inclusive); an invalid value
+	// falls back to the default rather than erroring, so charts keep
+	// rendering. parseWindow is the contributions routes' reader too, and
+	// its parseDayParam is the cache key's (PR #226 review 5403959037).
+	since, until, ok := parseWindow(r)
+	if !ok {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
 		return
 	}

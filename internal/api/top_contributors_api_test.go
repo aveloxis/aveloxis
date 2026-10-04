@@ -41,16 +41,16 @@ func TestTopContributorsAuthzBeforeCache(t *testing.T) {
 }
 
 // Limit: default 20, hard cap 100 (an unbounded limit walks the whole
-// contributor set through the identity join for no UI benefit).
+// contributor set through the identity join for no UI benefit). The
+// handler reads ?limit= through topContributorsLimit
+// (TestFoldingHandlersReadTheQueryOnlyThroughTheirParser), so this is its behavior.
 func TestTopContributorsLimitClamp(t *testing.T) {
-	src, err := os.ReadFile("top_contributors.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "limit := 20") {
-		t.Error("default limit must be 20")
-	}
-	if !strings.Contains(string(src), "limit > 100") {
-		t.Error("limit must be capped at 100")
+	for in, want := range map[string]int{
+		"": 20, "abc": 20, "0": 20, "-3": 20, "1.5": 20,
+		"1": 1, "07": 7, "20": 20, "99": 99, "100": 100, "101": 100, "100000": 100,
+	} {
+		if got := topContributorsLimit(in); got != want {
+			t.Errorf("topContributorsLimit(%q) = %d, want %d", in, got, want)
+		}
 	}
 }

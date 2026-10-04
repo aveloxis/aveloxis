@@ -32,19 +32,15 @@ func parseWindow(r *http.Request) (since, until time.Time, ok bool) {
 	// default let the first request of a day fix the window for the rest of
 	// it (PR #226 review).
 	since = time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
-	if sinceParam := r.URL.Query().Get("since"); sinceParam != "" {
-		if t, err := time.Parse("2006-01-02", sinceParam); err == nil {
-			since = t
-		}
+	if t, ok := parseDayParam(r.URL.Query().Get("since")); ok {
+		since = t
 	}
 	var u time.Time
-	if untilParam := r.URL.Query().Get("until"); untilParam != "" {
-		if t, err := time.Parse("2006-01-02", untilParam); err == nil {
-			// Inclusive end-date: shift by one day so the store's
-			// exclusive-upper compare (< $3) covers the requested
-			// final calendar day.
-			u = t.AddDate(0, 0, 1)
-		}
+	if t, ok := parseDayParam(r.URL.Query().Get("until")); ok {
+		// Inclusive end-date: shift by one day so the store's
+		// exclusive-upper compare (< $3) covers the requested
+		// final calendar day.
+		u = t.AddDate(0, 0, 1)
 	}
 	if !u.IsZero() && !since.Before(u) {
 		return since, u, false

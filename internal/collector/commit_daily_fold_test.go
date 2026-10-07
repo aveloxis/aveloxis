@@ -54,6 +54,25 @@ func TestFacadeResultFoldsCommitsPerDayAndAuthor(t *testing.T) {
 	}
 }
 
+// A bogus future author date (2026-10-07, NVIDIA/nova's 2080s) never widens
+// the run's commit bounds; the fold keeps the row (the walk's truth), the
+// readers bound the window.
+func TestFutureAuthorDatesNeverBoundTheRun(t *testing.T) {
+	var r FacadeResult
+	ok := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	far := time.Date(2080, 1, 1, 0, 0, 0, 0, time.UTC)
+	r.noteCommitWritten(&ok)
+	r.noteCommitWritten(&far)
+	if !r.LastCommitAt.Equal(ok) || !r.FirstCommitAt.Equal(ok) {
+		t.Fatalf("bounds %v..%v; want the plausible commit only", r.FirstCommitAt, r.LastCommitAt)
+	}
+	var only FacadeResult
+	only.noteCommitWritten(&far)
+	if !only.FirstCommitAt.IsZero() || !only.LastCommitAt.IsZero() {
+		t.Fatal("a run whose only dated commits are implausible bounds nothing")
+	}
+}
+
 // The fold sites, by source (comments stripped): every path that proves a
 // commit written also folds it — the batch success loop (once per built
 // commit) and the per-row fallback (once per hash, where insertedByHash

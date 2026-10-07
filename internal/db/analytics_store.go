@@ -292,6 +292,11 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 	// reads every per-file commit row of the repository. The live scan is
 	// COALESCE's fallback, taken only while the column is unfilled (the
 	// facade fills it on the repository's next collection).
+	// A stored bound beyond the latest plausible commit time (a bogus
+	// future author date, written before the rule — 2026-10-07) reads as
+	// unfilled, and the live arm reads only plausible rows; the next walk
+	// repairs the stored value (RecordCommitBounds).
+	bound := LatestPlausibleCommitTime(time.Now())
 	var la *time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT MAX(GREATEST(
@@ -300,11 +305,12 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 			(SELECT created_at FROM aveloxis_data.pull_requests
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT 1),
 			COALESCE(
-			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id),
+			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at <= $2::timestamptz),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
-			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL ORDER BY cmt_author_timestamp DESC LIMIT 1))
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp <= $2::timestamptz
+			    ORDER BY cmt_author_timestamp DESC LIMIT 1))
 		))
-		FROM unnest($1::bigint[]) AS r(id)`, repoIDs).Scan(&la)
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs, bound).Scan(&la)
 	if err != nil {
 		return time.Time{}, false, err
 	}

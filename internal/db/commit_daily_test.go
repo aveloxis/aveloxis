@@ -292,6 +292,57 @@ func TestRepoTimeSeriesReadsTheDailyTableWhenFilledAndAligned(t *testing.T) {
 	}
 }
 
+// The time series ends at the plausible bound on both paths: a commit (and
+// a daily row) dated 2080 adds no week beyond it.
+func TestRepoTimeSeriesEndsAtThePlausibleBound(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_fut10")
+	far := time.Date(2080, 6, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp)
+		VALUES ($1, 'fu7u4e1', 'z.go', 'a', '_avcd_fut10@x', '2080-06-01', $2)`, fx.repoID, far); err != nil {
+		t.Fatal(err)
+	}
+	bound := LatestPlausibleCommitTime(time.Now())
+	since := utcDay(time.Now()).AddDate(0, 0, -30)
+	check := func(path string) {
+		t.Helper()
+		ts, err := store.GetRepoTimeSeries(ctx, fx.repoID, since, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := 0
+		for _, p := range ts.Commits {
+			sum += p.Count
+			if !p.WeekStart.Before(bound) {
+				t.Errorf("%s: a week at %v lies beyond the plausible bound %v", path, p.WeekStart, bound)
+			}
+		}
+		if sum != 1 {
+			t.Errorf("%s: the one plausible commit counts, the 2080 one does not: got %d", path, sum)
+		}
+	}
+	check("commits table")
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: "_avcd_fut10@x", Commits: 1},
+		{Day: utcDay(far), AuthorEmail: "_avcd_fut10@x", Commits: 1},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	check("daily table")
+	// An explicit until beyond the bound is clamped too.
+	ts, err := store.GetRepoTimeSeries(ctx, fx.repoID, since, far.AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ts.Commits {
+		if !p.WeekStart.Before(bound) {
+			t.Errorf("explicit far until: a week at %v beyond the bound", p.WeekStart)
+		}
+	}
+}
+
 func TestFillRepoCommitDailyFromCommitsBackfillsOnce(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)

@@ -29,6 +29,14 @@ import (
 // rewritten on each call: once per collection job and once per recheck
 // cadence (review round 5).
 func (s *PostgresStore) RecordCommitBounds(ctx context.Context, repoID int64, first, last time.Time) error {
+	// Bogus future author dates (2026-10-07) never become a bound: a run's
+	// last beyond the plausible bound is dropped (GREATEST ignores NULL), the
+	// table fill reads only plausible rows, and a stored last beyond the
+	// bound — written before this rule — reads as unfilled and is refilled.
+	bound := LatestPlausibleCommitTime(time.Now())
+	if last.After(bound) {
+		last = time.Time{}
+	}
 	// The CASE expressions sit in SET and the guard, reading the target row
 	// r: a statement that waited on another writer's row lock re-evaluates
 	// them against the row it finally updates (review round 4 F1 — computed
@@ -37,14 +45,14 @@ func (s *PostgresStore) RecordCommitBounds(ctx context.Context, repoID int64, fi
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos r SET
 		    first_commit_at = CASE WHEN r.first_commit_at IS NULL
-		        THEN (SELECT MIN(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1)
+		        THEN (SELECT MIN(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_author_timestamp <= $4::timestamptz)
 		        ELSE LEAST(r.first_commit_at, $2::timestamptz) END,
-		    last_commit_at = CASE WHEN r.last_commit_at IS NULL
-		        THEN (SELECT MAX(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1)
+		    last_commit_at = CASE WHEN r.last_commit_at IS NULL OR r.last_commit_at > $4::timestamptz
+		        THEN (SELECT MAX(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_author_timestamp <= $4::timestamptz)
 		        ELSE GREATEST(r.last_commit_at, $3::timestamptz) END
 		WHERE r.repo_id = $1
-		  AND (r.first_commit_at IS NULL OR r.last_commit_at IS NULL
+		  AND (r.first_commit_at IS NULL OR r.last_commit_at IS NULL OR r.last_commit_at > $4::timestamptz
 		       OR r.first_commit_at > $2::timestamptz OR r.last_commit_at < $3::timestamptz)`,
-		repoID, NullTime(first), NullTime(last))
+		repoID, NullTime(first), NullTime(last), bound)
 	return err
 }

@@ -149,6 +149,8 @@ under the cap.
 ```
 GET /api/v1/repos/{repoID}/timeseries
 GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
+
+Every window ends no later than the latest plausible commit time, two UTC days after now (a committer's clock at UTC+14 dates a commit one calendar day ahead of UTC; one more day for clock skew), whatever `until` says: repositories carry the occasional author date in 2080, and such a date must not stretch the series or the top-contributors window. The rows stay stored; only the windows are bounded.
 ```
 
 Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues.

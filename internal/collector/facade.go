@@ -951,9 +951,11 @@ func (f *FacadeCollector) recordCommitDaily(ctx context.Context, repoID int64, r
 }
 
 // noteCommitWritten widens the run's commit bounds by one row proven written
-// (a NULL author timestamp bounds nothing).
+// (a NULL author timestamp bounds nothing, and neither does a bogus future
+// one — 2026-10-07, NVIDIA/nova's 2080s: the row is kept, the bound is
+// not, db.LatestPlausibleCommitTime).
 func (r *FacadeResult) noteCommitWritten(ts *time.Time) {
-	if ts == nil {
+	if ts == nil || ts.After(db.LatestPlausibleCommitTime(time.Now())) {
 		return
 	}
 	if r.FirstCommitAt.IsZero() || ts.Before(r.FirstCommitAt) {

@@ -123,13 +123,11 @@ func resolveWindow(since, until time.Time) (time.Time, time.Time) {
 	if lower.IsZero() {
 		lower = time.Unix(0, 0)
 	}
-	upper := until
-	if upper.IsZero() {
-		// A UTC midnight, so an open-ended window stays UTC-day aligned and
-		// the daily commit table can serve it (summary/49).
-		upper = utcDay(time.Now()).AddDate(100, 0, 0)
-	}
-	return lower, upper
+	// The upper bound is at most the latest plausible commit time (a UTC
+	// midnight, so an open-ended window stays day-aligned and the daily
+	// commit table can serve it — summary/49; and bogus future author dates
+	// never stretch a window — 2026-10-07).
+	return lower, boundedUpper(until)
 }
 
 // GetRepoContributors returns every distinct contributor who made any

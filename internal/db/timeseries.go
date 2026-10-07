@@ -52,12 +52,11 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 	// A zero `until` is represented as a far-future timestamp so the SQL
 	// queries can remain parameterized identically regardless of whether the
 	// caller specified an upper bound.
-	upper := until
-	if until.IsZero() {
-		// A UTC midnight: an open-ended window stays UTC-day aligned so the
-		// daily commit table can serve it (summary/49).
-		upper = utcDay(time.Now()).AddDate(100, 0, 0)
-	}
+	// The upper bound is at most the latest plausible commit time (a UTC
+	// midnight: an open-ended window stays day-aligned so the daily commit
+	// table can serve it — summary/49; and bogus future author dates never
+	// stretch the series — 2026-10-07, NVIDIA/nova's 2080s).
+	upper := boundedUpper(until)
 
 	// The commit series (summary/49): the daily table when it serves this
 	// window, the commits table otherwise (one row per file per commit, so

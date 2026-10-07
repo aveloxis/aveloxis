@@ -496,6 +496,14 @@ var deployChecklists = map[string][]deployStep{
 	// a page exceeds GitHub's request time budget (the five large
 	// repositories that failed every cycle on /pulls/comments). No schema
 	// change.
+	// v0.29.74 (2026-10-07): exists so that every cached repository answer
+	// is recomputed. The answers' validators — the ETag, the API's memory,
+	// nginx's disk cache and every browser's — carry the binary's version,
+	// and 0.29.73's late fixes (the daily commit table's readers, the
+	// plausible-date bounds) changed answers without changing it: after the
+	// restart kate kept serving NVIDIA/nova's 2080 series as a 304. No
+	// schema change beyond 0.29.73's.
+	"0.29.74": v02974DeployChecklist,
 	"0.29.73": v02973DeployChecklist,
 	"0.29.72": v02972DeployChecklist,
 }
@@ -505,6 +513,20 @@ var deployChecklists = map[string][]deployStep{
 // 0.29.73 adds one nullable column (repos.data_changed_at, an instant
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
+var v02974DeployChecklist = v02974Checklist()
+
+// v02974Checklist is 0.29.73's ladder with a migrate that changes nothing
+// and a start that explains the recomputation; the heal and the rest stay
+// for a fleet that skipped 0.29.73.
+func v02974Checklist() []deployStep {
+	prev := v02973DeployChecklist
+	out := []deployStep{prev[0],
+		{"aveloxis migrate --skip-views", "no schema change in 0.29.74; otherwise as 0.29.73 — " + prev[1].desc}}
+	out = append(out, prev[2:len(prev)-1]...)
+	out = append(out, deployStep{"aveloxis start all", "0.29.74 exists so that every cached repository answer is recomputed: the answers' validators (the ETag, the API's memory, nginx's disk cache, every browser's) carry the binary's version, and 0.29.73's late fixes — the daily commit table's readers and the plausible-date bounds — changed answers without changing it, so a restart on 0.29.73 kept serving an old time series as a 304; after this start each repository's first visit (or the warm run) computes the new answers. Otherwise as 0.29.73 — " + prev[len(prev)-1].desc})
+	return out
+}
+
 var v02973DeployChecklist = []deployStep{
 	v02972DeployChecklist[0],
 	{"aveloxis migrate --skip-views", "adds aveloxis_data.repo_commit_daily (the facade's daily commit counts; born empty, filled by the step below and by every later walk) and builds idx_contributors_gh_user_id CONCURRENTLY (partial, gh_user_id <> 0; minutes on a fleet-sized contributors table — reads and writes continue), the index the daily commits arm attributes noreply authors through; adds repos.data_changed_at (nullable, no default: an instant ALTER), which every scorecard write, scancode snapshot and vulnerability insert or resolution, heal-vulnerabilities --rescore-only and heal-libyear --apply (on the repositories whose rows they change) stamp in the same transaction as their data, and aveloxis collect stamps at the end of each repository's run, so the API replaces its cached answers for that repository; aveloxis api refuses to start until this migrate has run; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},

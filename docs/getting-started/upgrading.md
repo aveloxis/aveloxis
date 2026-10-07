@@ -164,6 +164,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.74 changes nothing in the schema.** It exists so that every cached repository answer is recomputed: the answers' validators carry the binary's version, and 0.29.73's late fixes — the daily commit table's readers and the plausible-date bounds — changed answers without changing it, so a restart on 0.29.73 kept serving an old time series as a 304. Run the ladder as usual; a fleet that skipped 0.29.73 gets its steps.
+
 **0.29.73 adds a column and a table** (`repos.data_changed_at`, stamped
 by every writer of a repository's data so the API's response cache can tell
 a changed repository from an unchanged one; and `repo_commit_daily`, the

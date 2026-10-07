@@ -464,7 +464,7 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	// v0.27.4: annotate star state when the caller presented a Bearer
 	// identity, so the GUI renders the correct toggle on search rows.
-	if info, ok := r.Context().Value(authCtxKey{}).(authInfo); ok {
+	if info, ok := callerIdentity(w, r); ok {
 		if starred, serr := s.store.GetUserStarredRepoIDs(r.Context(), info.UserID); serr == nil {
 			for i := range repos {
 				repos[i].Starred = starred[repos[i].ID]

@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- once; the readers fall back to the live scan meanwhile.
     first_commit_at         TIMESTAMPTZ,
     last_commit_at          TIMESTAMPTZ,
+    -- v0.29.75: when repo_commit_daily last became this repository's
+    -- COMPLETE daily picture — a facade walk whose every commit was
+    -- proven written (it trims), or the heal command's fill from the
+    -- commits table. NULL = whatever daily rows exist are not
+    -- authoritative: the readers take the commits table and
+    -- heal-commit-daily lists the repository. A walk that swallowed
+    -- writes records what it saw but never sets this (PR #226 review
+    -- 5448678338: rows existing is not the aggregate being complete).
+    commit_daily_complete_at TIMESTAMPTZ,
     -- v0.29.69 (worklist 69): when the startup metadata backfill last
     -- got an ANSWER from the forge about this repo: metadata written
     -- (an honestly empty description and language included) or an
@@ -1914,7 +1923,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.dm_repo_monthly (
 -- from the walk it makes of the whole default branch and replaced after a
 -- completed walk (aveloxis heal-commit-daily fills repositories collected
 -- before). The repository page's weekly commit series and the commits arm
--- of top contributors read it when it is filled and the window is UTC-day
+-- of top contributors read it when the repository's picture is complete
+-- (repos.commit_daily_complete_at, v0.29.75) and the window is UTC-day
 -- aligned; the commits table (one row per file per commit, one repository's
 -- rows scattered about one per page) is read otherwise. Author identity at
 -- read time: see the column comment below.

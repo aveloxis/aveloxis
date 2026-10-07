@@ -21,9 +21,10 @@ import (
 // (NVIDIA/nova: 118 s, 1.48M heap pages for 337K rows). The facade already
 // walks the whole default branch every run, so it folds what it walks into
 // aveloxis_data.repo_commit_daily — one row per repository, UTC day and
-// author email — and the two readers sum that table when it is filled and
-// the window is UTC-day aligned, falling back to the commits table
-// otherwise. Author identity at read time is the contract's own rule R5:
+// author email — and the two readers sum that table when the repository's
+// picture is complete (repos.commit_daily_complete_at: a trimming walk or
+// the heal fill, never a walk that swallowed writes) and the window is
+// UTC-day aligned, falling back to the commits table otherwise. Author identity at read time is the contract's own rule R5:
 // contributors_aliases maps every commit email of a resolved contributor to
 // its cntrb_id.
 
@@ -113,9 +114,9 @@ func TestReplaceRepoCommitDailyReplacesAndClears(t *testing.T) {
 	t.Cleanup(store.Close)
 	fx := seedCommitDaily(t, store, ctx, "_avcd_rep01")
 
-	filled, err := store.RepoCommitDailyFilled(ctx, fx.repoID)
+	filled, err := store.RepoCommitDailyComplete(ctx, fx.repoID)
 	if err != nil || filled {
-		t.Fatalf("a repository with no daily rows is unfilled: filled=%v err=%v", filled, err)
+		t.Fatalf("a repository with no daily rows is not complete: complete=%v err=%v", filled, err)
 	}
 	day2 := fx.in.AddDate(0, 0, 1)
 	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
@@ -124,8 +125,8 @@ func TestReplaceRepoCommitDailyReplacesAndClears(t *testing.T) {
 	}, true); err != nil {
 		t.Fatal(err)
 	}
-	if filled, err = store.RepoCommitDailyFilled(ctx, fx.repoID); err != nil || !filled {
-		t.Fatalf("filled after a replace: filled=%v err=%v", filled, err)
+	if filled, err = store.RepoCommitDailyComplete(ctx, fx.repoID); err != nil || !filled {
+		t.Fatalf("complete after a trimming replace: complete=%v err=%v", filled, err)
 	}
 	// A second replace carries only what the new walk saw: the old rows go.
 	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{{Day: day2, AuthorEmail: "other@x", Commits: 3}}, true); err != nil {
@@ -207,12 +208,20 @@ func TestReplaceRepoCommitDailyReplacesAndClears(t *testing.T) {
 	if !after.After(before) {
 		t.Fatal("a walk that learns a login rewrites the row")
 	}
-	// A walk that saw nothing (an empty default branch) clears the table.
+	// A walk that saw nothing (an empty default branch) clears the table —
+	// and that empty picture is complete (PR #226 review 5448678338): the
+	// readers answer zero from it, never the commits table's stale rows.
 	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	if filled, err = store.RepoCommitDailyFilled(ctx, fx.repoID); err != nil || filled {
-		t.Fatalf("no rows after an empty replace: filled=%v err=%v", filled, err)
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1`, fx.repoID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("no rows after an empty replace, got %d", n)
+	}
+	if filled, err = store.RepoCommitDailyComplete(ctx, fx.repoID); err != nil || !filled {
+		t.Fatalf("an empty trimmed replace is a complete picture: complete=%v err=%v", filled, err)
 	}
 }
 

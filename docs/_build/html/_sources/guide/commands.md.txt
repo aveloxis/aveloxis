@@ -1360,17 +1360,21 @@ commit answers for a large repository read millions of pages (a kernel fork:
 two minutes, past the front end's budget). The facade now folds the walk it
 already makes of the whole default branch into one row per repository, UTC
 day and author email, and replaces the repository's rows after every
-completed walk; the two readers sum that table when it is filled and the
-window is UTC-day aligned, and read the commits table otherwise. Author
+completed walk; the two readers sum that table when the repository's
+picture is complete (`repos.commit_daily_complete_at`, set by a facade walk
+whose every commit was proven written and by this command — never by a
+walk that swallowed writes; 0.29.75) and the window is UTC-day aligned,
+and read the commits table otherwise. Author
 identity: the commits table's stored id when this command carried it, else
 GitHub's numeric user id a noreply address carries (it survives a rename),
 else the login it names (through `LOWER(gh_login)`), else the house email
 rule (the contributor's own emails, then `contributors_aliases`), each only
 when unambiguous among live contributors.
 
-A repository collected before 0.29.73 has no rows until its next collection.
-This command fills such repositories now, largest first, by one scan of each
-repository's commit rows — the cost its first page view pays today, paid
+A repository collected before 0.29.73 has no rows until its next collection,
+and one whose only walk since swallowed commit writes has rows but no stamp;
+both are listed. This command fills such repositories now, largest first,
+by one scan of each repository's commit rows — the cost its first page view pays today, paid
 once here:
 
 ```bash

@@ -929,9 +929,13 @@ func (r *FacadeResult) commitDailyRows() []db.CommitDailyRow {
 // proven written (review round 2 F2): a walk that swallowed writes still
 // records what it saw, so the picture stays fresh, but a sparser picture
 // never replaces a fuller one — and the WARN says the rows were not
-// trimmed. A failure is logged and never fails the facade: the readers take
-// the commits table while the repository is unfilled, and keep the previous
-// rows otherwise.
+// trimmed. Only a trimming replace stamps the repository's picture complete
+// (repos.commit_daily_complete_at): the readers take the commits table
+// until then, so a swallowed-writes walk on a never-filled repository never
+// puts a sparse picture in front of the fuller table (PR #226 review
+// 5448678338). A failure is logged and never fails the facade: the readers
+// take the commits table while the repository is unstamped, and keep the
+// previous rows otherwise.
 func (f *FacadeCollector) recordCommitDaily(ctx context.Context, repoID int64, result *FacadeResult) {
 	if ctx.Err() != nil || f.store == nil { // a stop; or a facade built without a store (unit tests)
 		return

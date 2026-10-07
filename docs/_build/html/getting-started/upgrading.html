@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.73 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.75 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
+      <script src="../_static/documentation_options.js?v=71680c30"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -692,7 +692,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -863,7 +863,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts-0-29-73">Daily commit counts (0.29.73)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -1848,6 +1848,8 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.75 adds one column</strong> (<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>, nullable, an instant ALTER) and, on the run that adds it, stamps every repository that already has daily commit rows (one indexed probe per repository; seconds on a fleet). From here the repository page’s commit readers use the daily table only for a stamped repository — a facade walk whose every commit was proven written stamps it, <code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code> stamps what it fills, a walk that swallowed writes never does — and <code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code> lists the unstamped ones; a repository whose only walk swallowed writes shows the fuller commits table until its next clean walk. Also: every answer that depends on who asks — the routes behind a signed-in session, a signed-in caller’s search, compare or entity search, the one-time Shared-with-Me notice, and every <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code> — carries <code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">private,</span> <span class="pre">no-store</span></code> (<code class="docutils literal notranslate"><span class="pre">/api/v1/me</span></code> was the one Copilot named). Run the ladder as usual.</p>
+<p><strong>0.29.74 changes nothing in the schema.</strong> It exists so that every cached repository answer is recomputed: the answers’ validators carry the binary’s version, and 0.29.73’s late fixes — the daily commit table’s readers and the plausible-date bounds — changed answers without changing it, so a restart on 0.29.73 kept serving an old time series as a 304. Run the ladder as usual; a fleet that skipped 0.29.73 gets its steps.</p>
 <p><strong>0.29.73 adds a column and a table</strong> (<code class="docutils literal notranslate"><span class="pre">repos.data_changed_at</span></code>, stamped
 by every writer of a repository’s data so the API’s response cache can tell
 a changed repository from an unchanged one; and <code class="docutils literal notranslate"><span class="pre">repo_commit_daily</span></code>, the
@@ -2151,7 +2153,7 @@ re-running is always safe. Rows marked <em>fleet-scale</em> take hours on a
 <tr class="row-even"><td><p>20</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code>, then <code class="docutils literal notranslate"><span class="pre">--apply</span></code></p></td>
 <td><p>v0.29.73</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">repo_commit_daily</span></code> (distinct commits per repository, UTC day and author email, which the facade writes after every completed walk) for repositories collected before 0.29.73: until a repository is filled, its page’s weekly commit series and top-contributors commit counts read the commits table — one row per file per commit, scattered, minutes for a kernel fork — and the front end’s warm run times out on the largest (summary/49)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repo_commit_daily</span></code> (distinct commits per repository, UTC day and author email, which the facade writes after every completed walk) for repositories collected before 0.29.73: until a repository’s picture is complete (<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>, 0.29.75 — set by this command and by a walk whose every commit was proven written), its page’s weekly commit series and top-contributors commit counts read the commits table — one row per file per commit, scattered, minutes for a kernel fork — and the front end’s warm run times out on the largest (summary/49)</p></td>
 <td><p>any fleet upgrading to 0.29.73; one scan of each repository’s commit rows, largest first, each its own transaction; safe beside <code class="docutils literal notranslate"><span class="pre">serve</span></code> (a repository’s own next collection fills it anyway); interrupt and rerun freely; run under <code class="docutils literal notranslate"><span class="pre">nohup</span></code> on a large fleet</p></td>
 </tr>
 <tr class="row-odd"><td><p>19</p></td>

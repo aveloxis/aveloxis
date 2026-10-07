@@ -230,6 +230,9 @@ func bearerToken(r *http.Request) string {
 }
 
 func writeAuthError(w http.ResponseWriter, code int, msg string) {
+	// A refusal is an answer about this caller: never stored (api.md's
+	// "every 401/403"; L10 round 4 found three refusal writers without it).
+	setNoStoreHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	// Deliberate manual encode: WriteHeader already ran (non-200), so
@@ -282,6 +285,10 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 					s.auth.invalidateAll()
 				}
 				s.homeCache.invalidate(info.UserID)
+				// The notice is for this caller alone: the answer that carries
+				// it is never stored (the cached routes already re-mark it;
+				// the plain metrics routes did not — L10 round 3).
+				setNoStoreHeaders(w.Header())
 				w.Header().Set(sharedWithMeHeader, db.SharedWithMeGroupName)
 				w.Header().Add("Access-Control-Expose-Headers", sharedWithMeHeader)
 			}
@@ -293,6 +300,7 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 				"user_id", info.UserID, "repo_id", repoID, "error", err)
 		}
 	}
+	setNoStoreHeaders(w.Header()) // a refusal is about this caller (api.md: every 401/403)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	// Deliberate manual encode: non-200 status already written.

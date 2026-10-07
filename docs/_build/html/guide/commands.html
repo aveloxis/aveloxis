@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.73 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.75 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
+      <script src="../_static/documentation_options.js?v=71680c30"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -3202,16 +3202,20 @@ commit answers for a large repository read millions of pages (a kernel fork:
 two minutes, past the front end’s budget). The facade now folds the walk it
 already makes of the whole default branch into one row per repository, UTC
 day and author email, and replaces the repository’s rows after every
-completed walk; the two readers sum that table when it is filled and the
-window is UTC-day aligned, and read the commits table otherwise. Author
+completed walk; the two readers sum that table when the repository’s
+picture is complete (<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>, set by a facade walk
+whose every commit was proven written and by this command — never by a
+walk that swallowed writes; 0.29.75) and the window is UTC-day aligned,
+and read the commits table otherwise. Author
 identity: the commits table’s stored id when this command carried it, else
 GitHub’s numeric user id a noreply address carries (it survives a rename),
 else the login it names (through <code class="docutils literal notranslate"><span class="pre">LOWER(gh_login)</span></code>), else the house email
 rule (the contributor’s own emails, then <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code>), each only
 when unambiguous among live contributors.</p>
-<p>A repository collected before 0.29.73 has no rows until its next collection.
-This command fills such repositories now, largest first, by one scan of each
-repository’s commit rows — the cost its first page view pays today, paid
+<p>A repository collected before 0.29.73 has no rows until its next collection,
+and one whose only walk since swallowed commit writes has rows but no stamp;
+both are listed. This command fills such repositories now, largest first,
+by one scan of each repository’s commit rows — the cost its first page view pays today, paid
 once here:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>heal-commit-daily<span class="w">                </span><span class="c1"># dry run: how many repositories need it</span>
 aveloxis<span class="w"> </span>heal-commit-daily<span class="w"> </span>--apply<span class="w">        </span><span class="c1"># fill them, largest first</span>

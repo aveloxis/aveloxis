@@ -18,21 +18,26 @@ import (
 )
 
 // healCommitDailyCmd fills aveloxis_data.repo_commit_daily (summary/49) for
-// repositories collected before the facade wrote it: one scan of each
-// repository's commit rows, largest first, each in its own transaction.
+// repositories whose daily picture is not complete (never filled, or filled
+// only by a walk that swallowed writes — repos.commit_daily_complete_at
+// unset): one scan of each repository's commit rows, largest first, each in
+// its own transaction, stamped complete at the end.
 func healCommitDailyCmd(cfgPath *string) *cobra.Command {
 	var apply bool
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "heal-commit-daily",
-		Short: "Fill the daily commit counts for repositories collected before 0.29.73 (dry run unless --apply)",
+		Short: "Fill the daily commit counts for repositories whose picture is not complete (dry run unless --apply)",
 		Long: `The repository page's weekly commit series and the commits column of its
 top contributors read aveloxis_data.repo_commit_daily — distinct commits per
 repository, UTC day and author email — which the facade writes after every
-completed walk of a repository's default branch. A repository collected
-before this release has no rows there until its next collection, and its
-page reads the commits table instead: one row per file per commit, scattered
-across the table, minutes for a kernel fork.
+completed walk of a repository's default branch — and use it only once the
+repository's picture is COMPLETE (repos.commit_daily_complete_at, set by a
+walk whose every commit was proven written, and by this command). A
+repository collected before 0.29.73 has no rows there until its next
+collection, and one whose only walk since swallowed commit writes has rows
+but no stamp; either way its page reads the commits table instead: one row
+per file per commit, scattered across the table, minutes for a kernel fork.
 
 This command fills those repositories now, largest first, by one scan of
 each repository's commit rows (the cost its first page view pays today, paid
@@ -97,7 +102,7 @@ func healCommitDailyReport(apply bool, pending, filled int64, err error) (string
 	case err != nil:
 		return "", fmt.Errorf("heal-commit-daily after %d of %d repositories: %w", filled, pending, err)
 	case !apply:
-		return fmt.Sprintf("heal-commit-daily (dry run): %d repositories have commits but no daily counts; re-run with --apply to fill them, largest first", pending), nil
+		return fmt.Sprintf("heal-commit-daily (dry run): %d repositories have commits but no complete daily counts; re-run with --apply to fill them, largest first", pending), nil
 	}
 	return fmt.Sprintf("heal-commit-daily: %d of %d repositories filled", filled, pending), nil
 }

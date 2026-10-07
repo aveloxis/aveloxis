@@ -503,6 +503,12 @@ var deployChecklists = map[string][]deployStep{
 	// plausible-date bounds) changed answers without changing it: after the
 	// restart kate kept serving NVIDIA/nova's 2080 series as a 304. No
 	// schema change beyond 0.29.73's.
+	// v0.29.75 (2026-10-07, PR #226 review 5448678338): the daily commit
+	// table's completeness stamp — "has rows" was read as "complete", so a
+	// walk that swallowed writes on a never-filled repository put a sparse
+	// picture in front of the fuller commits table. One nullable column
+	// on repos, stamped once at migrate for repositories that have rows.
+	"0.29.75": v02975DeployChecklist,
 	"0.29.74": v02974DeployChecklist,
 	"0.29.73": v02973DeployChecklist,
 	"0.29.72": v02972DeployChecklist,
@@ -514,6 +520,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02975DeployChecklist is 0.29.74's ladder with a migrate that adds the
+// stamp column; the rest stays for a fleet that skipped 0.29.73/74.
+var v02975DeployChecklist = func() []deployStep {
+	prev := v02974DeployChecklist
+	out := []deployStep{prev[0],
+		{"aveloxis migrate --skip-views", "adds repos.commit_daily_complete_at (nullable, no default: an instant ALTER) and, on that run only, stamps every repository that already has daily commit rows (one indexed probe per repository; seconds on a fleet) — from here the repository page's commit readers use the daily table only for a stamped repository (a facade walk whose every commit was proven written stamps it; heal-commit-daily stamps what it fills; a walk that swallowed writes never does) and heal-commit-daily lists the unstamped ones; otherwise as 0.29.74 — " + prev[1].desc},
+		// The heal step's 0.29.73 text says the readers use the table "when it
+		// is filled"; in this ladder that is the stamp (L10 round 2).
+		{prev[2].cmd, "in 0.29.75 the readers use the table only for a STAMPED repository and this command stamps what it fills (it lists the unstamped ones: never filled, or filled only by a walk that swallowed writes); otherwise as 0.29.73 — " + prev[2].desc}}
+	out = append(out, prev[3:]...)
+	return out
+}()
 
 // v02974Checklist is 0.29.73's ladder with a migrate that changes nothing
 // and a start that explains the recomputation; the heal and the rest stay

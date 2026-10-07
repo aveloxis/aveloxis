@@ -86,6 +86,83 @@ func TestMeCarriesTheAccountFields(t *testing.T) {
 			t.Errorf("/me %s = %v, want %v", k, m[k], want)
 		}
 	}
+	// Account data with the addresses is never stored by a browser or an
+	// intermediary (PR #226 review 5408306640): the same no-store answer the
+	// authorization route and every per-caller route send.
+	if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("/me Cache-Control = %q, want %q", got, "private, no-store")
+	}
+	if got := w.Header().Get("X-Accel-Expires"); got != "0" {
+		t.Errorf("/me X-Accel-Expires = %q, want 0 (nginx must store nothing)", got)
+	}
+	if w.Header().Get("ETag") != "" {
+		t.Error("/me must carry no validator")
+	}
+}
+
+// resolveEntityRepos owns the per-caller decisions of the compare family
+// (scope filter, auto-add, the structured 403), so it marks a signed-in
+// caller's answer itself, whatever handler asked (L10 round 3: the snapshot
+// route relied on its caller).
+func TestResolveEntityReposMarksASignedInCallersAnswer(t *testing.T) {
+	srv := newTestServer()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/compare/snapshot", nil)
+	r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: 7, Scope: map[int64]bool{42: true}}))
+	ids, _, ok := srv.resolveEntityRepos(w, r, entity{Kind: "repo", RepoID: 42})
+	if !ok || len(ids) != 1 || ids[0] != 42 {
+		t.Fatalf("an in-scope repository resolves to itself: %v %v", ids, ok)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("a scoped caller's resolution is marked no-store, got %q", got)
+	}
+	// Anonymous: nothing to mark.
+	w = httptest.NewRecorder()
+	srv.resolveEntityRepos(w, httptest.NewRequest(http.MethodGet, "/api/v1/compare/snapshot", nil), entity{Kind: "repo", RepoID: 42})
+	if got := w.Header().Get("Cache-Control"); got != "" {
+		t.Errorf("an anonymous resolution carries no mark, got %q", got)
+	}
+}
+
+// Every refusal is about its caller (api.md: every 401/403 is no-store):
+// the middleware's 401 (L10 round 4 found writeAuthError, authorizeRepo's
+// 403 and the resolver's 403 unmarked).
+func TestRefusalsAnswerNoStore(t *testing.T) {
+	srv := newTestServer()
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/me", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("an anonymous /me is refused, got %d", w.Code)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("the 401 carries Cache-Control %q, want private, no-store", got)
+	}
+}
+
+// The class (L10 round 1 of 0.29.75): every route behind requireUser or
+// requireAdmin answers per-caller data, so the no-store mark is set by that
+// layer, not per handler — the admin user list carries every account's
+// address, the group list the caller's groups.
+func TestPerCallerRoutesAnswerNoStore(t *testing.T) {
+	srv := newTestServer()
+	// A member's account, and a member refused by requireAdmin (the 403
+	// is per-caller too): the two routes behind the layer that need no
+	// store on this test server.
+	// The compare snapshot (L10 round 3): marked before its first write, so
+	// even its 400 carries the mark (the scoped answer is pinned below).
+	for target, wantCode := range map[string]int{"/api/v1/me": http.StatusOK, "/api/v1/admin/users": http.StatusForbidden, "/api/v1/compare/snapshot?metric=labor_investment": http.StatusBadRequest} {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, accountRequest(http.MethodGet, target, ""))
+		if w.Code != wantCode {
+			t.Errorf("%s: status %d, want %d", target, w.Code, wantCode)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
+			t.Errorf("%s (%d): Cache-Control = %q, want %q", target, w.Code, got, "private, no-store")
+		}
+		if got := w.Header().Get("X-Accel-Expires"); got != "0" {
+			t.Errorf("%s: X-Accel-Expires = %q, want 0", target, got)
+		}
+	}
 }
 
 // The submission: a bad body is 400; a refusal (not deliverable, mail not

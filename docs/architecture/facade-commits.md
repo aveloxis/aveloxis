@@ -214,7 +214,7 @@ After adding new affiliations, existing commits can be re-processed by re-runnin
 
 ## Daily commit counts
 
-(0.29.73.)
+(0.29.73; the completeness stamp 0.29.75.)
 
 The walk already visits every commit of the default branch on every run, so
 the facade folds the commits it proves written — once per commit, beside
@@ -227,16 +227,21 @@ git-log error leaves the previous rows, which are still a whole earlier
 walk; a walk that swallowed any commit write — the per-row fallback's
 failures — records what it saw but neither trims the rows it may have
 missed nor lowers a bucket's count, so a sparser picture never replaces a
-fuller one). A commit with no parseable author timestamp buckets nowhere, as the
-readers' `cmt_author_timestamp IS NOT NULL` excludes it.
+fuller one). A trimming replace also stamps the repository's picture
+complete (`repos.commit_daily_complete_at`); a walk that swallowed writes
+never sets the stamp, so on a repository never filled before, its sparse
+rows stay behind the fuller commits table until a clean walk (0.29.75;
+"rows exist" is not "the aggregate is complete"). A commit with no
+parseable author timestamp buckets nowhere, as the readers'
+`cmt_author_timestamp IS NOT NULL` excludes it.
 
 Why: the commits table is one row per file per commit and one repository's
 rows are scattered about one per page across it (forty workers insert
 interleaved), so the repository page's weekly commit series and the commits
 arm of its top contributors read millions of pages for a kernel fork
 (summary/49: NVIDIA/nova, 118 s). The daily table is a few thousand rows
-for the same window. The two readers use it when the repository is filled
-and the window is UTC-day aligned — every default window the API hands them
+for the same window. The two readers use it when the repository's picture
+is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
 is a UTC midnight — and the commits table otherwise. Author identity: a row
 carries what its writer knew, never a guess — the facade stores the login AND
 GitHub's numeric user id a noreply address names (such commits get no alias

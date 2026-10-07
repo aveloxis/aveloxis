@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.73 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.75 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
+      <script src="../_static/documentation_options.js?v=71680c30"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2002,7 +2002,7 @@ during dependency analysis surface their stderr the same way.</p>
 <hr class="docutils" />
 <section id="daily-commit-counts">
 <h2>Daily commit counts<a class="headerlink" href="#daily-commit-counts" title="Link to this heading"></a></h2>
-<p>(0.29.73.)</p>
+<p>(0.29.73; the completeness stamp 0.29.75.)</p>
 <p>The walk already visits every commit of the default branch on every run, so
 the facade folds the commits it proves written — once per commit, beside
 the distinct commit count, in both the batch path and the per-row fallback
@@ -2014,15 +2014,20 @@ git-log error leaves the previous rows, which are still a whole earlier
 walk; a walk that swallowed any commit write — the per-row fallback’s
 failures — records what it saw but neither trims the rows it may have
 missed nor lowers a bucket’s count, so a sparser picture never replaces a
-fuller one). A commit with no parseable author timestamp buckets nowhere, as the
-readers’ <code class="docutils literal notranslate"><span class="pre">cmt_author_timestamp</span> <span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> excludes it.</p>
+fuller one). A trimming replace also stamps the repository’s picture
+complete (<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>); a walk that swallowed writes
+never sets the stamp, so on a repository never filled before, its sparse
+rows stay behind the fuller commits table until a clean walk (0.29.75;
+“rows exist” is not “the aggregate is complete”). A commit with no
+parseable author timestamp buckets nowhere, as the readers’
+<code class="docutils literal notranslate"><span class="pre">cmt_author_timestamp</span> <span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> excludes it.</p>
 <p>Why: the commits table is one row per file per commit and one repository’s
 rows are scattered about one per page across it (forty workers insert
 interleaved), so the repository page’s weekly commit series and the commits
 arm of its top contributors read millions of pages for a kernel fork
 (summary/49: NVIDIA/nova, 118 s). The daily table is a few thousand rows
-for the same window. The two readers use it when the repository is filled
-and the window is UTC-day aligned — every default window the API hands them
+for the same window. The two readers use it when the repository’s picture
+is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
 is a UTC midnight — and the commits table otherwise. Author identity: a row
 carries what its writer knew, never a guess — the facade stores the login AND
 GitHub’s numeric user id a noreply address names (such commits get no alias

@@ -246,6 +246,13 @@ func (s *Server) recordComparison(r *http.Request, entities []entity) {
 func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e entity) ([]int64, string, bool) {
 	info, authed := r.Context().Value(authCtxKey{}).(authInfo)
 	scoped := authed && !info.IsAdmin
+	// This is the layer that decides per caller (scope filter, auto-add,
+	// the structured 403): a signed-in caller's answer is marked here
+	// whatever handler asked (SR-18; L10 round 3 found the snapshot route
+	// relying on its caller to have marked).
+	if authed {
+		setNoStoreHeaders(w.Header())
+	}
 
 	var ids []int64
 	switch e.Kind {
@@ -308,6 +315,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 	}
 	if len(ids) == 0 {
 		w.Header().Set("Content-Type", "application/json")
+		setNoStoreHeaders(w.Header()) // a refusal is about this caller, signed in or not
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":  "entity_out_of_scope",
@@ -527,8 +535,9 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cache key includes the caller's scope identity so users cannot
-	// read each other's cached responses.
-	info, _ := r.Context().Value(authCtxKey{}).(authInfo)
+	// read each other's cached responses (and the answer is marked
+	// per-caller when there is one).
+	info, _ := callerIdentity(w, r)
 	key := fmt.Sprintf("cmp|%d|%s|%s|%s|%s|%s|rt%d", info.UserID, metric,
 		r.URL.Query().Get("entities"), since.Format("2006-01-02"), until.Format("2006-01-02"), bucket,
 		retentionThreshold)
@@ -795,6 +804,10 @@ func VelocitySeries(parts [][]db.WeeklyPoint) []db.WeeklyPoint {
 }
 
 func (s *Server) handleCompareSnapshot(w http.ResponseWriter, r *http.Request) {
+	// A signed-in caller's snapshot is per-caller (resolveEntityRepos
+	// filters to the caller's scope, auto-adds into the caller's group and
+	// writes the 403 itself): marked before any write (L10 round 3).
+	callerIdentity(w, r)
 	metric := r.URL.Query().Get("metric")
 	def := catalogEntry(metric)
 	if def == nil || def.Kind != "snapshot" {
@@ -854,7 +867,7 @@ func (s *Server) handleEntitiesSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "q parameter is required", http.StatusBadRequest)
 		return
 	}
-	info, authed := r.Context().Value(authCtxKey{}).(authInfo)
+	info, authed := callerIdentity(w, r)
 	scoped := authed && !info.IsAdmin
 
 	class := func(repoID int64) string {

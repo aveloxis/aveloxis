@@ -24,9 +24,12 @@ import (
 // is resolved as the next paragraph says (the alias rule R5 is its LAST
 // step: a noreply address, the most common web-UI author, gets no alias).
 //
-// The readers use it only when the repository is filled AND the window is
-// UTC-day aligned (a day bucket cannot be split); otherwise they read the
-// commits table as before. Day buckets are exact for the API's windows,
+// The readers use it only when the repository's picture is COMPLETE
+// (repos.commit_daily_complete_at, set by a trimming replace or the heal
+// command's fill — never by a walk that swallowed writes; PR #226 review
+// 5448678338: rows existing is not the aggregate being complete) AND the
+// window is UTC-day aligned (a day bucket cannot be split); otherwise they
+// read the commits table as before. Day buckets are exact for the API's windows,
 // which are UTC days by construction (parseDayParam, parseWindow; the
 // open-ended uppers and /contributors/elsewhere's default are UTC
 // midnights too — review round 1 F5).
@@ -89,11 +92,15 @@ func alignedToUTCDay(t time.Time) bool {
 // transaction under the per-repository lock: every (day, author) in rows is
 // upserted — a known identity the walk could not supply is KEPT — and, when
 // trim is set, every (day, author) not in rows is deleted, so a walk that
-// saw nothing (an empty default branch) clears the table. The facade trims
+// saw nothing (an empty default branch) clears the table — and the
+// repository is stamped complete (repos.commit_daily_complete_at): the
+// rows are now the whole picture, an empty one included. The facade trims
 // only after a walk whose every commit was proven written (review round 2
 // F2): a walk that swallowed writes still records what it saw, so the rows
-// stay fresh, but never removes rows it may have missed, and (round 3 F3)
-// never lowers a bucket's count either — a commit whose rows failed this
+// stay fresh, but never removes rows it may have missed, never sets the
+// stamp (a never-stamped repository keeps reading the fuller commits
+// table; a stamped one keeps its stamp — its rows still cover the earlier
+// clean walk), and (round 3 F3) never lowers a bucket's count either — a commit whose rows failed this
 // run still sits in the commits table from an earlier walk, so the fuller
 // count stands until a clean walk. A row whose effective values are
 // unchanged is not touched at all (round 4 F1, round 5 F1): it is left OUT
@@ -168,22 +175,33 @@ func (s *PostgresStore) ReplaceRepoCommitDaily(ctx context.Context, repoID int64
 				repoID, days, emails); err != nil {
 				return fmt.Errorf("trim repo_commit_daily: %w", err)
 			}
+			if _, err := tx.Exec(ctx, stampCommitDailyCompleteSQL, repoID); err != nil {
+				return fmt.Errorf("stamp repo_commit_daily complete: %w", err)
+			}
 		}
 		return tx.Commit(ctx)
 	})
 }
 
-// RepoCommitDailyFilled reports whether the repository has daily rows. An
-// error is an error (SR-5): the readers return it rather than silently
-// taking the slow path.
-func (s *PostgresStore) RepoCommitDailyFilled(ctx context.Context, repoID int64) (bool, error) {
-	var filled bool
+// stampCommitDailyCompleteSQL marks the repository's daily rows as its
+// whole picture; run inside the writer's transaction, after the rows.
+const stampCommitDailyCompleteSQL = `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NOW() WHERE repo_id = $1`
+
+// RepoCommitDailyComplete reports whether the repository's daily rows are
+// its complete picture (repos.commit_daily_complete_at is set): only then
+// do the readers use them. Rows existing is not that — a walk that
+// swallowed writes leaves rows without the stamp (PR #226 review
+// 5448678338). An error is an error (SR-5): the readers return it rather
+// than silently taking the slow path. An unknown repository is not
+// complete.
+func (s *PostgresStore) RepoCommitDailyComplete(ctx context.Context, repoID int64) (bool, error) {
+	var complete bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1)`, repoID).Scan(&filled)
+		`SELECT COALESCE((SELECT commit_daily_complete_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1), false)`, repoID).Scan(&complete)
 	if err != nil {
-		return false, fmt.Errorf("repo_commit_daily probe: %w", err)
+		return false, fmt.Errorf("repo_commit_daily completeness probe: %w", err)
 	}
-	return filled, nil
+	return complete, nil
 }
 
 // FillRepoCommitDailyFromCommits computes the repository's daily rows from
@@ -222,21 +240,26 @@ func (s *PostgresStore) FillRepoCommitDailyFromCommits(ctx context.Context, repo
 			return fmt.Errorf("fill repo_commit_daily from commits: %w", err)
 		}
 		written = tag.RowsAffected()
+		if _, err := tx.Exec(ctx, stampCommitDailyCompleteSQL, repoID); err != nil {
+			return fmt.Errorf("stamp repo_commit_daily complete: %w", err)
+		}
 		return tx.Commit(ctx)
 	})
 	return written, err
 }
 
 // ListReposNeedingCommitDaily lists repositories that have dated commit rows
-// but no daily rows, largest first (the queue's last commit count), up to
-// limit. The largest are the ones whose page times out.
+// but no complete daily picture (repos.commit_daily_complete_at unset —
+// rows a swallowed-writes walk left count as none), largest first (the
+// queue's last commit count), up to limit. The largest are the ones whose
+// page times out.
 func (s *PostgresStore) ListReposNeedingCommitDaily(ctx context.Context, limit int) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.repo_id
 		FROM aveloxis_data.repos r
 		LEFT JOIN aveloxis_ops.collection_queue q ON q.repo_id = r.repo_id
 		WHERE EXISTS (SELECT 1 FROM aveloxis_data.commits c WHERE c.repo_id = r.repo_id AND c.cmt_author_timestamp IS NOT NULL)
-		  AND NOT EXISTS (SELECT 1 FROM aveloxis_data.repo_commit_daily d WHERE d.repo_id = r.repo_id)
+		  AND r.commit_daily_complete_at IS NULL
 		ORDER BY COALESCE(q.last_commits, 0) DESC, r.repo_id
 		LIMIT $1`, limit)
 	if err != nil {
@@ -325,11 +348,11 @@ const dailyWeeklyCommitsSQL = `
 		ORDER BY week_start`
 
 // commitDailyServes reports whether the daily table answers this window for
-// this repository: filled, and both bounds UTC-day aligned. A probe error
-// is returned (SR-5).
+// this repository: its picture complete, and both bounds UTC-day aligned.
+// A probe error is returned (SR-5).
 func (s *PostgresStore) commitDailyServes(ctx context.Context, repoID int64, lower, upper time.Time) (bool, error) {
 	if !alignedToUTCDay(lower) || !alignedToUTCDay(upper) {
 		return false, nil
 	}
-	return s.RepoCommitDailyFilled(ctx, repoID)
+	return s.RepoCommitDailyComplete(ctx, repoID)
 }

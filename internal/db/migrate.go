@@ -775,6 +775,8 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// computes them once; the readers scan live until then (today's cost).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "first_commit_at", "TIMESTAMPTZ")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "last_commit_at", "TIMESTAMPTZ")
+	// v0.29.75: the daily commit table's completeness stamp (see schema.sql).
+	addCommitDailyCompleteColumn(ctx, pg, logger, errs)
 	// v0.29.69 (worklist 69): the metadata backfill's attempt stamp (see
 	// schema.sql). NULL on existing rows = never answered = still a candidate.
 	// No index: the candidate query pages the repos PK and this is one more
@@ -3925,6 +3927,92 @@ func addColumnIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Log
 		logger.Error("schema migration error", "step", label, "error", err)
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
 	}
+}
+
+// addCommitDailyCompleteColumn adds repos.commit_daily_complete_at
+// (v0.29.75) and, ONLY on the run that adds it, stamps every repository
+// that already has daily rows. Until this column, the readers took "has
+// rows" for "complete" (PR #226 review 5448678338); the rows a fleet holds
+// were written by a trimming facade walk or by heal-commit-daily — both
+// complete — except a walk that swallowed writes on a never-filled
+// repository, which nothing could tell apart then either: that repository
+// keeps the state it had, and its next clean walk sets the stamp. The
+// stamp runs once: after it, an unstamped repository with rows IS that
+// partial case, so a later migrate must not stamp it. A probe error is an
+// error (SR-5), never "the column is new".
+func addCommitDailyCompleteColumn(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	addColumnWithOneTimeStamp(ctx, pg, logger, errs, "aveloxis_data", "repos", "commit_daily_complete_at", "TIMESTAMPTZ", stampCommitDailyCompleteWhereFilledSQL)
+}
+
+// stampCommitDailyCompleteWhereFilledSQL is the one-time stamp of
+// addCommitDailyCompleteColumn: every unstamped repository that has daily
+// rows. One indexed probe per repository (the daily table's primary key
+// starts with repo_id); seconds on a fleet.
+const stampCommitDailyCompleteWhereFilledSQL = `
+		UPDATE aveloxis_data.repos r
+		SET commit_daily_complete_at = NOW()
+		WHERE r.commit_daily_complete_at IS NULL
+		  AND EXISTS (SELECT 1 FROM aveloxis_data.repo_commit_daily d WHERE d.repo_id = r.repo_id)`
+
+// addColumnWithOneTimeStamp adds schema.table.column and, on the run that
+// adds it, runs stampSQL — probe, ALTER and stamp in ONE transaction, so a
+// stamp that fails (an interrupt, a lock wait on an orphaned backend, a
+// deadlock with a still-running heal) rolls the column back with it and
+// the rerun redoes both. The first shape gated the stamp on the column's
+// EXISTENCE in autocommit, so a failed stamp after a committed ALTER was
+// lost for good and silently (L10 round 1 of 0.29.75): the readers would
+// have taken the slow path fleet-wide with no line saying why. A probe
+// error is an error (SR-5), never "the column is new". The skip arm logs,
+// so a rerun says why it stamped nothing. Through the deadlock retry like
+// every other ALTER (worklist item 37).
+func addColumnWithOneTimeStamp(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, table, column, colType, stampSQL string) {
+	label := fmt.Sprintf("add column %s.%s.%s (%s) with its one-time stamp", schema, table, column, colType)
+	var stamped int64
+	var added bool
+	err := retryOnDeadlock(ctx, logger, label, func() error {
+		tx, err := pg.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		stamped, added, err = addColumnWithOneTimeStampTx(ctx, tx, schema, table, column, colType, stampSQL)
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+	if err != nil {
+		logger.Error("schema migration error", "step", label, "error", err)
+		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+		return
+	}
+	if added {
+		logger.Info("column added and its one-time stamp applied", "column", schema+"."+table+"."+column, "rows_stamped", stamped)
+	} else {
+		logger.Info("column already present — the one-time stamp is not re-run (a fleet that added it by migrate was stamped then; a schema born with the column had no rows to stamp)", "column", schema+"."+table+"."+column)
+	}
+}
+
+// addColumnWithOneTimeStampTx is the transactional body: returns the rows
+// the stamp touched and whether this call added the column.
+func addColumnWithOneTimeStampTx(ctx context.Context, tx pgx.Tx, schema, table, column, colType, stampSQL string) (int64, bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		               WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)`, schema, table, column).Scan(&exists); err != nil {
+		return 0, false, fmt.Errorf("probe %s.%s.%s: %w", schema, table, column, err)
+	}
+	if exists {
+		return 0, false, nil
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`, schema, table, column, colType)); err != nil {
+		return 0, false, fmt.Errorf("add column: %w", err)
+	}
+	tag, err := tx.Exec(ctx, stampSQL)
+	if err != nil {
+		return 0, false, fmt.Errorf("one-time stamp: %w", err)
+	}
+	return tag.RowsAffected(), true, nil
 }
 
 // cleanupRepoNameGitSuffix strips a trailing ".git" from aveloxis_data.repos.repo_name.

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contributor Resolution &mdash; Aveloxis 0.29.73 documentation</title>
+  <title>Contributor Resolution &mdash; Aveloxis 0.29.75 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=1e9918e4"></script>
+      <script src="../_static/documentation_options.js?v=71680c30"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -264,6 +264,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -691,7 +692,7 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -862,6 +863,7 @@
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -1546,6 +1548,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-monthly">dm_repo_group_monthly</a></li>

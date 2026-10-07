@@ -108,6 +108,7 @@ func newRootCmd() *cobra.Command {
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
 		healLibyearCmd(&cfgPath),
+		healCommitDailyCmd(&cfgPath),
 		healCollectionGapsCmd(&cfgPath),
 		markGoneReposCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),

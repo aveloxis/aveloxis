@@ -395,9 +395,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 149 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (102 tables + 22 materialized views) -- all collected data
+- **`aveloxis_data`** (103 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -1347,6 +1347,43 @@ properly.
 
 Walks keyset windows over the primary key, so it is safe alongside a running
 `serve` and a cancelled run simply resumes on the next invocation.
+
+## `aveloxis heal-commit-daily`
+
+One-shot filler for `aveloxis_data.repo_commit_daily`, the table the
+repository page's weekly commit series and top-contributors commit counts
+read (0.29.73).
+
+The commits table holds one row per file per commit, and one repository's
+rows lie scattered about one per page across the whole table, so the two
+commit answers for a large repository read millions of pages (a kernel fork:
+two minutes, past the front end's budget). The facade now folds the walk it
+already makes of the whole default branch into one row per repository, UTC
+day and author email, and replaces the repository's rows after every
+completed walk; the two readers sum that table when it is filled and the
+window is UTC-day aligned, and read the commits table otherwise. Author
+identity: the commits table's stored id when this command carried it, else
+GitHub's numeric user id a noreply address carries (it survives a rename),
+else the login it names (through `LOWER(gh_login)`), else the house email
+rule (the contributor's own emails, then `contributors_aliases`), each only
+when unambiguous among live contributors.
+
+A repository collected before 0.29.73 has no rows until its next collection.
+This command fills such repositories now, largest first, by one scan of each
+repository's commit rows — the cost its first page view pays today, paid
+once here:
+
+```bash
+aveloxis heal-commit-daily                # dry run: how many repositories need it
+aveloxis heal-commit-daily --apply        # fill them, largest first
+aveloxis heal-commit-daily --apply --limit 200   # only the 200 largest
+```
+
+Each repository is its own transaction, so an interrupt loses at most the
+one in flight; rerun to finish. It can run beside a running `serve`: every
+repository's own next collection fills it anyway, so this only brings the
+largest forward. Minutes per kernel fork, seconds for most repositories; on a
+large fleet run it under `nohup` and read its log.
 
 ## `aveloxis heal-vulnerabilities`
 

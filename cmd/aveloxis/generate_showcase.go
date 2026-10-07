@@ -543,8 +543,8 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 // failure WARNs and returns nil (section omitted), never failing the
 // run.
 func buildShowcaseContributors(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoID int64, now time.Time) []showcase.ShowcaseContributor {
-	since := now.AddDate(-1, 0, 0)
-	top, err := store.TopContributors(ctx, repoID, since, now, 5, true)
+	since := db.UTCDay(now).AddDate(-1, 0, 0)                                   // a UTC midnight: the daily commit table serves it (summary/49)
+	top, err := store.TopContributors(ctx, repoID, since, time.Time{}, 5, true) // an open upper bound: `now` is not a UTC midnight, and the daily commit table serves only aligned windows (summary/49)
 	if err != nil {
 		logger.Warn("showcase contributors lookup failed — section omitted", "repo_id", repoID, "error", err)
 		return nil

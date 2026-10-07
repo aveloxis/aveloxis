@@ -327,6 +327,9 @@ var loserRepoIDDeletes = []string{
 	"aveloxis_data.repo_cluster_messages",
 	"aveloxis_data.repo_topic",
 	"aveloxis_data.repo_labor",
+	// summary/49: the facade's daily commit fold (FK to repos); the winner's
+	// rows undercount the loser's commits until its next walk.
+	"aveloxis_data.repo_commit_daily",
 	"aveloxis_data.repo_meta",
 	"aveloxis_data.repo_stats",
 	"aveloxis_data.message_analysis_summary",

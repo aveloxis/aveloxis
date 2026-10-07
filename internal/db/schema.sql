@@ -1909,6 +1909,39 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.dm_repo_monthly (
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- repo_commit_daily (summary/49, 0.29.73): distinct commits per repository,
+-- UTC day of the author timestamp and author email, folded by the facade
+-- from the walk it makes of the whole default branch and replaced after a
+-- completed walk (aveloxis heal-commit-daily fills repositories collected
+-- before). The repository page's weekly commit series and the commits arm
+-- of top contributors read it when it is filled and the window is UTC-day
+-- aligned; the commits table (one row per file per commit, one repository's
+-- rows scattered about one per page) is read otherwise. Author identity at
+-- read time: see the column comment below.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_commit_daily (
+    repo_id      BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    day          DATE NOT NULL,
+    author_email TEXT NOT NULL,
+    commits      INTEGER NOT NULL,
+    author_login TEXT NOT NULL DEFAULT '',
+    author_gh_user_id BIGINT NOT NULL DEFAULT 0,
+    cntrb_id     UUID,
+    computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (repo_id, day, author_email)
+);
+-- author_login / author_gh_user_id: the login and GitHub's numeric user id
+-- a noreply address names (the facade's writer; the id survives a rename,
+-- the login does not); cntrb_id: the commits table's stored
+-- cmt_ght_author_id when the bucket's resolved commits agree on one (the
+-- backfill's writer), kept across replaces. The reader resolves the rest, in
+-- that order, each only when unambiguous: the stored id, the numeric id
+-- (contributors.gh_user_id, its partial index built by the migrate), the
+-- login through LOWER(gh_login), the email through the house rule (the
+-- contributor's own emails, then contributors_aliases).
+ALTER TABLE aveloxis_data.repo_commit_daily ADD COLUMN IF NOT EXISTS author_login TEXT NOT NULL DEFAULT '';
+ALTER TABLE aveloxis_data.repo_commit_daily ADD COLUMN IF NOT EXISTS author_gh_user_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE aveloxis_data.repo_commit_daily ADD COLUMN IF NOT EXISTS cntrb_id UUID;
+
 CREATE TABLE IF NOT EXISTS aveloxis_data.dm_repo_weekly (
     repo_id          BIGINT NOT NULL,
     email            TEXT NOT NULL DEFAULT '',

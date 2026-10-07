@@ -264,6 +264,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -691,7 +692,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -862,6 +863,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -1546,6 +1548,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-monthly">dm_repo_group_monthly</a></li>
@@ -2242,9 +2245,9 @@ are left as they are.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
+<p>Creates 149 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (102 tables + 22 materialized views) – all collected data</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (103 tables + 22 materialized views) – all collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (42 tables) – operational state</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> (4 tables) – scancode per-file license/copyright results</p></li>
 </ul>
@@ -3187,6 +3190,39 @@ them here would erase rows the next collection cycle is about to answer
 properly.</p>
 <p>Walks keyset windows over the primary key, so it is safe alongside a running
 <code class="docutils literal notranslate"><span class="pre">serve</span></code> and a cancelled run simply resumes on the next invocation.</p>
+</section>
+<section id="aveloxis-heal-commit-daily">
+<h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code><a class="headerlink" href="#aveloxis-heal-commit-daily" title="Link to this heading"></a></h2>
+<p>One-shot filler for <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repo_commit_daily</span></code>, the table the
+repository page’s weekly commit series and top-contributors commit counts
+read (0.29.73).</p>
+<p>The commits table holds one row per file per commit, and one repository’s
+rows lie scattered about one per page across the whole table, so the two
+commit answers for a large repository read millions of pages (a kernel fork:
+two minutes, past the front end’s budget). The facade now folds the walk it
+already makes of the whole default branch into one row per repository, UTC
+day and author email, and replaces the repository’s rows after every
+completed walk; the two readers sum that table when it is filled and the
+window is UTC-day aligned, and read the commits table otherwise. Author
+identity: the commits table’s stored id when this command carried it, else
+GitHub’s numeric user id a noreply address carries (it survives a rename),
+else the login it names (through <code class="docutils literal notranslate"><span class="pre">LOWER(gh_login)</span></code>), else the house email
+rule (the contributor’s own emails, then <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code>), each only
+when unambiguous among live contributors.</p>
+<p>A repository collected before 0.29.73 has no rows until its next collection.
+This command fills such repositories now, largest first, by one scan of each
+repository’s commit rows — the cost its first page view pays today, paid
+once here:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>heal-commit-daily<span class="w">                </span><span class="c1"># dry run: how many repositories need it</span>
+aveloxis<span class="w"> </span>heal-commit-daily<span class="w"> </span>--apply<span class="w">        </span><span class="c1"># fill them, largest first</span>
+aveloxis<span class="w"> </span>heal-commit-daily<span class="w"> </span>--apply<span class="w"> </span>--limit<span class="w"> </span><span class="m">200</span><span class="w">   </span><span class="c1"># only the 200 largest</span>
+</pre></div>
+</div>
+<p>Each repository is its own transaction, so an interrupt loses at most the
+one in flight; rerun to finish. It can run beside a running <code class="docutils literal notranslate"><span class="pre">serve</span></code>: every
+repository’s own next collection fills it anyway, so this only brings the
+largest forward. Minutes per kernel fork, seconds for most repositories; on a
+large fleet run it under <code class="docutils literal notranslate"><span class="pre">nohup</span></code> and read its log.</p>
 </section>
 <section id="aveloxis-heal-vulnerabilities">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code><a class="headerlink" href="#aveloxis-heal-vulnerabilities" title="Link to this heading"></a></h2>

@@ -264,6 +264,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -862,6 +863,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -1546,6 +1548,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-monthly">dm_repo_group_monthly</a></li>
@@ -1840,7 +1843,7 @@ restored repository is re-enqueued on its own</p></li>
 <hr class="docutils" />
 <section id="phase-3-facade-git">
 <h2>Phase 3: Facade (git)<a class="headerlink" href="#phase-3-facade-git" title="Link to this heading"></a></h2>
-<p>After API data is processed, the facade phase handles git-level data. Analysis, scorecard, SBOM and vulnerability scanning all need the clone this phase makes, so a facade failure is recorded: <code class="docutils literal notranslate"><span class="pre">last_error</span></code> begins <code class="docutils literal notranslate"><span class="pre">facade</span> <span class="pre">collection</span> <span class="pre">failed:</span></code> and the job-complete line carries it, while an API repository’s job still completes so its incremental anchor advances (a git-only repository’s job fails, the clone being its whole collection). A default branch proved empty and, on GitHub and GitLab, a clone the forge refused with its own notice record nothing; the notice is stored and shown instead (see <a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128"><span class="std std-ref">troubleshooting</span></a>).</p>
+<p>After API data is processed, the facade phase handles git-level data. Analysis, scorecard, SBOM and vulnerability scanning all need the clone this phase makes, so a facade failure is recorded: <code class="docutils literal notranslate"><span class="pre">last_error</span></code> begins <code class="docutils literal notranslate"><span class="pre">facade</span> <span class="pre">collection</span> <span class="pre">failed:</span></code> and the job-complete line carries it, while an API repository’s job still completes so its incremental anchor advances (a git-only repository’s job fails, the clone being its whole collection). A default branch proved empty and, on GitHub and GitLab, a clone the forge refused with its own notice record nothing; the notice is stored and shown instead (see <a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128"><span class="std std-ref">troubleshooting</span></a>). The walk also folds the commits it writes into daily per-author counts (<code class="docutils literal notranslate"><span class="pre">repo_commit_daily</span></code>), which the repository page’s commit answers read instead of the file-level commits table (see <a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts"><span class="std std-ref">facade</span></a>).</p>
 <section id="bare-clone">
 <h3>Bare clone<a class="headerlink" href="#bare-clone" title="Link to this heading"></a></h3>
 <p>The repo is cloned as a bare repo (or fetched if a clone already exists):</p>

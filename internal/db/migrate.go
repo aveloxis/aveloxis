@@ -971,6 +971,17 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_login_lower
 		ON aveloxis_data.contributors (LOWER(gh_login)) WHERE gh_login != ''`)
 
+	// summary/49 (0.29.73, daily-table review round 3 F2): the daily commit
+	// arm attributes a GitHub noreply author by the numeric user id the
+	// address carries — the id survives a rename, the login does not — so
+	// contributors.gh_user_id gets its first index. Partial on the literal
+	// non-zero guard the arm carries (a NULL is excluded by <> 0 as well),
+	// the same usability rule as the login index above.
+	execCreateIndexConcurrently(ctx, pg, logger, errs,
+		"aveloxis_data", "idx_contributors_gh_user_id",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_gh_user_id
+		ON aveloxis_data.contributors (gh_user_id) WHERE gh_user_id <> 0`)
+
 	// v0.29.0 (review 2026-08-30 #15) — the Jira identity probes.
 	// ResolveJiraIdentity matches each first-seen Jira username against
 	// lower(cntrb_login) and each display name against

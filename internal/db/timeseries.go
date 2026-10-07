@@ -54,19 +54,30 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 	// caller specified an upper bound.
 	upper := until
 	if until.IsZero() {
-		upper = time.Now().AddDate(100, 0, 0)
+		// A UTC midnight: an open-ended window stays UTC-day aligned so the
+		// daily commit table can serve it (summary/49).
+		upper = utcDay(time.Now()).AddDate(100, 0, 0)
 	}
 
-	var err error
-	// Weekly commits (from the commits table — one row per file, so count distinct hashes).
-	result.Commits, err = s.weeklySeries(ctx, `
+	// The commit series (summary/49): the daily table when it serves this
+	// window, the commits table otherwise (one row per file per commit, so
+	// count distinct hashes).
+	daily, err := s.commitDailyServes(ctx, repoID, since, upper)
+	if err != nil {
+		return nil, fmt.Errorf("time series: %w", err)
+	}
+	commitsSQL := `
 		SELECT date_trunc('week', cmt_author_timestamp AT TIME ZONE 'UTC') AS week_start,
 			COUNT(DISTINCT cmt_commit_hash) AS cnt
 		FROM aveloxis_data.commits
 		WHERE repo_id = $1 AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
 		  AND cmt_author_timestamp IS NOT NULL
 		GROUP BY week_start
-		ORDER BY week_start`, repoID, since, upper)
+		ORDER BY week_start`
+	if daily {
+		commitsSQL = dailyWeeklyCommitsSQL
+	}
+	result.Commits, err = s.weeklySeries(ctx, commitsSQL, repoID, since, upper)
 	if err != nil {
 		return nil, fmt.Errorf("weekly commits: %w", err)
 	}

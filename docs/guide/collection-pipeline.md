@@ -150,7 +150,7 @@ A failed upsert for one issue, PR, or message logs a warning but does not abort 
 
 ## Phase 3: Facade (git)
 
-After API data is processed, the facade phase handles git-level data. Analysis, scorecard, SBOM and vulnerability scanning all need the clone this phase makes, so a facade failure is recorded: `last_error` begins `facade collection failed:` and the job-complete line carries it, while an API repository's job still completes so its incremental anchor advances (a git-only repository's job fails, the clone being its whole collection). A default branch proved empty and, on GitHub and GitLab, a clone the forge refused with its own notice record nothing; the notice is stored and shown instead (see [troubleshooting](troubleshooting.md#git-clone-exit-status-128)).
+After API data is processed, the facade phase handles git-level data. Analysis, scorecard, SBOM and vulnerability scanning all need the clone this phase makes, so a facade failure is recorded: `last_error` begins `facade collection failed:` and the job-complete line carries it, while an API repository's job still completes so its incremental anchor advances (a git-only repository's job fails, the clone being its whole collection). A default branch proved empty and, on GitHub and GitLab, a clone the forge refused with its own notice record nothing; the notice is stored and shown instead (see [troubleshooting](troubleshooting.md#git-clone-exit-status-128)). The walk also folds the commits it writes into daily per-author counts (`repo_commit_daily`), which the repository page's commit answers read instead of the file-level commits table (see [facade](../architecture/facade-commits.md#daily-commit-counts)).
 
 ### Bare clone
 

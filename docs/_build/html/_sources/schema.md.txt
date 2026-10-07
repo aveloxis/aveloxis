@@ -1248,6 +1248,30 @@ Monthly commit statistics per contributor per repository.
 
 ---
 
+#### repo_commit_daily
+
+Distinct commits per repository, UTC day of the author timestamp and author
+email (0.29.73). The facade folds it from the walk it makes of the whole
+default branch and replaces the repository's rows after every completed
+walk; `aveloxis heal-commit-daily` fills repositories collected before. The
+repository page's weekly commit series and the commits arm of its top
+contributors read it when it is filled and the window is UTC-day aligned,
+and the `commits` table otherwise (one row per file per commit, scattered —
+minutes for a kernel fork). Author identity at read time: the columns below, in order.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `repo_id` | BIGINT NOT NULL | Facade fold | Repository (FK). |
+| `day` | DATE NOT NULL | Facade fold | UTC day of the author timestamp. |
+| `author_email` | TEXT NOT NULL | Facade fold | The commit's author email, as in `commits.cmt_author_email`. |
+| `commits` | INTEGER NOT NULL | Facade fold | Distinct commits by that author on that day. |
+| `author_login` | TEXT NOT NULL | Facade fold | The login a GitHub noreply address names (`''` otherwise); the reader maps it to the contributor through the author-id backfill's own rule, `LOWER(gh_login)`. |
+| `author_gh_user_id` | BIGINT NOT NULL | Facade fold | GitHub's numeric user id when the noreply address carries one (`0` otherwise); matched to `contributors.gh_user_id` before the login, because the id survives an account rename and the login does not. |
+| `cntrb_id` | UUID | Backfill | The `commits` table's `cmt_ght_author_id` carried by `heal-commit-daily` when the bucket's resolved commits agree on one (ambiguous: NULL); kept across the facade's replaces. The facade never stores an id (the deterministic one is the id the resolver wants, not the one it keeps for a legacy row). NULL: resolved at read time — the numeric id, the login, then the house email rule (the contributor's own emails, then `contributors_aliases`), each only when unambiguous. |
+| `computed_at` | TIMESTAMPTZ NOT NULL | Default NOW() | When the row was written. |
+
+Primary key `(repo_id, day, author_email)`. The two writers (the facade's replace, the backfill) serialise per repository with an advisory transaction lock.
+
 #### dm_repo_weekly
 
 Weekly commit statistics per contributor per repository.

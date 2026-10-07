@@ -118,6 +118,34 @@ func scrubArgsInPlace(args []any) {
 				cleaned := safeUTF8(*v)
 				args[i] = &cleaned
 			}
+		case []string:
+			// Array parameters (unnest writers, summary/49 review round 1
+			// F3): one invalid element failed the whole statement. The
+			// scrubbed copy goes into args; the caller's slice is not
+			// written through (round 2 F9), as the *string case allocates.
+			var cleaned []string
+			for j, e := range v {
+				if utf8.ValidString(e) {
+					continue
+				}
+				if cleaned == nil {
+					cleaned = append([]string(nil), v...)
+				}
+				cleaned[j] = safeUTF8(e)
+			}
+			if cleaned != nil {
+				args[i] = cleaned
+			}
 		}
 	}
+}
+
+// SafeUTF8 is the one scrub every string reaching PostgreSQL gets (the
+// tracer applies it to arguments); a writer that derives a KEY from a
+// string applies it first so the key matches what the rows carry.
+func SafeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return safeUTF8(s)
 }

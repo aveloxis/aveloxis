@@ -264,6 +264,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -691,7 +692,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -862,6 +863,7 @@
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -1546,6 +1548,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-monthly">dm_repo_group_monthly</a></li>
@@ -1735,7 +1738,7 @@
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 102 tables        │  │ 42 tables              │ │
+  │  │ 103 tables        │  │ 42 tables              │ │
   │  │ 22 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -1762,8 +1765,8 @@
 <section id="four-schemas">
 <h2>Four schemas<a class="headerlink" href="#four-schemas" title="Link to this heading"></a></h2>
 <p>Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.</p>
-<section id="aveloxis-data-102-tables-22-materialized-views">
-<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)<a class="headerlink" href="#aveloxis-data-102-tables-22-materialized-views" title="Link to this heading"></a></h3>
+<section id="aveloxis-data-103-tables-22-materialized-views">
+<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)<a class="headerlink" href="#aveloxis-data-103-tables-22-materialized-views" title="Link to this heading"></a></h3>
 <p>All collected open source community health data:</p>
 <table class="docutils align-default">
 <thead>
@@ -2017,7 +2020,7 @@ Done -&gt; repo re-queued with new due time
       <span class="n">postgres</span><span class="o">.</span><span class="n">go</span>         <span class="c1"># All upsert methods</span>
       <span class="n">staging</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># JSONB staging writer and processor</span>
       <span class="n">migrate</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># Schema migration</span>
-      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (148 tables)</span>
+      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (149 tables)</span>
       <span class="n">matviews</span><span class="o">.</span><span class="n">sql</span>        <span class="c1"># the 20 8Knot materialized views (the two supply-chain views are built from supply_chain_views.go)</span>
       <span class="n">contributors</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Contributor resolver with cache</span>
       <span class="n">affiliations</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Email domain -&gt; org resolver</span>

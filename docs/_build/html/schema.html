@@ -263,6 +263,7 @@
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -690,7 +691,7 @@
 <li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -861,6 +862,7 @@
 <li class="toctree-l3"><a class="reference internal" href="architecture/facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="architecture/facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -1545,6 +1547,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#dm-repo-group-monthly">dm_repo_group_monthly</a></li>
@@ -5742,6 +5745,69 @@ preserved (SR-6). See the identity chapter in
 </table>
 </section>
 <hr class="docutils" />
+<section id="repo-commit-daily">
+<h4>repo_commit_daily<a class="headerlink" href="#repo-commit-daily" title="Link to this heading"></a></h4>
+<p>Distinct commits per repository, UTC day of the author timestamp and author
+email (0.29.73). The facade folds it from the walk it makes of the whole
+default branch and replaces the repository’s rows after every completed
+walk; <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code> fills repositories collected before. The
+repository page’s weekly commit series and the commits arm of its top
+contributors read it when it is filled and the window is UTC-day aligned,
+and the <code class="docutils literal notranslate"><span class="pre">commits</span></code> table otherwise (one row per file per commit, scattered —
+minutes for a kernel fork). Author identity at read time: the columns below, in order.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL</p></td>
+<td><p>Facade fold</p></td>
+<td><p>Repository (FK).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">day</span></code></p></td>
+<td><p>DATE NOT NULL</p></td>
+<td><p>Facade fold</p></td>
+<td><p>UTC day of the author timestamp.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">author_email</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>Facade fold</p></td>
+<td><p>The commit’s author email, as in <code class="docutils literal notranslate"><span class="pre">commits.cmt_author_email</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">commits</span></code></p></td>
+<td><p>INTEGER NOT NULL</p></td>
+<td><p>Facade fold</p></td>
+<td><p>Distinct commits by that author on that day.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">author_login</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>Facade fold</p></td>
+<td><p>The login a GitHub noreply address names (<code class="docutils literal notranslate"><span class="pre">''</span></code> otherwise); the reader maps it to the contributor through the author-id backfill’s own rule, <code class="docutils literal notranslate"><span class="pre">LOWER(gh_login)</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">author_gh_user_id</span></code></p></td>
+<td><p>BIGINT NOT NULL</p></td>
+<td><p>Facade fold</p></td>
+<td><p>GitHub’s numeric user id when the noreply address carries one (<code class="docutils literal notranslate"><span class="pre">0</span></code> otherwise); matched to <code class="docutils literal notranslate"><span class="pre">contributors.gh_user_id</span></code> before the login, because the id survives an account rename and the login does not.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></td>
+<td><p>UUID</p></td>
+<td><p>Backfill</p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">commits</span></code> table’s <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> carried by <code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code> when the bucket’s resolved commits agree on one (ambiguous: NULL); kept across the facade’s replaces. The facade never stores an id (the deterministic one is the id the resolver wants, not the one it keeps for a legacy row). NULL: resolved at read time — the numeric id, the login, then the house email rule (the contributor’s own emails, then <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code>), each only when unambiguous.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">computed_at</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL</p></td>
+<td><p>Default NOW()</p></td>
+<td><p>When the row was written.</p></td>
+</tr>
+</tbody>
+</table>
+<p>Primary key <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">day,</span> <span class="pre">author_email)</span></code>. The two writers (the facade’s replace, the backfill) serialise per repository with an advisory transaction lock.</p>
+</section>
 <section id="dm-repo-weekly">
 <h4>dm_repo_weekly<a class="headerlink" href="#dm-repo-weekly" title="Link to this heading"></a></h4>
 <p>Weekly commit statistics per contributor per repository.</p>

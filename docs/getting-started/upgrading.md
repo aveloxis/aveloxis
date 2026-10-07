@@ -164,11 +164,14 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
-**0.29.73 adds a column** (`repos.data_changed_at`, stamped by every
-writer of a repository's data so the API's response cache can tell a
-changed repository from an unchanged one): run `aveloxis migrate
---skip-views` on the way to it; `api` and `web` refuse to start until the
-stamp is current.
+**0.29.73 adds a column and a table** (`repos.data_changed_at`, stamped
+by every writer of a repository's data so the API's response cache can tell
+a changed repository from an unchanged one; and `repo_commit_daily`, the
+facade's daily commit counts that the repository page's commit answers
+read): run `aveloxis migrate --skip-views` on the way to it; `api` and
+`web` refuse to start until the stamp is current. Then `aveloxis
+heal-commit-daily --apply` (row 20) fills the new table for repositories
+collected before — a background job, not a gate.
 
 Migration steps are fail-closed (v0.19.4): a failing step fails the
 migrate — every remaining step still runs, the error lists **every**
@@ -265,6 +268,7 @@ re-running is always safe. Rows marked *fleet-scale* take hours on a
 | 16 | `aveloxis strip-quoted-history --limit 50000`, then full | v0.29.0 | `msg_text_clean` on historical mailing-list bodies (82.5% of list mail embeds the thread it replies to; new mail is stripped at ingest) | only if you collect mailing lists; ~30–45 min per 12.6M bodies, marker-resumable |
 | 17 | `aveloxis register-jira-projects`, then `aveloxis backfill-jira-identities` | v0.29.0 | Jira reporter + assignee identity and authoritative issue state, from the Jira Server API (comment-author identity is NOT in this one-shot — the ongoing Jira worker banks it as it collects each project's comment blocks). **Time-sensitive**: the stable username this matches on does not exist in Jira Cloud's API — run it before the ASF instance migrates | only if you hold Jira-projected issues (Apache mailing lists); ~2–3 polite hours for the full ASF corpus |
 | 18 | `aveloxis backfill-mailing-list-projection` | v0.29.0 | re-projects mailing-list messages a wrong-system drain pool processed without Layer-2 projection (the cross-system drain fix: 90%+ of Apache list mail was drained by the lore processor and never projected onto issues). The migrate itself restamps `ml_system` and resets the affected rows to pending; this command runs the keyed + thread passes over them | only if you collect mailing lists AND upgraded through an affected version; one clean run converges — rerun only after a mid-run error |
+| 20 | `aveloxis heal-commit-daily`, then `--apply` | v0.29.73 | `repo_commit_daily` (distinct commits per repository, UTC day and author email, which the facade writes after every completed walk) for repositories collected before 0.29.73: until a repository is filled, its page's weekly commit series and top-contributors commit counts read the commits table — one row per file per commit, scattered, minutes for a kernel fork — and the front end's warm run times out on the largest (summary/49) | any fleet upgrading to 0.29.73; one scan of each repository's commit rows, largest first, each its own transaction; safe beside `serve` (a repository's own next collection fills it anyway); interrupt and rerun freely; run under `nohup` on a large fleet |
 | 19 | `aveloxis heal-libyear`, then `--apply` | v0.29.57 | libyear values stored as `0` for dependencies with no pinned version, whose libyear can never be computed; they become `NULL`, which averages and medians skip (before v0.29.57 an unknown libyear was stored as `0` and read as "up to date") | any fleet upgrading to v0.29.57; the dry run is the default and reports the count; walks the table in primary-key windows, safe beside `serve`. **Run `aveloxis refresh-views` (row 9) again afterwards**, or `explorer_libyear_summary` keeps the old values until the next weekly rebuild. The same release changed that view's definition, so a fleet crossing v0.29.57 also needs one plain `aveloxis migrate` (see above) if the checklist it followed used `--skip-views`. 8Knot's dependency-age chart reads this table itself and keeps only `libyear >= 0`, so these dependencies leave that chart (it had counted them as up to date) |
 
 Skipped as instance-specific: the `load-foundation-*` importers (only if

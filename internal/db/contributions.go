@@ -113,21 +113,20 @@ contributors_in_window AS (
 )`
 
 // resolveWindow normalizes a (since, until) pair the same way
-// GetRepoTimeSeries does: a zero until is treated as "no upper bound"
-// by substituting a far-future timestamp so the SQL stays parameterized.
+// GetRepoTimeSeries does: the upper bound is BoundedUpper(until) — the
+// latest plausible commit time when until is zero or beyond it.
 // A zero since is treated as "since the beginning of time" (1970-01-01).
 // since must be strictly less than until; the caller validates this and
 // surfaces a 400 if violated.
 func resolveWindow(since, until time.Time) (time.Time, time.Time) {
-	lower := since
-	if lower.IsZero() {
-		lower = time.Unix(0, 0)
-	}
+	// The lower bound is at least the earliest plausible commit time (an
+	// unset clock stamps the epoch; 2026-10-07).
+	lower := BoundedLower(since)
 	// The upper bound is at most the latest plausible commit time (a UTC
 	// midnight, so an open-ended window stays day-aligned and the daily
 	// commit table can serve it — summary/49; and bogus future author dates
 	// never stretch a window — 2026-10-07).
-	return lower, boundedUpper(until)
+	return lower, BoundedUpper(until)
 }
 
 // GetRepoContributors returns every distinct contributor who made any

@@ -955,7 +955,7 @@ func (f *FacadeCollector) recordCommitDaily(ctx context.Context, repoID int64, r
 // one — 2026-10-07, NVIDIA/nova's 2080s: the row is kept, the bound is
 // not, db.LatestPlausibleCommitTime).
 func (r *FacadeResult) noteCommitWritten(ts *time.Time) {
-	if ts == nil || ts.After(db.LatestPlausibleCommitTime(time.Now())) {
+	if ts == nil || !ts.Before(db.LatestPlausibleCommitTime(time.Now())) || ts.Before(db.EarliestPlausibleCommitTime()) {
 		return
 	}
 	if r.FirstCommitAt.IsZero() || ts.Before(r.FirstCommitAt) {

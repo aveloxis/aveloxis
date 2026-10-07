@@ -336,11 +336,57 @@ func TestRepoTimeSeriesEndsAtThePlausibleBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	farSum := 0
 	for _, p := range ts.Commits {
+		farSum += p.Count
 		if !p.WeekStart.Before(bound) {
 			t.Errorf("explicit far until: a week at %v beyond the bound", p.WeekStart)
 		}
 	}
+	if farSum != 1 {
+		t.Errorf("explicit far until: the one plausible commit still counts, got %d", farSum)
+	}
+}
+
+// The series starts no earlier than the plausible floor on both paths: an
+// epoch-dated commit (an unset clock) and a year-0001 daily row add no week.
+func TestRepoTimeSeriesStartsAtThePlausibleFloor(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_pst11")
+	epoch := time.Unix(0, 0).UTC()
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp)
+		VALUES ($1, 'ep0ch001', 'y.go', 'a', '_avcd_pst11@x', '1970-01-01', $2)`, fx.repoID, epoch); err != nil {
+		t.Fatal(err)
+	}
+	floor := EarliestPlausibleCommitTime()
+	check := func(path string, since time.Time) {
+		t.Helper()
+		ts, err := store.GetRepoTimeSeries(ctx, fx.repoID, since, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := 0
+		for _, p := range ts.Commits {
+			sum += p.Count
+			if p.WeekStart.Before(floor.AddDate(0, 0, -7)) {
+				t.Errorf("%s: a week at %v lies before the plausible floor %v", path, p.WeekStart, floor)
+			}
+		}
+		if sum != 1 {
+			t.Errorf("%s: the one plausible commit counts, the epoch one does not: got %d", path, sum)
+		}
+	}
+	check("commits table, open since", time.Time{})
+	check("commits table, year-1 since", time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: "_avcd_pst11@x", Commits: 1},
+		{Day: time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), AuthorEmail: "_avcd_pst11@x", Commits: 1},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	check("daily table, open since", time.Time{})
 }
 
 func TestFillRepoCommitDailyFromCommitsBackfillsOnce(t *testing.T) {

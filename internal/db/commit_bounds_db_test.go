@@ -74,7 +74,7 @@ func TestRecordCommitBounds(t *testing.T) {
 	// see — and NULL-dated rows are ignored.
 	a := repo("a")
 	commit(a, strings.Repeat("1", 40), p(d(2015)))
-	commit(a, strings.Repeat("2", 40), p(d(2030))) // a bogus future-dated commit (2026-10-07: NVIDIA/nova carries 2080s): never a bound
+	commit(a, strings.Repeat("2", 40), p(d(2080))) // a bogus future-dated commit (2026-10-07: NVIDIA/nova carries 2080s): never a bound
 	commit(a, strings.Repeat("3", 40), nil)
 	if err := store.RecordCommitBounds(ctx, a, d(2020), d(2021)); err != nil {
 		t.Fatal(err)
@@ -89,11 +89,11 @@ func TestRecordCommitBounds(t *testing.T) {
 	if f, l := bounds(a); !eq(f, d(2015)) || !eq(l, d(2015)) {
 		t.Errorf("narrower run: first=%v last=%v; want unchanged", f, l)
 	}
-	if err := store.RecordCommitBounds(ctx, a, d(2010), d(2031)); err != nil {
+	if err := store.RecordCommitBounds(ctx, a, d(2010), d(2081)); err != nil {
 		t.Fatal(err)
 	}
 	if f, l := bounds(a); !eq(f, d(2010)) || !eq(l, d(2015)) {
-		t.Errorf("wider run with an implausible last: first=%v last=%v; want 2010 and 2015 (2031 ignored)", f, l)
+		t.Errorf("wider run with an implausible last: first=%v last=%v; want 2010 and 2015 (2081 ignored)", f, l)
 	}
 	// A stored bogus bound (written before the rule) is repaired on the next
 	// run from the table's plausible maximum.
@@ -103,6 +103,43 @@ func TestRecordCommitBounds(t *testing.T) {
 	}
 	if f, l := bounds(a); !eq(f, d(2010)) || !eq(l, d(2015)) {
 		t.Errorf("repair: first=%v last=%v; want 2010 and the table's plausible 2015", f, l)
+	}
+	// The same for a stored bogus first (a repository whose only dated
+	// commits were bogus when filled), and a repository whose only dated
+	// commits are implausible stays NULL rather than filling from them.
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET first_commit_at = $2 WHERE repo_id = $1`, a, d(2080))
+	if err := store.RecordCommitBounds(ctx, a, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if f, l := bounds(a); !eq(f, d(2015)) || !eq(l, d(2015)) {
+		t.Errorf("first repair: first=%v last=%v; want the table's plausible 2015 both", f, l)
+	}
+	// The past end (operator, the same day): an epoch-dated row never
+	// becomes a first bound, and a stored one is repaired.
+	y := repo("y")
+	epoch := time.Unix(0, 0).UTC()
+	commit(y, strings.Repeat("a", 40), p(epoch))
+	commit(y, strings.Repeat("b", 40), p(d(2015)))
+	if err := store.RecordCommitBounds(ctx, y, epoch, d(2015)); err != nil {
+		t.Fatal(err)
+	}
+	if f, l := bounds(y); !eq(f, d(2015)) || !eq(l, d(2015)) {
+		t.Errorf("epoch row: first=%v last=%v; want 2015 both", f, l)
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET first_commit_at = $2 WHERE repo_id = $1`, y, time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := store.RecordCommitBounds(ctx, y, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := bounds(y); !eq(f, d(2015)) {
+		t.Errorf("stored year-1 first repaired: first=%v; want 2015", f)
+	}
+	z := repo("z")
+	commit(z, strings.Repeat("9", 40), p(d(2080)))
+	if err := store.RecordCommitBounds(ctx, z, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if f, l := bounds(z); f != nil || l != nil {
+		t.Errorf("only implausible commits: first=%v last=%v; want NULL both (never filled from them)", f, l)
 	}
 	// A run that wrote nothing (zero bounds) still fills an unfilled row.
 	b := repo("b")
@@ -142,6 +179,7 @@ func TestActivityBoundsReadTheStoredCommitTimes(t *testing.T) {
 
 	stored := repo("stored")
 	commit(stored, strings.Repeat("6", 40), p(d(2020)))
+	commit(stored, strings.Repeat("8", 40), p(d(2080))) // bogus: the live arms must skip it
 	// A stored value that differs from the table proves which one is read.
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET last_commit_at = $2, first_commit_at = $3 WHERE repo_id = $1`,
 		stored, d(2025), d(2005))
@@ -151,9 +189,18 @@ func TestActivityBoundsReadTheStoredCommitTimes(t *testing.T) {
 	// A stored bogus bound reads as unfilled: the live plausible maximum.
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET last_commit_at = $2 WHERE repo_id = $1`, stored, d(2080))
 	if la, ok, err := store.LastActivityAt(ctx, []int64{stored}); err != nil || !ok || !la.Equal(d(2020)) {
-		t.Errorf("LastActivityAt with a bogus stored bound = %v, %v, %v; want the table's plausible 2020", la, ok, err)
+		t.Errorf("LastActivityAt with a bogus stored bound = %v, %v, %v; want the table's plausible 2020 (not the 2080 row)", la, ok, err)
 	}
-	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET last_commit_at = $2 WHERE repo_id = $1`, stored, d(2025))
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET last_commit_at = $2, first_commit_at = $3 WHERE repo_id = $1`, stored, d(2025), d(2080))
+	if fa, ok, err := store.FirstActivityAt(ctx, []int64{stored}); err != nil || !ok || !fa.Equal(d(2020)) {
+		t.Errorf("FirstActivityAt with a bogus stored first = %v, %v, %v; want the table's plausible 2020", fa, ok, err)
+	}
+	commit(stored, strings.Repeat("c", 40), p(time.Unix(0, 0).UTC())) // an unset clock: the live arm must skip it
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET first_commit_at = $2 WHERE repo_id = $1`, stored, time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC))
+	if fa, ok, err := store.FirstActivityAt(ctx, []int64{stored}); err != nil || !ok || !fa.Equal(d(2020)) {
+		t.Errorf("FirstActivityAt with a stored year-1 first = %v, %v, %v; want the table's plausible 2020 (not the epoch row)", fa, ok, err)
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET last_commit_at = $2, first_commit_at = $3 WHERE repo_id = $1`, stored, d(2025), d(2005))
 	if fa, ok, err := store.FirstActivityAt(ctx, []int64{stored}); err != nil || !ok || !fa.Equal(d(2005)) {
 		t.Errorf("FirstActivityAt = %v, %v, %v; want the stored 2005", fa, ok, err)
 	}
@@ -168,12 +215,12 @@ func TestActivityBoundsReadTheStoredCommitTimes(t *testing.T) {
 // column first, the live scan only as COALESCE's fallback.
 func TestActivityBoundsPreferTheStoredColumn(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/db/analytics_store.go"))
-	// 2026-10-07: LastActivityAt reads the stored column only when it is
-	// plausible (a bogus future bound reads as unfilled) and scans only
-	// plausible rows; FirstActivityAt keeps the plain form.
+	// 2026-10-07: both reads take the stored column only when it is
+	// plausible (a bogus bound, future or epoch, reads as unfilled) and
+	// scan only plausible rows.
 	for fn, needle := range map[string]string{
-		"LastActivityAt":  "COALESCE( (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at <= $2::timestamptz), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp <= $2::timestamptz",
-		"FirstActivityAt": "COALESCE( (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id), (SELECT cmt_author_timestamp FROM aveloxis_data.commits",
+		"LastActivityAt":  "COALESCE( (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at >= $3::timestamptz AND last_commit_at < $2::timestamptz), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
+		"FirstActivityAt": "COALESCE( (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND first_commit_at >= $3::timestamptz AND first_commit_at < $2::timestamptz), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
 	} {
 		body := srctest.NormalizeWS(srctest.FuncBody(t, src, "func (s *PostgresStore) "+fn+"("))
 		if !strings.Contains(body, needle) {

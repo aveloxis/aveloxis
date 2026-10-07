@@ -149,11 +149,11 @@ under the cap.
 ```
 GET /api/v1/repos/{repoID}/timeseries
 GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
-
-Every window ends no later than the latest plausible commit time, two UTC days after now (a committer's clock at UTC+14 dates a commit one calendar day ahead of UTC; one more day for clock skew), whatever `until` says: repositories carry the occasional author date in 2080, and such a date must not stretch the series or the top-contributors window. The rows stay stored; only the windows are bounded.
 ```
 
 Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues.
+
+Every commit window on this API — this series, `/contributors/top`, `/contributions/*`, `/compare` — ends no later than the latest plausible commit time, two UTC days after now, and starts no earlier than the earliest, 1970-01-02, whatever `since` and `until` say. An author timestamp is an absolute instant, so only a wrong committer clock can place one in the future (the margin is a day of skew rounded to a day-aligned edge), and a Unix clock cannot place one before the epoch, which is what an unset clock stamps. Repositories carry the occasional author date in 2080 or 1970, and such a date must not stretch a window. The rows stay stored; only the windows are bounded.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

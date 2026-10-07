@@ -31,8 +31,9 @@ type TimeSeriesResult struct {
 }
 
 // GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics
-// between `since` and `until` (inclusive lower, exclusive upper).
-// A zero `until` is treated as "no upper bound" (queries up to the latest data).
+// between `since` and `until` (inclusive lower, exclusive upper). The upper
+// bound is at most the latest plausible commit time (BoundedUpper): a zero
+// `until` means up to it.
 // Uses date_trunc('week', timestamp) for consistent Monday-aligned weeks.
 //
 // v0.27.36: every query/scan error propagates. The pre-fix structure
@@ -49,14 +50,12 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		return nil, fmt.Errorf("time series repo lookup: %w", err)
 	}
 
-	// A zero `until` is represented as a far-future timestamp so the SQL
-	// queries can remain parameterized identically regardless of whether the
-	// caller specified an upper bound.
 	// The upper bound is at most the latest plausible commit time (a UTC
 	// midnight: an open-ended window stays day-aligned so the daily commit
 	// table can serve it — summary/49; and bogus future author dates never
 	// stretch the series — 2026-10-07, NVIDIA/nova's 2080s).
-	upper := boundedUpper(until)
+	upper := BoundedUpper(until)
+	since = BoundedLower(since) // and no earlier than the plausible floor (an unset clock stamps the epoch)
 
 	// The commit series (summary/49): the daily table when it serves this
 	// window, the commits table otherwise (one row per file per commit, so

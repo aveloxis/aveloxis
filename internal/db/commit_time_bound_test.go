@@ -17,9 +17,10 @@ import (
 func TestLatestPlausibleCommitTime(t *testing.T) {
 	now := time.Date(2026, 10, 7, 15, 4, 5, 0, time.UTC)
 	got := LatestPlausibleCommitTime(now)
-	// A committer's clock at UTC+14 dates a commit up to one calendar day
-	// ahead of UTC; one more day absorbs clock skew. Two UTC days ahead,
-	// at midnight, so the bound is itself a day-aligned window edge.
+	// An author timestamp is an absolute instant (git gives its offset), so
+	// only a wrong clock can place one ahead of now: a day of skew, rounded
+	// up to the next UTC midnight — two UTC days ahead, a day-aligned
+	// window edge (24–48 h of margin).
 	if want := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -44,5 +45,38 @@ func TestResolveWindowClampsToThePlausibleBound(t *testing.T) {
 	past := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, upper := resolveWindow(time.Time{}, past); !upper.Equal(past) {
 		t.Errorf("an explicit upper bound within it stands, got %v", upper)
+	}
+}
+
+// 2026-10-07 (operator): the past end too. A Unix clock cannot produce an
+// instant before the epoch, and the epoch itself is what every tool stamps
+// when a clock is unset, so the earliest plausible commit time is the first
+// UTC midnight after the epoch day. Converted histories from the 1970s stay
+// plausible; year-0001 and epoch-zero garbage does not.
+func TestEarliestPlausibleCommitTime(t *testing.T) {
+	got := EarliestPlausibleCommitTime()
+	if want := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	if !alignedToUTCDay(got) {
+		t.Fatal("the floor is a UTC midnight: a day-aligned window edge")
+	}
+}
+
+func TestResolveWindowClampsToThePlausibleFloor(t *testing.T) {
+	floor := EarliestPlausibleCommitTime()
+	if lower, _ := resolveWindow(time.Time{}, time.Time{}); !lower.Equal(floor) {
+		t.Errorf("an open lower bound is the plausible floor, got %v want %v", lower, floor)
+	}
+	if lower, _ := resolveWindow(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), time.Time{}); !lower.Equal(floor) {
+		t.Errorf("an explicit lower bound before the floor is clamped, got %v", lower)
+	}
+	epoch := time.Unix(0, 0).UTC()
+	if lower, _ := resolveWindow(epoch, time.Time{}); !lower.Equal(floor) {
+		t.Errorf("the epoch itself is below the floor, got %v", lower)
+	}
+	within := time.Date(1985, 1, 1, 0, 0, 0, 0, time.UTC)
+	if lower, _ := resolveWindow(within, time.Time{}); !lower.Equal(within) {
+		t.Errorf("an explicit lower bound within stands, got %v", lower)
 	}
 }

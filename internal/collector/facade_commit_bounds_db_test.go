@@ -45,6 +45,7 @@ func TestFacadeMaintainsTheCommitBounds(t *testing.T) {
 			`DELETE FROM aveloxis_data.commit_parents WHERE cmt_id IN (SELECT cmt_id FROM aveloxis_data.commits WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1))`,
 			`DELETE FROM aveloxis_data.commit_messages WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`,
 			`DELETE FROM aveloxis_data.commits WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`,
+			`DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`,
 			`DELETE FROM aveloxis_data.repos WHERE repo_git=$1`,
 		} {
 			if _, err := pool.Exec(context.Background(), q, repoGit); err != nil {
@@ -83,7 +84,7 @@ func TestFacadeMaintainsTheCommitBounds(t *testing.T) {
 	}
 	git(nil, "init", "-q", "-b", "main", work)
 	commit("a", "2012-05-01T00:00:00Z")
-	commit("b", "2030-05-01T00:00:00Z") // a future-dated commit in history
+	commit("b", "2080-05-01T00:00:00Z") // a bogus future-dated commit in history (2026-10-07): walked, stored, never a bound
 	commit("c", "2018-05-01T00:00:00Z")
 	git(nil, "clone", "-q", "--bare", work, bare)
 	git(nil, "-C", bare, "update-server-info")
@@ -106,33 +107,44 @@ func TestFacadeMaintainsTheCommitBounds(t *testing.T) {
 	if _, err := f.CollectRepo(ctx, repoID, url); err != nil {
 		t.Fatalf("first collection: %v", err)
 	}
-	if first, last := bounds(); !eq(first, "2012-05-01T00:00:00Z") || !eq(last, "2030-05-01T00:00:00Z") {
-		t.Fatalf("after the first collection: first=%v last=%v; want 2012 and 2030", first, last)
+	if first, last := bounds(); !eq(first, "2012-05-01T00:00:00Z") || !eq(last, "2018-05-01T00:00:00Z") {
+		t.Fatalf("after the first collection: first=%v last=%v; want 2012 and 2018 (the 2080 commit is implausible)", first, last)
 	}
 
 	// A filled row only widens: a run with nothing new keeps what is stored
 	// (set wider by hand here, which the table does not support — a rescan
 	// would narrow it back).
-	if _, err := pool.Exec(ctx, `UPDATE aveloxis_data.repos SET first_commit_at = '2000-01-01Z', last_commit_at = '2040-01-01Z' WHERE repo_id = $1`, repoID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE aveloxis_data.repos SET first_commit_at = '2000-01-01Z', last_commit_at = '2025-01-01Z' WHERE repo_id = $1`, repoID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.CollectRepo(ctx, repoID, url); err != nil {
 		t.Fatalf("second collection: %v", err)
 	}
-	if first, last := bounds(); !eq(first, "2000-01-01T00:00:00Z") || !eq(last, "2040-01-01T00:00:00Z") {
+	if first, last := bounds(); !eq(first, "2000-01-01T00:00:00Z") || !eq(last, "2025-01-01T00:00:00Z") {
 		t.Errorf("a run with nothing new narrowed a filled row: first=%v last=%v", first, last)
+	}
+	// A stored bogus bound (2026-10-07) is the one thing a run moves DOWN:
+	// repaired to the table's plausible maximum.
+	if _, err := pool.Exec(ctx, `UPDATE aveloxis_data.repos SET last_commit_at = '2081-01-01Z' WHERE repo_id = $1`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.CollectRepo(ctx, repoID, url); err != nil {
+		t.Fatalf("third collection: %v", err)
+	}
+	if _, last := bounds(); !eq(last, "2018-05-01T00:00:00Z") {
+		t.Errorf("a stored bogus last must be repaired on the next walk: last=%v want 2018", last)
 	}
 
 	// A new commit dated past the stored bound widens it from the run's
 	// own rows (no rescan happens on a filled row).
-	commit("d", "2041-05-01T00:00:00Z")
+	commit("d", "2025-06-01T00:00:00Z")
 	git(nil, "-C", work, "push", "-q", bare, "main")
 	git(nil, "-C", bare, "update-server-info")
 	if _, err := f.CollectRepo(ctx, repoID, url); err != nil {
-		t.Fatalf("third collection: %v", err)
+		t.Fatalf("fourth collection: %v", err)
 	}
-	if _, last := bounds(); !eq(last, "2041-05-01T00:00:00Z") {
-		t.Errorf("a new later commit: last=%v; want 2041", last)
+	if _, last := bounds(); !eq(last, "2025-06-01T00:00:00Z") {
+		t.Errorf("a new later commit: last=%v; want 2025-06", last)
 	}
 }
 
@@ -160,6 +172,7 @@ func TestRefusedCloneStillFillsTheCommitBounds(t *testing.T) {
 	cleanup := func() {
 		for _, q := range []string{
 			`DELETE FROM aveloxis_data.commits WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`,
+			`DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git=$1)`,
 			`DELETE FROM aveloxis_data.repos WHERE repo_git=$1`,
 		} {
 			if _, err := pool.Exec(context.Background(), q, repoGit); err != nil {

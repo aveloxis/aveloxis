@@ -327,6 +327,10 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 			return since, until, "", fmt.Errorf("invalid until %q", u)
 		}
 	}
+	// The one other caller-supplied commit window (2026-10-07): at most
+	// the latest plausible commit time, so a bogus 2080 author date cannot
+	// be plotted by asking for it (and, below, no earlier than the floor).
+	until = db.BoundedUpper(until)
 	since = until.AddDate(-3, 0, 0)
 	sinceGiven := false
 	if s := r.URL.Query().Get("since"); s != "" {
@@ -335,6 +339,7 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 		}
 		sinceGiven = true
 	}
+	since = db.BoundedLower(since)
 	if !since.Before(until) {
 		return since, until, "", fmt.Errorf("since must be before until")
 	}

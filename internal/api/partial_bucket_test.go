@@ -14,6 +14,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestCompareWindowTruncatesPartialBucket(t *testing.T) {
@@ -76,5 +78,30 @@ func TestCompareWindowDefaultSinceIsBucketAligned(t *testing.T) {
 	r := httptest.NewRequest("GET", "/api/v1/compare?since=2024-01-03&bucket=week", nil)
 	if since, _, _, err := compareWindow(r); err != nil || !since.Equal(time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("explicit since = %v, %v", since, err)
+	}
+}
+
+// 2026-10-07: the compare page's explicit until is bounded by the latest
+// plausible commit time too — the one other caller-supplied commit window.
+func TestCompareWindowUntilIsBounded(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&until=2081-01-01", nil)
+	_, until, bucket, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := db.LatestPlausibleCommitTime(time.Now())
+	if until.After(bound) {
+		t.Fatalf("until=2081 must be clamped to the plausible bound %v (then bucket-truncated), got %v (%s)", bound, until, bucket)
+	}
+}
+
+func TestCompareWindowSinceIsBounded(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&since=0001-01-01", nil)
+	since, _, _, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if since.Before(db.EarliestPlausibleCommitTime()) {
+		t.Fatalf("since=0001 must be clamped to the plausible floor, got %v", since)
 	}
 }

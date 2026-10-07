@@ -305,12 +305,12 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 			(SELECT created_at FROM aveloxis_data.pull_requests
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT 1),
 			COALESCE(
-			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at <= $2::timestamptz),
+			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at >= $3::timestamptz AND last_commit_at < $2::timestamptz),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
-			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp <= $2::timestamptz
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz
 			    ORDER BY cmt_author_timestamp DESC LIMIT 1))
 		))
-		FROM unnest($1::bigint[]) AS r(id)`, repoIDs, bound).Scan(&la)
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs, bound, EarliestPlausibleCommitTime()).Scan(&la)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -347,7 +347,10 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil
 	}
-	// Per-repository arms, as LastActivityAt (O11 option 1).
+	// Per-repository arms, as LastActivityAt (O11 option 1); a stored first
+	// at or beyond the plausible bound (a repository whose only dated
+	// commits were bogus when it was filled) reads as unfilled (2026-10-07).
+	bound := LatestPlausibleCommitTime(time.Now())
 	var fa *time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT MIN(LEAST(
@@ -356,12 +359,13 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 			(SELECT created_at FROM aveloxis_data.pull_requests
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at LIMIT 1),
 			COALESCE(
-			  (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id),
+			  (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND first_commit_at >= $3::timestamptz AND first_commit_at < $2::timestamptz),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
-			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL ORDER BY cmt_author_timestamp LIMIT 1)),
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz
+			    ORDER BY cmt_author_timestamp LIMIT 1)),
 			(SELECT created_at FROM aveloxis_data.repos WHERE repo_id = r.id)
 		))
-		FROM unnest($1::bigint[]) AS r(id)`, repoIDs).Scan(&fa)
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs, bound, EarliestPlausibleCommitTime()).Scan(&fa)
 	if err != nil {
 		return time.Time{}, false, err
 	}

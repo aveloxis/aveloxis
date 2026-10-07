@@ -71,6 +71,15 @@ func TestFutureAuthorDatesNeverBoundTheRun(t *testing.T) {
 	if !only.FirstCommitAt.IsZero() || !only.LastCommitAt.IsZero() {
 		t.Fatal("a run whose only dated commits are implausible bounds nothing")
 	}
+	// The past end: an unset clock stamps the epoch; year 1 is an
+	// uninitialised time. Neither bounds a run.
+	epoch := time.Unix(0, 0).UTC()
+	yearOne := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	r.noteCommitWritten(&epoch)
+	r.noteCommitWritten(&yearOne)
+	if !r.FirstCommitAt.Equal(ok) {
+		t.Fatalf("first=%v; an epoch or year-1 date must not become the first bound", r.FirstCommitAt)
+	}
 }
 
 // The fold sites, by source (comments stripped): every path that proves a

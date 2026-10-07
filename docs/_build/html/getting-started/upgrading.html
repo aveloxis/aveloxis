@@ -1845,6 +1845,10 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.73 adds a column</strong> (<code class="docutils literal notranslate"><span class="pre">repos.data_changed_at</span></code>, stamped by every
+writer of a repository’s data so the API’s response cache can tell a
+changed repository from an unchanged one): run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> on the way to it; <code class="docutils literal notranslate"><span class="pre">api</span></code> and <code class="docutils literal notranslate"><span class="pre">web</span></code> refuse to start until the
+stamp is current.</p>
 <p>Migration steps are fail-closed (v0.19.4): a failing step fails the
 migrate — every remaining step still runs, the error lists <strong>every</strong>
 failed step, and <code class="docutils literal notranslate"><span class="pre">serve</span></code> refuses to start until they are fixed. Three

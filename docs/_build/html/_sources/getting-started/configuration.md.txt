@@ -581,7 +581,15 @@ shows the values in effect. Cached GETs carry an `ETag` and answer
 decides whether a body is kept. Size it from the largest repositories you
 want held (a 56,000-file scancode listing is about 7 MB of JSON, a
 600-finding vulnerability list about 1 MB, a typical page about 100 KB);
-the Aveloxis project's own site uses 2048.
+the Aveloxis project's own site uses 2048. Past the budget the oldest
+bodies are evicted; an evicted answer still gets a 304, because its ETag
+is computed from the repository's state, not from the cache.
+
+The re-warm replays only the answers that were requested since the
+repository's last collection, in-process, so a repository nobody viewed
+costs nothing. It follows the scheduler's collections; a one-shot
+`aveloxis collect` does not trigger it (the next scheduled collection
+does).
 
 ## Email (Gmail SMTP, optional)
 

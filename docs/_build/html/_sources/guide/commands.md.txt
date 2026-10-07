@@ -1945,7 +1945,7 @@ aveloxis version
 
 ### Config file
 
-All commands look for `aveloxis.json` in the current working directory. The config file must exist and contain valid database connection parameters.
+Every command reads the file named by `-c`/`--config`, default `aveloxis.json` in the **current working directory**. A missing file is not an error: the command logs `config file not found, using defaults` at WARN and runs on compiled defaults (the database `augur` as user `augur` on `localhost:5432`, every other key at its default) — so a `migrate` or `add-key` run from the wrong directory acts on that default database. Pass `-c /path/to/aveloxis.json` on every command in scripts, units and runbooks; an invalid file (bad JSON, a value refused at load) is fatal. `version` and `install-tools` read no configuration.
 
 ### Exit codes
 

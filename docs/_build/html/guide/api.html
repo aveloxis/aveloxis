@@ -2131,7 +2131,12 @@ scanned. Answers that name contributors are also recomputed after
 request whose <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> names the current one gets
 <code class="docutils literal notranslate"><span class="pre">304</span> <span class="pre">Not</span> <span class="pre">Modified</span></code>. A response served from the cache carries <code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>.
 Each entity’s series on <code class="docutils literal notranslate"><span class="pre">/compare</span></code> is reused inside the response, and only a
-whole-response hit (below) carries the header.</p>
+whole-response hit (below) carries the header. Shareable answers carry
+<code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">no-cache</span></code> with a weak <code class="docutils literal notranslate"><span class="pre">ETag</span></code>, so a client revalidates every
+time and gets a 304 when nothing changed. An answer that depends on who
+asks — the per-user routes, every <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code>, and a response that just
+added the repository to the caller’s group — carries
+<code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">private,</span> <span class="pre">no-store</span></code> and is never cached by anything.</p>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/authz/repos/{repoID}</span></code> (0.29.73) returns <code class="docutils literal notranslate"><span class="pre">204</span></code> when the caller
 may read that repository, otherwise the same <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code> the data endpoints
 return. It returns no data.</p>

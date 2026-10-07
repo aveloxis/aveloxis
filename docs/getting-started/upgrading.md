@@ -164,6 +164,12 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.73 adds a column** (`repos.data_changed_at`, stamped by every
+writer of a repository's data so the API's response cache can tell a
+changed repository from an unchanged one): run `aveloxis migrate
+--skip-views` on the way to it; `api` and `web` refuse to start until the
+stamp is current.
+
 Migration steps are fail-closed (v0.19.4): a failing step fails the
 migrate — every remaining step still runs, the error lists **every**
 failed step, and `serve` refuses to start until they are fixed. Three

@@ -370,7 +370,12 @@ scanned. Answers that name contributors are also recomputed after
 request whose `If-None-Match` names the current one gets
 `304 Not Modified`. A response served from the cache carries `X-Cache: hit`.
 Each entity's series on `/compare` is reused inside the response, and only a
-whole-response hit (below) carries the header.
+whole-response hit (below) carries the header. Shareable answers carry
+`Cache-Control: no-cache` with a weak `ETag`, so a client revalidates every
+time and gets a 304 when nothing changed. An answer that depends on who
+asks — the per-user routes, every `401`/`403`, and a response that just
+added the repository to the caller's group — carries
+`Cache-Control: private, no-store` and is never cached by anything.
 
 `GET /api/v1/authz/repos/{repoID}` (0.29.73) returns `204` when the caller
 may read that repository, otherwise the same `401`/`403` the data endpoints

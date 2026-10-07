@@ -37,7 +37,15 @@ apply (see step 9).
 
 Run the processes as a dedicated user. The examples below use
 `aveloxis`, with the configuration at `/etc/aveloxis/aveloxis.json` and
-the binary in that user's `~/go/bin`.
+the binary in that user's `~/go/bin`. Every `aveloxis` command below
+names that file with `-c`: without the flag the binary reads
+`aveloxis.json` from the **current directory** and, when there is none,
+runs on compiled defaults with only a WARN — a `migrate` or `add-key`
+from the wrong directory would act on the default database.
+
+```bash
+CONFIG=/etc/aveloxis/aveloxis.json
+```
 
 ## 2. Install
 
@@ -47,8 +55,8 @@ git clone https://github.com/aveloxis/aveloxis.git "$AVELOXIS_SRC"
 cd "$AVELOXIS_SRC"
 go mod tidy
 go install ./cmd/aveloxis        # → ~/go/bin/aveloxis
-aveloxis version
-aveloxis install-tools           # optional analysis tools, into ~/go/bin and ~/.local/bin
+aveloxis version                 # reads no configuration
+aveloxis install-tools           # optional analysis tools, into ~/go/bin and ~/.local/bin (reads no configuration)
 ```
 
 If `aveloxis: command not found`, add `$(go env GOPATH)/bin` to the
@@ -144,7 +152,7 @@ start with the reason, so run step 5 before the services.
 ## 5. Schema
 
 ```bash
-aveloxis migrate      # a fresh install: the plain form builds the materialized views too
+aveloxis -c "$CONFIG" migrate      # a fresh install: the plain form builds the materialized views too
 ```
 
 `web` and `api` refuse to start until the schema stamp is current (they
@@ -155,8 +163,8 @@ shows as both units restarting every 30 seconds until the migrate — or
 ## 6. API keys
 
 ```bash
-aveloxis add-key ghp_your_github_token --platform github
-aveloxis add-key glpat-your_gitlab_token --platform gitlab    # optional
+aveloxis -c "$CONFIG" add-key ghp_your_github_token --platform github
+aveloxis -c "$CONFIG" add-key glpat-your_gitlab_token --platform gitlab    # optional
 ```
 
 Keys live in `aveloxis_ops.worker_oauth`; `serve` (and `web`, for its
@@ -200,8 +208,8 @@ processes with pidfiles and logs under `~/.aveloxis/`; they do not survive
 a reboot.
 
 ```bash
-aveloxis start all        # ~/.aveloxis/aveloxis.log, web.log, api.log
-aveloxis stop all
+aveloxis -c "$CONFIG" start all        # ~/.aveloxis/aveloxis.log, web.log, api.log; the flag reaches all three
+aveloxis -c "$CONFIG" stop all
 ```
 
 ## 9. Reverse proxy
@@ -211,6 +219,11 @@ the API directly, everything else (the pages and `/auth/`) to the web
 process. Sending `/api/` straight to the API is what makes the per-visitor
 rate limits work: if it went through the web process's own `/api/` proxy,
 every visitor would reach the API from loopback and count as exempt.
+
+Remove Ubuntu's stock site first: it is `default_server` on port 80 with
+`root /var/www/html`, so any request whose Host is not yours (the bare
+IP, a scanner) is served that directory — with none of the rules of the
+block below. `sudo rm -f /etc/nginx/sites-enabled/default`.
 
 ```nginx
 server {
@@ -245,6 +258,20 @@ curl -s http://127.0.0.1:8383/api/v1/health                 # {"status":"ok","ve
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8383/api/v1/authz/repos/1   # 204 from loopback
 journalctl -u aveloxis@api -n 20 | grep 'API repository page cache'   # the values in effect: max_bytes, rewarm_interval, front_end_secret_set
 ```
+
+With `api.response_cache_mb` set, two requests show the cache working once
+one repository has been collected (its id from the monitor, or
+`SELECT repo_id FROM aveloxis_ops.collection_queue WHERE last_collected IS NOT NULL LIMIT 1`):
+
+```bash
+R=1
+E=$(curl -s -D - -o /dev/null "http://127.0.0.1:8383/api/v1/repos/$R/licenses" | awk 'tolower($1)=="etag:" {print $2}' | tr -d '\r')
+curl -s -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $E" "http://127.0.0.1:8383/api/v1/repos/$R/licenses"   # 304
+curl -s -D - -o /dev/null "http://127.0.0.1:8383/api/v1/repos/$R/licenses" | grep -i '^x-cache'                     # X-Cache: hit
+```
+
+The 304 holds whether or not the cache is on (the ETag comes from the
+repository's state); `X-Cache: hit` appears only with a body kept.
 
 Then, from a browser: `https://aveloxis.example.org` → sign in (the
 first account is the admin) → create a group → add a repository → watch

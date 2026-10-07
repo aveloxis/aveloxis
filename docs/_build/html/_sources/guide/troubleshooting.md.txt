@@ -645,9 +645,12 @@ UPDATE aveloxis_ops.collection_queue SET locked_at = NULL WHERE repo_id = ?;
 **Symptom:** Log shows `exit status 128` during the facade phase.
 
 **Cause:** `git clone --bare` or `git fetch` failed. Common reasons:
+- `collection.repo_clone_dir` does not exist and the account cannot create it (the example configuration's `/data/aveloxis-repos` on a fresh host)
 - The clone directory has an incomplete or corrupted bare clone from a previous crash
 - Disk full
 - Network issue during clone
+
+**What the job records (0.29.73):** the queue row's `last_error` begins `facade collection failed:` and carries git's message, the job-complete log line carries the same `error=`, and the monitor shows the row's error badge. On a GitHub or GitLab repository the job itself still completes: the API phase did its work, so `last_collected` advances and the next collection is incremental (failing the job would re-walk the whole API history every cycle for as long as the clone kept failing). On a git-only repository the clone is the whole collection, so the job fails. Before 0.29.73 an API repository recorded nothing — one WARN in the log, and everything downstream of the clone (commits, dependencies, licenses, scorecard, SBOM, vulnerabilities) stayed empty. No path retries a repository sooner than its regular re-collection: fix the cause, then `aveloxis prioritize <url>`. Two cases record nothing: a default branch the facade proved empty, and — on GitHub and GitLab repositories, whose notices are stored — a clone the forge refused with its own notice (a blocked, disabled or taken-down repository), which is kept on the repository and shown on its page instead. A repository whose API phase returned nothing at all is still marked failed by the no-data check, notice or not.
 
 **Solution:**
 
@@ -1207,7 +1210,7 @@ This makes them claimable immediately and ranks them above any non-zero-priority
 realigned queue due_at from current days_until_recollect rows_updated=3079 recollect_after=168h0m0s
 ```
 
-`'collecting'` rows (in-flight), never-collected rows (`last_collected IS NULL`) and rows whose last collection failed (`last_error` set, v0.29.69) are skipped. A failure sets `due_at` to its retry time and leaves `last_collected` at the last success, so realigning it put the failed repository in the past and it re-ran at every restart; such a row picks up a changed interval at its next completion. The operation is idempotent — repeated restarts that don't change the config are no-ops.
+`'collecting'` rows (in-flight), never-collected rows (`last_collected IS NULL`) and rows with `last_error` set (v0.29.69) are skipped. A failure sets `due_at` to its retry time and leaves `last_collected` at the last success, so realigning it put the failed repository in the past and it re-ran at every restart; such a row picks up a changed interval at its next completion. Since 0.29.73 a successful job can also carry `last_error` (a recorded clone failure, see "Git clone exit status 128"); those rows are skipped the same way and follow the new interval from their next completion. The operation is idempotent — repeated restarts that don't change the config are no-ops.
 
 **Verifying on a live database:**
 

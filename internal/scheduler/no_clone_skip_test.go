@@ -28,8 +28,10 @@ func TestNoCloneSkipsAnalysisAndScorecard(t *testing.T) {
 	if !(guard < analyze && guard < scorecard) {
 		t.Error("the missing-clone guard must come before analysis and the scorecard phase")
 	}
+	// Item 83: the function's results are named and its returns bare (every
+	// return carries the facade's error), so the guard's return is `return`.
 	after := body[guard:analyze]
-	if !strings.Contains(after, "return facadeResult, nil") {
+	if !strings.Contains(after, "\n\t\treturn\n") {
 		t.Error("the guard must return before analysis when there is no clone")
 	}
 }

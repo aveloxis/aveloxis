@@ -4,6 +4,7 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -209,7 +210,7 @@ func TestBuildOutcome_Success(t *testing.T) {
 	}
 	facade := &collector.FacadeResult{Commits: 100}
 
-	out := s.buildOutcome(result, facade, nil, nil, nil)
+	out := s.buildOutcome(result, facade, nil, nil, nil, nil)
 
 	if !out.success {
 		t.Error("expected success=true")
@@ -237,7 +238,7 @@ func TestBuildOutcome_CollectionError(t *testing.T) {
 	result := &collector.CollectResult{Issues: 5, PullRequests: 3}
 	err := fmt.Errorf("rate limited")
 
-	out := s.buildOutcome(result, nil, nil, err, nil)
+	out := s.buildOutcome(result, nil, nil, err, nil, nil)
 
 	if out.success {
 		t.Error("expected success=false on collection error")
@@ -258,7 +259,7 @@ func TestBuildOutcome_ResultErrors(t *testing.T) {
 		Errors:       []error{fmt.Errorf("partial failure")},
 	}
 
-	out := s.buildOutcome(result, nil, nil, nil, nil)
+	out := s.buildOutcome(result, nil, nil, nil, nil, nil)
 
 	if out.success {
 		t.Error("expected success=false when result has errors")
@@ -274,7 +275,7 @@ func TestBuildOutcome_ZeroData(t *testing.T) {
 	// Non-nil result with all zeros should be treated as failure.
 	result := &collector.CollectResult{}
 
-	out := s.buildOutcome(result, nil, nil, nil, nil)
+	out := s.buildOutcome(result, nil, nil, nil, nil, nil)
 
 	if out.success {
 		t.Error("expected success=false for zero-data result")
@@ -294,9 +295,10 @@ func TestBuildOutcome_NilResult(t *testing.T) {
 	// runJob lifecycle test exposed (facade was cloning
 	// https://unknown/... for every generic-git repo and nothing
 	// noticed).
-	out := s.buildOutcome(nil, nil, nil, nil, nil)
+	// Item 83: the facade's error is handed over as a value now.
+	out := s.buildOutcome(nil, nil, nil, nil, nil, errors.New("clone/fetch: exit status 128"))
 	if out.success {
-		t.Error("nil result + nil facadeResult must be a FAILURE — a git-only repo " +
+		t.Error("nil result + a facade error must be a FAILURE — a git-only repo " +
 			"whose facade errored has produced nothing, and success here hides it")
 	}
 	if out.errMsg == "" {
@@ -305,7 +307,7 @@ func TestBuildOutcome_NilResult(t *testing.T) {
 
 	// A git-only repo whose facade SUCCEEDED (even with zero commits —
 	// legitimately empty repo) stays success.
-	okOut := s.buildOutcome(nil, &collector.FacadeResult{}, nil, nil, nil)
+	okOut := s.buildOutcome(nil, &collector.FacadeResult{}, nil, nil, nil, nil)
 	if !okOut.success {
 		t.Error("nil result with a non-nil (empty) facadeResult is a legitimately " +
 			"empty git-only repo and must stay success")
@@ -322,7 +324,7 @@ func TestBuildOutcome_FacadeOnlyCounts(t *testing.T) {
 	}
 	facade := &collector.FacadeResult{Commits: 500}
 
-	out := s.buildOutcome(result, facade, nil, nil, nil)
+	out := s.buildOutcome(result, facade, nil, nil, nil, nil)
 
 	if !out.success {
 		t.Error("expected success=true")

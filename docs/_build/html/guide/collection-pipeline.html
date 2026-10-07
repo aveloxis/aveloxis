@@ -1840,7 +1840,7 @@ restored repository is re-enqueued on its own</p></li>
 <hr class="docutils" />
 <section id="phase-3-facade-git">
 <h2>Phase 3: Facade (git)<a class="headerlink" href="#phase-3-facade-git" title="Link to this heading"></a></h2>
-<p>After API data is processed, the facade phase handles git-level data.</p>
+<p>After API data is processed, the facade phase handles git-level data. Analysis, scorecard, SBOM and vulnerability scanning all need the clone this phase makes, so a facade failure is recorded: <code class="docutils literal notranslate"><span class="pre">last_error</span></code> begins <code class="docutils literal notranslate"><span class="pre">facade</span> <span class="pre">collection</span> <span class="pre">failed:</span></code> and the job-complete line carries it, while an API repository’s job still completes so its incremental anchor advances (a git-only repository’s job fails, the clone being its whole collection). A default branch proved empty and, on GitHub and GitLab, a clone the forge refused with its own notice record nothing; the notice is stored and shown instead (see <a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128"><span class="std std-ref">troubleshooting</span></a>).</p>
 <section id="bare-clone">
 <h3>Bare clone<a class="headerlink" href="#bare-clone" title="Link to this heading"></a></h3>
 <p>The repo is cloned as a bare repo (or fetched if a clone already exists):</p>

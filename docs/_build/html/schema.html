@@ -7641,7 +7641,7 @@ is nullable and un-FK’d; <code class="docutils literal notranslate"><span clas
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">last_error</span></code></p></td>
 <td><p>TEXT</p></td>
 <td><p>Computed</p></td>
-<td><p>Error message from last failed run.</p></td>
+<td><p>The message the last run recorded: a failed run’s error, or (0.29.73) a successful run’s recorded facade failure or skip reason. NULL after a clean success.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last_issues</span></code></p></td>
 <td><p>INT</p></td>

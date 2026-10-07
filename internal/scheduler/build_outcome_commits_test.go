@@ -44,7 +44,7 @@ func TestBuildOutcome_RepoWithCommitsButNoAPIData(t *testing.T) {
 	}
 	facade := &collector.FacadeResult{Commits: 9}
 
-	outcome := s.buildOutcome(result, facade, nil, nil, nil)
+	outcome := s.buildOutcome(result, facade, nil, nil, nil, nil)
 
 	if !outcome.success {
 		t.Errorf("buildOutcome must mark success=true when facade.Commits > 0, even if all API entity counts are zero — pre-v0.20.7 the heuristic flagged ~100 small-but-real repos like biocorecrg/ggplot2_functions (9 commits, 0 API data) as failures and re-collected them daily from since=zero. Got success=%v errMsg=%q", outcome.success, outcome.errMsg)
@@ -66,7 +66,7 @@ func TestBuildOutcome_TrulyEmptyRepoStaysFailure(t *testing.T) {
 	result := &collector.CollectResult{}
 	// No facade result (nil) — the most common shape for a repo
 	// where neither API nor facade produced data.
-	outcome := s.buildOutcome(result, nil, nil, nil, nil)
+	outcome := s.buildOutcome(result, nil, nil, nil, nil, nil)
 
 	if outcome.success {
 		t.Error("buildOutcome with zero API data AND no facade commits must mark success=false — that's the genuine 'truly empty or auth failure' case the heuristic exists to catch")
@@ -79,7 +79,7 @@ func TestBuildOutcome_TrulyEmptyRepoStaysFailure(t *testing.T) {
 	// found no commits — e.g. git log exit 128 from an empty bare
 	// clone). buildOutcome can't distinguish a zero-commit facade
 	// result from a nil one, and shouldn't try.
-	outcome2 := s.buildOutcome(result, &collector.FacadeResult{Commits: 0}, nil, nil, nil)
+	outcome2 := s.buildOutcome(result, &collector.FacadeResult{Commits: 0}, nil, nil, nil, nil)
 	if outcome2.success {
 		t.Error("buildOutcome with facade.Commits == 0 and zero API data must mark success=false — zero commits is the same signal as no facade at all")
 	}
@@ -143,12 +143,12 @@ func readSchedulerSource() (string, error) {
 // stays a failure.
 func TestBuildOutcome_ProvenEmptyRepoIsNotAFailure(t *testing.T) {
 	var s Scheduler
-	outcome := s.buildOutcome(&collector.CollectResult{}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil)
+	outcome := s.buildOutcome(&collector.CollectResult{}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil, nil)
 	if !outcome.success || outcome.errMsg != "" {
 		t.Errorf("a repository the facade proved empty is collected, not failed: success=%v errMsg=%q", outcome.success, outcome.errMsg)
 	}
 	// An API error still fails the job, empty or not.
-	withErr := s.buildOutcome(&collector.CollectResult{Errors: []error{errForTest}}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil)
+	withErr := s.buildOutcome(&collector.CollectResult{Errors: []error{errForTest}}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil, nil)
 	if withErr.success {
 		t.Error("an API collection error must still fail the job on an empty repository")
 	}

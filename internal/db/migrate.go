@@ -1335,8 +1335,10 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	// Idempotent — once last_error is cleared, the row no longer
 	// matches the WHERE clause.
 	//
-	// We DON'T need to flip success state — the queue's notion of
-	// success is implicit (last_error IS NULL). Clearing the error
+	// We DON'T need to flip success state — the queue keeps no success
+	// flag (last_error is the last run's message: a failure's error, or
+	// since item 83 a successful run's recorded facade failure or skip
+	// reason). Clearing the error
 	// AND any inappropriately-set force_full_collect lets the next
 	// cycle run incrementally, which is the correct cadence for a
 	// healthy small repo with no API activity.

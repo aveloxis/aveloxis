@@ -1877,7 +1877,7 @@ Postgres-backed priority queue that drives the collection pipeline. Each repo ha
 | `locked_by` | TEXT | Computed | Worker instance ID that holds the lock. |
 | `locked_at` | TIMESTAMPTZ | Computed | When the lock was acquired. |
 | `last_collected` | TIMESTAMPTZ | Computed | When collection last completed. |
-| `last_error` | TEXT | Computed | Error message from last failed run. |
+| `last_error` | TEXT | Computed | The message the last run recorded: a failed run's error, or (0.29.73) a successful run's recorded facade failure or skip reason. NULL after a clean success. |
 | `last_issues` | INT | Computed | Issues collected in the last run. |
 | `last_prs` | INT | Computed | PRs collected in the last run. |
 | `last_messages` | INT | Computed | Messages collected in the last run. |

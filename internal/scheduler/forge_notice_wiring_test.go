@@ -58,7 +58,7 @@ func TestForgeNoticeIsWiredIntoTheJob(t *testing.T) {
 		}
 	}
 	fa := srctest.FuncBody(t, src, "func (s *Scheduler) runFacadeAndAnalysis(")
-	if !regexp.MustCompile(`result, err := fc\.CollectRepo\(ctx, repoID, gitURL\)\s*if errors\.Is\(err, context\.Canceled\) \{\s*return nil, nil\s*\}\s*s\.noteCloneOutcome\(ctx, repo, result != nil && result\.CloneOK, err\)`).MatchString(fa) {
+	if !regexp.MustCompile(`result, err := fc\.CollectRepo\(ctx, repoID, gitURL\)\s*if errors\.Is\(err, context\.Canceled\) \{\s*return nil, nil, nil\s*\}\s*s\.noteCloneOutcome\(ctx, repo, result != nil && result\.CloneOK, err\)`).MatchString(fa) {
 		t.Error("runFacadeAndAnalysis must note the clone outcome right after CollectRepo (after the shutdown return)")
 	}
 }

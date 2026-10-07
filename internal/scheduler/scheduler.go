@@ -1426,7 +1426,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 
 	// Phase 3+4: facade then analysis (sequential — analysis needs bare clone).
 	s.slots.setPhase(job.RepoID, "facade/analysis")
-	facadeResult, analysisResult := s.runFacadeAndAnalysis(ctx, job.RepoID, repo)
+	facadeResult, analysisResult, facadeErr := s.runFacadeAndAnalysis(ctx, job.RepoID, repo)
 	if ctx.Err() != nil {
 		s.jobInterrupted(job.RepoID, "facade/analysis")
 		return
@@ -1475,7 +1475,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 
 	// Determine outcome and complete the job.
-	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr)
+	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr, facadeErr)
 	duration := time.Since(start)
 
 	// v0.27.139: last_collected anchors at THIS job's start on success
@@ -1534,17 +1534,26 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// A failed job says why (worklist 66: `success=false` carried no error —
 	// six giant repositories failed 6–21 h attempts with the reason only in
 	// collection_queue.last_error).
-	completeAttrs := []any{
-		"repo_id", job.RepoID,
+	s.logger.Info("job complete", jobCompleteAttrs(job.RepoID, repo, outcome, duration)...)
+}
+
+// jobCompleteAttrs is the job-complete line. It carries the outcome's
+// message whenever there is one (worklist 66: a failed job's reason; item
+// 83: a recorded facade failure on a SUCCESSFUL job), so `error=` on the
+// line means "something to look at", not "the job failed" — `success=`
+// says that.
+func jobCompleteAttrs(repoID int64, repo *model.Repo, outcome jobOutcome, duration time.Duration) []any {
+	attrs := []any{
+		"repo_id", repoID,
 		"owner", repo.Owner, "repo", repo.Name,
 		"success", outcome.success,
 		"duration", duration.Truncate(time.Second),
 		"issues", outcome.issues, "prs", outcome.prs,
 	}
-	if !outcome.success {
-		completeAttrs = append(completeAttrs, "error", outcome.errMsg)
+	if outcome.errMsg != "" {
+		attrs = append(attrs, "error", outcome.errMsg)
 	}
-	s.logger.Info("job complete", completeAttrs...)
+	return attrs
 }
 
 // completeJobStampRetryTimeout is the CEILING on the background-context
@@ -1748,9 +1757,15 @@ func (s *Scheduler) collectAndProcess(ctx context.Context, repoID int64, repo *m
 // runFacadeAndAnalysis runs facade (git clone + log) then analysis (deps, libyear,
 // scc) sequentially. Analysis depends on the bare clone that facade creates, so
 // they cannot run in parallel on the first collection pass for a repo.
-func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo *model.Repo) (*collector.FacadeResult, *collector.AnalysisResult) {
+//
+// facadeErr is the facade's own error (item 83), assigned ONCE right after
+// CollectRepo and carried by every return — the results are named and the
+// returns bare so that no later path can drop it (review round 2: the
+// clone-present, git-log-failed path returns last, after analysis and
+// scorecard). The one explicit return is the shutdown arm, which ends the
+// job unrecorded.
+func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo *model.Repo) (facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, facadeErr error) {
 	// Phase 3: Facade — creates/updates bare clone and parses git log.
-	var facadeResult *collector.FacadeResult
 	fc := collector.NewFacadeCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	// Clone from the repo's OWN stored URL (v0.25.38). The pre-v0.25.38
 	// reconstruction via the platform host table produced
@@ -1766,14 +1781,18 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if errors.Is(err, context.Canceled) {
-		return nil, nil // shutdown mid-facade: runJob's guard ends the job unrecorded
+		return nil, nil, nil // shutdown mid-facade: runJob's guard ends the job unrecorded
 	}
 	s.noteCloneOutcome(ctx, repo, result != nil && result.CloneOK, err) // item 82: record a refusal's notice, clear it once the clone succeeds
+	// The facade's error reaches buildOutcome as a value (item 83): recorded
+	// in last_error on an API repository (the job still completes), the
+	// job's failure on a git-only one; a refusal carrying the forge's notice
+	// records nothing.
+	facadeErr = err
 	if err != nil {
 		s.logger.Warn("facade collection failed", "repo_id", repoID, "error", err)
-		// nil facadeResult is the "facade errored" signal buildOutcome
-		// keys on for git-only repos (v0.25.38) — CollectRepo returns a
-		// non-nil empty result alongside its error, so normalize here.
+		// CollectRepo returns a non-nil empty result alongside its error,
+		// so normalize here.
 		result = nil
 	} else if result != nil {
 		s.logger.Info("facade complete",
@@ -1790,7 +1809,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	if err != nil && !collector.HasBareClone(s.cfg.Collection.RepoCloneDir, repoID) {
 		s.logger.Info("skipping analysis and scorecard — the repository has no clone",
 			"repo_id", repoID)
-		return facadeResult, nil
+		return
 	}
 
 	// GitLab commit_count backfill: GitLab's API commonly reports 0 commits
@@ -1802,7 +1821,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	if err == nil && repo.Platform == model.PlatformGitLab {
 		updated, bfErr := s.store.BackfillGitLabCommitCount(ctx, repoID)
 		if errors.Is(bfErr, context.Canceled) {
-			return facadeResult, nil
+			return
 		}
 		if bfErr != nil {
 			s.logger.Warn("gitlab commit_count backfill failed",
@@ -1815,7 +1834,6 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 
 	// Phase 4: Analysis — needs the bare clone from facade.
 	// RetainClone keeps the temp clone alive for scorecard local execution.
-	var analysisResult *collector.AnalysisResult
 	ac := collector.NewAnalysisCollector(s.store, s.logger, s.cfg.Collection.RepoCloneDir)
 	ac.RetainClone = true
 	// v0.27.21 C1: store the full lockfile closure when transitive
@@ -1830,7 +1848,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	aResult, aErr := ac.AnalyzeRepo(ctx, repoID)
 	if errors.Is(aErr, context.Canceled) {
-		return facadeResult, nil
+		return
 	}
 	if aErr != nil {
 		s.logger.Warn("analysis failed", "repo_id", repoID, "error", aErr)
@@ -1853,7 +1871,7 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	}
 	s.runScorecardPhase(ctx, repoID, repo, localPath)
 
-	return facadeResult, analysisResult
+	return
 }
 
 // scorecardSkipReason names a scorecard outcome that is a deliberate skip
@@ -2046,7 +2064,7 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 // loop: each incremental cycle re-detected the same gap, gap fill
 // failed the same way, last_error stayed NULL, force_full_collect
 // stayed FALSE.
-func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error, gapFillErr error) jobOutcome {
+func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error, gapFillErr error, facadeErr error) jobOutcome {
 	out := jobOutcome{success: true}
 
 	if collectionErr != nil {
@@ -2069,6 +2087,39 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 		out.success = false
 		out.errMsg = gapFillErr.Error()
 		out.forceFull = errors.Is(gapFillErr, platform.ErrPRBatch)
+	}
+
+	// Item 83 (2026-10-06): the facade's own error is RECORDED. A clone or
+	// git log that errored leaves everything downstream of the clone empty
+	// (commits, contributor resolution, dependencies, libyear, licenses,
+	// SCC, scorecard, SBOM, vulnerabilities), and the WARN alone left a
+	// GitHub/GitLab repository's job with no last_error and nothing on the
+	// monitor — the example config's /data/aveloxis-repos did this on every
+	// fresh host. On an API repository the message goes into last_error
+	// and the job-complete line while success stays TRUE: success is what
+	// anchors last_collected, keeps the listing ETags and clears
+	// force_full_collect (runJob, CompleteJob), and the API phase DID
+	// complete — failing the outcome would re-walk the whole API history
+	// every cycle for as long as the clone keeps failing (review of this
+	// change, HIGH). A failed row is not retried any sooner either way
+	// (CompleteJob's due_at is the same on success and failure), so the
+	// operator fixes the cause and `prioritize`s. Two guards: a refusal
+	// that carries the forge's own notice (blocked, disabled, taken down;
+	// item 82) on an API repository is the forge's word, which
+	// noteCloneOutcome stores (or warns), not an error to record; a
+	// git-only repository (result == nil) has no other collection, so its
+	// facade error still FAILS the job (v0.25.38). A default branch the
+	// facade PROVED empty is no error at all (v0.29.56) and never reaches
+	// here.
+	if facadeErr != nil && out.errMsg == "" {
+		_, forgeRefusal := platform.NoticeOf(facadeErr)
+		switch {
+		case result == nil:
+			out.success = false
+			out.errMsg = "facade collection failed: " + facadeErr.Error()
+		case !forgeRefusal:
+			out.errMsg = "facade collection failed: " + facadeErr.Error()
+		}
 	}
 
 	if result != nil {
@@ -2107,17 +2158,10 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 		}
 	}
 
-	// v0.25.38: git-only repos have NO API collection (result == nil), so
-	// facade is their only failure signal — and it was previously
-	// invisible: the gate above requires result != nil, so a failed
-	// facade on a generic-git repo reported SUCCESS with no last_error,
-	// every cycle. A nil facadeResult means the clone/log errored; a
-	// non-nil result with zero commits is a legitimately empty repo and
-	// stays success.
-	if result == nil && facadeResult == nil && out.errMsg == "" {
-		out.success = false
-		out.errMsg = "facade collection failed (git-only repo; see facade warning in log)"
-	}
+	// v0.25.38's git-only rule (a failed facade on a generic-git repository
+	// reported SUCCESS with no last_error, every cycle) is the result == nil
+	// arm of the facade branch above: the facade's error is handed over as
+	// a value now, so the nil-facadeResult shape no longer carries it.
 
 	return out
 }

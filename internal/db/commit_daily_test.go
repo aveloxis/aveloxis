@@ -370,8 +370,10 @@ func TestRepoTimeSeriesStartsAtThePlausibleFloor(t *testing.T) {
 		sum := 0
 		for _, p := range ts.Commits {
 			sum += p.Count
-			if p.WeekStart.Before(floor.AddDate(0, 0, -7)) {
-				t.Errorf("%s: a week at %v lies before the plausible floor %v", path, p.WeekStart, floor)
+			// The floor (a Friday) sits inside the week that starts on the
+			// Monday before it; no week may start before THAT Monday.
+			if floorWeek := floor.AddDate(0, 0, -int((floor.Weekday()+6)%7)); p.WeekStart.Before(floorWeek) {
+				t.Errorf("%s: a week at %v lies before the plausible floor's week %v", path, p.WeekStart, floorWeek)
 			}
 		}
 		if sum != 1 {

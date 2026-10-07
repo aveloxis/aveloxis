@@ -31,9 +31,10 @@ type TimeSeriesResult struct {
 }
 
 // GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics
-// between `since` and `until` (inclusive lower, exclusive upper). The upper
-// bound is at most the latest plausible commit time (BoundedUpper): a zero
-// `until` means up to it.
+// between `since` and `until` (inclusive lower, exclusive upper), both
+// clamped to the plausible range: the lower bound is at least the earliest
+// plausible commit time (BoundedLower; a zero `since` means from it) and
+// the upper at most the latest (BoundedUpper; a zero `until` means up to it).
 // Uses date_trunc('week', timestamp) for consistent Monday-aligned weeks.
 //
 // v0.27.36: every query/scan error propagates. The pre-fix structure

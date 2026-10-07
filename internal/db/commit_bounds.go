@@ -10,8 +10,8 @@ import (
 
 // RecordCommitBounds maintains repos.first_commit_at and last_commit_at, the
 // MIN and MAX of the repository's PLAUSIBLE commits.cmt_author_timestamp
-// (O11 option 2, operator decision 2026-09-29; "plausible" = before
-// LatestPlausibleCommitTime, 2026-10-07). Production has no (repo_id,
+// (O11 option 2, operator decision 2026-09-29; "plausible" = within
+// [EarliestPlausibleCommitTime, LatestPlausibleCommitTime), 2026-10-07). Production has no (repo_id,
 // cmt_author_timestamp) index, so computing either live reads every one of a
 // repository's per-file commit rows — what ran /stats past nginx's 60 s on
 // the giant repositories.
@@ -23,21 +23,22 @@ import (
 // change — commit rows are never deleted), which a walk of the branch does
 // not see. The callers run inside a collection job or the recheck ticker,
 // where no request deadline applies. A filled, plausible column only widens
-// (GREATEST/LEAST); a filled column at or beyond the plausible bound (a
-// bogus future date stored before the rule) is treated as unfilled and
-// refilled from the table's plausible rows — the one way a bound moves
-// down. The uncorrelated subqueries are InitPlans, evaluated only on that
+// (GREATEST/LEAST); a filled column outside the plausible range (a bogus
+// date stored before the rule — 2080, or the epoch an unset clock stamps)
+// is treated as unfilled and refilled from the table's plausible rows —
+// the one way a bound moves against its direction. The uncorrelated
+// subqueries are InitPlans, evaluated only on that
 // branch. A filled row is rewritten only when a bound widens or a bogus
 // bound is repaired (the gone recheck calls this for every still-gone
 // repository every cadence); a row that stays NULL — a repository with no
 // plausibly dated commits — is rewritten on each call: once per collection
 // job and once per recheck cadence (review round 5).
 func (s *PostgresStore) RecordCommitBounds(ctx context.Context, repoID int64, first, last time.Time) error {
-	// Bogus future author dates (2026-10-07) never become a bound: a run's
-	// bound at or beyond the plausible one is dropped (GREATEST/LEAST
-	// ignore NULL), the table fill reads only plausible rows, and a stored
-	// bound at or beyond it — written before this rule — reads as unfilled
-	// and is refilled, first and last alike. A commit dated just beyond the
+	// Bogus author dates (2026-10-07: 2080, or the epoch an unset clock
+	// stamps) never become a bound: a run's bound outside [floor, ceiling)
+	// is dropped (GREATEST/LEAST ignore NULL), the table fill reads only
+	// plausible rows, and a stored bound outside it — written before this
+	// rule — reads as unfilled and is refilled, first and last alike. A commit dated just beyond the
 	// bound by a fast clock is simply not a bound YET: every walk notes
 	// every row of the default branch again, so the first walk after the
 	// bound passes it folds it in (review round 2 corrected round 1's F3).

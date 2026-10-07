@@ -105,3 +105,20 @@ func TestCompareWindowSinceIsBounded(t *testing.T) {
 		t.Fatalf("since=0001 must be clamped to the plausible floor, got %v", since)
 	}
 }
+
+// Review round 3 F1: the DEFAULT since (three years before an early until)
+// is clamped too, rounded up to a whole bucket.
+func TestCompareWindowDefaultSinceIsBounded(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&until=1972-06-01", nil)
+	since, _, bucket, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor := db.EarliestPlausibleCommitTime()
+	if since.Before(floor) {
+		t.Fatalf("the default since derived from until=1972 must not fall below the floor %v, got %v", floor, since)
+	}
+	if !since.Equal(truncBucket(since, bucket)) {
+		t.Fatalf("the clamped default since must be a whole bucket start, got %v (%s)", since, bucket)
+	}
+}

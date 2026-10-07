@@ -115,7 +115,7 @@ contributors_in_window AS (
 // resolveWindow normalizes a (since, until) pair the same way
 // GetRepoTimeSeries does: the upper bound is BoundedUpper(until) — the
 // latest plausible commit time when until is zero or beyond it.
-// A zero since is treated as "since the beginning of time" (1970-01-01).
+// A zero since is the earliest plausible commit time (BoundedLower).
 // since must be strictly less than until; the caller validates this and
 // surfaces a 400 if violated.
 func resolveWindow(since, until time.Time) (time.Time, time.Time) {

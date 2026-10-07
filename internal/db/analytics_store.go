@@ -292,8 +292,8 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 	// reads every per-file commit row of the repository. The live scan is
 	// COALESCE's fallback, taken only while the column is unfilled (the
 	// facade fills it on the repository's next collection).
-	// A stored bound beyond the latest plausible commit time (a bogus
-	// future author date, written before the rule — 2026-10-07) reads as
+	// A stored bound outside the plausible range (a bogus author date —
+	// 2080, or the epoch — written before the rule, 2026-10-07) reads as
 	// unfilled, and the live arm reads only plausible rows; the next walk
 	// repairs the stored value (RecordCommitBounds).
 	bound := LatestPlausibleCommitTime(time.Now())
@@ -348,8 +348,9 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 		return time.Time{}, false, nil
 	}
 	// Per-repository arms, as LastActivityAt (O11 option 1); a stored first
-	// at or beyond the plausible bound (a repository whose only dated
-	// commits were bogus when it was filled) reads as unfilled (2026-10-07).
+	// outside the plausible range (the epoch an unset clock stamps, or a
+	// repository whose only dated commits were bogus when it was filled)
+	// reads as unfilled (2026-10-07).
 	bound := LatestPlausibleCommitTime(time.Now())
 	var fa *time.Time
 	err := s.pool.QueryRow(ctx, `

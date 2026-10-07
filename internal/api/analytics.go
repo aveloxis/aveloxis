@@ -339,7 +339,7 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 		}
 		sinceGiven = true
 	}
-	since = db.BoundedLower(since)
+	since = db.BoundedLower(since) // an explicit since no earlier than the plausible floor (2026-10-07)
 	if !since.Before(until) {
 		return since, until, "", fmt.Errorf("since must be before until")
 	}
@@ -366,6 +366,16 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 	// v0.27.39 removed at the right edge.
 	if !sinceGiven {
 		since = truncBucket(until.AddDate(-3, 0, 0), bucket)
+		// A default derived from an early until can land below the floor
+		// (review round 3 F1: ?until=1972-06-01 gave 1969): clamp it too,
+		// rounded UP to the next bucket start so the first point is a
+		// whole bucket, as the v0.29.71 rule wants.
+		if floor := db.EarliestPlausibleCommitTime(); since.Before(floor) {
+			since = truncBucket(floor, bucket)
+			if since.Before(floor) {
+				since = nextBucket(since, bucket)
+			}
+		}
 	}
 	return since, until, bucket, nil
 }

@@ -126,6 +126,15 @@ func TestRecordCommitBounds(t *testing.T) {
 	if f, l := bounds(y); !eq(f, d(2015)) || !eq(l, d(2015)) {
 		t.Errorf("epoch row: first=%v last=%v; want 2015 both", f, l)
 	}
+	// On a FILLED row the Go-side drop is what keeps a run's epoch first
+	// out of LEAST (review round 3 F4): without it the stored first would
+	// alternate between the epoch and its repair every other run.
+	if err := store.RecordCommitBounds(ctx, y, epoch, d(2015)); err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := bounds(y); !eq(f, d(2015)) {
+		t.Errorf("filled row, run first = epoch: first=%v; want 2015 kept", f)
+	}
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET first_commit_at = $2 WHERE repo_id = $1`, y, time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err := store.RecordCommitBounds(ctx, y, time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)

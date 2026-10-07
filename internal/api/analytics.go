@@ -377,6 +377,13 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 			}
 		}
 	}
+	// Truncating until and clamping since can invert a window that passed
+	// the first check (review round 4: ?until=1970-01-03 gave since
+	// 1970-01-05, until 1969-12-29, and an empty 200): an inverted window
+	// is the same 400 as an explicit one.
+	if !since.Before(until) {
+		return since, until, "", fmt.Errorf("since must be before until")
+	}
 	return since, until, bucket, nil
 }
 

@@ -772,7 +772,9 @@ func TestDailyArmEmailRuleMatchesTheHouseResolver(t *testing.T) {
 	if !strings.Contains(arm, directWhole) {
 		t.Error("the direct email lookup must be the house statement verbatim with $1 → d.author_email, nothing added")
 	}
-	stored := strings.Index(arm, "COALESCE(\n                   d.cntrb_id,")
+	// PR #226 Copilot review 5460776344: the stored id is the FIRST arm and
+	// counts only while its contributor is live (a merge soft-deletes it).
+	stored := strings.Index(arm, "COALESCE(\n                   (SELECT c.cntrb_id FROM aveloxis_data.contributors c\n                     WHERE c.cntrb_id = d.cntrb_id AND COALESCE(c.cntrb_deleted, 0) = 0),")
 	forge := strings.Index(arm, "c.gh_user_id = d.author_gh_user_id")
 	login := strings.Index(arm, "LOWER(c.gh_login) = LOWER(d.author_login)")
 	direct := strings.Index(arm, directWhole)
@@ -860,5 +862,71 @@ func TestTopContributorsDailyArmResolvesByForgeIDAndRefusesAmbiguity(t *testing.
 	}
 	if got[fx.alice] != 0 {
 		t.Errorf("the alias must not override a stored id: %v", got)
+	}
+}
+
+// PR #226 Copilot review 5460776344: a daily row's STORED identity can be
+// soft-deleted afterwards by a contributor merge (MergeCntrbIDCollisionsBatch
+// marks the loser cntrb_deleted = 1 and maps its email to the winner through
+// contributors_aliases; child rows keep the loser's id by design). The stored
+// id must count only while its contributor is live, so the fallbacks — here
+// the merge's alias — find the winner instead of the outer join dropping the
+// row and its commits.
+func TestTopContributorsDailyArmFollowsAMergedStoredIdentity(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_mrg09")
+	since := utcDay(time.Now()).AddDate(0, 0, -30)
+
+	loserID := PlatformUUID(1, 5091).String()
+	winnerID := PlatformUUID(1, 5092).String()
+	for _, c := range []struct {
+		id, login string
+		deleted   int
+	}{
+		{loserID, "_avcd_mrg09_loser", 1},
+		{winnerID, "_avcd_mrg09_winner", 0},
+	} {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, c.login)
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_login, cntrb_deleted, gh_activity_class)
+			VALUES ($1::uuid, $2, $2, $3, 'active') ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO NOTHING`, c.id, c.login, c.deleted); err != nil {
+			t.Fatal(err)
+		}
+		login := c.login
+		t.Cleanup(func() {
+			_, _ = store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login)
+		})
+	}
+	const merged = "merged@mrg09.x"
+	_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors_aliases WHERE alias_email = $1`, merged)
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.contributors_aliases (cntrb_id, canonical_email, alias_email) VALUES ($1::uuid, $2, $2)`, winnerID, merged); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.contributors_aliases WHERE alias_email = $1`, merged)
+	})
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: merged, Commits: 5, CntrbID: loserID},            // stored before the merge
+		{Day: fx.in, AuthorEmail: "stored@mrg09.x", Commits: 2, CntrbID: fx.alice}, // a LIVE stored id still wins outright
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.TopContributors(ctx, fx.repoID, since, time.Time{}, 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, r := range rows {
+		got[r.CntrbID] = r.Commits
+	}
+	if got[winnerID] != 5 {
+		t.Errorf("a merged-away stored id must resolve through the merge's alias to the winner: got %d (%v)", got[winnerID], got)
+	}
+	if got[fx.alice] != 2 {
+		t.Errorf("a live stored id counts as stored: got %d (%v)", got[fx.alice], got)
+	}
+	if _, ok := got[loserID]; ok {
+		t.Errorf("the soft-deleted loser must never be a top contributor: %v", got)
 	}
 }

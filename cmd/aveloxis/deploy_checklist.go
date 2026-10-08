@@ -528,6 +528,10 @@ var deployChecklists = map[string][]deployStep{
 	// zero-data gate does not judge a job whose facade errored; the
 	// systemd doc pin parses shell comments as the shell does. No schema
 	// change.
+	// v0.29.81 (2026-10-08): PR #226 Copilot review 5460776344 — the daily
+	// arm of top contributors takes a stored identity only while its
+	// contributor is live. No schema change.
+	"0.29.81": v02981DeployChecklist,
 	"0.29.80": v02980DeployChecklist,
 	"0.29.79": v02979DeployChecklist,
 	"0.29.78": v02978DeployChecklist,
@@ -545,6 +549,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02981DeployChecklist is 0.29.80's ladder with a note on the start step.
+var v02981DeployChecklist = func() []deployStep {
+	prev := v02980DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.81: top contributors (read from the daily commit table) credit a merged contributor's commits to the contributor it was merged into, instead of dropping them. No schema change: a fleet already running 0.29.80 needs only the stop, the migrate (a version stamp) and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02980DeployChecklist is 0.29.79's ladder with a note on the start step.
 var v02980DeployChecklist = func() []deployStep {

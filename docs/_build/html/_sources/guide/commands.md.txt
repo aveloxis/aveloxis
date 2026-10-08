@@ -1365,7 +1365,8 @@ picture is complete (`repos.commit_daily_complete_at`, set by a facade walk
 whose every commit was proven written and by this command — never by a
 walk that swallowed writes; 0.29.75) and the window is UTC-day aligned,
 and read the commits table otherwise. Author
-identity: the commits table's stored id when this command carried it, else
+identity: the commits table's stored id when this command carried it and
+its contributor is still live (not merged away; 0.29.81), else
 GitHub's numeric user id a noreply address carries (it survives a rename),
 else the login it names (through `LOWER(gh_login)`), else the house email
 rule (the contributor's own emails, then `contributors_aliases`), each only

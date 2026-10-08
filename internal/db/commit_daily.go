@@ -323,7 +323,11 @@ func (s *PostgresStore) ListReposNeedingCommitDaily(ctx context.Context, limit i
 
 // dailyCommitsArmSQL is the commits arm of TopContributors read from the
 // daily table: distinct commits per (day, email) summed over the window,
-// each row attributed in this order — its stored identity (the backfill's);
+// each row attributed in this order — its stored identity (the backfill's),
+// only while that contributor is LIVE: a contributor merge soft-deletes the
+// loser and leaves child rows on its id by design, mapping its email to the
+// winner through an alias, so a merged-away stored id falls through to the
+// rules below (PR #226 Copilot review 5460776344; a primary-key probe);
 // GitHub's numeric user id a noreply address carried (contributors.
 // gh_user_id: the id survives a rename, the login does not — round 3 F2);
 // the login it named, through the backfill's own rule (LOWER(gh_login),
@@ -346,7 +350,8 @@ const dailyCommitsArmSQL = `
            0::bigint AS issues, 0::bigint AS prs, 0::bigint AS reviews, 0::bigint AS comments
     FROM (
         SELECT COALESCE(
-                   d.cntrb_id,
+                   (SELECT c.cntrb_id FROM aveloxis_data.contributors c
+                     WHERE c.cntrb_id = d.cntrb_id AND COALESCE(c.cntrb_deleted, 0) = 0),
                    (SELECT MIN(c.cntrb_id::text)::uuid FROM aveloxis_data.contributors c
                      WHERE d.author_gh_user_id <> 0 AND c.gh_user_id = d.author_gh_user_id AND c.gh_user_id <> 0
                        AND COALESCE(c.cntrb_deleted, 0) = 0

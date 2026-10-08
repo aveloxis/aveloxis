@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.80 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.81 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=5ce32bb1"></script>
+      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1849,6 +1849,7 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.81 credits a merged contributor’s commits to the contributor it was merged into.</strong> Top contributors read from the daily commit table used to drop the commits of a contributor that a merge had folded into another. No schema change: from 0.29.80 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>
 <p><strong>0.29.80 keeps a quiet collection with a broken clone incremental.</strong> An incremental GitHub or GitLab collection whose clone fails and whose API phase found nothing new now completes with the clone’s error in <code class="docutils literal notranslate"><span class="pre">last_error</span></code>, instead of failing as “no data collected”, so the next collection stays incremental while you fix the clone. A first or forced collection is still judged and still fails that way. No schema change: from 0.29.79 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>
 <p><strong>0.29.79 marks a repository’s daily commit counts incomplete when a collection adds commits it could not record completely.</strong> The page then reads the commits table for that repository until its next clean collection, instead of leaving the new commits out. No schema change: from 0.29.78 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>
 <p><strong>0.29.78 keeps two answers with the response cache off.</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> unset (the default), the API again keeps the weekly time series and the top contributors in memory, up to 1,000 answers, as it did before 0.29.73; every other answer stays uncached until the setting is turned on. No schema change: from 0.29.77 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start; from an earlier version, follow the checklist, which includes 0.29.77’s steps.</p>

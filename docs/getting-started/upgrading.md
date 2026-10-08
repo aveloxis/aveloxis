@@ -164,6 +164,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.81 credits a merged contributor's commits to the contributor it was merged into.** Top contributors read from the daily commit table used to drop the commits of a contributor that a merge had folded into another. No schema change: from 0.29.80 the upgrade is the stop, `aveloxis migrate --skip-views` and the start.
+
 **0.29.80 keeps a quiet collection with a broken clone incremental.** An incremental GitHub or GitLab collection whose clone fails and whose API phase found nothing new now completes with the clone's error in `last_error`, instead of failing as "no data collected", so the next collection stays incremental while you fix the clone. A first or forced collection is still judged and still fails that way. No schema change: from 0.29.79 the upgrade is the stop, `aveloxis migrate --skip-views` and the start.
 
 **0.29.79 marks a repository's daily commit counts incomplete when a collection adds commits it could not record completely.** The page then reads the commits table for that repository until its next clean collection, instead of leaving the new commits out. No schema change: from 0.29.78 the upgrade is the stop, `aveloxis migrate --skip-views` and the start.

@@ -259,8 +259,10 @@ is not the id it keeps when a legacy row already holds it, so no contributor
 id is stored),
 `aveloxis heal-commit-daily` carries the commits table's stored id when a
 bucket's resolved commits agree on one, and a replace keeps an id the table
-already knows — and the reader resolves the rest: the stored id, then the
-numeric id (`contributors.gh_user_id`, its partial index built by the
+already knows — and the reader resolves the rest: the stored id while its
+contributor is live (a contributor merge marks the loser deleted and maps
+its email to the winner, so a merged-away id falls through to the rules
+below; 0.29.81), then the numeric id (`contributors.gh_user_id`, its partial index built by the
 migrate), then the login through the author-id backfill's own rule
 (`LOWER(gh_login)`), then the house email rule exactly as the mailing-list resolver applies it (the
 unambiguous match over the contributor's own emails, then the alias joined

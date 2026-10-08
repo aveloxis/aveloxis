@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.80 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.81 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=5ce32bb1"></script>
+      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2046,8 +2046,10 @@ is not the id it keeps when a legacy row already holds it, so no contributor
 id is stored),
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code> carries the commits table’s stored id when a
 bucket’s resolved commits agree on one, and a replace keeps an id the table
-already knows — and the reader resolves the rest: the stored id, then the
-numeric id (<code class="docutils literal notranslate"><span class="pre">contributors.gh_user_id</span></code>, its partial index built by the
+already knows — and the reader resolves the rest: the stored id while its
+contributor is live (a contributor merge marks the loser deleted and maps
+its email to the winner, so a merged-away id falls through to the rules
+below; 0.29.81), then the numeric id (<code class="docutils literal notranslate"><span class="pre">contributors.gh_user_id</span></code>, its partial index built by the
 migrate), then the login through the author-id backfill’s own rule
 (<code class="docutils literal notranslate"><span class="pre">LOWER(gh_login)</span></code>), then the house email rule exactly as the mailing-list resolver applies it (the
 unambiguous match over the contributor’s own emails, then the alias joined

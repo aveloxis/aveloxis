@@ -184,7 +184,11 @@ type WebConfig struct {
 	// Addr is the listen address for the web GUI (default ":8082").
 	Addr string `json:"addr"`
 
-	// SessionSecret is used to sign session cookies (generate a random string).
+	// SessionSecret is reserved: the loader accepts it and nothing reads it
+	// today. Web sessions are random tokens held in the web process (lost on
+	// its restart); the API's Bearer tokens are stored in the database.
+	// Pinned by scripts/session_secret_docs_test.go: while it stays unread,
+	// no page may say it signs cookies or keeps sessions across restarts.
 	SessionSecret string `json:"session_secret"`
 
 	// BaseURL is the external URL for OAuth callbacks (e.g., "https://aveloxis.example.com").

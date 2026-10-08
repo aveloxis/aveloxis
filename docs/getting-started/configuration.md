@@ -371,7 +371,7 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `web.addr` | string | `":8082"` | Listen address for the web GUI. |
-| `web.session_secret` | string | (none) | Secret used to sign session cookies. Generate a random 32+ byte string. Without this, sessions don't survive restarts. |
+| `web.session_secret` | string | (none) | Reserved: accepted by the loader and not read today. Web sessions are random tokens held in the web process, so a web restart signs everyone out whatever this is set to; the API's Bearer tokens are stored in the database and survive restarts. Set a long random string anyway, so a release that starts using it needs no change. |
 | `web.base_url` | string | (none) | Public-facing external URL of the web GUI (e.g. `https://aveloxis.example.com`). Used to build OAuth callback URLs only. Links in emails, including account-email confirmation links, come from `mail.site_url`; when `web.spa_url` is set, the group, pending-approvals and confirmation links lead to that front end's pages instead (see `web.spa_url`). |
 | `web.dev_mode` | boolean | `false` | When `true`, disables the `Secure` flag on cookies so the GUI works over plain HTTP, and lets a loopback request (`localhost`, `127.0.0.1`, `[::1]`) build email confirmation links when `mail.site_url` is unset. **Production must leave this `false`** so browsers only send cookies over HTTPS and confirmation links always come from `mail.site_url` (or `web.spa_url`). `HttpOnly` is always set regardless. |
 | `web.github_client_id` | string | (none) | GitHub OAuth App client ID. Create one at <https://github.com/settings/developers>. The callback URL must match `<base_url>/auth/github/callback`. |

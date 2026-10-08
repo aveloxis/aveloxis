@@ -2493,7 +2493,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.session_secret</span></code></p></td>
 <td><p>string</p></td>
 <td><p>(none)</p></td>
-<td><p>Secret used to sign session cookies. Generate a random 32+ byte string. Without this, sessions don’t survive restarts.</p></td>
+<td><p>Reserved: accepted by the loader and not read today. Web sessions are random tokens held in the web process, so a web restart signs everyone out whatever this is set to; the API’s Bearer tokens are stored in the database and survive restarts. Set a long random string anyway, so a release that starts using it needs no change.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.base_url</span></code></p></td>
 <td><p>string</p></td>

@@ -109,9 +109,20 @@ func fastest(op func()) time.Duration {
 // the operation.
 func Check(prepare func(n int) func(), small int, slack time.Duration) (bool, string) {
 	sOp, lOp := prepare(small), prepare(Factor*small)
+	return decide(func() (time.Duration, time.Duration) { return fastest(sOp), fastest(lOp) }, slack)
+}
+
+// decide is Check's verdict over successive measurements of the small and
+// the large input (measure returns one pair per attempt). It is separate so
+// the verdict's rules — the limit, a pass on any attempt, the early stop
+// for a runaway — are tested on exact durations: a self-test that measured
+// the clock to prove the check REJECTS superlinear work was a coin toss on
+// a shared CI runner, where one noisy attempt of three can pass it (PR #226
+// CI; old problem O16).
+func decide(measure func() (small, large time.Duration), slack time.Duration) (bool, string) {
 	var seen []string
 	for i := range attempts {
-		ts, tl := fastest(sOp), fastest(lOp)
+		ts, tl := measure()
 		bound := Limit*ts + slack
 		if tl <= bound {
 			return true, ""

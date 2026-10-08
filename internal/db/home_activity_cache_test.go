@@ -45,7 +45,9 @@ func TestSchemaDeclaresLastActivity90d(t *testing.T) {
 
 // TestCompleteJobStampsActivity90d — the writer rides the same UPDATE
 // as last_issues/last_prs, using the two composite indexes v0.27.4
-// added (idx_issues_repo_created / idx_pull_requests_repo_created):
+// added (now idx_issues_repo_created_reporter /
+// idx_pull_requests_repo_created_author, 0.29.77: the same keys,
+// INCLUDE the author column):
 // two indexed range-counts on ONE repo per completed job.
 func TestCompleteJobStampsActivity90d(t *testing.T) {
 	src := srctest.StripGoComments(srctest.FuncBody(t,
@@ -268,8 +270,12 @@ func TestHomeActivityBackfillLedgered(t *testing.T) {
 	// Ordering (review 2026-08-31 #4): the step must run AFTER the two
 	// composite-index builds so even a pre-v0.27.4 fleet's one-shot
 	// pass is index-served.
-	if strings.Index(migrate, label) < strings.Index(migrate, "idx_pull_requests_repo_created") {
-		t.Error("the backfill must run after idx_issues_repo_created / idx_pull_requests_repo_created are built")
+	labelAt, indexAt := strings.Index(migrate, label), strings.Index(migrate, "idx_pull_requests_repo_created_author")
+	if labelAt < 0 || indexAt < 0 {
+		t.Fatalf("both the backfill (%d) and the covering index build (%d) must be in migrate.go", labelAt, indexAt)
+	}
+	if labelAt < indexAt {
+		t.Error("the backfill must run after idx_issues_repo_created_reporter / idx_pull_requests_repo_created_author are built")
 	}
 }
 

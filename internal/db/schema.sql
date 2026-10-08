@@ -1566,12 +1566,18 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
 
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
     ON aveloxis_data.repo_deps_vulnerabilities (repo_id);
--- v0.27.4: serve the home tab's 90-day activity counts as tight
--- per-repo index range probes (86,909-repo admin group sets).
-CREATE INDEX IF NOT EXISTS idx_issues_repo_created
-    ON aveloxis_data.issues (repo_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
-    ON aveloxis_data.pull_requests (repo_id, created_at);
+-- v0.27.4: the home tab's 90-day activity counts as tight per-repo index
+-- range probes (86,909-repo admin group sets) rode idx_issues_repo_created
+-- / idx_pull_requests_repo_created (repo_id, created_at). v0.29.77: those
+-- are superseded by idx_issues_repo_created_reporter and
+-- idx_pull_requests_repo_created_author — the same keys INCLUDE the author
+-- column, so the top-contributors issue and PR arms are index-only (kate
+-- 2026-10-07, repo 94609: 505K PR rows read one heap page each, 58K issue
+-- rows likewise). Both are MIGRATION-ONLY (SR-2: this base DDL runs
+-- before the CONCURRENTLY steps, so a plain form here would block-build
+-- them on every upgraded fleet; a fresh install gets the CONCURRENTLY
+-- build from migrate.go, an instant on an empty table). The v0.27.4 names
+-- are dropped by migrate and never reused (SR-4).
 
 -- v0.27.96/v0.27.98 perf-wave indexes (summary/21 F1/F5) are DELIBERATELY
 -- NOT declared here. RunMigrations executes this base DDL BEFORE the

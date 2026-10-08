@@ -1386,7 +1386,10 @@ aveloxis heal-commit-daily --apply --limit 200   # only the 200 largest
 Each repository is its own transaction, so an interrupt loses at most the
 one in flight; rerun to finish. It can run beside a running `serve`: every
 repository's own next collection fills it anyway, so this only brings the
-largest forward. Minutes per kernel fork, seconds for most repositories; on a
+largest forward — and a repository whose collection finishes between this
+command's listing and its turn is skipped, because that walk's fold is the
+authoritative default-branch picture (a rebuild from the commits table
+would bring back force-pushed commits); the closing line counts them. Minutes per kernel fork, seconds for most repositories; on a
 large fleet run it under `nohup` and read its log.
 
 ## `aveloxis heal-vulnerabilities`

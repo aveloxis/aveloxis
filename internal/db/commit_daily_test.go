@@ -468,6 +468,11 @@ func TestFillRepoCommitDailyFromCommitsBackfillsOnce(t *testing.T) {
 		VALUES ($1, 'c0ffee5', 'f.go', 'a', '_avcd_fil04@x', '2026-09-29', $2, $3::uuid)`, fx.repoID, fx.in.Add(21*time.Hour), PlatformUUID(1, 4040).String()); err != nil {
 		t.Fatal(err)
 	}
+	// The picture is complete; a rebuild means clearing the stamp first
+	// (the fill skips a complete repository, 0.29.77).
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL WHERE repo_id = $1`, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = store.FillRepoCommitDailyFromCommits(ctx, fx.repoID); err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +489,10 @@ func TestFillRepoCommitDailyFromCommitsBackfillsOnce(t *testing.T) {
 	if containsID(pending, fx.repoID) {
 		t.Fatal("a filled repository is no longer pending")
 	}
-	// Idempotent: a second fill replaces with the same rows.
+	// Idempotent: a second fill (stamp cleared) replaces with the same rows.
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL WHERE repo_id = $1`, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
 	if rows, err = store.FillRepoCommitDailyFromCommits(ctx, fx.repoID); err != nil || rows != 2 {
 		t.Fatalf("second fill: rows=%d err=%v", rows, err)
 	}

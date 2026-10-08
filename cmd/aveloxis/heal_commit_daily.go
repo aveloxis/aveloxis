@@ -64,11 +64,18 @@ Without --apply it only counts the repositories that need it.`,
 			}
 			ids, err := store.ListReposNeedingCommitDaily(ctx, listLimit)
 			pending := int64(len(ids))
-			var filled int64
+			var filled, skipped int64
 			if err == nil && apply {
 				for _, id := range ids {
 					started := time.Now()
 					rows, ferr := store.FillRepoCommitDailyFromCommits(ctx, id)
+					if errors.Is(ferr, db.ErrCommitDailyAlreadyComplete) {
+						// A collection finished first: its fold is the
+						// authoritative one (Copilot PR #226 review 5450156135).
+						skipped++
+						logger.Info("daily commit counts already complete — a collection finished first, its fold is kept", "repo_id", id)
+						continue
+					}
 					if ferr != nil {
 						err = fmt.Errorf("repository %d: %w", id, ferr)
 						break
@@ -78,7 +85,7 @@ Without --apply it only counts the repositories that need it.`,
 						"elapsed", time.Since(started).Truncate(time.Millisecond), "done", filled, "of", pending)
 				}
 			}
-			line, err := healCommitDailyReport(apply, pending, filled, err)
+			line, err := healCommitDailyReport(apply, pending, filled, skipped, err)
 			if err != nil {
 				return err
 			}
@@ -92,7 +99,11 @@ Without --apply it only counts the repositories that need it.`,
 }
 
 // healCommitDailyReport is the command's closing line or error.
-func healCommitDailyReport(apply bool, pending, filled int64, err error) (string, error) {
+func healCommitDailyReport(apply bool, pending, filled, skipped int64, err error) (string, error) {
+	skippedNote := ""
+	if skipped > 0 {
+		skippedNote = fmt.Sprintf(", %d skipped (a collection completed them first)", skipped)
+	}
 	switch {
 	case err != nil && errors.Is(err, context.Canceled):
 		if !apply {
@@ -104,5 +115,5 @@ func healCommitDailyReport(apply bool, pending, filled int64, err error) (string
 	case !apply:
 		return fmt.Sprintf("heal-commit-daily (dry run): %d repositories have commits but no complete daily counts; re-run with --apply to fill them, largest first", pending), nil
 	}
-	return fmt.Sprintf("heal-commit-daily: %d of %d repositories filled", filled, pending), nil
+	return fmt.Sprintf("heal-commit-daily: %d of %d repositories filled%s", filled, pending, skippedNote), nil
 }

@@ -1888,6 +1888,20 @@ process-limit) exhaustion.
    `vm.overcommit_memory` guidance is what stops the kernel from promising
    memory it does not have and then killing the postmaster.
 
+## A repository's daily commit counts need rebuilding
+
+`aveloxis_data.repo_commit_daily` is replaced by the facade after every completed walk and filled by `aveloxis heal-commit-daily` for repositories whose picture is not complete (`repos.commit_daily_complete_at` unset). A complete picture is never rebuilt by the heal — a collection that finished first owns it (a rebuild from the commits table would bring back force-pushed commits) — so to rebuild one on purpose, clear its stamp and run the heal:
+
+```sql
+UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL WHERE repo_id = <id>;
+```
+
+```bash
+aveloxis heal-commit-daily --apply
+```
+
+Between the `UPDATE` and the heal's re-stamp every reader gated on the stamp (the weekly commit series, the commits arm of the top contributors, the activity bounds in `/stats`) falls back to the commits table, which on a large repository is the slow path the daily table exists to avoid. Run the heal at once; `--limit 1` fills only the largest pending repository, which is the one you just cleared unless another is pending. The next facade walk of that repository replaces and re-stamps it anyway; this only brings it forward.
+
 ## A one-shot migration backfill needs to re-run
 
 Since v0.28.4, expensive one-shot data steps (keyset backfills,

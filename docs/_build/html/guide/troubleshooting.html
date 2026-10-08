@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.76 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.77 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4690865a"></script>
+      <script src="../_static/documentation_options.js?v=e2e80243"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -680,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -3343,6 +3344,17 @@ exhaustion rather than one oversized request. The same section’s
 <code class="docutils literal notranslate"><span class="pre">vm.overcommit_memory</span></code> guidance is what stops the kernel from promising
 memory it does not have and then killing the postmaster.</p></li>
 </ol>
+</section>
+<section id="a-repository-s-daily-commit-counts-need-rebuilding">
+<h2>A repository’s daily commit counts need rebuilding<a class="headerlink" href="#a-repository-s-daily-commit-counts-need-rebuilding" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">aveloxis_data.repo_commit_daily</span></code> is replaced by the facade after every completed walk and filled by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code> for repositories whose picture is not complete (<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code> unset). A complete picture is never rebuilt by the heal — a collection that finished first owns it (a rebuild from the commits table would bring back force-pushed commits) — so to rebuild one on purpose, clear its stamp and run the heal:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">commit_daily_complete_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&lt;</span><span class="n">id</span><span class="o">&gt;</span><span class="p">;</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>heal-commit-daily<span class="w"> </span>--apply
+</pre></div>
+</div>
+<p>Between the <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> and the heal’s re-stamp every reader gated on the stamp (the weekly commit series, the commits arm of the top contributors, the activity bounds in <code class="docutils literal notranslate"><span class="pre">/stats</span></code>) falls back to the commits table, which on a large repository is the slow path the daily table exists to avoid. Run the heal at once; <code class="docutils literal notranslate"><span class="pre">--limit</span> <span class="pre">1</span></code> fills only the largest pending repository, which is the one you just cleared unless another is pending. The next facade walk of that repository replaces and re-stamps it anyway; this only brings it forward.</p>
 </section>
 <section id="a-one-shot-migration-backfill-needs-to-re-run">
 <h2>A one-shot migration backfill needs to re-run<a class="headerlink" href="#a-one-shot-migration-backfill-needs-to-re-run" title="Link to this heading"></a></h2>

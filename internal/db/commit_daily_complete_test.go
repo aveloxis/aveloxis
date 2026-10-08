@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -338,5 +339,49 @@ func TestActivityBoundsReadTheDailyTableWhenComplete(t *testing.T) {
 	}
 	if got := last(); !got.Equal(exact) {
 		t.Fatalf("the stored bound wins, got %v", got)
+	}
+}
+
+// Copilot PR #226 review 5450156135: heal-commit-daily lists an unstamped
+// repository, a concurrent facade walk takes the lock first and installs
+// the authoritative default-branch fold (stamping it), then the heal takes
+// the lock and would delete that fold and rebuild it from the append-only
+// commits table (force-pushed and switched-branch commits included). The
+// fill rechecks the stamp AFTER the lock and skips a repository that
+// became complete since it was listed; a caller that means to rebuild a
+// complete picture clears the stamp first.
+func TestFillSkipsARepositoryStampedSinceItWasListed(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_skp01")
+	// The facade's fold, already stamped: a bucket the commits table does
+	// not carry (a rewritten branch), which a rebuild would lose.
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{{Day: fx.in.AddDate(0, 0, -3), AuthorEmail: "rewritten@x", Commits: 4}}, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.FillRepoCommitDailyFromCommits(ctx, fx.repoID)
+	if !errors.Is(err, ErrCommitDailyAlreadyComplete) {
+		t.Fatalf("a repository stamped since it was listed is skipped, got rows=%d err=%v", rows, err)
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND author_email = 'rewritten@x'`, fx.repoID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("the authoritative fold must be left as it was, got %d rows", n)
+	}
+	// A rebuild means clearing the stamp first; then the fill replaces it
+	// from the commits table.
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL WHERE repo_id = $1`, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err = store.FillRepoCommitDailyFromCommits(ctx, fx.repoID); err != nil || rows != 1 {
+		t.Fatalf("a fill after the stamp is cleared rebuilds: rows=%d err=%v", rows, err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND author_email = 'rewritten@x'`, fx.repoID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("the rebuild is from the commits table")
 	}
 }

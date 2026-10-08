@@ -350,8 +350,10 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 // making the clamp a no-op — never hidden data inside the window.
 // Postgres LEAST ignores NULL operands.
 //
-// Cost note: the issues/PR arms ride idx_issues_repo_created /
-// idx_pull_requests_repo_created one row per repository. The commits
+// Cost note: the issues/PR arms ride idx_issues_repo_created_reporter /
+// idx_pull_requests_repo_created_author (0.29.77; the same (repo_id,
+// created_at) keys as the v0.27.4 indexes they superseded) one row per
+// repository. The commits
 // arm reads the stored repos.first_commit_at (v0.29.70, O11 option 2)
 // and scans the repository's per-file rows only while that column is
 // unfilled — there is still deliberately no (repo_id,

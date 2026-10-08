@@ -44,7 +44,7 @@ var standingRules = []Rule{
 		EnforcedBy: []string{"TestMsgRefMigrationShape"}},
 	{ID: "SR-2",
 		Statement:  "A newly-introduced index on a fleet-scale table is migration-owned via CONCURRENTLY (fresh installs included); schema.sql declarations are only for shapes every fleet already has.",
-		EnforcedBy: []string{"TestPerfWaveIndexesAreMigrationOnly", "TestPlatformRepoIDIndexIsMigrationOnly", "TestHistoryIndexIsMigrationOnlyAndDropIsConcurrent"}},
+		EnforcedBy: []string{"TestPerfWaveIndexesAreMigrationOnly", "TestPlatformRepoIDIndexIsMigrationOnly", "TestHistoryIndexIsMigrationOnlyAndDropIsConcurrent", "TestConcurrentlyBuiltIndexesAreNotDeclaredInSchemaSQL"}},
 	{ID: "SR-3",
 		Statement:  "A progress/resume marker is stamped only over rows PROVEN written — never over a walk whose writes may have been dropped or whose rows don't exist yet.",
 		EnforcedBy: []string{"TestWhitespaceGateIsOperative", "TestWhitespacePhaseValidatesMarkerUpFront", "TestRewalkClaimExcludesNeverCollectedAndRechecks"}},

@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -211,7 +212,15 @@ func (s *PostgresStore) RepoCommitDailyComplete(ctx context.Context, repoID int6
 // resolved commits agree on one; a bucket whose commits carry two ids is
 // ambiguous and carries none (SR-6; review round 2 F5). The heal command's
 // unit of work: an interrupt loses at most the repository in flight.
-// Returns the rows written.
+// The stamp is rechecked AFTER the lock: a repository listed as unstamped
+// may have been stamped by a facade walk that took the lock first, and
+// that fold is the authoritative default-branch picture — rebuilding it
+// from the append-only commits table would bring back force-pushed and
+// switched-branch commits (Copilot PR #226 review 5450156135). Such a
+// repository is skipped with ErrCommitDailyAlreadyComplete; a caller that
+// means to rebuild a complete picture clears the stamp first (there is no
+// bypass parameter: a wrong caller cannot succeed, SR-18). Returns the rows
+// written.
 func (s *PostgresStore) FillRepoCommitDailyFromCommits(ctx context.Context, repoID int64) (int64, error) {
 	var written int64
 	err := s.withRetry(ctx, func(ctx context.Context) error {
@@ -222,6 +231,13 @@ func (s *PostgresStore) FillRepoCommitDailyFromCommits(ctx context.Context, repo
 		defer func() { _ = tx.Rollback(ctx) }()
 		if _, err := tx.Exec(ctx, repoCommitDailyLockSQL, repoID); err != nil {
 			return fmt.Errorf("lock repo_commit_daily: %w", err)
+		}
+		var complete bool
+		if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT commit_daily_complete_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1), false)`, repoID).Scan(&complete); err != nil {
+			return fmt.Errorf("recheck repo_commit_daily completeness: %w", err)
+		}
+		if complete {
+			return ErrCommitDailyAlreadyComplete
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1`, repoID); err != nil {
 			return fmt.Errorf("clear repo_commit_daily: %w", err)
@@ -356,3 +372,9 @@ func (s *PostgresStore) commitDailyServes(ctx context.Context, repoID int64, low
 	}
 	return s.RepoCommitDailyComplete(ctx, repoID)
 }
+
+// ErrCommitDailyAlreadyComplete says the repository's daily picture was stamped
+// complete between the heal's listing and its lock — a collection finished
+// first and its fold is the authoritative one (Copilot PR #226 review
+// 5450156135). The caller skips it; it is not a failure.
+var ErrCommitDailyAlreadyComplete = errors.New("repo_commit_daily: the picture became complete since the repository was listed")

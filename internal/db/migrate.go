@@ -1725,12 +1725,23 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.4 index user_repo_stars by repo",
 		`CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id)`)
-	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_issues_repo_created",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_repo_created
-			ON aveloxis_data.issues (repo_id, created_at)`)
-	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_pull_requests_repo_created",
-		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created
-			ON aveloxis_data.pull_requests (repo_id, created_at)`)
+	// v0.29.77: the v0.27.4 (repo_id, created_at) indexes become covering —
+	// INCLUDE the author column — so the top-contributors issue and PR arms
+	// are index-only (kate 2026-10-07, repo 94609: 505K PR rows and 58K
+	// issue rows read one heap page each; the plan is in the ledger). The
+	// same leading columns still serve the home tab's 90-day probes, so
+	// the plain forms are dropped once the covering ones exist. New names
+	// (SR-4): the dropped names are never reused.
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_issues_repo_created_reporter",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_repo_created_reporter
+			ON aveloxis_data.issues (repo_id, created_at) INCLUDE (reporter_id)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_pull_requests_repo_created_author",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_repo_created_author
+			ON aveloxis_data.pull_requests (repo_id, created_at) INCLUDE (author_id)`)
+	// Without the covering ones the home tab's per-job 90-day counts and
+	// every /stats would scan, so the plain indexes stay until then.
+	dropIndexOnceReplacementIsValid(ctx, pg, logger, errs, "idx_issues_repo_created", "idx_issues_repo_created_reporter")
+	dropIndexOnceReplacementIsValid(ctx, pg, logger, errs, "idx_pull_requests_repo_created", "idx_pull_requests_repo_created_author")
 
 	// v0.29.0: seed the home page's cached 90-day activity ranking so
 	// the page is fast on the first post-deploy render, not after a
@@ -2420,6 +2431,23 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		"aveloxis_data", "idx_issues_repo_closed",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issues_repo_closed
 		 ON aveloxis_data.issues (repo_id, closed_at) WHERE closed_at IS NOT NULL`)
+
+	// v0.29.77: an index-only scan is only as good as the visibility map,
+	// and these tables are insert-mostly, so the default insert trigger
+	// (20% growth) leaves the newest pages — exactly the ones a freshly
+	// collected repository's rows sit in — unmarked for months (kate
+	// 2026-10-07: messages 48% of pages all-visible, issues 50%, PRs 66%,
+	// reviews 81%, commits 89%; the covering reviews/messages indexes
+	// fetched 1.99M of 1.85M rows from the heap). The factor is derived
+	// from the largest single collection — one repository inserts up to
+	// about 2M message rows, 1.4% of the table — so the map is refreshed
+	// about once per such collection. Idempotent; a storage parameter
+	// survives dumps and restores. The ladder runs one manual VACUUM per
+	// table to catch up.
+	for _, tbl := range []string{"commits", "issues", "pull_requests", "pull_request_reviews", "messages"} {
+		execMigrationStep(ctx, pg, logger, errs, "v0.29.77 autovacuum insert factor "+tbl,
+			`ALTER TABLE aveloxis_data.`+tbl+` SET (autovacuum_vacuum_insert_scale_factor = 0.01)`)
+	}
 
 	// v0.27.57: GitHub contribution-activity classification columns
 	// (GraphQL contributionsCollection — distinguishes publicly-active
@@ -3758,14 +3786,18 @@ func ensureLinkedMsgIDUnique(ctx context.Context, pg *PostgresStore, logger *slo
 		*errs = append(*errs, fmt.Errorf("linked_msg dedup: %w", err))
 		return
 	}
-	// Retire the non-unique index (SR-4: dropped, never recreated).
-	execMigrationStep(ctx, pg, logger, errs,
-		"v0.29.0 drop non-unique idx_email_message_linked_msg (replaced by unique backstop)",
-		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.idx_email_message_linked_msg`)
-	// The hard backstop: one notification per native comment.
+	// The hard backstop: one notification per native comment. Built BEFORE
+	// the non-unique index is retired (0.29.77 round 6): a build that fails
+	// or is left INVALID (a duplicate claim committed by a live serve
+	// mid-build, a cancelled statement) must not leave email_message with
+	// no index on linked_msg_id until a rerun — the names differ, so both
+	// coexist until the replacement is proven valid.
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "uq_email_message_linked_msg",
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_email_message_linked_msg
 		ON aveloxis_data.email_message (linked_msg_id) WHERE linked_msg_id IS NOT NULL`)
+	// Retire the non-unique index (SR-4: dropped, never recreated) only
+	// once the unique one is valid.
+	dropIndexOnceReplacementIsValid(ctx, pg, logger, errs, "idx_email_message_linked_msg", "uq_email_message_linked_msg")
 }
 
 // dedupLinkedMsgIDsTx captures the affected issues, NULLs the duplicate
@@ -3953,6 +3985,36 @@ const stampCommitDailyCompleteWhereFilledSQL = `
 		SET commit_daily_complete_at = NOW()
 		WHERE r.commit_daily_complete_at IS NULL
 		  AND EXISTS (SELECT 1 FROM aveloxis_data.repo_commit_daily d WHERE d.repo_id = r.repo_id)`
+
+// dropIndexOnceReplacementIsValid drops the superseded index old ONLY when
+// its replacement exists and is valid: a CONCURRENTLY build that failed
+// (a cancelled statement, a full disk, an exhausted deadlock retry) leaves
+// the replacement absent or INVALID, and an unconditional drop would then
+// leave the table with no index on those keys until a rerun (0.29.77 L10
+// round 2; the consequence per site is at the caller). "Not valid" is a
+// definitive negative: logged at ERROR, the old index kept, no second
+// error for the build's one failure; a probe error is an error (SR-5).
+func dropIndexOnceReplacementIsValid(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, old, replacement string) {
+	var valid bool
+	err := pg.pool.QueryRow(ctx, `
+		SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'aveloxis_data' AND c.relname = $1`, replacement).Scan(&valid)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		valid = false
+	case err != nil:
+		logger.Error("schema migration error", "step", "probe "+replacement+" before dropping "+old, "error", err)
+		*errs = append(*errs, fmt.Errorf("probe %s before dropping %s: %w", replacement, old, err))
+		return
+	}
+	if !valid {
+		logger.Error("replacement index absent or INVALID — keeping the index it supersedes until a rerun builds it", "replacement", replacement, "kept", old)
+		return
+	}
+	execMigrationStep(ctx, pg, logger, errs, "drop the superseded index "+old,
+		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.`+old)
+}
 
 // addColumnWithOneTimeStamp adds schema.table.column and, on the run that
 // adds it, runs stampSQL — probe, ALTER and stamp in ONE transaction, so a

@@ -524,6 +524,11 @@ var deployChecklists = map[string][]deployStep{
 	// that inserted new commits and did not record its daily fold completely clears
 	// the completeness stamp; the migration-only index pin ignores
 	// commented-out statements. No schema change.
+	// v0.29.80 (2026-10-08): PR #226 Copilot review 5458877691 — the
+	// zero-data gate does not judge a job whose facade errored; the
+	// systemd doc pin parses shell comments as the shell does. No schema
+	// change.
+	"0.29.80": v02980DeployChecklist,
 	"0.29.79": v02979DeployChecklist,
 	"0.29.78": v02978DeployChecklist,
 	"0.29.77": v02977DeployChecklist,
@@ -540,6 +545,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02980DeployChecklist is 0.29.79's ladder with a note on the start step.
+var v02980DeployChecklist = func() []deployStep {
+	prev := v02979DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.80: an INCREMENTAL GitHub or GitLab collection whose clone fails and whose API phase found nothing new now completes (last_error 'facade collection failed: …') instead of failing as 'no data collected' — so last_collected advances and the next collection stays incremental while the clone is fixed. A first or forced (force_full_collect) collection is still judged: with a failed clone and nothing from the API it still fails as 'no data collected'. No schema change: a fleet already running 0.29.79 needs only the stop, the migrate (a version stamp) and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02979DeployChecklist is 0.29.78's ladder with a note on the start step.
 var v02979DeployChecklist = func() []deployStep {

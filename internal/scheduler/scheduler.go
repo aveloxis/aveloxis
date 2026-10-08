@@ -1342,6 +1342,10 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	// keep the outcome green and last_collected advances past a window
 	// that was never stored. On failure, forget this repo's cached ETags.
 	var forgetRepoETags func()
+	// incremental: the API phase ran with a non-zero since. buildOutcome's
+	// zero-data gate stands down for a facade error only then (PR #226
+	// Copilot review 5458877691; L10 round 1 on 0.29.80).
+	incremental := false
 	if !repo.Platform.IsGitOnly() {
 		client, clientErr := s.selectClient(repo.Platform)
 		if clientErr != nil {
@@ -1359,6 +1363,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 		}
 		s.slots.setPhase(job.RepoID, "api collection")
 		since := s.determineSince(job)
+		incremental = !since.IsZero()
 		if since.IsZero() {
 			s.logger.Info("full collection (since=zero)", "repo_id", job.RepoID,
 				"last_collected", job.LastCollected)
@@ -1475,7 +1480,7 @@ func (s *Scheduler) runJob(ctx context.Context, job *db.QueueJob) {
 	}
 
 	// Determine outcome and complete the job.
-	outcome := s.buildOutcome(result, facadeResult, analysisResult, err, gapFillErr, facadeErr)
+	outcome := s.buildOutcome(incremental, result, facadeResult, analysisResult, err, gapFillErr, facadeErr)
 	duration := time.Since(start)
 
 	// v0.27.139: last_collected anchors at THIS job's start on success
@@ -2064,7 +2069,7 @@ func (s *Scheduler) runCommitResolution(ctx context.Context, repoID int64, repo 
 // loop: each incremental cycle re-detected the same gap, gap fill
 // failed the same way, last_error stayed NULL, force_full_collect
 // stayed FALSE.
-func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error, gapFillErr error, facadeErr error) jobOutcome {
+func (s *Scheduler) buildOutcome(incremental bool, result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error, gapFillErr error, facadeErr error) jobOutcome {
 	out := jobOutcome{success: true}
 
 	if collectionErr != nil {
@@ -2151,7 +2156,18 @@ func (s *Scheduler) buildOutcome(result *collector.CollectResult, facadeResult *
 	// is explained, not suspicious: 668 of 677 failed jobs on kate were
 	// these (2026-09-23 log review; worklist 33).
 	provenEmpty := facadeResult != nil && facadeResult.EmptyDefaultBranch
-	if result != nil && !provenEmpty && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
+	// PR #226 Copilot review 5458877691: the gate reasons from the facade's
+	// commit count, and a facade that ERRORED produced none — zero there is
+	// unknown, not empty. A quiet INCREMENTAL cycle (nothing new from the
+	// API, common) would otherwise fail the job and re-walk the API history
+	// every cycle while the clone stays broken, which item 83 above exists
+	// to prevent; the facade's error is already the recorded explanation. A
+	// FULL collection is still judged (L10 round 1 on 0.29.80): zero API
+	// data there — every listing skipped as 403/404, say — is what the gate
+	// is for, and a success would clear force_full_collect and leave the API
+	// history unwalked for good.
+	facadeUnknown := facadeErr != nil && incremental
+	if result != nil && !provenEmpty && !facadeUnknown && out.issues == 0 && out.prs == 0 && out.releases == 0 && out.contributors == 0 && out.commits == 0 {
 		out.success = false
 		if out.errMsg == "" {
 			out.errMsg = "no data collected (possible API auth failure or empty repo)"

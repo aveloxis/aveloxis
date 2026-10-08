@@ -53,7 +53,7 @@ func TestBuildOutcome_FacadeErrorIsRecordedWithoutUnanchoringTheAPIPhase(t *test
 	apiData := &collector.CollectResult{Issues: 12, PullRequests: 3, Contributors: 4}
 	cloneErr := errors.New("git clone: mkdir /data/aveloxis-repos: permission denied")
 
-	out := s.buildOutcome(apiData, nil, nil, nil, nil, cloneErr)
+	out := s.buildOutcome(false, apiData, nil, nil, nil, nil, cloneErr)
 
 	if !strings.HasPrefix(out.errMsg, "facade collection failed") || !strings.Contains(out.errMsg, "permission denied") {
 		t.Fatalf("last_error must name the facade and carry the clone error, got %q", out.errMsg)
@@ -74,7 +74,7 @@ func TestBuildOutcome_ForgeRefusalWithNoticeRecordsNothing(t *testing.T) {
 		Err:    errors.New("git clone: remote: Repository access blocked"),
 	}
 
-	out := s.buildOutcome(apiData, nil, nil, nil, nil, refusal)
+	out := s.buildOutcome(false, apiData, nil, nil, nil, nil, refusal)
 
 	if !out.success || out.errMsg != "" {
 		t.Fatalf("a refusal carrying the forge's notice is the forge's word (stored on the repository), not an error to record: success=%v err=%q", out.success, out.errMsg)
@@ -94,7 +94,7 @@ func TestBuildOutcome_GitOnlyFacadeErrorStillFailsTheJob(t *testing.T) {
 			Err:    errors.New("git clone: remote: access denied"),
 		},
 	} {
-		out := s.buildOutcome(nil, nil, nil, nil, nil, ferr)
+		out := s.buildOutcome(false, nil, nil, nil, nil, nil, ferr)
 		if out.success || !strings.HasPrefix(out.errMsg, "facade collection failed") {
 			t.Fatalf("%s: git-only facade failure must fail the job: success=%v err=%q", name, out.success, out.errMsg)
 		}
@@ -103,7 +103,7 @@ func TestBuildOutcome_GitOnlyFacadeErrorStillFailsTheJob(t *testing.T) {
 
 func TestBuildOutcome_ProvenEmptyBranchIsNoFacadeError(t *testing.T) {
 	s := newOutcomeScheduler()
-	out := s.buildOutcome(&collector.CollectResult{}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil, nil)
+	out := s.buildOutcome(false, &collector.CollectResult{}, &collector.FacadeResult{EmptyDefaultBranch: true}, nil, nil, nil, nil)
 	if !out.success || out.errMsg != "" {
 		t.Fatalf("a proven-empty default branch stays a success (v0.29.56): success=%v err=%q", out.success, out.errMsg)
 	}
@@ -111,7 +111,7 @@ func TestBuildOutcome_ProvenEmptyBranchIsNoFacadeError(t *testing.T) {
 
 func TestBuildOutcome_CollectionErrorOutranksFacadeError(t *testing.T) {
 	s := newOutcomeScheduler()
-	out := s.buildOutcome(nil, nil, nil, errors.New("rate limited"), nil, errors.New("git clone: timeout"))
+	out := s.buildOutcome(false, nil, nil, nil, errors.New("rate limited"), nil, errors.New("git clone: timeout"))
 	if out.success || out.errMsg != "rate limited" {
 		t.Fatalf("the collection error is the more informative one to record: success=%v err=%q", out.success, out.errMsg)
 	}
@@ -192,7 +192,7 @@ func assignmentsTo(t *testing.T, file, method, ident string) int {
 func TestRunJob_HandsTheFacadeErrorToBuildOutcome(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go"))
 	run := srctest.FuncBody(t, src, "func (s *Scheduler) runJob(")
-	re := regexp.MustCompile(`facadeResult, analysisResult, facadeErr := s\.runFacadeAndAnalysis\(ctx, job\.RepoID, repo\)[\s\S]*?outcome := s\.buildOutcome\(result, facadeResult, analysisResult, err, gapFillErr, facadeErr\)`)
+	re := regexp.MustCompile(`facadeResult, analysisResult, facadeErr := s\.runFacadeAndAnalysis\(ctx, job\.RepoID, repo\)[\s\S]*?outcome := s\.buildOutcome\(incremental, result, facadeResult, analysisResult, err, gapFillErr, facadeErr\)`)
 	if !re.MatchString(run) {
 		t.Fatal("runJob must receive facadeErr from runFacadeAndAnalysis and pass that same value to buildOutcome")
 	}
@@ -243,5 +243,58 @@ func TestRunFacadeAndAnalysis_EveryReturnCarriesTheFacadeError(t *testing.T) {
 	}
 	if shutdown != 1 {
 		t.Errorf("exactly one explicit return (the shutdown arm), found %d", shutdown)
+	}
+}
+
+// PR #226 Copilot review 5458877691: a QUIET incremental cycle (the API
+// phase completed and fetched nothing new — common) whose facade errored
+// fell to the zero-data gate, which reads zero commits as "auth failure or
+// empty repository" and failed the job — un-anchoring last_collected and
+// re-walking the API history every cycle while the clone stayed broken,
+// the outcome item 83 exists to prevent. With the facade errored, its
+// commit count is UNKNOWN, not zero: the gate has no evidence to judge by,
+// and the facade's own error is already the recorded explanation.
+func TestBuildOutcome_FacadeErrorOnAQuietIncrementalCycleStaysASuccess(t *testing.T) {
+	s := newOutcomeScheduler()
+	cloneErr := errors.New("clone/fetch: exit status 128")
+	out := s.buildOutcome(true, &collector.CollectResult{}, nil, nil, nil, nil, cloneErr)
+	if !out.success {
+		t.Fatalf("a quiet incremental cycle whose facade errored must stay a success (item 83): err=%q", out.errMsg)
+	}
+	if !strings.HasPrefix(out.errMsg, "facade collection failed") {
+		t.Fatalf("the facade's error is the recorded explanation, got %q", out.errMsg)
+	}
+	// A quiet cycle whose clone the forge refused with its notice also
+	// completes, recording nothing (the forge's word is stored instead).
+	refusal := &platform.NoticeError{
+		Notice: platform.ForgeNotice{Message: "Repository access blocked"},
+		Err:    errors.New("git clone: remote: Repository access blocked"),
+	}
+	if out := s.buildOutcome(true, &collector.CollectResult{}, nil, nil, nil, nil, refusal); !out.success || out.errMsg != "" {
+		t.Fatalf("a quiet incremental cycle refused with the forge's notice completes and records nothing: success=%v err=%q", out.success, out.errMsg)
+	}
+	// A FULL collection (first, or force_full) still gets judged with the
+	// facade errored (L10 round 1 on 0.29.80): silent zero API data there is
+	// the case the gate exists for, and succeeding would clear force_full and
+	// leave the API history unwalked for good.
+	if out := s.buildOutcome(false, &collector.CollectResult{}, nil, nil, nil, nil, cloneErr); out.success {
+		t.Fatalf("a full collection with zero API data and a failed clone must still fail: err=%q", out.errMsg)
+	}
+	// The gate still judges when the facade ran and found nothing.
+	out = s.buildOutcome(true, &collector.CollectResult{}, &collector.FacadeResult{}, nil, nil, nil, nil)
+	if out.success || out.errMsg != "no data collected (possible API auth failure or empty repo)" {
+		t.Fatalf("zero API data and a facade that ran with zero commits still fail the job: success=%v err=%q", out.success, out.errMsg)
+	}
+}
+
+// runJob's incremental flag is the API phase's own since (L10 round 1 on
+// 0.29.80): set from determineSince, nowhere else.
+func TestRunJob_IncrementalIsTheAPIPhasesSince(t *testing.T) {
+	run := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go")), "func (s *Scheduler) runJob(")
+	if !regexp.MustCompile(`since := s\.determineSince\(job\)\s*incremental = !since\.IsZero\(\)`).MatchString(run) {
+		t.Fatal("incremental must be set from the API phase's since, right after determineSince")
+	}
+	if n := strings.Count(run, "incremental = "); n != 1 {
+		t.Fatalf("incremental is assigned %d times in runJob, want once", n)
 	}
 }

@@ -85,7 +85,7 @@ func TestBuildOutcomeForceFullIsTyped(t *testing.T) {
 		{name: "database error", collectionErr: errors.New("failed to connect to database: connection refused"), want: false},
 		{name: "gap fill ignored when collection failed otherwise", collectionErr: errors.New("issues: 500"), fill: batch("x"), want: false},
 	} {
-		got := s.buildOutcome(tc.result, nil, nil, tc.collectionErr, tc.fill, nil)
+		got := s.buildOutcome(false, tc.result, nil, nil, tc.collectionErr, tc.fill, nil)
 		if got.forceFull != tc.want {
 			t.Errorf("%s: forceFull = %v, want %v (errMsg %q)", tc.name, got.forceFull, tc.want, got.errMsg)
 		}

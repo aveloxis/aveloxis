@@ -262,3 +262,81 @@ func TestCommitDailyCompleteColumnMigrationStampsOnce(t *testing.T) {
 		t.Fatal("a later run must not stamp an unstamped repository that has rows")
 	}
 }
+
+// kate 2026-10-07, after the fleet-wide heal: the warm run's /stats answered
+// 503 (nginx's 120 s) on the nine largest repositories. /stats reads
+// LastActivityAt, whose commits arm falls back from the stored bound
+// (NULL until the repository's next collection) to a live scan of the
+// commits table — the scattered-page scan the daily table retired for
+// the other two readers. A complete daily picture answers the bound from
+// its primary key instead: the stored bound first (exact), then the daily
+// table (a UTC day: midnight of the last/first day — a lower bound of the
+// true last instant, which every consumer rounds to a day anyway), then
+// the live scan only when neither exists. A bogus day (the daily fold
+// keeps every dated commit, 2080 included) is never a bound.
+func TestActivityBoundsReadTheDailyTableWhenComplete(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_act01") // one commit at fx.in + 10h; repos bounds NULL
+	last := func() time.Time {
+		t.Helper()
+		la, ok, err := store.LastActivityAt(ctx, []int64{fx.repoID})
+		if err != nil || !ok {
+			t.Fatalf("LastActivityAt: %v %v", ok, err)
+		}
+		return la
+	}
+	first := func() time.Time {
+		t.Helper()
+		fa, ok, err := store.FirstActivityAt(ctx, []int64{fx.repoID})
+		if err != nil || !ok {
+			t.Fatalf("FirstActivityAt: %v %v", ok, err)
+		}
+		return fa
+	}
+	// Not complete, no stored bound: the live scan answers the exact instant.
+	if got := last(); !got.Equal(fx.in.Add(10 * time.Hour)) {
+		t.Fatalf("not complete: live last = %v", got)
+	}
+	// Complete (the heal's fill): the daily table answers — midnight of the day.
+	if _, err := store.FillRepoCommitDailyFromCommits(ctx, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(); !got.Equal(fx.in) {
+		t.Fatalf("complete: the daily table's last day answers, got %v want %v", got, fx.in)
+	}
+	if got := first(); !got.Equal(fx.in) {
+		t.Fatalf("complete: the daily table's first day answers, got %v want %v", got, fx.in)
+	}
+	// A bogus day in the daily rows (a 2080 commit folded by the heal) is
+	// not a bound: the plausible days answer.
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits) VALUES ($1, '2080-01-01', 'z@x', 1), ($1, '1970-01-01', 'z@x', 1)`, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(); !got.Equal(fx.in) {
+		t.Fatalf("a bogus future day is not the last activity, got %v", got)
+	}
+	if got := first(); !got.Equal(fx.in) {
+		t.Fatalf("the epoch day is not the first activity, got %v", got)
+	}
+	// Rows present but the picture NOT complete (a walk that swallowed
+	// writes on a never-filled repository): the daily rows are not read —
+	// the live instant answers (the gate's refusal, pinned at runtime).
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL WHERE repo_id = $1`, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(); !got.Equal(fx.in.Add(10 * time.Hour)) {
+		t.Fatalf("unstamped rows are not read: the live instant answers, got %v", got)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NOW() WHERE repo_id = $1`, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
+	// The stored bound, when plausible, wins (it is exact).
+	exact := fx.in.Add(10 * time.Hour)
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET last_commit_at = $2, first_commit_at = $2 WHERE repo_id = $1`, fx.repoID, exact); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(); !got.Equal(exact) {
+		t.Fatalf("the stored bound wins, got %v", got)
+	}
+}

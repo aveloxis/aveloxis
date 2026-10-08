@@ -225,15 +225,24 @@ func TestActivityBoundsReadTheStoredCommitTimes(t *testing.T) {
 func TestActivityBoundsPreferTheStoredColumn(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/db/analytics_store.go"))
 	// 2026-10-07: both reads take the stored column only when it is
-	// plausible (a bogus bound, future or epoch, reads as unfilled) and
-	// scan only plausible rows.
-	for fn, needle := range map[string]string{
-		"LastActivityAt":  "COALESCE( (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at >= $3::timestamptz AND last_commit_at < $2::timestamptz), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
-		"FirstActivityAt": "COALESCE( (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND first_commit_at >= $3::timestamptz AND first_commit_at < $2::timestamptz), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
+	// plausible (a bogus bound, future or epoch, reads as unfilled), then
+	// the complete daily picture (one primary-key read), and scan only
+	// plausible rows — the scan is the LAST arm.
+	for fn, needles := range map[string][]string{
+		"LastActivityAt": {
+			"COALESCE( (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at >= $3::timestamptz AND last_commit_at < $2::timestamptz), (SELECT (MAX(d.day)::timestamp AT TIME ZONE 'UTC') FROM aveloxis_data.repo_commit_daily d",
+			"p.commit_daily_complete_at IS NOT NULL)), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
+		},
+		"FirstActivityAt": {
+			"COALESCE( (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND first_commit_at >= $3::timestamptz AND first_commit_at < $2::timestamptz), (SELECT (MIN(d.day)::timestamp AT TIME ZONE 'UTC') FROM aveloxis_data.repo_commit_daily d",
+			"p.commit_daily_complete_at IS NOT NULL)), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
+		},
 	} {
 		body := srctest.NormalizeWS(srctest.FuncBody(t, src, "func (s *PostgresStore) "+fn+"("))
-		if !strings.Contains(body, needle) {
-			t.Errorf("%s: the commits arm must read the stored column first and scan commits only when it is NULL (or, for last, implausible)", fn)
+		for _, needle := range needles {
+			if !strings.Contains(body, needle) {
+				t.Errorf("%s: the commits arm must read the stored column, then the complete daily picture, and scan commits only when neither answers", fn)
+			}
 		}
 	}
 }

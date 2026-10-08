@@ -242,7 +242,11 @@ arm of its top contributors read millions of pages for a kernel fork
 (summary/49: NVIDIA/nova, 118 s). The daily table is a few thousand rows
 for the same window. The two readers use it when the repository's picture
 is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
-is a UTC midnight — and the commits table otherwise. Author identity: a row
+is a UTC midnight — and the commits table otherwise. The activity bounds (`/stats`' last
+activity, the chart floor) read its first and last plausible day — a UTC
+midnight — when the stored bound is not yet filled and the picture is
+complete (0.29.76: the one live commits scan still on the page after the
+fleet-wide heal). Author identity: a row
 carries what its writer knew, never a guess — the facade stores the login AND
 GitHub's numeric user id a noreply address names (such commits get no alias
 row, so an alias-only join would have dropped every web-UI and squash-merge

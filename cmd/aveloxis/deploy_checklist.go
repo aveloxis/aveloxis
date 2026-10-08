@@ -508,6 +508,10 @@ var deployChecklists = map[string][]deployStep{
 	// walk that swallowed writes on a never-filled repository put a sparse
 	// picture in front of the fuller commits table. One nullable column
 	// on repos, stamped once at migrate for repositories that have rows.
+	// v0.29.76 (2026-10-07): /stats answered 503 on the largest repositories
+	// after the fleet-wide heal — the activity readers' last live commits
+	// scan now reads the complete daily picture. No schema change.
+	"0.29.76": v02976DeployChecklist,
 	"0.29.75": v02975DeployChecklist,
 	"0.29.74": v02974DeployChecklist,
 	"0.29.73": v02973DeployChecklist,
@@ -520,6 +524,17 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02976DeployChecklist is 0.29.75's ladder with a migrate that changes
+// nothing and a start note; the rest stays for a fleet that skipped earlier.
+var v02976DeployChecklist = func() []deployStep {
+	prev := v02975DeployChecklist
+	out := []deployStep{prev[0],
+		{"aveloxis migrate --skip-views", "no schema change in 0.29.76; otherwise as 0.29.75 — " + prev[1].desc}}
+	out = append(out, prev[2:len(prev)-1]...)
+	out = append(out, deployStep{"aveloxis start all", "0.29.76: the repository page's /stats (its last-activity bound, which the front end's windows and the warm run's URLs depend on) reads the first and last plausible day of the complete daily picture when the stored bound is not yet filled or is bogus (the kernel forks' 2085-dated commit; an epoch first commit — the next walk repairs the stored value) — before this the nine largest repositories answered 503 at nginx's 120 s on the one live commits scan left on the page. Otherwise as 0.29.75 — " + prev[len(prev)-1].desc})
+	return out
+}()
 
 // v02975DeployChecklist is 0.29.74's ladder with a migrate that adds the
 // stamp column; the rest stays for a fleet that skipped 0.29.73/74.

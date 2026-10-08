@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.75 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.76 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=71680c30"></script>
+      <script src="../_static/documentation_options.js?v=4690865a"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2028,7 +2028,11 @@ arm of its top contributors read millions of pages for a kernel fork
 (summary/49: NVIDIA/nova, 118 s). The daily table is a few thousand rows
 for the same window. The two readers use it when the repository’s picture
 is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
-is a UTC midnight — and the commits table otherwise. Author identity: a row
+is a UTC midnight — and the commits table otherwise. The activity bounds (<code class="docutils literal notranslate"><span class="pre">/stats</span></code>’ last
+activity, the chart floor) read its first and last plausible day — a UTC
+midnight — when the stored bound is not yet filled and the picture is
+complete (0.29.76: the one live commits scan still on the page after the
+fleet-wide heal). Author identity: a row
 carries what its writer knew, never a guess — the facade stores the login AND
 GitHub’s numeric user id a noreply address names (such commits get no alias
 row, so an alias-only join would have dropped every web-UI and squash-merge

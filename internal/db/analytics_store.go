@@ -277,6 +277,18 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 // because first activity is immutable). ok=false when the repo set
 // has no activity yet. (v0.27.50: the chart "last-active ceiling" for
 // archived/dormant repos, mirror of the first-activity floor.)
+//
+// The commits arm, in order (both readers): the stored bound when
+// plausible (exact; the facade writes it); else, when the repository's
+// daily picture is complete, the last/first plausible day of
+// repo_commit_daily (a UTC midnight: a lower bound of the true last
+// instant, which every consumer rounds to a UTC day — one primary-key
+// read); else the live scan of the commits table. kate 2026-10-07: with
+// the daily table built fleet-wide, /stats still answered 503 on the
+// nine largest repositories — their stored bounds were bogus (a 2085-dated
+// commit the kernel forks share; an epoch first commit) and so read as
+// unfilled until their next walk repairs them, and this reader was the one
+// live scan left on the page (3.2M rows, 152 s, measured on kate).
 func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil
@@ -306,6 +318,9 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT 1),
 			COALESCE(
 			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at >= $3::timestamptz AND last_commit_at < $2::timestamptz),
+			  (SELECT (MAX(d.day)::timestamp AT TIME ZONE 'UTC') FROM aveloxis_data.repo_commit_daily d
+			    WHERE d.repo_id = r.id AND d.day >= ($3::timestamptz AT TIME ZONE 'UTC')::date AND d.day < ($2::timestamptz AT TIME ZONE 'UTC')::date
+			      AND EXISTS (SELECT 1 FROM aveloxis_data.repos p WHERE p.repo_id = r.id AND p.commit_daily_complete_at IS NOT NULL)),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
 			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz
 			    ORDER BY cmt_author_timestamp DESC LIMIT 1))
@@ -361,6 +376,9 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at LIMIT 1),
 			COALESCE(
 			  (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND first_commit_at >= $3::timestamptz AND first_commit_at < $2::timestamptz),
+			  (SELECT (MIN(d.day)::timestamp AT TIME ZONE 'UTC') FROM aveloxis_data.repo_commit_daily d
+			    WHERE d.repo_id = r.id AND d.day >= ($3::timestamptz AT TIME ZONE 'UTC')::date AND d.day < ($2::timestamptz AT TIME ZONE 'UTC')::date
+			      AND EXISTS (SELECT 1 FROM aveloxis_data.repos p WHERE p.repo_id = r.id AND p.commit_daily_complete_at IS NOT NULL)),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
 			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz
 			    ORDER BY cmt_author_timestamp LIMIT 1)),

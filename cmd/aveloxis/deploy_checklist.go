@@ -520,6 +520,11 @@ var deployChecklists = map[string][]deployStep{
 	// api.response_cache_mb unset the API again keeps /timeseries and
 	// /contributors/top answers (main's bound); docs and ladder text. No
 	// schema change: a fleet on 0.29.77 needs only the stamp.
+	// v0.29.79 (2026-10-08): PR #226 Copilot review 5458301284 — a walk
+	// that inserted new commits and did not record its daily fold completely clears
+	// the completeness stamp; the migration-only index pin ignores
+	// commented-out statements. No schema change.
+	"0.29.79": v02979DeployChecklist,
 	"0.29.78": v02978DeployChecklist,
 	"0.29.77": v02977DeployChecklist,
 	"0.29.76": v02976DeployChecklist,
@@ -535,6 +540,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02979DeployChecklist is 0.29.78's ladder with a note on the start step.
+var v02979DeployChecklist = func() []deployStep {
+	prev := v02978DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.79: a collection that inserts new commits but cannot record the repository's daily commit counts completely (a failed, stopped or untrimmed replace) now marks them incomplete (INFO 'daily commit counts marked incomplete'), so the page reads the commits table until the next clean walk instead of omitting the new commits; an ERROR 'could not clear the daily commit counts' completeness stamp' means the clear itself failed. No schema change: a fleet already running 0.29.78 needs only the stop, the migrate (a version stamp) and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02978DeployChecklist is 0.29.77's ladder (a fleet that skipped 0.29.77
 // still needs its index builds and VACUUM) with a note on the start step.

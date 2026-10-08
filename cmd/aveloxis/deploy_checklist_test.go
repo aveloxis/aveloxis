@@ -877,7 +877,7 @@ func TestVacuumGateWaitsForALineServeWrites(t *testing.T) {
 func TestEveryLadderStartsServeOnce(t *testing.T) {
 	// The ladders built by the positional recipe (0.29.73 on) carry the
 	// start step; older ladders predate it and have none.
-	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true}
+	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true}
 	for version, steps := range deployChecklists {
 		n := 0
 		for _, s := range steps {
@@ -922,5 +922,29 @@ func TestBackgroundedPsqlNeverPrompts(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("no backgrounded psql step found; the scan is not seeing the ladders")
+	}
+}
+
+// The 0.29.79 start note names the two lines the stamp clear logs; each
+// quote must be that line's message at its level.
+func TestV02979StartNoteQuotesRealLogLines(t *testing.T) {
+	steps, _ := deployChecklistFor("0.29.79")
+	var desc string
+	for _, s := range steps {
+		if s.cmd == "aveloxis start all" {
+			desc = s.desc
+		}
+	}
+	body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/collector/facade.go")), "func (f *FacadeCollector) invalidateUnrecordedDaily(")
+	for _, q := range []struct{ level, quote string }{
+		{"Info", "daily commit counts marked incomplete"},
+		{"Error", "could not clear the daily commit counts' completeness stamp"},
+	} {
+		if !strings.Contains(desc, q.quote) {
+			t.Errorf("the 0.29.79 start note must quote %q", q.quote)
+		}
+		if !strings.Contains(body, "logger."+q.level+`("`+q.quote) {
+			t.Errorf("invalidateUnrecordedDaily does not log %q at %s", q.quote, q.level)
+		}
 	}
 }

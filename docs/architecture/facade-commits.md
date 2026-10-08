@@ -224,7 +224,10 @@ a **completed** walk replaces the repository's rows in
 `aveloxis_data.repo_commit_daily` with the fold in one transaction (an empty
 branch folds nothing and clears the rows; a walk cut short by a clone or
 git-log error leaves the previous rows, which are still a whole earlier
-walk; a walk that swallowed any commit write — the per-row fallback's
+walk — but if it had already inserted new commits, or new commits went in
+and the replace failed, was stopped, or could not trim (a walk that
+swallowed writes), the repository's completeness stamp is cleared
+(0.29.79), because the rows may no longer cover the commits table; a walk that swallowed any commit write — the per-row fallback's
 failures — records what it saw but neither trims the rows it may have
 missed nor lowers a bucket's count, so a sparser picture never replaces a
 fuller one). A trimming replace also stamps the repository's picture

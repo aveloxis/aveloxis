@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // SR-2, made bidirectional (0.29.77 round 1: the two new covering indexes
@@ -58,20 +60,17 @@ func TestConcurrentlyBuiltIndexesAreNotDeclaredInSchemaSQL(t *testing.T) {
 		sources.WriteString(readFileForTest(t, f))
 		sources.WriteString("\n")
 	}
-	schema := readFileForTest(t, "schema.sql")
-	concurrently := regexp.MustCompile(`CREATE (?:UNIQUE )?INDEX CONCURRENTLY IF NOT EXISTS (\w+)`).FindAllStringSubmatch(sources.String(), -1)
-	plain := regexp.MustCompile(`CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)`).FindAllStringSubmatch(schema, -1)
+	concurrently := concurrentlyBuiltIndexes(sources.String())
 	declared := map[string]bool{}
-	for _, m := range plain {
-		declared[m[1]] = true
+	for _, name := range schemaDeclaredIndexes(readFileForTest(t, "schema.sql")) {
+		declared[name] = true
 	}
 	if len(concurrently) < 50 {
 		t.Fatalf("expected the package's CONCURRENTLY builds to be scanned, found %d", len(concurrently))
 	}
 	seen := map[string]bool{}
 	var both []string
-	for _, m := range concurrently {
-		name := m[1]
+	for _, name := range concurrently {
 		if declared[name] && !seen[name] {
 			seen[name] = true
 			both = append(both, name)
@@ -88,5 +87,43 @@ func TestConcurrentlyBuiltIndexesAreNotDeclaredInSchemaSQL(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("legacyIndexesInBothPlaces names %s, which is no longer declared in both places — remove it from the list", name)
 		}
+	}
+}
+
+// concurrentlyBuiltIndexes names every live `CREATE [UNIQUE] INDEX
+// CONCURRENTLY IF NOT EXISTS` in Go source: Go comments are stripped, and
+// then SQL comments (the statements sit in raw strings, where a `--` line
+// is still Go text). PR #226 review 5458301284: the raw scan counted
+// commented-out builds.
+func concurrentlyBuiltIndexes(goSrc string) []string {
+	live := srctest.StripSQLComments(srctest.StripGoComments(goSrc))
+	var names []string
+	for _, m := range regexp.MustCompile(`CREATE (?:UNIQUE )?INDEX CONCURRENTLY IF NOT EXISTS (\w+)`).FindAllStringSubmatch(live, -1) {
+		names = append(names, m[1])
+	}
+	return names
+}
+
+// schemaDeclaredIndexes names every live plain `CREATE [UNIQUE] INDEX IF NOT
+// EXISTS` in schema.sql (SQL comments stripped).
+func schemaDeclaredIndexes(schema string) []string {
+	var names []string
+	for _, m := range regexp.MustCompile(`CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)`).FindAllStringSubmatch(srctest.StripSQLComments(schema), -1) {
+		names = append(names, m[1])
+	}
+	return names
+}
+
+func TestIndexScansIgnoreCommentedOutStatements(t *testing.T) {
+	goSrc := "package db\n" +
+		"// execCreateIndexConcurrently(ctx, pg, logger, errs, \"aveloxis_data\", \"idx_go_line\", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_go_line ON t (a)`)\n" +
+		"/* `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_go_block ON t (a)` */\n" +
+		"var a = `\n-- CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sql_line ON t (a)\nCREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_live ON t (a)`\n"
+	if got := concurrentlyBuiltIndexes(goSrc); len(got) != 1 || got[0] != "idx_live" {
+		t.Errorf("concurrentlyBuiltIndexes = %v, want only [idx_live]: commented-out builds are not builds", got)
+	}
+	schema := "-- CREATE INDEX IF NOT EXISTS idx_schema_commented ON t (a);\n/* CREATE INDEX IF NOT EXISTS idx_schema_block ON t (a); */\nCREATE INDEX IF NOT EXISTS idx_schema_live ON t (a);\n"
+	if got := schemaDeclaredIndexes(schema); len(got) != 1 || got[0] != "idx_schema_live" {
+		t.Errorf("schemaDeclaredIndexes = %v, want only [idx_schema_live]: a commented-out declaration is not a declaration", got)
 	}
 }

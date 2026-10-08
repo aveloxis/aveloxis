@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.78 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.79 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=0af2a181"></script>
+      <script src="../_static/documentation_options.js?v=ae8a2598"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2012,7 +2012,10 @@ a <strong>completed</strong> walk replaces the repository’s rows in
 <code class="docutils literal notranslate"><span class="pre">aveloxis_data.repo_commit_daily</span></code> with the fold in one transaction (an empty
 branch folds nothing and clears the rows; a walk cut short by a clone or
 git-log error leaves the previous rows, which are still a whole earlier
-walk; a walk that swallowed any commit write — the per-row fallback’s
+walk — but if it had already inserted new commits, or new commits went in
+and the replace failed, was stopped, or could not trim (a walk that
+swallowed writes), the repository’s completeness stamp is cleared
+(0.29.79), because the rows may no longer cover the commits table; a walk that swallowed any commit write — the per-row fallback’s
 failures — records what it saw but neither trims the rows it may have
 missed nor lowers a bucket’s count, so a sparser picture never replaces a
 fuller one). A trimming replace also stamps the repository’s picture

@@ -184,6 +184,34 @@ func (s *PostgresStore) ReplaceRepoCommitDaily(ctx context.Context, repoID int64
 	})
 }
 
+// InvalidateCommitDailyComplete clears the repository's completeness stamp:
+// the commits table holds rows its daily picture does not (a walk inserted
+// new commits and its fold was not recorded completely: a failed, stopped
+// or untrimmed replace — PR #226 review 5458301284;
+// SR-3: the stamp covers only rows proven folded). The readers then take
+// the commits table until the next clean walk or `heal-commit-daily`
+// restamps it. It takes the writers' per-repository lock, so it cannot
+// interleave with a heal fill that read the table before the new commits
+// and would stamp after this clear (the fill rechecks after the lock).
+// Clearing an unstamped repository is a no-op.
+func (s *PostgresStore) InvalidateCommitDailyComplete(ctx context.Context, repoID int64) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, repoCommitDailyLockSQL, repoID); err != nil {
+			return fmt.Errorf("lock repo_commit_daily: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL
+			WHERE repo_id = $1 AND commit_daily_complete_at IS NOT NULL`, repoID); err != nil {
+			return fmt.Errorf("clear repo_commit_daily stamp: %w", err)
+		}
+		return tx.Commit(ctx)
+	})
+}
+
 // stampCommitDailyCompleteSQL marks the repository's daily rows as its
 // whole picture; run inside the writer's transaction, after the rows.
 const stampCommitDailyCompleteSQL = `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NOW() WHERE repo_id = $1`

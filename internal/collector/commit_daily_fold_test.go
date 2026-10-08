@@ -100,11 +100,11 @@ func TestCommitDailyIsFoldedWhereCommitsAreProvenWritten(t *testing.T) {
 	collect := srctest.FuncBody(t, src, "func (f *FacadeCollector) CollectRepo(")
 	// Round 2 F2: a walk that swallowed commit writes still records what it
 	// saw (freshness) but does not TRIM rows it may have missed, and says so.
-	if !regexp.MustCompile(`parseErr := f\.parseGitLog\(ctx, repoID, clonePath, result\)\s*f\.recordCommitBounds\(ctx, repoID, result\)\s*if parseErr != nil \{[^}]*\}\s*f\.recordCommitDaily\(ctx, repoID, result\)`).MatchString(collect) {
+	if !regexp.MustCompile(`parseErr := f\.parseGitLog\(ctx, repoID, clonePath, result\)\s*f\.recordCommitBounds\(ctx, repoID, result\)\s*if parseErr != nil \{[^}]*\}\s*dailyComplete = f\.recordCommitDaily\(ctx, repoID, result\)`).MatchString(collect) {
 		t.Error("CollectRepo must record the daily fold right after a COMPLETED walk (after the git-log error return), never after a partial one")
 	}
 	record := srctest.FuncBody(t, src, "func (f *FacadeCollector) recordCommitDaily(")
-	if !strings.Contains(record, "trim := result.CommitWriteFailures == 0") || !strings.Contains(record, "f.store.ReplaceRepoCommitDaily(ctx, repoID, result.commitDailyRows(), trim)") {
+	if !strings.Contains(record, "trim := result.CommitWriteFailures == 0") || !strings.Contains(record, "replace := f.store.ReplaceRepoCommitDaily") || !strings.Contains(record, "replace(ctx, repoID, result.commitDailyRows(), trim)") {
 		t.Error("recordCommitDaily trims only when every walked commit was proven written, and always upserts what it saw")
 	}
 	if !regexp.MustCompile(`if !trim \{\s*f\.logger\.Warn\(`).MatchString(record) {

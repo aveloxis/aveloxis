@@ -31,8 +31,10 @@ type TimeSeriesResult struct {
 }
 
 // GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics
-// between `since` and `until` (inclusive lower, exclusive upper).
-// A zero `until` is treated as "no upper bound" (queries up to the latest data).
+// between `since` and `until` (inclusive lower, exclusive upper), both
+// clamped to the plausible range: the lower bound is at least the earliest
+// plausible commit time (BoundedLower; a zero `since` means from it) and
+// the upper at most the latest (BoundedUpper; a zero `until` means up to it).
 // Uses date_trunc('week', timestamp) for consistent Monday-aligned weeks.
 //
 // v0.27.36: every query/scan error propagates. The pre-fix structure
@@ -49,24 +51,32 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 		return nil, fmt.Errorf("time series repo lookup: %w", err)
 	}
 
-	// A zero `until` is represented as a far-future timestamp so the SQL
-	// queries can remain parameterized identically regardless of whether the
-	// caller specified an upper bound.
-	upper := until
-	if until.IsZero() {
-		upper = time.Now().AddDate(100, 0, 0)
-	}
+	// The upper bound is at most the latest plausible commit time (a UTC
+	// midnight: an open-ended window stays day-aligned so the daily commit
+	// table can serve it — summary/49; and bogus future author dates never
+	// stretch the series — 2026-10-07, NVIDIA/nova's 2080s).
+	upper := BoundedUpper(until)
+	since = BoundedLower(since) // and no earlier than the plausible floor (an unset clock stamps the epoch)
 
-	var err error
-	// Weekly commits (from the commits table — one row per file, so count distinct hashes).
-	result.Commits, err = s.weeklySeries(ctx, `
+	// The commit series (summary/49): the daily table when it serves this
+	// window, the commits table otherwise (one row per file per commit, so
+	// count distinct hashes).
+	daily, err := s.commitDailyServes(ctx, repoID, since, upper)
+	if err != nil {
+		return nil, fmt.Errorf("time series: %w", err)
+	}
+	commitsSQL := `
 		SELECT date_trunc('week', cmt_author_timestamp AT TIME ZONE 'UTC') AS week_start,
 			COUNT(DISTINCT cmt_commit_hash) AS cnt
 		FROM aveloxis_data.commits
 		WHERE repo_id = $1 AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
 		  AND cmt_author_timestamp IS NOT NULL
 		GROUP BY week_start
-		ORDER BY week_start`, repoID, since, upper)
+		ORDER BY week_start`
+	if daily {
+		commitsSQL = dailyWeeklyCommitsSQL
+	}
+	result.Commits, err = s.weeklySeries(ctx, commitsSQL, repoID, since, upper)
 	if err != nil {
 		return nil, fmt.Errorf("weekly commits: %w", err)
 	}

@@ -58,6 +58,8 @@ func TestFacadeRealRepoEndToEnd(t *testing.T) {
 		(SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1)`, markerURL)
 	_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.commits WHERE repo_id IN
 		(SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1)`, markerURL)
+	_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id IN
+		(SELECT repo_id FROM aveloxis_data.repos WHERE repo_git = $1)`, markerURL)
 	_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_git = $1`, markerURL)
 
 	var repoID int64
@@ -72,6 +74,7 @@ func TestFacadeRealRepoEndToEnd(t *testing.T) {
 			(SELECT cmt_id FROM aveloxis_data.commits WHERE repo_id = $1)`, repoID)
 		_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.commit_messages WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.commits WHERE repo_id = $1`, repoID)
+		_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1`, repoID) // the FK (summary/49)
 		_, _ = store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	}
 	t.Cleanup(cleanup)

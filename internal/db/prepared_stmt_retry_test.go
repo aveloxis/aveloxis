@@ -4,11 +4,17 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -137,5 +143,47 @@ func TestStagingFlushUsesRetryWrapper(t *testing.T) {
 	if strings.Contains(flushBody, "w.store.pool.SendBatch(") {
 		t.Error("StagingWriter.Flush still calls w.store.pool.SendBatch directly — " +
 			"remove it so only sendBatchWithRetry runs the batch")
+	}
+}
+
+// TestSendBatchWithRetryRecoversFromAStaleStatement — review 9 on PR #226:
+// the retry must send a FRESH batch. pgx (v5, QueryExecModeCacheStatement)
+// writes each queued query's statement description into the batch on the
+// first send and skips the prepare on a resend, so retrying the same batch
+// sent the same stale statement name again and failed a second time; pgx
+// does clear its cache on the failure, so a fresh copy re-prepares. The
+// stale entry is made real here: the statement is prepared, then the server
+// forgets it (DEALLOCATE ALL) while pgx's cache still lists it.
+func TestSendBatchWithRetryRecoversFromAStaleStatement(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1 // one connection: the stale entry and the retry meet on it
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	s := &PostgresStore{pool: pool, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	const q = `SELECT $1::int + 0 AS avstale`
+	prime := &pgx.Batch{}
+	prime.Queue(q, 1)
+	if err := pool.SendBatch(ctx, prime).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "DEALLOCATE ALL", pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatal(err)
+	}
+	b := &pgx.Batch{}
+	b.Queue(q, 2)
+	if err := s.sendBatchWithRetry(ctx, b); err != nil {
+		t.Errorf("the retry must recover from a stale prepared statement, got %v", err)
 	}
 }

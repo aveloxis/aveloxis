@@ -70,6 +70,7 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/repos/{repoID}/contributions/coverage":     {},
 	"GET /api/v1/repos/{repoID}/contributors/top":           {},
 	"GET /api/v1/repos/{repoID}/contributors/elsewhere":     {},
+	"GET /api/v1/authz/repos/{repoID}":                      {wantStatus: []int{204}},
 	"GET /api/v1/contributors/{cntrbID}/activity":           {auth: "user"},
 	"GET /api/v1/compare":                                   {query: "entities=repo:{repoID}&metric=contributors"},
 	"GET /api/v1/compare/snapshot":                          {query: "entities=repo:{repoID}&metric=labor_investment"},
@@ -77,7 +78,12 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/mailing-list/stats":                        {},
 
 	// Portal (Bearer unconditionally).
-	"GET /api/v1/me":                            {auth: "user"},
+	"GET /api/v1/me": {auth: "user"},
+	// 2026-10-04 profile routes: the harness has no mailer, so a submission
+	// is refused with the "not configured" message (422); a token nobody
+	// issued is "invalid" (200), never an error.
+	"POST /api/v1/me/email":                     {auth: "user", body: `{"email":"smoke@example.com"}`, wantStatus: []int{422}},
+	"POST /api/v1/me/email/confirm":             {auth: "user", body: `{"token":"smoke-no-such-token"}`},
 	"GET /api/v1/groups":                        {auth: "user"},
 	"POST /api/v1/groups":                       {auth: "user", body: `{"name":"smoke-extra-group"}`},
 	"GET /api/v1/groups/{groupID}/repos":        {auth: "user"},

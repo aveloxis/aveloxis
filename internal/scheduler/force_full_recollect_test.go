@@ -17,6 +17,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -84,7 +85,7 @@ func TestBuildOutcomeForceFullIsTyped(t *testing.T) {
 		{name: "database error", collectionErr: errors.New("failed to connect to database: connection refused"), want: false},
 		{name: "gap fill ignored when collection failed otherwise", collectionErr: errors.New("issues: 500"), fill: batch("x"), want: false},
 	} {
-		got := s.buildOutcome(tc.result, nil, nil, tc.collectionErr, tc.fill)
+		got := s.buildOutcome(false, tc.result, nil, nil, tc.collectionErr, tc.fill, nil)
 		if got.forceFull != tc.want {
 			t.Errorf("%s: forceFull = %v, want %v (errMsg %q)", tc.name, got.forceFull, tc.want, got.errMsg)
 		}
@@ -136,15 +137,41 @@ func TestCompleteJobPathWiresAutoFlag(t *testing.T) {
 // a failed job carries the error; through v0.29.68 it logged success=false
 // and nothing else, so six giant repositories' 6–21 h failures had no reason
 // in the log.
+// Item 83 (review round 2): the line carries the message on a SUCCESSFUL
+// job too (a recorded facade failure), and the source pin that keyed on
+// `if !outcome.success {` had started passing by accident — the attributes
+// are a function now, tested by behaviour.
 func TestFailedJobCompleteLogsItsError(t *testing.T) {
-	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go"))
-	at := strings.Index(src, `s.logger.Info("job complete", completeAttrs...)`)
-	if at < 0 {
-		t.Fatal(`the job-complete log must be s.logger.Info("job complete", completeAttrs...)`)
+	repo := &model.Repo{Owner: "chaoss", Name: "augur"}
+	attrOf := func(attrs []any, key string) (any, bool) {
+		for i := 0; i+1 < len(attrs); i += 2 {
+			if attrs[i] == key {
+				return attrs[i+1], true
+			}
+		}
+		return nil, false
 	}
-	before := src[:at]
-	arm := strings.LastIndex(before, "if !outcome.success {")
-	if arm < 0 || !strings.Contains(before[arm:], `completeAttrs = append(completeAttrs, "error", outcome.errMsg)`) {
-		t.Error("a failed job's complete line must append its error: `if !outcome.success { completeAttrs = append(completeAttrs, \"error\", outcome.errMsg) }` just before the log")
+	// Since item 83 `error=` appears on successful jobs too, so `success=`
+	// is the line's only failure signal: asserted in every case.
+	for name, out := range map[string]jobOutcome{
+		"failed":                  {success: false, errMsg: "rate limited"},
+		"recorded facade failure": {success: true, errMsg: "facade collection failed: exit status 128"},
+		"clean":                   {success: true},
+	} {
+		attrs := jobCompleteAttrs(7, repo, out, time.Second)
+		if got, ok := attrOf(attrs, "success"); !ok || got != out.success {
+			t.Errorf("%s: the line must carry success=%v, got %v ok=%v", name, out.success, got, ok)
+		}
+		msg, ok := attrOf(attrs, "error")
+		if out.errMsg != "" && (!ok || msg != out.errMsg) {
+			t.Errorf("%s: the line must carry the message %q, got %v ok=%v", name, out.errMsg, msg, ok)
+		}
+		if out.errMsg == "" && ok {
+			t.Errorf("%s: a clean success carries no error attribute, got %v", name, msg)
+		}
+	}
+	src := srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go"))
+	if !strings.Contains(srctest.FuncBody(t, src, "func (s *Scheduler) runJob("), `s.logger.Info("job complete", jobCompleteAttrs(job.RepoID, repo, outcome, duration)...)`) {
+		t.Error("runJob must log the job-complete line through jobCompleteAttrs")
 	}
 }

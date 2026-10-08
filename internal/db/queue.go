@@ -173,8 +173,15 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, repoID int64, success b
 	}
 
 	status := "queued" // re-queue immediately
+	// last_error carries any message the job hands over (item 83): a
+	// successful API collection whose facade failed records the facade's
+	// error while keeping its anchor (a skipped job's reason, success with
+	// a zero start, is recorded the same way). A completion without a
+	// message clears the column. So last_error set no longer means the
+	// last attempt FAILED — RealignDueDates reads it that way and leaves
+	// such rows to their next completion, a small and documented effect.
 	var lastErr *string
-	if !success {
+	if errMsg != "" {
 		lastErr = &errMsg
 	}
 	// Round-23: the failure invariant is enforced HERE, not by caller
@@ -327,7 +334,11 @@ func (s *PostgresStore) MakeQueuedReposDue(ctx context.Context) (int64, error) {
 //   - last_error IS NOT NULL — a failed row's due_at is its retry time and
 //     its last_collected the last success, so realigning it made it due at
 //     once on every restart (worklist 68, v0.29.69); it picks up a changed
-//     interval at its next completion
+//     interval at its next completion. Since item 83 a SUCCESSFUL row can
+//     carry last_error too (a recorded facade failure, a skip reason); the
+//     column cannot tell the two apart, so it is left alone the same way
+//     and takes a new interval at its next completion (at most the rest of
+//     one old interval)
 //
 // Idempotent: the <> predicate skips rows already in the correct shape, so
 // updated_at stays stable across repeated startups.
@@ -341,13 +352,18 @@ func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time
 	if archivedMultiplier < 1 {
 		archivedMultiplier = 1
 	}
-	// A row whose last attempt FAILED (last_error set; CompleteJob clears it
-	// on success) keeps the due date its failure gave it — NOW() + interval
+	// A row whose last attempt FAILED (last_error set; a completion without
+	// a message clears it) keeps the due date its failure gave it — NOW() + interval
 	// at the failure (worklist 68, the 2026-09-28 kate log: last_collected
 	// is the last SUCCESS, so realigning a failed row put it in the past and
 	// it re-ran at every start; eight repositories failed within seconds of
 	// each of seven starts). A changed interval reaches such a row at its
-	// next completion.
+	// next completion. Since item 83 a SUCCESSFUL row can carry last_error
+	// too (a recorded facade failure, a skip reason): it is left alone here
+	// as well. A skip keeps its OLD anchor (zero startedAt), so realigning
+	// it would re-create the worklist-68 shape; a recorded facade failure
+	// has a fresh anchor, but the column cannot tell the cases apart, and
+	// the cost of leaving both is at most the rest of one old interval.
 	stretch := fmt.Sprintf(archivedStretchCaseSQL, "$2")
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_ops.collection_queue

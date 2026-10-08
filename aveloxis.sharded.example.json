@@ -55,5 +55,24 @@
     "gitlab_base_url": "https://gitlab.com",
     "api_internal_url": "http://127.0.0.1:8383"
   },
+  "api": {
+    "addr": "127.0.0.1:8383",
+    "rate_limit_rps": 1,
+    "rate_limit_burst": 10,
+    "rate_limit_daily": 1000,
+    "exempt_cidrs": [
+      "127.0.0.0/8",
+      "::1/128",
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16"
+    ],
+    "cors_origins": [],
+    "trusted_proxy": "",
+    "require_auth": false,
+    "response_cache_mb": 0,
+    "cache_rewarm_seconds": 60,
+    "front_end_secret": ""
+  },
   "log_level": "info"
 }

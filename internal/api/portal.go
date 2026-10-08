@@ -37,8 +37,19 @@ import (
 // requireUser demands a validated Bearer identity regardless of the
 // api.require_auth rollout flag (user-context endpoints are
 // meaningless without one). Writes the 401 (or, on a store failure, the 503) itself on failure.
+// On success it marks the answer per-caller (`private, no-store`; PR #226
+// review 5408306640 on /me, then its class — the groups, home, admin and
+// account routes carried no cache directive at all): this is the layer
+// that knows the answer belongs to one caller (SR-18). No route behind
+// requireUser is shareable today; the shareable routes (cachedRepoGET's,
+// the metrics catalog, the authz route) do not pass through it. A
+// shareable route added behind it must set its own headers AFTER the
+// call, which replace these. Routes that answer differently WITH an
+// identity but need none (search, compare, entity search) read it through
+// callerIdentity, which marks the same way.
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
 	if info, ok := r.Context().Value(authCtxKey{}).(authInfo); ok {
+		setNoStoreHeaders(w.Header())
 		return info, true
 	}
 	// The global middleware may not have resolved a token (auth off /
@@ -48,6 +59,7 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 	if tok := bearerToken(r); tok != "" {
 		info, err := s.auth.resolveToken(r.Context(), tok)
 		if err == nil {
+			setNoStoreHeaders(w.Header())
 			return info, true
 		}
 		if !errors.Is(err, errInvalidToken) {
@@ -58,6 +70,22 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 	}
 	writeAuthError(w, http.StatusUnauthorized, "this endpoint requires a signed-in session (Bearer token)")
 	return authInfo{}, false
+}
+
+// callerIdentity is the read for routes that serve everyone but answer
+// differently for a signed-in caller (the star column of a search, a
+// compare keyed on the caller's scope, the in_scope class of an entity
+// search): when an identity is present the answer is per-caller and is
+// marked `private, no-store` like requireUser's (L10 round 2 of 0.29.75,
+// the class sweep); without one nothing is marked. Every direct read of
+// the identity in a handler goes through this or requireUser
+// (TestIdentityReadsGoThroughTheMarkingHelpers).
+func callerIdentity(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
+	info, ok := r.Context().Value(authCtxKey{}).(authInfo)
+	if ok {
+		setNoStoreHeaders(w.Header())
+	}
+	return info, ok
 }
 
 // requireAdmin layers the admin check on requireUser.
@@ -85,13 +113,27 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	// before). v0.27.84: name + avatar_url added — the home greeting
 	// and nav avatar render from here, never from mocks. Best-effort —
 	// a lookup failure yields empty strings, never an error for /me.
-	login, name, avatarURL, _ := s.store.GetUserIdentity(r.Context(), info.UserID)
+	var login, name, avatarURL string
+	if s.accounts != nil { // a Server without a store answers the identity it has: none
+		login, name, avatarURL, _ = s.accounts.GetUserIdentity(r.Context(), info.UserID)
+	}
+	// 2026-10-04: the account fields the profile page shows — the forge
+	// signed in with, the confirmed email (the forge's own, or one confirmed
+	// through the link) and a confirmation still pending. Best-effort like
+	// the identity, but a failed read is logged.
+	provider, email, pending := s.accountFields(r, info.UserID)
+	// Account data, with the addresses: never stored by a browser or an
+	// intermediary — requireUser marked the answer `private, no-store`
+	// (PR #226 review 5408306640; pinned in TestMeCarriesTheAccountFields).
 	jsonResponse(w, map[string]any{
-		"user_id":    info.UserID,
-		"login":      login,
-		"name":       name,
-		"avatar_url": avatarURL,
-		"is_admin":   info.IsAdmin,
+		"user_id":       info.UserID,
+		"login":         login,
+		"name":          name,
+		"avatar_url":    avatarURL,
+		"provider":      provider,
+		"email":         email,
+		"email_pending": pending,
+		"is_admin":      info.IsAdmin,
 		"scope_repo_count": func() int {
 			if info.IsAdmin {
 				return -1 // unscoped

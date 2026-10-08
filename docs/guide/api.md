@@ -3,10 +3,10 @@
 Aveloxis includes a REST API server for programmatic access to collected data, repository statistics, time-series metrics, SBOM downloads, and vulnerability information. Start it with:
 
 ```bash
-aveloxis api --addr :8383
+aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr overrides it
 ```
 
-The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database.
+The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
 ## Endpoints
 
@@ -19,8 +19,10 @@ GET /api/v1/health
 Returns the server status and version.
 
 ```json
-{"status": "ok", "version": "0.9.0"}
+{"status": "ok", "version": "0.29.73"}
 ```
+
+`version` is the running binary's.
 
 ### Public fleet stats
 
@@ -150,6 +152,8 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 ```
 
 Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues.
+
+Every commit window on this API — this series, `/contributors/top`, `/contributions/*`, `/compare` — ends no later than the latest plausible commit time, two UTC days after now, and starts no earlier than the earliest, 1970-01-02, whatever `since` and `until` say. An author timestamp is an absolute instant, so only a wrong committer clock can place one in the future (the margin is a day of skew rounded to a day-aligned edge), and a Unix clock cannot place one before the epoch, which is what an unset clock stamps. Repositories carry the occasional author date in 2080 or 1970, and such a date must not stretch a window. The rows stay stored; only the windows are bounded.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -358,14 +362,27 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-**Caching (since 0.29.71).** This endpoint, `/timeseries` and each entity's
-series on `/compare` are cached under the repositories' collection state: an
-answer is reused until a collection job over one of them starts or ends, and
-for at most `collection.enrich_interval_minutes` (default 30), the cadence at
-which contributor names can change between collections. A cached response
-from this endpoint or `/timeseries` carries `X-Cache: hit`; on `/compare` the
-per-entity series are reused inside the response, and only a whole-response
-hit (below) carries the header.
+**Caching (since 0.29.71; 0.29.73).** With `api.response_cache_mb` set, a
+repository's own GET answers (this endpoint, `/timeseries`, `/licenses`,
+`/deps`, `/libyear`, `/scancode-*`, `/vulnerabilities`, `/scorecard`,
+`/sbom` and `/contributions/*`) are reused until the repository is collected
+again or scanned; with it unset (the default) only this endpoint and
+`/timeseries` are, up to 1,000 answers. Answers that name contributors are also recomputed after
+`collection.enrich_interval_minutes` (default 30). These answers carry an
+`ETag` (weak for answers that depend only on the repository's state); a
+request whose `If-None-Match` names the current one gets
+`304 Not Modified`. A response served from the cache carries `X-Cache: hit`.
+Each entity's series on `/compare` is reused inside the response, and only a
+whole-response hit (below) carries the header. Shareable answers carry
+`Cache-Control: no-cache` with a weak `ETag`, so a client revalidates every
+time and gets a 304 when nothing changed. An answer that depends on who
+asks — the per-user routes, every `401`/`403`, and a response that just
+added the repository to the caller's group — carries
+`Cache-Control: private, no-store` and is never cached by anything.
+
+`GET /api/v1/authz/repos/{repoID}` (0.29.73) returns `204` when the caller
+may read that repository, otherwise the same `401`/`403` the data endpoints
+return. It returns no data.
 
 `?bots=hide` (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types
@@ -386,9 +403,9 @@ talbot) stay visible. Deliberately
 broader than the `contributor_retention` metric's bot exclusion,
 which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
-same repo scope as every other per-repo endpoint; responses are served
-from a 60-second cache (the underlying data only changes per
-collection cycle).
+same repo scope as every other per-repo endpoint. This endpoint's answers
+are cached as the caching paragraph above describes; `/contributors/elsewhere`
+reads other repositories' activity and keeps a 60-second cache.
 
 Response:
 
@@ -691,16 +708,22 @@ origin (and the web GUI origin if its pages fetch the API cross-port).
 
 ## Deployment
 
-The API server is stateless — it reads directly from PostgreSQL. You can run multiple instances behind a load balancer for high availability.
+The three processes are started together with `aveloxis start all` (pidfiles
+and logs under `~/.aveloxis/`) or, on a production host, as systemd units
+([Running as a Service](running-as-a-service.md)); the whole layout — proxy,
+OAuth, the first admin, upgrades — is
+[Production Deployment](../getting-started/deployment.md).
 
-```bash
-# Typical 3-process deployment
-(nohup aveloxis serve --workers 40 --monitor :5555 >> aveloxis.log &)
-(nohup aveloxis web >> web.log &)
-(nohup aveloxis api --addr :8383 >> api.log &)
-```
+Each `api` process keeps its own state: the per-repository response cache
+(up to `api.response_cache_mb`, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
+authorization cache. Several instances behind a load balancer each compute
+and hold their own answers, and the per-IP limits are per instance; run one
+per host unless that is what you want.
 
-The web GUI's Chart.js visualizations fetch data from the API server. The API URL is configured as `http://localhost:8383` by default. If running on a different host or port, update the API base URL in the web templates.
+The web GUI's charts fetch the API through the web process, which proxies
+`/api/*` to `web.api_internal_url` (`http://127.0.0.1:8383` by default);
+when the API moves, that URL must follow. Behind a reverse proxy, send
+`/api/` to the API directly so its per-visitor limits see the visitor.
 
 ## Comparison analytics (v0.27.2)
 
@@ -1165,12 +1188,30 @@ require the caller's user to be an administrator (403 otherwise).
 
 Per-user:
 
-- `GET /api/v1/me` — `{user_id, login, name, avatar_url, is_admin,
-  scope_repo_count}` (`login` added v0.27.77; `name` + `avatar_url`
-  added v0.27.84 — the home greeting and nav avatar render the REAL
-  signed-in identity, stored from OAuth and refreshed on every
-  login). `scope_repo_count` is `-1` for admins (unscoped). The GUI
-  uses `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/me` — `{user_id, login, name, avatar_url, provider, email,
+  email_pending, is_admin, scope_repo_count}` (`login` added v0.27.77;
+  `name` + `avatar_url` added v0.27.84 — the home greeting and nav avatar
+  render the REAL signed-in identity, stored from OAuth and refreshed on
+  every login; `provider` (`github` or `gitlab`), `email` and
+  `email_pending` added 2026-10-04 for the profile page: `email` is the
+  forge's own address taken at sign-in, or one confirmed through the
+  mailed link; `email_pending` is an address awaiting confirmation, or
+  empty). `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
+  `is_admin` to decide whether to render the admin navigation.
+- `POST /api/v1/me/email` — body `{"email": "…"}`: stores the address as
+  pending and mails the confirmation link, for an account whose forge gave
+  no email (a private GitHub address). `200 {"sent": true}`, or `422
+  {"sent": false, "message": "…"}` with the reason (not a deliverable
+  address; mail not configured — `mail.site_url` and the Gmail settings
+  are required; a failed save or send). The link lands on the front end's
+  profile page when `web.spa_url` is set, on the web process's
+  `/account/email/confirm` otherwise. The same submission the web
+  process's `/account/email` form runs.
+- `POST /api/v1/me/email/confirm` — body `{"token": "…"}` from that link,
+  for the signed-in account: `200 {"status": "confirmed"}`; `200 {"status":
+  "invalid"}` for a token that is not live for this account (unknown,
+  expired, already used, another account's — nothing changes); `500
+  {"status": "error"}` when the database failed (the link still works).
 - `GET /api/v1/groups` — the caller's groups:
   `{groups: [{group_id, name, status, repo_count, favorited,
   pending_adds}]}`. `status` is `approved`, `pending`, or `rejected`

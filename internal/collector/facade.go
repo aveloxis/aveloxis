@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,10 @@ type FacadeCollector struct {
 	logger       *slog.Logger
 	repoDir      string // base directory for cloned repos
 	affiliations *db.AffiliationResolver
+	// replaceCommitDaily is a test-only seam over store.ReplaceRepoCommitDaily
+	// (nil in production, pinned by TestReplaceCommitDailySeamIsTestOnly):
+	// the tests inject a failed or stopped replace.
+	replaceCommitDaily func(ctx context.Context, repoID int64, rows []db.CommitDailyRow, trim bool) error
 }
 
 // NewFacadeCollector creates a facade collector. repoDir is the base directory
@@ -65,6 +70,11 @@ type FacadeResult struct {
 	// fallback row that did — SR-3); zero when it wrote none. CollectRepo
 	// folds them into repos.first_commit_at / last_commit_at (O11 option 2).
 	FirstCommitAt, LastCommitAt time.Time
+	// commitDaily folds the commits this run PROVED written by UTC day of
+	// the author timestamp and author email (summary/49): CollectRepo
+	// replaces the repository's repo_commit_daily rows with it after a
+	// completed walk. A NULL author timestamp buckets nowhere.
+	commitDaily map[commitDayKey]int
 	// EmptyDefaultBranch is set when the default branch resolved to no
 	// commit (v0.29.58): the numstat pass completed with nothing to walk,
 	// and the whitespace phase has nothing to walk either — CollectRepo
@@ -84,6 +94,15 @@ type FacadeResult struct {
 	// Message/parent write failures deliberately don't count: they
 	// don't remove commits rows, which is all the whitespace join needs.
 	CommitWriteFailures int
+
+	// NewCommitRows counts commit-file rows this walk INSERTED (not ones
+	// already present). When it is non-zero and the walk's daily fold was
+	// not recorded completely (failed, stopped, or untrimmed), the
+	// repository's completeness stamp is cleared
+	// (invalidateUnrecordedDaily). The per-row fallback cannot tell new from
+	// present and counts every row it wrote — it runs only after a failed
+	// batch, and an over-count costs only a clear the next walk restamps.
+	NewCommitRows int64
 }
 
 // CollectRepo clones (or fetches) the repo and parses git log for commit data.
@@ -117,6 +136,16 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	}
 	result.CloneOK = true
 
+	// Whatever the walk returns from here, new commit rows whose fold is not
+	// completely recorded leave the stamped picture without them: clear the
+	// stamp (PR #226 review 5458301284; SR-3).
+	dailyComplete := false
+	defer func() {
+		if result.NewCommitRows > 0 && !dailyComplete {
+			f.invalidateUnrecordedDaily(ctx, repoID, result)
+		}
+	}()
+
 	// Parse git log (the whole default branch, every run). The commit
 	// bounds are recorded whatever the walk returned: they cover only rows
 	// proven written, and with none the call only fills an unfilled row.
@@ -125,6 +154,11 @@ func (f *FacadeCollector) CollectRepo(ctx context.Context, repoID int64, gitURL 
 	if parseErr != nil {
 		return result, fmt.Errorf("git log: %w", parseErr)
 	}
+	// The walk completed: the fold is recorded (summary/49) — trimmed to a
+	// whole picture of the default branch when every walked commit was
+	// proven written, untrimmed otherwise (recordCommitDaily). An empty
+	// branch folds nothing and clears the rows.
+	dailyComplete = f.recordCommitDaily(ctx, repoID, result)
 
 	// v0.27.105: whitespace measurement (Augur parity — see
 	// whitespace.go). Incremental past the stamped marker; full history
@@ -732,7 +766,9 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 	// failure, degrade to the pre-v0.27.97 per-row path so one poison row
 	// can't lose the other 499 (collect what we can; the fallback keeps
 	// the old per-row WARN + counting semantics exactly).
-	if err := f.store.UpsertCommitBatch(ctx, rows); err != nil {
+	inserted, err := f.store.UpsertCommitBatch(ctx, rows)
+	result.NewCommitRows += inserted // chunks that committed before a failure count too
+	if err != nil {
 		if ctx.Err() != nil {
 			// Shutdown mid-write: no fallback on the dead ctx, no WARN;
 			// the rows are re-walked next cycle (pass 37).
@@ -746,8 +782,9 @@ func (f *FacadeCollector) insertCommitBatch(ctx context.Context, repoID int64, b
 		// Batch success means every commit's rows are in place (inserted
 		// or already present) — count each commit once, matching the
 		// v0.19.11 distinct-commit contract.
-		for range built {
+		for _, pc := range built {
 			result.Commits++
+			result.noteCommitDaily(parseTimestamp(pc.AuthorDate), pc.AuthorEmail)
 		}
 		for _, r := range rows {
 			result.noteCommitWritten(r.AuthorTimestamp)
@@ -836,16 +873,168 @@ func (f *FacadeCollector) upsertCommitRowsFallback(ctx context.Context, repoID i
 			result.CommitWriteFailures++
 			continue
 		}
-		insertedByHash[commit.Hash] = true
-		result.noteCommitWritten(commit.AuthorTimestamp)
+		result.NewCommitRows++
+		result.noteFallbackRowWritten(insertedByHash, commit)
 	}
 	result.Commits += len(insertedByHash)
 }
 
-// noteCommitWritten widens the run's commit bounds by one row proven written
-// (a NULL author timestamp bounds nothing).
-func (r *FacadeResult) noteCommitWritten(ts *time.Time) {
+// commitDayKey is one (UTC day, author email) bucket of the fold.
+type commitDayKey struct {
+	day   string // YYYY-MM-DD, UTC
+	email string
+}
+
+// noteCommitDaily folds one commit proven written into its (UTC day, author)
+// bucket. Called once per COMMIT (not per file row), beside the distinct
+// commit count. The key is the scrubbed email — the string the commits rows
+// carry — so the readers' joins match and two raw spellings that scrub
+// alike share one bucket (review round 1 F3).
+func (r *FacadeResult) noteCommitDaily(ts *time.Time, email string) {
 	if ts == nil {
+		return
+	}
+	if r.commitDaily == nil {
+		r.commitDaily = make(map[commitDayKey]int)
+	}
+	r.commitDaily[commitDayKey{day: ts.UTC().Format("2006-01-02"), email: db.SafeUTF8(email)}]++
+}
+
+// noteFallbackRowWritten is the per-row fallback's bookkeeping for one FILE
+// row proven written: the commit's bounds and daily bucket fold once, where
+// its hash is first seen (review round 1 F1: folding every row counted a
+// ten-file commit ten times).
+func (r *FacadeResult) noteFallbackRowWritten(seen map[string]bool, commit *model.Commit) {
+	if seen[commit.Hash] {
+		return
+	}
+	seen[commit.Hash] = true
+	r.noteCommitWritten(commit.AuthorTimestamp)
+	r.noteCommitDaily(commit.AuthorTimestamp, commit.AuthorEmail)
+}
+
+// commitDailyRows is the fold as store rows, in a stable order; nil when the
+// walk folded nothing (the store then clears the repository's rows).
+func (r *FacadeResult) commitDailyRows() []db.CommitDailyRow {
+	if len(r.commitDaily) == 0 {
+		return nil
+	}
+	rows := make([]db.CommitDailyRow, 0, len(r.commitDaily))
+	for k, n := range r.commitDaily {
+		day, err := time.Parse("2006-01-02", k.day)
+		if err != nil {
+			continue // cannot happen: the key is formatted from a time
+		}
+		row := db.CommitDailyRow{Day: day, AuthorEmail: k.email, Commits: n}
+		// A GitHub noreply address names the author's LOGIN, which the
+		// reader maps to the contributor row through the backfill's own
+		// rule (LOWER(gh_login)) — so the daily arm counts web-UI and
+		// squash-merge commits, which get no alias row (review round 1
+		// F2). Never an id: the deterministic PlatformUUID is the id the
+		// resolver WANTS, not the one it keeps when a legacy row already
+		// holds the login (review round 2 F1; SR-6).
+		if info := ParseNoreplyEmail(k.email); info != nil {
+			row.AuthorLogin = info.Login
+			row.AuthorGhUserID = info.UserID // GitHub's stable id (0 for the ID-less form): a login can be renamed, this cannot (round 3 F2)
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].Day.Equal(rows[j].Day) {
+			return rows[i].Day.Before(rows[j].Day)
+		}
+		return rows[i].AuthorEmail < rows[j].AuthorEmail
+	})
+	return rows
+}
+
+// recordCommitDaily records this run's fold as the repository's daily
+// commit rows (summary/49). Called only after a COMPLETED walk: a partial
+// one leaves the previous rows, which are still a whole earlier walk. The
+// rows the walk did not see are trimmed only when every walked commit was
+// proven written (review round 2 F2): a walk that swallowed writes still
+// records what it saw, so the picture stays fresh, but a sparser picture
+// never replaces a fuller one — and the WARN says the rows were not
+// trimmed. Only a trimming replace stamps the repository's picture complete
+// (repos.commit_daily_complete_at): the readers take the commits table
+// until then, so a swallowed-writes walk on a never-filled repository never
+// puts a sparse picture in front of the fuller table (PR #226 review
+// 5448678338). A failure is logged and never fails the facade: the readers
+// take the commits table while the repository is unstamped, and keep the
+// previous rows otherwise.
+//
+// It reports whether the fold is COMPLETE: recorded and trimmed, so every
+// commit the walk wrote is in it. An untrimmed record (swallowed writes)
+// is not: a chunk can commit new rows before its batch fails, and those
+// rows are folded only if the per-row fallback then writes them (L10 round
+// 1 on 0.29.79), so the caller clears the stamp for it too.
+func (f *FacadeCollector) recordCommitDaily(ctx context.Context, repoID int64, result *FacadeResult) bool {
+	if ctx.Err() != nil || f.store == nil { // a stop; or a facade built without a store (unit tests)
+		return false
+	}
+	trim := result.CommitWriteFailures == 0
+	if !trim {
+		f.logger.Warn("daily commit counts recorded without trimming — this walk swallowed commit writes, so rows it may have missed are kept until a clean walk",
+			"repo_id", repoID, "commit_write_failures", result.CommitWriteFailures)
+	}
+	replace := f.store.ReplaceRepoCommitDaily
+	if f.replaceCommitDaily != nil {
+		replace = f.replaceCommitDaily
+	}
+	if err := replace(ctx, repoID, result.commitDailyRows(), trim); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return false // a stop, not a failure to log
+		}
+		f.logger.Warn("could not replace the repository's daily commit counts — its page keeps the previous rows (or reads the commits table if they were never complete, or if this walk added commits) until the next collection",
+			"repo_id", repoID, "error", err)
+		return false
+	}
+	return trim
+}
+
+// commitDailyInvalidateTimeout bounds the stamp clear, which runs on a
+// context detached from a stop (the walk's new rows are committed whether
+// or not serve is stopping): one primary-key UPDATE behind at most one
+// other writer's per-repository lock. The same bound as `aveloxis
+// collect`'s cache stamp on its way out.
+const commitDailyInvalidateTimeout = 10 * time.Second
+
+// invalidateUnrecordedDaily clears the completeness stamp of a repository
+// whose walk inserted new commit rows and did not record its daily fold
+// completely (the replace failed or was stopped, or it could not trim).
+// Declined alternative (Copilot's first option): clearing BEFORE the
+// writes, or in the same statement as each insert, would also cover a
+// process killed between the writes and the record — but it would send
+// every large repository that gained commits to the commits-table path for
+// its whole walk (hours on a kernel fork; the 120 s timeouts this table
+// ended). A killed process is healed by its next clean walk.
+func (f *FacadeCollector) invalidateUnrecordedDaily(ctx context.Context, repoID int64, result *FacadeResult) {
+	if f.store == nil {
+		return
+	}
+	// Detached from the stop on purpose: the walk's new rows are committed
+	// whether or not serve is stopping, so the clear must still run. A stop
+	// cannot cancel this context (only its bound can end it), so its
+	// failure is never a shutdown and is logged as a failure (the shutdown
+	// ratchet's rule covers stop-bound contexts).
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitDailyInvalidateTimeout)
+	defer cancel()
+	if err := f.store.InvalidateCommitDailyComplete(detached, repoID); err != nil {
+		f.logger.Error("could not clear the daily commit counts' completeness stamp after new commits were not recorded completely — the repository page may omit those commits until the next clean walk (or heal-commit-daily)",
+			"repo_id", repoID, "new_commit_rows", result.NewCommitRows, "error", err)
+		return
+	}
+	f.logger.Info("daily commit counts marked incomplete — this walk added commits and did not record them completely (a failed, stopped or untrimmed replace); the page reads the commits table until the next clean walk",
+		"repo_id", repoID, "new_commit_rows", result.NewCommitRows)
+}
+
+// noteCommitWritten widens the run's commit bounds by one row proven written
+// (a NULL author timestamp bounds nothing, and neither does a bogus one —
+// 2026-10-07, NVIDIA/nova's 2080s, or the epoch an unset clock stamps: the
+// row is kept, the bound is not; db.LatestPlausibleCommitTime and
+// db.EarliestPlausibleCommitTime).
+func (r *FacadeResult) noteCommitWritten(ts *time.Time) {
+	if ts == nil || !ts.Before(db.LatestPlausibleCommitTime(time.Now())) || ts.Before(db.EarliestPlausibleCommitTime()) {
 		return
 	}
 	if r.FirstCommitAt.IsZero() || ts.Before(r.FirstCommitAt) {

@@ -277,6 +277,18 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 // because first activity is immutable). ok=false when the repo set
 // has no activity yet. (v0.27.50: the chart "last-active ceiling" for
 // archived/dormant repos, mirror of the first-activity floor.)
+//
+// The commits arm, in order (both readers): the stored bound when
+// plausible (exact; the facade writes it); else, when the repository's
+// daily picture is complete, the last/first plausible day of
+// repo_commit_daily (a UTC midnight: a lower bound of the true last
+// instant, which every consumer rounds to a UTC day — one primary-key
+// read); else the live scan of the commits table. kate 2026-10-07: with
+// the daily table built fleet-wide, /stats still answered 503 on the
+// nine largest repositories — their stored bounds were bogus (a 2085-dated
+// commit the kernel forks share; an epoch first commit) and so read as
+// unfilled until their next walk repairs them, and this reader was the one
+// live scan left on the page (3.2M rows, 152 s, measured on kate).
 func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil
@@ -292,6 +304,11 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 	// reads every per-file commit row of the repository. The live scan is
 	// COALESCE's fallback, taken only while the column is unfilled (the
 	// facade fills it on the repository's next collection).
+	// A stored bound outside the plausible range (a bogus author date —
+	// 2080, or the epoch — written before the rule, 2026-10-07) reads as
+	// unfilled, and the live arm reads only plausible rows; the next walk
+	// repairs the stored value (RecordCommitBounds).
+	bound := LatestPlausibleCommitTime(time.Now())
 	var la *time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT MAX(GREATEST(
@@ -300,11 +317,15 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 			(SELECT created_at FROM aveloxis_data.pull_requests
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT 1),
 			COALESCE(
-			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id),
+			  (SELECT last_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND last_commit_at >= $3::timestamptz AND last_commit_at < $2::timestamptz),
+			  (SELECT (MAX(d.day)::timestamp AT TIME ZONE 'UTC') FROM aveloxis_data.repo_commit_daily d
+			    WHERE d.repo_id = r.id AND d.day >= ($3::timestamptz AT TIME ZONE 'UTC')::date AND d.day < ($2::timestamptz AT TIME ZONE 'UTC')::date
+			      AND EXISTS (SELECT 1 FROM aveloxis_data.repos p WHERE p.repo_id = r.id AND p.commit_daily_complete_at IS NOT NULL)),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
-			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL ORDER BY cmt_author_timestamp DESC LIMIT 1))
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz
+			    ORDER BY cmt_author_timestamp DESC LIMIT 1))
 		))
-		FROM unnest($1::bigint[]) AS r(id)`, repoIDs).Scan(&la)
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs, bound, EarliestPlausibleCommitTime()).Scan(&la)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -329,8 +350,10 @@ func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (ti
 // making the clamp a no-op — never hidden data inside the window.
 // Postgres LEAST ignores NULL operands.
 //
-// Cost note: the issues/PR arms ride idx_issues_repo_created /
-// idx_pull_requests_repo_created one row per repository. The commits
+// Cost note: the issues/PR arms ride idx_issues_repo_created_reporter /
+// idx_pull_requests_repo_created_author (0.29.77; the same (repo_id,
+// created_at) keys as the v0.27.4 indexes they superseded) one row per
+// repository. The commits
 // arm reads the stored repos.first_commit_at (v0.29.70, O11 option 2)
 // and scans the repository's per-file rows only while that column is
 // unfilled — there is still deliberately no (repo_id,
@@ -341,7 +364,11 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil
 	}
-	// Per-repository arms, as LastActivityAt (O11 option 1).
+	// Per-repository arms, as LastActivityAt (O11 option 1); a stored first
+	// outside the plausible range (the epoch an unset clock stamps, or a
+	// repository whose only dated commits were bogus when it was filled)
+	// reads as unfilled (2026-10-07).
+	bound := LatestPlausibleCommitTime(time.Now())
 	var fa *time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT MIN(LEAST(
@@ -350,12 +377,16 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 			(SELECT created_at FROM aveloxis_data.pull_requests
 			  WHERE repo_id = r.id AND created_at IS NOT NULL ORDER BY created_at LIMIT 1),
 			COALESCE(
-			  (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id),
+			  (SELECT first_commit_at FROM aveloxis_data.repos WHERE repo_id = r.id AND first_commit_at >= $3::timestamptz AND first_commit_at < $2::timestamptz),
+			  (SELECT (MIN(d.day)::timestamp AT TIME ZONE 'UTC') FROM aveloxis_data.repo_commit_daily d
+			    WHERE d.repo_id = r.id AND d.day >= ($3::timestamptz AT TIME ZONE 'UTC')::date AND d.day < ($2::timestamptz AT TIME ZONE 'UTC')::date
+			      AND EXISTS (SELECT 1 FROM aveloxis_data.repos p WHERE p.repo_id = r.id AND p.commit_daily_complete_at IS NOT NULL)),
 			  (SELECT cmt_author_timestamp FROM aveloxis_data.commits
-			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL ORDER BY cmt_author_timestamp LIMIT 1)),
+			    WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz
+			    ORDER BY cmt_author_timestamp LIMIT 1)),
 			(SELECT created_at FROM aveloxis_data.repos WHERE repo_id = r.id)
 		))
-		FROM unnest($1::bigint[]) AS r(id)`, repoIDs).Scan(&fa)
+		FROM unnest($1::bigint[]) AS r(id)`, repoIDs, bound, EarliestPlausibleCommitTime()).Scan(&fa)
 	if err != nil {
 		return time.Time{}, false, err
 	}

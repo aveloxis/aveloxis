@@ -12,10 +12,10 @@ The monitoring dashboard is served by `aveloxis serve` at the address specified 
 
 ```bash
 # Default: http://localhost:5555
-aveloxis serve --monitor :5555
+aveloxis serve --monitor 127.0.0.1:5555
 
 # Custom port
-aveloxis serve --monitor :8082
+aveloxis serve --monitor 127.0.0.1:5556
 
 # Bind to all interfaces (for remote access)
 aveloxis serve --monitor 0.0.0.0:5555
@@ -185,13 +185,13 @@ At DEBUG level, you see individual API calls, staging writes, contributor resolu
 Logs are written to standard output (`stdout`). To save logs to a file:
 
 ```bash
-aveloxis serve --monitor :5555 2>&1 | tee aveloxis.log
+aveloxis serve --monitor 127.0.0.1:5555 2>&1 | tee aveloxis.log
 ```
 
 Or redirect:
 
 ```bash
-aveloxis serve --monitor :5555 > aveloxis.log 2>&1 &
+aveloxis serve --monitor 127.0.0.1:5555 > aveloxis.log 2>&1 &
 ```
 
 For production deployments, run all three processes under systemd — units,

@@ -113,21 +113,20 @@ contributors_in_window AS (
 )`
 
 // resolveWindow normalizes a (since, until) pair the same way
-// GetRepoTimeSeries does: a zero until is treated as "no upper bound"
-// by substituting a far-future timestamp so the SQL stays parameterized.
-// A zero since is treated as "since the beginning of time" (1970-01-01).
+// GetRepoTimeSeries does: the upper bound is BoundedUpper(until) — the
+// latest plausible commit time when until is zero or beyond it.
+// A zero since is the earliest plausible commit time (BoundedLower).
 // since must be strictly less than until; the caller validates this and
 // surfaces a 400 if violated.
 func resolveWindow(since, until time.Time) (time.Time, time.Time) {
-	lower := since
-	if lower.IsZero() {
-		lower = time.Unix(0, 0)
-	}
-	upper := until
-	if upper.IsZero() {
-		upper = time.Now().AddDate(100, 0, 0)
-	}
-	return lower, upper
+	// The lower bound is at least the earliest plausible commit time (an
+	// unset clock stamps the epoch; 2026-10-07).
+	lower := BoundedLower(since)
+	// The upper bound is at most the latest plausible commit time (a UTC
+	// midnight, so an open-ended window stays day-aligned and the daily
+	// commit table can serve it — summary/49; and bogus future author dates
+	// never stretch a window — 2026-10-07).
+	return lower, BoundedUpper(until)
 }
 
 // GetRepoContributors returns every distinct contributor who made any
@@ -399,15 +398,27 @@ func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since
 		limit = 100
 	}
 
-	sql := `
-WITH per_kind AS (
+	// The commits arm (summary/49): the daily table when it serves this
+	// window, the commits table otherwise — one row per file per commit,
+	// scattered, 118 s for a kernel fork.
+	daily, err := s.commitDailyServes(ctx, repoID, lower, upper)
+	if err != nil {
+		return nil, fmt.Errorf("TopContributors: %w", err)
+	}
+	commitsArm := `
     SELECT c.cmt_ght_author_id AS cntrb_id,
            COUNT(DISTINCT c.cmt_commit_hash) AS commits,
            0::bigint AS issues, 0::bigint AS prs, 0::bigint AS reviews, 0::bigint AS comments
     FROM aveloxis_data.commits c
     WHERE c.repo_id = $1 AND c.cmt_ght_author_id IS NOT NULL
       AND c.cmt_author_timestamp >= $2 AND c.cmt_author_timestamp < $3
-    GROUP BY 1
+    GROUP BY 1`
+	if daily {
+		commitsArm = dailyCommitsArmSQL
+	}
+
+	sql := `
+WITH per_kind AS (` + commitsArm + `
 
     UNION ALL
     SELECT i.reporter_id, 0, COUNT(*), 0, 0, 0

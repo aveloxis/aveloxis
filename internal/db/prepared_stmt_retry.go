@@ -48,11 +48,14 @@ func isStalePreparedStatement(err error) bool {
 // the new backend has never seen, and Postgres rejects the whole
 // batch with 26000.
 //
-// On the retry, pgxpool is very likely to hand us a different pooled
-// connection, and even if it returns the same one, pgx's cache
-// invalidation on 26000 causes the statements to be re-prepared
-// before the second SendBatch executes. Either way a fresh prepare
-// cycle runs and the batch succeeds.
+// The retry sends a FRESH copy of the batch (freshBatch). pgx drops the
+// failed batch's statements from the connection's cache, but it writes each
+// queued query's statement description into the batch on the first send
+// and skips the prepare on a resend — so resending the SAME batch reused
+// the stale statement name and failed with 26000 again (review on PR #226,
+// proven by TestSendBatchWithRetryRecoversFromAStaleStatement). A fresh
+// copy is looked up again: a cache miss re-prepares, on whichever pooled
+// connection the retry gets.
 //
 // A single retry is deliberate: if the retry also 26000s, something
 // more systemic is wrong (network is thrashing, or pgbouncer has
@@ -65,7 +68,18 @@ func (s *PostgresStore) sendBatchWithRetry(ctx context.Context, batch *pgx.Batch
 	}
 	s.logger.Warn("prepared statement cache miss on SendBatch — retrying once",
 		"sqlstate", staleStatementSQLSTATE, "rows", batch.Len(), "error", err)
-	return s.pool.SendBatch(ctx, batch).Close()
+	return s.pool.SendBatch(ctx, freshBatch(batch)).Close()
+}
+
+// freshBatch copies a batch's queued queries — SQL, arguments and result
+// callback — into a new batch that carries no statement description from a
+// previous send.
+func freshBatch(b *pgx.Batch) *pgx.Batch {
+	fresh := &pgx.Batch{QueuedQueries: make([]*pgx.QueuedQuery, 0, len(b.QueuedQueries))}
+	for _, q := range b.QueuedQueries {
+		fresh.QueuedQueries = append(fresh.QueuedQueries, &pgx.QueuedQuery{SQL: q.SQL, Arguments: q.Arguments, Fn: q.Fn})
+	}
+	return fresh
 }
 
 // keepaliveIdle, keepaliveInterval, keepaliveCount tune dead-socket

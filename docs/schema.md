@@ -93,7 +93,7 @@ Central repository table. Every collected repository has exactly one row here. A
 
 ---
 
-**Operational lifecycle columns on `repos`** (added over the v0.21–v0.29 series, not itemized above): the scancode worker family (`scancode_last_run`, `scancode_version`, `scancode_locked_at/pid/boot_id/host`, `scancode_output_path`, `scancode_failed_attempts`, `scancode_timeout_attempts`, `scancode_skip_reason`), the distribution worker family (`distribution_last_run`, `distribution_scan_complete`, `distribution_failed_attempts`, `distribution_last_failed_at`), `whitespace_head_hash` (incremental whitespace-walk marker), `added_at` (stable fleet-entry stamp), `vuln_scan_last_run` (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), `repo_gone_at` (v0.28.1 — the distinct "no longer reachable on its forge" state, cleared on resurrection), `repo_gone_checked_at` (v0.29.7 — when that state was last re-verified; the scheduler's recheck ticker claims on it), and `metadata_backfill_attempted_at` (v0.29.69 — when the startup metadata backfill last got an answer from the forge for this repository: metadata written, or a definitive not-found; NULL = never answered; the repository is not asked again until one recollect interval has passed), and `repo_unavailable_reason` / `repo_unavailable_url` (v0.29.70 — the forge's own message for a blocked or disabled repository and its https notice link; shown on the repository page; cleared when a clone succeeds or the gone state is lifted), and `first_commit_at` / `last_commit_at` (v0.29.70 — the MIN and MAX of the repository's commit author timestamps, maintained by the facade so the repository page and chart floors never scan a large repository's commit rows; NULL until the repository's next collection, or for a gone repository its next gone recheck, fills them). See `schema.sql` for the authoritative column list.
+**Operational lifecycle columns on `repos`** (added over the v0.21–v0.29 series, not itemized above): the scancode worker family (`scancode_last_run`, `scancode_version`, `scancode_locked_at/pid/boot_id/host`, `scancode_output_path`, `scancode_failed_attempts`, `scancode_timeout_attempts`, `scancode_skip_reason`), the distribution worker family (`distribution_last_run`, `distribution_scan_complete`, `distribution_failed_attempts`, `distribution_last_failed_at`), `whitespace_head_hash` (incremental whitespace-walk marker), `added_at` (stable fleet-entry stamp), `data_changed_at` (v0.29.73 — stamped in the same transaction as each write of data the repository's pages show that can happen outside a collection job: every scorecard write (the job's phase and `aveloxis run-scorecard`), every scancode snapshot, every vulnerability insert or resolution, the CVSS rescore of `heal-vulnerabilities --rescore-only` and `heal-libyear --apply` on the repositories whose rows they change, and `aveloxis collect` at the end of each repository's run — so the API replaces its cached answers for that repository; NULL = never stamped), `vuln_scan_last_run` (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), `repo_gone_at` (v0.28.1 — the distinct "no longer reachable on its forge" state, cleared on resurrection), `repo_gone_checked_at` (v0.29.7 — when that state was last re-verified; the scheduler's recheck ticker claims on it), and `metadata_backfill_attempted_at` (v0.29.69 — when the startup metadata backfill last got an answer from the forge for this repository: metadata written, or a definitive not-found; NULL = never answered; the repository is not asked again until one recollect interval has passed), and `repo_unavailable_reason` / `repo_unavailable_url` (v0.29.70 — the forge's own message for a blocked or disabled repository and its https notice link; shown on the repository page; cleared when a clone succeeds or the gone state is lifted), and `first_commit_at` / `last_commit_at` (v0.29.70 — the MIN and MAX of the repository's plausibly dated commit author timestamps (from 1970-01-02 to two UTC days from now; a bogus date never becomes a bound, and a stored one is repaired on the next walk — 2026-10-07), maintained by the facade so the repository page and chart floors never scan a large repository's commit rows; NULL until the repository's next collection, or for a gone repository its next gone recheck, fills them), and `commit_daily_complete_at` (v0.29.75 — when `repo_commit_daily` last became the repository's complete daily picture: a facade walk whose every commit was proven written, or `heal-commit-daily`'s fill; NULL = the daily rows, if any, are not authoritative, the readers take the commits table and the heal command lists the repository; the migrate that adds the column stamps, on that run only, every repository that already has rows). See `schema.sql` for the authoritative column list.
 
 #### repo_groups_list_serve
 
@@ -1248,6 +1248,33 @@ Monthly commit statistics per contributor per repository.
 
 ---
 
+#### repo_commit_daily
+
+Distinct commits per repository, UTC day of the author timestamp and author
+email (0.29.73). The facade folds it from the walk it makes of the whole
+default branch and replaces the repository's rows after every completed
+walk; `aveloxis heal-commit-daily` fills repositories collected before. The
+repository page's weekly commit series and the commits arm of its top
+contributors read it when the repository's picture is complete
+(`repos.commit_daily_complete_at`, set by a facade walk whose every commit
+was proven written and by the heal command — never by a walk that
+swallowed writes) and the window is UTC-day aligned, and the `commits`
+table otherwise (one row per file per commit, scattered —
+minutes for a kernel fork). Author identity at read time: the columns below, in order.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `repo_id` | BIGINT NOT NULL | Facade fold | Repository (FK). |
+| `day` | DATE NOT NULL | Facade fold | UTC day of the author timestamp. |
+| `author_email` | TEXT NOT NULL | Facade fold | The commit's author email, as in `commits.cmt_author_email`. |
+| `commits` | INTEGER NOT NULL | Facade fold | Distinct commits by that author on that day. |
+| `author_login` | TEXT NOT NULL | Facade fold | The login a GitHub noreply address names (`''` otherwise); the reader maps it to the contributor through the author-id backfill's own rule, `LOWER(gh_login)`. |
+| `author_gh_user_id` | BIGINT NOT NULL | Facade fold | GitHub's numeric user id when the noreply address carries one (`0` otherwise); matched to `contributors.gh_user_id` before the login, because the id survives an account rename and the login does not. |
+| `cntrb_id` | UUID | Backfill | The `commits` table's `cmt_ght_author_id` carried by `heal-commit-daily` when the bucket's resolved commits agree on one (ambiguous: NULL); kept across the facade's replaces. The facade never stores an id (the deterministic one is the id the resolver wants, not the one it keeps for a legacy row). NULL: resolved at read time — the numeric id, the login, then the house email rule (the contributor's own emails, then `contributors_aliases`), each only when unambiguous. |
+| `computed_at` | TIMESTAMPTZ NOT NULL | Default NOW() | When the row was written. |
+
+Primary key `(repo_id, day, author_email)`. The two writers (the facade's replace, the backfill) serialise per repository with an advisory transaction lock.
+
 #### dm_repo_weekly
 
 Weekly commit statistics per contributor per repository.
@@ -1877,7 +1904,7 @@ Postgres-backed priority queue that drives the collection pipeline. Each repo ha
 | `locked_by` | TEXT | Computed | Worker instance ID that holds the lock. |
 | `locked_at` | TIMESTAMPTZ | Computed | When the lock was acquired. |
 | `last_collected` | TIMESTAMPTZ | Computed | When collection last completed. |
-| `last_error` | TEXT | Computed | Error message from last failed run. |
+| `last_error` | TEXT | Computed | The message the last run recorded: a failed run's error, or (0.29.73) a successful run's recorded facade failure or skip reason. NULL after a clean success. |
 | `last_issues` | INT | Computed | Issues collected in the last run. |
 | `last_prs` | INT | Computed | PRs collected in the last run. |
 | `last_messages` | INT | Computed | Messages collected in the last run. |

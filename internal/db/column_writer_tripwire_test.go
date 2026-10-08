@@ -60,6 +60,8 @@ var auditedTables = []string{
 	"email_message", "email_message_ref", "issue_message_ref",
 	"pull_request_message_ref", "contributors_aliases",
 	"jira_identities",
+	// summary/49: the facade's daily commit fold.
+	"repo_commit_daily",
 }
 
 // documentedEmpty: columns with NO writer, kept as Augur schema-parity

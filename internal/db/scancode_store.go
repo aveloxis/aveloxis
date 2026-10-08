@@ -439,6 +439,13 @@ func (s *PostgresStore) ReplaceScancodeSnapshot(ctx context.Context, repoID int6
 				return fmt.Errorf("inserting scancode file results: %w", err)
 			}
 		}
+		// The repository page's cached scancode and SBOM answers move with the
+		// snapshot, in this transaction (PR #226 review: MarkScancodeComplete
+		// stamps scancode_last_run in a separate statement that can fail after
+		// this commit).
+		if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
+			return fmt.Errorf("stamping repository cache state: %w", err)
+		}
 		return tx.Commit(ctx)
 	})
 	return scanID, err

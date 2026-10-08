@@ -115,7 +115,7 @@ All workflows have status badges at the top of the README:
 ## Dockerfile
 
 The multi-stage `Dockerfile` in the repo root:
-1. **Builder stage** — `golang:1.25-alpine`, downloads dependencies, builds a static binary
+1. **Builder stage** — `golang:1.26-alpine` (the Go 1.26+ `go.mod` requires), downloads dependencies, builds a static binary
 2. **Runtime stage** — `alpine:3.20`, copies the binary, includes git/curl/ca-certificates for facade and libyear phases
 
 Exposed ports: 5555 (monitor), 8082 (web), 8383 (API).

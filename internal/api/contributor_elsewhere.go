@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -43,7 +44,7 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 	if !s.authorizeRepo(w, r, repoID) {
 		return
 	}
-	since := time.Now().AddDate(0, 0, -elsewhereWindowDays)
+	since := db.UTCDay(time.Now()).AddDate(0, 0, -elsewhereWindowDays) // a UTC midnight: the daily commit table serves it (summary/49)
 	if sp := r.URL.Query().Get("since"); sp != "" {
 		if t, err := time.Parse("2006-01-02", sp); err == nil {
 			since = t

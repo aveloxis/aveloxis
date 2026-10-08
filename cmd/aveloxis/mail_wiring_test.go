@@ -38,8 +38,22 @@ func loadConfigJSON(t *testing.T, cfgJSON string) *config.Config {
 // drops, or a mailer.Config field added without wiring, fails here
 // (round-9 review: dropping OperatorEmail, SiteURL or GmailUser passed).
 func TestMailerConfigFromCarriesEveryField(t *testing.T) {
+	// Fields the builder reads from another aveloxis.json section, with the
+	// reason: the mailer has no key of its own for them.
+	fromSection := map[string]string{
+		"spa_url": "web", // the front end's origin is web.spa_url; the mailer links to its pages when set (2026-10-04)
+	}
+	// The value each key carries: distinct per key so a crossed wire shows,
+	// and loadable — web.spa_url is refused at load unless it is the origin
+	// as a browser writes it (no path), so its marker rides in the host.
+	valueOf := func(key string) string {
+		if key == "spa_url" {
+			return "https://value-of-" + strings.ReplaceAll(key, "_", "-") + ".example"
+		}
+		return "value-of-" + key
+	}
 	typ := reflect.TypeOf(mailer.Config{})
-	block := map[string]string{}
+	blocks := map[string]map[string]string{"mail": {}}
 	keys := make([]string, typ.NumField())
 	for i := range keys {
 		f := typ.Field(i)
@@ -48,16 +62,27 @@ func TestMailerConfigFromCarriesEveryField(t *testing.T) {
 			t.Fatalf("mailer.Config.%s is not a string with a json key; extend this test for it", f.Name)
 		}
 		keys[i] = key
-		block[key] = "value-of-" + key
+		section := "mail"
+		if s, ok := fromSection[key]; ok {
+			section = s
+		}
+		if blocks[section] == nil {
+			blocks[section] = map[string]string{}
+		}
+		blocks[section][key] = valueOf(key)
 	}
-	raw, err := json.Marshal(map[string]any{"mail": block})
+	raw, err := json.Marshal(blocks)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := reflect.ValueOf(mailerConfigFrom(loadConfigJSON(t, string(raw))))
 	for i, key := range keys {
-		if v := got.Field(i).String(); v != block[key] {
-			t.Errorf("mailerConfigFrom: %s = %q, want %q from mail.%s", typ.Field(i).Name, v, block[key], key)
+		section := "mail"
+		if s, ok := fromSection[key]; ok {
+			section = s
+		}
+		if v := got.Field(i).String(); v != valueOf(key) {
+			t.Errorf("mailerConfigFrom: %s = %q, want %q from %s.%s", typ.Field(i).Name, v, valueOf(key), section, key)
 		}
 	}
 }

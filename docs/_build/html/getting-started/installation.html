@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Installation &mdash; Aveloxis 0.29.69 documentation</title>
+  <title>Installation &mdash; Aveloxis 0.29.81 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
+      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -90,6 +90,7 @@
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#clone-directory">Clone directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#public-analytics-api-api">Public analytics API (<code class="docutils literal notranslate"><span class="pre">api</span></code>)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="configuration.html#reaching-the-api-from-another-host">Reaching the API from another host</a></li>
+<li class="toctree-l3"><a class="reference internal" href="configuration.html#response-caching-advanced-off-by-default">Response caching (advanced, off by default)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#email-gmail-smtp-optional">Email (Gmail SMTP, optional)</a><ul>
@@ -124,11 +125,26 @@
 <li class="toctree-l3"><a class="reference internal" href="quickstart.html#add-all-repos-from-a-github-organization">Add all repos from a GitHub organization</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="quickstart.html#step-5-start-the-scheduler">Step 5: Start the scheduler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#step-5-start-the-processes">Step 5: Start the processes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#check-the-monitoring-dashboard">Check the monitoring dashboard</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#verify-data-in-the-database">Verify data in the database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#what-happens-next">What happens next</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="deployment.html">Production Deployment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#the-three-processes">The three processes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#requirements">1. Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#install">2. Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#postgresql">3. PostgreSQL</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#configuration">4. Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#schema">5. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#api-keys">6. API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#oauth-applications-and-the-first-admin">7. OAuth applications and the first admin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#running">8. Running</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#reverse-proxy">9. Reverse proxy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#verify">10. Verify</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#upgrading">11. Upgrading</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="augur-migration.html">Augur Migration</a><ul>
@@ -248,6 +264,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -463,6 +480,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#pick-one-manager">Pick one manager</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#unit-files">Unit files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#enable-and-manage">Enable and manage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#upgrading-under-systemd">Upgrading under systemd</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#the-path-trap">The PATH trap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#logs">Logs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/running-as-a-service.html#automatic-restarts-unattended-upgrades-and-needrestart">Automatic restarts, unattended upgrades, and needrestart</a></li>
@@ -562,6 +580,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#reference-configuration">Reference configuration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#operating-system-settings">Operating-system settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#verifying-what-is-actually-live">Verifying what is actually live</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#write-heavy-hosts-wal-checkpoints-and-temporary-files">Write-heavy hosts: WAL, checkpoints and temporary files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#diagnostic-settings">Diagnostic settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/scaling.html#drift-is-the-failure-mode">Drift is the failure mode</a></li>
 </ul>
 </li>
@@ -590,6 +610,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#observation-lines-added-in-0-29-70">Observation lines added in 0.29.70</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -646,7 +667,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#list-all-sidelined-repos">List all sidelined repos</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/troubleshooting.html#the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository">The same <code class="docutils literal notranslate"><span class="pre">pulls/comments</span></code> page fails every cycle on a large repository</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#charts-or-pages-time-out-504-502-in-the-browser">Charts or pages time out (504 / 502 in the browser)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#deadlock-errors">Deadlock errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#prepared-statement-stmtcache-does-not-exist-sqlstate-26000"><code class="docutils literal notranslate"><span class="pre">prepared</span> <span class="pre">statement</span> <span class="pre">&quot;stmtcache_...&quot;</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span> <span class="pre">(SQLSTATE</span> <span class="pre">26000)</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#restart-appears-to-take-days-before-collection-resumes">Restart appears to take days before collection resumes</a></li>
@@ -655,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -667,7 +693,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -838,6 +864,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -893,7 +920,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#architecture">3. Architecture</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#components">3.1 Components</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#the-lifecycle-of-a-single-scan">3.2 The lifecycle of a single scan</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-v0-21-3-minimum-gap-not-throughput-cap">3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-a-start-gap-per-worker-v0-21-3-v0-29-70">3.3 Dispatcher pacing: a start gap per worker (v0.21.3, v0.29.70)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#cadence-rationale-180-days-default">4. Cadence rationale (180 days default)</a></li>
@@ -1134,7 +1161,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#page-size-step-down-v0-29-72">Page-size step-down (v0.29.72)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#design-notes">Design notes</a></li>
@@ -1519,6 +1549,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-monthly">dm_repo_group_monthly</a></li>
@@ -1682,7 +1713,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p><strong>Go</strong></p></td>
-<td><p>1.23+</p></td>
+<td><p>1.26+</p></td>
 <td><p>Compiles and runs Aveloxis</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>PostgreSQL</strong></p></td>
@@ -1695,10 +1726,10 @@
 </tr>
 </tbody>
 </table>
-<p>You also need at least one <strong>GitHub personal access token</strong> (with <code class="docutils literal notranslate"><span class="pre">repo</span></code> or <code class="docutils literal notranslate"><span class="pre">read</span></code> scope) and/or a <strong>GitLab personal access token</strong> (with <code class="docutils literal notranslate"><span class="pre">read_api</span></code> scope) to collect data from those platforms.</p>
+<p>You also need at least one <strong>GitHub personal access token</strong> (with <code class="docutils literal notranslate"><span class="pre">repo</span></code> scope, or <code class="docutils literal notranslate"><span class="pre">public_repo</span></code> for public repositories only) and/or a <strong>GitLab personal access token</strong> (with <code class="docutils literal notranslate"><span class="pre">read_api</span></code> scope) to collect data from those platforms.</p>
 <section id="verify-prerequisites">
 <h3>Verify prerequisites<a class="headerlink" href="#verify-prerequisites" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>go<span class="w"> </span>version<span class="w">        </span><span class="c1"># Should print go1.25 or later</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>go<span class="w"> </span>version<span class="w">        </span><span class="c1"># Should print go1.26 or later</span>
 psql<span class="w"> </span>--version<span class="w">    </span><span class="c1"># Should print 14.x or later</span>
 git<span class="w"> </span>--version<span class="w">     </span><span class="c1"># Any recent version</span>
 </pre></div>
@@ -1817,11 +1848,10 @@ go<span class="w"> </span>mod<span class="w"> </span>tidy
 go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w">    </span><span class="c1"># or: go build -o bin/aveloxis ./cmd/aveloxis</span>
 </pre></div>
 </div>
-<p>Then restart any running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> instances:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>stop
-aveloxis<span class="w"> </span>serve<span class="w"> </span>--monitor<span class="w"> </span>:5555
-</pre></div>
-</div>
+<p>A new binary is an upgrade: follow the four steps in
+<a class="reference internal" href="upgrading.html"><span class="std std-doc">Upgrading</span></a> (<code class="docutils literal notranslate"><span class="pre">deploy-checklist</span> <span class="pre">--pending</span></code>, stop, migrate with
+the release’s heals, <code class="docutils literal notranslate"><span class="pre">ack-deploy</span></code>, start) rather than restarting the
+processes on the new binary. A production host: <a class="reference internal" href="deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
 </section>
 <hr class="docutils" />
 <section id="next-steps">

@@ -212,6 +212,75 @@ After adding new affiliations, existing commits can be re-processed by re-runnin
 
 ---
 
+## Daily commit counts
+
+(0.29.73; the completeness stamp 0.29.75.)
+
+The walk already visits every commit of the default branch on every run, so
+the facade folds the commits it proves written — once per commit, beside
+the distinct commit count, in both the batch path and the per-row fallback
+— into `(UTC day of the author timestamp, author email) → count`, and after
+a **completed** walk replaces the repository's rows in
+`aveloxis_data.repo_commit_daily` with the fold in one transaction (an empty
+branch folds nothing and clears the rows; a walk cut short by a clone or
+git-log error leaves the previous rows, which are still a whole earlier
+walk — but if it had already inserted new commits, or new commits went in
+and the replace failed, was stopped, or could not trim (a walk that
+swallowed writes), the repository's completeness stamp is cleared
+(0.29.79), because the rows may no longer cover the commits table; a walk that swallowed any commit write — the per-row fallback's
+failures — records what it saw but neither trims the rows it may have
+missed nor lowers a bucket's count, so a sparser picture never replaces a
+fuller one). A trimming replace also stamps the repository's picture
+complete (`repos.commit_daily_complete_at`); a walk that swallowed writes
+never sets the stamp, so on a repository never filled before, its sparse
+rows stay behind the fuller commits table until a clean walk (0.29.75;
+"rows exist" is not "the aggregate is complete"). A commit with no
+parseable author timestamp buckets nowhere, as the readers'
+`cmt_author_timestamp IS NOT NULL` excludes it.
+
+Why: the commits table is one row per file per commit and one repository's
+rows are scattered about one per page across it (forty workers insert
+interleaved), so the repository page's weekly commit series and the commits
+arm of its top contributors read millions of pages for a kernel fork
+(NVIDIA/nova: 118 s). The daily table is a few thousand rows
+for the same window. The two readers use it when the repository's picture
+is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
+is a UTC midnight — and the commits table otherwise. The activity bounds (`/stats`' last
+activity, the chart floor) read its first and last plausible day — a UTC
+midnight — when the stored bound is not yet filled and the picture is
+complete (0.29.76: the one live commits scan still on the page after the
+fleet-wide heal). Author identity: a row
+carries what its writer knew, never a guess — the facade stores the login AND
+GitHub's numeric user id a noreply address names (such commits get no alias
+row, so an alias-only join would have dropped every web-UI and squash-merge
+commit; the numeric id survives an account rename, which the login does
+not; and the deterministic contributor id the resolver wants for that login
+is not the id it keeps when a legacy row already holds it, so no contributor
+id is stored),
+`aveloxis heal-commit-daily` carries the commits table's stored id when a
+bucket's resolved commits agree on one, and a replace keeps an id the table
+already knows — and the reader resolves the rest: the stored id while its
+contributor is live (a contributor merge marks the loser deleted and maps
+its email to the winner, so a merged-away id falls through to the rules
+below; 0.29.81), then the numeric id (`contributors.gh_user_id`, its partial index built by the
+migrate), then the login through the author-id backfill's own rule
+(`LOWER(gh_login)`), then the house email rule exactly as the mailing-list resolver applies it (the
+unambiguous match over the contributor's own emails, then the alias joined
+to a live contributor). Every lookup attributes only an unambiguous match
+(an email two contributors claim counts for neither). Three bounded
+differences from the old arm: a merge loser's commits now credit the
+winner; on GitLab repositories — where the resolver never ran, so the old
+arm attributed nothing — authors with a profile email or an alias are now
+credited; and commit rows that left the default branch (a force-push, a
+default-branch switch) stay in the commits table forever, so the backfill
+and the commits-table fallback count them while the facade's trimmed fold
+does not — a backfilled repository's numbers settle on its next walk. The author email is scrubbed the way the commits rows' is,
+so the joins match. A walk that swallowed commit writes records what it saw
+without trimming rows it may have missed (and warns), so a filled
+repository never goes stale; `aveloxis heal-commit-daily` fills
+repositories collected before the facade wrote the table; the two writers
+serialise per repository with an advisory transaction lock.
+
 ## Facade aggregates
 
 After all commits for a repo are inserted, aggregate tables are refreshed by SQL aggregation over the `commits` table.

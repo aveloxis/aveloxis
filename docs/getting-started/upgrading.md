@@ -60,7 +60,10 @@ is an error and exits non-zero, rather than printing an empty list.
 deploy steps, `aveloxis start serve` (and `start all`) asks at a terminal
 whether they were completed and, without a terminal — a script, systemd,
 an SSH command — **refuses to start** until they are acknowledged. Run it
-after the heals, not before: it records that the steps ran. If the schema
+after the heals, not before: it records that the steps ran. The gate is
+`aveloxis start`'s: a systemd unit runs `aveloxis serve` directly, which
+migrates at its own start with no gate, so under systemd run the ladder
+by hand and start the target last ([Production Deployment](deployment.md#11-upgrading)). If the schema
 stamp cannot be read, `--pending` says so and starts the range from the
 acknowledgements (the new binary's own steps if there are none); the
 section below says how to find the version you are
@@ -161,6 +164,31 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.81 credits a merged contributor's commits to the contributor it was merged into.** Top contributors read from the daily commit table used to drop the commits of a contributor that a merge had folded into another. No schema change: from 0.29.80 the upgrade is the stop, `aveloxis migrate --skip-views` and the start.
+
+**0.29.80 keeps a quiet collection with a broken clone incremental.** An incremental GitHub or GitLab collection whose clone fails and whose API phase found nothing new now completes with the clone's error in `last_error`, instead of failing as "no data collected", so the next collection stays incremental while you fix the clone. A first or forced collection is still judged and still fails that way. No schema change: from 0.29.79 the upgrade is the stop, `aveloxis migrate --skip-views` and the start.
+
+**0.29.79 marks a repository's daily commit counts incomplete when a collection adds commits it could not record completely.** The page then reads the commits table for that repository until its next clean collection, instead of leaving the new commits out. No schema change: from 0.29.78 the upgrade is the stop, `aveloxis migrate --skip-views` and the start.
+
+**0.29.78 keeps two answers with the response cache off.** With `api.response_cache_mb` unset (the default), the API again keeps the weekly time series and the top contributors in memory, up to 1,000 answers, as it did before 0.29.73; every other answer stays uncached until the setting is turned on. No schema change: from 0.29.77 the upgrade is the stop, `aveloxis migrate --skip-views` and the start; from an earlier version, follow the checklist, which includes 0.29.77's steps.
+
+**0.29.77 builds two indexes and sets a storage parameter.** The top-contributors issue and pull-request arms read a large repository's rows one heap page at a time (repository 94609 on the production fleet: 505K pull-request rows and 58K issue rows, 2.5M page reads with the review and message arms, past nginx's 120 s). The migrate builds `idx_issues_repo_created_reporter` and `idx_pull_requests_repo_created_author` CONCURRENTLY — the v0.27.4 `(repo_id, created_at)` indexes with the author column INCLUDED, so those arms are index-only; the plain forms are dropped — and sets `autovacuum_vacuum_insert_scale_factor = 0.01` on the five large tables, because an index-only scan is only as good as the visibility map and insert-mostly tables left half their pages unmarked under the default. The ladder then runs, after the start and once serve is up, one manual `VACUUM (ANALYZE)` on messages, pull_request_reviews, pull_requests and issues to catch the map up (online; its duration scales with the table sizes and is not measured; a migrate that runs DDL — `aveloxis migrate`, or a serve start whose stamp is behind the binary — waits behind it per table, while a serve start on a stamped fleet fast-paths past the DDL). Run the ladder as usual.
+
+**0.29.76 changes nothing in the schema.** After the fleet-wide `heal-commit-daily`, the repository page's `/stats` still answered 503 on the largest repositories: its last-activity bound fell back to a live scan of the commits table whenever the stored bound could not be used — not yet filled (it fills at the repository's next collection), or bogus and so read as unfilled (every kernel fork carries one commit dated 2085 and some one dated at the epoch; the next walk repairs the stored value). The activity bounds now read the first and last plausible day of the complete daily picture before any live scan. Run the ladder as usual.
+
+**0.29.75 adds one column** (`repos.commit_daily_complete_at`, nullable, an instant ALTER) and, on the run that adds it, stamps every repository that already has daily commit rows (one indexed probe per repository; seconds on a fleet). From here the repository page's commit readers use the daily table only for a stamped repository — a facade walk whose every commit was proven written stamps it, `heal-commit-daily` stamps what it fills, a walk that swallowed writes never does — and `heal-commit-daily` lists the unstamped ones; a repository whose only walk swallowed writes shows the fuller commits table until its next clean walk. Also: every answer that depends on who asks — the routes behind a signed-in session, a signed-in caller's search, compare or entity search, the one-time Shared-with-Me notice, and every `401`/`403` — carries `Cache-Control: private, no-store` (`/api/v1/me` was the one Copilot named). Run the ladder as usual.
+
+**0.29.74 changes nothing in the schema.** It exists so that every cached repository answer is recomputed: the answers' validators carry the binary's version, and 0.29.73's late fixes — the daily commit table's readers and the plausible-date bounds — changed answers without changing it, so a restart on 0.29.73 kept serving an old time series as a 304. Run the ladder as usual; a fleet that skipped 0.29.73 gets its steps.
+
+**0.29.73 adds a column and a table** (`repos.data_changed_at`, stamped
+by every writer of a repository's data so the API's response cache can tell
+a changed repository from an unchanged one; and `repo_commit_daily`, the
+facade's daily commit counts that the repository page's commit answers
+read): run `aveloxis migrate --skip-views` on the way to it; `api` and
+`web` refuse to start until the stamp is current. Then `aveloxis
+heal-commit-daily --apply` (row 20) fills the new table for repositories
+collected before — a background job, not a gate.
+
 Migration steps are fail-closed (v0.19.4): a failing step fails the
 migrate — every remaining step still runs, the error lists **every**
 failed step, and `serve` refuses to start until they are fixed. Three
@@ -201,8 +229,11 @@ no-op once their work is done):
 
 An older `aveloxis.json` keeps working: unknown keys are ignored and
 every new key takes its documented default (see
-[Configuration](configuration.md)). Defaults that **changed** — check
-whether you relied on the old value:
+[Configuration](configuration.md)) — with one class of exception: a value
+a release starts to **validate** is refused at load, by `aveloxis migrate`
+and every process alike, so check the table before step 3. Defaults that
+**changed**, and values now refused — check whether you relied on the old
+behavior:
 
 | Key | Old default | New default | Since |
 |---|---|---|---|
@@ -211,6 +242,8 @@ whether you relied on the old value:
 | `collection.matview_rebuild_day` = `"disable"` | silently fell back to Saturday | honored (alias of `disabled`) | v0.27.96 |
 | `collection.vuln_scan_transitive` | off | on — lockfile closures + transitive findings + real SBOM graphs | v0.27.136 |
 | `collection.archived_recollect_multiplier` | (every repo on the same cadence) | 6 — archived repos recollect six times less often | v0.28.1 |
+| `api.trusted_proxy` | any text; a host name, a CIDR or a non-canonical spelling silently never matched | must be an IP address in canonical form (`127.0.0.1`, lowercase compressed IPv6); anything else is **refused at load**, naming the canonical spelling | v0.29.73 |
+| `api.front_end_secret` | — | a value without `api.trusted_proxy`, or shorter than 32 characters, is **refused at load** | v0.29.73 |
 
 Two behavior changes that need no configuration but are worth knowing:
 since v0.27.139 incremental collection anchors `since` on the previous
@@ -251,6 +284,7 @@ re-running is always safe. Rows marked *fleet-scale* take hours on a
 | 16 | `aveloxis strip-quoted-history --limit 50000`, then full | v0.29.0 | `msg_text_clean` on historical mailing-list bodies (82.5% of list mail embeds the thread it replies to; new mail is stripped at ingest) | only if you collect mailing lists; ~30–45 min per 12.6M bodies, marker-resumable |
 | 17 | `aveloxis register-jira-projects`, then `aveloxis backfill-jira-identities` | v0.29.0 | Jira reporter + assignee identity and authoritative issue state, from the Jira Server API (comment-author identity is NOT in this one-shot — the ongoing Jira worker banks it as it collects each project's comment blocks). **Time-sensitive**: the stable username this matches on does not exist in Jira Cloud's API — run it before the ASF instance migrates | only if you hold Jira-projected issues (Apache mailing lists); ~2–3 polite hours for the full ASF corpus |
 | 18 | `aveloxis backfill-mailing-list-projection` | v0.29.0 | re-projects mailing-list messages a wrong-system drain pool processed without Layer-2 projection (the cross-system drain fix: 90%+ of Apache list mail was drained by the lore processor and never projected onto issues). The migrate itself restamps `ml_system` and resets the affected rows to pending; this command runs the keyed + thread passes over them | only if you collect mailing lists AND upgraded through an affected version; one clean run converges — rerun only after a mid-run error |
+| 20 | `aveloxis heal-commit-daily`, then `--apply` | v0.29.73 | `repo_commit_daily` (distinct commits per repository, UTC day and author email, which the facade writes after every completed walk) for repositories collected before 0.29.73: until a repository's picture is complete (`repos.commit_daily_complete_at`, 0.29.75 — set by this command and by a walk whose every commit was proven written), its page's weekly commit series and top-contributors commit counts read the commits table — one row per file per commit, scattered, minutes for a kernel fork — and the largest run past a reverse proxy's 120 s timeout | any fleet upgrading to 0.29.73; one scan of each repository's commit rows, largest first, each its own transaction; safe beside `serve` (a repository's own next collection fills it anyway); interrupt and rerun freely; run under `nohup` on a large fleet |
 | 19 | `aveloxis heal-libyear`, then `--apply` | v0.29.57 | libyear values stored as `0` for dependencies with no pinned version, whose libyear can never be computed; they become `NULL`, which averages and medians skip (before v0.29.57 an unknown libyear was stored as `0` and read as "up to date") | any fleet upgrading to v0.29.57; the dry run is the default and reports the count; walks the table in primary-key windows, safe beside `serve`. **Run `aveloxis refresh-views` (row 9) again afterwards**, or `explorer_libyear_summary` keeps the old values until the next weekly rebuild. The same release changed that view's definition, so a fleet crossing v0.29.57 also needs one plain `aveloxis migrate` (see above) if the checklist it followed used `--skip-views`. 8Knot's dependency-age chart reads this table itself and keeps only `libyear >= 0`, so these dependencies leave that chart (it had counted them as up to date) |
 
 Skipped as instance-specific: the `load-foundation-*` importers (only if

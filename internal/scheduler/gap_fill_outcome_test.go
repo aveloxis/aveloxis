@@ -46,7 +46,7 @@ func makeGapFillError() error {
 // argument order in one place if the implementation evolves. New args
 // are appended to the end so legacy tests can stop at the prior arity.
 func callBuildOutcome(s *Scheduler, result *collector.CollectResult, facadeResult *collector.FacadeResult, analysisResult *collector.AnalysisResult, collectionErr error, gapFillErr error) jobOutcome {
-	return s.buildOutcome(result, facadeResult, analysisResult, collectionErr, gapFillErr)
+	return s.buildOutcome(false, result, facadeResult, analysisResult, collectionErr, gapFillErr, nil)
 }
 
 // v0.20.5: Gap fill errors were previously logged at WARN and dropped on

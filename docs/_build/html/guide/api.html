@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.69 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.81 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=ca45f5dc"></script>
+      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -90,6 +90,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#clone-directory">Clone directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#public-analytics-api-api">Public analytics API (<code class="docutils literal notranslate"><span class="pre">api</span></code>)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#reaching-the-api-from-another-host">Reaching the API from another host</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#response-caching-advanced-off-by-default">Response caching (advanced, off by default)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#email-gmail-smtp-optional">Email (Gmail SMTP, optional)</a><ul>
@@ -124,11 +125,26 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/quickstart.html#add-all-repos-from-a-github-organization">Add all repos from a GitHub organization</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#step-5-start-the-scheduler">Step 5: Start the scheduler</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#step-5-start-the-processes">Step 5: Start the processes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#check-the-monitoring-dashboard">Check the monitoring dashboard</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#verify-data-in-the-database">Verify data in the database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#what-happens-next">What happens next</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/quickstart.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../getting-started/deployment.html">Production Deployment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#the-three-processes">The three processes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#requirements">1. Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#install">2. Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#postgresql">3. PostgreSQL</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#configuration">4. Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#schema">5. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#api-keys">6. API keys</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#oauth-applications-and-the-first-admin">7. OAuth applications and the first admin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#running">8. Running</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#reverse-proxy">9. Reverse proxy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#verify">10. Verify</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../getting-started/deployment.html#upgrading">11. Upgrading</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../getting-started/augur-migration.html">Augur Migration</a><ul>
@@ -248,6 +264,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-data-verify"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-verify</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-messages"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-messages</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-libyear"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-libyear</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-commit-daily"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-heal-vulnerabilities"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-vulnerabilities</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-mark-gone-repos"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">mark-gone-repos</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-run-scorecard"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code></a></li>
@@ -463,6 +480,7 @@
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#pick-one-manager">Pick one manager</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#unit-files">Unit files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#enable-and-manage">Enable and manage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#upgrading-under-systemd">Upgrading under systemd</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#the-path-trap">The PATH trap</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#logs">Logs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="running-as-a-service.html#automatic-restarts-unattended-upgrades-and-needrestart">Automatic restarts, unattended upgrades, and needrestart</a></li>
@@ -592,6 +610,7 @@
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#http-401-bad-credentials">HTTP 401 Bad Credentials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#http-403-forbidden-rate-limited">HTTP 403 Forbidden / Rate Limited</a></li>
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#rate-limit-exhausted-repeats-for-one-key-while-other-keys-have-budget"><code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">limit</span> <span class="pre">exhausted</span></code> repeats for one key while other keys have budget</a></li>
+<li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#observation-lines-added-in-0-29-70">Observation lines added in 0.29.70</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#fk-constraint-violations">FK constraint violations</a></li>
@@ -648,7 +667,11 @@
 <li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#list-all-sidelined-repos">List all sidelined repos</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gateway-errors-502-503-504">Gateway errors (502/503/504)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="troubleshooting.html#the-same-pulls-comments-page-fails-every-cycle-on-a-large-repository">The same <code class="docutils literal notranslate"><span class="pre">pulls/comments</span></code> page fails every cycle on a large repository</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#charts-or-pages-time-out-504-502-in-the-browser">Charts or pages time out (504 / 502 in the browser)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#deadlock-errors">Deadlock errors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#prepared-statement-stmtcache-does-not-exist-sqlstate-26000"><code class="docutils literal notranslate"><span class="pre">prepared</span> <span class="pre">statement</span> <span class="pre">&quot;stmtcache_...&quot;</span> <span class="pre">does</span> <span class="pre">not</span> <span class="pre">exist</span> <span class="pre">(SQLSTATE</span> <span class="pre">26000)</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#restart-appears-to-take-days-before-collection-resumes">Restart appears to take days before collection resumes</a></li>
@@ -657,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -669,7 +693,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-102-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (102 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -840,6 +864,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#adding-affiliations">Adding affiliations</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#daily-commit-counts">Daily commit counts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/facade-commits.html#facade-aggregates">Facade aggregates</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-tables">Aggregate tables</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/facade-commits.html#aggregate-columns">Aggregate columns</a></li>
@@ -895,7 +920,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#architecture">3. Architecture</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#components">3.1 Components</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#the-lifecycle-of-a-single-scan">3.2 The lifecycle of a single scan</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-v0-21-3-minimum-gap-not-throughput-cap">3.3 Dispatcher pacing (v0.21.3): minimum-gap, not throughput cap</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/scancode.html#dispatcher-pacing-a-start-gap-per-worker-v0-21-3-v0-29-70">3.3 Dispatcher pacing: a start gap per worker (v0.21.3, v0.29.70)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/scancode.html#cadence-rationale-180-days-default">4. Cadence rationale (180 days default)</a></li>
@@ -1136,7 +1161,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#graphql-errors-that-arrive-with-http-200">GraphQL errors that arrive with HTTP 200</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#pagination">Pagination</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/platform-layer.html#page-size-step-down-v0-29-72">Page-size step-down (v0.29.72)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#url-parsing-repourl">URL parsing (<code class="docutils literal notranslate"><span class="pre">RepoURL</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#adding-a-new-platform">Adding a new platform</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/platform-layer.html#design-notes">Design notes</a></li>
@@ -1521,6 +1549,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#facade-aggregates-data-mart">Facade Aggregates (Data Mart)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-annual">dm_repo_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-monthly">dm_repo_monthly</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-commit-daily">repo_commit_daily</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-weekly">dm_repo_weekly</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-annual">dm_repo_group_annual</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dm-repo-group-monthly">dm_repo_group_monthly</a></li>
@@ -1671,10 +1700,10 @@
   <section id="rest-api">
 <h1>REST API<a class="headerlink" href="#rest-api" title="Link to this heading"></a></h1>
 <p>Aveloxis includes a REST API server for programmatic access to collected data, repository statistics, time-series metrics, SBOM downloads, and vulnerability information. Start it with:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>api<span class="w"> </span>--addr<span class="w"> </span>:8383
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>api<span class="w">            </span><span class="c1"># listens on api.addr, 127.0.0.1:8383 by default; --addr overrides it</span>
 </pre></div>
 </div>
-<p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database.</p>
+<p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
 <section id="endpoints">
 <h2>Endpoints<a class="headerlink" href="#endpoints" title="Link to this heading"></a></h2>
 <section id="health-check">
@@ -1683,9 +1712,10 @@
 </pre></div>
 </div>
 <p>Returns the server status and version.</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.9.0&quot;</span><span class="p">}</span>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.29.73&quot;</span><span class="p">}</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">version</span></code> is the running binary’s.</p>
 </section>
 <section id="public-fleet-stats">
 <h3>Public fleet stats<a class="headerlink" href="#public-fleet-stats" title="Link to this heading"></a></h3>
@@ -1786,7 +1816,8 @@ session.</p>
 </div>
 <p>Returns stats for multiple repos in one call. Response is a map keyed by repo ID.</p>
 <p>Since v0.28.7 the batch rows carry the same <code class="docutils literal notranslate"><span class="pre">gone_at</span></code> and
-<code class="docutils literal notranslate"><span class="pre">metadata_as_of</span></code> fields as the single-repo endpoint, and requested ids
+<code class="docutils literal notranslate"><span class="pre">metadata_as_of</span></code> fields as the single-repo endpoint (and, since
+v0.29.70, <code class="docutils literal notranslate"><span class="pre">unavailable_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">unavailable_url</span></code>), and requested ids
 with no collection-queue row (the prelim-dequeued “gone” cohort) fall
 back to live gathered counts instead of serving zeros — the two
 endpoints can no longer disagree about a vanished repository. The
@@ -1805,6 +1836,7 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 </pre></div>
 </div>
 <p>Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues.</p>
+<p>Every commit window on this API — this series, <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code>, <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>, <code class="docutils literal notranslate"><span class="pre">/compare</span></code> — ends no later than the latest plausible commit time, two UTC days after now, and starts no earlier than the earliest, 1970-01-02, whatever <code class="docutils literal notranslate"><span class="pre">since</span></code> and <code class="docutils literal notranslate"><span class="pre">until</span></code> say. An author timestamp is an absolute instant, so only a wrong committer clock can place one in the future (the margin is a day of skew rounded to a day-aligned edge), and a Unix clock cannot place one before the epoch, which is what an unset clock stamps. Repositories carry the occasional author date in 2080 or 1970, and such a date must not stretch a window. The rows stay stored; only the windows are bounded.</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Parameter</p></th>
@@ -2094,26 +2126,48 @@ GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&amp;until=2024-12-3
 contributors card. Same <code class="docutils literal notranslate"><span class="pre">since</span></code>/<code class="docutils literal notranslate"><span class="pre">until</span></code> window semantics as the
 <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code> endpoints (default: trailing 2 years; <code class="docutils literal notranslate"><span class="pre">until</span></code> is
 inclusive); <code class="docutils literal notranslate"><span class="pre">limit</span></code> defaults to 20 and is capped at 100.</p>
-<p><code class="docutils literal notranslate"><span class="pre">?bots=hide</span></code> (v0.27.69; widened v0.28.1) filters automation
+<p><strong>Caching (since 0.29.71; 0.29.73).</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, a
+repository’s own GET answers (this endpoint, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/licenses</span></code>,
+<code class="docutils literal notranslate"><span class="pre">/deps</span></code>, <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">/scancode-*</span></code>, <code class="docutils literal notranslate"><span class="pre">/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">/scorecard</span></code>,
+<code class="docutils literal notranslate"><span class="pre">/sbom</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected
+again or scanned; with it unset (the default) only this endpoint and
+<code class="docutils literal notranslate"><span class="pre">/timeseries</span></code> are, up to 1,000 answers. Answers that name contributors are also recomputed after
+<code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> (default 30). These answers carry an
+<code class="docutils literal notranslate"><span class="pre">ETag</span></code> (weak for answers that depend only on the repository’s state); a
+request whose <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> names the current one gets
+<code class="docutils literal notranslate"><span class="pre">304</span> <span class="pre">Not</span> <span class="pre">Modified</span></code>. A response served from the cache carries <code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>.
+Each entity’s series on <code class="docutils literal notranslate"><span class="pre">/compare</span></code> is reused inside the response, and only a
+whole-response hit (below) carries the header. Shareable answers carry
+<code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">no-cache</span></code> with a weak <code class="docutils literal notranslate"><span class="pre">ETag</span></code>, so a client revalidates every
+time and gets a 304 when nothing changed. An answer that depends on who
+asks — the per-user routes, every <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code>, and a response that just
+added the repository to the caller’s group — carries
+<code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">private,</span> <span class="pre">no-store</span></code> and is never cached by anything.</p>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/authz/repos/{repoID}</span></code> (0.29.73) returns <code class="docutils literal notranslate"><span class="pre">204</span></code> when the caller
+may read that repository, otherwise the same <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code> the data endpoints
+return. It returns no data.</p>
+<p><code class="docutils literal notranslate"><span class="pre">?bots=hide</span></code> (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types
 <code class="docutils literal notranslate"><span class="pre">gh_type</span> <span class="pre">IN</span> <span class="pre">('Bot',</span> <span class="pre">'ProgrammaticAccessBot',</span> <span class="pre">'Organization')</span></code>
 (GitHub App accounts like <code class="docutils literal notranslate"><span class="pre">dependabot[bot]</span></code>; fine-grained-PAT
 actors; org accounts acting as contributors — the codecov shape,
 whose enriched row is typed Organization), the <code class="docutils literal notranslate"><span class="pre">[bot]</span></code> login
-suffix, the hyphenated <code class="docutils literal notranslate"><span class="pre">-bot</span></code>/<code class="docutils literal notranslate"><span class="pre">-robot</span></code> machine-account convention
-(the <code class="docutils literal notranslate"><span class="pre">k8s-ci-robot</span></code> class, which GitHub types as a regular User —
+suffix, a login ending in <code class="docutils literal notranslate"><span class="pre">bot</span></code> (so <code class="docutils literal notranslate"><span class="pre">-bot</span></code>, <code class="docutils literal notranslate"><span class="pre">-robot</span></code> and
+separator-less names such as <code class="docutils literal notranslate"><span class="pre">pytorchmergebot</span></code>; digits may follow —
+the <code class="docutils literal notranslate"><span class="pre">k8s-ci-robot</span></code> class, which GitHub types as a regular User,
 verified live), and the curated system-account list (actions-user,
 web-flow, ghost, codecov, codecov-io, codecov-commenter — machine
 accounts GitHub types as plain User). <code class="docutils literal notranslate"><span class="pre">Mannequin</span></code> rows are
 deliberately NOT hidden: mannequins are import placeholders
-standing in for unmatched humans, not automation. The separator
-requirement keeps human surnames (talbot) safe. Deliberately
+standing in for unmatched humans, not automation. Logins ending in a
+surname that ends in <code class="docutils literal notranslate"><span class="pre">bot</span></code> (abbot, barbot, cabot, chabot, jabot, rabot,
+talbot) stay visible. Deliberately
 broader than the <code class="docutils literal notranslate"><span class="pre">contributor_retention</span></code> metric’s bot exclusion,
 which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on <code class="docutils literal notranslate"><span class="pre">/contributors/elsewhere</span></code> so the two surfaces stay consistent. Requires the
-same repo scope as every other per-repo endpoint; responses are served
-from a 60-second cache (the underlying data only changes per
-collection cycle).</p>
+same repo scope as every other per-repo endpoint. This endpoint’s answers
+are cached as the caching paragraph above describes; <code class="docutils literal notranslate"><span class="pre">/contributors/elsewhere</span></code>
+reads other repositories’ activity and keeps a 60-second cache.</p>
 <p>Response:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;since&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2024-07-31T00:00:00Z&quot;</span><span class="p">,</span>
@@ -2487,14 +2541,20 @@ origin (and the web GUI origin if its pages fetch the API cross-port).</p>
 </section>
 <section id="deployment">
 <h2>Deployment<a class="headerlink" href="#deployment" title="Link to this heading"></a></h2>
-<p>The API server is stateless — it reads directly from PostgreSQL. You can run multiple instances behind a load balancer for high availability.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Typical 3-process deployment</span>
-<span class="o">(</span>nohup<span class="w"> </span>aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">40</span><span class="w"> </span>--monitor<span class="w"> </span>:5555<span class="w"> </span>&gt;&gt;<span class="w"> </span>aveloxis.log<span class="w"> </span><span class="p">&amp;</span><span class="o">)</span>
-<span class="o">(</span>nohup<span class="w"> </span>aveloxis<span class="w"> </span>web<span class="w"> </span>&gt;&gt;<span class="w"> </span>web.log<span class="w"> </span><span class="p">&amp;</span><span class="o">)</span>
-<span class="o">(</span>nohup<span class="w"> </span>aveloxis<span class="w"> </span>api<span class="w"> </span>--addr<span class="w"> </span>:8383<span class="w"> </span>&gt;&gt;<span class="w"> </span>api.log<span class="w"> </span><span class="p">&amp;</span><span class="o">)</span>
-</pre></div>
-</div>
-<p>The web GUI’s Chart.js visualizations fetch data from the API server. The API URL is configured as <code class="docutils literal notranslate"><span class="pre">http://localhost:8383</span></code> by default. If running on a different host or port, update the API base URL in the web templates.</p>
+<p>The three processes are started together with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code> (pidfiles
+and logs under <code class="docutils literal notranslate"><span class="pre">~/.aveloxis/</span></code>) or, on a production host, as systemd units
+(<a class="reference internal" href="running-as-a-service.html"><span class="std std-doc">Running as a Service</span></a>); the whole layout — proxy,
+OAuth, the first admin, upgrades — is
+<a class="reference internal" href="../getting-started/deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
+<p>Each <code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps its own state: the per-repository response cache
+(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
+authorization cache. Several instances behind a load balancer each compute
+and hold their own answers, and the per-IP limits are per instance; run one
+per host unless that is what you want.</p>
+<p>The web GUI’s charts fetch the API through the web process, which proxies
+<code class="docutils literal notranslate"><span class="pre">/api/*</span></code> to <code class="docutils literal notranslate"><span class="pre">web.api_internal_url</span></code> (<code class="docutils literal notranslate"><span class="pre">http://127.0.0.1:8383</span></code> by default);
+when the API moves, that URL must follow. Behind a reverse proxy, send
+<code class="docutils literal notranslate"><span class="pre">/api/</span></code> to the API directly so its per-visitor limits see the visitor.</p>
 </section>
 <section id="comparison-analytics-v0-27-2">
 <h2>Comparison analytics (v0.27.2)<a class="headerlink" href="#comparison-analytics-v0-27-2" title="Link to this heading"></a></h2>
@@ -2532,7 +2592,11 @@ the GUI’s popovers and reference page).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/compare?entities=repo:1,org:github.com/chaoss&amp;metric=contributors&amp;since=2023-07-01&amp;until=2026-07-01&amp;bucket=week</span></code>
 — temporal metrics; window defaults to the trailing 3 years; bucket
 week (default) or month; buckets are densified (aligned x-axes).
-Responses are cached 60s per (user, query).</p>
+Whole responses are cached 60s per (user, query) (<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>); each
+entity’s series is also reused under its repositories’ collection state,
+for at most <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> (see the caching note
+under the top-contributors endpoint). The default window starts on the
+bucket boundary three years before the last complete bucket.</p>
 <ul>
 <li><p><strong>Per-entity window clamp (v0.27.24):</strong> each entity’s series is
 densified from <code class="docutils literal notranslate"><span class="pre">max(since,</span> <span class="pre">its</span> <span class="pre">first</span> <span class="pre">activity)</span></code> — the least of
@@ -2651,6 +2715,24 @@ C1 — <code class="docutils literal notranslate"><span class="pre">direct</span
 rows count as direct), and — v0.27.46 — <code class="docutils literal notranslate"><span class="pre">runtime</span></code> (current
 findings on runtime-scope dependencies: <code class="docutils literal notranslate"><span class="pre">current</span> <span class="pre">-</span> <span class="pre">dev</span></code>, the
 headline GUIs should lead with).</p>
+<p><strong>Unknown-version advisories (v0.29.70).</strong> A dependency that
+declares no version (<code class="docutils literal notranslate"><span class="pre">version_resolution:</span> <span class="pre">&quot;unpinned&quot;</span></code>) was queried
+at OSV.dev without one, and OSV answers such a query with every
+advisory ever published for the package — most of them for old
+releases. Whether the repository is affected is unknown (the VEX
+<code class="docutils literal notranslate"><span class="pre">under_investigation</span></code> class), so these rows are no longer
+dependency exposure: <code class="docutils literal notranslate"><span class="pre">current</span></code>, <code class="docutils literal notranslate"><span class="pre">critical</span></code>, <code class="docutils literal notranslate"><span class="pre">direct</span></code>,
+<code class="docutils literal notranslate"><span class="pre">transitive</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code> and <code class="docutils literal notranslate"><span class="pre">runtime</span></code> exclude them, and they are
+counted apart as <code class="docutils literal notranslate"><span class="pre">unknown_version</span></code> (with <code class="docutils literal notranslate"><span class="pre">unknown_version_critical</span></code>).
+Except GitHub Actions dependencies (<code class="docutils literal notranslate"><span class="pre">ecosystem</span></code> <code class="docutils literal notranslate"><span class="pre">githubactions</span></code>): a
+floating ref (<code class="docutils literal notranslate"><span class="pre">&#64;v4</span></code>, <code class="docutils literal notranslate"><span class="pre">&#64;main</span></code>) is stored <code class="docutils literal notranslate"><span class="pre">unpinned</span></code> too, but its
+advisories were matched against the ref, so they stay exposure.
+The rows themselves stay in <code class="docutils literal notranslate"><span class="pre">vulnerabilities</span></code>. The same definition
+applies to the repository stats (<code class="docutils literal notranslate"><span class="pre">vulnerabilities</span></code>,
+<code class="docutils literal notranslate"><span class="pre">critical_vulns</span></code>, and the new <code class="docutils literal notranslate"><span class="pre">vulnerabilities_version_unknown</span></code>),
+the operator digest and the supply-chain package views. Range floors
+(<code class="docutils literal notranslate"><span class="pre">range-floor</span></code>, <code class="docutils literal notranslate"><span class="pre">bounded-range</span></code>) stay exposure: the lowest version
+the declared range allows is affected.</p>
 <p><strong>Transitive findings (v0.27.21 Phase C1).</strong> With
 <code class="docutils literal notranslate"><span class="pre">collection.vuln_scan_transitive</span></code> enabled, findings from the full
 lockfile closure carry <code class="docutils literal notranslate"><span class="pre">dependency_kind:</span> <span class="pre">&quot;transitive&quot;</span></code> (direct
@@ -2703,10 +2785,10 @@ the scanned version was chosen:</p>
 <td><p>The requirement has an upper bound (<code class="docutils literal notranslate"><span class="pre">~=</span></code>, <code class="docutils literal notranslate"><span class="pre">^</span></code>, <code class="docutils literal notranslate"><span class="pre">~</span></code>, or a compound containing <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>/<code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>). The purl is the range FLOOR.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">range-floor</span></code></p></td>
-<td><p>Lower bound only (<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>). The purl is the FLOOR — the worst case the declaration permits. UIs should render e.g. “≥2.20 declared — floor shown”.</p></td>
+<td><p>Lower bound only (<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>). The purl is the FLOOR — the worst case the declaration permits, not the installed version. UIs should say so, e.g. “lowest allowed” beside the version, with the declared requirement.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unpinned</span></code></p></td>
-<td><p>No version declared (produces no findings today).</p></td>
+<td><p>No version declared: OSV.dev was queried without one and returned every advisory for the package, so exposure is unknown — counted apart as <code class="docutils literal notranslate"><span class="pre">unknown_version</span></code> (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in <code class="docutils literal notranslate"><span class="pre">current</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -2772,7 +2854,17 @@ metadata_* counts, so gone repos can date their frozen metadata
 honestly). Also v0.28.1: for QUEUELESS repos (no collection_queue
 row — the prelim-dequeued gone cohort) the gathered counts fall
 back to live row counts instead of fabricated zeros; tracked
-repos keep the cached-count read.</p></li>
+repos keep the cached-count read.
+v0.29.70 adds <code class="docutils literal notranslate"><span class="pre">unavailable_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">unavailable_url</span></code> (both
+omitted when empty): the forge’s own message for a blocked or
+disabled repository, repeated on the repository page — GitHub’s
+block answer on a 451 or 403 (“Repository access blocked (dmca)”)
+with its notice link, or the text git prints when the forge refuses a
+clone (“Access to this repository has been disabled by GitHub
+staff.”). At most 500 characters; the link is present only when it
+is an https URL. Independent of <code class="docutils literal notranslate"><span class="pre">gone_at</span></code>: a repository disabled by
+staff is not marked gone. Cleared when a clone succeeds again or the
+gone state is lifted. The batch endpoint carries the same two fields.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/licenses</span></code> — response is now an envelope
 <code class="docutils literal notranslate"><span class="pre">{&quot;scanned&quot;:</span> <span class="pre">bool,</span> <span class="pre">&quot;licenses&quot;:</span> <span class="pre">[...]}</span></code>. <code class="docutils literal notranslate"><span class="pre">scanned=false</span></code> means the
 dependency-analysis phase has not recorded anything for this repo
@@ -2929,11 +3021,26 @@ without an identity. The <code class="docutils literal notranslate"><span class=
 require the caller’s user to be an administrator (403 otherwise).</p>
 <p>Per-user:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/me</span></code> — <code class="docutils literal notranslate"><span class="pre">{user_id,</span> <span class="pre">login,</span> <span class="pre">name,</span> <span class="pre">avatar_url,</span> <span class="pre">is_admin,</span> <span class="pre">scope_repo_count}</span></code> (<code class="docutils literal notranslate"><span class="pre">login</span></code> added v0.27.77; <code class="docutils literal notranslate"><span class="pre">name</span></code> + <code class="docutils literal notranslate"><span class="pre">avatar_url</span></code>
-added v0.27.84 — the home greeting and nav avatar render the REAL
-signed-in identity, stored from OAuth and refreshed on every
-login). <code class="docutils literal notranslate"><span class="pre">scope_repo_count</span></code> is <code class="docutils literal notranslate"><span class="pre">-1</span></code> for admins (unscoped). The GUI
-uses <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> to decide whether to render the admin navigation.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/me</span></code> — <code class="docutils literal notranslate"><span class="pre">{user_id,</span> <span class="pre">login,</span> <span class="pre">name,</span> <span class="pre">avatar_url,</span> <span class="pre">provider,</span> <span class="pre">email,</span> <span class="pre">email_pending,</span> <span class="pre">is_admin,</span> <span class="pre">scope_repo_count}</span></code> (<code class="docutils literal notranslate"><span class="pre">login</span></code> added v0.27.77;
+<code class="docutils literal notranslate"><span class="pre">name</span></code> + <code class="docutils literal notranslate"><span class="pre">avatar_url</span></code> added v0.27.84 — the home greeting and nav avatar
+render the REAL signed-in identity, stored from OAuth and refreshed on
+every login; <code class="docutils literal notranslate"><span class="pre">provider</span></code> (<code class="docutils literal notranslate"><span class="pre">github</span></code> or <code class="docutils literal notranslate"><span class="pre">gitlab</span></code>), <code class="docutils literal notranslate"><span class="pre">email</span></code> and
+<code class="docutils literal notranslate"><span class="pre">email_pending</span></code> added 2026-10-04 for the profile page: <code class="docutils literal notranslate"><span class="pre">email</span></code> is the
+forge’s own address taken at sign-in, or one confirmed through the
+mailed link; <code class="docutils literal notranslate"><span class="pre">email_pending</span></code> is an address awaiting confirmation, or
+empty). <code class="docutils literal notranslate"><span class="pre">scope_repo_count</span></code> is <code class="docutils literal notranslate"><span class="pre">-1</span></code> for admins (unscoped). The GUI uses
+<code class="docutils literal notranslate"><span class="pre">is_admin</span></code> to decide whether to render the admin navigation.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email</span></code> — body <code class="docutils literal notranslate"><span class="pre">{&quot;email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code>: stores the address as
+pending and mails the confirmation link, for an account whose forge gave
+no email (a private GitHub address). <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">{&quot;sent&quot;:</span> <span class="pre">true}</span></code>, or <code class="docutils literal notranslate"><span class="pre">422</span> <span class="pre">{&quot;sent&quot;:</span> <span class="pre">false,</span> <span class="pre">&quot;message&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> with the reason (not a deliverable
+address; mail not configured — <code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code> and the Gmail settings
+are required; a failed save or send). The link lands on the front end’s
+profile page when <code class="docutils literal notranslate"><span class="pre">web.spa_url</span></code> is set, on the web process’s
+<code class="docutils literal notranslate"><span class="pre">/account/email/confirm</span></code> otherwise. The same submission the web
+process’s <code class="docutils literal notranslate"><span class="pre">/account/email</span></code> form runs.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email/confirm</span></code> — body <code class="docutils literal notranslate"><span class="pre">{&quot;token&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> from that link,
+for the signed-in account: <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">{&quot;status&quot;:</span> <span class="pre">&quot;confirmed&quot;}</span></code>; <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">{&quot;status&quot;:</span> <span class="pre">&quot;invalid&quot;}</span></code> for a token that is not live for this account (unknown,
+expired, already used, another account’s — nothing changes); <code class="docutils literal notranslate"><span class="pre">500</span> <span class="pre">{&quot;status&quot;:</span> <span class="pre">&quot;error&quot;}</span></code> when the database failed (the link still works).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/groups</span></code> — the caller’s groups:
 <code class="docutils literal notranslate"><span class="pre">{groups:</span> <span class="pre">[{group_id,</span> <span class="pre">name,</span> <span class="pre">status,</span> <span class="pre">repo_count,</span> <span class="pre">favorited,</span> <span class="pre">pending_adds}]}</span></code>. <code class="docutils literal notranslate"><span class="pre">status</span></code> is <code class="docutils literal notranslate"><span class="pre">approved</span></code>, <code class="docutils literal notranslate"><span class="pre">pending</span></code>, or <code class="docutils literal notranslate"><span class="pre">rejected</span></code>
 (empty legacy values normalize to <code class="docutils literal notranslate"><span class="pre">approved</span></code>). <code class="docutils literal notranslate"><span class="pre">pending_adds</span></code>

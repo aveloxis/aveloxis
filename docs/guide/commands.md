@@ -57,11 +57,11 @@ See [`configuration.md` -> scancode worker](../getting-started/configuration.md)
 ### Examples
 
 ```bash
-# Start with defaults (1 worker, dashboard on :5555)
+# Start with defaults (collection.workers, default 12; dashboard on 127.0.0.1:5555)
 aveloxis serve
 
-# Start with 4 workers and a custom dashboard port
-aveloxis serve --workers 4 --monitor :8082
+# Start with 4 workers and a custom dashboard address (8082 is the web GUI's port)
+aveloxis serve --workers 4 --monitor 127.0.0.1:5556
 
 # Start using Augur's API keys
 aveloxis serve --workers 4 --augur-keys
@@ -85,7 +85,11 @@ The `web` command has no CLI flags. All settings come from the `web` section of 
 |---|---|---|---|
 | `web.addr` | string | `":8082"` | Listen address for the web server. |
 | `web.base_url` | string | `"http://localhost:8082"` | External URL used to construct OAuth callback URLs. |
-| `web.session_secret` | string | (required) | Secret key for signing session cookies. |
+| `web.session_secret` | string | `""` | Reserved; not read today (sessions are random in-process tokens). Set a random string anyway. |
+| `web.dev_mode` | bool | `false` | Local HTTP development: cookies without `Secure`, loopback confirmation links. Never in production. |
+| `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Where `web` proxies `/api/*`; must follow `api.addr`. |
+| `web.spa_url` | string | `""` | The origin of a separate front end whose `?next=` the login flow may honor; empty otherwise. |
+| `web.auto_approve_add_limit` | int | `0` | Ordinary users' repository batches up to this size are approved automatically; `0` means every addition waits for an admin; organizations always do. |
 | `web.github_client_id` | string | `""` | GitHub OAuth app client ID. |
 | `web.github_client_secret` | string | `""` | GitHub OAuth app client secret. |
 | `web.gitlab_client_id` | string | `""` | GitLab OAuth app client ID (Application ID). |
@@ -391,9 +395,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 149 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (102 tables + 22 materialized views) -- all collected data
+- **`aveloxis_data`** (103 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (42 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -1131,10 +1135,9 @@ sitemap, and the prune pass with it). If a run still times out, raise
 `--timeout` — the first run on a cold Postgres cache is the slowest;
 subsequent hourly runs benefit from warm buffers.
 
-Runs hourly from the `aveloxis-showcase.timer` systemd unit (template
-in the aveloxis-gui repo's `deploy/` directory). Read-only on the
-schema; does not run migrations (v0.21.5 policy). Safe alongside an
-active `aveloxis serve`.
+Runs hourly from a systemd timer (the Aveloxis project's own site keeps
+its unit with the site). Read-only on the schema; does not run migrations
+(v0.21.5 policy). Safe alongside an active `aveloxis serve`.
 
 ## `aveloxis adopt-forge-id`
 
@@ -1344,6 +1347,51 @@ properly.
 
 Walks keyset windows over the primary key, so it is safe alongside a running
 `serve` and a cancelled run simply resumes on the next invocation.
+
+## `aveloxis heal-commit-daily`
+
+One-shot filler for `aveloxis_data.repo_commit_daily`, the table the
+repository page's weekly commit series and top-contributors commit counts
+read (0.29.73).
+
+The commits table holds one row per file per commit, and one repository's
+rows lie scattered about one per page across the whole table, so the two
+commit answers for a large repository read millions of pages (a kernel fork:
+two minutes, past the front end's budget). The facade now folds the walk it
+already makes of the whole default branch into one row per repository, UTC
+day and author email, and replaces the repository's rows after every
+completed walk; the two readers sum that table when the repository's
+picture is complete (`repos.commit_daily_complete_at`, set by a facade walk
+whose every commit was proven written and by this command — never by a
+walk that swallowed writes; 0.29.75) and the window is UTC-day aligned,
+and read the commits table otherwise. Author
+identity: the commits table's stored id when this command carried it and
+its contributor is still live (not merged away; 0.29.81), else
+GitHub's numeric user id a noreply address carries (it survives a rename),
+else the login it names (through `LOWER(gh_login)`), else the house email
+rule (the contributor's own emails, then `contributors_aliases`), each only
+when unambiguous among live contributors.
+
+A repository collected before 0.29.73 has no rows until its next collection,
+and one whose only walk since swallowed commit writes has rows but no stamp;
+both are listed. This command fills such repositories now, largest first,
+by one scan of each repository's commit rows — the cost its first page view pays today, paid
+once here:
+
+```bash
+aveloxis heal-commit-daily                # dry run: how many repositories need it
+aveloxis heal-commit-daily --apply        # fill them, largest first
+aveloxis heal-commit-daily --apply --limit 200   # only the 200 largest
+```
+
+Each repository is its own transaction, so an interrupt loses at most the
+one in flight; rerun to finish. It can run beside a running `serve`: every
+repository's own next collection fills it anyway, so this only brings the
+largest forward — and a repository whose collection finishes between this
+command's listing and its turn is skipped, because that walk's fold is the
+authoritative default-branch picture (a rebuild from the commits table
+would bring back force-pushed commits); the closing line counts them. Minutes per kernel fork, seconds for most repositories; on a
+large fleet run it under `nohup` and read its log.
 
 ## `aveloxis heal-vulnerabilities`
 
@@ -1942,7 +1990,7 @@ aveloxis version
 
 ### Config file
 
-All commands look for `aveloxis.json` in the current working directory. The config file must exist and contain valid database connection parameters.
+Every command reads the file named by `-c`/`--config`, default `aveloxis.json` in the **current working directory**. A missing file is not an error: the command logs `config file not found, using defaults` at WARN and runs on compiled defaults (the database `augur` as user `augur` on `localhost:5432`, every other key at its default) — so a `migrate` or `add-key` run from the wrong directory acts on that default database. Pass `-c /path/to/aveloxis.json` on every command in scripts, units and runbooks; an invalid file (bad JSON, a value refused at load) is fatal. `version` and `install-tools` read no configuration.
 
 ### Exit codes
 

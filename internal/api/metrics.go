@@ -78,8 +78,8 @@ func (s *Server) registerMetricRoutes() {
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/languages", s.handleLanguages)
 
 	// === Dependencies ===
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/deps", s.handleDeps)
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/libyear", s.handleDeps) // Same as deps — libyear data is in the same table.
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/deps", s.cachedRepoGET(pageExact, s.handleDeps))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/libyear", s.cachedRepoGET(pageExact, s.handleDeps)) // Same as deps — libyear data is in the same table.
 
 	// === Messages ===
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/repo-messages", s.handleRepoMessages)

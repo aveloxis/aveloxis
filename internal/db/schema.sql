@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- per-finding last_seen_at cannot, since a clean scan touches
     -- zero vuln rows.
     vuln_scan_last_run      TIMESTAMPTZ,
+    -- v0.29.73: stamped, in the same transaction as their data, by writers
+    -- that change what the repository's pages show outside a collection job
+    -- (the full list: pageCacheWriters in page_cache_writers_test.go), so
+    -- the API's cached answers are replaced. On repos, which every
+    -- repository has: a gone repository keeps its data but has no queue row.
+    data_changed_at         TIMESTAMPTZ,
     -- v0.28.1 (A6): the repo no longer resolves on its forge —
     -- prelim's probe got a DEFINITIVE 404/410 (privatized or deleted
     -- upstream; the department-of-veterans-affairs class). Distinct
@@ -120,6 +126,15 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- once; the readers fall back to the live scan meanwhile.
     first_commit_at         TIMESTAMPTZ,
     last_commit_at          TIMESTAMPTZ,
+    -- v0.29.75: when repo_commit_daily last became this repository's
+    -- COMPLETE daily picture — a facade walk whose every commit was
+    -- proven written (it trims), or the heal command's fill from the
+    -- commits table. NULL = whatever daily rows exist are not
+    -- authoritative: the readers take the commits table and
+    -- heal-commit-daily lists the repository. A walk that swallowed
+    -- writes records what it saw but never sets this (PR #226 review
+    -- 5448678338: rows existing is not the aggregate being complete).
+    commit_daily_complete_at TIMESTAMPTZ,
     -- v0.29.69 (worklist 69): when the startup metadata backfill last
     -- got an ANSWER from the forge about this repo: metadata written
     -- (an honestly empty description and language included) or an
@@ -1551,12 +1566,18 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
 
 CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
     ON aveloxis_data.repo_deps_vulnerabilities (repo_id);
--- v0.27.4: serve the home tab's 90-day activity counts as tight
--- per-repo index range probes (86,909-repo admin group sets).
-CREATE INDEX IF NOT EXISTS idx_issues_repo_created
-    ON aveloxis_data.issues (repo_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_created
-    ON aveloxis_data.pull_requests (repo_id, created_at);
+-- v0.27.4: the home tab's 90-day activity counts as tight per-repo index
+-- range probes (86,909-repo admin group sets) rode idx_issues_repo_created
+-- / idx_pull_requests_repo_created (repo_id, created_at). v0.29.77: those
+-- are superseded by idx_issues_repo_created_reporter and
+-- idx_pull_requests_repo_created_author — the same keys INCLUDE the author
+-- column, so the top-contributors issue and PR arms are index-only (kate
+-- 2026-10-07, repo 94609: 505K PR rows read one heap page each, 58K issue
+-- rows likewise). Both are MIGRATION-ONLY (SR-2: this base DDL runs
+-- before the CONCURRENTLY steps, so a plain form here would block-build
+-- them on every upgraded fleet; a fresh install gets the CONCURRENTLY
+-- build from migrate.go, an instant on an empty table). The v0.27.4 names
+-- are dropped by migrate and never reused (SR-4).
 
 -- v0.27.96/v0.27.98 perf-wave indexes (summary/21 F1/F5) are DELIBERATELY
 -- NOT declared here. RunMigrations executes this base DDL BEFORE the
@@ -1902,6 +1923,40 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.dm_repo_monthly (
     data_source      TEXT DEFAULT '',
     data_collection_date TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- repo_commit_daily (summary/49, 0.29.73): distinct commits per repository,
+-- UTC day of the author timestamp and author email, folded by the facade
+-- from the walk it makes of the whole default branch and replaced after a
+-- completed walk (aveloxis heal-commit-daily fills repositories collected
+-- before). The repository page's weekly commit series and the commits arm
+-- of top contributors read it when the repository's picture is complete
+-- (repos.commit_daily_complete_at, v0.29.75) and the window is UTC-day
+-- aligned; the commits table (one row per file per commit, one repository's
+-- rows scattered about one per page) is read otherwise. Author identity at
+-- read time: see the column comment below.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_commit_daily (
+    repo_id      BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) DEFERRABLE INITIALLY DEFERRED,
+    day          DATE NOT NULL,
+    author_email TEXT NOT NULL,
+    commits      INTEGER NOT NULL,
+    author_login TEXT NOT NULL DEFAULT '',
+    author_gh_user_id BIGINT NOT NULL DEFAULT 0,
+    cntrb_id     UUID,
+    computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (repo_id, day, author_email)
+);
+-- author_login / author_gh_user_id: the login and GitHub's numeric user id
+-- a noreply address names (the facade's writer; the id survives a rename,
+-- the login does not); cntrb_id: the commits table's stored
+-- cmt_ght_author_id when the bucket's resolved commits agree on one (the
+-- backfill's writer), kept across replaces. The reader resolves the rest, in
+-- that order, each only when unambiguous: the stored id, the numeric id
+-- (contributors.gh_user_id, its partial index built by the migrate), the
+-- login through LOWER(gh_login), the email through the house rule (the
+-- contributor's own emails, then contributors_aliases).
+ALTER TABLE aveloxis_data.repo_commit_daily ADD COLUMN IF NOT EXISTS author_login TEXT NOT NULL DEFAULT '';
+ALTER TABLE aveloxis_data.repo_commit_daily ADD COLUMN IF NOT EXISTS author_gh_user_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE aveloxis_data.repo_commit_daily ADD COLUMN IF NOT EXISTS cntrb_id UUID;
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.dm_repo_weekly (
     repo_id          BIGINT NOT NULL,

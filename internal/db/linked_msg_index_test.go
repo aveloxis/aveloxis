@@ -50,25 +50,38 @@ func TestLinkedMsgUniqueIndexIsMigrationOnlyConcurrentAndPartial(t *testing.T) {
 // round 20 replaced it with the unique index above, so it must be
 // DROPPED on existing fleets (to remove the redundant non-unique index)
 // AND must never be CREATE'd again (a reused DROP+CREATE would rebuild
-// forever, since DROP steps run every migrate).
+// forever, since DROP steps run every migrate). Since 0.29.77 (round 6)
+// the drop is the gated one — dropIndexOnceReplacementIsValid with this
+// name as its `old` argument — so the unique replacement is proven valid
+// before the plain index goes; the ordering is pinned by
+// TestIndexReplacementsBuildBeforeTheGatedDrop.
 func TestRetiredNonUniqueLinkedMsgIndexIsDroppedNeverRecreated(t *testing.T) {
 	migrate := srctest.StripGoComments(srctest.Read(t, "internal/db/migrate.go"))
 	const old = "idx_email_message_linked_msg"
 
-	var dropped, created bool
+	var dropped, created, unconditional bool
 	for _, line := range strings.Split(migrate, "\n") {
 		if !strings.Contains(line, old) {
 			continue
 		}
-		if strings.Contains(line, "DROP INDEX") {
+		if strings.Contains(line, `dropIndexOnceReplacementIsValid(ctx, pg, logger, errs, "`+old+`", `) {
 			dropped = true
+		}
+		if strings.Contains(line, "DROP INDEX") {
+			// Round 8: any direct DROP (CONCURRENTLY or the plain ACCESS
+			// EXCLUSIVE form) beside or instead of the gated call makes
+			// the gate decorative; the message below is then true.
+			unconditional = true
 		}
 		if strings.Contains(line, "CREATE INDEX") || strings.Contains(line, "CREATE UNIQUE INDEX") {
 			created = true
 		}
 	}
 	if !dropped {
-		t.Errorf("%s must be DROP INDEX CONCURRENTLY IF EXISTS'd — it is retired in favor of the unique index", old)
+		t.Errorf("%s must be retired through dropIndexOnceReplacementIsValid (old = %q) once the unique index is valid — never an unconditional DROP INDEX", old, old)
+	}
+	if unconditional {
+		t.Errorf("%s is dropped directly; only dropIndexOnceReplacementIsValid may retire it", old)
 	}
 	if created {
 		t.Errorf("%s must NOT be recreated — SR-4: a dropped name reused in a CREATE rebuilds forever", old)

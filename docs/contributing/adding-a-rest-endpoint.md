@@ -20,7 +20,7 @@ internal/api/
 └── scancode_freshness_test.go
 ```
 
-The server uses Go 1.22+ ServeMux pattern matching (`{repoID}` path params). It's intentionally plain — no router library, no middleware stack beyond CORS.
+The server uses the standard-library ServeMux pattern matching Go added in 1.22 (`{repoID}` path params). It's intentionally plain — no router library, no middleware stack beyond CORS.
 
 ## Existing endpoints
 
@@ -218,7 +218,7 @@ Bump `internal/db/version.go`. Put the release-note entry in your PR description
 
 ### Path parameters via `r.PathValue("name")`
 
-Go 1.22+ ServeMux pattern matching. Mux registration uses `{name}` placeholders; the handler reads via `r.PathValue("name")`. Always parse + validate immediately and return 400 on parse failure.
+ServeMux pattern matching (standard library since Go 1.22). Mux registration uses `{name}` placeholders; the handler reads via `r.PathValue("name")`. Always parse + validate immediately and return 400 on parse failure.
 
 ### Query params via `r.URL.Query().Get`
 

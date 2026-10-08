@@ -27,8 +27,12 @@ const commitBatchChunk = 500
 
 // UpsertCommitBatch inserts commit-file rows in multi-row chunks.
 // ON CONFLICT (repo_id, cmt_commit_hash, cmt_filename) DO NOTHING is
-// intra-statement-duplicate safe, so callers need not dedup.
-func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.Commit) error {
+// intra-statement-duplicate safe, so callers need not dedup. It returns the
+// number of rows NEWLY inserted (the statements' row counts: DO NOTHING
+// rows are not counted), which the facade uses to tell a walk that added
+// commits from one that only re-walked them (PR #226 review 5458301284).
+func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.Commit) (int64, error) {
+	var inserted int64
 	for start := 0; start < len(commits); start += commitBatchChunk {
 		end := start + commitBatchChunk
 		if end > len(commits) {
@@ -77,14 +81,17 @@ func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.
 			VALUES ` + sb.String() + `
 			ON CONFLICT (repo_id, cmt_commit_hash, cmt_filename) DO NOTHING`
 
+		var chunkInserted int64
 		if err := s.withRetry(ctx, func(ctx context.Context) error {
-			_, err := s.pool.Exec(ctx, sql, args...)
+			tag, err := s.pool.Exec(ctx, sql, args...)
+			chunkInserted = tag.RowsAffected() // the successful attempt's count
 			return err
 		}); err != nil {
-			return fmt.Errorf("commit batch chunk [%d:%d]: %w", start, end, err)
+			return inserted, fmt.Errorf("commit batch chunk [%d:%d]: %w", start, end, err)
 		}
+		inserted += chunkInserted
 	}
-	return nil
+	return inserted, nil
 }
 
 // UpsertCommitMessageBatch inserts commit messages in multi-row chunks.

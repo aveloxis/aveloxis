@@ -19,7 +19,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/idna"
+
 	"github.com/aveloxis/aveloxis/internal/httpserver"
+	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -181,7 +184,11 @@ type WebConfig struct {
 	// Addr is the listen address for the web GUI (default ":8082").
 	Addr string `json:"addr"`
 
-	// SessionSecret is used to sign session cookies (generate a random string).
+	// SessionSecret is reserved: the loader accepts it and nothing reads it
+	// today. Web sessions are random tokens held in the web process (lost on
+	// its restart); the API's Bearer tokens are stored in the database.
+	// Pinned by scripts/session_secret_docs_test.go: while it stays unread,
+	// no page may say it signs cookies or keeps sessions across restarts.
 	SessionSecret string `json:"session_secret"`
 
 	// BaseURL is the external URL for OAuth callbacks (e.g., "https://aveloxis.example.com").
@@ -1520,6 +1527,62 @@ func (c *Config) validate() error {
 	if h := c.Collection.SupplyChainRefreshHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
+	if mb := c.API.ResponseCacheMB; mb != nil && (*mb < 0 || int64(*mb) > MaxResponseCacheMB) {
+		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep only the weekly time series and top contributors, as before 0.29.73", *mb, MaxResponseCacheMB)
+	}
+	if spa := c.Web.SPAURL; spa != "" {
+		// With it set, spa_url starts the mailed page links (group, pending
+		// approvals, email confirmation; welcome and digest links stay on
+		// mail.site_url) and the OAuth return: the rule
+		// mail.site_url has, plus the canonical form, because every reader
+		// appends "/page.html" to the value as written (2026-10-04).
+		if err := mailer.ValidateSiteURL("web.spa_url", spa); err != nil {
+			return err
+		}
+		if strings.HasSuffix(spa, "/") {
+			return errors.New("web.spa_url ends with a slash — use the front end's origin as is, such as https://gui.example (each link appends /page.html to it)")
+		}
+		// The OAuth return compares the front end's next (built from the
+		// browser's location.origin) against this value as written, and the
+		// front end is served at its origin's root, so the value must be
+		// exactly what the address bar shows: one normaliser computes that
+		// origin and anything else is refused (reviews 2026-10-04: a default
+		// port, a leading zero, a trailing colon, uppercase, a Unicode host,
+		// an uncompressed IPv6 literal or a path each sent every SPA sign-in
+		// to /dashboard with only a WARN). Parsed once more here rather than
+		// inside the helper so no url.Parse error can echo the value.
+		u, err := url.Parse(spa)
+		if err != nil {
+			return errors.New("web.spa_url is not a URL")
+		}
+		if origin, err := browserOrigin(u); err != nil || origin != spa {
+			return errors.New("web.spa_url is not the origin as the browser's address bar shows it (lowercase scheme and ASCII host, an IPv4 address in dotted-decimal form, no default port, no leading zero, no path), such as https://gui.example or http://localhost:8000")
+		}
+	}
+	if n := len(c.API.FrontEndSecret); n > 0 && n < MinFrontEndSecretLen {
+		return fmt.Errorf("api.front_end_secret is %d characters — use at least %d (openssl rand -hex 32), or omit it to count every request", n, MinFrontEndSecretLen)
+	}
+	if tp := c.API.TrustedProxy; tp != "" {
+		// Compared byte for byte with the peer address, which Go reports in
+		// canonical form: anything else (stray spaces, a host name, a CIDR,
+		// ::ffff:127.0.0.1 for 127.0.0.1) never matches, and X-Forwarded-For
+		// and the front-end secret would silently be ignored.
+		if ip := net.ParseIP(tp); ip == nil || ip.String() != tp {
+			canonical := ""
+			if ip != nil {
+				canonical = " (written " + ip.String() + ")"
+			}
+			return fmt.Errorf("api.trusted_proxy is %q — use the proxy's IP address in canonical form%s, e.g. 127.0.0.1 for nginx on the same host, or omit it", tp, canonical)
+		}
+	}
+	if c.API.FrontEndSecret != "" && c.API.TrustedProxy == "" {
+		// The API believes the mark only from trusted_proxy: without one the
+		// secret would be logged as set and never take effect.
+		return fmt.Errorf("api.front_end_secret is set but api.trusted_proxy is empty — the secret is believed only from the trusted proxy; set api.trusted_proxy (127.0.0.1 for nginx on the same host) or omit api.front_end_secret")
+	}
+	if sec := c.API.CacheRewarmSeconds; sec != nil && (*sec < 0 || int64(*sec) > MaxCacheRewarmSeconds) {
+		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default (it applies only while api.response_cache_mb is set)", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
+	}
 	return nil
 }
 
@@ -1527,6 +1590,71 @@ func (c *Config) validate() error {
 // hold: above it the hours-to-Duration product overflows and the ticker
 // panics at serve start on a value Load had accepted (review round 1).
 const MaxSupplyChainRefreshHours = int(math.MaxInt64 / int64(time.Hour))
+
+// browserIDNA is the WHATWG domain-to-ASCII profile (UTS 46, nontransitional,
+// no STD3 rules, no hyphen placement check): browsers accept an underscore
+// or a hyphen anywhere in a label, and the spa_url rule must accept what a
+// browser shows (idna.Lookup refuses both; round-3 review).
+var browserIDNA = idna.New(idna.MapForLookup(), idna.BidiRule(), idna.CheckJoiners(true), idna.StrictDomainName(false), idna.CheckHyphens(false), idna.Transitional(false))
+
+// ipv4Candidate is WHATWG's "ends in a number" test: a host whose last
+// label (a trailing dot stripped) is all digits or 0x-hex is parsed as an
+// IPv4 address, so 127.1, 010.1.2.3 and 0xa.1.2.3 are rewritten.
+func ipv4Candidate(host string) bool {
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	last := labels[len(labels)-1]
+	if last == "" {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(last), "0x") {
+		return strings.Trim(strings.ToLower(last[2:]), "0123456789abcdef") == ""
+	}
+	return strings.Trim(last, "0123456789") == ""
+}
+
+// browserOrigin is the origin a browser reports as location.origin for u
+// (WHATWG URL serialisation): lowercase scheme; the host as a browser shows
+// it — a bracketed IPv6 literal compressed, an IPv4 candidate only in its
+// dotted-decimal form, a name through browserIDNA; the port only when it is
+// not the scheme's default; and nothing else — no path, no trailing colon.
+// The one normaliser the spa_url rule compares against (SR-17).
+func browserOrigin(u *url.URL) (string, error) {
+	scheme := strings.ToLower(u.Scheme)
+	host := u.Hostname()
+	switch {
+	case strings.HasPrefix(u.Host, "["):
+		// Declined for the IPv4-mapped form ([::ffff:10.1.2.3]): Go prints
+		// the embedded address dotted, a browser prints ::ffff:a01:203, so
+		// the two can never agree and the value is refused — nobody serves a
+		// front end at that literal (round-3 review).
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return "", errors.New("not an IPv6 literal")
+		}
+		host = "[" + ip.String() + "]"
+	case ipv4Candidate(host):
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil || ip.String() != host {
+			return "", errors.New("an IPv4 address a browser rewrites")
+		}
+	default:
+		ascii, err := browserIDNA.ToASCII(host)
+		if err != nil {
+			return "", err
+		}
+		host = ascii
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return "", err
+		}
+		if !((scheme == "https" && n == 443) || (scheme == "http" && n == 80)) {
+			host += ":" + strconv.Itoa(n)
+		}
+	}
+	return scheme + "://" + host, nil
+}
 
 // SlogLevel returns the slog.Level corresponding to the LogLevel string.
 func (c *Config) SlogLevel() slog.Level {
@@ -1850,8 +1978,9 @@ type APIConfig struct {
 	// ExemptCIDRs lists client networks that bypass limiting
 	// entirely. Default: loopback + RFC1918 (+ ::1).
 	ExemptCIDRs []string `json:"exempt_cidrs,omitempty"`
-	// CORSOrigins lists browser origins allowed to call the API
-	// (the separate-repo GUI). Empty = no cross-origin access.
+	// CORSOrigins lists browser origins allowed to call the API. Empty
+	// sends Access-Control-Allow-Origin: * (any origin); a list is a
+	// strict allowlist (ratelimit.go cors).
 	CORSOrigins []string `json:"cors_origins,omitempty"`
 	// TrustedProxy is the peer IP whose X-Forwarded-For header is
 	// believed when resolving the client address (the nginx-on-
@@ -1877,6 +2006,90 @@ type APIConfig struct {
 	// breaks the server-rendered GUI's browser-side chart fetches.
 	// Exempt-CIDR clients bypass auth even when enabled.
 	RequireAuth bool `json:"require_auth,omitempty"`
+
+	// ResponseCacheMB bounds the API's repository-page response cache in
+	// megabytes (v0.29.73; off by default — an advanced option a deployment
+	// turns on by setting it). Absent → DefaultResponseCacheMB (0); an explicit 0
+	// keeps only the /timeseries and /contributors/top answers main always
+	// kept, bounded by count (0.29.78; every answer is still tagged and
+	// revalidated);
+	// negative or past MaxResponseCacheMB → refused at load.
+	ResponseCacheMB *int `json:"response_cache_mb,omitempty"`
+
+	// CacheRewarmSeconds is how often the API looks for cached repository
+	// pages a finished collection made outdated and recomputes them
+	// (v0.29.73). Absent → DefaultCacheRewarmSeconds; an explicit 0 turns
+	// the re-warm off; negative or past MaxCacheRewarmSeconds → refused at
+	// load.
+	CacheRewarmSeconds *int `json:"cache_rewarm_seconds,omitempty"`
+
+	// FrontEndSecret is the value a front end sends in X-Aveloxis-Authorized
+	// on a request it forwards after GET /api/v1/authz/repos/{id} admitted
+	// the visitor, so that request is not counted against the visitor's rate
+	// limit a second time (v0.29.73). Believed only from trusted_proxy.
+	// Empty (the default): every request is counted. Shorter than
+	// MinFrontEndSecretLen → refused at load. Never logged.
+	FrontEndSecret string `json:"front_end_secret,omitempty"`
+}
+
+// MinFrontEndSecretLen is the shortest api.front_end_secret accepted: 32
+// characters, 128 bits as hex (openssl rand -hex 16 prints 32; -hex 32
+// prints 64). A guessable value would let any visitor skip the rate limit.
+const MinFrontEndSecretLen = 32
+
+// DefaultResponseCacheMB is 0: the repository-page response cache is an
+// advanced option, off unless api.response_cache_mb is set (operator
+// decision 2026-10-04 — a fresh deployment should not reserve gigabytes
+// for a cache it did not ask for). Sizing, for a deployment that turns it
+// on: about a hundred of the largest repository pages (a 56,000-file
+// scancode listing is ~7 MB of JSON, a 600-finding vulnerability list
+// ~1 MB) plus ten thousand typical ones (~100 KB) is 2 GB.
+const DefaultResponseCacheMB = 0
+
+// MaxResponseCacheMB keeps the byte count inside an int64 (an int64
+// constant: on a 32-bit build it does not fit an int, and the int field
+// cannot exceed it there anyway).
+const MaxResponseCacheMB int64 = math.MaxInt64 >> 20
+
+// DefaultCacheRewarmSeconds is the re-warm's default cadence while the
+// cache is on: a visitor who arrives within a minute of a collection's end
+// may still pay for the recomputation; each pass costs one primary-key
+// read per cached repository. With the cache off (ResponseCacheBytes 0)
+// the effective cadence is 0: the two routes still kept then are not
+// re-warmed (main never re-warmed them; their key carries the repository's
+// state, so a collection makes a new answer, not a stale one).
+const DefaultCacheRewarmSeconds = 60
+
+// MaxCacheRewarmSeconds is the largest cadence a time.Duration can hold
+// (int64, as MaxResponseCacheMB).
+const MaxCacheRewarmSeconds int64 = math.MaxInt64 / int64(time.Second)
+
+// ResponseCacheBytes is the effective budget in bytes (the single default
+// layer).
+func (a APIConfig) ResponseCacheBytes() int64 {
+	if a.ResponseCacheMB == nil {
+		return int64(DefaultResponseCacheMB) << 20
+	}
+	if *a.ResponseCacheMB <= 0 {
+		return 0
+	}
+	return int64(*a.ResponseCacheMB) << 20
+}
+
+// CacheRewarmInterval is the effective re-warm cadence; zero means off —
+// and it is off whenever response_cache_mb is 0 (one knob turns the
+// feature on).
+func (a APIConfig) CacheRewarmInterval() time.Duration {
+	if a.ResponseCacheBytes() == 0 {
+		return 0
+	}
+	if a.CacheRewarmSeconds == nil {
+		return DefaultCacheRewarmSeconds * time.Second
+	}
+	if *a.CacheRewarmSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(*a.CacheRewarmSeconds) * time.Second
 }
 
 // AddrOrDefault returns the configured listen address, or the

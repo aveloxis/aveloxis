@@ -38,6 +38,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/platform/github"
 	"github.com/aveloxis/aveloxis/internal/platform/gitlab"
+	"github.com/aveloxis/aveloxis/internal/safego"
 	"github.com/aveloxis/aveloxis/internal/scheduler"
 	"github.com/aveloxis/aveloxis/internal/web"
 	"github.com/spf13/cobra"
@@ -107,6 +108,7 @@ func newRootCmd() *cobra.Command {
 		stagingStatsCmd(&cfgPath),
 		healVulnerabilitiesCmd(&cfgPath),
 		healLibyearCmd(&cfgPath),
+		healCommitDailyCmd(&cfgPath),
 		healCollectionGapsCmd(&cfgPath),
 		markGoneReposCmd(&cfgPath),
 		runScorecardCmd(&cfgPath),
@@ -446,6 +448,9 @@ func runAPI(cfgPath, addr string) error {
 	defer pidfile.RemoveIfOwn(pidPath, os.Getpid())
 	signalReady(logger)
 
+	// v0.29.73: recompute cached repository pages after their collections.
+	safego.Go(logger, "repository page cache re-warm", func() { apiServer.RunRewarm(ctx) })
+
 	srv := newAPIServer(cfg, addr, apiServer.Handler(), logger)
 	return serveUntilDone(ctx, srv, ln, logger, "API server")
 }
@@ -540,6 +545,19 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 			WithCollectionModes(cfg.Collection.PRChildMode, cfg.Collection.ListingMode,
 				cfg.Collection.ThreadingMode, cfg.Collection.ShardSize, cfg.Collection.IssueChildMode)
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
+		// Outside the queue no CompleteJob marks the end of this run: stamp
+		// the repository so the API replaces its cached answers (v0.29.73).
+		// Also after a failure — the run may have written part of its data.
+		// On a context the interrupt cannot cancel (Ctrl-C is the commonest
+		// failure of a one-shot run, after part of the data was written),
+		// bounded so a dead database cannot hold the command.
+		stampCtx, stampCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		stampErr := store.StampRepoDataChanged(stampCtx, repoID)
+		stampCancel()
+		if stampErr != nil {
+			logger.Warn("could not stamp the repository's cache state — its cached API answers may stay until its next collection",
+				"url", platform.RedactURLUserinfo(repoURL), "error", stampErr)
+		}
 		if err != nil {
 			logger.Error("collection failed", "url", platform.RedactURLUserinfo(repoURL), "error", err)
 			continue
@@ -2385,6 +2403,7 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config {
 		FromName:         cfg.Mail.FromName,
 		SiteURL:          cfg.Mail.SiteURL,
 		OperatorEmail:    cfg.Mail.OperatorEmail,
+		SPAURL:           cfg.Web.SPAURL,
 	}
 }
 
@@ -2428,6 +2447,13 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		// O11 option 4 (v0.29.71): a per-repository answer is reused within
 		// its collection generation for at most one enrichment interval.
 		ResponseCacheMaxAge: cfg.Collection.EnrichIntervalDuration(),
+		// v0.29.73: the repository-page cache's budget, its re-warm
+		// cadence, and the request bound each re-warm request runs under.
+		ResponseCacheBytes: cfg.API.ResponseCacheBytes(),
+		RewarmInterval:     cfg.API.CacheRewarmInterval(),
+		RequestTimeout:     cfg.HTTPTimeout(),
+		FrontEndSecret:     cfg.API.FrontEndSecret,
+		SPAURL:             cfg.Web.SPAURL,
 	}
 }
 

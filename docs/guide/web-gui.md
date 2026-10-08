@@ -60,7 +60,7 @@ All web GUI settings live under the `web` key in `aveloxis.json`:
 |---|---|---|
 | `web.addr` | Listen address for the web server | `":8082"` |
 | `web.base_url` | External URL used to construct OAuth callback URLs | `"http://localhost:8082"` |
-| `web.session_secret` | Secret key for signing session cookies. Use a long random string. | (required) |
+| `web.session_secret` | Reserved: accepted by the loader and not read elsewhere today (sessions are random tokens held in the process). Set a long random string so an upgrade that starts using it needs no change. | `""` |
 | `web.dev_mode` | Set `true` for local HTTP development. Disables the `Secure` flag on cookies so they work without HTTPS, and lets a loopback request build email confirmation links when `mail.site_url` is unset. **Do not enable in production** — set `mail.site_url` instead. `HttpOnly` is always set regardless. | `false` |
 | `web.github_client_id` | Client ID from your GitHub OAuth app | `""` |
 | `web.github_client_secret` | Client secret from your GitHub OAuth app | `""` |
@@ -111,7 +111,7 @@ Groups are named collections of repositories. After logging in:
 1. Open a group from the dashboard.
 2. Click **Add Repository**.
 3. Paste the repository URL (e.g., `https://github.com/chaoss/augur` or `https://gitlab.com/fdroid/fdroidclient`).
-4. Click **Add**. The repo is added to the group and automatically queued for collection.
+4. Click **Add**. The repo is added to the group and queued for collection — at once for an admin, or for a repository already tracked; an ordinary user's not-yet-tracked repository waits for an admin's approval.
 
 Platform is auto-detected from the URL, the same as `aveloxis add-repo`.
 
@@ -155,7 +155,7 @@ The web GUI uses breadcrumb navigation across the top of every page:
 
 Each group detail page (and the main dashboard) includes a **Compare Repositories** search widget. This uses the REST API (`aveloxis api`) to search across all repositories in the database — not just those in the current group. Select up to 5 repos, click **Compare**, and you are taken to the comparison page with your selection pre-populated.
 
-The API must be running (`aveloxis api --addr :8383`) for the compare search to work.
+The API must be running (`aveloxis api`, at `web.api_internal_url` — `127.0.0.1:8383` by default) for the compare search to work.
 
 ## Searching and Pagination
 
@@ -198,9 +198,9 @@ You must have `aveloxis serve` running for collection to happen. The web GUI onl
 ## Session Management
 
 - Sessions are stored **in-memory** on the web server process.
-- Each session expires after **24 hours** of inactivity.
+- Each session expires **24 hours after login** (not refreshed by use).
 - Restarting `aveloxis web` clears all sessions. Users will need to log in again.
-- Sessions are tied to a secure, signed cookie. The signing key is `web.session_secret` from your config.
+- The session cookie carries a random token; it is not signed, so `web.session_secret` plays no part today (the API's Bearer tokens, minted at `/auth/token`, are stored in the database and survive restarts).
 
 ## Running Alongside `aveloxis serve`
 
@@ -208,21 +208,24 @@ The web GUI and the collection scheduler are separate processes. In a typical de
 
 ```bash
 # Terminal 1: collection scheduler with monitoring dashboard
-aveloxis serve --workers 4 --monitor :5555
+aveloxis serve --workers 4 --monitor 127.0.0.1:5555
 
 # Terminal 2: web GUI for group management
 aveloxis web
+
+# Terminal 3: the REST API the charts and the compare search read
+aveloxis api
 ```
 
-They share the same PostgreSQL database. The web GUI writes to the queue; the scheduler reads from it. There is no direct communication between the two processes.
+Or all three in the background with `aveloxis start all`. They share the same PostgreSQL database. The web GUI writes to the queue; the scheduler reads from it. There is no direct communication between the two processes, except that `web` proxies `/api/*` to the API at `web.api_internal_url`.
 
 You can run them on different hosts as long as both can reach the database.
 
 ## Security Considerations
 
 - **OAuth tokens**: The access tokens obtained during login are used only to fetch the user's profile and are not stored persistently. They are held in the session for the duration of the login.
-- **Session cookies**: Signed with `web.session_secret`. Use a strong, random secret in production. If the secret is compromised, an attacker could forge session cookies. All cookies set `HttpOnly` to prevent JavaScript access. The `Secure` flag is set in production (default) but can be disabled for local HTTP development via `"dev_mode": true`.
+- **Session cookies**: A random 256-bit token looked up in the process; unguessable rather than signed. All cookies set `HttpOnly` to prevent JavaScript access. The `Secure` flag is set in production (default) but can be disabled for local HTTP development via `"dev_mode": true`.
 - **HTTPS**: In production, run `aveloxis web` behind a reverse proxy (nginx, Caddy, etc.) that terminates TLS. OAuth providers require HTTPS callback URLs for production apps (localhost is exempt during development). Leave `dev_mode` at its default (`false`) in production — this ensures cookies are only sent over HTTPS.
 - **Development mode**: For local development over plain HTTP, set `"dev_mode": true` in the `web` section of `aveloxis.json`. This disables the `Secure` cookie flag so session cookies work without HTTPS, and lets a loopback request build email confirmation links when `mail.site_url` is unset. `HttpOnly` remains enabled even in dev mode. Never deploy with `dev_mode` enabled; production confirmation links need `mail.site_url`.
 - **Client secrets**: The `web.github_client_secret` and `web.gitlab_client_secret` values in `aveloxis.json` are sensitive. Protect the config file with appropriate file permissions (`chmod 600 aveloxis.json`).
-- **No role-based access control**: Currently all authenticated users have the same permissions. Any logged-in user can create groups and add repos. If you need to restrict access, control who can reach the web GUI at the network level.
+- **Roles**: the first account to sign in is the admin; every later account is an ordinary user until an admin promotes it on the users page. Ordinary users create groups freely, but a repository or organization they add that is not yet tracked waits for an admin's approval before it is collected (`web.auto_approve_add_limit` auto-approves small repository batches, never organizations). To restrict who can sign in at all, control reach at the network level.

@@ -9,7 +9,7 @@ This chapter gets you from an empty machine to a working aveloxis dev environmen
 
 ## Prerequisites
 
-- **Go 1.25 or later.** Aveloxis uses Go 1.25 iterator syntax (`iter.Seq2`) in the platform layer.
+- **Go 1.26 or later** (the `go` directive in `go.mod`; a newer `go` downloads the pinned toolchain itself). The platform layer uses iterator syntax (`iter.Seq2`).
 - **PostgreSQL 14 or later.** 18.x is what the maintainers use; anything 14+ should work (the schema uses `gen_random_uuid()` and `pg_trgm`).
 - **git** (obviously).
 - **scc** and **scorecard** — installed automatically via `aveloxis install-tools`, see below.
@@ -97,7 +97,7 @@ The other blocks (`github`, `gitlab`, `web`, `collection`, `log_level`) can stay
 go run ./cmd/aveloxis migrate
 ```
 
-Expect a short stream of `migration step ok` log lines. The full schema (148 tables, 20 8Knot materialized views plus the two supply-chain views, 50+ indexes) lands in two passes — DDL then view creation; the 8Knot pass runs only with `collection.materialized_views` enabled (the default), and the per-package test databases skip both.
+Expect a short stream of `migration step ok` log lines. The full schema (149 tables, 20 8Knot materialized views plus the two supply-chain views, 50+ indexes) lands in two passes — DDL then view creation; the 8Knot pass runs only with `collection.materialized_views` enabled (the default), and the per-package test databases skip both.
 
 If you want to skip the matview build for faster iteration (you typically do during development):
 

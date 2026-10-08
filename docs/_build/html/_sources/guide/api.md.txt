@@ -3,10 +3,10 @@
 Aveloxis includes a REST API server for programmatic access to collected data, repository statistics, time-series metrics, SBOM downloads, and vulnerability information. Start it with:
 
 ```bash
-aveloxis api --addr :8383
+aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr overrides it
 ```
 
-The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database.
+The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
 ## Endpoints
 
@@ -19,8 +19,10 @@ GET /api/v1/health
 Returns the server status and version.
 
 ```json
-{"status": "ok", "version": "0.9.0"}
+{"status": "ok", "version": "0.29.73"}
 ```
+
+`version` is the running binary's.
 
 ### Public fleet stats
 
@@ -128,7 +130,8 @@ GET /api/v1/repos/stats?ids=1,2,3,42
 Returns stats for multiple repos in one call. Response is a map keyed by repo ID.
 
 Since v0.28.7 the batch rows carry the same `gone_at` and
-`metadata_as_of` fields as the single-repo endpoint, and requested ids
+`metadata_as_of` fields as the single-repo endpoint (and, since
+v0.29.70, `unavailable_reason` and `unavailable_url`), and requested ids
 with no collection-queue row (the prelim-dequeued "gone" cohort) fall
 back to live gathered counts instead of serving zeros — the two
 endpoints can no longer disagree about a vanished repository. The
@@ -149,6 +152,8 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 ```
 
 Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues.
+
+Every commit window on this API — this series, `/contributors/top`, `/contributions/*`, `/compare` — ends no later than the latest plausible commit time, two UTC days after now, and starts no earlier than the earliest, 1970-01-02, whatever `since` and `until` say. An author timestamp is an absolute instant, so only a wrong committer clock can place one in the future (the margin is a day of skew rounded to a day-aligned edge), and a Unix clock cannot place one before the epoch, which is what an unset clock stamps. Repositories carry the occasional author date in 2080 or 1970, and such a date must not stretch a window. The rows stay stored; only the windows are bounded.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -357,26 +362,50 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-`?bots=hide` (v0.27.69; widened v0.28.1) filters automation
+**Caching (since 0.29.71; 0.29.73).** With `api.response_cache_mb` set, a
+repository's own GET answers (this endpoint, `/timeseries`, `/licenses`,
+`/deps`, `/libyear`, `/scancode-*`, `/vulnerabilities`, `/scorecard`,
+`/sbom` and `/contributions/*`) are reused until the repository is collected
+again or scanned; with it unset (the default) only this endpoint and
+`/timeseries` are, up to 1,000 answers. Answers that name contributors are also recomputed after
+`collection.enrich_interval_minutes` (default 30). These answers carry an
+`ETag` (weak for answers that depend only on the repository's state); a
+request whose `If-None-Match` names the current one gets
+`304 Not Modified`. A response served from the cache carries `X-Cache: hit`.
+Each entity's series on `/compare` is reused inside the response, and only a
+whole-response hit (below) carries the header. Shareable answers carry
+`Cache-Control: no-cache` with a weak `ETag`, so a client revalidates every
+time and gets a 304 when nothing changed. An answer that depends on who
+asks — the per-user routes, every `401`/`403`, and a response that just
+added the repository to the caller's group — carries
+`Cache-Control: private, no-store` and is never cached by anything.
+
+`GET /api/v1/authz/repos/{repoID}` (0.29.73) returns `204` when the caller
+may read that repository, otherwise the same `401`/`403` the data endpoints
+return. It returns no data.
+
+`?bots=hide` (v0.27.69; widened v0.28.1 and v0.29.70) filters automation
 identities by four markers: the non-human account types
 `gh_type IN ('Bot', 'ProgrammaticAccessBot', 'Organization')`
 (GitHub App accounts like `dependabot[bot]`; fine-grained-PAT
 actors; org accounts acting as contributors — the codecov shape,
 whose enriched row is typed Organization), the `[bot]` login
-suffix, the hyphenated `-bot`/`-robot` machine-account convention
-(the `k8s-ci-robot` class, which GitHub types as a regular User —
+suffix, a login ending in `bot` (so `-bot`, `-robot` and
+separator-less names such as `pytorchmergebot`; digits may follow —
+the `k8s-ci-robot` class, which GitHub types as a regular User,
 verified live), and the curated system-account list (actions-user,
 web-flow, ghost, codecov, codecov-io, codecov-commenter — machine
 accounts GitHub types as plain User). `Mannequin` rows are
 deliberately NOT hidden: mannequins are import placeholders
-standing in for unmatched humans, not automation. The separator
-requirement keeps human surnames (talbot) safe. Deliberately
+standing in for unmatched humans, not automation. Logins ending in a
+surname that ends in `bot` (abbot, barbot, cabot, chabot, jabot, rabot,
+talbot) stay visible. Deliberately
 broader than the `contributor_retention` metric's bot exclusion,
 which is pinned to 8Knot parity; this one is a display filter. The same parameter works
 on `/contributors/elsewhere` so the two surfaces stay consistent. Requires the
-same repo scope as every other per-repo endpoint; responses are served
-from a 60-second cache (the underlying data only changes per
-collection cycle).
+same repo scope as every other per-repo endpoint. This endpoint's answers
+are cached as the caching paragraph above describes; `/contributors/elsewhere`
+reads other repositories' activity and keeps a 60-second cache.
 
 Response:
 
@@ -679,16 +708,22 @@ origin (and the web GUI origin if its pages fetch the API cross-port).
 
 ## Deployment
 
-The API server is stateless — it reads directly from PostgreSQL. You can run multiple instances behind a load balancer for high availability.
+The three processes are started together with `aveloxis start all` (pidfiles
+and logs under `~/.aveloxis/`) or, on a production host, as systemd units
+([Running as a Service](running-as-a-service.md)); the whole layout — proxy,
+OAuth, the first admin, upgrades — is
+[Production Deployment](../getting-started/deployment.md).
 
-```bash
-# Typical 3-process deployment
-(nohup aveloxis serve --workers 40 --monitor :5555 >> aveloxis.log &)
-(nohup aveloxis web >> web.log &)
-(nohup aveloxis api --addr :8383 >> api.log &)
-```
+Each `api` process keeps its own state: the per-repository response cache
+(up to `api.response_cache_mb`, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
+authorization cache. Several instances behind a load balancer each compute
+and hold their own answers, and the per-IP limits are per instance; run one
+per host unless that is what you want.
 
-The web GUI's Chart.js visualizations fetch data from the API server. The API URL is configured as `http://localhost:8383` by default. If running on a different host or port, update the API base URL in the web templates.
+The web GUI's charts fetch the API through the web process, which proxies
+`/api/*` to `web.api_internal_url` (`http://127.0.0.1:8383` by default);
+when the API moves, that URL must follow. Behind a reverse proxy, send
+`/api/` to the API directly so its per-visitor limits see the visitor.
 
 ## Comparison analytics (v0.27.2)
 
@@ -728,7 +763,11 @@ scope-granting auto-add.
 - `GET /api/v1/compare?entities=repo:1,org:github.com/chaoss&metric=contributors&since=2023-07-01&until=2026-07-01&bucket=week`
   — temporal metrics; window defaults to the trailing 3 years; bucket
   week (default) or month; buckets are densified (aligned x-axes).
-  Responses are cached 60s per (user, query).
+  Whole responses are cached 60s per (user, query) (`X-Cache: hit`); each
+  entity's series is also reused under its repositories' collection state,
+  for at most `collection.enrich_interval_minutes` (see the caching note
+  under the top-contributors endpoint). The default window starts on the
+  bucket boundary three years before the last complete bucket.
   - **Per-entity window clamp (v0.27.24):** each entity's series is
     densified from `max(since, its first activity)` — the least of
     first issue, first PR, first commit, and the forge's repo
@@ -846,6 +885,25 @@ Token semantics:
   findings on runtime-scope dependencies: `current - dev`, the
   headline GUIs should lead with).
 
+  **Unknown-version advisories (v0.29.70).** A dependency that
+  declares no version (`version_resolution: "unpinned"`) was queried
+  at OSV.dev without one, and OSV answers such a query with every
+  advisory ever published for the package — most of them for old
+  releases. Whether the repository is affected is unknown (the VEX
+  `under_investigation` class), so these rows are no longer
+  dependency exposure: `current`, `critical`, `direct`,
+  `transitive`, `dev` and `runtime` exclude them, and they are
+  counted apart as `unknown_version` (with `unknown_version_critical`).
+  Except GitHub Actions dependencies (`ecosystem` `githubactions`): a
+  floating ref (`@v4`, `@main`) is stored `unpinned` too, but its
+  advisories were matched against the ref, so they stay exposure.
+  The rows themselves stay in `vulnerabilities`. The same definition
+  applies to the repository stats (`vulnerabilities`,
+  `critical_vulns`, and the new `vulnerabilities_version_unknown`),
+  the operator digest and the supply-chain package views. Range floors
+  (`range-floor`, `bounded-range`) stay exposure: the lowest version
+  the declared range allows is affected.
+
   **Transitive findings (v0.27.21 Phase C1).** With
   `collection.vuln_scan_transitive` enabled, findings from the full
   lockfile closure carry `dependency_kind: "transitive"` (direct
@@ -890,8 +948,8 @@ Token semantics:
   | `locked` | A committed lockfile resolved this package — the purl is the LOCKED version, not the range floor. Go dependencies are `locked` by construction (go.mod versions are exact under MVS). |
   | `exact` | `==X` or a bare version: the manifest names exactly one version. |
   | `bounded-range` | The requirement has an upper bound (`~=`, `^`, `~`, or a compound containing `<`/`<=`). The purl is the range FLOOR. |
-  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits. UIs should render e.g. "≥2.20 declared — floor shown". |
-  | `unpinned` | No version declared (produces no findings today). |
+  | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits, not the installed version. UIs should say so, e.g. "lowest allowed" beside the version, with the declared requirement. |
+  | `unpinned` | No version declared: OSV.dev was queried without one and returned every advisory for the package, so exposure is unknown — counted apart as `unknown_version` (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in `current`. |
 
   Both fields are absent (`""`) on findings last touched by a
   pre-v0.27.11 scan and heal on the repo's next scan.
@@ -960,6 +1018,16 @@ Token semantics:
   row — the prelim-dequeued gone cohort) the gathered counts fall
   back to live row counts instead of fabricated zeros; tracked
   repos keep the cached-count read.
+  v0.29.70 adds `unavailable_reason` and `unavailable_url` (both
+  omitted when empty): the forge's own message for a blocked or
+  disabled repository, repeated on the repository page — GitHub's
+  block answer on a 451 or 403 ("Repository access blocked (dmca)")
+  with its notice link, or the text git prints when the forge refuses a
+  clone ("Access to this repository has been disabled by GitHub
+  staff."). At most 500 characters; the link is present only when it
+  is an https URL. Independent of `gone_at`: a repository disabled by
+  staff is not marked gone. Cleared when a clone succeeds again or the
+  gone state is lifted. The batch endpoint carries the same two fields.
 - `GET /api/v1/repos/{repoID}/licenses` — response is now an envelope
   `{"scanned": bool, "licenses": [...]}`. `scanned=false` means the
   dependency-analysis phase has not recorded anything for this repo
@@ -1120,12 +1188,30 @@ require the caller's user to be an administrator (403 otherwise).
 
 Per-user:
 
-- `GET /api/v1/me` — `{user_id, login, name, avatar_url, is_admin,
-  scope_repo_count}` (`login` added v0.27.77; `name` + `avatar_url`
-  added v0.27.84 — the home greeting and nav avatar render the REAL
-  signed-in identity, stored from OAuth and refreshed on every
-  login). `scope_repo_count` is `-1` for admins (unscoped). The GUI
-  uses `is_admin` to decide whether to render the admin navigation.
+- `GET /api/v1/me` — `{user_id, login, name, avatar_url, provider, email,
+  email_pending, is_admin, scope_repo_count}` (`login` added v0.27.77;
+  `name` + `avatar_url` added v0.27.84 — the home greeting and nav avatar
+  render the REAL signed-in identity, stored from OAuth and refreshed on
+  every login; `provider` (`github` or `gitlab`), `email` and
+  `email_pending` added 2026-10-04 for the profile page: `email` is the
+  forge's own address taken at sign-in, or one confirmed through the
+  mailed link; `email_pending` is an address awaiting confirmation, or
+  empty). `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
+  `is_admin` to decide whether to render the admin navigation.
+- `POST /api/v1/me/email` — body `{"email": "…"}`: stores the address as
+  pending and mails the confirmation link, for an account whose forge gave
+  no email (a private GitHub address). `200 {"sent": true}`, or `422
+  {"sent": false, "message": "…"}` with the reason (not a deliverable
+  address; mail not configured — `mail.site_url` and the Gmail settings
+  are required; a failed save or send). The link lands on the front end's
+  profile page when `web.spa_url` is set, on the web process's
+  `/account/email/confirm` otherwise. The same submission the web
+  process's `/account/email` form runs.
+- `POST /api/v1/me/email/confirm` — body `{"token": "…"}` from that link,
+  for the signed-in account: `200 {"status": "confirmed"}`; `200 {"status":
+  "invalid"}` for a token that is not live for this account (unknown,
+  expired, already used, another account's — nothing changes); `500
+  {"status": "error"}` when the database failed (the link still works).
 - `GET /api/v1/groups` — the caller's groups:
   `{groups: [{group_id, name, status, repo_count, favorited,
   pending_adds}]}`. `status` is `approved`, `pending`, or `rejected`

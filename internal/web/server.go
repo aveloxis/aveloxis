@@ -529,7 +529,9 @@ func safeNextTarget(next, spaURL string) string {
 		!strings.HasPrefix(next, `/\`) {
 		return next
 	}
-	if spa := strings.TrimSuffix(spaURL, "/"); spa != "" &&
+	// spa_url arrives canonical (no trailing slash; config refuses one at
+	// load, 2026-10-04), so the prefix test needs no trim here.
+	if spa := spaURL; spa != "" &&
 		(next == spa || strings.HasPrefix(next, spa+"/")) {
 		return next
 	}
@@ -1019,8 +1021,21 @@ func emailConfirmBase(siteURL string, r *http.Request, devMode bool) (string, bo
 	return scheme + "://" + authority, true
 }
 
-// confirmationLink is the mailed link for a base from emailConfirmBase.
-func confirmationLink(base, token string) string {
+// confirmationLink is the mailed link for a base from emailConfirmBase:
+// the separate-repo front end's profile page when web.spa_url is set
+// (it confirms through the API), this process's /account/email/confirm
+// otherwise (2026-10-04). The token is hex, so it needs no escaping. On
+// the front end it rides in the FRAGMENT: a fragment is never sent to the
+// static server (so never in its access log), the front end's analytics
+// tag excludes it, and the page moves it into the tab's session storage
+// and drops it from the URL while its script loads, before any request
+// is issued, so a signed-out click's login round trip carries a
+// token-free ?next= (reviews 2026-10-04). spa_url is taken as written: config refuses a
+// non-canonical value at load.
+func confirmationLink(base, spaURL, token string) string {
+	if spaURL != "" {
+		return spaURL + "/profile.html#token=" + token
+	}
 	return base + "/account/email/confirm?token=" + token
 }
 
@@ -1039,11 +1054,25 @@ var (
 type confirmationPolicy struct {
 	mailer  confirmationMailer
 	devMode bool
+	spaURL  string // web.spa_url: the link lands on the front end's profile page
 }
 
 func (s *Server) confirmationPolicy() confirmationPolicy {
-	return confirmationPolicy{mailer: s.mailer, devMode: s.cfg.DevMode}
+	return confirmationPolicy{mailer: s.mailer, devMode: s.cfg.DevMode, spaURL: s.cfg.SPAURL}
 }
+
+// ConfirmationPolicy is confirmationPolicy for the API process, which
+// never builds a link from a request Host (devMode false): a configured
+// mail.site_url, or no link at all.
+type ConfirmationPolicy = confirmationPolicy
+
+// NewConfirmationPolicy is the API's policy: its mailer and web.spa_url.
+func NewConfirmationPolicy(m *mailer.Mailer, spaURL string) ConfirmationPolicy {
+	return confirmationPolicy{mailer: m, spaURL: spaURL}
+}
+
+// AccountEmailStore is what SubmitAccountEmail needs from the store.
+type AccountEmailStore = accountEmailStore
 
 // confirmationBaseFor decides whether this request's user can be mailed a
 // working confirmation link, and returns the link base when so.
@@ -1137,33 +1166,47 @@ var (
 // dashboard then told the user a link had been sent. For the same reason a
 // send that fails after storing clears that pending address again.
 func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmationPolicy, logger *slog.Logger, r *http.Request, sess *Session) string {
-	email, err := mailer.ParseRecipient(r.FormValue("email"))
+	return submitAccountEmailAddress(ctx, st, p, logger, r, sess.UserID, sess.LoginName, r.FormValue("email"))
+}
+
+// SubmitAccountEmail is the API's entry to the same submission (its JSON
+// body carries the address; the request supplies the Host only for a
+// dev-mode web process, never here). The message is the user-facing
+// reason it was refused, or "" when the confirmation was mailed.
+func SubmitAccountEmail(ctx context.Context, st AccountEmailStore, p ConfirmationPolicy, logger *slog.Logger, r *http.Request, userID int, login, rawEmail string) string {
+	return submitAccountEmailAddress(ctx, st, p, logger, r, userID, login, rawEmail)
+}
+
+// submitAccountEmailAddress is the one place an account email is stored
+// and its confirmation mailed, for the web form and the API alike.
+func submitAccountEmailAddress(ctx context.Context, st accountEmailStore, p confirmationPolicy, logger *slog.Logger, r *http.Request, userID int, login, rawEmail string) string {
+	email, err := mailer.ParseRecipient(rawEmail)
 	if err != nil {
 		logger.Info("account email rejected: not a deliverable address",
-			"user_id", sess.UserID, "error", truncateForLog([]byte(err.Error()), 200))
+			"user_id", userID, "error", truncateForLog([]byte(err.Error()), 200))
 		return "Please enter a valid email address."
 	}
 	base, err := confirmationBaseFor(p, r)
 	if err != nil {
 		logger.Error("refusing an account email: "+err.Error(),
-			"user_id", sess.UserID, "host", truncateForLog([]byte(r.Host), 200))
+			"user_id", userID, "host", truncateForLog([]byte(r.Host), 200))
 		return "Email confirmation is not configured on this site. Contact the operator."
 	}
-	if err := st.SetUserPendingEmail(ctx, sess.UserID, email); err != nil {
-		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to set pending email", "user_id", sess.UserID, "error", err)
+	if err := st.SetUserPendingEmail(ctx, userID, email); err != nil {
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to set pending email", "user_id", userID, "error", err)
 		return "Could not save email. Try again."
 	}
-	token, err := st.CreateEmailConfirmation(ctx, sess.UserID, email)
+	token, err := st.CreateEmailConfirmation(ctx, userID, email)
 	if err != nil {
-		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to create email confirmation", "user_id", sess.UserID, "error", err)
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to create email confirmation", "user_id", userID, "error", err)
 		return "Could not generate confirmation. Try again."
 	}
-	if err := p.mailer.SendEmailConfirmation(email, sess.LoginName, confirmationLink(base, token), db.EmailConfirmationLifetime); err != nil {
+	if err := p.mailer.SendEmailConfirmation(email, login, confirmationLink(base, p.spaURL, token), db.EmailConfirmationLifetime); err != nil {
 		if !mailer.IsSkip(err) { // a skip was already logged by the mailer
 			// The send takes no context: its failure is never the
 			// request's end (NET-6 review r6 F2), so no LogFailure.
 			logger.Warn("failed to send confirmation email",
-				"user_id", sess.UserID, "email", platform.RedactEmail(email), "error", err)
+				"user_id", userID, "email", platform.RedactEmail(email), "error", err)
 		}
 		// Don't leave the dashboard announcing "we sent a confirmation
 		// link" (operator decision, v0.29.29) — but the mail may still have
@@ -1180,9 +1223,9 @@ func submitAccountEmail(ctx context.Context, st accountEmailStore, p confirmatio
 		// announcing a link that was never sent) and any failure is a WARN.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), pendingEmailCleanupTimeout)
 		defer cleanupCancel()
-		if clearErr := st.ClearUserPendingEmailIf(cleanupCtx, sess.UserID, email); clearErr != nil {
+		if clearErr := st.ClearUserPendingEmailIf(cleanupCtx, userID, email); clearErr != nil {
 			logger.Warn("failed to clear the pending email after a failed confirmation send",
-				"user_id", sess.UserID, "error", clearErr)
+				"user_id", userID, "error", clearErr)
 		}
 		return "We couldn't send the confirmation email. If one does arrive, its link still works; otherwise try again later."
 	}
@@ -1306,31 +1349,60 @@ func (s *Server) handleAccountEmail(w http.ResponseWriter, r *http.Request) {
 // link still works. The form explains both.
 func (s *Server) handleEmailConfirm(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(r)
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" {
+	switch ConfirmAccountEmail(r.Context(), s.store, s.logger, strings.TrimSpace(r.URL.Query().Get("token")), sess.UserID) {
+	case ConfirmConfirmed:
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+	case ConfirmError:
+		http.Redirect(w, r, "/account/email?error=1", http.StatusFound)
+	default:
 		http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
-		return
 	}
-	if _, err := s.store.ConfirmEmailToken(r.Context(), token, sess.UserID); err != nil {
+}
+
+// ConfirmOutcome is what following a confirmation link came to.
+type ConfirmOutcome int
+
+const (
+	// ConfirmConfirmed: the address is this account's confirmed email now.
+	ConfirmConfirmed ConfirmOutcome = iota
+	// ConfirmInvalid: not a live token for THIS account — unknown, expired,
+	// used, empty, or another account's (logged at WARN); nothing changed,
+	// and the owner's link stays usable.
+	ConfirmInvalid
+	// ConfirmError: the database failed; the transaction rolled back, so
+	// the link still works.
+	ConfirmError
+)
+
+// ConfirmEmailStore is what ConfirmAccountEmail needs from the store.
+type ConfirmEmailStore interface {
+	ConfirmEmailToken(ctx context.Context, token string, userID int) (string, error)
+}
+
+// ConfirmAccountEmail confirms the v0.20.4 click-to-confirm link for the
+// signed-in user, for the web page and the API alike: one classification
+// of the token's errors, so the two surfaces never disagree.
+func ConfirmAccountEmail(ctx context.Context, st ConfirmEmailStore, logger *slog.Logger, token string, userID int) ConfirmOutcome {
+	if token == "" {
+		return ConfirmInvalid
+	}
+	if _, err := st.ConfirmEmailToken(ctx, token, userID); err != nil {
 		var mismatch *db.TokenOwnerMismatchError
 		if errors.As(err, &mismatch) {
 			// The replay emailConfirmBase exists to prevent: say so.
-			s.logger.Warn("email confirmation link belongs to another account",
-				"token_user_id", mismatch.OwnerID, "session_user_id", sess.UserID)
-			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
-			return
+			logger.Warn("email confirmation link belongs to another account",
+				"token_user_id", mismatch.OwnerID, "session_user_id", userID)
+			return ConfirmInvalid
 		}
 		if errors.Is(err, db.ErrConfirmationTokenInvalid) {
-			s.logger.Info("email confirmation link rejected: unknown, expired, or already used",
-				"session_user_id", sess.UserID)
-			http.Redirect(w, r, "/account/email?expired=1", http.StatusFound)
-			return
+			logger.Info("email confirmation link rejected: unknown, expired, or already used",
+				"session_user_id", userID)
+			return ConfirmInvalid
 		}
-		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "failed to confirm user email", "user_id", sess.UserID, "error", err)
-		http.Redirect(w, r, "/account/email?error=1", http.StatusFound)
-		return
+		httpserver.LogFailure(ctx, logger, slog.LevelWarn, err, "failed to confirm user email", "user_id", userID, "error", err)
+		return ConfirmError
 	}
-	http.Redirect(w, r, "/dashboard", http.StatusFound)
+	return ConfirmConfirmed
 }
 
 func (s *Server) handleNewGroup(w http.ResponseWriter, r *http.Request) {

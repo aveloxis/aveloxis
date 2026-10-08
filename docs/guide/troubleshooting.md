@@ -223,7 +223,7 @@ These only report; nothing acts on them.
 
 4. Restart:
    ```bash
-   aveloxis serve --workers 4 --monitor :5555
+   aveloxis serve --workers 4 --monitor 127.0.0.1:5555
    ```
 
 ```{note}
@@ -645,9 +645,12 @@ UPDATE aveloxis_ops.collection_queue SET locked_at = NULL WHERE repo_id = ?;
 **Symptom:** Log shows `exit status 128` during the facade phase.
 
 **Cause:** `git clone --bare` or `git fetch` failed. Common reasons:
+- `collection.repo_clone_dir` does not exist and the account cannot create it (the example configuration's `/data/aveloxis-repos` on a fresh host)
 - The clone directory has an incomplete or corrupted bare clone from a previous crash
 - Disk full
 - Network issue during clone
+
+**What the job records (0.29.73):** the queue row's `last_error` begins `facade collection failed:` and carries git's message, the job-complete log line carries the same `error=`, and the monitor shows the row's error badge. On a GitHub or GitLab repository the job itself still completes: the API phase did its work, so `last_collected` advances and the next collection is incremental (failing the job would re-walk the whole API history every cycle for as long as the clone kept failing). On a git-only repository the clone is the whole collection, so the job fails. Before 0.29.73 an API repository recorded nothing — one WARN in the log, and everything downstream of the clone (commits, dependencies, licenses, scorecard, SBOM, vulnerabilities) stayed empty. No path retries a repository sooner than its regular re-collection: fix the cause, then `aveloxis prioritize <url>`. Two cases record nothing: a default branch the facade proved empty, and — on GitHub and GitLab repositories, whose notices are stored — a clone the forge refused with its own notice (a blocked, disabled or taken-down repository), which is kept on the repository and shown on its page instead. The no-data check, which fails a job whose API phase returned nothing and whose facade found no commits, does not judge an incremental collection whose facade errored (0.29.80): that facade's commit count is unknown, not zero, and an incremental collection with nothing new routinely returns nothing from the API, so the job stays complete with the facade's error (or the forge's notice) as the record. A full collection (the first, or one forced) is still judged: returning nothing from the API there is what the check exists to catch.
 
 **Solution:**
 
@@ -1207,7 +1210,7 @@ This makes them claimable immediately and ranks them above any non-zero-priority
 realigned queue due_at from current days_until_recollect rows_updated=3079 recollect_after=168h0m0s
 ```
 
-`'collecting'` rows (in-flight), never-collected rows (`last_collected IS NULL`) and rows whose last collection failed (`last_error` set, v0.29.69) are skipped. A failure sets `due_at` to its retry time and leaves `last_collected` at the last success, so realigning it put the failed repository in the past and it re-ran at every restart; such a row picks up a changed interval at its next completion. The operation is idempotent — repeated restarts that don't change the config are no-ops.
+`'collecting'` rows (in-flight), never-collected rows (`last_collected IS NULL`) and rows with `last_error` set (v0.29.69) are skipped. A failure sets `due_at` to its retry time and leaves `last_collected` at the last success, so realigning it put the failed repository in the past and it re-ran at every restart; such a row picks up a changed interval at its next completion. Since 0.29.73 a successful job can also carry `last_error` (a recorded clone failure, see "Git clone exit status 128"); those rows are skipped the same way and follow the new interval from their next completion. The operation is idempotent — repeated restarts that don't change the config are no-ops.
 
 **Verifying on a live database:**
 
@@ -1884,6 +1887,20 @@ process-limit) exhaustion.
    exhaustion rather than one oversized request. The same section's
    `vm.overcommit_memory` guidance is what stops the kernel from promising
    memory it does not have and then killing the postmaster.
+
+## A repository's daily commit counts need rebuilding
+
+`aveloxis_data.repo_commit_daily` is replaced by the facade after every completed walk and filled by `aveloxis heal-commit-daily` for repositories whose picture is not complete (`repos.commit_daily_complete_at` unset). A complete picture is never rebuilt by the heal — a collection that finished first owns it (a rebuild from the commits table would bring back force-pushed commits) — so to rebuild one on purpose, clear its stamp and run the heal:
+
+```sql
+UPDATE aveloxis_data.repos SET commit_daily_complete_at = NULL WHERE repo_id = <id>;
+```
+
+```bash
+aveloxis heal-commit-daily --apply
+```
+
+Between the `UPDATE` and the heal's re-stamp every reader gated on the stamp (the weekly commit series, the commits arm of the top contributors, the activity bounds in `/stats`) falls back to the commits table, which on a large repository is the slow path the daily table exists to avoid. Run the heal at once; `--limit 1` fills only the largest pending repository, which is the one you just cleared unless another is pending. The next facade walk of that repository replaces and re-stamps it anyway; this only brings it forward.
 
 ## A one-shot migration backfill needs to re-run
 

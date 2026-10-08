@@ -127,10 +127,40 @@ up against a database you thought it had left.
 Re-enable with `sudo systemctl enable --now aveloxis.target`.
 ```
 
-Only `serve` (and `aveloxis migrate`) run schema migrations — the ordering
-among the three units doesn't matter for correctness; `web` and `api` log an
-ERROR and serve degraded responses until the schema is current, then recover
-on their next queries.
+Only `serve` (and `aveloxis migrate`) run schema migrations. `web` and
+`api` never do: each **refuses to start** (logging the migrate it needs)
+until the schema stamp is current, so under systemd they restart every
+`RestartSec` until `serve`'s startup migrate — or an `aveloxis migrate`
+you ran first — has finished. The ordering among the units therefore
+costs only those retries.
+
+## Upgrading under systemd
+
+`aveloxis start` asks whether a release's deploy steps were completed and,
+without a terminal, refuses until `aveloxis ack-deploy` has recorded them.
+The units run `aveloxis serve` directly, so that gate never fires here, and
+`serve`'s startup migrate never applies a release's changed view
+definition (it builds the materialized views only when none exist), so a
+release that needs a plain `aveloxis migrate` gets it only by hand. Run the four steps of [Upgrading](../getting-started/upgrading.md)
+by hand and start the target last:
+
+```bash
+# as the service user (sudo -iu aveloxis); the two systemctl lines need an account with sudo
+CFG=/etc/aveloxis/aveloxis.json         # the units' config; the checkout has no aveloxis.json
+AVELOXIS_SRC=/home/aveloxis/aveloxis
+cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version
+aveloxis deploy-checklist --pending -c "$CFG"   # read it now; it names the migrate step 3 runs
+sudo systemctl stop aveloxis.target             # nothing runs against the schema while it changes
+aveloxis migrate --skip-views -c "$CFG"         # or the plain form when the checklist asks for it
+# ... the checklist's checks and heals, oldest first, each aveloxis command with -c "$CFG" ...
+aveloxis ack-deploy -c "$CFG"
+sudo systemctl start aveloxis.target
+```
+
+Every `aveloxis` command here passes the units' config. Without `-c` it
+reads `aveloxis.json` in the current directory, which the checkout does
+not have, and runs on the built-in defaults: the migrate, the stamp and
+the acknowledgement would then miss the database the units read.
 
 ## The PATH trap
 

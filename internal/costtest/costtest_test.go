@@ -23,23 +23,29 @@ func linearOp(scale int) func(n int) func() {
 	}
 }
 
-func quadraticOp(n int) func() {
+func cubicOp(n int) func() {
 	return func() {
 		for i := range n {
 			for j := range n {
-				sink += i ^ j
+				for k := range n {
+					sink += i ^ j ^ k
+				}
 			}
 		}
 	}
 }
 
-// TestCheckSeparatesLinearFromQuadratic: linear work passes; pure quadratic
-// work fails; and so does work that is mostly linear with a quadratic step —
-// the dilution a wider comparison let through (PR #218 review F1). The mixed
-// case puts the quadratic at eight times the linear part at the larger size
-// (expected ratio 12 against the limit of 8): the check's boundary is about
-// twice, and a self-test near it would measure noise, not the check.
-func TestCheckSeparatesLinearFromQuadratic(t *testing.T) {
+// TestCheckSeparatesLinearFromSuperlinear, on the real clock: linear work
+// passes, and clearly superlinear work fails. The superlinear case is CUBIC
+// (64x the time at 4x the input in theory, about 50x measured with loop
+// overhead — six times the limit): the quadratic it
+// replaced (16x, twice the limit) passed the check on a shared CI runner
+// whenever one of the three attempts was noisy — the check passes on ANY
+// attempt, by design, so linear code is not failed by noise (PR #226 CI;
+// old problem O16). The boundary itself (12x fails, a mostly-linear
+// quadratic step, the dilution of PR #218 review F1) is pinned on exact
+// durations in TestDecideRules, where noise cannot reach it.
+func TestCheckSeparatesLinearFromSuperlinear(t *testing.T) {
 	if testing.Short() || raceBuild {
 		t.Skip("timing comparison (not under -short or the race detector)")
 	}
@@ -50,19 +56,50 @@ func TestCheckSeparatesLinearFromQuadratic(t *testing.T) {
 	if ok, report := Check(linearOp(50), 20000, 0); !ok {
 		t.Errorf("linear work failed the check: %s", report)
 	}
-	if ok, _ := Check(quadraticOp, 1000, 0); ok {
-		t.Error("quadratic work passed the check")
+	if ok, _ := Check(cubicOp, 60, 0); ok {
+		t.Error("cubic work passed the check")
 	}
-	// At the larger size (4n) the quadratic part is (4n)² = 16n² loop steps
-	// and the linear part scale·4n: scale = n/2 makes the quadratic eight
-	// times the linear part there. Small: a/4 + 8a/16 = 0.75a; large: 9a.
-	const n = 1200
-	mixed := func(m int) func() {
-		lin, quad := linearOp(n/2)(m), quadraticOp(m)
-		return func() { lin(); quad() }
+}
+
+// TestDecideRules pins the verdict on exact durations: the limit sits
+// between linear (4x) and quadratic (16x); a mostly-linear operation with a
+// quadratic step eight times its linear part (12x) fails (PR #218 review F1:
+// the dilution a wider comparison let through); a pass on any attempt
+// passes; a runaway first attempt stops without re-measuring; slack widens
+// the bound.
+func TestDecideRules(t *testing.T) {
+	const ms = time.Millisecond
+	seq := func(pairs ...[2]time.Duration) (func() (time.Duration, time.Duration), *int) {
+		calls := 0
+		return func() (time.Duration, time.Duration) {
+			p := pairs[calls%len(pairs)]
+			calls++
+			return p[0], p[1]
+		}, &calls
 	}
-	if ok, _ := Check(mixed, n, 0); ok {
-		t.Error("mostly-linear work with a quadratic step eight times its linear part passed the check")
+	for _, c := range []struct {
+		name      string
+		pairs     [][2]time.Duration
+		slack     time.Duration
+		wantOK    bool
+		wantCalls int
+	}{
+		{"linear 4x", [][2]time.Duration{{10 * ms, 40 * ms}}, 0, true, 1},
+		{"at the limit 8x", [][2]time.Duration{{10 * ms, 80 * ms}}, 0, true, 1},
+		{"quadratic 16x", [][2]time.Duration{{10 * ms, 160 * ms}}, 0, false, attempts},
+		{"mostly linear with a quadratic step 12x", [][2]time.Duration{{10 * ms, 120 * ms}}, 0, false, attempts},
+		{"one quiet attempt passes", [][2]time.Duration{{10 * ms, 90 * ms}, {10 * ms, 90 * ms}, {10 * ms, 70 * ms}}, 0, true, 3},
+		{"runaway stops at once", [][2]time.Duration{{10 * ms, 330 * ms}}, 0, false, 1},
+		{"slack widens the bound", [][2]time.Duration{{1 * ms, 9 * ms}}, 2 * ms, true, 1},
+	} {
+		measure, calls := seq(c.pairs...)
+		ok, report := decide(measure, c.slack)
+		if ok != c.wantOK || *calls != c.wantCalls {
+			t.Errorf("%s: ok=%v after %d measurement(s), want ok=%v after %d (%s)", c.name, ok, *calls, c.wantOK, c.wantCalls, report)
+		}
+		if !ok && report == "" {
+			t.Errorf("%s: a failure must say what it measured", c.name)
+		}
 	}
 }
 
@@ -165,9 +202,11 @@ func TestLinearReportsAFailure(t *testing.T) {
 	if testing.Short() || raceBuild {
 		t.Skip("timing comparison (not under -short or the race detector)")
 	}
+	// Cubic, not quadratic: about six times the limit, so noise on a shared
+	// runner cannot pass it (TestCheckSeparatesLinearFromSuperlinear).
 	rec := &recordingTB{}
-	Linear(rec, "quadratic", quadraticOp, 1000, 0)
+	Linear(rec, "cubic", cubicOp, 60, 0)
 	if !rec.failed {
-		t.Error("Linear did not report a quadratic operation")
+		t.Error("Linear did not report a cubic operation")
 	}
 }

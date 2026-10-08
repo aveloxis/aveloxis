@@ -220,6 +220,7 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 		}
 	}
 	facadeResult, err := c.facade.CollectRepo(ctx, repoID, gitURL)
+	facadeFailed := err != nil // CollectRepo returns a non-nil empty result alongside its error (item 83 sibling)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("facade: %w", err))
 	} else if facadeResult != nil {
@@ -252,10 +253,7 @@ func (c *Collector) CollectRepo(ctx context.Context, repoID int64, owner, repo s
 		status = string(StatusError)
 	}
 	now := time.Now().Format(time.RFC3339)
-	facadeStatus := string(StatusSuccess)
-	if facadeResult == nil || len(facadeResult.Errors) > 0 {
-		facadeStatus = string(StatusError)
-	}
+	facadeStatus := facadeStatusFor(facadeFailed, facadeResult)
 	if err := c.store.UpdateCollectionStatus(ctx, &db.CollectionState{
 		RepoID:                  repoID,
 		CoreStatus:              status,
@@ -314,4 +312,15 @@ func ClientForRepo(repoURL string, ghClient, glClient platform.Client) (platform
 	default:
 		return nil, "", "", fmt.Errorf("unsupported platform for URL: %s", repoURL)
 	}
+}
+
+// facadeStatusFor is the one-shot collector's facade status: Error when
+// CollectRepo returned an error (it returns a non-nil empty result alongside
+// it — item 83 sibling, review round 1 F8), when there is no result, or
+// when the result carries errors; Success otherwise.
+func facadeStatusFor(failed bool, res *FacadeResult) string {
+	if failed || res == nil || len(res.Errors) > 0 {
+		return string(StatusError)
+	}
+	return string(StatusSuccess)
 }

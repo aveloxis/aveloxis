@@ -45,13 +45,14 @@ func TestServerCacheUsesTheConfiguredMaxAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.repoCache == nil || s.repoCache.ttl != 45*time.Minute {
-		t.Errorf("repoCache = %+v, want a 45 min TTL", s.repoCache)
+	// The compare series and the repository page (v0.29.73) are separate
+	// caches (a compare flood cannot evict the repository-page answers),
+	// both aged by the same enrichment interval.
+	if s.seriesCache == nil || s.seriesCache.ttl != 45*time.Minute {
+		t.Errorf("seriesCache = %+v, want a 45 min TTL", s.seriesCache)
 	}
-	// Review round 1: the compare series have their own instance (a compare
-	// flood cannot evict the repository-page answers), with the same TTL.
-	if s.seriesCache == nil || s.seriesCache == s.repoCache || s.seriesCache.ttl != 45*time.Minute {
-		t.Errorf("seriesCache = %+v, want its own instance with a 45 min TTL", s.seriesCache)
+	if s.pageCache == nil || s.pageCache.ttl != 45*time.Minute {
+		t.Errorf("pageCache = %+v, want a 45 min enriched TTL", s.pageCache)
 	}
 	// SR-10: the EFFECTIVE value is logged at startup.
 	if got := buf.String(); !strings.Contains(got, "collection cache") || !strings.Contains(got, "ttl=45m0s") {

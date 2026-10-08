@@ -327,6 +327,10 @@ var loserRepoIDDeletes = []string{
 	"aveloxis_data.repo_cluster_messages",
 	"aveloxis_data.repo_topic",
 	"aveloxis_data.repo_labor",
+	// The facade's daily commit fold (FK to repos): the loser's rows count
+	// the same commits as the winner's (its commits are deleted above), so
+	// dropping them loses nothing.
+	"aveloxis_data.repo_commit_daily",
 	"aveloxis_data.repo_meta",
 	"aveloxis_data.repo_stats",
 	"aveloxis_data.message_analysis_summary",

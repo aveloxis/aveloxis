@@ -553,6 +553,35 @@ func checkChecklistAppliesLibyearView(t *testing.T, version string, steps []depl
 	}
 }
 
+// The 0.29.77 validity check tells the operator which ERROR line means a
+// covering index was not built and the plain one was kept. The quoted
+// text must be the message dropIndexOnceReplacementIsValid logs (round 8:
+// the 0.29.57 view check has this pin, this step had none; round 7 had
+// just reworded that line).
+func TestV02977ValidityCheckQuotesARealLogLine(t *testing.T) {
+	steps, _ := deployChecklistFor("0.29.77")
+	var quote string
+	for _, s := range steps {
+		// The inherited 0.29.57 view check also says "must print 2"; this
+		// is the step that counts the covering indexes.
+		if !strings.Contains(s.cmd, "idx_issues_repo_created_reporter") {
+			continue
+		}
+		m := regexp.MustCompile(`it logs '([^']+)'`).FindStringSubmatch(s.desc)
+		if m == nil {
+			t.Fatalf("the validity check must quote the log line a failed build leaves: %q", s.desc)
+		}
+		quote = m[1]
+	}
+	if quote == "" {
+		t.Fatal("no 'must print 2' validity step in the 0.29.77 ladder")
+	}
+	body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/db/migrate.go")), "func dropIndexOnceReplacementIsValid(")
+	if !strings.Contains(body, `logger.Error("`+quote) {
+		t.Errorf("the ladder quotes %q, which dropIndexOnceReplacementIsValid does not log at Error", quote)
+	}
+}
+
 // The check step's description names the WARN a failed re-create logs. A
 // renamed log line would leave the operator searching for text that is
 // never printed, so the quoted text must exist in RunMigrations' view block.
@@ -575,17 +604,20 @@ func TestV02957ViewCheckQuotesARealLogLine(t *testing.T) {
 	// field, each from a variable the operator sets that stops the command
 	// when unset (Copilot on PR #210: `<host>`-style placeholders are shell
 	// redirections, so the pasted line failed).
+	// Every psql step, not only the view check (0.29.77 round 1: a bare
+	// psql in the VACUUM step passed this pin because it was scoped to
+	// pg_get_viewdef).
 	for _, s := range steps {
-		if !strings.Contains(s.cmd, "pg_get_viewdef") {
+		if !strings.Contains(s.cmd, "psql") {
 			continue
 		}
 		for _, field := range []string{`-h "${PGHOST:?}"`, `-p "${PGPORT:?}"`, `-U "${PGUSER:?}"`, `-d "${PGDATABASE:?}"`} {
 			if !strings.Contains(s.cmd, field) {
-				t.Errorf("the view check must connect with aveloxis.json's database block; %q is missing from %q", field, s.cmd)
+				t.Errorf("every psql step must connect with aveloxis.json's database block; %q is missing from %q", field, s.cmd)
 			}
 		}
 		if !strings.Contains(s.desc, "aveloxis.json") {
-			t.Errorf("the view check's description must say where the connection values come from (aveloxis.json's database block): %q", s.desc)
+			t.Errorf("a psql step's description must say where the connection values come from (aveloxis.json's database block): %q", s.desc)
 		}
 	}
 	// Scoped to the branch a plain migrate takes: the create-if-missing
@@ -804,5 +836,115 @@ func TestDeployChecklistCommandsHaveNoPlaceholders(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no checklist step examined")
+	}
+}
+
+// 0.29.77 round 4: the gate before the VACUUM waited for "schema
+// migrations complete", which serve never writes on the ladder's own path
+// (step 2 stamps the version, so the startup migrate fast-paths and returns
+// before that log line). The line it waits for must be one the scheduler
+// writes after the ready signal on BOTH paths — pinned by reachability in
+// Scheduler.Run, not by the string existing somewhere.
+func TestVacuumGateWaitsForALineServeWrites(t *testing.T) {
+	var gate *deployStep
+	for i := range v02977DeployChecklist {
+		if strings.Contains(v02977DeployChecklist[i].cmd, "AVX_LOG_LINES:?") {
+			gate = &v02977DeployChecklist[i]
+		}
+	}
+	if gate == nil {
+		t.Fatal("the 0.29.77 ladder has no log-count gate before the VACUUM")
+	}
+	m := regexp.MustCompile(`grep '([^']+)'`).FindStringSubmatch(gate.cmd)
+	if m == nil {
+		t.Fatalf("the gate greps a quoted line: %q", gate.cmd)
+	}
+	// The string must be a log MESSAGE at Info inside Run's body (round 5:
+	// a bare literal would also match an attribute key such as "error",
+	// which the migrate's own warnings write before it returns).
+	run := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/scheduler/scheduler.go")), "func (s *Scheduler) Run(")
+	if !strings.Contains(run, `Info("`+m[1]+`"`) {
+		t.Errorf("the gate waits for %q, which Scheduler.Run does not log at Info (serve fast-paths its startup migrate on a stamped fleet, so a migrate log line never appears)", m[1])
+	}
+	if strings.Contains(gate.cmd, "schema migrations complete") {
+		t.Error("the gate must not wait for a migrate log line: the fast path never writes it")
+	}
+}
+
+// 0.29.77 round 2: the ladders were built by position (`prev[len-1]` is
+// the start step) and 0.29.77 put a VACUUM after the start. Every ladder
+// has exactly one `aveloxis start all`, and a builder finds it by cmd.
+func TestEveryLadderStartsServeOnce(t *testing.T) {
+	// The ladders built by the positional recipe (0.29.73 on) carry the
+	// start step; older ladders predate it and have none.
+	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true}
+	for version, steps := range deployChecklists {
+		n := 0
+		for _, s := range steps {
+			if s.cmd == "aveloxis start all" {
+				n++
+			}
+		}
+		if recipe[version] && n != 1 {
+			t.Errorf("ladder %s has %d `aveloxis start all` steps, want exactly 1", version, n)
+		}
+		if n > 1 {
+			t.Errorf("ladder %s has %d `aveloxis start all` steps (a builder glued a start onto another step?)", version, n)
+		}
+	}
+	if !recipe[db.ToolVersion] {
+		t.Errorf("the current ladder %s must be in the recipe list above", db.ToolVersion)
+	}
+}
+
+// A backgrounded psql must never prompt (final whole-PR review D3): a
+// password prompt from a background job stops it (SIGTTIN), so the step
+// reads as started while nothing runs and its log stays empty. -w makes a
+// missing password an immediate error in the log; the step must say where
+// the password comes from.
+func TestBackgroundedPsqlNeverPrompts(t *testing.T) {
+	seen := 0
+	for v := range deployChecklists {
+		steps, _ := deployChecklistFor(v)
+		for _, s := range steps {
+			cmd := strings.TrimSpace(s.cmd)
+			if !strings.Contains(cmd, "psql") || !strings.HasSuffix(cmd, "&") {
+				continue
+			}
+			seen++
+			if !strings.Contains(cmd, "psql -w ") {
+				t.Errorf("%s: a backgrounded psql must run with -w: %q", v, cmd)
+			}
+			if !strings.Contains(s.desc, "~/.pgpass") || !strings.Contains(s.desc, "PGPASSWORD") {
+				t.Errorf("%s: the backgrounded psql step must say the password comes from ~/.pgpass or PGPASSWORD", v)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no backgrounded psql step found; the scan is not seeing the ladders")
+	}
+}
+
+// The 0.29.79 start note names the two lines the stamp clear logs; each
+// quote must be that line's message at its level.
+func TestV02979StartNoteQuotesRealLogLines(t *testing.T) {
+	steps, _ := deployChecklistFor("0.29.79")
+	var desc string
+	for _, s := range steps {
+		if s.cmd == "aveloxis start all" {
+			desc = s.desc
+		}
+	}
+	body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/collector/facade.go")), "func (f *FacadeCollector) invalidateUnrecordedDaily(")
+	for _, q := range []struct{ level, quote string }{
+		{"Info", "daily commit counts marked incomplete"},
+		{"Error", "could not clear the daily commit counts' completeness stamp"},
+	} {
+		if !strings.Contains(desc, q.quote) {
+			t.Errorf("the 0.29.79 start note must quote %q", q.quote)
+		}
+		if !strings.Contains(body, "logger."+q.level+`("`+q.quote) {
+			t.Errorf("invalidateUnrecordedDaily does not log %q at %s", q.quote, q.level)
+		}
 	}
 }

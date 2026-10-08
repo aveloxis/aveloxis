@@ -14,6 +14,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestCompareWindowTruncatesPartialBucket(t *testing.T) {
@@ -76,5 +78,76 @@ func TestCompareWindowDefaultSinceIsBucketAligned(t *testing.T) {
 	r := httptest.NewRequest("GET", "/api/v1/compare?since=2024-01-03&bucket=week", nil)
 	if since, _, _, err := compareWindow(r); err != nil || !since.Equal(time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("explicit since = %v, %v", since, err)
+	}
+}
+
+// 2026-10-07: the compare page's explicit until is bounded by the latest
+// plausible commit time too — the one other caller-supplied commit window.
+func TestCompareWindowUntilIsBounded(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&until=2081-01-01", nil)
+	_, until, bucket, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := db.LatestPlausibleCommitTime(time.Now())
+	if until.After(bound) {
+		t.Fatalf("until=2081 must be clamped to the plausible bound %v (then bucket-truncated), got %v (%s)", bound, until, bucket)
+	}
+}
+
+func TestCompareWindowSinceIsBounded(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&since=0001-01-01", nil)
+	since, _, _, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if since.Before(db.EarliestPlausibleCommitTime()) {
+		t.Fatalf("since=0001 must be clamped to the plausible floor, got %v", since)
+	}
+}
+
+// Review round 3 F1: the DEFAULT since (three years before an early until)
+// is clamped too, rounded up to a whole bucket.
+func TestCompareWindowDefaultSinceIsBounded(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&until=1972-06-01", nil)
+	since, _, bucket, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor := db.EarliestPlausibleCommitTime()
+	if since.Before(floor) {
+		t.Fatalf("the default since derived from until=1972 must not fall below the floor %v, got %v", floor, since)
+	}
+	if !since.Equal(truncBucket(since, bucket)) {
+		t.Fatalf("the clamped default since must be a whole bucket start, got %v (%s)", since, bucket)
+	}
+}
+
+// Review round 4: a window that inverts AFTER truncation and the default
+// clamp (an until inside the floor's first buckets) is a 400, like an
+// explicit inverted one — never an empty 200 whose body shows since after
+// until. Both buckets.
+func TestCompareWindowInvertedAfterClampIs400(t *testing.T) {
+	for _, q := range []string{
+		"until=1970-01-03",                  // week: until → 1969-12-29, since → 1970-01-05
+		"until=1970-01-20&bucket=month",     // month: until → 1970-01-01, since → 1970-02-01
+		"since=2024-05-15&until=2024-05-16", // explicit: until truncates below since
+	} {
+		r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&"+q, nil)
+		if since, until, _, err := compareWindow(r); err == nil {
+			t.Errorf("%s: want an error, got since=%v until=%v", q, since, until)
+		}
+	}
+	// And the month bucket's clamped default: until=1973-01-15 truncates to
+	// 1973-01-01, the default since to 1970-01-01 — below the floor — so it
+	// rounds up to the next month start (review round 5: an until in June
+	// never reached the clamp).
+	r := httptest.NewRequest("GET", "/api/v1/compare?metric=commits&entities=repo:1&until=1973-01-15&bucket=month", nil)
+	since, _, _, err := compareWindow(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(1970, 2, 1, 0, 0, 0, 0, time.UTC); !since.Equal(want) {
+		t.Fatalf("month bucket: the clamped default since must round up to %v, got %v", want, since)
 	}
 }

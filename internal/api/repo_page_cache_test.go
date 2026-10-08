@@ -1,0 +1,1101 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
+)
+
+// pageCacheHarness is a Server whose repository-page cache is fed by a fake
+// state reader and a counting handler, routed through a real ServeMux so
+// r.Pattern is set as in production.
+type pageCacheHarness struct {
+	t        *testing.T
+	s        *Server
+	mux      *http.ServeMux
+	mu       sync.Mutex
+	state    db.RepoCacheState
+	known    bool
+	stateErr error
+	runs     atomic.Int64
+	now      time.Time
+}
+
+const testPagePattern = "GET /api/v1/repos/{repoID}/thing"
+
+// The test route's parameters (pageParams lists every cached route's; set
+// once for the package's tests, never removed: no test depends on its
+// absence).
+func init() {
+	pageParams[testPagePattern] = []string{"a", "b", "fast", "slow", "broken", "ok", "bad"}
+}
+
+func newPageCacheHarness(t *testing.T, pol pagePolicy, maxBytes int64, h func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request)) *pageCacheHarness {
+	t.Helper()
+	hn := &pageCacheHarness{t: t, known: true, now: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
+		state: db.RepoCacheState{HasQueueRow: true, LastCollected: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}}
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(maxBytes, 30*time.Minute)}
+	s.pageCache.now = func() time.Time { hn.mu.Lock(); defer hn.mu.Unlock(); return hn.now }
+	s.repoStates = func(_ context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
+		hn.mu.Lock()
+		defer hn.mu.Unlock()
+		if hn.stateErr != nil {
+			return nil, hn.stateErr
+		}
+		out := map[int64]db.RepoCacheState{}
+		if hn.known {
+			for _, id := range ids {
+				out[id] = hn.state
+			}
+		}
+		return out, nil
+	}
+	hn.s = s
+	hn.mux = http.NewServeMux()
+	hn.mux.HandleFunc(testPagePattern, s.cachedRepoGET(pol, func(w http.ResponseWriter, r *http.Request) {
+		hn.runs.Add(1)
+		h(hn, w, r)
+	}))
+	return hn
+}
+
+func okBody(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"run":%d,"q":%q}`, hn.runs.Load(), r.URL.RawQuery)
+}
+
+func (hn *pageCacheHarness) get(target string, mod ...func(*http.Request)) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	for _, m := range mod {
+		m(r)
+	}
+	w := httptest.NewRecorder()
+	hn.mux.ServeHTTP(w, r)
+	return w
+}
+
+func (hn *pageCacheHarness) setState(f func(*db.RepoCacheState)) {
+	hn.mu.Lock()
+	defer hn.mu.Unlock()
+	f(&hn.state)
+}
+
+func ifNoneMatch(etag string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set("If-None-Match", etag) }
+}
+
+func TestPageCacheHitsUntilTheRepositoryStateChanges(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	first := hn.get("/api/v1/repos/7/thing")
+	if first.Code != 200 || hn.runs.Load() != 1 {
+		t.Fatalf("first call: %d, runs %d", first.Code, hn.runs.Load())
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" || first.Header().Get("Cache-Control") != "no-cache" || first.Header().Get("X-Accel-Expires") != "1" {
+		t.Errorf("a shareable answer needs an ETag, Cache-Control no-cache and X-Accel-Expires 1; got %v", first.Header())
+	}
+	if first.Header().Get("X-Cache") != "" {
+		t.Errorf("a computed answer is not a hit: X-Cache %q", first.Header().Get("X-Cache"))
+	}
+	// A week later, same state: still the cached answer (no timer).
+	hn.mu.Lock()
+	hn.now = hn.now.Add(7 * 24 * time.Hour)
+	hn.mu.Unlock()
+	second := hn.get("/api/v1/repos/7/thing")
+	if second.Header().Get("X-Cache") != "hit" || hn.runs.Load() != 1 || second.Body.String() != first.Body.String() {
+		t.Errorf("same state a week later must hit: X-Cache %q runs %d", second.Header().Get("X-Cache"), hn.runs.Load())
+	}
+	if second.Header().Get("ETag") != etag {
+		t.Error("a hit must carry the same ETag")
+	}
+	for name, change := range map[string]func(*db.RepoCacheState){
+		"a finished collection": func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) },
+		"a claim or re-queue":   func(st *db.RepoCacheState) { st.QueueUpdatedAt = st.QueueUpdatedAt.Add(time.Hour) },
+		"a scancode run":        func(st *db.RepoCacheState) { st.ScancodeLastRun = st.ScancodeLastRun.Add(time.Hour) },
+		"a vulnerability scan":  func(st *db.RepoCacheState) { st.VulnScanLastRun = st.VulnScanLastRun.Add(time.Hour) },
+	} {
+		before := hn.runs.Load()
+		hn.setState(change)
+		w := hn.get("/api/v1/repos/7/thing")
+		if hn.runs.Load() != before+1 || w.Header().Get("X-Cache") == "hit" {
+			t.Errorf("%s must recompute (runs %d → %d)", name, before, hn.runs.Load())
+		}
+		if w.Header().Get("ETag") == etag {
+			t.Errorf("%s must change the ETag", name)
+		}
+		etag = w.Header().Get("ETag")
+	}
+	// Another repository is another answer.
+	if hn.get("/api/v1/repos/8/thing").Header().Get("X-Cache") == "hit" {
+		t.Error("repository 8 must not be served repository 7's answer")
+	}
+}
+
+func TestPageCacheAnswers304WithoutRunningTheHandler(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+	if w.Code != http.StatusNotModified || w.Body.Len() != 0 || hn.runs.Load() != 1 {
+		t.Errorf("a matching If-None-Match must be a bodyless 304: %d %q runs %d", w.Code, w.Body.String(), hn.runs.Load())
+	}
+	if w.Header().Get("ETag") != etag {
+		t.Error("the 304 must repeat the ETag")
+	}
+	// The process lost its memory (restart, eviction): an exact answer's
+	// ETag is still verifiable from the state alone.
+	hn.s.pageCache = newRepoPageCache(1<<20, 30*time.Minute)
+	hn.s.pageCache.now = func() time.Time { return hn.now }
+	w = hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+	if w.Code != http.StatusNotModified || hn.runs.Load() != 1 {
+		t.Errorf("after a restart an exact ETag must still revalidate without the handler: %d runs %d", w.Code, hn.runs.Load())
+	}
+	// A list form and a weak form of the same tag both match.
+	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(`"x", `+etag)); w.Code != http.StatusNotModified {
+		t.Errorf("a list naming the tag must 304, got %d", w.Code)
+	}
+	// A stale tag gets the body.
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag)); w.Code != 200 || w.Body.Len() == 0 {
+		t.Errorf("an outdated tag must get the new body, got %d", w.Code)
+	}
+}
+
+func TestPageCacheEnrichedAnswersAgeOut(t *testing.T) {
+	hn := newPageCacheHarness(t, pageEnriched, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	hn.mu.Lock()
+	hn.now = hn.now.Add(29 * time.Minute)
+	hn.mu.Unlock()
+	if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("X-Cache") != "hit" {
+		t.Error("an enriched answer within the enrichment interval must hit")
+	}
+	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag)); w.Code != http.StatusNotModified {
+		t.Errorf("an enriched answer in memory revalidates, got %d", w.Code)
+	}
+	hn.mu.Lock()
+	hn.now = hn.now.Add(1 * time.Minute)
+	hn.mu.Unlock()
+	w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+	if w.Code != 200 || hn.runs.Load() != 2 {
+		t.Errorf("past the interval an enriched answer is recomputed, even for a client holding its tag: %d runs %d", w.Code, hn.runs.Load())
+	}
+	// Cold process: an enriched tag cannot be verified without the body.
+	hn.s.pageCache = newRepoPageCache(1<<20, 30*time.Minute)
+	hn.s.pageCache.now = func() time.Time { return hn.now }
+	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(w.Header().Get("ETag"))); w.Code != 200 || hn.runs.Load() != 3 {
+		t.Errorf("a cold enriched answer is computed, never assumed: %d runs %d", w.Code, hn.runs.Load())
+	}
+}
+
+func TestPageCacheNowRelativeAnswersChangeWithTheDay(t *testing.T) {
+	hn := newPageCacheHarness(t, pagePolicy{nowRelative: true}, 1<<20, okBody)
+	hn.get("/api/v1/repos/7/thing")
+	hn.mu.Lock()
+	hn.now = time.Date(2026, 10, 2, 23, 59, 0, 0, time.UTC)
+	hn.mu.Unlock()
+	if hn.get("/api/v1/repos/7/thing").Header().Get("X-Cache") != "hit" {
+		t.Error("the same UTC day must hit")
+	}
+	hn.mu.Lock()
+	hn.now = time.Date(2026, 10, 3, 0, 1, 0, 0, time.UTC)
+	hn.mu.Unlock()
+	if hn.get("/api/v1/repos/7/thing").Header().Get("X-Cache") == "hit" || hn.runs.Load() != 2 {
+		t.Error("a default window anchored at now must be recomputed the next UTC day")
+	}
+}
+
+func TestPageCacheKeyIsTheCanonicalQuery(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	hn.get("/api/v1/repos/7/thing?a=1&b=2")
+	if hn.get("/api/v1/repos/7/thing?b=2&a=1").Header().Get("X-Cache") != "hit" {
+		t.Error("the same parameters in another order are the same answer")
+	}
+	if hn.get("/api/v1/repos/7/thing?a=1&b=3").Header().Get("X-Cache") == "hit" {
+		t.Error("different parameters are a different answer")
+	}
+}
+
+func TestPageCacheKeyCarriesTheToolVersion(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	old := db.ToolVersion
+	t.Cleanup(func() { db.ToolVersion = old })
+	db.ToolVersion = old + "-next"
+	w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+	if w.Code != 200 || hn.runs.Load() != 2 {
+		t.Errorf("a new binary may change any body's shape: its answers and tags must be new (%d, runs %d)", w.Code, hn.runs.Load())
+	}
+}
+
+func TestPageCacheStateUnreadableAnswersLiveUntagged(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	hn.mu.Lock()
+	hn.stateErr = &net.OpError{Op: "dial", Net: "tcp", Err: errBrokenPipeForTest}
+	hn.mu.Unlock()
+	for i := 0; i < 2; i++ {
+		w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+		if w.Code != 200 || w.Header().Get("ETag") != "" || w.Header().Get("X-Cache") != "" {
+			t.Errorf("an unreadable state must answer live and untagged: %d %v", w.Code, w.Header())
+		}
+		if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("X-Accel-Expires") != "0" {
+			t.Errorf("an unvalidated answer must not be stored downstream: %v", w.Header())
+		}
+	}
+	if hn.runs.Load() != 3 {
+		t.Errorf("each unvalidated request runs the handler: runs %d", hn.runs.Load())
+	}
+	// An unknown repository has no state: live, untagged.
+	hn.mu.Lock()
+	hn.stateErr, hn.known = nil, false
+	hn.mu.Unlock()
+	if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("ETag") != "" {
+		t.Error("an unknown repository must not be tagged")
+	}
+}
+
+func TestPageCacheNeverStoresPartialOrFailedAnswers(t *testing.T) {
+	partial := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		hn.s.partialAnswer(r, errors.New("lookup failed"), "lookup failed — served without it")
+		okBody(hn, w, r)
+	})
+	for i := 0; i < 2; i++ {
+		w := partial.get("/api/v1/repos/7/thing")
+		if w.Code != 200 || w.Header().Get("ETag") != "" || w.Header().Get("Cache-Control") != "private, no-store" {
+			t.Errorf("a partial answer is served but never tagged or stored: %d %v", w.Code, w.Header())
+		}
+	}
+	if partial.runs.Load() != 2 {
+		t.Errorf("a partial answer must be recomputed: runs %d", partial.runs.Load())
+	}
+
+	failed := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	for i := 0; i < 2; i++ {
+		w := failed.get("/api/v1/repos/7/thing")
+		if w.Code != 500 || !strings.Contains(w.Body.String(), "internal error") || w.Header().Get("ETag") != "" {
+			t.Errorf("a failure passes through untagged: %d %q", w.Code, w.Body.String())
+		}
+		if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Error("a passed-through answer keeps the handler's headers")
+		}
+	}
+	if failed.runs.Load() != 2 {
+		t.Errorf("a failure must not be cached: runs %d", failed.runs.Load())
+	}
+}
+
+func TestPageCacheKeepsTheDownloadName(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="sbom-repo-7.cdx.json"`)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	hn.get("/api/v1/repos/7/thing")
+	w := hn.get("/api/v1/repos/7/thing")
+	if w.Header().Get("X-Cache") != "hit" || w.Header().Get("Content-Disposition") != `attachment; filename="sbom-repo-7.cdx.json"` ||
+		w.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("a cached download keeps its type and name: %v", w.Header())
+	}
+}
+
+// The authorization decision and the Shared-with-Me notice are per caller:
+// neither may reach anyone else through a cache.
+func TestPageCacheRefusalsAndAutoAddsAreNeverShared(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	fake := &fakeSharedWithMe{err: db.ErrSharedRepoNotFound}
+	hn.s.sharedWithMe = fake
+	scoped := func(r *http.Request) {
+		*r = *r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: 7}))
+	}
+	w := hn.get("/api/v1/repos/7/thing", scoped)
+	if w.Code != http.StatusForbidden || hn.runs.Load() != 0 {
+		t.Fatalf("an out-of-scope caller is refused before any lookup: %d runs %d", w.Code, hn.runs.Load())
+	}
+	// The headers SENT (Result), not the live map: authorizeRepo has
+	// written the 403 by the time the wrapper regains control (review
+	// round 1, finding 6).
+	if sent := w.Result().Header; sent.Get("Cache-Control") != "private, no-store" || sent.Get("X-Accel-Expires") != "0" || sent.Get("ETag") != "" {
+		t.Errorf("a refusal must never be stored: sent %v", sent)
+	}
+
+	// A refused caller must not be served a body another caller cached.
+	hn.get("/api/v1/repos/7/thing") // anonymous (auth off) caches it
+	if w := hn.get("/api/v1/repos/7/thing", scoped); w.Code != http.StatusForbidden {
+		t.Errorf("a cached body must never bypass the scope check: %d", w.Code)
+	}
+
+	// The auto-add: this caller's answer carries the notice and is not
+	// shareable; the cached body is still the shared one.
+	fake.err, fake.added = nil, true
+	hn.s.auth = newAuthenticator(nil, false, nil)
+	w = hn.get("/api/v1/repos/7/thing", scoped)
+	if w.Code != 200 || w.Header().Get(sharedWithMeHeader) == "" {
+		t.Fatalf("the auto-add answers with its notice: %d %v", w.Code, w.Header())
+	}
+	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("X-Accel-Expires") != "0" || w.Header().Get("ETag") != "" {
+		t.Errorf("an answer carrying the one-time notice must not be stored downstream: %v", w.Header())
+	}
+	runs := hn.runs.Load()
+	next := hn.get("/api/v1/repos/7/thing")
+	if next.Header().Get(sharedWithMeHeader) != "" || next.Header().Get("ETag") == "" || hn.runs.Load() != runs {
+		t.Errorf("the next caller gets the shared answer without the notice: %v", next.Header())
+	}
+}
+
+func TestPageCacheRunsOneHandlerForConcurrentMisses(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		okBody(hn, w, r)
+	})
+	const callers = 8
+	var wg sync.WaitGroup
+	bodies := make([]string, callers)
+	wg.Add(1)
+	go func() { defer wg.Done(); bodies[0] = hn.get("/api/v1/repos/7/thing").Body.String() }()
+	<-started // the leader is inside the handler
+	for i := 1; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); bodies[i] = hn.get("/api/v1/repos/7/thing").Body.String() }(i)
+	}
+	// Give the followers time to queue on the flight before releasing.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hn.s.pageCache.mu.Lock()
+		n := len(hn.s.pageCache.inflight)
+		hn.s.pageCache.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if hn.runs.Load() != 1 {
+		t.Errorf("%d concurrent misses must run the handler once, ran %d", callers, hn.runs.Load())
+	}
+	for i, b := range bodies {
+		if b != bodies[0] || b == "" {
+			t.Errorf("caller %d got %q, want the shared %q", i, b, bodies[0])
+		}
+	}
+}
+
+func TestPageCacheFollowerRunsItselfWhenTheLeaderFails(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var calls atomic.Int64
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			started <- struct{}{}
+			<-release
+			http.Error(w, "internal error; try again", http.StatusInternalServerError)
+			return
+		}
+		okBody(hn, w, r)
+	})
+	var leader, follower *httptest.ResponseRecorder
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); leader = hn.get("/api/v1/repos/7/thing") }()
+	<-started
+	wg.Add(1)
+	go func() { defer wg.Done(); follower = hn.get("/api/v1/repos/7/thing") }()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if leader.Code != 500 || follower.Code != 200 {
+		t.Errorf("one caller's failure must not become another's: leader %d follower %d", leader.Code, follower.Code)
+	}
+}
+
+func TestRepoPageCacheIsBoundedByBytes(t *testing.T) {
+	entry := func(key string, repo int64, n int) *pageEntry {
+		return &pageEntry{key: key, repoID: repo, uri: "/u/" + key, body: []byte(strings.Repeat("x", n))}
+	}
+	one := entry("a", 1, 100).size()
+	c := newRepoPageCache(3*one, time.Minute)
+	c.put(entry("a", 1, 100))
+	c.put(entry("b", 1, 100))
+	c.put(entry("c", 2, 100))
+	if c.bytes != 3*one {
+		t.Fatalf("bytes = %d, want %d", c.bytes, 3*one)
+	}
+	if _, ok := c.get("a"); !ok { // a becomes most recently used
+		t.Fatal("a must be cached")
+	}
+	c.put(entry("d", 2, 100))
+	if _, ok := c.get("b"); ok {
+		t.Error("the least recently used entry (b) must be evicted first")
+	}
+	for _, k := range []string{"a", "c", "d"} {
+		if _, ok := c.get(k); !ok {
+			t.Errorf("%s must survive", k)
+		}
+	}
+	if c.bytes > c.maxBytes {
+		t.Errorf("bytes %d over the bound %d", c.bytes, c.maxBytes)
+	}
+	c.put(entry("huge", 3, int(4*one)))
+	if _, ok := c.get("huge"); ok || c.bytes > c.maxBytes {
+		t.Error("an answer larger than the whole budget is never stored")
+	}
+	// Replacing a key does not double-count it.
+	c.put(entry("a", 1, 100))
+	if c.bytes != 3*one {
+		t.Errorf("after replacing a: bytes = %d, want %d", c.bytes, 3*one)
+	}
+	// The per-repository index follows evictions.
+	if ids := c.repoIDs(); len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
+		t.Errorf("repoIDs = %v, want [1 2]", ids)
+	}
+	zero := newRepoPageCache(0, time.Minute)
+	zero.put(entry("a", 1, 1))
+	if _, ok := zero.get("a"); ok || zero.bytes != 0 {
+		t.Error("a zero budget stores nothing for a route not kept without a budget")
+	}
+}
+
+func TestPageCacheZeroBudgetStillRevalidates(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 0, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("a zero budget still tags exact answers")
+	}
+	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag)); w.Code != http.StatusNotModified || hn.runs.Load() != 1 {
+		t.Errorf("a zero budget still answers 304 from the state: %d runs %d", w.Code, hn.runs.Load())
+	}
+}
+
+// A handler that panics must not leave its single-flight entry behind:
+// every later request for that answer would wait on it until its own
+// deadline (review round 1, finding 4).
+func TestPageCachePanicReleasesTheFlight(t *testing.T) {
+	var calls atomic.Int64
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			panic("handler bug")
+		}
+		okBody(hn, w, r)
+	})
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the handler's panic must still reach the caller (net/http recovers it per connection)")
+			}
+		}()
+		hn.get("/api/v1/repos/7/thing")
+	}()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- hn.get("/api/v1/repos/7/thing") }()
+	select {
+	case w := <-done:
+		if w.Code != 200 {
+			t.Errorf("the request after a panic: %d, want a fresh 200", w.Code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request after a panic is stuck on the dead flight")
+	}
+}
+
+// A parameter the route does not read never makes a new answer: ?x=1
+// shares the real one (review round 1, finding 5 — junk parameters filled
+// the LRU and were re-warmed after every collection). Repeated parameters
+// key on the first value, which is what the handlers read.
+func TestPageCacheKeyIgnoresParametersTheRouteDoesNotRead(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	first := hn.get("/api/v1/repos/7/thing?a=1")
+	for _, junk := range []string{"?a=1&x=1", "?x=2&a=1", "?a=1&a=9", "?a=1&utm_source=mail"} {
+		w := hn.get("/api/v1/repos/7/thing" + junk)
+		if w.Header().Get("X-Cache") != "hit" || w.Header().Get("ETag") != first.Header().Get("ETag") {
+			t.Errorf("%s must be served the ?a=1 answer", junk)
+		}
+	}
+	if hn.runs.Load() != 1 {
+		t.Errorf("junk parameters ran the handler %d times, want 1", hn.runs.Load())
+	}
+	hn.s.pageCache.mu.Lock()
+	n := len(hn.s.pageCache.m)
+	var uri string
+	for _, el := range hn.s.pageCache.m {
+		uri = el.Value.(*pageEntry).uri
+	}
+	hn.s.pageCache.mu.Unlock()
+	if n != 1 || uri != "/api/v1/repos/7/thing?a=1" {
+		t.Errorf("one entry with the canonical URI expected, got %d entries (uri %q)", n, uri)
+	}
+}
+
+// A cached route with no parameter list is never keyed: served live and
+// untagged, so a parameter it reads can never be dropped from its key.
+func TestPageCacheRouteWithoutAParameterListIsNotCached(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/repos/{repoID}/unlisted", hn.s.cachedRepoGET(pageExact, func(w http.ResponseWriter, r *http.Request) {
+		hn.runs.Add(1)
+		okBody(hn, w, r)
+	}))
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/repos/7/unlisted", nil))
+		if w.Header().Get("ETag") != "" || w.Header().Get("Cache-Control") != "private, no-store" {
+			t.Errorf("an unlisted route must answer untagged: %v", w.Header())
+		}
+	}
+	if hn.runs.Load() != 2 {
+		t.Errorf("an unlisted route runs every time, ran %d", hn.runs.Load())
+	}
+}
+
+// A repository id spelled another way (+7, 07) is the same repository to
+// strconv but another key to the cache and another path to a front end's
+// location match (review round 2): it is answered live, untagged, never
+// stored.
+func TestPageCacheServesNonCanonicalIdsUncached(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	for _, id := range []string{"+7", "07", "0007"} {
+		for i := 0; i < 2; i++ {
+			w := hn.get("/api/v1/repos/" + id + "/thing")
+			if w.Header().Get("ETag") != "" || w.Header().Get("X-Cache") != "" || w.Header().Get("Cache-Control") != "private, no-store" {
+				t.Errorf("id %q: a non-canonical id must be answered untagged: %v", id, w.Header())
+			}
+		}
+	}
+	if hn.runs.Load() != 6 {
+		t.Errorf("non-canonical ids ran the handler %d times, want 6 (never cached)", hn.runs.Load())
+	}
+	if n := len(hn.s.pageCache.repoIDs()); n != 0 {
+		t.Errorf("nothing may be stored for a non-canonical id, %d repositories cached", n)
+	}
+}
+
+// PR #226 Copilot review — If-None-Match: * matches an answer that exists.
+// With nothing in memory the representation is unknown (the handler might
+// refuse the parameters with a 400), so a wildcard must reach the handler.
+func TestPageCacheWildcardMatchesOnlyAStoredAnswer(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("a") == "bad" {
+			http.Error(w, "format must be 'cyclonedx' or 'spdx'", http.StatusBadRequest)
+			return
+		}
+		okBody(hn, w, r)
+	})
+	if w := hn.get("/api/v1/repos/7/thing?a=bad", ifNoneMatch("*")); w.Code != http.StatusBadRequest {
+		t.Errorf("a wildcard on a cold, invalid request: %d, want the handler's 400", w.Code)
+	}
+	// A valid request with nothing stored is computed first; the answer then
+	// exists, so the wildcard matches it (RFC 9110: * names any current
+	// representation) — what it must never do is answer before the handler
+	// has established the request is valid (the 400 above).
+	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != http.StatusNotModified || hn.runs.Load() != 2 {
+		t.Errorf("a wildcard on a valid request: %d after %d runs, want a 304 after computing it", w.Code, hn.runs.Load())
+	}
+	if w := hn.get("/api/v1/repos/7/thing?a=1", ifNoneMatch("*")); w.Code != http.StatusNotModified {
+		t.Errorf("a wildcard on a stored answer: %d, want 304", w.Code)
+	}
+}
+
+// PR #226 Copilot review — an exact answer's ETag names the repository's
+// state, not the bytes (an SBOM carries a fresh serial and timestamp per
+// generation), so it is a WEAK validator; If-None-Match compares weakly.
+func TestPageCacheExactETagsAreWeak(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	if !strings.HasPrefix(etag, `W/"`) {
+		t.Fatalf("exact ETag %q must be weak", etag)
+	}
+	strong := strings.TrimPrefix(etag, "W/")
+	for _, inm := range []string{etag, strong} {
+		if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(inm)); w.Code != http.StatusNotModified {
+			t.Errorf("If-None-Match %s: %d, want 304 (weak comparison)", inm, w.Code)
+		}
+	}
+	en := newPageCacheHarness(t, pageEnriched, 1<<20, okBody)
+	if e := en.get("/api/v1/repos/7/thing").Header().Get("ETag"); strings.HasPrefix(e, "W/") {
+		t.Errorf("an enriched ETag names the body: it stays strong, got %q", e)
+	}
+}
+
+// PR #226 Copilot review — only the run that computed an answer stores it:
+// followers that shared it must not replace the entry (cost 0, hits reset),
+// which made the re-warm's order and its "asked for again" signal depend on
+// the scheduler.
+func TestPageCacheFollowersDoNotReplaceTheEntry(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		time.Sleep(5 * time.Millisecond) // a measurable cost
+		okBody(hn, w, r)
+	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); hn.get("/api/v1/repos/7/thing") }()
+	<-started
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); hn.get("/api/v1/repos/7/thing") }()
+	}
+	time.Sleep(30 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	hn.get("/api/v1/repos/7/thing") // one hit after the flight
+	hn.s.pageCache.mu.Lock()
+	defer hn.s.pageCache.mu.Unlock()
+	if len(hn.s.pageCache.m) != 1 {
+		t.Fatalf("%d entries, want 1", len(hn.s.pageCache.m))
+	}
+	for _, el := range hn.s.pageCache.m {
+		e := el.Value.(*pageEntry)
+		if e.cost < 5*time.Millisecond {
+			t.Errorf("entry cost %v: a follower replaced the leader's measured entry", e.cost)
+		}
+		if e.hits != 1 {
+			t.Errorf("entry hits %d, want 1 (the request after the flight)", e.hits)
+		}
+	}
+}
+
+// PR #226 review 5403078495: parseWindow's default start is the UTC day
+// boundary two years back — the same granularity as the cache key's UTC day
+// (pageEnriched) — so every request of a day computes, and is served, the
+// same window. An instant-precise default made the first request of the
+// day fix the window for the rest of it.
+func TestParseWindowDefaultStartsOnAUTCDay(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/7/contributors/top", nil)
+	since, _, ok := parseWindow(r)
+	if !ok {
+		t.Fatal("the default window must be valid")
+	}
+	if since.Location() != time.UTC || since.Hour() != 0 || since.Minute() != 0 || since.Second() != 0 || since.Nanosecond() != 0 {
+		t.Errorf("default since %v must be a UTC midnight", since)
+	}
+	want := time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
+	if !since.Equal(want) && !since.Equal(want.AddDate(0, 0, -1)) { // a test running across midnight
+		t.Errorf("default since %v, want %v", since, want)
+	}
+}
+
+// Whole-branch review: an enriched answer recomputed after its TTL (or an
+// eviction, a restart, a zero budget) whose ETag equals the client's is a
+// 304, not the same body again — top contributors, the heaviest route,
+// re-shipped its body to every revalidating client after each TTL.
+func TestPageCacheRecomputedAnswerMatchingTheClientsTagIs304(t *testing.T) {
+	for name, budget := range map[string]int64{"cached": 1 << 20, "zero budget": 0} {
+		hn := newPageCacheHarness(t, pageEnriched, budget, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"same":"body"}`)) // identical on every computation
+		})
+		etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+		hn.mu.Lock()
+		hn.now = hn.now.Add(31 * time.Minute) // past the enrichment TTL
+		hn.mu.Unlock()
+		w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
+		if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
+			t.Errorf("%s: a recomputed identical answer for a client holding its tag: %d (%d bytes), want a bodyless 304", name, w.Code, w.Body.Len())
+		}
+		if hn.runs.Load() != 2 {
+			t.Errorf("%s: runs %d, want 2 (it was recomputed)", name, hn.runs.Load())
+		}
+	}
+}
+
+// PR #226 review 5403959037: the key holds each parameter's EFFECTIVE value
+// — the value the handler acts on — not its spelling. Every spelling a
+// handler folds into one value (an invalid date into the default window,
+// an invalid limit into 20, any bots value but "hide" into "show them")
+// shares that value's entry, so junk spellings cannot each recompute the
+// heaviest route, fill the LRU and become re-warm candidates.
+func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
+	const top = "GET /api/v1/repos/{repoID}/contributors/top"
+	const ts = "GET /api/v1/repos/{repoID}/timeseries"
+	const sbom = "GET /api/v1/repos/{repoID}/sbom"
+	const deps = "GET /api/v1/repos/{repoID}/deps"
+	key := func(pattern, q string) string {
+		r := httptest.NewRequest(http.MethodGet, "/x?"+q, nil)
+		return canonicalQuery(r, pageParams[pattern])
+	}
+	same := []struct{ pattern, a, b string }{
+		{top, "", "limit=20"},
+		{top, "", "limit=abc"},
+		{top, "", "limit=0"},
+		{top, "", "limit=-3"},
+		{top, "limit=100", "limit=500"},
+		{top, "limit=7", "limit=07"},
+		{top, "", "bots=x"},
+		{top, "", "bots=HIDE"},
+		{top, "", "since=yesterday"},
+		{top, "", "since=2024-1-1"},
+		{top, "", "until=2024-02-30"},
+		{top, "bots=hide&limit=10", "limit=10&bots=hide&limit=99"},
+		{ts, "", "since=2024-13-01"},
+		{ts, "", "since="},
+		{sbom, "", "vulns=true"},
+		{sbom, "", "vulns=0"},
+		// The handler reads no format as CycloneDX (final whole-PR review A2).
+		{sbom, "", "format=cyclonedx"},
+		{sbom, "vulns=1", "format=cyclonedx&vulns=1"},
+		{deps, "", "license="},
+	}
+	for _, c := range same {
+		if ka, kb := key(c.pattern, c.a), key(c.pattern, c.b); ka != kb {
+			t.Errorf("%s: ?%s and ?%s are the same answer but key %q vs %q", c.pattern, c.a, c.b, ka, kb)
+		}
+	}
+	differ := []struct{ pattern, a, b string }{
+		{top, "limit=10", "limit=20"},
+		{top, "limit=99", "limit=100"},
+		{top, "", "bots=hide"},
+		{top, "", "since=2024-01-01"},
+		{top, "until=2024-01-01", "until=2024-01-02"},
+		{ts, "since=2024-01-01", "since=2024-01-02"},
+		{sbom, "", "vulns=1"},
+		{sbom, "format=spdx", "format=cyclonedx"},
+		// The legacy full list (no parameters) and the filtered list
+		// (?scope=all) are different answers on /deps.
+		{deps, "", "scope=all"},
+		{deps, "license=MIT", "license=GPL-3.0"},
+	}
+	for _, c := range differ {
+		if ka, kb := key(c.pattern, c.a), key(c.pattern, c.b); ka == kb {
+			t.Errorf("%s: ?%s and ?%s are different answers but share key %q", c.pattern, c.a, c.b, ka)
+		}
+	}
+}
+
+// Every parameter a cached route reads has an effective-value rule, chosen
+// on purpose (identity included): a new parameter cannot silently key on
+// its spelling.
+func TestEveryPageParamHasAnEffectiveValueRule(t *testing.T) {
+	for pattern, names := range pageParams {
+		if pattern == testPagePattern {
+			continue
+		}
+		for _, n := range names {
+			if _, ok := pageParamValue[n]; !ok {
+				t.Errorf("%s reads ?%s, which has no rule in pageParamValue", pattern, n)
+			}
+		}
+	}
+}
+
+// The invariant the key exists for: two requests a cached route keys alike
+// get the same answer. For the routes whose key folds spellings (dates,
+// limit, bots, vulns), the handler acts only on what its parse function
+// returns (pinned below), so "same key ⇒ same parsed arguments" over a
+// corpus of spellings is that invariant, tested on behavior: a handler-side
+// extra rule (bots=1 also hiding bots) has to live in the parse function,
+// and this test then fails for it.
+func TestSameKeyMeansSameHandlerArguments(t *testing.T) {
+	days := []string{"", "since=2024-01-01", "since=yesterday", "since=2024-1-1", "since=2024-02-30", "since=",
+		"until=2024-06-01", "until=bad", "until=2024-6-1", "since=2024-01-01&until=2024-06-01", "since=2024-01-01&until=2023-01-01"}
+	type route struct {
+		pattern string
+		corpus  []string
+		args    func(*http.Request) any
+	}
+	var top []string
+	for _, d := range days {
+		for _, extra := range []string{"", "limit=20", "limit=abc", "limit=0", "limit=10", "limit=100", "limit=500", "limit=07",
+			"bots=hide", "bots=x", "bots=1", "bots=HIDE", "limit=10&bots=hide"} {
+			top = append(top, strings.Trim(d+"&"+extra, "&"))
+		}
+	}
+	window := func(r *http.Request) any { s, u, ok := parseWindow(r); return [3]any{s, u, ok} }
+	routes := []route{
+		{"GET /api/v1/repos/{repoID}/contributors/top", top, func(r *http.Request) any {
+			a, ok := parseTopContributorsArgs(r)
+			return [2]any{a, ok}
+		}},
+		{"GET /api/v1/repos/{repoID}/timeseries", days, window},
+		{"GET /api/v1/repos/{repoID}/contributions/identities", days, window},
+		{"GET /api/v1/repos/{repoID}/contributions/affiliations", days, window},
+		{"GET /api/v1/repos/{repoID}/contributions/coverage", days, window},
+		{"GET /api/v1/repos/{repoID}/sbom", []string{"", "vulns=1", "vulns=true", "vulns=0", "format=spdx", "format=spdx&vulns=1",
+			"format=spdx&vulns=yes", "scope=runtime", "scope=runtime&vulns=1", "scope=runtime&vulns=2"}, func(r *http.Request) any {
+			return parseSBOMArgs(r)
+		}},
+	}
+	for _, rt := range routes {
+		type parsed struct {
+			q    string
+			args any
+		}
+		byKey := map[string]parsed{}
+		for _, q := range rt.corpus {
+			r := httptest.NewRequest(http.MethodGet, "/x?"+q, nil)
+			k, a := canonicalQuery(r, pageParams[rt.pattern]), rt.args(r)
+			if prev, ok := byKey[k]; ok && fmt.Sprint(prev.args) != fmt.Sprint(a) {
+				t.Errorf("%s: ?%s and ?%s share key %q but the handler acts on %v vs %v", rt.pattern, prev.q, q, k, prev.args, a)
+			}
+			byKey[k] = parsed{q, a}
+		}
+	}
+}
+
+// The handlers of those routes read the query only through their parse
+// function (ban the operation: no other Query() in the body), so the test
+// above covers everything they act on.
+func TestFoldingHandlersReadTheQueryOnlyThroughTheirParser(t *testing.T) {
+	for _, c := range []struct{ file, handler, parser string }{
+		{"top_contributors.go", "handleTopContributors", "parseTopContributorsArgs(r)"},
+		{"server.go", "handleTimeSeries", "parseWindow(r)"},
+		{"server.go", "handleSBOMDownload", "parseSBOMArgs(r)"},
+		{"contributions.go", "handleRepoContributors", "parseWindow(r)"},
+		{"contributions.go", "handleRepoAffiliations", "parseWindow(r)"},
+		{"contributions.go", "handleRepoContributionsCoverage", "parseWindow(r)"},
+	} {
+		body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/api/"+c.file)), "func (s *Server) "+c.handler+"(")
+		if !strings.Contains(body, c.parser) {
+			t.Errorf("%s must parse its query with %s", c.handler, c.parser)
+		}
+		if strings.Contains(body, "Query()") || strings.Contains(body, "FormValue(") || strings.Contains(body, "RawQuery") {
+			t.Errorf("%s reads the query outside %s: the key cannot see that read", c.handler, c.parser)
+		}
+	}
+}
+
+// The re-warm replays an entry's canonical URI and matches the replayed
+// entry by that URI, so the canonical query must map to itself: a rule that
+// did not would store each replay under a new URI and never refresh the
+// entry (completeReplay false on every pass).
+func TestCanonicalQueryIsItsOwnCanonicalForm(t *testing.T) {
+	for pattern, params := range pageParams {
+		if pattern == testPagePattern {
+			continue
+		}
+		for _, q := range []string{"", "limit=500", "limit=07", "limit=abc", "bots=x", "bots=hide", "since=2024-01-01", "since=bad",
+			"until=2024-02-29", "vulns=true", "vulns=1", "format=spdx", "scope=all", "scope=runtime", "license=Apache-2.0%20OR%20MIT",
+			"license=a%2Bb", "limit=10&bots=hide&since=2024-01-01&until=2024-06-01"} {
+			once := canonicalQuery(httptest.NewRequest(http.MethodGet, "/x?"+q, nil), params)
+			twice := canonicalQuery(httptest.NewRequest(http.MethodGet, "/x?"+once, nil), params)
+			if once != twice {
+				t.Errorf("%s: ?%s canonicalizes to %q, which canonicalizes to %q", pattern, q, once, twice)
+			}
+		}
+	}
+}
+
+// parseSBOMArgs: the defaults; a format or scope outside the handler's
+// switches is passed through for it to refuse with 400.
+func TestParseSBOMArgs(t *testing.T) {
+	for q, want := range map[string]sbomArgs{
+		"":                             {format: "cyclonedx"},
+		"format=spdx":                  {format: "spdx"},
+		"format=pdf":                   {format: "pdf"},
+		"vulns=1":                      {format: "cyclonedx", withVulns: true},
+		"vulns=true":                   {format: "cyclonedx"},
+		"scope=runtime&vulns=1":        {format: "cyclonedx", scope: "runtime", withVulns: true},
+		"scope=all":                    {format: "cyclonedx", scope: "all"},
+		"scope=everything":             {format: "cyclonedx", scope: "everything"},
+		"format=spdx&format=cyclonedx": {format: "spdx"},
+	} {
+		if a := parseSBOMArgs(httptest.NewRequest(http.MethodGet, "/x?"+q, nil)); a != want {
+			t.Errorf("parseSBOMArgs(?%s) = %+v, want %+v", q, a, want)
+		}
+	}
+}
+
+// The auto-add on a COLD key (whole-branch review): the first visitor
+// through a shared link computes the answer itself, so the miss path — not
+// only the hit path above — must answer it no-store, and a client's
+// If-None-Match must not turn its notice into a cold 304.
+func TestPageCacheAutoAddOnAColdKeyIsNeverShared(t *testing.T) {
+	scoped := func(r *http.Request) {
+		*r = *r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: 7}))
+	}
+	for _, c := range []struct {
+		name string
+		opts []func(*http.Request)
+	}{
+		{"miss", []func(*http.Request){scoped}},
+		{"miss with If-None-Match", []func(*http.Request){scoped, func(r *http.Request) {
+			r.Header.Set("If-None-Match", "*")
+		}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+			hn.s.sharedWithMe = &fakeSharedWithMe{added: true}
+			hn.s.auth = newAuthenticator(nil, false, nil)
+			w := hn.get("/api/v1/repos/7/thing", c.opts...)
+			sent := w.Result().Header
+			if w.Code != http.StatusOK || sent.Get(sharedWithMeHeader) == "" {
+				t.Fatalf("the auto-add answers 200 with its notice: %d %v", w.Code, sent)
+			}
+			if sent.Get("Cache-Control") != "private, no-store" || sent.Get("X-Accel-Expires") != "0" || sent.Get("ETag") != "" {
+				t.Errorf("a cold-key answer carrying the one-time notice must not be stored downstream: %v", sent)
+			}
+		})
+	}
+	// The exact-ETag cold 304 arm, with that answer's own ETag.
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
+	hn2 := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	hn2.s.sharedWithMe = &fakeSharedWithMe{added: true}
+	hn2.s.auth = newAuthenticator(nil, false, nil)
+	w := hn2.get("/api/v1/repos/7/thing", scoped, func(r *http.Request) { r.Header.Set("If-None-Match", etag) })
+	if w.Code == http.StatusNotModified || w.Result().Header.Get(sharedWithMeHeader) == "" {
+		t.Errorf("a cold 304 would drop the one-time notice: %d %v", w.Code, w.Result().Header)
+	}
+}
+
+// Final whole-PR review, finding A1: main cached /timeseries and
+// /contributors/top in the collection-generation cache unconditionally
+// (bounded at collectionCacheMaxEntries). With api.response_cache_mb unset
+// (the default, 0) the page cache must still keep those two routes'
+// answers, by count, and nothing else — the operator's default-off
+// decision covers the byte-budgeted cache of every other route.
+func TestZeroBudgetKeepsTheRoutesMainAlwaysCached(t *testing.T) {
+	entry := func(key string, repo int64, n int) *pageEntry {
+		return &pageEntry{key: key, repoID: repo, uri: "/u/" + key, body: []byte(strings.Repeat("x", n))}
+	}
+	c := newRepoPageCache(0, time.Minute)
+	kept := entry("kept", 1, 1)
+	kept.keptWhenOff = true
+	c.put(kept)
+	if _, ok := c.get("kept"); !ok {
+		t.Fatal("a zero budget must keep an answer of a route main always cached")
+	}
+	c.put(entry("other", 1, 1))
+	if _, ok := c.get("other"); ok {
+		t.Error("a zero budget must keep nothing for any other route")
+	}
+	for i := 0; i <= collectionCacheMaxEntries; i++ {
+		e := entry(fmt.Sprintf("k%d", i), int64(i), 1)
+		e.keptWhenOff = true
+		c.put(e)
+	}
+	if n := c.ll.Len(); n != collectionCacheMaxEntries {
+		t.Errorf("a zero budget keeps %d answers, want main's bound %d", n, collectionCacheMaxEntries)
+	}
+	if _, ok := c.get("k0"); ok {
+		t.Error("the least recently used answer must be evicted past the bound")
+	}
+	if _, ok := c.get(fmt.Sprintf("k%d", collectionCacheMaxEntries)); !ok {
+		t.Error("the newest answer must be kept")
+	}
+	var want int64
+	for el := c.ll.Front(); el != nil; el = el.Next() {
+		want += el.Value.(*pageEntry).size()
+	}
+	if c.bytes != want {
+		t.Errorf("bytes = %d, want the sum of the kept entries %d", c.bytes, want)
+	}
+}
+
+// The same through the handler path: with the default budget a second
+// visit to a kept route runs no handler.
+func TestZeroBudgetServesAKeptRouteFromMemory(t *testing.T) {
+	for _, pol := range []pagePolicy{pageDatedKept, pageEnrichedKept} {
+		hn := newPageCacheHarness(t, pol, 0, okBody)
+		hn.get("/api/v1/repos/7/thing")
+		if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("X-Cache") != "hit" || hn.runs.Load() != 1 {
+			t.Errorf("%+v: the second visit ran the handler %d times (X-Cache %q), want a hit", pol, hn.runs.Load(), w.Header().Get("X-Cache"))
+		}
+	}
+}
+
+// Wiring: exactly the two routes main cached unconditionally use a kept
+// policy, and no other route does.
+func TestKeptPoliciesAreTheRoutesMainAlwaysCached(t *testing.T) {
+	src := srctest.StripGoComments(srctest.Read(t, "internal/api/server.go")) + srctest.StripGoComments(srctest.Read(t, "internal/api/metrics.go"))
+	want := map[string]string{
+		"/api/v1/repos/{repoID}/timeseries":       "pageDatedKept",
+		"/api/v1/repos/{repoID}/contributors/top": "pageEnrichedKept",
+	}
+	re := regexp.MustCompile(`"GET (/api/v1/[^"]+)", s\.cachedRepoGET\((\w+),`)
+	seen := 0
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		seen++
+		pol, kept := want[m[1]]
+		isKept := strings.HasSuffix(m[2], "Kept")
+		if kept && m[2] != pol {
+			t.Errorf("%s must use %s (main always cached it), uses %s", m[1], pol, m[2])
+		}
+		if !kept && isKept {
+			t.Errorf("%s uses %s; only the routes main always cached may", m[1], m[2])
+		}
+	}
+	if seen < 10 {
+		t.Fatalf("matched %d cachedRepoGET routes; the scan is not seeing the registrations", seen)
+	}
+}
+
+// The configuration page states the zero-budget bound; it must be the
+// constant's value.
+func TestConfigurationDocStatesTheZeroBudgetBound(t *testing.T) {
+	doc := srctest.Read(t, "docs/getting-started/configuration.md")
+	n := strconv.Itoa(collectionCacheMaxEntries)
+	if len(n) > 3 {
+		n = n[:len(n)-3] + "," + n[len(n)-3:]
+	}
+	if c := strings.Count(doc, "at most "+n+" answers") + strings.Count(doc, "up to "+n+" answers"); c != 2 {
+		t.Errorf("configuration.md must state the zero-budget bound (%s answers) in both places, found %d", n, c)
+	}
+	// The 0.29.78 upgrade note and ladder state it too.
+	// Every statement of the bound is required on its own (round 3: an OR
+	// of two spellings let api.md pass on one of its two statements).
+	for f, needles := range map[string][]string{
+		"docs/getting-started/upgrading.md": {"up to " + n + " answers"},
+		"cmd/aveloxis/deploy_checklist.go":  {"up to " + n + " answers"},
+		"docs/guide/scaling.md":             {"keeps only up to " + n + " weekly-series"},
+		"docs/guide/api.md":                 {"are, up to " + n + " answers", "or " + n + " weekly-series"},
+	} {
+		doc := srctest.Read(t, f)
+		for _, needle := range needles {
+			if !strings.Contains(doc, needle) {
+				t.Errorf("%s must state the zero-budget bound: %q is missing", f, needle)
+			}
+		}
+	}
+}
+
+// A negative budget through the exported Options is the zero budget (L10
+// round 2 on 0.29.78): before the clamp, put evicted the new entry and then
+// dereferenced an empty list.
+func TestNegativeBudgetIsTheZeroBudget(t *testing.T) {
+	c := newRepoPageCache(-1, time.Minute)
+	kept := &pageEntry{key: "kept", repoID: 1, uri: "/u/kept", body: []byte("x"), keptWhenOff: true}
+	c.put(kept)
+	c.put(&pageEntry{key: "other", repoID: 1, uri: "/u/other", body: []byte("x")})
+	if _, ok := c.get("kept"); !ok {
+		t.Error("a negative budget must keep what a zero budget keeps")
+	}
+	if _, ok := c.get("other"); ok {
+		t.Error("a negative budget must refuse what a zero budget refuses")
+	}
+	if c.keptWithoutBudget() != collectionCacheMaxEntries {
+		t.Errorf("keptWithoutBudget = %d at a negative budget, want %d", c.keptWithoutBudget(), collectionCacheMaxEntries)
+	}
+}

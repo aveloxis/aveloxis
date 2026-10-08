@@ -20,10 +20,10 @@ Copyright © 2026 University of Missouri, Sean Goggins, and Derek Howard. This s
 
 ## Requirements
 **Note: RHEL/CentOS installations are based on internet searches, as we do not have access to a machine with those OS's**
-- **Go 1.23+** ([install](https://go.dev/doc/install))
+- **Go 1.26+** ([install](https://go.dev/doc/install))
 - **PostgreSQL 14+** (local, Docker, or remote)
 - **git** (for the facade/commit collection phase)
-- **GitHub and/or GitLab API tokens** (personal access tokens with repo/read scope)
+- **GitHub and/or GitLab API tokens** (personal access tokens with `repo` scope, or `public_repo` for public repositories only)
 - **Python 3.10+** and **libmagic** (optional, for ScanCode license/copyright scanning — installed automatically by `aveloxis install-tools`)
   - macOS: `brew install libmagic`
   - Debian/Ubuntu: `sudo apt-get install libmagic1`
@@ -104,7 +104,7 @@ Then run migrations:
 aveloxis migrate
 ```
 
-This creates 148 tables (102 in `aveloxis_data`, 42 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
+This creates 149 tables (103 in `aveloxis_data`, 42 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
 
 ### OAUTH App Setup
 You will need a github OAUTH application for login to work on the web view. And there's nothing available without login. You can also use GitLab's OAUTH, or configure both. 
@@ -327,16 +327,17 @@ aveloxis add-key glpat-your_gitlab_token --platform gitlab
 # 4. Add repos to the collection queue (CLI method)
 aveloxis add-repo https://github.com/chaoss/augur https://gitlab.com/fdroid/fdroidclient
 
-# -- OR use the web GUI to add repos and orgs via browser --
-# Configure OAuth credentials in aveloxis.json (see Configuration),
-# then run: aveloxis web
-# Open http://localhost:8082, log in with GitHub/GitLab, create a group,
+# -- OR add repos and orgs through the web GUI after step 5: configure
+# OAuth credentials in aveloxis.json (see Configuration), open
+# http://localhost:8082, log in with GitHub/GitLab, create a group,
 # and add repos or orgs through the UI.
 
-# 5. Start the scheduler
-aveloxis start serve
+# 5. Start the three processes (logs under ~/.aveloxis/)
+aveloxis start all
 
-# Open http://localhost:8082/monitor to watch collection progress
+# Open http://localhost:8082 (the web GUI; the first account to sign in is the admin)
+# and http://127.0.0.1:5555 (the scheduler's monitor) to watch collection progress.
+# A public host: docs/getting-started/deployment.md
 ```
 
 ## Configuration
@@ -545,8 +546,8 @@ Combine with `aveloxis prioritize <url>` if you want the re-collection to start 
 aveloxis migrate
 ```
 
-Creates 148 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, on every deployment, the two supply-chain views the GUI reads:
-- **`aveloxis_data`** (102 tables + 22 materialized views) — all collected data plus analytics views
+Creates 149 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, on every deployment, the two supply-chain views the GUI reads:
+- **`aveloxis_data`** (103 tables + 22 materialized views) — all collected data plus analytics views
 - **`aveloxis_ops`** (42 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
 - **`aveloxis_scan`** (4 tables) — scancode per-file license/copyright results and history
 - **`aveloxis_augur_data`** (6 views) — Augur compatibility layer for 8Knot. Contains views that alias Aveloxis column names to Augur conventions (e.g., `star_count` → `stars_count`, `pr_number` → `pr_src_number`). Only tables with column name differences have views here; identical tables resolve via search_path fallback to `aveloxis_data`.
@@ -961,7 +962,7 @@ Two further materialized views, `explorer_package_exposure` and `explorer_packag
 
 Four schemas in PostgreSQL: two with full parity to Augur's `augur_data` and `augur_operations`, a dedicated schema for ScanCode results, and one carrying the Augur-compatibility views:
 
-- **`aveloxis_data`** (102 tables + 22 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility and the two supply-chain views.
+- **`aveloxis_data`** (103 tables + 22 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility and the two supply-chain views.
 - **`aveloxis_ops`** (42 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
 - **`aveloxis_scan`** (4 tables) — ScanCode per-file license and copyright detection: `scancode_scans` (scan metadata), `scancode_file_results` (per-file SPDX license, copyrights, holders, packages as JSONB), plus `_history` tables for both.
 - **`aveloxis_augur_data`** (views only, no tables) — Augur-compatibility views for 8Knot: `repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`. Only the entities whose column names differ from Augur's need a view; 8Knot reads with `search_path = aveloxis_augur_data,aveloxis_data` so everything else resolves straight through to the real tables.

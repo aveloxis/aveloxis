@@ -21,7 +21,7 @@ import (
 func TestUpsertCommitBatchShape(t *testing.T) {
 	src := readFileForTest(t, "commit_batch.go")
 
-	if !strings.Contains(src, "func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.Commit) error") {
+	if !strings.Contains(src, "func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.Commit) (int64, error)") {
 		t.Fatal("UpsertCommitBatch missing — the F2 batch write path")
 	}
 	// Same arbiter as the single-row UpsertCommit — the v0.7-era dedup
@@ -94,8 +94,10 @@ func TestUpsertCommitBatchEndToEnd(t *testing.T) {
 		mk("avtestcbhash2", "a.go"),
 		mk("avtestcbhash2", "a.go"), // intra-batch duplicate — DO NOTHING must tolerate
 	}
-	if err := store.UpsertCommitBatch(ctx, batch); err != nil {
+	if n, err := store.UpsertCommitBatch(ctx, batch); err != nil {
 		t.Fatalf("UpsertCommitBatch: %v", err)
+	} else if n != 3 {
+		t.Errorf("UpsertCommitBatch reported %d inserted rows, want 3 (the duplicate is not new)", n)
 	}
 
 	var rows int
@@ -114,7 +116,7 @@ func TestUpsertCommitBatchEndToEnd(t *testing.T) {
 	for i := 0; i < commitBatchChunk+100; i++ {
 		big = append(big, mk("avtestcbbig", fmt.Sprintf("file-%04d.go", i)))
 	}
-	if err := store.UpsertCommitBatch(ctx, big); err != nil {
+	if _, err := store.UpsertCommitBatch(ctx, big); err != nil {
 		t.Fatalf("UpsertCommitBatch >chunk: %v", err)
 	}
 	var bigRows int
@@ -129,8 +131,10 @@ func TestUpsertCommitBatchEndToEnd(t *testing.T) {
 
 	// Idempotent re-run (scoped to the original hashes — the chunk batch
 	// above added its own rows for this repo).
-	if err := store.UpsertCommitBatch(ctx, batch); err != nil {
+	if n, err := store.UpsertCommitBatch(ctx, batch); err != nil {
 		t.Fatalf("re-run UpsertCommitBatch: %v", err)
+	} else if n != 0 {
+		t.Errorf("a re-run reported %d inserted rows, want 0 (every row was already there)", n)
 	}
 	if err := store.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM aveloxis_data.commits

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -47,15 +48,30 @@ func normalizeSiteURL(site string) string {
 // (round 25). The errors do not repeat the value, which could carry a
 // password.
 func validateSiteURL(site string) error {
+	return ValidateSiteURL("mail.site_url", site)
+}
+
+// ValidateSiteURL is validateSiteURL's rule for any config key whose value
+// starts mailed links — web.spa_url takes it at config load (2026-10-04,
+// review: the sibling was unguarded). key names the setting in the error;
+// the value is never repeated.
+func ValidateSiteURL(key, site string) error {
 	if site == "" {
 		return nil
 	}
 	u, err := url.Parse(site)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !siteHost(u.Hostname()) || strings.Count(site, "://") > 1 {
-		return errors.New("mail.site_url must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
+		return errors.New(key + " must be an absolute http:// or https:// URL with a host, such as https://aveloxis.example")
 	}
 	if u.User != nil || strings.ContainsAny(site, "?#") || strings.IndexFunc(site, unicode.IsSpace) >= 0 {
-		return errors.New("mail.site_url must not contain a query (?), a fragment (#), a user name or spaces")
+		return errors.New(key + " must not contain a query (?), a fragment (#), a user name or spaces")
+	}
+	// url.Parse accepts any digits as a port; a browser cannot open a link
+	// outside 1-65535 (Copilot review 5407929995).
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return errors.New(key + " has a port outside 1-65535")
+		}
 	}
 	return nil
 }

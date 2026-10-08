@@ -31,8 +31,8 @@ func TestTopContributorsRouteRegistered(t *testing.T) {
 func TestTopContributorsAuthzBeforeCache(t *testing.T) {
 	for _, reg := range repoGETRegistrations(t) {
 		if reg.handler == "handleTopContributors" {
-			if !reg.cached || reg.policy != "pageEnriched" {
-				t.Errorf("contributors/top must be served through s.cachedRepoGET(pageEnriched, …), got cached=%t policy=%q", reg.cached, reg.policy)
+			if !reg.cached || reg.policy != "pageEnrichedKept" {
+				t.Errorf("contributors/top must be served through s.cachedRepoGET(pageEnrichedKept, …), got cached=%t policy=%q", reg.cached, reg.policy)
 			}
 			return
 		}

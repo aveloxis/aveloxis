@@ -877,7 +877,7 @@ func TestVacuumGateWaitsForALineServeWrites(t *testing.T) {
 func TestEveryLadderStartsServeOnce(t *testing.T) {
 	// The ladders built by the positional recipe (0.29.73 on) carry the
 	// start step; older ladders predate it and have none.
-	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true}
+	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true}
 	for version, steps := range deployChecklists {
 		n := 0
 		for _, s := range steps {
@@ -894,5 +894,33 @@ func TestEveryLadderStartsServeOnce(t *testing.T) {
 	}
 	if !recipe[db.ToolVersion] {
 		t.Errorf("the current ladder %s must be in the recipe list above", db.ToolVersion)
+	}
+}
+
+// A backgrounded psql must never prompt (final whole-PR review D3): a
+// password prompt from a background job stops it (SIGTTIN), so the step
+// reads as started while nothing runs and its log stays empty. -w makes a
+// missing password an immediate error in the log; the step must say where
+// the password comes from.
+func TestBackgroundedPsqlNeverPrompts(t *testing.T) {
+	seen := 0
+	for v := range deployChecklists {
+		steps, _ := deployChecklistFor(v)
+		for _, s := range steps {
+			cmd := strings.TrimSpace(s.cmd)
+			if !strings.Contains(cmd, "psql") || !strings.HasSuffix(cmd, "&") {
+				continue
+			}
+			seen++
+			if !strings.Contains(cmd, "psql -w ") {
+				t.Errorf("%s: a backgrounded psql must run with -w: %q", v, cmd)
+			}
+			if !strings.Contains(s.desc, "~/.pgpass") || !strings.Contains(s.desc, "PGPASSWORD") {
+				t.Errorf("%s: the backgrounded psql step must say the password comes from ~/.pgpass or PGPASSWORD", v)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no backgrounded psql step found; the scan is not seeing the ladders")
 	}
 }

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.77 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.78 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e2e80243"></script>
+      <script src="../_static/documentation_options.js?v=0af2a181"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -680,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -2773,7 +2774,7 @@ same-box and same-LAN traffic is never limited.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">response_cache_mb</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p><strong>Advanced, off by default.</strong> Memory for the API’s per-repository response cache, in megabytes, on top of the process’s baseline; set it to turn the cache on (see “Response caching” below). <code class="docutils literal notranslate"><span class="pre">0</span></code> keeps no response bodies in memory. Negative values, and values above the maximum, are refused at load.</p></td>
+<td><p><strong>Advanced, off by default.</strong> Memory for the API’s per-repository response cache, in megabytes, on top of the process’s baseline; set it to turn the cache on (see “Response caching” below). <code class="docutils literal notranslate"><span class="pre">0</span></code> keeps no response bodies in memory except the weekly time series and top contributors, which are kept for up to 1,000 answers as before 0.29.73. Negative values, and values above the maximum, are refused at load.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">front_end_secret</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
@@ -2851,7 +2852,7 @@ repository’s answers after its collection ends, every
 <code class="docutils literal notranslate"><span class="pre">cache_rewarm_seconds</span></code>. The start-up line <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">repository</span> <span class="pre">page</span> <span class="pre">cache</span></code>
 shows the values in effect. Cached GETs carry an <code class="docutils literal notranslate"><span class="pre">ETag</span></code> and answer
 <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> with 304 whether or not the cache is on; the cache only
-decides whether a body is kept. Size it from the largest repositories you
+decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed. Size it from the largest repositories you
 want held (a 56,000-file scancode listing is about 7 MB of JSON, a
 600-finding vulnerability list about 1 MB, a typical page about 100 KB);
 the Aveloxis project’s own site uses 2048. Past the budget the oldest

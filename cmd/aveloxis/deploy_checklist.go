@@ -498,7 +498,7 @@ var deployChecklists = map[string][]deployStep{
 	// change.
 	// v0.29.74 (2026-10-07): exists so that every cached repository answer
 	// is recomputed. The answers' validators — the ETag, the API's memory,
-	// nginx's disk cache and every browser's — carry the binary's version,
+	// any HTTP cache in front of the API and every browser's — carry the binary's version,
 	// and 0.29.73's late fixes (the daily commit table's readers, the
 	// plausible-date bounds) changed answers without changing it: after the
 	// restart kate kept serving NVIDIA/nova's 2080 series as a 304. No
@@ -516,6 +516,11 @@ var deployChecklists = map[string][]deployStep{
 	// covering indexes on issues/pull_requests and an insert-driven
 	// autovacuum factor on the five big tables. Schema change (two
 	// CONCURRENTLY builds), plus a one-time VACUUM step.
+	// v0.29.78 (2026-10-08): the final whole-PR review of PR #226 — with
+	// api.response_cache_mb unset the API again keeps /timeseries and
+	// /contributors/top answers (main's bound); docs and ladder text. No
+	// schema change: a fleet on 0.29.77 needs only the stamp.
+	"0.29.78": v02978DeployChecklist,
 	"0.29.77": v02977DeployChecklist,
 	"0.29.76": v02976DeployChecklist,
 	"0.29.75": v02975DeployChecklist,
@@ -530,6 +535,20 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02978DeployChecklist is 0.29.77's ladder (a fleet that skipped 0.29.77
+// still needs its index builds and VACUUM) with a note on the start step.
+var v02978DeployChecklist = func() []deployStep {
+	prev := v02977DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.78: with api.response_cache_mb unset (the default) the API again keeps the weekly time series and top contributors in memory, up to 1,000 answers as before 0.29.73; every other answer stays uncached until the setting is turned on. The start-up line 'API repository page cache' now also reports kept_without_budget (1000 at max_bytes=0, 0 with a budget); max_bytes=0 no longer means nothing is kept. No schema change: a fleet already running 0.29.77 needs only the stop, the migrate (a version stamp) and this start — not the VACUUM again. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02977DeployChecklist is 0.29.76's ladder with a migrate that builds two
 // covering indexes and sets the autovacuum factor, a one-time VACUUM of the
@@ -561,7 +580,7 @@ var v02977DeployChecklist = func() []deployStep {
 	// last; find it by its cmd (TestEveryLadderStartsServeOnce), never by
 	// position.
 	out = append(out, deployStep{`tail -n +$((${AVX_LOG_LINES:?} + 1)) ~/.aveloxis/aveloxis.log | grep 'scheduler started'`, "must print a line — searched only among the lines written since this start (the count from the step before start; an earlier start's line would otherwise pass). serve logs it once its startup migrate (the fast path here: step 2 stamped the version, so a stamp probe and no DDL, seconds) is done and the ready signal is sent; `start all` waits only 30 s for that signal (then prints 'still starting after 30s'): repeat this step until it prints. It is an INFO line: with log_level warn or error in aveloxis.json it never appears — set info for the deploy, or confirm serve is up on the monitor at :5555 instead. Only then start the VACUUM below — a migrate that runs DDL (aveloxis migrate, or a serve start whose stamp is behind the binary) queues behind a VACUUM at the base DDL for its whole duration"})
-	out = append(out, deployStep{`nohup psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.messages' -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.pull_request_reviews' -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.pull_requests' -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.issues' > ~/.aveloxis/vacuum-0.29.77.log 2>&1 &`, "catches the visibility map up ONCE on the four tables the top-contributors forge arms read (kate: messages 48% of pages all-visible, issues 50%, pull requests 66%, reviews 81% — an index-only scan fetched nearly every row from the heap); the new autovacuum factor keeps it current afterwards. The commits table is left to autovacuum (89% current; the page reads the daily table instead). The connection values are aveloxis.json's database block (a bare psql reaches libpq's defaults); run it once per database the deployment serves (on kate: aveloxis and aveloxis_large). Online — no lock that blocks reads or writes — but it holds SHARE UPDATE EXCLUSIVE on each table in turn, and a migrate that runs DDL (aveloxis migrate; a serve start whose stamp is behind the binary) waits behind it at the base DDL: that is why this step comes AFTER step 2 stamped the version and after serve is up, and why a restart during it on a stamped fleet fast-paths past the DDL (a full migrate would wait; the blocker watch names this psql session — let it finish rather than terminating it). Its duration scales with the table sizes and is not measured; the log shows each table as it finishes"})
+	out = append(out, deployStep{`nohup psql -w -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.messages' -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.pull_request_reviews' -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.pull_requests' -c 'VACUUM (ANALYZE, VERBOSE) aveloxis_data.issues' > ~/.aveloxis/vacuum-0.29.77.log 2>&1 &`, "catches the visibility map up ONCE on the four tables the top-contributors forge arms read (kate: messages 48% of pages all-visible, issues 50%, pull requests 66%, reviews 81% — an index-only scan fetched nearly every row from the heap); the new autovacuum factor keeps it current afterwards. The commits table is left to autovacuum (89% current; the page reads the daily table instead). The connection values are aveloxis.json's database block (a bare psql reaches libpq's defaults); run it once per database the deployment serves (on kate: aveloxis and aveloxis_large). Online — no lock that blocks reads or writes — but it holds SHARE UPDATE EXCLUSIVE on each table in turn, and a migrate that runs DDL (aveloxis migrate; a serve start whose stamp is behind the binary) waits behind it at the base DDL: that is why this step comes AFTER step 2 stamped the version and after serve is up, and why a restart during it on a stamped fleet fast-paths past the DDL (a full migrate would wait; the blocker watch names this psql session — let it finish rather than terminating it). Its duration scales with the table sizes and is not measured; the log shows each table as it finishes. psql runs with -w (never prompt): a password prompt would stop a background job and leave the log empty, so the password must come from ~/.pgpass or PGPASSWORD; without either the log shows the authentication error at once — check it a few seconds after starting"})
 	return out
 }()
 
@@ -572,7 +591,7 @@ var v02976DeployChecklist = func() []deployStep {
 	out := []deployStep{prev[0],
 		{"aveloxis migrate --skip-views", "no schema change in 0.29.76; otherwise as 0.29.75 — " + prev[1].desc}}
 	out = append(out, prev[2:len(prev)-1]...)
-	out = append(out, deployStep{"aveloxis start all", "0.29.76: the repository page's /stats (its last-activity bound, which the front end's windows and the warm run's URLs depend on) reads the first and last plausible day of the complete daily picture when the stored bound is not yet filled or is bogus (the kernel forks' 2085-dated commit; an epoch first commit — the next walk repairs the stored value) — before this the nine largest repositories answered 503 at nginx's 120 s on the one live commits scan left on the page. Otherwise as 0.29.75 — " + prev[len(prev)-1].desc})
+	out = append(out, deployStep{"aveloxis start all", "0.29.76: the repository page's /stats (its last-activity bound, which the front end's default windows depend on) reads the first and last plausible day of the complete daily picture when the stored bound is not yet filled or is bogus (the kernel forks' 2085-dated commit; an epoch first commit — the next walk repairs the stored value) — before this the nine largest repositories answered 503 at nginx's 120 s on the one live commits scan left on the page. Otherwise as 0.29.75 — " + prev[len(prev)-1].desc})
 	return out
 }()
 
@@ -597,14 +616,14 @@ func v02974Checklist() []deployStep {
 	out := []deployStep{prev[0],
 		{"aveloxis migrate --skip-views", "no schema change in 0.29.74; otherwise as 0.29.73 — " + prev[1].desc}}
 	out = append(out, prev[2:len(prev)-1]...)
-	out = append(out, deployStep{"aveloxis start all", "0.29.74 exists so that every cached repository answer is recomputed: the answers' validators (the ETag, the API's memory, nginx's disk cache, every browser's) carry the binary's version, and 0.29.73's late fixes — the daily commit table's readers and the plausible-date bounds — changed answers without changing it, so a restart on 0.29.73 kept serving an old time series as a 304; after this start each repository's first visit (or the warm run) computes the new answers. Otherwise as 0.29.73 — " + prev[len(prev)-1].desc})
+	out = append(out, deployStep{"aveloxis start all", "0.29.74 exists so that every cached repository answer is recomputed: the answers' validators (the ETag, the API's memory, any HTTP cache in front of the API, every browser's) carry the binary's version, and 0.29.73's late fixes — the daily commit table's readers and the plausible-date bounds — changed answers without changing it, so a restart on 0.29.73 kept serving an old time series as a 304; after this start each repository's first visit computes the new answers. Otherwise as 0.29.73 — " + prev[len(prev)-1].desc})
 	return out
 }
 
 var v02973DeployChecklist = []deployStep{
 	v02972DeployChecklist[0],
 	{"aveloxis migrate --skip-views", "adds aveloxis_data.repo_commit_daily (the facade's daily commit counts; born empty, filled by the step below and by every later walk) and builds idx_contributors_gh_user_id CONCURRENTLY (partial, gh_user_id <> 0; minutes on a fleet-sized contributors table — reads and writes continue), the index the daily commits arm attributes noreply authors through; adds repos.data_changed_at (nullable, no default: an instant ALTER), which every scorecard write, scancode snapshot and vulnerability insert or resolution, heal-vulnerabilities --rescore-only and heal-libyear --apply (on the repositories whose rows they change) stamp in the same transaction as their data, and aveloxis collect stamps at the end of each repository's run, so the API replaces its cached answers for that repository; aveloxis api refuses to start until this migrate has run; otherwise as 0.29.72 — " + v02972DeployChecklist[1].desc},
-	{"nohup aveloxis heal-commit-daily --apply > ~/.aveloxis/heal-commit-daily.log 2>&1 &", "fills the new aveloxis_data.repo_commit_daily (distinct commits per repository, UTC day and author email, which the facade now writes after every completed walk) for repositories collected before this release, largest first — one scan of each repository's commit rows, minutes for a kernel fork, seconds for most; it can run while serve runs (a repository's own next collection fills it anyway, so this only brings the largest forward; one whose collection finishes first is skipped, that fold being the authoritative one), and an interrupt loses at most the repository in flight: rerun to finish. The repository page's weekly commit series and top-contributors commits read this table when it is filled and the commits table otherwise, so the warm run's 120 s timeouts on kernel forks (summary/49) end as each is filled. Without --apply the command only counts"},
+	{"nohup aveloxis heal-commit-daily --apply > ~/.aveloxis/heal-commit-daily.log 2>&1 &", "fills the new aveloxis_data.repo_commit_daily (distinct commits per repository, UTC day and author email, which the facade now writes after every completed walk) for repositories collected before this release, largest first — one scan of each repository's commit rows, minutes for a kernel fork, seconds for most; it can run while serve runs (a repository's own next collection fills it anyway, so this only brings the largest forward; one whose collection finishes first is skipped, that fold being the authoritative one), and an interrupt loses at most the repository in flight: rerun to finish. The repository page's weekly commit series and top-contributors commits read this table when it is filled and the commits table otherwise, so the requests that ran past the proxy's 120 s on kernel forks end as each is filled. Without --apply the command only counts"},
 	v02972DeployChecklist[2],
 	v02972DeployChecklist[3],
 	v02972DeployChecklist[4],

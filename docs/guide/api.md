@@ -362,11 +362,12 @@ contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: trailing 2 years; `until` is
 inclusive); `limit` defaults to 20 and is capped at 100.
 
-**Caching (since 0.29.71; 0.29.73).** A repository's own GET answers
-(this endpoint, `/timeseries`, `/licenses`, `/deps`, `/libyear`,
-`/scancode-*`, `/vulnerabilities`, `/scorecard`, `/sbom` and
-`/contributions/*`) are reused until the repository is collected again or
-scanned. Answers that name contributors are also recomputed after
+**Caching (since 0.29.71; 0.29.73).** With `api.response_cache_mb` set, a
+repository's own GET answers (this endpoint, `/timeseries`, `/licenses`,
+`/deps`, `/libyear`, `/scancode-*`, `/vulnerabilities`, `/scorecard`,
+`/sbom` and `/contributions/*`) are reused until the repository is collected
+again or scanned; with it unset (the default) only this endpoint and
+`/timeseries` are, up to 1,000 answers. Answers that name contributors are also recomputed after
 `collection.enrich_interval_minutes` (default 30). These answers carry an
 `ETag` (weak for answers that depend only on the repository's state); a
 request whose `If-None-Match` names the current one gets
@@ -714,7 +715,7 @@ OAuth, the first admin, upgrades — is
 [Production Deployment](../getting-started/deployment.md).
 
 Each `api` process keeps its own state: the per-repository response cache
-(up to `api.response_cache_mb`), its rate-limit buckets and a short
+(up to `api.response_cache_mb`, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
 authorization cache. Several instances behind a load balancer each compute
 and hold their own answers, and the per-IP limits are per instance; run one
 per host unless that is what you want.

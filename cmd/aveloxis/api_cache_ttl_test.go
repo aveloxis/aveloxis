@@ -39,10 +39,10 @@ func TestAPICacheMaxAgeFollowsTheEnrichmentInterval(t *testing.T) {
 // default layer in the config accessors), including the explicit zeros.
 func TestAPIRepositoryPageCacheFollowsTheConfig(t *testing.T) {
 	for json, want := range map[string][]string{
-		`{}`:                                   {"max_bytes=0", "rewarm_interval=0s", "enriched_ttl=30m0s"},
-		`{"api": {"response_cache_mb": 2048}}`: {"max_bytes=2147483648", "rewarm_interval=1m0s"},
+		`{}`:                                   {"max_bytes=0", "kept_without_budget=1000", "rewarm_interval=0s", "enriched_ttl=30m0s"},
+		`{"api": {"response_cache_mb": 2048}}`: {"max_bytes=2147483648", "kept_without_budget=0", "rewarm_interval=1m0s"},
 		`{"api": {"response_cache_mb": 64, "cache_rewarm_seconds": 15}}`:                                  {"max_bytes=67108864", "rewarm_interval=15s"},
-		`{"api": {"response_cache_mb": 0, "cache_rewarm_seconds": 0}}`:                                    {"max_bytes=0", "rewarm_interval=0s", "front_end_secret_set=false"},
+		`{"api": {"response_cache_mb": 0, "cache_rewarm_seconds": 0}}`:                                    {"max_bytes=0", "kept_without_budget=1000", "rewarm_interval=0s", "front_end_secret_set=false"},
 		`{"api": {"trusted_proxy": "127.0.0.1", "front_end_secret": "0123456789abcdef0123456789abcdef"}}`: {"front_end_secret_set=true"},
 	} {
 		cfg := loadConfigJSON(t, json)

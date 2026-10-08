@@ -18,7 +18,7 @@ import (
 //
 // Computed from the base tables (repo_id-leading index slices) — the
 // heaviest API shape on kate (13 s mean, 589 s max) — and cached by the
-// route's cachedRepoGET (pageEnriched; v0.29.73, replacing the v0.29.71
+// route's cachedRepoGET (pageEnrichedKept; v0.29.73, replacing the v0.29.71
 // collection-generation cache here): one query per collection or per
 // enrichment interval. The wrapper runs authorizeRepo BEFORE any cache
 // lookup — a cached body must never leak past repo scope (pinned by test).

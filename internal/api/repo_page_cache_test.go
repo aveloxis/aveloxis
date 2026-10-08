@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -477,7 +479,7 @@ func TestRepoPageCacheIsBoundedByBytes(t *testing.T) {
 	zero := newRepoPageCache(0, time.Minute)
 	zero.put(entry("a", 1, 1))
 	if _, ok := zero.get("a"); ok || zero.bytes != 0 {
-		t.Error("a zero budget stores nothing")
+		t.Error("a zero budget stores nothing for a route not kept without a budget")
 	}
 }
 
@@ -761,6 +763,9 @@ func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
 		{ts, "", "since="},
 		{sbom, "", "vulns=true"},
 		{sbom, "", "vulns=0"},
+		// The handler reads no format as CycloneDX (final whole-PR review A2).
+		{sbom, "", "format=cyclonedx"},
+		{sbom, "vulns=1", "format=cyclonedx&vulns=1"},
 		{deps, "", "license="},
 	}
 	for _, c := range same {
@@ -962,5 +967,135 @@ func TestPageCacheAutoAddOnAColdKeyIsNeverShared(t *testing.T) {
 	w := hn2.get("/api/v1/repos/7/thing", scoped, func(r *http.Request) { r.Header.Set("If-None-Match", etag) })
 	if w.Code == http.StatusNotModified || w.Result().Header.Get(sharedWithMeHeader) == "" {
 		t.Errorf("a cold 304 would drop the one-time notice: %d %v", w.Code, w.Result().Header)
+	}
+}
+
+// Final whole-PR review, finding A1: main cached /timeseries and
+// /contributors/top in the collection-generation cache unconditionally
+// (bounded at collectionCacheMaxEntries). With api.response_cache_mb unset
+// (the default, 0) the page cache must still keep those two routes'
+// answers, by count, and nothing else — the operator's default-off
+// decision covers the byte-budgeted cache of every other route.
+func TestZeroBudgetKeepsTheRoutesMainAlwaysCached(t *testing.T) {
+	entry := func(key string, repo int64, n int) *pageEntry {
+		return &pageEntry{key: key, repoID: repo, uri: "/u/" + key, body: []byte(strings.Repeat("x", n))}
+	}
+	c := newRepoPageCache(0, time.Minute)
+	kept := entry("kept", 1, 1)
+	kept.keptWhenOff = true
+	c.put(kept)
+	if _, ok := c.get("kept"); !ok {
+		t.Fatal("a zero budget must keep an answer of a route main always cached")
+	}
+	c.put(entry("other", 1, 1))
+	if _, ok := c.get("other"); ok {
+		t.Error("a zero budget must keep nothing for any other route")
+	}
+	for i := 0; i <= collectionCacheMaxEntries; i++ {
+		e := entry(fmt.Sprintf("k%d", i), int64(i), 1)
+		e.keptWhenOff = true
+		c.put(e)
+	}
+	if n := c.ll.Len(); n != collectionCacheMaxEntries {
+		t.Errorf("a zero budget keeps %d answers, want main's bound %d", n, collectionCacheMaxEntries)
+	}
+	if _, ok := c.get("k0"); ok {
+		t.Error("the least recently used answer must be evicted past the bound")
+	}
+	if _, ok := c.get(fmt.Sprintf("k%d", collectionCacheMaxEntries)); !ok {
+		t.Error("the newest answer must be kept")
+	}
+	var want int64
+	for el := c.ll.Front(); el != nil; el = el.Next() {
+		want += el.Value.(*pageEntry).size()
+	}
+	if c.bytes != want {
+		t.Errorf("bytes = %d, want the sum of the kept entries %d", c.bytes, want)
+	}
+}
+
+// The same through the handler path: with the default budget a second
+// visit to a kept route runs no handler.
+func TestZeroBudgetServesAKeptRouteFromMemory(t *testing.T) {
+	for _, pol := range []pagePolicy{pageDatedKept, pageEnrichedKept} {
+		hn := newPageCacheHarness(t, pol, 0, okBody)
+		hn.get("/api/v1/repos/7/thing")
+		if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("X-Cache") != "hit" || hn.runs.Load() != 1 {
+			t.Errorf("%+v: the second visit ran the handler %d times (X-Cache %q), want a hit", pol, hn.runs.Load(), w.Header().Get("X-Cache"))
+		}
+	}
+}
+
+// Wiring: exactly the two routes main cached unconditionally use a kept
+// policy, and no other route does.
+func TestKeptPoliciesAreTheRoutesMainAlwaysCached(t *testing.T) {
+	src := srctest.StripGoComments(srctest.Read(t, "internal/api/server.go")) + srctest.StripGoComments(srctest.Read(t, "internal/api/metrics.go"))
+	want := map[string]string{
+		"/api/v1/repos/{repoID}/timeseries":       "pageDatedKept",
+		"/api/v1/repos/{repoID}/contributors/top": "pageEnrichedKept",
+	}
+	re := regexp.MustCompile(`"GET (/api/v1/[^"]+)", s\.cachedRepoGET\((\w+),`)
+	seen := 0
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		seen++
+		pol, kept := want[m[1]]
+		isKept := strings.HasSuffix(m[2], "Kept")
+		if kept && m[2] != pol {
+			t.Errorf("%s must use %s (main always cached it), uses %s", m[1], pol, m[2])
+		}
+		if !kept && isKept {
+			t.Errorf("%s uses %s; only the routes main always cached may", m[1], m[2])
+		}
+	}
+	if seen < 10 {
+		t.Fatalf("matched %d cachedRepoGET routes; the scan is not seeing the registrations", seen)
+	}
+}
+
+// The configuration page states the zero-budget bound; it must be the
+// constant's value.
+func TestConfigurationDocStatesTheZeroBudgetBound(t *testing.T) {
+	doc := srctest.Read(t, "docs/getting-started/configuration.md")
+	n := strconv.Itoa(collectionCacheMaxEntries)
+	if len(n) > 3 {
+		n = n[:len(n)-3] + "," + n[len(n)-3:]
+	}
+	if c := strings.Count(doc, "at most "+n+" answers") + strings.Count(doc, "up to "+n+" answers"); c != 2 {
+		t.Errorf("configuration.md must state the zero-budget bound (%s answers) in both places, found %d", n, c)
+	}
+	// The 0.29.78 upgrade note and ladder state it too.
+	// Every statement of the bound is required on its own (round 3: an OR
+	// of two spellings let api.md pass on one of its two statements).
+	for f, needles := range map[string][]string{
+		"docs/getting-started/upgrading.md": {"up to " + n + " answers"},
+		"cmd/aveloxis/deploy_checklist.go":  {"up to " + n + " answers"},
+		"docs/guide/scaling.md":             {"keeps only up to " + n + " weekly-series"},
+		"docs/guide/api.md":                 {"are, up to " + n + " answers", "or " + n + " weekly-series"},
+	} {
+		doc := srctest.Read(t, f)
+		for _, needle := range needles {
+			if !strings.Contains(doc, needle) {
+				t.Errorf("%s must state the zero-budget bound: %q is missing", f, needle)
+			}
+		}
+	}
+}
+
+// A negative budget through the exported Options is the zero budget (L10
+// round 2 on 0.29.78): before the clamp, put evicted the new entry and then
+// dereferenced an empty list.
+func TestNegativeBudgetIsTheZeroBudget(t *testing.T) {
+	c := newRepoPageCache(-1, time.Minute)
+	kept := &pageEntry{key: "kept", repoID: 1, uri: "/u/kept", body: []byte("x"), keptWhenOff: true}
+	c.put(kept)
+	c.put(&pageEntry{key: "other", repoID: 1, uri: "/u/other", body: []byte("x")})
+	if _, ok := c.get("kept"); !ok {
+		t.Error("a negative budget must keep what a zero budget keeps")
+	}
+	if _, ok := c.get("other"); ok {
+		t.Error("a negative budget must refuse what a zero budget refuses")
+	}
+	if c.keptWithoutBudget() != collectionCacheMaxEntries {
+		t.Errorf("keptWithoutBudget = %d at a negative budget, want %d", c.keptWithoutBudget(), collectionCacheMaxEntries)
 	}
 }

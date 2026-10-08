@@ -127,6 +127,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		logger.Info("API collection cache", "ttl", s.seriesCache.ttl, "configured", opts.ResponseCacheMaxAge,
 			"source", "collection.enrich_interval_minutes")
 		logger.Info("API repository page cache", "max_bytes", s.pageCache.maxBytes,
+			"kept_without_budget", s.pageCache.keptWithoutBudget(), // /timeseries and /contributors/top answers held at max_bytes=0
 			"enriched_ttl", s.pageCache.ttl, "rewarm_interval", s.rewarmInterval,
 			"front_end_secret_set", s.frontEndSecret != "", // never the value
 			"source", "api.response_cache_mb, api.cache_rewarm_seconds")
@@ -142,7 +143,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/stats", s.handleRepoStats)
 	s.mux.HandleFunc("GET /api/v1/repos/stats", s.handleRepoStatsBatch)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/sbom", s.cachedRepoGET(pageExact, s.handleSBOMDownload))
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.cachedRepoGET(pageDated, s.handleTimeSeries))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.cachedRepoGET(pageDatedKept, s.handleTimeSeries))
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.cachedRepoGET(pageExact, s.handleLicenses))
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.cachedRepoGET(pageExact, s.handleScancodeLicenses))
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.cachedRepoGET(pageExact, s.handleScancodeFiles))
@@ -224,7 +225,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scorecard", s.cachedRepoGET(pageExact, s.handleRepoScorecard))
 	// v0.27.61 — ranked per-contributor activity for the repo page's
 	// "Top contributors" card.
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/top", s.cachedRepoGET(pageEnriched, s.handleTopContributors))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/top", s.cachedRepoGET(pageEnrichedKept, s.handleTopContributors))
 	// v0.27.64 — cross-repo contributor history (the v0.27.58 daily
 	// tables): where-else matrix + person-level monthly view.
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/elsewhere", s.handleContributorsElsewhere)
@@ -350,7 +351,7 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 	var sbomFormat collector.SBOMFormat
 	var filename string
 	switch args.format {
-	case "cyclonedx":
+	case sbomDefaultFormat:
 		sbomFormat = collector.FormatCycloneDX
 		// *.cdx.json is CycloneDX's recognized filename convention.
 		filename = fmt.Sprintf("sbom-repo-%d.cdx.json", repoID)
@@ -441,7 +442,7 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "since must be before until", http.StatusBadRequest)
 		return
 	}
-	// Cached by the route's cachedRepoGET (pageDated; v0.29.73), which
+	// Cached by the route's cachedRepoGET (pageDatedKept; v0.29.73), which
 	// replaced the v0.29.71 collection-generation cache here.
 	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {

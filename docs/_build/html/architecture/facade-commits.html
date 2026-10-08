@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.77 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.78 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e2e80243"></script>
+      <script src="../_static/documentation_options.js?v=0af2a181"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -680,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -2025,7 +2026,7 @@ parseable author timestamp buckets nowhere, as the readers’
 rows are scattered about one per page across it (forty workers insert
 interleaved), so the repository page’s weekly commit series and the commits
 arm of its top contributors read millions of pages for a kernel fork
-(summary/49: NVIDIA/nova, 118 s). The daily table is a few thousand rows
+(NVIDIA/nova: 118 s). The daily table is a few thousand rows
 for the same window. The two readers use it when the repository’s picture
 is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
 is a UTC midnight — and the commits table otherwise. The activity bounds (<code class="docutils literal notranslate"><span class="pre">/stats</span></code>’ last

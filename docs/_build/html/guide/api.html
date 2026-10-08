@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.77 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.78 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e2e80243"></script>
+      <script src="../_static/documentation_options.js?v=0af2a181"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -680,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -2125,11 +2126,12 @@ GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&amp;until=2024-12-3
 contributors card. Same <code class="docutils literal notranslate"><span class="pre">since</span></code>/<code class="docutils literal notranslate"><span class="pre">until</span></code> window semantics as the
 <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code> endpoints (default: trailing 2 years; <code class="docutils literal notranslate"><span class="pre">until</span></code> is
 inclusive); <code class="docutils literal notranslate"><span class="pre">limit</span></code> defaults to 20 and is capped at 100.</p>
-<p><strong>Caching (since 0.29.71; 0.29.73).</strong> A repository’s own GET answers
-(this endpoint, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/licenses</span></code>, <code class="docutils literal notranslate"><span class="pre">/deps</span></code>, <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>,
-<code class="docutils literal notranslate"><span class="pre">/scancode-*</span></code>, <code class="docutils literal notranslate"><span class="pre">/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">/scorecard</span></code>, <code class="docutils literal notranslate"><span class="pre">/sbom</span></code> and
-<code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected again or
-scanned. Answers that name contributors are also recomputed after
+<p><strong>Caching (since 0.29.71; 0.29.73).</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, a
+repository’s own GET answers (this endpoint, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/licenses</span></code>,
+<code class="docutils literal notranslate"><span class="pre">/deps</span></code>, <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">/scancode-*</span></code>, <code class="docutils literal notranslate"><span class="pre">/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">/scorecard</span></code>,
+<code class="docutils literal notranslate"><span class="pre">/sbom</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected
+again or scanned; with it unset (the default) only this endpoint and
+<code class="docutils literal notranslate"><span class="pre">/timeseries</span></code> are, up to 1,000 answers. Answers that name contributors are also recomputed after
 <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> (default 30). These answers carry an
 <code class="docutils literal notranslate"><span class="pre">ETag</span></code> (weak for answers that depend only on the repository’s state); a
 request whose <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> names the current one gets
@@ -2545,7 +2547,7 @@ and logs under <code class="docutils literal notranslate"><span class="pre">~/.a
 OAuth, the first admin, upgrades — is
 <a class="reference internal" href="../getting-started/deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
 <p>Each <code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps its own state: the per-repository response cache
-(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>), its rate-limit buckets and a short
+(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
 authorization cache. Several instances behind a load balancer each compute
 and hold their own answers, and the per-IP limits are per instance; run one
 per host unless that is what you want.</p>

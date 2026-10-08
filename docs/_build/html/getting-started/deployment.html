@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Production Deployment &mdash; Aveloxis 0.29.77 documentation</title>
+  <title>Production Deployment &mdash; Aveloxis 0.29.78 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e2e80243"></script>
+      <script src="../_static/documentation_options.js?v=0af2a181"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -680,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -1982,9 +1983,11 @@ the stop and start are <code class="docutils literal notranslate"><span class="p
 <p class="admonition-title">Warning</p>
 <p>The acknowledgement gate lives in <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code>. A systemd unit runs
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> directly, which migrates at its own start with no gate
-and with the materialized views included (the slow form). Run the ladder
-by hand — stop the target, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> or the form
-the checklist names, the heals, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code> — and only then
+and never applies a release’s changed view definition (it builds the
+materialized views only when none exist). Run the ladder by hand, each
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> command with <code class="docutils literal notranslate"><span class="pre">-c</span></code> naming the units’ config — stop the target,
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> or the form the checklist names, the
+heals, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code> — and only then
 <code class="docutils literal notranslate"><span class="pre">systemctl</span> <span class="pre">start</span> <span class="pre">aveloxis.target</span></code>. Starting the target first makes
 <code class="docutils literal notranslate"><span class="pre">serve</span></code> migrate unsupervised while <code class="docutils literal notranslate"><span class="pre">web</span></code> and <code class="docutils literal notranslate"><span class="pre">api</span></code> restart every 30 s
 until it finishes.</p>

@@ -502,7 +502,7 @@ same-box and same-LAN traffic is never limited.
 | `cors_origins` | `[]` | Browser origins allowed to call the API. Empty sends `Access-Control-Allow-Origin: *` (any origin); a list makes it a strict allowlist — set it on a public host, naming the origins whose pages fetch the API. |
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set it to the address the API sees the proxy connect from (`127.0.0.1` for nginx on the same host) — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health` and `/public/stats`) behind the Bearer session tokens the web process mints at `/auth/token`. Keep it `false` with the built-in web GUI, whose pages call the API from the browser without a token; turn it on only for a front end that holds the token. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
-| `response_cache_mb` | `0` | **Advanced, off by default.** Memory for the API's per-repository response cache, in megabytes, on top of the process's baseline; set it to turn the cache on (see "Response caching" below). `0` keeps no response bodies in memory. Negative values, and values above the maximum, are refused at load. |
+| `response_cache_mb` | `0` | **Advanced, off by default.** Memory for the API's per-repository response cache, in megabytes, on top of the process's baseline; set it to turn the cache on (see "Response caching" below). `0` keeps no response bodies in memory except the weekly time series and top contributors, which are kept for up to 1,000 answers as before 0.29.73. Negative values, and values above the maximum, are refused at load. |
 | `front_end_secret` | `""` | A shared secret for a separate front end that documents it; leave it empty otherwise (every request is then counted against its visitor). At least 32 characters, and `trusted_proxy` must be set with it; shorter, or without `trusted_proxy`, is refused at load. The start-up line reports `front_end_secret_set`, never the value. |
 | `cache_rewarm_seconds` | `60` | With the cache on: how often the API recomputes cached repository answers after their repository is collected again. `0` turns the re-warm off; it is off whenever `response_cache_mb` is `0`. Negative values, and values above the maximum, are refused at load. |
 
@@ -578,7 +578,7 @@ repository's answers after its collection ends, every
 `cache_rewarm_seconds`. The start-up line `API repository page cache`
 shows the values in effect. Cached GETs carry an `ETag` and answer
 `If-None-Match` with 304 whether or not the cache is on; the cache only
-decides whether a body is kept. Size it from the largest repositories you
+decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed. Size it from the largest repositories you
 want held (a 56,000-file scancode listing is about 7 MB of JSON, a
 600-finding vulnerability list about 1 MB, a typical page about 100 KB);
 the Aveloxis project's own site uses 2048. Past the budget the oldest

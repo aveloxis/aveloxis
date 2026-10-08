@@ -89,13 +89,18 @@ type sbomArgs struct {
 	withVulns bool
 }
 
+// sbomDefaultFormat is what the SBOM download serves when no format is
+// asked for. The cache key folds the same default through it, so ?format=
+// absent and ?format=cyclonedx share one entry (final whole-PR review A2).
+const sbomDefaultFormat = "cyclonedx"
+
 // parseSBOMArgs reads the SBOM download's query. A format or scope it does
 // not serve is passed through: the handler's switches refuse it with 400.
 func parseSBOMArgs(r *http.Request) sbomArgs {
 	q := r.URL.Query()
 	a := sbomArgs{format: q.Get("format"), scope: q.Get("scope"), withVulns: vulnsRequested(q.Get("vulns"))}
 	if a.format == "" {
-		a.format = "cyclonedx"
+		a.format = sbomDefaultFormat
 	}
 	return a
 }
@@ -130,8 +135,14 @@ var pageParamValue = map[string]func(string) string{
 	// Each value is its own answer, or a 400 never stored. /deps and
 	// /libyear tell "" (the legacy full list) from "all" (the filtered
 	// list), so scope is not folded.
-	"scope":  identityParam,
-	"format": identityParam,
+	"scope": identityParam,
+	// Only /sbom reads format; its default spelled out is the default.
+	"format": func(v string) string {
+		if v == sbomDefaultFormat {
+			return ""
+		}
+		return v
+	},
 	// License names are data: each is its own filter.
 	"license": identityParam,
 }

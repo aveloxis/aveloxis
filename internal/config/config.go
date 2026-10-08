@@ -1524,7 +1524,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
 	if mb := c.API.ResponseCacheMB; mb != nil && (*mb < 0 || int64(*mb) > MaxResponseCacheMB) {
-		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep no bodies in memory", *mb, MaxResponseCacheMB)
+		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep only the weekly time series and top contributors, as before 0.29.73", *mb, MaxResponseCacheMB)
 	}
 	if spa := c.Web.SPAURL; spa != "" {
 		// With it set, spa_url starts the mailed page links (group, pending
@@ -2006,7 +2006,9 @@ type APIConfig struct {
 	// ResponseCacheMB bounds the API's repository-page response cache in
 	// megabytes (v0.29.73; off by default — an advanced option a deployment
 	// turns on by setting it). Absent → DefaultResponseCacheMB (0); an explicit 0
-	// keeps no bodies in memory (answers are still tagged and revalidated);
+	// keeps only the /timeseries and /contributors/top answers main always
+	// kept, bounded by count (0.29.78; every answer is still tagged and
+	// revalidated);
 	// negative or past MaxResponseCacheMB → refused at load.
 	ResponseCacheMB *int `json:"response_cache_mb,omitempty"`
 
@@ -2049,7 +2051,9 @@ const MaxResponseCacheMB int64 = math.MaxInt64 >> 20
 // cache is on: a visitor who arrives within a minute of a collection's end
 // may still pay for the recomputation; each pass costs one primary-key
 // read per cached repository. With the cache off (ResponseCacheBytes 0)
-// the effective cadence is 0: there is nothing to re-warm.
+// the effective cadence is 0: the two routes still kept then are not
+// re-warmed (main never re-warmed them; their key carries the repository's
+// state, so a collection makes a new answer, not a stale one).
 const DefaultCacheRewarmSeconds = 60
 
 // MaxCacheRewarmSeconds is the largest cadence a time.Duration can hold
@@ -2069,8 +2073,8 @@ func (a APIConfig) ResponseCacheBytes() int64 {
 }
 
 // CacheRewarmInterval is the effective re-warm cadence; zero means off —
-// and it is off whenever the cache keeps no bodies (one knob,
-// response_cache_mb, turns the feature on).
+// and it is off whenever response_cache_mb is 0 (one knob turns the
+// feature on).
 func (a APIConfig) CacheRewarmInterval() time.Duration {
 	if a.ResponseCacheBytes() == 0 {
 		return 0

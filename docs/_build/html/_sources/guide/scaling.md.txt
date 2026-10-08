@@ -485,7 +485,7 @@ curl -X POST http://localhost:5555/api/prioritize/42
 | Clone disk | 50 GB | 5 TB | 50+ TB |
 | DB connections | 20 | 20 | 60 (3 instances) |
 | PostgreSQL RAM | 2 GB | 8 GB | 32+ GB |
-| `api` process RAM | baseline + `api.response_cache_mb` (0 = off, the default; counts only if you turn the cache on) | same | same, per API instance |
+| `api` process RAM | baseline + `api.response_cache_mb` (0, the default, keeps only up to 1,000 weekly-series and top-contributor answers) | same | same, per API instance |
 
 ---
 

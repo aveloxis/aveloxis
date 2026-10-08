@@ -43,8 +43,10 @@ import (
 // step enforced by a test:
 //  1. Decide: does the answer depend only on the repository and the query
 //     (not on who asks)? Then register it through s.cachedRepoGET with its
-//     policy (pageExact, pageDated for a default window anchored at today,
-//     pageEnriched for contributor identities); otherwise add it to
+//     policy (pageExact; pageEnriched for contributor identities; a route
+//     whose default window is anchored at today needs a
+//     pagePolicy{nowRelative: true} of its own, since the Kept policies
+//     are only for the two routes main always cached); otherwise add it to
 //     uncachedRepoGETs with the reason (TestEveryRepoScopedGETIsCachedOrReviewed).
 //  2. List the query parameters its handler reads in pageParams
 //     (TestPageParamsMatchTheHandlers).
@@ -66,15 +68,26 @@ type pagePolicy struct {
 	// time, so the UTC day is part of the key (a quantized clock; an
 	// unquantized time.Now() in a key never hits).
 	nowRelative bool
+	// keptWhenOff: main kept this route's answers in the collection-
+	// generation cache unconditionally (v0.29.71). With api.response_cache_mb
+	// unset (0, the default) the page cache still keeps them, bounded by that
+	// cache's entry count (collectionCacheMaxEntries), so a deployment that
+	// never turned the response cache on loses nothing it had; every other
+	// route stays uncached until the operator sets a budget (final whole-PR
+	// review A1).
+	keptWhenOff bool
 }
 
 var (
 	// pageExact: valid until the repository's state changes.
 	pageExact = pagePolicy{}
-	// pageDated: the default window starts relative to today.
-	pageDated = pagePolicy{nowRelative: true}
 	// pageEnriched: contributor identities, over a default window ending now.
 	pageEnriched = pagePolicy{enriched: true, nowRelative: true}
+	// pageDatedKept: the default window starts relative to today; kept with
+	// a zero budget too (/timeseries). pageEnrichedKept: pageEnriched, kept
+	// with a zero budget too (/contributors/top).
+	pageDatedKept    = pagePolicy{nowRelative: true, keptWhenOff: true}
+	pageEnrichedKept = pagePolicy{enriched: true, nowRelative: true, keptWhenOff: true}
 )
 
 // pageParams lists, for each cached route, the query parameters its handler
@@ -154,6 +167,7 @@ type pageEntry struct {
 	computed    time.Time
 	cost        time.Duration // handler run time, orders the re-warm
 	enriched    bool
+	keptWhenOff bool   // stored under a zero budget too (pagePolicy.keptWhenOff)
 	hits        int    // served from the cache since computed; the re-warm replays only answers asked for again
 	triedFor    string // the state a failed re-warm of this answer was attempted for: retried only under a newer one
 }
@@ -180,8 +194,9 @@ type pageFlight struct {
 	entry *pageEntry // what the run stored (nil: nothing cacheable); followers share it, never store
 }
 
-// repoPageCache is the byte-bounded LRU. A zero maxBytes stores nothing
-// (ETags and 304s still work).
+// repoPageCache is the byte-bounded LRU. A zero maxBytes stores only the
+// keptWhenOff routes' answers, at most collectionCacheMaxEntries of them;
+// ETags and 304s work either way.
 type repoPageCache struct {
 	mu       sync.Mutex
 	maxBytes int64
@@ -197,6 +212,11 @@ type repoPageCache struct {
 func newRepoPageCache(maxBytes int64, ttl time.Duration) *repoPageCache {
 	if ttl <= 0 {
 		ttl = compareCacheTTL
+	}
+	if maxBytes < 0 {
+		// The exported api.Options can carry one; it means no budget, and
+		// put's branches assume maxBytes >= 0 (SR-18: the cache enforces it).
+		maxBytes = 0
 	}
 	return &repoPageCache{maxBytes: maxBytes, ll: list.New(), m: map[string]*list.Element{},
 		byRepo: map[int64]map[*list.Element]struct{}{}, inflight: map[string]*pageFlight{}, ttl: ttl, now: time.Now}
@@ -221,13 +241,27 @@ func (c *repoPageCache) get(key string) (*pageEntry, bool) {
 	return e, true
 }
 
+// keptWithoutBudget is how many keptWhenOff answers a zero budget holds
+// (main's collection-generation bound), and 0 when a budget is set (the
+// byte bound applies instead). put enforces it and the start-up line
+// reports it, so the logged value is the enforced one (SR-10).
+func (c *repoPageCache) keptWithoutBudget() int {
+	if c.maxBytes == 0 {
+		return collectionCacheMaxEntries
+	}
+	return 0
+}
+
 func (c *repoPageCache) put(e *pageEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if old, ok := c.m[e.key]; ok {
 		c.removeLocked(old)
 	}
-	if e.size() > c.maxBytes {
+	if c.maxBytes == 0 && !e.keptWhenOff {
+		return // the response cache is off for this route
+	}
+	if c.maxBytes > 0 && e.size() > c.maxBytes {
 		return // larger than the whole budget: never stored
 	}
 	el := c.ll.PushFront(e)
@@ -239,6 +273,14 @@ func (c *repoPageCache) put(e *pageEntry) {
 	}
 	set[el] = struct{}{}
 	c.bytes += e.size()
+	if c.maxBytes == 0 {
+		// Off: only keptWhenOff answers are here, bounded by count as main
+		// bounded them.
+		for c.ll.Len() > c.keptWithoutBudget() {
+			c.removeLocked(c.ll.Back())
+		}
+		return
+	}
 	for c.bytes > c.maxBytes {
 		c.removeLocked(c.ll.Back())
 	}
@@ -573,7 +615,7 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 	res, e := s.runOnce(c, key, r, h, func(res pageResult, cost time.Duration) *pageEntry {
 		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(),
 			body: res.body, contentType: res.contentType, disposition: res.disposition,
-			computed: c.now(), cost: cost, enriched: pol.enriched}
+			computed: c.now(), cost: cost, enriched: pol.enriched, keptWhenOff: pol.keptWhenOff}
 		if pol.enriched {
 			sum := sha256.Sum256(res.body)
 			e.etag = `"` + key + "." + hex.EncodeToString(sum[:6]) + `"`

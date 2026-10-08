@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Running Aveloxis as a Service &mdash; Aveloxis 0.29.77 documentation</title>
+  <title>Running Aveloxis as a Service &mdash; Aveloxis 0.29.78 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e2e80243"></script>
+      <script src="../_static/documentation_options.js?v=0af2a181"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -680,6 +680,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#case-variant-duplicate-repositories">Case-variant duplicate repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#orphaned-postgres-backend-after-aveloxis-stop-serve">Orphaned postgres backend after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">serve</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
@@ -1828,22 +1829,26 @@ costs only those retries.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">start</span></code> asks whether a release’s deploy steps were completed and,
 without a terminal, refuses until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">ack-deploy</span></code> has recorded them.
 The units run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> directly, so that gate never fires here, and
-<code class="docutils literal notranslate"><span class="pre">serve</span></code>’s startup migrate is the slow form (the materialized views
-included). Run the four steps of <a class="reference internal" href="../getting-started/upgrading.html"><span class="std std-doc">Upgrading</span></a>
+<code class="docutils literal notranslate"><span class="pre">serve</span></code>’s startup migrate never applies a release’s changed view
+definition (it builds the materialized views only when none exist), so a
+release that needs a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> gets it only by hand. Run the four steps of <a class="reference internal" href="../getting-started/upgrading.html"><span class="std std-doc">Upgrading</span></a>
 by hand and start the target last:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/home/aveloxis/aveloxis
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># as the service user (sudo -iu aveloxis); the two systemctl lines need an account with sudo</span>
+<span class="nv">CFG</span><span class="o">=</span>/etc/aveloxis/aveloxis.json<span class="w">         </span><span class="c1"># the units&#39; config; the checkout has no aveloxis.json</span>
+<span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/home/aveloxis/aveloxis
 <span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>version
-aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w">     </span><span class="c1"># read it now; it names the migrate step 3 runs</span>
-sudo<span class="w"> </span>systemctl<span class="w"> </span>stop<span class="w"> </span>aveloxis.target<span class="w">     </span><span class="c1"># nothing runs against the schema while it changes</span>
-aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">           </span><span class="c1"># or the plain form when the checklist asks for it</span>
-<span class="c1"># ... the checklist&#39;s checks and heals, oldest first ...</span>
-aveloxis<span class="w"> </span>ack-deploy
+aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CFG</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># read it now; it names the migrate step 3 runs</span>
+sudo<span class="w"> </span>systemctl<span class="w"> </span>stop<span class="w"> </span>aveloxis.target<span class="w">             </span><span class="c1"># nothing runs against the schema while it changes</span>
+aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CFG</span><span class="s2">&quot;</span><span class="w">         </span><span class="c1"># or the plain form when the checklist asks for it</span>
+<span class="c1"># ... the checklist&#39;s checks and heals, oldest first, each aveloxis command with -c &quot;$CFG&quot; ...</span>
+aveloxis<span class="w"> </span>ack-deploy<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CFG</span><span class="s2">&quot;</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>start<span class="w"> </span>aveloxis.target
 </pre></div>
 </div>
-<p>Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> and <code class="docutils literal notranslate"><span class="pre">ack-deploy</span></code> as the service user against the
-service’s config (<code class="docutils literal notranslate"><span class="pre">-c</span> <span class="pre">/etc/aveloxis/aveloxis.json</span></code>), so the stamp and the
-acknowledgement land in the same database the units read.</p>
+<p>Every <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> command here passes the units’ config. Without <code class="docutils literal notranslate"><span class="pre">-c</span></code> it
+reads <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> in the current directory, which the checkout does
+not have, and runs on the built-in defaults: the migrate, the stamp and
+the acknowledgement would then miss the database the units read.</p>
 </section>
 <section id="the-path-trap">
 <h2>The PATH trap<a class="headerlink" href="#the-path-trap" title="Link to this heading"></a></h2>

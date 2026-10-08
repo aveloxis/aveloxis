@@ -239,7 +239,7 @@ Why: the commits table is one row per file per commit and one repository's
 rows are scattered about one per page across it (forty workers insert
 interleaved), so the repository page's weekly commit series and the commits
 arm of its top contributors read millions of pages for a kernel fork
-(summary/49: NVIDIA/nova, 118 s). The daily table is a few thousand rows
+(NVIDIA/nova: 118 s). The daily table is a few thousand rows
 for the same window. The two readers use it when the repository's picture
 is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
 is a UTC midnight — and the commits table otherwise. The activity bounds (`/stats`' last

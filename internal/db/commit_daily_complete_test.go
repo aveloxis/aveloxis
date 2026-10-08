@@ -264,7 +264,7 @@ func TestCommitDailyCompleteColumnMigrationStampsOnce(t *testing.T) {
 	}
 }
 
-// kate 2026-10-07, after the fleet-wide heal: the warm run's /stats answered
+// kate 2026-10-07, after the fleet-wide heal: the repository page's /stats answered
 // 503 (nginx's 120 s) on the nine largest repositories. /stats reads
 // LastActivityAt, whose commits arm falls back from the stored bound
 // (NULL until the repository's next collection) to a live scan of the

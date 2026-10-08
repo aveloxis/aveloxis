@@ -289,9 +289,11 @@ the stop and start are `systemctl stop aveloxis.target` and
 ```{warning}
 The acknowledgement gate lives in `aveloxis start`. A systemd unit runs
 `aveloxis serve` directly, which migrates at its own start with no gate
-and with the materialized views included (the slow form). Run the ladder
-by hand — stop the target, `aveloxis migrate --skip-views` or the form
-the checklist names, the heals, `aveloxis ack-deploy` — and only then
+and never applies a release's changed view definition (it builds the
+materialized views only when none exist). Run the ladder by hand, each
+`aveloxis` command with `-c` naming the units' config — stop the target,
+`aveloxis migrate --skip-views` or the form the checklist names, the
+heals, `aveloxis ack-deploy` — and only then
 `systemctl start aveloxis.target`. Starting the target first makes
 `serve` migrate unsupervised while `web` and `api` restart every 30 s
 until it finishes.

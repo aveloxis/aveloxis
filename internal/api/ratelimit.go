@@ -52,7 +52,8 @@ type Options struct {
 
 	// ResponseCacheBytes bounds the repository-page response cache
 	// (repo_page_cache.go, v0.29.73): api.response_cache_mb in bytes. Zero
-	// stores no bodies; ETags and 304s still work.
+	// keeps only /timeseries and /contributors/top answers, bounded by count
+	// as main kept them (0.29.78); ETags and 304s work either way.
 	ResponseCacheBytes int64
 
 	// RewarmInterval is how often the API looks for repositories whose

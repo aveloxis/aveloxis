@@ -395,6 +395,9 @@ func (s *PostgresStore) GetUserGroups(ctx context.Context, userID int) ([]UserGr
 // middleware doesn't need to hit the DB per request, but exposed
 // here for cases that need a fresh value.
 func (s *PostgresStore) IsUserAdmin(ctx context.Context, userID int) (bool, error) {
+	if AdminPrivilegeDropped(ctx) {
+		return false, nil // the request runs without admin privilege (an API token)
+	}
 	var isAdmin bool
 	err := s.pool.QueryRow(ctx,
 		`SELECT admin FROM aveloxis_ops.users WHERE user_id = $1`, userID,

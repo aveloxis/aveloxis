@@ -39,7 +39,7 @@ import (
 func TestResolveEntityReposAutoAddsToComparisons(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
 	body := extractFuncBody(t, src, "resolveEntityRepos")
-	for _, needle := range []string{"FindOrCreateComparisonsGroup(", "AddRepoToGroupByID(", "invalidateAll()"} {
+	for _, needle := range []string{"FindOrCreateComparisonsGroup(", "AddRepoToGroupByID(", "invalidateUser(info.UserID)"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("resolveEntityRepos out-of-scope branch must auto-add via %s (v0.27.4 Starred-flow pattern), not 403", needle)
 		}

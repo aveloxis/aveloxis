@@ -98,6 +98,14 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (authInfo,
 		writeAuthError(w, http.StatusForbidden, "administrator access required")
 		return authInfo{}, false
 	}
+	// An API token authenticates as its owner for data, never to administer
+	// (OWASP ASVS V8.2.1, the 0.29.82 review A1): a leaked admin-owned token
+	// could otherwise grant itself replacements or change roles. Only a
+	// signed-in session administers.
+	if info.APITokenID != 0 {
+		writeAuthError(w, http.StatusForbidden, "an API token cannot administer; sign in to use admin routes")
+		return authInfo{}, false
+	}
 	return info, true
 }
 
@@ -383,8 +391,9 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			// token would answer 403 for the repository it just added
 			// until the TTL. Admin mutations already bust here. Whatever
 			// the error: an add that fails for some URLs (ErrAddItemsFailed)
-			// has still linked the others (PR #218 review C1).
-			s.auth.invalidateAll()
+			// has still linked the others (PR #218 review C1). Only the
+			// caller's cache: their own scope changed (0.29.82).
+			s.auth.invalidateUser(info.UserID)
 		}
 		if err == nil {
 			resp["linked"] = out.Linked
@@ -903,18 +912,41 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 	// access to data we already have. Unstar needs no scope at all.
 	addedToGroup := ""
 	if r.Method != http.MethodDelete && !info.IsAdmin && !info.Scope[repoID] {
+		// Only a repository that exists is linked (user_repos has no FK on
+		// repo_id; the other implicit-link sites check too — 0.29.82 L10
+		// round 3). A failed lookup is the store's failure (SR-5).
+		repos, lerr := s.store.GetReposBatch(r.Context(), []int64{repoID})
+		if lerr != nil {
+			s.serverError(w, r, "handleStarRepo", lerr)
+			return
+		}
+		if repos[repoID] == nil {
+			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+		// A signed-in session is not rate limited (0.29.82): the implicit
+		// link is capped per user before it writes (the ASVS review's A2).
+		if s.autoAdds != nil {
+			if ok, retry := s.autoAdds.reserve(info.UserID); !ok {
+				refuseAutoAdd(w, retry)
+				return
+			}
+		}
 		gid, gerr := s.store.FindOrCreateStarredGroup(r.Context(), info.UserID)
 		if gerr == nil {
 			_, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
 		}
 		if gerr != nil {
+			if s.autoAdds != nil {
+				s.autoAdds.refund(info.UserID)
+			}
 			s.serverError(w, r, "handleStarRepo", gerr)
 			return
 		}
 		addedToGroup = db.StarredGroupName
 		// Scope changed — the user's cached token validation must
 		// re-resolve so their next data request sees the repo.
-		s.auth.invalidateAll()
+		s.auth.invalidateUser(info.UserID)
 	}
 	if r.Method == http.MethodDelete {
 		err = s.store.UnstarRepo(r.Context(), info.UserID, repoID)

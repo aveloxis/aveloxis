@@ -58,6 +58,7 @@ type Server struct {
 	// authorizeRepo (set to the store at construction; nil in bare
 	// test Servers, which fail closed to the 403).
 	sharedWithMe sharedWithMeStore
+	autoAdds     *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
 
 	// accounts serves the profile routes (/me's account fields, the
 	// account-email submission and confirmation); the store, or a fake.
@@ -193,6 +194,14 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/admin/forge-id-changes", s.handleAdminForgeIDChanges)               // v0.29.63
 	s.mux.HandleFunc("POST /api/v1/admin/forge-id-changes/{repoID}/adopt", s.handleAdminForgeIDAdopt) // v0.29.63
 	s.mux.HandleFunc("GET /api/v1/admin/add-requests", s.handleAdminAddRequests)
+	// v0.29.82: sign-out ends the API session token (the ASVS review).
+	s.mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	// v0.29.82: operator-issued API tokens (aveloxis-gui's admin page).
+	s.mux.HandleFunc("GET /api/v1/admin/api-tokens", s.handleAdminAPITokens)
+	s.mux.HandleFunc("POST /api/v1/admin/api-tokens", s.handleAdminAPITokenGrant)
+	s.mux.HandleFunc("POST /api/v1/admin/api-tokens/{tokenID}/revoke", s.handleAdminAPITokenRevoke)
+	s.mux.HandleFunc("GET /api/v1/admin/api-token-settings", s.handleAdminAPITokenSettings)
+	s.mux.HandleFunc("POST /api/v1/admin/api-token-settings", s.handleAdminAPITokenSettingsUpdate)
 	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
@@ -237,6 +246,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	}
 	s.limiter = rl
 	rl.uncounted = s.frontEndAuthorized
+	rl.logger = s.logger
+	s.autoAdds = newAutoAddLimiter()
 	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
@@ -261,11 +272,18 @@ func (s *Server) serverError(w http.ResponseWriter, r *http.Request, handler str
 	http.Error(w, "internal error; try again", http.StatusInternalServerError)
 }
 
-// Handler returns the HTTP handler: CORS outermost (preflights are
-// never rate-limited), then the per-IP limiter, then Bearer auth +
-// scope, then the routes.
+// Handler returns the HTTP handler (requestChain).
 func (s *Server) Handler() http.Handler {
-	return s.limiter.cors(s.limiter.middleware(s.auth.middleware(s.limiter, s.mux)))
+	return requestChain(s.limiter, s.auth, s.mux)
+}
+
+// requestChain is the order every request passes through: CORS outermost
+// (preflights are never rate-limited), then identify (the Bearer token is
+// resolved once, v0.29.82), then the rate limiter (which reads that answer:
+// a valid session is not counted, an API token has its own hourly
+// allowance), then Bearer auth + scope, then the routes.
+func requestChain(rl *rateLimiter, a *authenticator, next http.Handler) http.Handler {
+	return rl.cors(a.identify(rl, rl.middleware(a.middleware(rl, next))))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

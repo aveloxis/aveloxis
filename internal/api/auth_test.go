@@ -28,6 +28,7 @@ type fakeSessionStore struct {
 	scopeErr    error
 	scope       []int64
 	valid       map[string]bool
+	apiValid    map[string]db.APITokenIdentity // v0.29.82: operator-issued API tokens
 	validates   atomic.Int64
 	onValidate  func() // runs inside ValidateSessionToken (worklist follow-up 7: a bust racing a resolve)
 }
@@ -44,6 +45,23 @@ func (f *fakeSessionStore) ValidateSessionToken(_ context.Context, token string)
 		return f.userID, nil
 	}
 	return 0, db.ErrInvalidSessionToken
+}
+func (f *fakeSessionStore) ValidateAPIToken(_ context.Context, token string) (db.APITokenIdentity, error) {
+	f.validates.Add(1)
+	if f.validateErr != nil {
+		return db.APITokenIdentity{}, f.validateErr
+	}
+	if id, ok := f.apiValid[token]; ok {
+		return id, nil
+	}
+	return db.APITokenIdentity{}, db.ErrInvalidAPIToken
+}
+func (f *fakeSessionStore) APITokenActive(_ context.Context, token string) (bool, error) {
+	if f.validateErr != nil {
+		return false, f.validateErr
+	}
+	_, ok := f.apiValid[token]
+	return ok, nil
 }
 func (f *fakeSessionStore) IsUserAdmin(context.Context, int) (bool, error) {
 	return f.admin, f.adminErr

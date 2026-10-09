@@ -877,7 +877,7 @@ func TestVacuumGateWaitsForALineServeWrites(t *testing.T) {
 func TestEveryLadderStartsServeOnce(t *testing.T) {
 	// The ladders built by the positional recipe (0.29.73 on) carry the
 	// start step; older ladders predate it and have none.
-	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true}
+	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true, "0.29.82": true}
 	for version, steps := range deployChecklists {
 		n := 0
 		for _, s := range steps {
@@ -945,6 +945,51 @@ func TestV02979StartNoteQuotesRealLogLines(t *testing.T) {
 		}
 		if !strings.Contains(body, "logger."+q.level+`("`+q.quote) {
 			t.Errorf("invalidateUnrecordedDaily does not log %q at %s", q.quote, q.level)
+		}
+	}
+}
+
+// The 0.29.82 start note names the line the session-token hash migration
+// logs; the quote must be that Info message.
+func TestV02982StartNoteQuotesARealLogLine(t *testing.T) {
+	steps, _ := deployChecklistFor("0.29.82")
+	var desc string
+	for _, s := range steps {
+		if s.cmd == "aveloxis start all" {
+			desc = s.desc
+		}
+	}
+	const quote = "column added and its one-time stamp applied"
+	if !strings.Contains(desc, "'"+quote+"'") {
+		t.Fatalf("the 0.29.82 start note must quote %q", quote)
+	}
+	body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/db/migrate.go")), "func addColumnWithOneTimeStamp(")
+	if !strings.Contains(body, `logger.Info("`+quote+`"`) {
+		t.Errorf("addColumnWithOneTimeStamp does not log %q at Info", quote)
+	}
+}
+
+// The 0.29.82 ASVS review A4 (V7.4.2): the account-takeover remediation
+// ends the account's sessions; since 0.29.82 it must also revoke the API
+// tokens the account holds and the ones it granted (a token the intruder
+// minted outlives a session delete).
+func TestTakeoverRemediationRevokesAPITokens(t *testing.T) {
+	steps, _ := deployChecklistFor("0.29.69")
+	var desc string
+	for _, s := range steps {
+		if strings.Contains(s.desc, "end the account's sessions") {
+			desc = s.desc
+		}
+	}
+	if desc == "" {
+		t.Fatal("the takeover remediation step is missing")
+	}
+	for _, want := range []string{
+		"UPDATE aveloxis_ops.api_tokens SET revoked_at = NOW() WHERE user_id = N AND revoked_at IS NULL",
+		"created_by = N",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("the takeover remediation must include %q", want)
 		}
 	}
 }

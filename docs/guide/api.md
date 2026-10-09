@@ -121,6 +121,50 @@ process holds no forge API keys, so this adopts the recorded observation;
 `aveloxis adopt-forge-id` asks the forge live. Both require an admin Bearer
 session.
 
+### API tokens (admin, v0.29.82)
+
+```
+GET  /api/v1/admin/api-tokens
+POST /api/v1/admin/api-tokens
+POST /api/v1/admin/api-tokens/{tokenID}/revoke
+GET  /api/v1/admin/api-token-settings
+POST /api/v1/admin/api-token-settings
+```
+
+Operator-issued API tokens for people who need more than the per-IP limit
+(see "Rate limits" below). A token belongs to an existing account and
+authenticates as that account, with its repository scope; it is counted
+against its own hourly allowance instead of the per-IP limit.
+
+- `GET /api/v1/admin/api-tokens` lists every granted token, newest first:
+  `token_id`, `user_id`, `owner_login`, `label`, `created_by`,
+  `created_by_login`, `created_at`, `expires_at`, `rate_limit_per_hour`,
+  `last_used_at` and `revoked_at`, plus the current `settings`. It never
+  carries a token or its hash: only the hash is stored.
+- `POST /api/v1/admin/api-tokens` grants one. Body:
+  `{"user_id": 12, "label": "who or what it is for", "lifetime_days": 30,
+  "rate_limit_per_hour": 5000}`; the last two are optional and default to
+  the current settings. Answers `201` with the token (`"token":
+  "avx_…"`), shown this once and sent `no-store`. `400` for a missing or
+  unknown `user_id`, an empty `label` or one over 200 characters, a
+  lifetime that is not 1 to 365 days, or an allowance that is not a
+  positive number.
+- `POST …/{tokenID}/revoke` revokes a token: it stops working on its next
+  call to any api process (every call with an API token rechecks it, one
+  indexed lookup). Revoking a revoked token is a no-op; `404` for an
+  unknown id.
+- `GET`/`POST /api/v1/admin/api-token-settings` read and change the
+  defaults the grant offers: `{"default_rate_limit_per_hour": 5000,
+  "default_lifetime_days": 30}` (the allowance positive, the lifetime 1 to
+  365 days; the values shown are the initial defaults).
+
+All five require an admin **signed-in session**: an API token, even one
+granted to an administrator, is refused (`403`) on every admin route — a
+token works as its owner for data, never to administer. Grants, revocations
+and changed defaults are logged with who did them; a refused token is
+logged once a minute per address, and a token over its allowance once per
+hour, never with the token itself.
+
 ### Batch Statistics
 
 ```
@@ -794,6 +838,31 @@ scope-granting auto-add.
   classes: `in_scope` (chartable now), `collected` (one click to add),
   `uncollected` (submit a collection request).
 
+## Rate limits
+
+The per-IP limit (`api.rate_limit_rps`, default 1 request per second with a
+burst of `api.rate_limit_burst`, default 10, and `api.rate_limit_daily`,
+default 1,000 per day) applies only to callers **without a valid token**
+(v0.29.82). Clients on an exempt network (`api.exempt_cidrs`) are never
+limited.
+
+- **A valid session token** (signed in, below) is not counted at all.
+- **An operator-issued API token** (`Authorization: Bearer avx_…`) is
+  counted against its own hourly allowance (5,000 calls per hour unless the
+  operator set another), whatever address the calls come from. Each `api`
+  process keeps its own count, so behind N api processes a token can make
+  up to N times its allowance. Every
+  answer carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+  `X-RateLimit-Reset` (Unix seconds, when the current hour ends); past the
+  allowance the answer is `429` with `Retry-After`. Ask the operator for
+  one; it is granted to your account and shown once.
+- **No token, an unknown token or an expired one** is counted per IP, with
+  `429` and `Retry-After` past the limit. An address over its limit that
+  has just presented an invalid token gets its further tokens refused
+  without a lookup for a minute, unless they are already known valid; such
+  a refusal past the daily quota has a `Retry-After` of when that minute
+  ends (an empty bucket's refusal keeps `Retry-After: 1`).
+
 ## Authentication: getting an API token
 
 When `api.require_auth` is `true`, every data endpoint (everything
@@ -837,6 +906,17 @@ Token semantics:
 - Each visit to `/auth/token` mints a **new** token; existing tokens
   keep working until they expire, so long-running scripts aren't cut
   off when you log in elsewhere.
+- **Signing out ends the token** (v0.29.82): `POST /api/v1/auth/logout`
+  with the session token as the Bearer deletes it server-side (`204`; a
+  missing token `401`, an API token `400` — an administrator revokes
+  those; an already-invalid token gets `401` when `api.require_auth` is on,
+  `204` otherwise). The GUI's Sign out calls
+  it. Before 0.29.82 a token copied before sign-out stayed valid for its
+  30 days.
+- Session tokens are stored only as their SHA-256 hash (v0.29.82): a
+  read of the database, or a backup, yields nothing a caller can present.
+  Upgrading signs nobody out; rolling back to an older release signs every
+  API session out once.
 - A token's role and repository scope are cached for 60 seconds per
   process. An admin mutation, and (v0.29.68) an add through
   `POST /api/v1/groups/{id}/repos` that linked or queued repositories,
@@ -852,7 +932,12 @@ Token semantics:
   not visibility of collected data). Administrators are unscoped.
 - **Shared links (v0.27.82):** requesting a repo outside your groups
   auto-adds it to your implicit **"Shared with Me"** group and the
-  request proceeds — repo links are shareable between signed-in
+  request proceeds (v0.29.82: at most 100 such additions per user per
+  hour across Shared with Me, the compare's Comparisons group and stars
+  of repositories outside your groups — an organization entity counts
+  once; past that the request is `429` with `Retry-After` and that
+  addition is not made, though entities of the same request resolved
+  before it were) — repo links are shareable between signed-in
   users (the Starred/Comparisons auto-add pattern, triggered by
   viewing). The response that performed the add carries a one-time
   `X-Aveloxis-Added-To-Group: Shared with Me` header (CORS-exposed)
@@ -1038,7 +1123,8 @@ Token semantics:
   Starring a repo outside the caller's groups auto-adds it to their
   implicit "Starred" group (created on first use) and the response
   carries `added_to_group: "Starred"` — approval only ever gates NEW
-  collection, and stars can only target already-collected repos, so
+  collection, and stars can only target already-collected repos (a star
+  of an id that names no repository is `404`, v0.29.82), so
   no approval is involved. Unstarring never removes the repo from
   the group (scope stays until the user prunes the group).
 - `GET /api/v1/repos/{repoID}/star` — `{"starred": bool}`, the

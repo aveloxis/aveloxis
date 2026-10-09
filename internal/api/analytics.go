@@ -229,9 +229,13 @@ func (s *Server) recordComparison(r *http.Request, entities []entity) {
 	if !authed || info.UserID <= 0 {
 		return
 	}
+	// Only repositories already in the caller's scope (admins: any): an
+	// out-of-scope entity is linked by resolveEntityRepos, under the per-user
+	// auto-add cap (0.29.82, the ASVS review's A2 — recording it here first
+	// linked it uncapped).
 	var repoIDs []int64
 	for _, e := range entities {
-		if e.Kind == "repo" {
+		if e.Kind == "repo" && (info.IsAdmin || info.Scope[e.RepoID]) {
 			repoIDs = append(repoIDs, e.RepoID)
 		}
 	}
@@ -295,6 +299,16 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 			}
 		}
 		if len(collected) > 0 {
+			// A signed-in session is not rate limited (0.29.82), so each
+			// user's auto-adds are capped (one per entity, an org counts
+			// once) and reserved before anything is written (the ASVS
+			// review's A2 and its L10 round: this second auto-add site).
+			if s.autoAdds != nil {
+				if ok, retry := s.autoAdds.reserve(info.UserID); !ok {
+					refuseAutoAdd(w, retry)
+					return nil, "", false
+				}
+			}
 			gid, err := s.store.FindOrCreateComparisonsGroup(r.Context(), info.UserID)
 			if err == nil {
 				for _, id := range collected {
@@ -304,12 +318,15 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 				}
 			}
 			if err != nil {
+				if s.autoAdds != nil {
+					s.autoAdds.refund(info.UserID)
+				}
 				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false
 			}
-			// Scope changed — the cached token validation must re-resolve
-			// so the user's next request sees the new repos.
-			s.auth.invalidateAll()
+			// Scope changed — this user's cached validations must
+			// re-resolve so their next request sees the new repos.
+			s.auth.invalidateUser(info.UserID)
 			return collected, db.ComparisonsGroupName, true
 		}
 	}

@@ -777,6 +777,13 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repos", "last_commit_at", "TIMESTAMPTZ")
 	// v0.29.75: the daily commit table's completeness stamp (see schema.sql).
 	addCommitDailyCompleteColumn(ctx, pg, logger, errs)
+	// v0.29.82: session tokens hashed at rest, existing rows once.
+	addSessionTokenHashedColumn(ctx, pg, logger, errs)
+	// v0.29.82: the API-token defaults' one row (operator decision
+	// 2026-10-08: 5,000 calls per hour, 30 days). Never overwrites an edit.
+	execMigrationStep(ctx, pg, logger, errs, "v0.29.82 seed api_token_settings",
+		fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_rate_limit_per_hour, default_lifetime_days)
+		VALUES (1, %d, %d) ON CONFLICT (id) DO NOTHING`, DefaultAPITokenRateLimitPerHour, DefaultAPITokenLifetimeDays))
 	// v0.29.69 (worklist 69): the metadata backfill's attempt stamp (see
 	// schema.sql). NULL on existing rows = never answered = still a candidate.
 	// No index: the candidate query pages the repos PK and this is one more
@@ -3975,6 +3982,31 @@ func addColumnIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Log
 func addCommitDailyCompleteColumn(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	addColumnWithOneTimeStamp(ctx, pg, logger, errs, "aveloxis_data", "repos", "commit_daily_complete_at", "TIMESTAMPTZ", stampCommitDailyCompleteWhereFilledSQL)
 }
+
+// addSessionTokenHashedColumn adds user_session_tokens.token_hashed and, in
+// the same transaction and only on the run that adds it, replaces every
+// stored session token with its SHA-256 hex (v0.29.82). The column's
+// arrival is the marker: a raw token and its hash are both 64 hex
+// characters, so nothing in a row says which it is. Nobody is signed out —
+// the API hashes the token a browser presents before it looks it up. A
+// fresh install creates the table without the column, and this adds it
+// over no rows. Rolling back to an older binary afterwards signs every API
+// session out (the older binary compares the raw token).
+func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	addColumnWithOneTimeStamp(ctx, pg, logger, errs, "aveloxis_ops", "user_session_tokens", "token_hashed", "BOOLEAN NOT NULL DEFAULT TRUE", hashExistingSessionTokensSQL)
+}
+
+// hashExistingSessionTokensSQL hashes every session token and the
+// refresh_tokens rows that reference it, in one statement (the foreign key
+// is deferred, so the pair is checked at commit).
+const hashExistingSessionTokensSQL = `
+		WITH refreshed AS (
+		    UPDATE aveloxis_ops.refresh_tokens
+		    SET user_session_token = encode(sha256(convert_to(user_session_token, 'UTF8')), 'hex')
+		    RETURNING 1
+		)
+		UPDATE aveloxis_ops.user_session_tokens
+		SET token = encode(sha256(convert_to(token, 'UTF8')), 'hex')`
 
 // stampCommitDailyCompleteWhereFilledSQL is the one-time stamp of
 // addCommitDailyCompleteColumn: every unstamped repository that has daily

@@ -18,8 +18,12 @@ package api
 // clients (§3 exempt_cidrs) bypass auth even when enabled, so
 // operator tooling keeps working.
 //
-// The "super token" tier (plan §3) plugs into resolveToken later:
-// one lookup function is the seam.
+// v0.29.82: operator-issued API tokens (the plan's "super tokens") resolve
+// through the same seam, recognised by db.APITokenPrefix. The identify step
+// resolves a request's token ONCE; the rate limiter (a valid session is not
+// counted, an API token has its own hourly allowance) and this layer both
+// read that answer (operator, 2026-10-08: the per-IP limit is only for
+// callers without a valid token).
 
 import (
 	"context"
@@ -40,6 +44,8 @@ import (
 // (*db.PostgresStore satisfies it; tests fake it).
 type sessionStore interface {
 	ValidateSessionToken(ctx context.Context, token string) (int, error)
+	ValidateAPIToken(ctx context.Context, token string) (db.APITokenIdentity, error)
+	APITokenActive(ctx context.Context, token string) (bool, error)
 	IsUserAdmin(ctx context.Context, userID int) (bool, error)
 	GetUserRepoScope(ctx context.Context, userID int) ([]int64, error)
 }
@@ -49,6 +55,83 @@ type authInfo struct {
 	UserID  int
 	IsAdmin bool
 	Scope   map[int64]bool // nil when IsAdmin (unscoped)
+	// APITokenID is set for an operator-issued API token (0 for a session),
+	// with its hourly allowance.
+	APITokenID       int64
+	RateLimitPerHour int
+}
+
+// resolution is a request's one token lookup (identify), read by the rate
+// limiter and the auth layer. presented=false: no Bearer token at all.
+type resolution struct {
+	presented bool
+	info      authInfo
+	err       error // nil, errInvalidToken, or the store's failure
+}
+
+type resolutionCtxKey struct{}
+
+// resolutionOf returns the identify step's answer, if it ran.
+func resolutionOf(r *http.Request) (resolution, bool) {
+	res, ok := r.Context().Value(resolutionCtxKey{}).(resolution)
+	return res, ok
+}
+
+// errLookupDeferred marks a token identify did not look up (rl.deferLookup):
+// the limiter counts the request per IP, and the auth layer looks the token
+// up if the limiter admitted it anyway.
+var errLookupDeferred = errors.New("token lookup deferred: the address is over its limit")
+
+// identify resolves the request's Bearer token once and records the answer
+// for the layers after it. It refuses nothing itself. A token already in
+// the cache costs nothing; an uncached one from an address over its limit
+// that recently sent an invalid token is not looked up (rl.deferLookup).
+func (a *authenticator) identify(rl *rateLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		res := resolution{}
+		if tok := bearerToken(r); tok != "" {
+			res.presented = true
+			if info, ok := a.cached(tok); ok && info.APITokenID == 0 {
+				res.info = info
+			} else if rl != nil && rl.deferLookup(r) {
+				res.err = errLookupDeferred
+			} else {
+				res.info, res.err = a.resolveToken(r.Context(), tok)
+				if errors.Is(res.err, errInvalidToken) && rl != nil {
+					rl.noteBadToken(r, tokenKind(tok))
+				}
+			}
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), resolutionCtxKey{}, res)))
+	})
+}
+
+// tokenKind names a token's kind for logs, never the token.
+func tokenKind(token string) string {
+	if strings.HasPrefix(token, db.APITokenPrefix) {
+		return "api"
+	}
+	return "session"
+}
+
+// cached returns a token's cached validation, if it is fresh.
+func (a *authenticator) cached(token string) (authInfo, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if c, ok := a.cache[token]; ok && time.Now().Before(c.expires) {
+		return c.info, true
+	}
+	return authInfo{}, false
+}
+
+// resolve answers for r's token: the identify step's answer when it ran,
+// otherwise a lookup (a chain built without identify, as some tests do, or
+// a lookup identify deferred for a request the limiter then admitted).
+func (a *authenticator) resolve(r *http.Request, tok string) (authInfo, error) {
+	if res, ok := resolutionOf(r); ok && res.presented && !errors.Is(res.err, errLookupDeferred) {
+		return res.info, res.err
+	}
+	return a.resolveToken(r.Context(), tok)
 }
 
 type authCtxKey struct{}
@@ -98,19 +181,47 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 	a.mu.Lock()
 	if c, ok := a.cache[token]; ok && now.Before(c.expires) {
 		a.mu.Unlock()
+		if c.info.APITokenID == 0 {
+			return c.info, nil
+		}
+		// An API token is rechecked on every call (one indexed lookup;
+		// ASVS V7.4.1, the 0.29.82 review A6): revoked or expired through
+		// ANY api process, it stops at once. Its owner's role and scope stay
+		// cached for authCacheTTL.
+		active, err := a.store.APITokenActive(ctx, token)
+		if err != nil {
+			return authInfo{}, fmt.Errorf("recheck API token: %w", err)
+		}
+		if !active {
+			a.forget(token)
+			return authInfo{}, errInvalidToken
+		}
 		return c.info, nil
 	}
 	gen := a.gen
 	a.mu.Unlock()
 
-	userID, err := a.store.ValidateSessionToken(ctx, token)
-	if errors.Is(err, db.ErrInvalidSessionToken) {
-		return authInfo{}, errInvalidToken
+	var info authInfo
+	if strings.HasPrefix(token, db.APITokenPrefix) {
+		id, err := a.store.ValidateAPIToken(ctx, token)
+		if errors.Is(err, db.ErrInvalidAPIToken) {
+			return authInfo{}, errInvalidToken
+		}
+		if err != nil {
+			return authInfo{}, fmt.Errorf("validate API token: %w", err)
+		}
+		info = authInfo{UserID: id.UserID, APITokenID: id.TokenID, RateLimitPerHour: id.RateLimitPerHour}
+	} else {
+		userID, err := a.store.ValidateSessionToken(ctx, token)
+		if errors.Is(err, db.ErrInvalidSessionToken) {
+			return authInfo{}, errInvalidToken
+		}
+		if err != nil {
+			return authInfo{}, fmt.Errorf("validate token: %w", err)
+		}
+		info = authInfo{UserID: userID}
 	}
-	if err != nil {
-		return authInfo{}, fmt.Errorf("validate token: %w", err)
-	}
-	info := authInfo{UserID: userID}
+	userID := info.UserID
 	// A lookup error is not "not an admin" (SR-5; worklist follow-up 6).
 	admin, err := a.store.IsUserAdmin(ctx, userID)
 	if err != nil {
@@ -169,6 +280,31 @@ func (a *authenticator) invalidateAll() {
 	a.mu.Unlock()
 }
 
+// invalidateUser drops one user's cached validations (their scope or role
+// changed) and leaves everyone else's (the 0.29.82 review A2: an auto-add
+// flushed every user's cache). The generation still moves, so a lookup in
+// flight cannot re-cache what it read before the change.
+func (a *authenticator) invalidateUser(userID int) {
+	a.mu.Lock()
+	for tok, c := range a.cache {
+		if c.info.UserID == userID {
+			delete(a.cache, tok)
+		}
+	}
+	a.gen++
+	a.mu.Unlock()
+}
+
+// forget drops one token's cached validation (sign-out, a failed recheck).
+// The generation moves too, so a lookup in flight cannot re-cache the token
+// after it was signed out.
+func (a *authenticator) forget(token string) {
+	a.mu.Lock()
+	delete(a.cache, token)
+	a.gen++
+	a.mu.Unlock()
+}
+
 // publicPaths bypass require_auth. This is the fail-closed boundary —
 // keep the list tiny, explicit, and EXACT-MATCH only (no prefixes):
 // health is the liveness probe; public/stats is the landing page's
@@ -187,10 +323,10 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			// Best-effort: attach auth info when a token IS presented,
 			// so scope checks apply even before require_auth flips on.
 			if tok := bearerToken(r); tok != "" {
-				info, err := a.resolveToken(r.Context(), tok)
+				info, err := a.resolve(r, tok)
 				switch {
 				case err == nil:
-					r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info))
+					r = r.WithContext(withIdentity(r.Context(), info))
 				case errors.Is(err, errInvalidToken):
 					// Best-effort: an unknown token is no token.
 				default:
@@ -208,7 +344,7 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			writeAuthError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		info, err := a.resolveToken(r.Context(), tok)
+		info, err := a.resolve(r, tok)
 		if errors.Is(err, errInvalidToken) {
 			writeAuthError(w, http.StatusUnauthorized, errInvalidToken.Error())
 			return
@@ -217,8 +353,19 @@ func (a *authenticator) middleware(rl *rateLimiter, next http.Handler) http.Hand
 			a.refuseStoreError(w, r, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info)))
+		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), info)))
 	})
+}
+
+// withIdentity attaches a validated caller to ctx. A request carrying an
+// API token also runs WithoutAdminPrivilege: the store's admin decisions
+// see a non-admin (an API token never administers).
+func withIdentity(ctx context.Context, info authInfo) context.Context {
+	ctx = context.WithValue(ctx, authCtxKey{}, info)
+	if info.APITokenID != 0 {
+		ctx = db.WithoutAdminPrivilege(ctx)
+	}
+	return ctx
 }
 
 func bearerToken(r *http.Request) string {
@@ -274,15 +421,27 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 		return true
 	}
 	if s.sharedWithMe != nil && info.UserID > 0 {
+		// A signed-in session is not rate limited (0.29.82), so each user's
+		// auto-adds are capped before anything is written (ASVS V2.4.1, the
+		// 0.29.82 review A2).
+		if s.autoAdds != nil {
+			if ok, retry := s.autoAdds.reserve(info.UserID); !ok {
+				refuseAutoAdd(w, retry)
+				return false
+			}
+		}
 		added, err := s.sharedWithMe.EnsureRepoSharedWithUser(r.Context(), info.UserID, repoID)
+		if (err != nil || !added) && s.autoAdds != nil {
+			s.autoAdds.refund(info.UserID) // nothing was added: the slot comes back
+		}
 		switch {
 		case err == nil:
 			if added {
-				// Scope changed: cached token validations must
-				// re-resolve, and the user's home list now includes
-				// the shared repo.
+				// Scope changed: this user's cached validations must
+				// re-resolve (only theirs: the 0.29.82 review A2), and
+				// their home list now includes the shared repo.
 				if s.auth != nil {
-					s.auth.invalidateAll()
+					s.auth.invalidateUser(info.UserID)
 				}
 				s.homeCache.invalidate(info.UserID)
 				// The notice is for this caller alone: the answer that carries

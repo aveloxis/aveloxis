@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Augur Migration &mdash; Aveloxis 0.29.81 documentation</title>
+  <title>Augur Migration &mdash; Aveloxis 0.29.82 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
+      <script src="../_static/documentation_options.js?v=cf6325c2"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -330,6 +330,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -354,6 +355,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#cors">CORS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#deployment">Deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#rate-limits">Rate limits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
@@ -695,7 +697,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-44-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (44 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1740,7 +1742,7 @@
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> – 103 tables + 22 materialized views (20 for 8Knot when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled, the default; two supply-chain views always) for collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> — 4 tables (ScanCode per-file license/copyright results + history)</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> – 42 tables for operational state (queue, staging, credentials, etc.)</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> – 44 tables for operational state (queue, staging, credentials, etc.)</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code></strong> — the Augur-compatibility schema: no base tables of its own, just 6 views over <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> for the columns whose names differ from Augur’s (<code class="docutils literal notranslate"><span class="pre">repo</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_info</span></code>, <code class="docutils literal notranslate"><span class="pre">issues</span></code>, <code class="docutils literal notranslate"><span class="pre">pull_requests</span></code>, <code class="docutils literal notranslate"><span class="pre">releases</span></code>, <code class="docutils literal notranslate"><span class="pre">message</span></code>). 8Knot reads through it with <code class="docutils literal notranslate"><span class="pre">search_path</span> <span class="pre">=</span> <span class="pre">aveloxis_augur_data,aveloxis_data</span></code>.</p></li>
 </ul>
 <p>The migration uses <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">...</span> <span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> throughout, so it is safe to run repeatedly. It never modifies or reads from <code class="docutils literal notranslate"><span class="pre">augur_data</span></code> or <code class="docutils literal notranslate"><span class="pre">augur_operations</span></code> schemas.</p>
@@ -1802,7 +1804,7 @@
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></p></td>
 <td><p>Aveloxis</p></td>
-<td><p>Aveloxis operational tables (42 tables)</p></td>
+<td><p>Aveloxis operational tables (44 tables)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></p></td>
 <td><p>Aveloxis</p></td>

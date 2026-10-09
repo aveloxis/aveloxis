@@ -24,9 +24,13 @@ package api
 // super-token tiers (§2 of the plan) will layer on top of this.
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +112,66 @@ type bucket struct {
 	dayCount int
 
 	lastSeen time.Time
+
+	// badTokenAt is when this address last presented a token the store
+	// called invalid (v0.29.82; see deferLookup).
+	badTokenAt time.Time
+}
+
+// badTokenMemory is how long an address that presented an invalid token
+// has its further uncached tokens deferred while its bucket is empty: the
+// token cache's own horizon (authCacheTTL).
+const badTokenMemory = authCacheTTL
+
+// deferLookup reports whether identify should skip the store lookup for an
+// uncached token from r's address (L10 round 1 on 0.29.82): the address is
+// over its limit (no whole token in its bucket, or its daily quota spent)
+// AND it presented an invalid token within badTokenMemory. Without it, an
+// address over its limit could make every request cost a lookup by sending
+// made-up tokens; with the second condition, a signed-in caller behind a
+// busy shared address that has sent no bad token is still resolved. A
+// deferred request the limiter admits anyway is looked up by the auth layer.
+func (rl *rateLimiter) deferLookup(r *http.Request) bool {
+	ip := rl.clientIP(r)
+	if rl.isExempt(ip) || ip == nil {
+		return false
+	}
+	now := rl.clock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	b, ok := rl.visitors[ip.String()]
+	if !ok || b.badTokenAt.IsZero() || now.Sub(b.badTokenAt) >= badTokenMemory {
+		return false
+	}
+	tokens := b.tokens + now.Sub(b.last).Seconds()*rl.opts.RateLimitRPS
+	overQuota := b.day == now.UTC().Format("2006-01-02") && b.dayCount >= rl.opts.RateLimitDaily
+	return tokens < 1 || overQuota
+}
+
+// noteBadToken records that r's address presented an invalid token, and
+// logs it once per address per badTokenMemory (never the token; kind is
+// "api" or "session").
+func (rl *rateLimiter) noteBadToken(r *http.Request, kind string) {
+	ip := rl.clientIP(r)
+	if rl.isExempt(ip) || ip == nil {
+		return
+	}
+	now := rl.clock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	b, ok := rl.visitors[ip.String()]
+	if !ok {
+		if len(rl.visitors) >= maxTrackedIPs {
+			rl.evictOldestLocked()
+		}
+		b = &bucket{tokens: float64(rl.opts.RateLimitBurst), last: now, lastSeen: now}
+		rl.visitors[ip.String()] = b
+	}
+	if rl.logger != nil && (b.badTokenAt.IsZero() || now.Sub(b.badTokenAt) >= badTokenMemory) {
+		rl.logger.Info("invalid token presented — unknown, revoked or expired; the address is counted per IP",
+			"address", ip.String(), "kind", kind)
+	}
+	b.badTokenAt = now
 }
 
 // allow refills by elapsed×rps (capped at burst) and consumes one
@@ -139,6 +203,70 @@ type rateLimiter struct {
 	// uncounted reports a request the visitor already paid for
 	// (Server.frontEndAuthorized, v0.29.73); nil counts everything.
 	uncounted func(*http.Request) bool
+
+	// v0.29.82: each operator-issued API token's hourly window (keyed by
+	// token id), and the clock they read (a test seam; time.Now otherwise).
+	tokenWindows map[int64]*tokenWindow
+	now          func() time.Time
+
+	// logger records refused tokens and exhausted allowances (ASVS V16.3,
+	// the 0.29.82 review A5); nil is silent.
+	logger *slog.Logger
+}
+
+// tokenWindow is one API token's current hour: its start and the calls
+// counted in it.
+type tokenWindow struct {
+	start  time.Time
+	count  int
+	warned bool // the over-allowance line was logged for this window
+}
+
+// apiTokenWindow is how long an API token's allowance lasts before it
+// starts over (the allowance is per hour: operator decision 2026-10-08).
+const apiTokenWindow = time.Hour
+
+// allowToken counts one call of an API token against its hourly allowance.
+// It returns whether the call is allowed, the calls left in the window and
+// when the window ends.
+func (rl *rateLimiter) allowToken(tokenID int64, userID, limit int) (bool, int, time.Time) {
+	now := rl.clock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.tokenWindows == nil {
+		rl.tokenWindows = map[int64]*tokenWindow{}
+	}
+	w, ok := rl.tokenWindows[tokenID]
+	if !ok || !now.Before(w.start.Add(apiTokenWindow)) {
+		if len(rl.tokenWindows) >= maxTrackedIPs {
+			// Bounded like the per-IP map: drop windows that have ended.
+			for id, old := range rl.tokenWindows {
+				if !now.Before(old.start.Add(apiTokenWindow)) {
+					delete(rl.tokenWindows, id)
+				}
+			}
+		}
+		w = &tokenWindow{start: now}
+		rl.tokenWindows[tokenID] = w
+	}
+	reset := w.start.Add(apiTokenWindow)
+	if w.count >= limit {
+		if !w.warned && rl.logger != nil {
+			w.warned = true
+			rl.logger.Warn("API token over its hourly allowance — refused until its window ends",
+				"token_id", tokenID, "user_id", userID, "rate_limit_per_hour", limit, "window_ends", reset)
+		}
+		return false, 0, reset
+	}
+	w.count++
+	return true, limit - w.count, reset
+}
+
+func (rl *rateLimiter) clock() time.Time {
+	if rl.now != nil {
+		return rl.now()
+	}
+	return time.Now()
 }
 
 func newRateLimiter(opts Options) (*rateLimiter, error) {
@@ -208,7 +336,37 @@ func (rl *rateLimiter) isExempt(ip net.IP) bool {
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := rl.clientIP(r)
-		if rl.isExempt(ip) || (rl.uncounted != nil && rl.uncounted(r)) {
+		if rl.isExempt(ip) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// v0.29.82 (operator, 2026-10-08): the per-IP limit is only for
+		// callers without a valid token. A valid session is not counted; an
+		// API token is counted against its own hourly allowance. An unknown
+		// or expired token, or one the store could not resolve, is no token.
+		if res, ok := resolutionOf(r); ok && res.presented && res.err == nil {
+			if res.info.APITokenID == 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			allowed, remaining, reset := rl.allowToken(res.info.APITokenID, res.info.UserID, res.info.RateLimitPerHour)
+			h := w.Header()
+			h.Set("X-RateLimit-Limit", strconv.Itoa(res.info.RateLimitPerHour))
+			h.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+			h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+			if !allowed {
+				retry := int(math.Ceil(reset.Sub(rl.clock()).Seconds()))
+				if retry < 1 {
+					retry = 1
+				}
+				h.Set("Retry-After", strconv.Itoa(retry))
+				http.Error(w, "API token's hourly allowance exceeded", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if rl.uncounted != nil && rl.uncounted(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -216,7 +374,7 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		if ip != nil {
 			key = ip.String()
 		}
-		now := time.Now()
+		now := rl.clock()
 		rl.mu.Lock()
 		b, ok := rl.visitors[key]
 		if !ok {
@@ -235,12 +393,26 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		b.dayCount++
 		overQuota := b.dayCount > rl.opts.RateLimitDaily
 		allowed := !overQuota && b.allow(now, rl.opts.RateLimitRPS, rl.opts.RateLimitBurst)
+		// A request whose token identify deferred may carry a valid token: it
+		// is refused only until the deferral ends, so its Retry-After says
+		// that, not the daily quota's day (L10 round 2 on 0.29.82).
+		var deferredUntil time.Time
+		if res, ok := resolutionOf(r); ok && errors.Is(res.err, errLookupDeferred) {
+			deferredUntil = b.badTokenAt.Add(badTokenMemory)
+		}
 		rl.mu.Unlock()
 
 		if !allowed {
 			retry := "1"
 			if overQuota {
 				retry = "86400"
+				if !deferredUntil.IsZero() {
+					secs := int(math.Ceil(deferredUntil.Sub(now).Seconds()))
+					if secs < 1 {
+						secs = 1
+					}
+					retry = strconv.Itoa(secs)
+				}
 			}
 			w.Header().Set("Retry-After", retry)
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)

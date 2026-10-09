@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.81 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.82 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
+      <script src="../_static/documentation_options.js?v=cf6325c2"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -330,6 +330,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#dependency-licenses">Dependency Licenses</a></li>
@@ -354,6 +355,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#cors">CORS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#deployment">Deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#rate-limits">Rate limits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
@@ -695,7 +697,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-44-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (44 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1809,6 +1811,46 @@ process holds no forge API keys, so this adopts the recorded observation;
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code> asks the forge live. Both require an admin Bearer
 session.</p>
 </section>
+<section id="api-tokens-admin-v0-29-82">
+<h3>API tokens (admin, v0.29.82)<a class="headerlink" href="#api-tokens-admin-v0-29-82" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GET</span>  <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">tokens</span>
+<span class="n">POST</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">tokens</span>
+<span class="n">POST</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">tokens</span><span class="o">/</span><span class="p">{</span><span class="n">tokenID</span><span class="p">}</span><span class="o">/</span><span class="n">revoke</span>
+<span class="n">GET</span>  <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">token</span><span class="o">-</span><span class="n">settings</span>
+<span class="n">POST</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">token</span><span class="o">-</span><span class="n">settings</span>
+</pre></div>
+</div>
+<p>Operator-issued API tokens for people who need more than the per-IP limit
+(see “Rate limits” below). A token belongs to an existing account and
+authenticates as that account, with its repository scope; it is counted
+against its own hourly allowance instead of the per-IP limit.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/api-tokens</span></code> lists every granted token, newest first:
+<code class="docutils literal notranslate"><span class="pre">token_id</span></code>, <code class="docutils literal notranslate"><span class="pre">user_id</span></code>, <code class="docutils literal notranslate"><span class="pre">owner_login</span></code>, <code class="docutils literal notranslate"><span class="pre">label</span></code>, <code class="docutils literal notranslate"><span class="pre">created_by</span></code>,
+<code class="docutils literal notranslate"><span class="pre">created_by_login</span></code>, <code class="docutils literal notranslate"><span class="pre">created_at</span></code>, <code class="docutils literal notranslate"><span class="pre">expires_at</span></code>, <code class="docutils literal notranslate"><span class="pre">rate_limit_per_hour</span></code>,
+<code class="docutils literal notranslate"><span class="pre">last_used_at</span></code> and <code class="docutils literal notranslate"><span class="pre">revoked_at</span></code>, plus the current <code class="docutils literal notranslate"><span class="pre">settings</span></code>. It never
+carries a token or its hash: only the hash is stored.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/api-tokens</span></code> grants one. Body:
+<code class="docutils literal notranslate"><span class="pre">{&quot;user_id&quot;:</span> <span class="pre">12,</span> <span class="pre">&quot;label&quot;:</span> <span class="pre">&quot;who</span> <span class="pre">or</span> <span class="pre">what</span> <span class="pre">it</span> <span class="pre">is</span> <span class="pre">for&quot;,</span> <span class="pre">&quot;lifetime_days&quot;:</span> <span class="pre">30,</span> <span class="pre">&quot;rate_limit_per_hour&quot;:</span> <span class="pre">5000}</span></code>; the last two are optional and default to
+the current settings. Answers <code class="docutils literal notranslate"><span class="pre">201</span></code> with the token (<code class="docutils literal notranslate"><span class="pre">&quot;token&quot;:</span> <span class="pre">&quot;avx_…&quot;</span></code>), shown this once and sent <code class="docutils literal notranslate"><span class="pre">no-store</span></code>. <code class="docutils literal notranslate"><span class="pre">400</span></code> for a missing or
+unknown <code class="docutils literal notranslate"><span class="pre">user_id</span></code>, an empty <code class="docutils literal notranslate"><span class="pre">label</span></code> or one over 200 characters, a
+lifetime that is not 1 to 365 days, or an allowance that is not a
+positive number.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/{tokenID}/revoke</span></code> revokes a token: it stops working on its next
+call to any api process (every call with an API token rechecks it, one
+indexed lookup). Revoking a revoked token is a no-op; <code class="docutils literal notranslate"><span class="pre">404</span></code> for an
+unknown id.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span></code>/<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/api-token-settings</span></code> read and change the
+defaults the grant offers: <code class="docutils literal notranslate"><span class="pre">{&quot;default_rate_limit_per_hour&quot;:</span> <span class="pre">5000,</span> <span class="pre">&quot;default_lifetime_days&quot;:</span> <span class="pre">30}</span></code> (the allowance positive, the lifetime 1 to
+365 days; the values shown are the initial defaults).</p></li>
+</ul>
+<p>All five require an admin <strong>signed-in session</strong>: an API token, even one
+granted to an administrator, is refused (<code class="docutils literal notranslate"><span class="pre">403</span></code>) on every admin route — a
+token works as its owner for data, never to administer. Grants, revocations
+and changed defaults are logged with who did them; a refused token is
+logged once a minute per address, and a token over its allowance once per
+hour, never with the token itself.</p>
+</section>
 <section id="batch-statistics">
 <h3>Batch Statistics<a class="headerlink" href="#batch-statistics" title="Link to this heading"></a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET /api/v1/repos/stats?ids=1,2,3,42
@@ -2627,6 +2669,32 @@ classes: <code class="docutils literal notranslate"><span class="pre">in_scope</
 <code class="docutils literal notranslate"><span class="pre">uncollected</span></code> (submit a collection request).</p></li>
 </ul>
 </section>
+<section id="rate-limits">
+<h2>Rate limits<a class="headerlink" href="#rate-limits" title="Link to this heading"></a></h2>
+<p>The per-IP limit (<code class="docutils literal notranslate"><span class="pre">api.rate_limit_rps</span></code>, default 1 request per second with a
+burst of <code class="docutils literal notranslate"><span class="pre">api.rate_limit_burst</span></code>, default 10, and <code class="docutils literal notranslate"><span class="pre">api.rate_limit_daily</span></code>,
+default 1,000 per day) applies only to callers <strong>without a valid token</strong>
+(v0.29.82). Clients on an exempt network (<code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code>) are never
+limited.</p>
+<ul class="simple">
+<li><p><strong>A valid session token</strong> (signed in, below) is not counted at all.</p></li>
+<li><p><strong>An operator-issued API token</strong> (<code class="docutils literal notranslate"><span class="pre">Authorization:</span> <span class="pre">Bearer</span> <span class="pre">avx_…</span></code>) is
+counted against its own hourly allowance (5,000 calls per hour unless the
+operator set another), whatever address the calls come from. Each <code class="docutils literal notranslate"><span class="pre">api</span></code>
+process keeps its own count, so behind N api processes a token can make
+up to N times its allowance. Every
+answer carries <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Limit</span></code>, <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Remaining</span></code> and
+<code class="docutils literal notranslate"><span class="pre">X-RateLimit-Reset</span></code> (Unix seconds, when the current hour ends); past the
+allowance the answer is <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>. Ask the operator for
+one; it is granted to your account and shown once.</p></li>
+<li><p><strong>No token, an unknown token or an expired one</strong> is counted per IP, with
+<code class="docutils literal notranslate"><span class="pre">429</span></code> and <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> past the limit. An address over its limit that
+has just presented an invalid token gets its further tokens refused
+without a lookup for a minute, unless they are already known valid; such
+a refusal past the daily quota has a <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> of when that minute
+ends (an empty bucket’s refusal keeps <code class="docutils literal notranslate"><span class="pre">Retry-After:</span> <span class="pre">1</span></code>).</p></li>
+</ul>
+</section>
 <section id="authentication-getting-an-api-token">
 <h2>Authentication: getting an API token<a class="headerlink" href="#authentication-getting-an-api-token" title="Link to this heading"></a></h2>
 <p>When <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, every data endpoint (everything
@@ -2667,6 +2735,17 @@ gone”; retry the request.</p></li>
 <li><p>Each visit to <code class="docutils literal notranslate"><span class="pre">/auth/token</span></code> mints a <strong>new</strong> token; existing tokens
 keep working until they expire, so long-running scripts aren’t cut
 off when you log in elsewhere.</p></li>
+<li><p><strong>Signing out ends the token</strong> (v0.29.82): <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code>
+with the session token as the Bearer deletes it server-side (<code class="docutils literal notranslate"><span class="pre">204</span></code>; a
+missing token <code class="docutils literal notranslate"><span class="pre">401</span></code>, an API token <code class="docutils literal notranslate"><span class="pre">400</span></code> — an administrator revokes
+those; an already-invalid token gets <code class="docutils literal notranslate"><span class="pre">401</span></code> when <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is on,
+<code class="docutils literal notranslate"><span class="pre">204</span></code> otherwise). The GUI’s Sign out calls
+it. Before 0.29.82 a token copied before sign-out stayed valid for its
+30 days.</p></li>
+<li><p>Session tokens are stored only as their SHA-256 hash (v0.29.82): a
+read of the database, or a backup, yields nothing a caller can present.
+Upgrading signs nobody out; rolling back to an older release signs every
+API session out once.</p></li>
 <li><p>A token’s role and repository scope are cached for 60 seconds per
 process. An admin mutation, and (v0.29.68) an add through
 <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{id}/repos</span></code> that linked or queued repositories,
@@ -2681,7 +2760,12 @@ of your groups (pending included; approval gates new collection,
 not visibility of collected data). Administrators are unscoped.</p></li>
 <li><p><strong>Shared links (v0.27.82):</strong> requesting a repo outside your groups
 auto-adds it to your implicit <strong>“Shared with Me”</strong> group and the
-request proceeds — repo links are shareable between signed-in
+request proceeds (v0.29.82: at most 100 such additions per user per
+hour across Shared with Me, the compare’s Comparisons group and stars
+of repositories outside your groups — an organization entity counts
+once; past that the request is <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> and that
+addition is not made, though entities of the same request resolved
+before it were) — repo links are shareable between signed-in
 users (the Starred/Comparisons auto-add pattern, triggered by
 viewing). The response that performed the add carries a one-time
 <code class="docutils literal notranslate"><span class="pre">X-Aveloxis-Added-To-Group:</span> <span class="pre">Shared</span> <span class="pre">with</span> <span class="pre">Me</span></code> header (CORS-exposed)
@@ -2875,7 +2959,8 @@ signed-in user (Bearer required unconditionally). Idempotent.
 Starring a repo outside the caller’s groups auto-adds it to their
 implicit “Starred” group (created on first use) and the response
 carries <code class="docutils literal notranslate"><span class="pre">added_to_group:</span> <span class="pre">&quot;Starred&quot;</span></code> — approval only ever gates NEW
-collection, and stars can only target already-collected repos, so
+collection, and stars can only target already-collected repos (a star
+of an id that names no repository is <code class="docutils literal notranslate"><span class="pre">404</span></code>, v0.29.82), so
 no approval is involved. Unstarring never removes the repo from
 the group (scope stays until the user prunes the group).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/star</span></code> — <code class="docutils literal notranslate"><span class="pre">{&quot;starred&quot;:</span> <span class="pre">bool}</span></code>, the

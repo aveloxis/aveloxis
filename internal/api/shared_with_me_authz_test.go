@@ -138,8 +138,8 @@ func TestAuthorizeRepoAutoAddSkipsAdminAndInScope(t *testing.T) {
 	}
 }
 
-// TestAuthorizeRepoAutoAddSourceContract pins the wiring: cache
-// invalidation on a fresh share (auth + per-user home cache), the
+// TestAuthorizeRepoAutoAddSourceContract pins the wiring: the caller's
+// cache invalidation on a fresh share (auth + per-user home cache), the
 // nil-seam guard, and the negative tripwire that auth.go never grows
 // collection machinery.
 func TestAuthorizeRepoAutoAddSourceContract(t *testing.T) {
@@ -147,7 +147,7 @@ func TestAuthorizeRepoAutoAddSourceContract(t *testing.T) {
 	body := extractFuncBody(t, src, "authorizeRepo")
 	for _, needle := range []string{
 		"EnsureRepoSharedWithUser(",
-		"invalidateAll()",
+		"invalidateUser(info.UserID)", // 0.29.82 ASVS review A2: only the caller's cache, never every user's
 		"homeCache.invalidate(",
 		"sharedWithMe != nil",
 	} {

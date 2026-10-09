@@ -12,6 +12,10 @@ package db
 // api process validates the same token from the SPA's Authorization
 // Bearer header. DB-backed also fixes the long-standing "restart web
 // and everyone is logged out" limitation of in-memory sessions.
+//
+// v0.29.82: the table holds only the SHA-256 hex of each token
+// (hashToken); the raw token exists only in the caller's hands. Every
+// lookup hashes what it is given.
 
 import (
 	"context"
@@ -45,7 +49,7 @@ func (s *PostgresStore) CreateSessionToken(ctx context.Context, userID int, life
 	now := time.Now().Unix()
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO aveloxis_ops.user_session_tokens (token, user_id, created_at, expiration)
-		VALUES ($1, $2, $3, $4)`, token, userID, now, now+int64(lifetime.Seconds()))
+		VALUES ($1, $2, $3, $4)`, hashToken(token), userID, now, now+int64(lifetime.Seconds()))
 	if err != nil {
 		return "", fmt.Errorf("create session token: %w", err)
 	}
@@ -65,7 +69,7 @@ func (s *PostgresStore) ValidateSessionToken(ctx context.Context, token string) 
 	var userID int
 	err := s.pool.QueryRow(ctx, `
 		SELECT user_id FROM aveloxis_ops.user_session_tokens
-		WHERE token = $1 AND expiration > $2`, token, time.Now().Unix()).Scan(&userID)
+		WHERE token = $1 AND expiration > $2`, hashToken(token), time.Now().Unix()).Scan(&userID)
 	if err != nil {
 		// Only "no such row" is the sentinel (SR-5; worklist follow-up 6,
 		// review round 1): a lost connection or a cancelled context is the
@@ -81,7 +85,7 @@ func (s *PostgresStore) ValidateSessionToken(ctx context.Context, token string) 
 // DeleteSessionToken revokes one token (logout).
 func (s *PostgresStore) DeleteSessionToken(ctx context.Context, token string) error {
 	_, err := s.pool.Exec(ctx,
-		`DELETE FROM aveloxis_ops.user_session_tokens WHERE token = $1`, token)
+		`DELETE FROM aveloxis_ops.user_session_tokens WHERE token = $1`, hashToken(token))
 	return err
 }
 

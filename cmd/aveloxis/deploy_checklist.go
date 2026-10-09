@@ -539,6 +539,10 @@ var deployChecklists = map[string][]deployStep{
 	// (Go 1.26.9, golang.org/x/net v0.60.0) and Copilot review 5472987053 —
 	// the limiter maps stay bounded, a link that adds nothing spends no
 	// auto-add slot. No schema change.
+	// v0.29.84 (2026-10-09, branch tokenizer): Copilot review 5475865946 —
+	// a cached API token is never deferred behind a busy address; a partial
+	// organization link drops the cached scope. No schema change.
+	"0.29.84": v02984DeployChecklist,
 	"0.29.83": v02983DeployChecklist,
 	"0.29.82": v02982DeployChecklist,
 	"0.29.81": v02981DeployChecklist,
@@ -559,6 +563,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02984DeployChecklist is 0.29.83's ladder with a note on the start step.
+var v02984DeployChecklist = func() []deployStep {
+	prev := v02983DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.84: an API token already validated in the last minute is counted against its own hourly allowance even when its address has just sent a bad token and run out of its limit (it used to get the address's 429). No schema change and no new configuration. A fleet already running 0.29.83 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02983DeployChecklist is 0.29.82's ladder (which a fleet that skipped
 // 0.29.82 still needs) with a note on the start step.

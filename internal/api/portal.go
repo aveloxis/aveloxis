@@ -940,12 +940,10 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		if gerr == nil {
 			linked, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
 		}
-		if !linked && s.autoAdds != nil {
-			// Nothing was linked (an error, or already linked behind a
-			// stale cached scope or a concurrent star: Copilot review
-			// 5472987053 on PR #228): the slot comes back.
-			s.autoAdds.refund(slot)
-		}
+		// Nothing linked (an error, or already linked behind a stale cached
+		// scope or a concurrent star: Copilot review 5472987053 on PR #228)
+		// gives the slot back; the cached scope is dropped per settleAutoAdd.
+		s.settleAutoAdd(info.UserID, slot, linked, gerr)
 		if gerr != nil {
 			s.serverError(w, r, "handleStarRepo", gerr)
 			return
@@ -953,10 +951,6 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		if linked {
 			addedToGroup = db.StarredGroupName
 		}
-		// Scope changed (or the cached scope was stale) — the user's
-		// cached token validation must re-resolve so their next data
-		// request sees the repo.
-		s.auth.invalidateUser(info.UserID)
 	}
 	if r.Method == http.MethodDelete {
 		err = s.store.UnstarRepo(r.Context(), info.UserID, repoID)

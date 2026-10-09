@@ -276,3 +276,41 @@ func TestDeferredButAdmittedRequestIsLookedUp(t *testing.T) {
 		t.Fatalf("a deferred, admitted request = %d after %d lookups; want 200 after one lookup", w.Code, store.validates.Load())
 	}
 }
+
+// Copilot review 5475865946 on PR #228 (MEDIUM): identify took a cached
+// identity before the junk-token deferral only for SESSION tokens, so a
+// cached, valid API token behind an address that had just sent a bad token
+// and run out of its limit was deferred and given the address's 429 instead
+// of being rechecked and charged to its own allowance. Only UNCACHED tokens
+// are deferred: a cached one was valid within authCacheTTL, which a caller
+// cannot fabricate, and its recheck is one indexed lookup.
+func TestCachedAPITokenBehindADeferringAddressIsServed(t *testing.T) {
+	tok := db.APITokenPrefix + "good"
+	store := &fakeSessionStore{userID: 7, apiValid: map[string]db.APITokenIdentity{
+		tok: {TokenID: 41, UserID: 7, RateLimitPerHour: 100},
+	}}
+	h, _ := tokenChain(t, store, tightLimits)
+	addr := "203.0.113.40:1"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, tokenReq(addr, tok)) // validated and cached
+	if w.Code != http.StatusOK {
+		t.Fatalf("first API-token call = %d", w.Code)
+	}
+	for i := 0; i < 3; i++ { // someone else on the address empties its bucket
+		h.ServeHTTP(httptest.NewRecorder(), tokenReq(addr, ""))
+	}
+	h.ServeHTTP(httptest.NewRecorder(), tokenReq(addr, "junk")) // and sends a bad token
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, tokenReq(addr, tok))
+	if w.Code != http.StatusOK || w.Header().Get("X-RateLimit-Limit") != "100" {
+		t.Fatalf("a cached API token behind a deferring address = %d (limit header %q), want 200 charged to the token", w.Code, w.Header().Get("X-RateLimit-Limit"))
+	}
+	// Junk from the same address is still deferred.
+	before := store.validates.Load()
+	for i := 0; i < 5; i++ {
+		h.ServeHTTP(httptest.NewRecorder(), tokenReq(addr, "junk-"+strconv.Itoa(i)))
+	}
+	if n := store.validates.Load() - before; n > 0 {
+		t.Fatalf("uncached junk tokens from the deferring address cost %d lookups, want 0", n)
+	}
+}

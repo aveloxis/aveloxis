@@ -151,10 +151,14 @@ func TestAutoAddInvalidatesOnlyThatUser(t *testing.T) {
 	if _, ok := a.cached("a"); ok {
 		t.Fatal("invalidating user 7 must drop user 7's cached validation")
 	}
-	body := mustReadFile(t, "auth.go")
+	body := srctest.StripGoComments(mustReadFile(t, "auth.go"))
 	fn := body[strings.Index(body, "func (s *Server) authorizeRepo("):]
 	fn = fn[:strings.Index(fn, "\n}\n")]
-	if strings.Contains(fn, "invalidateAll()") || !strings.Contains(fn, "s.auth.invalidateUser(info.UserID)") {
+	// Since 0.29.84 the drop is settleAutoAdd's, which calls invalidateUser
+	// (TestSettleAutoAddAfterAPartialLink pins that it drops this user).
+	settle := srctest.StripGoComments(srctest.FuncBody(t, mustReadFile(t, "auto_add_limit.go"), "func (s *Server) settleAutoAdd("))
+	if strings.Contains(fn, "invalidateAll()") || strings.Contains(settle, "invalidateAll()") ||
+		!strings.Contains(fn, "s.settleAutoAdd(info.UserID, ") || !strings.Contains(settle, "s.auth.invalidateUser(userID)") {
 		t.Fatal("authorizeRepo's auto-add must invalidate only the caller (invalidateUser), never every user")
 	}
 }
@@ -434,6 +438,109 @@ func TestSharedWithMeViewThatAddsNothingSpendsNoSlot(t *testing.T) {
 			}
 			if got := s.autoAdds.windows[42].count; got != 0 {
 				t.Fatalf("two views that added nothing spent %d slots, want 0", got)
+			}
+		})
+	}
+}
+
+// Copilot review 5475865946 on PR #228 (MEDIUM): an organization's links
+// could commit one or more rows and then fail; the error path returned
+// before the user's cached scope was dropped, so later requests ran on the
+// stale scope (and a retry spent another slot). settleAutoAdd is the one
+// rule both multi-step link sites use: something linked → the scope is
+// dropped and the slot kept, error or not; nothing linked → the slot comes
+// back (and a stale scope is dropped when the store answered).
+func TestSettleAutoAddAfterAPartialLink(t *testing.T) {
+	cases := []struct {
+		name        string
+		linkedAny   bool
+		err         error
+		wantDropped bool
+		wantSlots   int
+	}{
+		{"partial link then error", true, io.ErrUnexpectedEOF, true, 1},
+		{"linked", true, nil, true, 1},
+		{"nothing new (stale scope)", false, nil, true, 0},
+		{"failed before any link", false, io.ErrUnexpectedEOF, false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeSessionStore{userID: 7, valid: map[string]bool{"sess": true}}
+			s := &Server{auth: newAuthenticator(store, false, nil), autoAdds: newAutoAddLimiter()}
+			if _, err := s.auth.resolveToken(context.Background(), "sess"); err != nil {
+				t.Fatal(err)
+			}
+			slot, _, _ := s.autoAdds.reserve(7)
+			s.settleAutoAdd(7, slot, tc.linkedAny, tc.err)
+			_, still := s.auth.cached("sess")
+			if still == tc.wantDropped {
+				t.Fatalf("cached scope kept=%v, want dropped=%v", still, tc.wantDropped)
+			}
+			if got := s.autoAdds.windows[7].count; got != tc.wantSlots {
+				t.Fatalf("slots spent = %d, want %d", got, tc.wantSlots)
+			}
+		})
+	}
+}
+
+// Both multi-step implicit link sites settle through settleAutoAdd BEFORE
+// their error return (wiring for the behavior above).
+func TestMultiStepLinkSitesSettleBeforeTheErrorReturn(t *testing.T) {
+	for file, fn := range map[string]string{
+		"internal/api/analytics.go": "func (s *Server) resolveEntityRepos(",
+		"internal/api/portal.go":    "func (s *Server) handleStarRepo(",
+	} {
+		body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, file), fn))
+		settle := strings.Index(body, "s.settleAutoAdd(info.UserID, slot, ")
+		link := strings.Index(body, "AddRepoToGroupByID(")
+		if settle < 0 || link < 0 || settle < link {
+			t.Fatalf("%s: settleAutoAdd must follow the link (settle at %d, link at %d)", fn, settle, link)
+		}
+		if after := body[link:settle]; strings.Contains(after, "return") {
+			t.Fatalf("%s: a return between the link and settleAutoAdd skips the settlement", fn)
+		}
+	}
+}
+
+// L10 round 1 on 0.29.84 (LOW): authorizeRepo dropped the cached scope only
+// when it ADDED; a repository already in the user's groups (linked by an org
+// scan or another process) behind a stale cached scope kept reserving and
+// refunding a slot on every request for up to authCacheTTL — a page's
+// parallel requests near the cap drew spurious 429s. It settles through
+// settleAutoAdd like the other two sites.
+func TestSharedWithMeAlreadyLinkedDropsTheStaleScope(t *testing.T) {
+	// Every answer of the store (L10 round 2: the "added" arm had only
+	// comment-blind source pins).
+	for _, tc := range []struct {
+		name        string
+		fake        *fakeSharedWithMe
+		wantServed  bool
+		wantDropped bool
+		wantSlots   int
+	}{
+		{"added", &fakeSharedWithMe{added: true}, true, true, 1},
+		{"already linked", &fakeSharedWithMe{added: false}, true, true, 0},
+		{"no such repository", &fakeSharedWithMe{err: db.ErrSharedRepoNotFound}, false, false, 0},
+		{"store error", &fakeSharedWithMe{err: io.ErrUnexpectedEOF}, false, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeSessionStore{userID: 42, valid: map[string]bool{"sess": true}}
+			s := autoAddServer(tc.fake)
+			s.auth = newAuthenticator(store, false, nil)
+			s.autoAdds = newAutoAddLimiter()
+			if _, err := s.auth.resolveToken(context.Background(), "sess"); err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/5/stats", nil)
+			r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: 42, Scope: map[int64]bool{}}))
+			if got := s.authorizeRepo(httptest.NewRecorder(), r, 5); got != tc.wantServed {
+				t.Fatalf("served = %v, want %v", got, tc.wantServed)
+			}
+			if _, still := s.auth.cached("sess"); still == tc.wantDropped {
+				t.Fatalf("cached scope kept = %v, want dropped = %v", still, tc.wantDropped)
+			}
+			if got := s.autoAdds.windows[42].count; got != tc.wantSlots {
+				t.Fatalf("slots spent = %d, want %d", got, tc.wantSlots)
 			}
 		})
 	}

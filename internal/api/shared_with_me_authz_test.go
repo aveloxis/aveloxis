@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 type fakeSharedWithMe struct {
@@ -144,10 +145,10 @@ func TestAuthorizeRepoAutoAddSkipsAdminAndInScope(t *testing.T) {
 // collection machinery.
 func TestAuthorizeRepoAutoAddSourceContract(t *testing.T) {
 	src := mustReadFile(t, "auth.go")
-	body := extractFuncBody(t, src, "authorizeRepo")
+	body := srctest.StripGoComments(extractFuncBody(t, src, "authorizeRepo"))
 	for _, needle := range []string{
 		"EnsureRepoSharedWithUser(",
-		"invalidateUser(info.UserID)", // 0.29.82 ASVS review A2: only the caller's cache, never every user's
+		"s.settleAutoAdd(info.UserID, slot, added, err)", // only the caller's cache (0.29.82 A2); settleAutoAdd since 0.29.84
 		"homeCache.invalidate(",
 		"sharedWithMe != nil",
 	} {

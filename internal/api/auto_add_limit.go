@@ -90,6 +90,22 @@ func (l *autoAddLimiter) refund(slot autoAddSlot) {
 	}
 }
 
+// settleAutoAdd is the one rule after every implicit link (Shared with Me,
+// Comparisons, Starred; the Comparisons link may write several rows). Something
+// linked: the user's cached scope is dropped and the slot kept, whether or
+// not a later link failed (Copilot review 5475865946 on PR #228: the error
+// path returned first and left the stale scope). Nothing linked: the slot
+// comes back, and when the store answered (the repository was already
+// linked behind a stale cached scope) that scope is dropped too.
+func (s *Server) settleAutoAdd(userID int, slot autoAddSlot, linkedAny bool, err error) {
+	if !linkedAny && s.autoAdds != nil {
+		s.autoAdds.refund(slot)
+	}
+	if (linkedAny || err == nil) && s.auth != nil {
+		s.auth.invalidateUser(userID)
+	}
+}
+
 // refuseAutoAdd answers a request whose auto-add the cap refused: 429, its
 // Retry-After, never stored.
 func refuseAutoAdd(w http.ResponseWriter, retry int) {

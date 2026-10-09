@@ -35,11 +35,12 @@ import (
 // TestResolveEntityReposAutoAddsToComparisons pins the wiring in
 // resolveEntityRepos: find-or-create the Comparisons group, add the
 // resolved repos by id, bust the auth cache so the user's next
-// request sees the new scope.
+// request sees the new scope. Since 0.29.84 the cache bust is
+// settleAutoAdd's (its behavior: TestSettleAutoAddAfterAPartialLink).
 func TestResolveEntityReposAutoAddsToComparisons(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
 	body := extractFuncBody(t, src, "resolveEntityRepos")
-	for _, needle := range []string{"FindOrCreateComparisonsGroup(", "AddRepoToGroupByID(", "invalidateUser(info.UserID)"} {
+	for _, needle := range []string{"FindOrCreateComparisonsGroup(", "AddRepoToGroupByID(", "s.settleAutoAdd(info.UserID, slot, "} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("resolveEntityRepos out-of-scope branch must auto-add via %s (v0.27.4 Starred-flow pattern), not 403", needle)
 		}

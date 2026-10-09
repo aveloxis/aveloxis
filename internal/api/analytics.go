@@ -327,17 +327,11 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 					linkedAny = linkedAny || linked
 				}
 			}
-			if !linkedAny && s.autoAdds != nil {
-				s.autoAdds.refund(slot)
-			}
+			s.settleAutoAdd(info.UserID, slot, linkedAny, err)
 			if err != nil {
 				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false
 			}
-			// Scope changed (or the cached scope was stale) — this user's
-			// cached validations must re-resolve so their next request
-			// sees the repos.
-			s.auth.invalidateUser(info.UserID)
 			if !linkedAny {
 				return collected, "", true
 			}

@@ -83,19 +83,27 @@ func resolutionOf(r *http.Request) (resolution, bool) {
 var errLookupDeferred = errors.New("token lookup deferred: the address is over its limit")
 
 // identify resolves the request's Bearer token once and records the answer
-// for the layers after it. It refuses nothing itself. A token already in
-// the cache costs nothing; an uncached one from an address over its limit
-// that recently sent an invalid token is not looked up (rl.deferLookup).
+// for the layers after it. It refuses nothing itself. A session token in
+// the cache costs nothing and a cached API token one recheck; an UNCACHED
+// token from an address over its limit that recently sent an invalid token
+// is not looked up (rl.deferLookup). A cached API token is never deferred
+// (Copilot review 5475865946 on PR #228): it was valid within authCacheTTL,
+// which a caller cannot fabricate, and deferring it handed a valid token
+// the address's 429 instead of its own allowance.
 func (a *authenticator) identify(rl *rateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		res := resolution{}
 		if tok := bearerToken(r); tok != "" {
 			res.presented = true
-			if info, ok := a.cached(tok); ok && info.APITokenID == 0 {
+			info, cached := a.cached(tok)
+			switch {
+			case cached && info.APITokenID == 0:
 				res.info = info
-			} else if rl != nil && rl.deferLookup(r) {
+			case cached: // an API token: rechecked, never deferred
+				res.info, res.err = a.resolveToken(r.Context(), tok)
+			case rl != nil && rl.deferLookup(r):
 				res.err = errLookupDeferred
-			} else {
+			default:
 				res.info, res.err = a.resolveToken(r.Context(), tok)
 				if errors.Is(res.err, errInvalidToken) && rl != nil {
 					rl.noteBadToken(r, tokenKind(tok))
@@ -434,18 +442,15 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 			}
 		}
 		added, err := s.sharedWithMe.EnsureRepoSharedWithUser(r.Context(), info.UserID, repoID)
-		if (err != nil || !added) && s.autoAdds != nil {
-			s.autoAdds.refund(slot) // nothing was added: the slot comes back
-		}
+		// Nothing added gives the slot back; the user's cached scope is
+		// dropped when it changed or was stale (already linked) — only
+		// theirs (the 0.29.82 review A2; one rule with the other implicit
+		// link sites since 0.29.84).
+		s.settleAutoAdd(info.UserID, slot, added, err)
 		switch {
 		case err == nil:
 			if added {
-				// Scope changed: this user's cached validations must
-				// re-resolve (only theirs: the 0.29.82 review A2), and
-				// their home list now includes the shared repo.
-				if s.auth != nil {
-					s.auth.invalidateUser(info.UserID)
-				}
+				// Their home list now includes the shared repo.
 				s.homeCache.invalidate(info.UserID)
 				// The notice is for this caller alone: the answer that carries
 				// it is never stored (the cached routes already re-mark it;

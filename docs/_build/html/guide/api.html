@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.82 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.83 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=cf6325c2"></script>
+      <script src="../_static/documentation_options.js?v=6b1ba1db"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2589,8 +2589,9 @@ and logs under <code class="docutils literal notranslate"><span class="pre">~/.a
 OAuth, the first admin, upgrades — is
 <a class="reference internal" href="../getting-started/deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
 <p>Each <code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps its own state: the per-repository response cache
-(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
-authorization cache. Several instances behind a load balancer each compute
+(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets (per IP,
+per API token and the per-user cap on repositories added by viewing them;
+all start over when the process restarts) and a short authorization cache. Several instances behind a load balancer each compute
 and hold their own answers, and the per-IP limits are per instance; run one
 per host unless that is what you want.</p>
 <p>The web GUI’s charts fetch the API through the web process, which proxies
@@ -2763,7 +2764,9 @@ auto-adds it to your implicit <strong>“Shared with Me”</strong> group and th
 request proceeds (v0.29.82: at most 100 such additions per user per
 hour across Shared with Me, the compare’s Comparisons group and stars
 of repositories outside your groups — an organization entity counts
-once; past that the request is <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> and that
+once, and a request that links nothing new counts nothing; each <code class="docutils literal notranslate"><span class="pre">api</span></code>
+process keeps its own count, which starts over when it restarts; past
+that the request is <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> and that
 addition is not made, though entities of the same request resolved
 before it were) — repo links are shareable between signed-in
 users (the Starred/Comparisons auto-add pattern, triggered by

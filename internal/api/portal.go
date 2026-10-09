@@ -926,26 +926,36 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		}
 		// A signed-in session is not rate limited (0.29.82): the implicit
 		// link is capped per user before it writes (the ASVS review's A2).
+		var slot autoAddSlot // the window a refund goes back to
 		if s.autoAdds != nil {
-			if ok, retry := s.autoAdds.reserve(info.UserID); !ok {
+			var ok bool
+			var retry int
+			if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
 				refuseAutoAdd(w, retry)
 				return
 			}
 		}
+		linked := false
 		gid, gerr := s.store.FindOrCreateStarredGroup(r.Context(), info.UserID)
 		if gerr == nil {
-			_, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+			linked, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+		}
+		if !linked && s.autoAdds != nil {
+			// Nothing was linked (an error, or already linked behind a
+			// stale cached scope or a concurrent star: Copilot review
+			// 5472987053 on PR #228): the slot comes back.
+			s.autoAdds.refund(slot)
 		}
 		if gerr != nil {
-			if s.autoAdds != nil {
-				s.autoAdds.refund(info.UserID)
-			}
 			s.serverError(w, r, "handleStarRepo", gerr)
 			return
 		}
-		addedToGroup = db.StarredGroupName
-		// Scope changed — the user's cached token validation must
-		// re-resolve so their next data request sees the repo.
+		if linked {
+			addedToGroup = db.StarredGroupName
+		}
+		// Scope changed (or the cached scope was stale) — the user's
+		// cached token validation must re-resolve so their next data
+		// request sees the repo.
 		s.auth.invalidateUser(info.UserID)
 	}
 	if r.Method == http.MethodDelete {

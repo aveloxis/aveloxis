@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/srctest"
@@ -232,7 +233,7 @@ func TestAutoAddCapHoldsUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ok, _ := l.reserve(7); ok {
+			if _, ok, _ := l.reserve(7); ok {
 				mu.Lock()
 				granted++
 				mu.Unlock()
@@ -243,8 +244,8 @@ func TestAutoAddCapHoldsUnderConcurrency(t *testing.T) {
 	if granted != sharedWithMeAddsPerHour {
 		t.Fatalf("%d concurrent auto-adds were granted, want exactly %d", granted, sharedWithMeAddsPerHour)
 	}
-	l.refund(7) // nothing was added: the slot comes back
-	if ok, _ := l.reserve(7); !ok {
+	l.refund(autoAddSlot{userID: 7, start: l.windows[7].start}) // nothing was added: the slot comes back
+	if _, ok, _ := l.reserve(7); !ok {
 		t.Fatal("a refunded slot must be reservable again")
 	}
 }
@@ -344,5 +345,96 @@ func TestGlobalCacheFlushIsAdminOnly(t *testing.T) {
 			}
 			i += 1 + next
 		}
+	}
+}
+
+// Copilot review 5472987053 on PR #228 (HIGH): the per-user auto-add map
+// and the per-token window map dropped only ENDED windows when full, so
+// with every window still active the map grew past maxTrackedIPs without
+// bound. Both now go through one bound that also evicts the window started
+// earliest (the least allowance left to give back).
+func TestWindowMapsStayBoundedWhenEveryWindowIsActive(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	l := newAutoAddLimiter()
+	l.now = func() time.Time { return now }
+	for u := 0; u < maxTrackedIPs+50; u++ {
+		l.reserve(u)
+		now = now.Add(time.Millisecond) // all inside one hour: every window is active
+	}
+	if got := len(l.windows); got > maxTrackedIPs {
+		t.Fatalf("auto-add map holds %d windows, bound is %d", got, maxTrackedIPs)
+	}
+	if _, kept := l.windows[maxTrackedIPs+49]; !kept {
+		t.Fatal("the newest user's window must be kept")
+	}
+	if _, kept := l.windows[0]; kept {
+		t.Fatal("the earliest-started window should be the one evicted")
+	}
+
+	rl := &rateLimiter{now: func() time.Time { return now }}
+	for id := int64(0); id < maxTrackedIPs+50; id++ {
+		rl.allowToken(id, 1, 5000)
+		now = now.Add(time.Millisecond)
+	}
+	if got := len(rl.tokenWindows); got > maxTrackedIPs {
+		t.Fatalf("API-token map holds %d windows, bound is %d", got, maxTrackedIPs)
+	}
+}
+
+// L10 round 1 on the 0.29.83 fixes (LOW): a refund looked up the user's
+// CURRENT window, so a reservation made in one hour and refunded in the
+// next took a slot off the new hour's real adds, and a refund for an
+// evicted window created a window (and could evict another user's). A
+// refund now gives back only to the window it was charged to.
+func TestAutoAddRefundReturnsToTheWindowItCameFrom(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 59, 59, 0, time.UTC)
+	l := newAutoAddLimiter()
+	l.now = func() time.Time { return now }
+	stale, ok, _ := l.reserve(7) // charged to the window that starts now
+	if !ok {
+		t.Fatal("first reservation refused")
+	}
+	now = now.Add(autoAddWindow + time.Second) // the window (started at the first reservation) has ended
+	if _, ok, _ := l.reserve(7); !ok {
+		t.Fatal("first reservation of the new window refused")
+	}
+	l.refund(stale)
+	if got := l.windows[7].count; got != 1 {
+		t.Fatalf("refunding last hour's slot changed this hour's count to %d, want 1", got)
+	}
+	l.refund(autoAddSlot{userID: 8, start: now}) // a user with no window
+	if _, made := l.windows[8]; made {
+		t.Fatal("a refund must never create a window")
+	}
+}
+
+// L10 round 2 on the 0.29.83 fixes (LOW): the Shared-with-Me refund was
+// unpinned — a zero slot passed to refund silently refunded nothing and the
+// package stayed green. A view that adds nothing (already shared behind a
+// stale scope) or fails spends no slot.
+func TestSharedWithMeViewThatAddsNothingSpendsNoSlot(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fake *fakeSharedWithMe
+	}{
+		{"already shared", &fakeSharedWithMe{added: false}},
+		{"store error", &fakeSharedWithMe{err: io.ErrUnexpectedEOF}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := autoAddServer(tc.fake)
+			s.autoAdds = newAutoAddLimiter()
+			info := authInfo{UserID: 42, Scope: map[int64]bool{}}
+			for i := 0; i < 2; i++ {
+				r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/5/stats", nil)
+				r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, info))
+				s.authorizeRepo(httptest.NewRecorder(), r, 5)
+			}
+			if len(tc.fake.calls) != 2 {
+				t.Fatalf("store called %d times, want 2", len(tc.fake.calls))
+			}
+			if got := s.autoAdds.windows[42].count; got != 0 {
+				t.Fatalf("two views that added nothing spent %d slots, want 0", got)
+			}
+		})
 	}
 }

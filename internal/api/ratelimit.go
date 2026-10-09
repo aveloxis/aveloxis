@@ -238,14 +238,7 @@ func (rl *rateLimiter) allowToken(tokenID int64, userID, limit int) (bool, int, 
 	}
 	w, ok := rl.tokenWindows[tokenID]
 	if !ok || !now.Before(w.start.Add(apiTokenWindow)) {
-		if len(rl.tokenWindows) >= maxTrackedIPs {
-			// Bounded like the per-IP map: drop windows that have ended.
-			for id, old := range rl.tokenWindows {
-				if !now.Before(old.start.Add(apiTokenWindow)) {
-					delete(rl.tokenWindows, id)
-				}
-			}
-		}
+		boundWindows(rl.tokenWindows, now, apiTokenWindow)
 		w = &tokenWindow{start: now}
 		rl.tokenWindows[tokenID] = w
 	}
@@ -260,6 +253,35 @@ func (rl *rateLimiter) allowToken(tokenID int64, userID, limit int) (bool, int, 
 	}
 	w.count++
 	return true, limit - w.count, reset
+}
+
+// boundWindows makes room for one more window in a full map: it drops the
+// windows that have ended and, when every window is still active, the one
+// that started earliest (the least allowance left to give back). Without
+// the second step the map grew past maxTrackedIPs whenever all windows were
+// active (Copilot review 5472987053 on PR #228). An evicted key starts a
+// fresh window on its next call; reaching that needs maxTrackedIPs keys
+// active at once, each a real account or an issued token. Called with the
+// owner's mutex held.
+func boundWindows[K comparable](m map[K]*tokenWindow, now time.Time, span time.Duration) {
+	if len(m) < maxTrackedIPs {
+		return
+	}
+	for k, w := range m {
+		if !now.Before(w.start.Add(span)) {
+			delete(m, k)
+		}
+	}
+	for len(m) >= maxTrackedIPs {
+		var oldestKey K
+		var oldest *tokenWindow
+		for k, w := range m {
+			if oldest == nil || w.start.Before(oldest.start) {
+				oldestKey, oldest = k, w
+			}
+		}
+		delete(m, oldestKey)
+	}
 }
 
 func (rl *rateLimiter) clock() time.Time {

@@ -424,15 +424,18 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 		// A signed-in session is not rate limited (0.29.82), so each user's
 		// auto-adds are capped before anything is written (ASVS V2.4.1, the
 		// 0.29.82 review A2).
+		var slot autoAddSlot // the window a refund goes back to
 		if s.autoAdds != nil {
-			if ok, retry := s.autoAdds.reserve(info.UserID); !ok {
+			var ok bool
+			var retry int
+			if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
 				refuseAutoAdd(w, retry)
 				return false
 			}
 		}
 		added, err := s.sharedWithMe.EnsureRepoSharedWithUser(r.Context(), info.UserID, repoID)
 		if (err != nil || !added) && s.autoAdds != nil {
-			s.autoAdds.refund(info.UserID) // nothing was added: the slot comes back
+			s.autoAdds.refund(slot) // nothing was added: the slot comes back
 		}
 		switch {
 		case err == nil:

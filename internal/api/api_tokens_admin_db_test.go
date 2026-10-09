@@ -287,7 +287,80 @@ func TestStarOfAMissingRepositoryIs404AndWritesNothing(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id = $1)`, owner)
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, owner)
 	})
-	if ok, _ := s.autoAdds.reserve(owner); !ok {
+	if _, ok, _ := s.autoAdds.reserve(owner); !ok {
 		t.Fatal("the refused star must not have spent a slot")
+	}
+}
+
+// Copilot review 5472987053 on PR #228 (MEDIUM, two sites): an implicit link
+// that inserts nothing — the repository was already linked, but the
+// caller's cached scope was stale or a concurrent request linked it first —
+// spent a slot of the auto-add cap, and the star reported it as added. The
+// slot comes back and no "added" marker is sent when nothing was linked.
+func TestImplicitLinkThatAddsNothingSpendsNoSlot(t *testing.T) {
+	s, store, _, owner := apiTokenAdminServer(t)
+	ctx := context.Background()
+	var repoID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avnooplink/r', 'r', '_avnooplink', 1) RETURNING repo_id`).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id = $1)`, owner)
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`, owner)
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, owner)
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+	stale := authInfo{UserID: owner, Scope: map[int64]bool{}} // never sees the link it made
+	slotsUsed := func() int {
+		s.autoAdds.mu.Lock()
+		defer s.autoAdds.mu.Unlock()
+		if w := s.autoAdds.windows[owner]; w != nil {
+			return w.count
+		}
+		return 0
+	}
+
+	star := func() map[string]any {
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/repos/"+strconv.FormatInt(repoID, 10)+"/star", nil)
+		r.SetPathValue("repoID", strconv.FormatInt(repoID, 10))
+		r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, stale))
+		w := httptest.NewRecorder()
+		s.handleStarRepo(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("star = %d %s", w.Code, w.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return out
+	}
+	if first := star(); first["added_to_group"] != db.StarredGroupName {
+		t.Fatalf("the first star of an out-of-scope repository = %v, want added_to_group", first)
+	}
+	if second := star(); second["added_to_group"] != nil {
+		t.Fatalf("a star that linked nothing reported added_to_group: %v", second)
+	}
+	if got := slotsUsed(); got != 1 {
+		t.Fatalf("two stars, one link: %d slots spent, want 1", got)
+	}
+
+	resolve := func() string {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/compare", nil)
+		r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, stale))
+		ids, added, ok := s.resolveEntityRepos(httptest.NewRecorder(), r, entity{Kind: "repo", RepoID: repoID, Label: "r"})
+		if !ok || len(ids) != 1 {
+			t.Fatalf("resolveEntityRepos = %v, %v", ids, ok)
+		}
+		return added
+	}
+	if added := resolve(); added != db.ComparisonsGroupName {
+		t.Fatalf("the first comparison of an out-of-scope repository added %q, want %q", added, db.ComparisonsGroupName)
+	}
+	if added := resolve(); added != "" {
+		t.Fatalf("a comparison that linked nothing reported %q as added", added)
+	}
+	if got := slotsUsed(); got != 2 {
+		t.Fatalf("after one star link and one comparison link: %d slots spent, want 2", got)
 	}
 }

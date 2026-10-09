@@ -759,8 +759,9 @@ OAuth, the first admin, upgrades — is
 [Production Deployment](../getting-started/deployment.md).
 
 Each `api` process keeps its own state: the per-repository response cache
-(up to `api.response_cache_mb`, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
-authorization cache. Several instances behind a load balancer each compute
+(up to `api.response_cache_mb`, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets (per IP,
+per API token and the per-user cap on repositories added by viewing them;
+all start over when the process restarts) and a short authorization cache. Several instances behind a load balancer each compute
 and hold their own answers, and the per-IP limits are per instance; run one
 per host unless that is what you want.
 
@@ -935,7 +936,9 @@ Token semantics:
   request proceeds (v0.29.82: at most 100 such additions per user per
   hour across Shared with Me, the compare's Comparisons group and stars
   of repositories outside your groups — an organization entity counts
-  once; past that the request is `429` with `Retry-After` and that
+  once, and a request that links nothing new counts nothing; each `api`
+  process keeps its own count, which starts over when it restarts; past
+  that the request is `429` with `Retry-After` and that
   addition is not made, though entities of the same request resolved
   before it were) — repo links are shareable between signed-in
   users (the Starred/Comparisons auto-add pattern, triggered by

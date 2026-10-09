@@ -535,6 +535,11 @@ var deployChecklists = map[string][]deployStep{
 	// for callers without a valid token; session tokens hashed at rest
 	// (existing rows once); operator-issued API tokens. Schema: two tables,
 	// one column, the hash migration — a migrate, as always.
+	// v0.29.83 (2026-10-09, branch tokenizer): PR #228 CI govulncheck
+	// (Go 1.26.9, golang.org/x/net v0.60.0) and Copilot review 5472987053 —
+	// the limiter maps stay bounded, a link that adds nothing spends no
+	// auto-add slot. No schema change.
+	"0.29.83": v02983DeployChecklist,
 	"0.29.82": v02982DeployChecklist,
 	"0.29.81": v02981DeployChecklist,
 	"0.29.80": v02980DeployChecklist,
@@ -554,6 +559,20 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02983DeployChecklist is 0.29.82's ladder (which a fleet that skipped
+// 0.29.82 still needs) with a note on the start step.
+var v02983DeployChecklist = func() []deployStep {
+	prev := v02982DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.83: built with Go 1.26.9 and golang.org/x/net v0.60.0 (security fixes in net/http, crypto/tls and HTTP/2); a star or comparison that links a repository already in your groups no longer counts against the per-user cap on repositories added by viewing them. No schema change and no new configuration. A fleet already running 0.29.82 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02982DeployChecklist is 0.29.81's ladder with a note on the start step.
 var v02982DeployChecklist = func() []deployStep {

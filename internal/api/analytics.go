@@ -303,30 +303,44 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 			// user's auto-adds are capped (one per entity, an org counts
 			// once) and reserved before anything is written (the ASVS
 			// review's A2 and its L10 round: this second auto-add site).
+			var slot autoAddSlot // the window a refund goes back to
 			if s.autoAdds != nil {
-				if ok, retry := s.autoAdds.reserve(info.UserID); !ok {
+				var ok bool
+				var retry int
+				if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
 					refuseAutoAdd(w, retry)
 					return nil, "", false
 				}
 			}
+			// The slot is kept when anything was linked, even if a later
+			// link failed; it comes back when nothing was (an already-linked
+			// repository behind a stale cached scope or a concurrent
+			// request: Copilot review 5472987053 on PR #228).
+			linkedAny := false
 			gid, err := s.store.FindOrCreateComparisonsGroup(r.Context(), info.UserID)
 			if err == nil {
 				for _, id := range collected {
-					if _, err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
+					var linked bool
+					if linked, err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
 						break
 					}
+					linkedAny = linkedAny || linked
 				}
 			}
+			if !linkedAny && s.autoAdds != nil {
+				s.autoAdds.refund(slot)
+			}
 			if err != nil {
-				if s.autoAdds != nil {
-					s.autoAdds.refund(info.UserID)
-				}
 				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false
 			}
-			// Scope changed — this user's cached validations must
-			// re-resolve so their next request sees the new repos.
+			// Scope changed (or the cached scope was stale) — this user's
+			// cached validations must re-resolve so their next request
+			// sees the repos.
 			s.auth.invalidateUser(info.UserID)
+			if !linkedAny {
+				return collected, "", true
+			}
 			return collected, db.ComparisonsGroupName, true
 		}
 	}

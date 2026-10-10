@@ -280,7 +280,9 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		}
 		ids = in
 	}
-	if len(ids) == 0 && scoped && len(collected) > 0 {
+	// An API token never auto-adds (operator decision 2026-10-09): it falls
+	// through to the refusal, which says how to add the entity.
+	if len(ids) == 0 && scoped && len(collected) > 0 && info.APITokenID == 0 {
 		// Auto-add path. For repo entities the id came from the URL, so
 		// verify it actually IS a collected repo before linking (org ids
 		// come straight from the repos table and always exist).
@@ -339,14 +341,18 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		}
 	}
 	if len(ids) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		setNoStoreHeaders(w.Header()) // a refusal is about this caller, signed in or not
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		body := map[string]any{
 			"error":  "entity_out_of_scope",
 			"entity": e.Label,
 			"hint":   "add this repository or organization to one of your groups to request access",
-		})
+		}
+		if authed && info.APITokenID != 0 {
+			s.addEntityInstructions(r, info, e, collected, body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		setNoStoreHeaders(w.Header()) // a refusal is about this caller, signed in or not
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(body)
 		return nil, "", false
 	}
 	return ids, "", true

@@ -58,7 +58,10 @@ type Server struct {
 	// authorizeRepo (set to the store at construction; nil in bare
 	// test Servers, which fail closed to the 403).
 	sharedWithMe sharedWithMeStore
-	autoAdds     *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
+	// scopeHelp reads what an API token's out-of-scope refusal says (the
+	// repository's URL, the owner's groups; v0.29.86).
+	scopeHelp scopeHelpStore
+	autoAdds  *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
 
 	// accounts serves the profile routes (/me's account fields, the
 	// account-email submission and confirmation); the store, or a fake.
@@ -111,6 +114,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		ghAPIBase:    platform.GitHubAPIBaseOrPublic(opts.GitHubAPIBase),
 		sharedWithMe: store}
 	s.homeLoader = store.GetHomeRepos
+	if store != nil { // a nil store in an interface is non-nil and panics when called
+		s.scopeHelp = store
+	}
 	s.seriesCache = newCollectionCache(opts.ResponseCacheMaxAge)
 	s.pageCache = newRepoPageCache(opts.ResponseCacheBytes, opts.ResponseCacheMaxAge)
 	// A method value of a nil store is a non-nil func that panics when
@@ -347,6 +353,23 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 	if len(ids) > db.RepoStatsBatchMaxIDs {
 		http.Error(w, fmt.Sprintf("at most %d ids per request", db.RepoStatsBatchMaxIDs), http.StatusBadRequest)
 		return
+	}
+	// An API token reads only its owner's groups (v0.29.86; L10 round 2: this
+	// batch ignored scope while /repos/{id}/stats refused): out-of-scope ids
+	// are left out of the answer. A session is unchanged — it reaches any
+	// collected repository by viewing it (the Shared-with-Me auto-add).
+	if info, ok := callerIdentity(w, r); ok && info.APITokenID != 0 {
+		in := ids[:0]
+		for _, id := range ids {
+			if info.Scope[id] {
+				in = append(in, id)
+			}
+		}
+		ids = in
+		if len(ids) == 0 {
+			jsonResponse(w, map[int64]*db.RepoStats{})
+			return
+		}
 	}
 	stats, err := s.store.GetRepoStatsBatch(r.Context(), ids)
 	if err != nil {

@@ -546,6 +546,11 @@ var deployChecklists = map[string][]deployStep{
 	// (logged, never limited); Copilot review 5476192626 — session deletes
 	// take their refresh_tokens rows, rate-limit headers exposed to CORS.
 	// No schema change.
+	// v0.29.86 (2026-10-09, branch tokenizer): Copilot review 5476707567 —
+	// an API token is never an administrator for data either (scoped to its
+	// owner's groups) and never auto-adds: out of scope it is refused with
+	// the way to add the repository (operator decision). No schema change.
+	"0.29.86": v02986DeployChecklist,
 	"0.29.85": v02985DeployChecklist,
 	"0.29.84": v02984DeployChecklist,
 	"0.29.83": v02983DeployChecklist,
@@ -568,6 +573,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02986DeployChecklist is 0.29.85's ladder with a note on the start step.
+var v02986DeployChecklist = func() []deployStep {
+	prev := v02985DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.86: an API token reads only the repositories in its owner's groups — also one granted to an administrator (before, it read every repository) — and a request for any other repository is now refused 403 with the way to add it (its URL, the owner's groups, and the calls to add it or create a group), where since 0.29.82 it was auto-added to Shared with Me; a script that relied on that must add the repositories to a group first; the batch stats route (/repos/stats?ids=) likewise answers a token only for its owner's groups. If the cache-warm script runs with AVELOXIS_TOKEN set to an API token, it now reaches only that token owner's groups: run it from an exempt address without a token, or with an administrator's signed-in session token. Signed-in browser sessions are unchanged (they still auto-add). No schema change and no new configuration. A fleet already running 0.29.85 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02985DeployChecklist is 0.29.84's ladder with a note on the start step.
 var v02985DeployChecklist = func() []deployStep {

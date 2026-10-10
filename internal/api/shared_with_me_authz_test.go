@@ -156,7 +156,7 @@ func TestAuthorizeRepoAutoAddSourceContract(t *testing.T) {
 			t.Errorf("authorizeRepo must contain %q", needle)
 		}
 	}
-	stripped := stripLineComments(src)
+	stripped := srctest.StripGoComments(src)
 	for _, forbidden := range []string{"EnqueueRepo", "AddOrgToGroup", "user_org_requests", "collection_add_requests"} {
 		if strings.Contains(stripped, forbidden) {
 			t.Errorf("auth.go must not reference %q — the shared-link flow links existing repos only", forbidden)

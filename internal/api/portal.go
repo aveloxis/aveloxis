@@ -94,16 +94,18 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (authInfo,
 	if !ok {
 		return authInfo{}, false
 	}
-	if !info.IsAdmin {
-		writeAuthError(w, http.StatusForbidden, "administrator access required")
-		return authInfo{}, false
-	}
 	// An API token authenticates as its owner for data, never to administer
 	// (OWASP ASVS V8.2.1, the 0.29.82 review A1): a leaked admin-owned token
 	// could otherwise grant itself replacements or change roles. Only a
-	// signed-in session administers.
+	// signed-in session administers. Checked FIRST: since 0.29.86 a token
+	// never carries IsAdmin, so after the role check this refusal could not
+	// be reached and an admin's token was told it lacked admin access.
 	if info.APITokenID != 0 {
 		writeAuthError(w, http.StatusForbidden, "an API token cannot administer; sign in to use admin routes")
+		return authInfo{}, false
+	}
+	if !info.IsAdmin {
+		writeAuthError(w, http.StatusForbidden, "administrator access required")
 		return authInfo{}, false
 	}
 	return info, true
@@ -922,6 +924,12 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		}
 		if repos[repoID] == nil {
 			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+		// An API token never writes a group link (operator decision
+		// 2026-10-09): refused, with the way to add the repository.
+		if info.APITokenID != 0 {
+			s.refuseTokenOutOfScope(w, r, info, repoID)
 			return
 		}
 		// A signed-in session is not rate limited (0.29.82): the implicit

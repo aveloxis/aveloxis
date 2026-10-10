@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.85 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.86 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=04eab50f"></script>
+      <script src="../_static/documentation_options.js?v=33123f65"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1846,7 +1846,10 @@ defaults the grant offers: <code class="docutils literal notranslate"><span clas
 </ul>
 <p>All five require an admin <strong>signed-in session</strong>: an API token, even one
 granted to an administrator, is refused (<code class="docutils literal notranslate"><span class="pre">403</span></code>) on every admin route — a
-token works as its owner for data, never to administer. Grants, revocations
+token works as its owner for data, never to administer — and, since
+v0.29.86, never as an administrator for data either: it reads only the
+repositories in its owner’s groups, like any account’s (see “Shared
+links” below for what a token gets outside them). Grants, revocations
 and changed defaults are logged with who did them; a refused token is
 logged once a minute per address, and a token over its allowance once per
 hour, never with the token itself.</p>
@@ -2757,13 +2760,18 @@ process. An admin mutation, and (v0.29.68) an add through
 <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{id}/repos</span></code> that linked or queued repositories,
 drop the cache in the process that served them. An approval decided in
 the <strong>web</strong> process reaches the <strong>api</strong> process only when its cache
-entry expires — up to 60 seconds; the two processes share no memory.</p></li>
+entry expires — up to 60 seconds; the two processes share no memory.
+Signing out (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code>) ends the session at once in the
+api process that served it; another api process may still accept it for
+up to those 60 seconds (one api process, the usual deployment, has no
+such window). An API token is rechecked on every call in every process.</p></li>
 <li><p>A server-side failure is a <strong>500</strong> whose body never carries the cause
 (<code class="docutils literal notranslate"><span class="pre">internal</span> <span class="pre">error;</span> <span class="pre">try</span> <span class="pre">again</span></code>, or a fixed phrase such as <code class="docutils literal notranslate"><span class="pre">package</span> <span class="pre">list</span> <span class="pre">failed</span></code>, v0.29.68); the cause is in the api log. Client-side refusals
 (400/403/404) keep their own messages.</p></li>
 <li><p>Your token carries <strong>your</strong> repository scope — every repo in any
 of your groups (pending included; approval gates new collection,
-not visibility of collected data). Administrators are unscoped.</p></li>
+not visibility of collected data). An administrator’s signed-in
+session is unscoped; an API token never is (v0.29.86), whoever owns it.</p></li>
 <li><p><strong>Shared links (v0.27.82):</strong> requesting a repo outside your groups
 auto-adds it to your implicit <strong>“Shared with Me”</strong> group and the
 request proceeds (v0.29.82: at most 100 such additions per user per
@@ -2784,6 +2792,25 @@ approval principle: approval gates collection, never visibility).
 Repo IDs with no repos row still return the structured 403
 (<code class="docutils literal notranslate"><span class="pre">repo_out_of_scope</span></code>), as do requests when the auto-add cannot be
 performed (fail closed).</p></li>
+<li><p><strong>An API token never auto-adds (v0.29.86).</strong> The auto-add above is for
+a signed-in session following a shared link. A request with an API
+token for a repository outside its owner’s groups (a repository route,
+the compare, a star) is refused <code class="docutils literal notranslate"><span class="pre">403</span></code> and nothing is written. The
+refusal says how to add it: <code class="docutils literal notranslate"><span class="pre">repo_url</span></code> (or, in the compare,
+<code class="docutils literal notranslate"><span class="pre">entity_url</span></code>), <code class="docutils literal notranslate"><span class="pre">your_groups</span></code> (each <code class="docutils literal notranslate"><span class="pre">group_id</span></code> and <code class="docutils literal notranslate"><span class="pre">name</span></code>),
+<code class="docutils literal notranslate"><span class="pre">add_to_existing_group</span></code> (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{group_id}/repos</span></code> with
+the body to send) and <code class="docutils literal notranslate"><span class="pre">create_group</span></code> (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups</span></code> with a
+name; then add to the new group’s id). For an organization in the
+compare, <code class="docutils literal notranslate"><span class="pre">entity_repo_urls</span></code> lists its collected repositories and the
+add sends them all in one call (<code class="docutils literal notranslate"><span class="pre">urls</span></code>); registering the organization
+itself is not suggested, since that only queues tracking for approval.
+A repository still queued for collection is readable once added; one
+that is no longer queued waits for an administrator’s approval, unless
+the add fits under <code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code>, which adds it at once. Only
+groups that accept additions are listed. A repository id that does not
+exist gets the plain refusal, with no instructions.
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code> with an API token answers only for the
+ids in its owner’s groups and leaves the others out.</p></li>
 <li><p>Treat the token like a password. <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code> with the
 token as the Bearer ends it (the GUI’s Sign out does this). To end every
 session of an account at once, an operator runs one statement, which also
@@ -3124,7 +3151,9 @@ every login; <code class="docutils literal notranslate"><span class="pre">provid
 <code class="docutils literal notranslate"><span class="pre">email_pending</span></code> added 2026-10-04 for the profile page: <code class="docutils literal notranslate"><span class="pre">email</span></code> is the
 forge’s own address taken at sign-in, or one confirmed through the
 mailed link; <code class="docutils literal notranslate"><span class="pre">email_pending</span></code> is an address awaiting confirmation, or
-empty). <code class="docutils literal notranslate"><span class="pre">scope_repo_count</span></code> is <code class="docutils literal notranslate"><span class="pre">-1</span></code> for admins (unscoped). The GUI uses
+empty). <code class="docutils literal notranslate"><span class="pre">scope_repo_count</span></code> is <code class="docutils literal notranslate"><span class="pre">-1</span></code> for an administrator’s session
+(unscoped); through an API token <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> and the count is
+the owner’s groups’ (v0.29.86). The GUI uses
 <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> to decide whether to render the admin navigation.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email</span></code> — body <code class="docutils literal notranslate"><span class="pre">{&quot;email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code>: stores the address as
 pending and mails the confirmation link, for an account whose forge gave

@@ -388,3 +388,100 @@ func TestSessionObservationReadsTheStoredDefault(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// v0.29.86 (operator, 2026-10-09), end to end on the real store: an API
+// token asking the compare or the star for a repository outside its owner's
+// groups is refused with the way to add it, and nothing is linked.
+func TestAPITokenOutOfScopeCompareAndStarAreRefused(t *testing.T) {
+	s, store, _, owner := apiTokenAdminServer(t)
+	ctx := context.Background()
+	var repoID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avtokscope/r', 'r', '_avtokscope', 1) RETURNING repo_id`).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.user_repos WHERE group_id IN (SELECT group_id FROM aveloxis_ops.user_groups WHERE user_id = $1)`, owner)
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, owner)
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+	token := authInfo{UserID: owner, APITokenID: 77, Scope: map[int64]bool{}}
+	linked := func() int {
+		var n int
+		if err := store.Pool().QueryRow(ctx, `
+			SELECT count(*) FROM aveloxis_ops.user_repos ur JOIN aveloxis_ops.user_groups g ON g.group_id = ur.group_id
+			WHERE g.user_id = $1 AND ur.repo_id = $2`, owner, repoID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/compare", nil)
+	r = r.WithContext(withIdentity(r.Context(), token))
+	w := httptest.NewRecorder()
+	if _, _, ok := s.resolveEntityRepos(w, r, entity{Kind: "repo", RepoID: repoID, Label: "r"}); ok {
+		t.Fatal("an API token resolved an out-of-scope repository in compare")
+	}
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"entity_url":"https://github.com/_avtokscope/r"`) ||
+		!strings.Contains(w.Body.String(), `"add_to_existing_group"`) {
+		t.Fatalf("compare refusal = %d %s; want 403 with the URL and the add call", w.Code, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodPut, "/api/v1/repos/"+strconv.FormatInt(repoID, 10)+"/star", nil)
+	r.SetPathValue("repoID", strconv.FormatInt(repoID, 10))
+	r = r.WithContext(withIdentity(r.Context(), token))
+	w = httptest.NewRecorder()
+	s.handleStarRepo(w, r)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"repo_url":"https://github.com/_avtokscope/r"`) {
+		t.Fatalf("star refusal = %d %s; want 403 with the URL", w.Code, w.Body.String())
+	}
+	if n := linked(); n != 0 {
+		t.Fatalf("an API token's refused requests linked the repository into %d group(s)", n)
+	}
+}
+
+// L10 round 2 on 0.29.86: /api/v1/repos/stats?ids= ignored scope, so any API
+// token read any repository's stats there (the single-repository route
+// refused it). An API token gets only its owner's groups' ids; the others
+// are left out. A session is unchanged.
+func TestBatchStatsAreScopedForAPITokens(t *testing.T) {
+	s, store, _, owner := apiTokenAdminServer(t)
+	ctx := context.Background()
+	var in, out int64
+	for _, row := range []struct {
+		dst  *int64
+		name string
+	}{{&in, "in"}, {&out, "out"}} {
+		if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+			VALUES ('https://github.com/_avbatchscope/'||$1::text, $1::text, '_avbatchscope', 1) RETURNING repo_id`, row.name).Scan(row.dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id IN ($1, $2)`, in, out)
+	})
+	call := func(info authInfo) map[string]any {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/stats?ids="+strconv.FormatInt(in, 10)+","+strconv.FormatInt(out, 10), nil)
+		r = r.WithContext(withIdentity(r.Context(), info))
+		w := httptest.NewRecorder()
+		s.handleRepoStatsBatch(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("batch stats = %d %s", w.Code, w.Body.String())
+		}
+		var m map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &m)
+		return m
+	}
+	token := call(authInfo{UserID: owner, APITokenID: 9, Scope: map[int64]bool{in: true}})
+	if _, ok := token[strconv.FormatInt(out, 10)]; ok {
+		t.Fatalf("an API token read an out-of-scope repository's stats: %v", token)
+	}
+	if _, ok := token[strconv.FormatInt(in, 10)]; !ok {
+		t.Fatalf("the in-scope repository is missing: %v", token)
+	}
+	session := call(authInfo{UserID: owner, Scope: map[int64]bool{in: true}})
+	if _, ok := session[strconv.FormatInt(out, 10)]; !ok {
+		t.Fatalf("a session's batch is unchanged (it reads any collected repository): %v", session)
+	}
+}

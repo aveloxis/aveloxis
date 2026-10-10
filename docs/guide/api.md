@@ -160,7 +160,10 @@ against its own hourly allowance instead of the per-IP limit.
 
 All five require an admin **signed-in session**: an API token, even one
 granted to an administrator, is refused (`403`) on every admin route — a
-token works as its owner for data, never to administer. Grants, revocations
+token works as its owner for data, never to administer — and, since
+v0.29.86, never as an administrator for data either: it reads only the
+repositories in its owner's groups, like any account's (see "Shared
+links" below for what a token gets outside them). Grants, revocations
 and changed defaults are logged with who did them; a refused token is
 logged once a minute per address, and a token over its allowance once per
 hour, never with the token itself.
@@ -929,13 +932,18 @@ Token semantics:
   drop the cache in the process that served them. An approval decided in
   the **web** process reaches the **api** process only when its cache
   entry expires — up to 60 seconds; the two processes share no memory.
+  Signing out (`POST /api/v1/auth/logout`) ends the session at once in the
+  api process that served it; another api process may still accept it for
+  up to those 60 seconds (one api process, the usual deployment, has no
+  such window). An API token is rechecked on every call in every process.
 - A server-side failure is a **500** whose body never carries the cause
   (`internal error; try again`, or a fixed phrase such as `package list
   failed`, v0.29.68); the cause is in the api log. Client-side refusals
   (400/403/404) keep their own messages.
 - Your token carries **your** repository scope — every repo in any
   of your groups (pending included; approval gates new collection,
-  not visibility of collected data). Administrators are unscoped.
+  not visibility of collected data). An administrator's signed-in
+  session is unscoped; an API token never is (v0.29.86), whoever owns it.
 - **Shared links (v0.27.82):** requesting a repo outside your groups
   auto-adds it to your implicit **"Shared with Me"** group and the
   request proceeds (v0.29.82: at most 100 such additions per user per
@@ -956,6 +964,25 @@ Token semantics:
   Repo IDs with no repos row still return the structured 403
   (`repo_out_of_scope`), as do requests when the auto-add cannot be
   performed (fail closed).
+- **An API token never auto-adds (v0.29.86).** The auto-add above is for
+  a signed-in session following a shared link. A request with an API
+  token for a repository outside its owner's groups (a repository route,
+  the compare, a star) is refused `403` and nothing is written. The
+  refusal says how to add it: `repo_url` (or, in the compare,
+  `entity_url`), `your_groups` (each `group_id` and `name`),
+  `add_to_existing_group` (`POST /api/v1/groups/{group_id}/repos` with
+  the body to send) and `create_group` (`POST /api/v1/groups` with a
+  name; then add to the new group's id). For an organization in the
+  compare, `entity_repo_urls` lists its collected repositories and the
+  add sends them all in one call (`urls`); registering the organization
+  itself is not suggested, since that only queues tracking for approval.
+  A repository still queued for collection is readable once added; one
+  that is no longer queued waits for an administrator's approval, unless
+  the add fits under `web.auto_approve_add_limit`, which adds it at once. Only
+  groups that accept additions are listed. A repository id that does not
+  exist gets the plain refusal, with no instructions.
+  `GET /api/v1/repos/stats?ids=` with an API token answers only for the
+  ids in its owner's groups and leaves the others out.
 - Treat the token like a password. `POST /api/v1/auth/logout` with the
   token as the Bearer ends it (the GUI's Sign out does this). To end every
   session of an account at once, an operator runs one statement, which also
@@ -1293,7 +1320,9 @@ Per-user:
   `email_pending` added 2026-10-04 for the profile page: `email` is the
   forge's own address taken at sign-in, or one confirmed through the
   mailed link; `email_pending` is an address awaiting confirmation, or
-  empty). `scope_repo_count` is `-1` for admins (unscoped). The GUI uses
+  empty). `scope_repo_count` is `-1` for an administrator's session
+  (unscoped); through an API token `is_admin` is `false` and the count is
+  the owner's groups' (v0.29.86). The GUI uses
   `is_admin` to decide whether to render the admin navigation.
 - `POST /api/v1/me/email` — body `{"email": "…"}`: stores the address as
   pending and mails the confirmation link, for an account whose forge gave

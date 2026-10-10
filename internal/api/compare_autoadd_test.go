@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestResolveEntityReposAutoAddsToComparisons pins the wiring in
@@ -39,7 +40,7 @@ import (
 // settleAutoAdd's (its behavior: TestSettleAutoAddAfterAPartialLink).
 func TestResolveEntityReposAutoAddsToComparisons(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
-	body := extractFuncBody(t, src, "resolveEntityRepos")
+	body := srctest.StripGoComments(extractFuncBody(t, src, "resolveEntityRepos")) // a comment cannot satisfy it (Copilot review 5476707567)
 	for _, needle := range []string{"FindOrCreateComparisonsGroup(", "AddRepoToGroupByID(", "s.settleAutoAdd(info.UserID, slot, "} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("resolveEntityRepos out-of-scope branch must auto-add via %s (v0.27.4 Starred-flow pattern), not 403", needle)
@@ -54,7 +55,7 @@ func TestResolveEntityReposAutoAddsToComparisons(t *testing.T) {
 // without approval.
 func TestCompareAutoAddNeverTouchesOrgTracking(t *testing.T) {
 	for _, f := range []string{"analytics.go", "../db/home_store.go"} {
-		src := stripLineComments(mustReadFile(t, f))
+		src := srctest.StripGoComments(mustReadFile(t, f)) // the shared stripper (SR-12): prose cannot false-match
 		for _, forbidden := range []string{"AddOrgToGroup(", "user_org_requests"} {
 			if strings.Contains(src, forbidden) {
 				t.Errorf("%s must not reference %q — the Comparisons auto-add flow adds COLLECTED repos only, never org tracking (approval gates new collection)", f, forbidden)
@@ -63,26 +64,12 @@ func TestCompareAutoAddNeverTouchesOrgTracking(t *testing.T) {
 	}
 }
 
-// stripLineComments removes // comments so prose mentioning the
-// forbidden identifiers can't false-match (v0.21.5 lesson).
-func stripLineComments(src string) string {
-	var b strings.Builder
-	for _, line := range strings.Split(src, "\n") {
-		if i := strings.Index(line, "//"); i >= 0 {
-			line = line[:i]
-		}
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // TestCompareSkipsCacheOnAutoAdd pins that a response carrying an
 // auto-add notice is NOT cached — replaying it within the 60s TTL
 // would re-toast "added to your Comparisons group" on every reload.
 func TestCompareSkipsCacheOnAutoAdd(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
-	body := extractFuncBody(t, src, "handleCompare")
+	body := srctest.StripGoComments(extractFuncBody(t, src, "handleCompare")) // a comment cannot satisfy it
 	if !strings.Contains(body, "added_to_group") {
 		t.Error("handleCompare must surface added_to_group notices so the GUI can toast")
 	}
@@ -265,7 +252,7 @@ func TestCompareAutoAddEndToEnd(t *testing.T) {
 // group at all, because admins are unscoped and the v0.27.14 branch
 // never fired for them.
 func TestCompareRecordsEveryRepoEntity(t *testing.T) {
-	src := mustReadFile(t, "analytics.go")
+	src := srctest.StripGoComments(mustReadFile(t, "analytics.go")) // a comment cannot satisfy it
 	if !strings.Contains(src, "func (s *Server) recordComparison(") {
 		t.Fatal("analytics.go must define recordComparison")
 	}

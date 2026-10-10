@@ -30,8 +30,18 @@ import (
 // itself replacements or change roles.
 func TestAPITokenCannotAdminister(t *testing.T) {
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	// The identity resolveToken really produces for an admin-owned token
+	// (since 0.29.86 it never carries IsAdmin; the token refusal must still
+	// be the one given — L10 round 1 on 0.29.86).
+	tok := db.APITokenPrefix + "adm"
+	a := newAuthenticator(&fakeSessionStore{userID: 1, admin: true,
+		apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 9, UserID: 1, RateLimitPerHour: 10}}}, false, nil)
+	tokInfo, err := a.resolveToken(context.Background(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/admin/api-tokens", nil)
-	r = r.WithContext(context.WithValue(r.Context(), authCtxKey{}, authInfo{UserID: 1, IsAdmin: true, APITokenID: 9, RateLimitPerHour: 10}))
+	r = r.WithContext(withIdentity(r.Context(), tokInfo))
 	w := httptest.NewRecorder()
 	if _, ok := s.requireAdmin(w, r); ok || w.Code != http.StatusForbidden {
 		t.Fatalf("an admin-owned API token passed requireAdmin (code %d); an API token never administers", w.Code)
@@ -543,5 +553,45 @@ func TestSharedWithMeAlreadyLinkedDropsTheStaleScope(t *testing.T) {
 				t.Fatalf("slots spent = %d, want %d", got, tc.wantSlots)
 			}
 		})
+	}
+}
+
+// Copilot review 5476707567 on PR #228 (HIGH): an API token owned by an
+// administrator resolved with IsAdmin=true and no scope, so every data
+// route (authorizeRepo, the compare's entity resolution) read the whole
+// fleet through it. An API token never carries the admin flag (the 0.29.82
+// rule "an API token never administers", applied to reads): it is scoped to
+// its owner's groups like any account's; the owner's session stays admin.
+func TestAdminOwnedAPITokenIsScoped(t *testing.T) {
+	tok := db.APITokenPrefix + "admins"
+	store := &fakeSessionStore{userID: 1, admin: true, scope: []int64{11},
+		valid:    map[string]bool{"sess": true},
+		apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 2, UserID: 1, RateLimitPerHour: 100}}}
+	a := newAuthenticator(store, false, nil)
+	info, err := a.resolveToken(context.Background(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsAdmin {
+		t.Fatal("an API token must never resolve as an administrator")
+	}
+	if !info.Scope[11] || info.Scope[99] {
+		t.Fatalf("an admin's API token must carry the owner's scope (11 in, 99 out): %v", info.Scope)
+	}
+	// Cached, it stays scoped.
+	if info, _ = a.resolveToken(context.Background(), tok); info.IsAdmin {
+		t.Fatal("the cached API-token identity became an administrator")
+	}
+	// The owner's session is still an administrator.
+	if sess, err := a.resolveToken(context.Background(), "sess"); err != nil || !sess.IsAdmin {
+		t.Fatalf("the admin's own session must stay admin: %+v, %v", sess, err)
+	}
+	// End to end: an out-of-scope repository through authorizeRepo is not
+	// served unscoped (no Shared-with-Me seam here: refused).
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), auth: a}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/99/stats", nil)
+	r = r.WithContext(withIdentity(r.Context(), info))
+	if s.authorizeRepo(httptest.NewRecorder(), r, 99) {
+		t.Fatal("an admin's API token read an out-of-scope repository unscoped")
 	}
 }

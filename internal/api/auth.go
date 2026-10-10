@@ -230,12 +230,20 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 		info = authInfo{UserID: userID}
 	}
 	userID := info.UserID
-	// A lookup error is not "not an admin" (SR-5; worklist follow-up 6).
-	admin, err := a.store.IsUserAdmin(ctx, userID)
-	if err != nil {
-		return authInfo{}, fmt.Errorf("admin flag: %w", err)
+	// An API token never carries the admin flag, for reads either (Copilot
+	// review 5476707567 on PR #228: an admin's token was unscoped on every
+	// data route): it is scoped to its owner's groups like any account's,
+	// and outside them it is refused, never auto-added
+	// (refuseTokenOutOfScope). Only a session asks. A lookup error is not
+	// "not an admin" (SR-5;
+	// worklist follow-up 6).
+	if info.APITokenID == 0 {
+		admin, err := a.store.IsUserAdmin(ctx, userID)
+		if err != nil {
+			return authInfo{}, fmt.Errorf("admin flag: %w", err)
+		}
+		info.IsAdmin = admin
 	}
-	info.IsAdmin = admin
 	if !info.IsAdmin {
 		ids, err := a.store.GetUserRepoScope(ctx, userID)
 		if err != nil {
@@ -427,6 +435,12 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 	}
 	if info.Scope[repoID] {
 		return true
+	}
+	// An API token reads only its owner's groups: refused, never
+	// auto-added, with the way to add it (operator decision 2026-10-09).
+	if info.APITokenID != 0 {
+		s.refuseTokenOutOfScope(w, r, info, repoID)
+		return false
 	}
 	if s.sharedWithMe != nil && info.UserID > 0 {
 		// A signed-in session is not rate limited (0.29.82), so each user's

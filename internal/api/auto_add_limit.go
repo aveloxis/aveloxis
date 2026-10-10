@@ -108,8 +108,9 @@ func (s *Server) settleAutoAdd(userID int, slot autoAddSlot, linkedAny bool, err
 }
 
 // refuseAutoAdd answers a request whose auto-add the cap refused: 429, its
-// Retry-After, never stored.
-func refuseAutoAdd(w http.ResponseWriter, retry int) {
+// Retry-After, never stored; logged once a minute per user (ASVS review G5).
+func (s *Server) refuseAutoAdd(w http.ResponseWriter, info authInfo, retry int) {
+	s.logRefusal("auto_add_cap", info, "retry_after", retry)
 	setNoStoreHeaders(w.Header())
 	w.Header().Set("Retry-After", strconv.Itoa(retry))
 	writeAuthError(w, http.StatusTooManyRequests, "too many repositories added to your groups by viewing them this hour; try again later")

@@ -480,8 +480,66 @@ func TestBatchStatsAreScopedForAPITokens(t *testing.T) {
 	if _, ok := token[strconv.FormatInt(in, 10)]; !ok {
 		t.Fatalf("the in-scope repository is missing: %v", token)
 	}
+	// ASVS review G1b: a non-admin session is scoped too — the batch read
+	// any repository without passing the auto-add cap (500 ids a call).
 	session := call(authInfo{UserID: owner, Scope: map[int64]bool{in: true}})
-	if _, ok := session[strconv.FormatInt(out, 10)]; !ok {
-		t.Fatalf("a session's batch is unchanged (it reads any collected repository): %v", session)
+	if _, ok := session[strconv.FormatInt(out, 10)]; ok {
+		t.Fatalf("a session read an out-of-scope repository's batch stats: %v", session)
+	}
+	if _, ok := session[strconv.FormatInt(in, 10)]; !ok {
+		t.Fatalf("the session's in-scope repository is missing: %v", session)
+	}
+	// An administrator's session stays unscoped.
+	if admin := call(authInfo{UserID: owner, IsAdmin: true}); len(admin) != 2 {
+		t.Fatalf("an administrator's session must read both: %v", admin)
+	}
+}
+
+// Copilot review 5477687920 on PR #228 (HIGH): the compare cache was keyed
+// by user id, so an administrator's session answer for an out-of-scope
+// repository was served to that administrator's (scoped) API token, and a
+// token's scoped answer to the session. A token and a session of one user
+// never share an entry: both orders.
+func TestCompareCacheSeparatesSessionAndAPIToken(t *testing.T) {
+	s, store, admin, _ := apiTokenAdminServer(t)
+	ctx := context.Background()
+	var repoID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avcmpcache/r', 'r', '_avcmpcache', 1) RETURNING repo_id`).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+	path := "/api/v1/compare?metric=contributors&entities=repo:" + strconv.FormatInt(repoID, 10)
+	call := func(info authInfo) int {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r = r.WithContext(withIdentity(r.Context(), info))
+		w := httptest.NewRecorder()
+		s.handleCompare(w, r)
+		if w.Code == http.StatusBadRequest {
+			t.Logf("400 body: %s", w.Body.String())
+		}
+		return w.Code
+	}
+	session := authInfo{UserID: admin, IsAdmin: true}
+	token := authInfo{UserID: admin, APITokenID: 88, Scope: map[int64]bool{}}
+	if code := call(session); code != http.StatusOK {
+		t.Fatalf("the admin session's compare = %d", code)
+	}
+	if code := call(token); code != http.StatusForbidden {
+		t.Fatalf("after the admin session cached it, the admin's API token got %d; want 403 (out of its scope)", code)
+	}
+	// The other order: a fresh server, the token first.
+	s2, err := NewWithOptions(store, s.logger, Options{RateLimitRPS: 1, RateLimitBurst: 10, RateLimitDaily: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = s2
+	if code := call(token); code != http.StatusForbidden {
+		t.Fatalf("token first: %d, want 403", code)
+	}
+	if code := call(session); code != http.StatusOK {
+		t.Fatalf("after the token's refusal, the admin session got %d; want 200", code)
 	}
 }

@@ -30,7 +30,8 @@ type fakeSessionStore struct {
 	valid       map[string]bool
 	apiValid    map[string]db.APITokenIdentity // v0.29.82: operator-issued API tokens
 	validates   atomic.Int64
-	onValidate  func() // runs inside ValidateSessionToken (worklist follow-up 7: a bust racing a resolve)
+	actives     atomic.Int64 // APITokenActive rechecks (ASVS review G4)
+	onValidate  func()       // runs inside ValidateSessionToken (worklist follow-up 7: a bust racing a resolve)
 }
 
 func (f *fakeSessionStore) ValidateSessionToken(_ context.Context, token string) (int, error) {
@@ -57,6 +58,7 @@ func (f *fakeSessionStore) ValidateAPIToken(_ context.Context, token string) (db
 	return db.APITokenIdentity{}, db.ErrInvalidAPIToken
 }
 func (f *fakeSessionStore) APITokenActive(_ context.Context, token string) (bool, error) {
+	f.actives.Add(1)
 	if f.validateErr != nil {
 		return false, f.validateErr
 	}

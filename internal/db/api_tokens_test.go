@@ -78,11 +78,11 @@ func TestSessionTokensAreStoredHashed(t *testing.T) {
 	if n != 0 {
 		t.Fatal("the raw session token is stored; only its hash may be")
 	}
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_session_tokens WHERE token = $1 AND user_id = $2`, sha256Hex(raw), uid).Scan(&n); err != nil {
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_session_tokens WHERE token = $1 AND user_id = $2`, "sha256$"+sha256Hex(raw), uid).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
-		t.Fatalf("the stored token must be the raw token's SHA-256 hex (found %d rows)", n)
+		t.Fatalf("the stored token must be the raw token's SHA-256 hex, tagged sha256$ (found %d rows)", n)
 	}
 	if got, err := store.ValidateSessionToken(ctx, raw); err != nil || got != uid {
 		t.Fatalf("the raw token must validate: (%d, %v)", got, err)
@@ -128,8 +128,8 @@ func TestSessionTokenHashMigrationHashesInPlace(t *testing.T) {
 	if err := tx.QueryRow(ctx, `SELECT user_session_token FROM aveloxis_ops.refresh_tokens WHERE id = 'avx-it-refresh'`).Scan(&ref); err != nil {
 		t.Fatal(err)
 	}
-	if tok != sha256Hex(raw) || ref != tok {
-		t.Fatalf("token=%q refresh=%q, want both %q", tok, ref, sha256Hex(raw))
+	if tok != "sha256$"+sha256Hex(raw) || ref != tok {
+		t.Fatalf("token=%q refresh=%q, want both %q", tok, ref, "sha256$"+sha256Hex(raw))
 	}
 	// The deferred foreign key is checked at commit: SET CONSTRAINTS ALL
 	// IMMEDIATE proves the pair is consistent inside the transaction.
@@ -154,8 +154,8 @@ func TestAPITokenLifecycle(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT token_hash FROM aveloxis_ops.api_tokens WHERE token_id = $1`, tok.TokenID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored != sha256Hex(raw) {
-		t.Fatal("an API token is stored only as its SHA-256 hex")
+	if stored != "sha256$"+sha256Hex(raw) {
+		t.Fatal("an API token is stored only as its SHA-256 hex, tagged sha256$")
 	}
 	if tok.UserID != owner || tok.Label != "research script" || tok.RateLimitPerHour != 1234 || tok.CreatedBy != admin {
 		t.Fatalf("created token = %+v", tok)

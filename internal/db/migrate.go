@@ -3990,8 +3990,12 @@ func addCommitDailyCompleteColumn(ctx context.Context, pg *PostgresStore, logger
 // characters, so nothing in a row says which it is. Nobody is signed out —
 // the API hashes the token a browser presents before it looks it up. A
 // fresh install creates the table without the column, and this adds it
-// over no rows. Rolling back to an older binary afterwards signs every API
-// session out (the older binary compares the raw token).
+// over no rows. Rolling back below 0.29.82 afterwards signs every API
+// session out (the older binary compares the raw token); the sessions any
+// older binary then writes are removed by the next migrate (0.29.87).
+// Rolling back from 0.29.88 to 0.29.82–0.29.87 makes every session and API
+// token unusable until re-upgrade (the hashes are tagged sha256$; the older
+// binary looks for the bare hex); re-upgrading restores them.
 func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	// Added already FALSE, and the one-time hash marks what it hashed (L10
 	// round 1 on 0.29.87: added TRUE and flipped later, a pre-0.29.82 binary
@@ -4007,7 +4011,16 @@ func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger 
 	// sessions are signed out once, the contract a rollback already had.
 	// The default is FALSE (CreateSessionToken writes TRUE); SET DEFAULT is
 	// for fleets that added the column TRUE (0.29.82–0.29.86).
-	if _, err := pg.pool.Exec(ctx, `ALTER TABLE aveloxis_ops.user_session_tokens ALTER COLUMN token_hashed SET DEFAULT FALSE`); err != nil {
+	//
+	// A database last migrated by 0.29.82–0.29.86 still has the default
+	// TRUE: a pre-0.29.82 binary run there stored RAW tokens marked hashed,
+	// and no row says which (Copilot review 5477687920 on PR #228). That
+	// default is the marker: under one lock, every session is signed out once
+	// (with its refresh rows) and the default flipped, so no insert lands in
+	// between and it never happens again. Not detected: such a database that
+	// 0.29.87 migrated since (it flipped the default without the sign-out);
+	// the 0.29.88 deploy note gives the manual sign-out for it (L10 round 1).
+	if err := flipSessionTokenDefault(ctx, pg, logger); err != nil {
 		logger.Error("schema migration error", "step", "user_session_tokens.token_hashed default FALSE", "error", err)
 		*errs = append(*errs, fmt.Errorf("token_hashed default: %w", err))
 		return
@@ -4021,6 +4034,20 @@ func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger 
 	if removed > 0 {
 		logger.Info("removed session tokens an older binary wrote (a rollback or a mixed-version deploy); those users sign in again", "sessions", removed)
 	}
+	// Tag the stored hashes written before the algorithm tag (ASVS review
+	// N5): marked session rows (hashes; the unmarked ones were just
+	// removed) with their refresh rows, and API tokens (never stored raw).
+	// Idempotent: a tagged value is never matched again.
+	for _, step := range []struct{ name, sql string }{
+		{"tag session token hashes", tagSessionTokenHashesSQL},
+		{"tag API token hashes", `UPDATE aveloxis_ops.api_tokens SET token_hash = 'sha256$' || token_hash WHERE token_hash NOT LIKE 'sha256$%'`},
+	} {
+		if _, err := pg.pool.Exec(ctx, step.sql); err != nil {
+			logger.Error("schema migration error", "step", step.name, "error", err)
+			*errs = append(*errs, fmt.Errorf("%s: %w", step.name, err))
+			return
+		}
+	}
 }
 
 // hashExistingSessionTokensSQL hashes every session token and the
@@ -4029,11 +4056,62 @@ func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger 
 const hashExistingSessionTokensSQL = `
 		WITH refreshed AS (
 		    UPDATE aveloxis_ops.refresh_tokens
-		    SET user_session_token = encode(sha256(convert_to(user_session_token, 'UTF8')), 'hex')
+		    SET user_session_token = 'sha256$' || encode(sha256(convert_to(user_session_token, 'UTF8')), 'hex')
 		    RETURNING 1
 		)
 		UPDATE aveloxis_ops.user_session_tokens
-		SET token = encode(sha256(convert_to(token, 'UTF8')), 'hex'), token_hashed = TRUE`
+		SET token = 'sha256$' || encode(sha256(convert_to(token, 'UTF8')), 'hex'), token_hashed = TRUE`
+
+// tagSessionTokenHashesSQL prefixes every marked, untagged session hash with
+// its algorithm, and the refresh_tokens rows that reference it, in one
+// statement (the foreign key is checked at commit).
+const tagSessionTokenHashesSQL = `
+		WITH old AS (
+		    SELECT token FROM aveloxis_ops.user_session_tokens WHERE token_hashed AND token NOT LIKE 'sha256$%'
+		), refreshed AS (
+		    UPDATE aveloxis_ops.refresh_tokens SET user_session_token = 'sha256$' || user_session_token
+		    WHERE user_session_token IN (SELECT token FROM old)
+		    RETURNING 1
+		)
+		UPDATE aveloxis_ops.user_session_tokens SET token = 'sha256$' || token
+		WHERE token_hashed AND token NOT LIKE 'sha256$%'`
+
+// flipSessionTokenDefault sets user_session_tokens.token_hashed's default
+// to FALSE. While it is still TRUE (a fleet that ran 0.29.82–0.29.86) it
+// first deletes every session and its refresh rows: rows a pre-0.29.82
+// binary wrote there are raw but marked hashed. One transaction, the table
+// locked first, so nothing is inserted between the delete and the flip.
+func flipSessionTokenDefault(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `LOCK TABLE aveloxis_ops.user_session_tokens IN ACCESS EXCLUSIVE MODE`); err != nil {
+		return err
+	}
+	var def *string
+	if err := tx.QueryRow(ctx, `
+		SELECT column_default FROM information_schema.columns
+		WHERE table_schema = 'aveloxis_ops' AND table_name = 'user_session_tokens' AND column_name = 'token_hashed'`).Scan(&def); err != nil {
+		return fmt.Errorf("read the token_hashed default: %w", err)
+	}
+	// The ALTER comes before the delete: PostgreSQL refuses to alter a table
+	// with pending (deferred foreign-key) trigger events in the same
+	// transaction. The lock already keeps inserts out of the whole window.
+	if _, err := tx.Exec(ctx, `ALTER TABLE aveloxis_ops.user_session_tokens ALTER COLUMN token_hashed SET DEFAULT FALSE`); err != nil {
+		return err
+	}
+	if def != nil && strings.EqualFold(*def, "true") {
+		var removed int64
+		if err := tx.QueryRow(ctx, deleteSessionsSQL("TRUE")).Scan(&removed); err != nil {
+			return fmt.Errorf("sign every session out: %w", err)
+		}
+		logger.Warn("signed every API session out once: this database ran 0.29.82-0.29.86, where a session an older binary wrote could be stored raw but marked hashed; users sign in again",
+			"sessions", removed)
+	}
+	return tx.Commit(ctx)
+}
 
 // stampCommitDailyCompleteWhereFilledSQL is the one-time stamp of
 // addCommitDailyCompleteColumn: every unstamped repository that has daily

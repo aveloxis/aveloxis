@@ -63,34 +63,43 @@ func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Requ
 	// the caller hides bots there.
 	excludeBots := r.URL.Query().Get("bots") == "hide"
 
+	// The cache holds the full answer; an API token gets it scoped to its
+	// owner's groups (ASVS review G3), filtered after the cache.
+	info, _ := callerIdentity(w, r)
 	key := fmt.Sprintf("elsewhere|%d|%s|%d|%t", repoID, since.Format("2006-01-02"), limit, excludeBots)
-	if body, ok := s.respCache.get(key); ok {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-		return
+	body, ok := s.respCache.get(key)
+	if !ok {
+		rows, err := s.store.ContributorsElsewhere(r.Context(), repoID, since, limit, 10, excludeBots)
+		if err != nil {
+			s.serverError(w, r, "handleContributorsElsewhere", err)
+			return
+		}
+		if body, err = json.Marshal(elsewhereAnswer{Since: since.Format("2006-01-02"), Limit: limit, Contributors: rows}); err != nil {
+			s.serverError(w, r, "handleContributorsElsewhere", err)
+			return
+		}
+		s.respCache.put(key, body)
 	}
-
-	rows, err := s.store.ContributorsElsewhere(r.Context(), repoID, since, limit, 10, excludeBots)
-	if err != nil {
-		s.serverError(w, r, "handleContributorsElsewhere", err)
-		return
+	if info.APITokenID != 0 {
+		var a elsewhereAnswer
+		if err := json.Unmarshal(body, &a); err != nil {
+			s.serverError(w, r, "handleContributorsElsewhere", err)
+			return
+		}
+		a.Contributors = scopeElsewhere(a.Contributors, info.Scope)
+		var err error
+		if body, err = json.Marshal(a); err != nil {
+			s.serverError(w, r, "handleContributorsElsewhere", err)
+			return
+		}
 	}
-	body, err := json.Marshal(map[string]any{
-		"since":        since.Format("2006-01-02"),
-		"limit":        limit,
-		"contributors": rows,
-	})
-	if err != nil {
-		s.serverError(w, r, "handleContributorsElsewhere", err)
-		return
-	}
-	s.respCache.put(key, body)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
 }
 
 func (s *Server) handleContributorActivity(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireUser(w, r); !ok {
+	info, ok := s.requireUser(w, r)
+	if !ok {
 		return
 	}
 	cntrbID := r.PathValue("cntrbID")
@@ -115,8 +124,7 @@ func (s *Server) handleContributorActivity(w http.ResponseWriter, r *http.Reques
 
 	key := fmt.Sprintf("cactivity|%s|%d", cntrbID, months)
 	if body, ok := s.respCache.get(key); ok {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
+		s.writeActivity(w, r, info, body)
 		return
 	}
 
@@ -140,6 +148,31 @@ func (s *Server) handleContributorActivity(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.respCache.put(key, body)
+	s.writeActivity(w, r, info, body)
+}
+
+// elsewhereAnswer is the /contributors/elsewhere body (cached whole).
+type elsewhereAnswer struct {
+	Since        string                    `json:"since"`
+	Limit        int                       `json:"limit"`
+	Contributors []db.ElsewhereContributor `json:"contributors"`
+}
+
+// writeActivity writes a contributor-activity body, scoped for an API token
+// (ASVS review G3; the cache holds the full answer).
+func (s *Server) writeActivity(w http.ResponseWriter, r *http.Request, info authInfo, body []byte) {
+	if info.APITokenID != 0 {
+		var v db.ContributorActivityView
+		if err := json.Unmarshal(body, &v); err != nil {
+			s.serverError(w, r, "handleContributorActivity", err)
+			return
+		}
+		var err error
+		if body, err = json.Marshal(scopeActivity(&v, info.Scope)); err != nil {
+			s.serverError(w, r, "handleContributorActivity", err)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
 }

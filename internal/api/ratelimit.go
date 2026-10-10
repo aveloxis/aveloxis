@@ -209,11 +209,12 @@ type rateLimiter struct {
 	tokenWindows map[int64]*tokenWindow
 	now          func() time.Time
 
-	// v0.29.85 (operator, 2026-10-09; observation only, SR-7): each
-	// signed-in user's session requests this hour (keyed by user id), and
-	// the threshold a session hour is logged at — the API-token default
-	// allowance, read through sessionBudget (false when it cannot be read:
-	// nothing is logged). nil sessionBudget observes nothing.
+	// v0.29.85: each signed-in user's session requests this hour (keyed by
+	// user id), and the threshold a session hour is logged at — the
+	// API-token default allowance, read through sessionBudget (false when it
+	// cannot be read: nothing is logged or refused). Since 0.29.88 a hour
+	// past sessionCeilingMultiple × the threshold is refused (ASVS review
+	// G1; operator decision). nil sessionBudget observes nothing.
 	sessionWindows map[int]*tokenWindow
 	sessionBudget  func() (int, bool)
 
@@ -307,11 +308,23 @@ func boundWindows[K comparable](m map[K]*tokenWindow, now time.Time, span time.D
 	}
 }
 
-// observeSession counts one request of a signed-in user's session and logs
-// the hour once its count reaches threshold, then at each doubling. It
-// never refuses (operator decision 2026-10-09: sessions stay unlimited; this
-// measures whether anyone uses one as a scraper's unlimited token).
-func (rl *rateLimiter) observeSession(userID, threshold int, ok bool) {
+// sessionCeilingMultiple sets a signed-in session's hourly ceiling to this
+// many times the API-token default allowance (ASVS review G1; operator
+// 2026-10-10: "approximates a very active user, but breaks if somebody turns
+// a bot against it"). With the default 5,000 the ceiling is 20,000 an hour:
+// a repository page makes about 23 API calls (14 on open, 9 as the page is
+// scrolled), so the ceiling is one repository page every ~4 s for a full
+// hour — beyond any person, a few minutes' work for a scraper. It follows the
+// default an operator sets on the API tokens page.
+const sessionCeilingMultiple = 4
+
+// observeSession counts one request of a signed-in user's session, logs
+// the hour once its count reaches threshold and at each doubling, and
+// reports whether the request is within the hour's ceiling
+// (sessionCeilingMultiple × threshold) with the seconds until the hour
+// ends. An unknown threshold never refuses: a failed settings read must not
+// lock signed-in users out.
+func (rl *rateLimiter) observeSession(userID, threshold int, ok bool) (bool, int) {
 	now := rl.clock()
 	rl.mu.Lock()
 	if rl.sessionWindows == nil {
@@ -337,12 +350,29 @@ func (rl *rateLimiter) observeSession(userID, threshold int, ok bool) {
 			w.nextLog = nextSessionMilestone(threshold, w.count)
 		}
 	}
+	over := ok && threshold > 0 && w.count > sessionCeilingMultiple*threshold
+	warnOver := over && !w.warned
+	if warnOver {
+		w.warned = true
+	}
 	count, start := w.count, w.start
 	rl.mu.Unlock()
 	if logIt && rl.logger != nil {
-		rl.logger.Warn("signed-in session made more requests this hour than an API token is allowed (observation only, not limited)",
-			"user_id", userID, "requests_this_hour", count, "threshold", threshold, "window_start", start)
+		rl.logger.Warn("signed-in session made more requests this hour than an API token is allowed",
+			"user_id", userID, "requests_this_hour", count, "threshold", threshold, "ceiling", sessionCeilingMultiple*threshold, "window_start", start)
 	}
+	if warnOver && rl.logger != nil {
+		rl.logger.Warn("signed-in session over its hourly ceiling — refused until its hour ends",
+			"user_id", userID, "ceiling", sessionCeilingMultiple*threshold, "window_ends", start.Add(apiTokenWindow))
+	}
+	if !over {
+		return true, 0
+	}
+	retry := int(math.Ceil(start.Add(apiTokenWindow).Sub(rl.clock()).Seconds()))
+	if retry < 1 {
+		retry = 1
+	}
+	return false, retry
 }
 
 // peekToken reports an API token's current window without charging it (a
@@ -360,6 +390,13 @@ func (rl *rateLimiter) peekToken(tokenID int64, limit int) (int, time.Time) {
 		remaining = 0
 	}
 	return remaining, w.start.Add(apiTokenWindow)
+}
+
+// tokenSpent reports whether an API token's current window has no calls
+// left (identify skips the store recheck then: the 429 needs none).
+func (rl *rateLimiter) tokenSpent(tokenID int64, limit int) bool {
+	remaining, _ := rl.peekToken(tokenID, limit)
+	return remaining == 0
 }
 
 func (rl *rateLimiter) clock() time.Time {
@@ -432,7 +469,8 @@ func (rl *rateLimiter) isExempt(ip net.IP) bool {
 	return false
 }
 
-// middleware enforces the bucket + daily quota for non-exempt IPs.
+// middleware enforces the bucket + daily quota for non-exempt IPs, and an
+// API token's hourly allowance from every address (exempt ones included).
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A request nginx forwards after an admitted authz subrequest
@@ -441,22 +479,32 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		// 0.29.85; API tokens were charged twice per cache miss since
 		// 0.29.82).
 		paid := rl.uncounted != nil && rl.uncounted(r)
-		// A valid session is observed whatever its address (before the
+		// A valid session is counted whatever its address (before the
 		// exempt check: a proxy misconfiguration that made every client
-		// local must not hide it). Observation only.
+		// local must not hide it) and refused past its hourly ceiling
+		// (sessionCeilingMultiple; ASVS review G1).
 		if res, ok := resolutionOf(r); ok && !paid && res.presented && res.err == nil && res.info.APITokenID == 0 && res.info.UserID > 0 && rl.sessionBudget != nil {
 			threshold, known := rl.sessionBudget()
-			rl.observeSession(res.info.UserID, threshold, known)
+			// An administrator's session is counted but never refused (the
+			// cache warm's authenticated mode uses one; an administrator is
+			// unscoped anyway — L10 on the ASVS fixes, F4).
+			if allowed, retry := rl.observeSession(res.info.UserID, threshold, known); !allowed && !res.info.IsAdmin {
+				setNoStoreHeaders(w.Header())
+				w.Header().Set("Retry-After", strconv.Itoa(retry))
+				http.Error(w, "too many requests from this account this hour; try again later", http.StatusTooManyRequests)
+				return
+			}
 		}
 		ip := rl.clientIP(r)
-		if rl.isExempt(ip) {
-			next.ServeHTTP(w, r)
-			return
-		}
+		// An API token is charged against its own allowance from EVERY
+		// address, exempt networks included (Copilot review 5477687920 on PR
+		// #228: the exemption returned first). The exemption below is for
+		// callers without a valid token.
 		// v0.29.82 (operator, 2026-10-08): the per-IP limit is only for
-		// callers without a valid token. A valid session is not counted; an
-		// API token is counted against its own hourly allowance. An unknown
-		// or expired token, or one the store could not resolve, is no token.
+		// callers without a valid token. A valid session is not counted
+		// here (its own hourly ceiling is above, 0.29.88); an API token is
+		// counted against its own hourly allowance. An unknown or expired
+		// token, or one the store could not resolve, is no token.
 		if res, ok := resolutionOf(r); ok && res.presented && res.err == nil {
 			if res.info.APITokenID == 0 {
 				next.ServeHTTP(w, r)
@@ -488,7 +536,7 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if paid {
+		if paid || rl.isExempt(ip) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -554,6 +554,11 @@ var deployChecklists = map[string][]deployStep{
 	// session tokens an older binary writes (rollback, mixed-version deploy)
 	// are removed by the next migrate (token_hashed default FALSE). No new
 	// table or index.
+	// v0.29.88 (2026-10-10, branch tokenizer): Copilot review 5477687920 —
+	// per-caller cache keys separate a session from an API token; an API
+	// token is charged on exempt networks too; a database that ran
+	// 0.29.82-0.29.86 signs every session out once. No new table or index.
+	"0.29.88": v02988DeployChecklist,
 	"0.29.87": v02987DeployChecklist,
 	"0.29.86": v02986DeployChecklist,
 	"0.29.85": v02985DeployChecklist,
@@ -578,6 +583,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02988DeployChecklist is 0.29.87's ladder with a note on the start step.
+var v02988DeployChecklist = func() []deployStep {
+	prev := v02987DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.88: a signed-in account is refused (429) past four times the API-token default in an hour (20,000 with the default 5,000; log line 'signed-in session over its hourly ceiling'), and batch stats are scoped for every non-administrator; an API token can no longer change its owner's e-mail; a group add carries at most 1,000 URLs and a group name at most 200 characters; refusals are logged once a minute per user and kind; stored token hashes are tagged sha256$ (the migrate tags existing ones; nobody is signed out). ROLLBACK: going back to 0.29.82-0.29.87 makes every session and API token unusable while the older binary runs (it looks for the untagged hash); re-upgrading restores them — do not re-grant API tokens. Stop everything before this migrate (as the ladder does): an older web or api still running would write untagged rows the new api cannot read until the next migrate. An API token is now counted against its own hourly allowance also from an exempt network (api.exempt_cidrs), which no longer bypasses it; a token and its owner's signed-in session never share a cached compare, new-repositories or supply-chain answer. A database whose last migrate was by 0.29.82-0.29.86 signs every API session out once at this migrate (log line 'signed every API session out once', with the count): a session an older binary wrote there could be stored raw but marked hashed, and no row says which; a database that never ran those versions (kate, if it goes from 0.29.81) signs nobody out. NOT detected: a database that ran 0.29.82-0.29.86, then had a binary older than 0.29.82 run against it, and then ran 0.29.87 (0.29.87 cleared the marker). If that can be true here, sign everyone out once by hand, once per database it applies to: psql -h \"${PGHOST:?}\" -p \"${PGPORT:?}\" -U \"${PGUSER:?}\" -d \"${PGDATABASE:?}\" -c 'WITH gone AS (DELETE FROM aveloxis_ops.user_session_tokens RETURNING token) DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)'. Also needed by the GUI's cache checker, which now requires API 0.29.85 or later. No new configuration. A fleet already running 0.29.87 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02987DeployChecklist is 0.29.86's ladder with a note on the start step.
 var v02987DeployChecklist = func() []deployStep {

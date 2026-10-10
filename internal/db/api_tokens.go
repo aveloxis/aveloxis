@@ -78,8 +78,14 @@ func AdminPrivilegeDropped(ctx context.Context) bool {
 // SHA-256 of the raw token, hex-encoded.
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
+	return tokenHashTag + hex.EncodeToString(sum[:])
 }
+
+// tokenHashTag names the algorithm in every stored token hash (ASVS review
+// N5, V11.2.2): before it a raw token and its hash were both 64 hex
+// characters and no row said which (the 0.29.87/0.29.88 migration work).
+// A future algorithm stores its own tag and lookups dispatch on it.
+const tokenHashTag = "sha256$"
 
 // APITokenGrant is what the admin page asks for.
 type APITokenGrant struct {

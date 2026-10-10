@@ -62,6 +62,7 @@ type Server struct {
 	// repository's URL, the owner's groups; v0.29.86).
 	scopeHelp scopeHelpStore
 	autoAdds  *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
+	refusals  *refusalLog     // ASVS review G5: refusals logged once a minute per user and kind
 
 	// accounts serves the profile routes (/me's account fields, the
 	// account-email submission and confirmation); the store, or a fake.
@@ -257,6 +258,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		rl.sessionBudget = (&sessionThreshold{read: store.GetAPITokenSettings, now: time.Now, logger: s.logger}).get
 	}
 	s.autoAdds = newAutoAddLimiter()
+	s.refusals = newRefusalLog(time.Now)
 	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
@@ -354,11 +356,13 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("at most %d ids per request", db.RepoStatsBatchMaxIDs), http.StatusBadRequest)
 		return
 	}
-	// An API token reads only its owner's groups (v0.29.86; L10 round 2: this
-	// batch ignored scope while /repos/{id}/stats refused): out-of-scope ids
-	// are left out of the answer. A session is unchanged — it reaches any
-	// collected repository by viewing it (the Shared-with-Me auto-add).
-	if info, ok := callerIdentity(w, r); ok && info.APITokenID != 0 {
+	// A non-administrator reads only its groups here, API token or session
+	// (v0.29.86 for tokens; ASVS review G1b for sessions: 500 ids a call
+	// bypassed the auto-add cap a session's single-repository view goes
+	// through). Out-of-scope ids are left out of the answer. An
+	// administrator's session, and a caller without an identity (an exempt
+	// network, the cache warm), are unscoped.
+	if info, ok := callerIdentity(w, r); ok && !info.IsAdmin {
 		in := ids[:0]
 		for _, id := range ids {
 			if info.Scope[id] {

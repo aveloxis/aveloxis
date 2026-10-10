@@ -229,3 +229,157 @@ func TestFirstUpgradeHashesAndMarksExistingSessions(t *testing.T) {
 		t.Fatalf("a session from before the upgrade must keep working: %d, %v", got, err)
 	}
 }
+
+// Copilot review 5477687920 on PR #228 (HIGH): on a fleet that ran
+// 0.29.82–0.29.86 the column defaulted to TRUE, so a pre-0.29.82 binary run
+// there (a rollback, a mixed deploy) stored RAW tokens marked hashed —
+// indistinguishable from real hashes, left in plaintext. The marker is the
+// default itself: still TRUE means such rows may exist, so that migrate
+// signs every session out once (sessions and refresh rows) before it flips
+// the default; afterwards the default is FALSE and nothing is wiped again.
+func TestFleetFrom0_29_82To86SignsEverySessionOutOnce(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	pool := store.Pool()
+	var userID int
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.users (login_name, oauth_provider) VALUES ('avx-it-fleet-8286', 'github')
+		ON CONFLICT (login_name) DO UPDATE SET oauth_provider = EXCLUDED.oauth_provider RETURNING user_id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `ALTER TABLE aveloxis_ops.user_session_tokens ALTER COLUMN token_hashed SET DEFAULT FALSE`)
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.refresh_tokens WHERE id = 'avx-it-fleet-ref'`)
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = $1`, userID)
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
+	})
+	// A 0.29.82–0.29.86 fleet: the default is TRUE, and a pre-0.29.82
+	// binary wrote a raw token there (marked TRUE by that default).
+	if _, err := pool.Exec(ctx, `ALTER TABLE aveloxis_ops.user_session_tokens ALTER COLUMN token_hashed SET DEFAULT TRUE`); err != nil {
+		t.Fatal(err)
+	}
+	raw := strings.Repeat("9a", 32)
+	now := time.Now().Unix()
+	if _, err := pool.Exec(ctx, `INSERT INTO aveloxis_ops.user_session_tokens (token, user_id, created_at, expiration) VALUES ($1, $2, $3, $4)`,
+		raw, userID, now, now+3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO aveloxis_ops.refresh_tokens (id, user_session_token) VALUES ('avx-it-fleet-ref', $1)`, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.user_session_tokens WHERE token = $1`, raw).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a raw token marked hashed survived the upgrade from 0.29.82–0.29.86: %d, %v", n, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_ops.refresh_tokens WHERE id = 'avx-it-fleet-ref'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("its refresh row must go too: %d, %v", n, err)
+	}
+	// Once: a session created after it survives the next migrate.
+	fresh, err := store.CreateSessionToken(ctx, userID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ValidateSessionToken(ctx, fresh); err != nil || got != userID {
+		t.Fatalf("the sign-out must happen once, not on every migrate: %d, %v", got, err)
+	}
+}
+
+// ASVS review N5 (V11.2.2): a stored token hash said nothing about its
+// form — the root of the 0.29.87/0.29.88 migration work. Both token kinds
+// are stored as "sha256$<hex>"; a migrate tags any untagged hash already
+// stored (session rows marked hashed, with their refresh rows; API-token
+// rows, which are never raw), and the tagged token still signs in.
+func TestStoredTokenHashesCarryTheirAlgorithm(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store, err := NewPostgresStore(ctx, dsn, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	pool := store.Pool()
+	var userID int
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO aveloxis_ops.users (login_name, oauth_provider) VALUES ('avx-it-hash-tag', 'github')
+		ON CONFLICT (login_name) DO UPDATE SET oauth_provider = EXCLUDED.oauth_provider RETURNING user_id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.refresh_tokens WHERE id = 'avx-it-tag-ref'`)
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.api_tokens WHERE user_id = $1`, userID)
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = $1`, userID)
+		_, _ = pool.Exec(c, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
+	})
+	if !strings.HasPrefix(hashToken("x"), "sha256$") {
+		t.Fatalf("hashToken must tag its algorithm: %q", hashToken("x"))
+	}
+	// A new session is stored tagged.
+	fresh, err := store.CreateSessionToken(ctx, userID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT token FROM aveloxis_ops.user_session_tokens WHERE user_id = $1`, userID).Scan(&stored); err != nil || !strings.HasPrefix(stored, "sha256$") {
+		t.Fatalf("a new session's stored form = %q, %v; want sha256$…", stored, err)
+	}
+	// Untagged hashes from before (0.29.82–0.29.88): a marked session with a
+	// refresh row, and an API token.
+	legacy := strings.Repeat("5e", 32)
+	untagged := strings.TrimPrefix(hashToken(legacy), "sha256$")
+	now := time.Now().Unix()
+	if _, err := pool.Exec(ctx, `INSERT INTO aveloxis_ops.user_session_tokens (token, user_id, created_at, expiration, token_hashed) VALUES ($1, $2, $3, $4, TRUE)`,
+		untagged, userID, now, now+3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO aveloxis_ops.refresh_tokens (id, user_session_token) VALUES ('avx-it-tag-ref', $1)`, untagged); err != nil {
+		t.Fatal(err)
+	}
+	apiRaw := APITokenPrefix + strings.Repeat("7c", 32)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.api_tokens (token_hash, user_id, label, created_by, expires_at, rate_limit_per_hour)
+		VALUES ($1, $2, 'legacy', $2, NOW() + interval '1 day', 10)`, strings.TrimPrefix(hashToken(apiRaw), "sha256$"), userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(ctx, store, logger); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ValidateSessionToken(ctx, legacy); err != nil || got != userID {
+		t.Fatalf("an untagged session hash must work after the migrate tags it: %d, %v", got, err)
+	}
+	var ref string
+	if err := pool.QueryRow(ctx, `SELECT user_session_token FROM aveloxis_ops.refresh_tokens WHERE id = 'avx-it-tag-ref'`).Scan(&ref); err != nil || ref != hashToken(legacy) {
+		t.Fatalf("its refresh row must follow the tag: %q, %v", ref, err)
+	}
+	if id, err := store.ValidateAPIToken(ctx, apiRaw); err != nil || id.UserID != userID {
+		t.Fatalf("an untagged API-token hash must work after the migrate tags it: %+v, %v", id, err)
+	}
+	if got, err := store.ValidateSessionToken(ctx, fresh); err != nil || got != userID {
+		t.Fatalf("a tagged session must survive the migrate unchanged: %d, %v", got, err)
+	}
+	var untaggedLeft int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM aveloxis_ops.user_session_tokens WHERE token NOT LIKE 'sha256$%')
+		+ (SELECT count(*) FROM aveloxis_ops.api_tokens WHERE token_hash NOT LIKE 'sha256$%')`).Scan(&untaggedLeft); err != nil || untaggedLeft != 0 {
+		t.Fatalf("%d untagged stored hash(es) left, %v", untaggedLeft, err)
+	}
+}

@@ -87,6 +87,7 @@ func (s *Server) refuseTokenOutOfScope(w http.ResponseWriter, r *http.Request, i
 			}
 		}
 	}
+	s.logRefusal("token_out_of_scope", info, "repo_id", repoID)
 	setNoStoreHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
@@ -148,4 +149,35 @@ func (s *Server) addEntityInstructions(r *http.Request, info authInfo, e entity,
 	for k, v := range tokenScopeInstructions(groups, add) {
 		body[k] = v
 	}
+}
+
+// scopeElsewhere is the "other repositories" of /contributors/elsewhere for
+// an API token: entries for COLLECTED repositories outside its owner's
+// groups are left out; repositories not collected here (no repo_id: the
+// contributor's public GitHub history) stay (ASVS review G3). The input is
+// shared (cached) and is not modified.
+func scopeElsewhere(rows []db.ElsewhereContributor, scope map[int64]bool) []db.ElsewhereContributor {
+	out := make([]db.ElsewhereContributor, len(rows))
+	for i, c := range rows {
+		c.Elsewhere = keepInScope(c.Elsewhere, func(r db.ElsewhereRepo) *int64 { return r.RepoID }, scope)
+		out[i] = c
+	}
+	return out
+}
+
+// scopeActivity is scopeElsewhere for /contributors/{id}/activity.
+func scopeActivity(v *db.ContributorActivityView, scope map[int64]bool) *db.ContributorActivityView {
+	cp := *v
+	cp.Repos = keepInScope(v.Repos, func(r db.ActivityRepo) *int64 { return r.RepoID }, scope)
+	return &cp
+}
+
+func keepInScope[T any](items []T, repoID func(T) *int64, scope map[int64]bool) []T {
+	out := make([]T, 0, len(items))
+	for _, it := range items {
+		if id := repoID(it); id == nil || scope[*id] {
+			out = append(out, it)
+		}
+	}
+	return out
 }

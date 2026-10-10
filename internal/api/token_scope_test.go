@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -231,5 +233,250 @@ func TestAPITokenOrgRefusalOffersTheCollectedRepositories(t *testing.T) {
 	s.authorizeRepo(w, tokenRepoRequest("99"), 99)
 	if strings.Contains(w.Body.String(), `"Old"`) {
 		t.Fatalf("a rejected group was offered:\n%s", w.Body.String())
+	}
+}
+
+// Every function that reads or writes a shared response cache (cmpCache,
+// respCache) builds its key with callerCacheID, unless its answer does not
+// depend on the caller (reviewed list below, with the reason): a session
+// and an API token of one user see different repositories (Copilot review
+// 5477687920 on PR #228). Scoped by the OPERATION (the cache call), over
+// every function of every non-test file — L10 round 1 on 0.29.88: a
+// line-based check missed a key built with fmt.Sprint or across lines.
+func TestCacheKeysNameTheCallerThroughCallerCacheID(t *testing.T) {
+	notPerCaller := map[string]string{
+		"handleContributorsElsewhere": "keyed by repository; the cache holds the full answer, scoped for an API token after it (scopeElsewhere)",
+		"handleContributorActivity":   "keyed by contributor; the cache holds the full answer, scoped for an API token after it (writeActivity)",
+	}
+	ents, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	examined, seenAllowed := 0, map[string]bool{}
+	for _, e := range ents {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src := srctest.StripGoComments(mustReadFile(t, name))
+		for _, fn := range strings.Split(src, "\nfunc ")[1:] {
+			usesCache := false
+			for _, op := range []string{"cmpCache.get(", "cmpCache.put(", "respCache.get(", "respCache.put("} {
+				if strings.Contains(fn, op) {
+					usesCache = true
+				}
+			}
+			if !usesCache {
+				continue
+			}
+			examined++
+			fnName := fn[:strings.IndexAny(fn, "(")]
+			if strings.HasPrefix(fn, "(") { // a method: the name follows the receiver
+				rest := fn[strings.Index(fn, ") ")+2:]
+				fnName = rest[:strings.Index(rest, "(")]
+			}
+			if _, ok := notPerCaller[fnName]; ok {
+				seenAllowed[fnName] = true
+				continue
+			}
+			if !strings.Contains(fn, "callerCacheID(") {
+				t.Errorf("%s: %s uses a shared response cache without callerCacheID in its key", name, fnName)
+			}
+		}
+	}
+	if examined < 6 {
+		t.Fatalf("examined %d cache-using functions; want at least the six known", examined)
+	}
+	for fn := range notPerCaller {
+		if !seenAllowed[fn] {
+			t.Errorf("reviewed exception %s no longer uses the cache: drop it from the list", fn)
+		}
+	}
+}
+
+// ASVS review G2: an API token could change its owner's account e-mail
+// (/me/email and /me/email/confirm accepted any requireUser identity): a
+// leaked token could redirect the notification address and confirm it.
+// Account settings take a signed-in session (requireSession).
+func TestAPITokenCannotChangeAccountSettings(t *testing.T) {
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, tc := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{"/api/v1/me/email", s.handleMeEmail},
+		{"/api/v1/me/email/confirm", s.handleMeEmailConfirm},
+	} {
+		r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"email":"x@example.org","token":"t"}`))
+		r = r.WithContext(withIdentity(r.Context(), authInfo{UserID: 7, APITokenID: 3}))
+		w := httptest.NewRecorder()
+		tc.h(w, r)
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "API token") {
+			t.Fatalf("%s with an API token = %d %s; want 403 naming the API token", tc.path, w.Code, w.Body.String())
+		}
+	}
+}
+
+// ASVS review G9: requireUser's fallback (no identity attached by the
+// middleware) resolved a token without the request-level admin drop
+// (WithoutAdminPrivilege). It cannot attach one, so an API token there is
+// refused (logged); a session still works.
+func TestRequireUserFallbackRefusesAPITokens(t *testing.T) {
+	tok := db.APITokenPrefix + "fb"
+	store := &fakeSessionStore{userID: 7, valid: map[string]bool{"sess": true},
+		apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 4, UserID: 7, RateLimitPerHour: 10}}}
+	logs := &lockedBuffer{}
+	s := &Server{logger: slog.New(slog.NewTextHandler(logs, nil)), auth: newAuthenticator(store, false, nil)}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	if _, ok := s.requireUser(w, r); ok || w.Code != http.StatusForbidden {
+		t.Fatalf("an API token through the fallback = ok %v, %d; want refused 403", ok, w.Code)
+	}
+	if !strings.Contains(logs.String(), "API token reached requireUser without an identity") {
+		t.Fatalf("the unexpected path must be logged:\n%s", logs.String())
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	r.Header.Set("Authorization", "Bearer sess")
+	if _, ok := s.requireUser(httptest.NewRecorder(), r); !ok {
+		t.Fatal("a session through the fallback must still work")
+	}
+}
+
+// ASVS review G3: /repos/{id}/contributors/elsewhere and
+// /contributors/{id}/activity listed collected repositories outside an API
+// token's owner's groups. For a token those entries are left out;
+// repositories not collected here (a contributor's public GitHub history,
+// no repo_id) stay. Sessions are unchanged.
+func TestContributorHistoryIsScopedForAPITokens(t *testing.T) {
+	in, out := int64(11), int64(99)
+	scope := map[int64]bool{in: true}
+	rows := []db.ElsewhereContributor{{CntrbID: "c", Elsewhere: []db.ElsewhereRepo{
+		{RepoFullName: "acme/in", RepoID: &in}, {RepoFullName: "acme/out", RepoID: &out}, {RepoFullName: "torvalds/linux"},
+	}}}
+	got := scopeElsewhere(rows, scope)
+	if names := elsewhereNames(got[0].Elsewhere); names != "acme/in,torvalds/linux" {
+		t.Fatalf("elsewhere for a token = %s; want the in-scope and the uncollected repositories", names)
+	}
+	if len(rows[0].Elsewhere) != 3 {
+		t.Fatal("the shared rows must not be modified (the cache holds them)")
+	}
+	view := &db.ContributorActivityView{Repos: []db.ActivityRepo{
+		{RepoFullName: "acme/in", RepoID: &in}, {RepoFullName: "acme/out", RepoID: &out}, {RepoFullName: "torvalds/linux"},
+	}}
+	v := scopeActivity(view, scope)
+	if len(v.Repos) != 2 || v.Repos[0].RepoFullName != "acme/in" || v.Repos[1].RepoFullName != "torvalds/linux" {
+		t.Fatalf("activity for a token = %+v", v.Repos)
+	}
+	if len(view.Repos) != 3 {
+		t.Fatal("the shared view must not be modified")
+	}
+	// Wiring: both handlers filter for an API token.
+	src := srctest.StripGoComments(mustReadFile(t, "contributor_elsewhere.go"))
+	for fn, call := range map[string]string{
+		"func (s *Server) handleContributorsElsewhere(": "scopeElsewhere(",
+		"func (s *Server) writeActivity(":               "scopeActivity(",
+	} {
+		body := srctest.FuncBody(t, src, fn)
+		if !strings.Contains(body, call) || !strings.Contains(body, "APITokenID != 0") {
+			t.Errorf("%s must apply %s for an API token", fn, call)
+		}
+	}
+	// Every write of an activity body goes through writeActivity.
+	act := srctest.FuncBody(t, src, "func (s *Server) handleContributorActivity(")
+	if strings.Contains(act, "w.Write(") || strings.Count(act, "s.writeActivity(w, r, info, body)") != 2 {
+		t.Error("handleContributorActivity must write both the cached and the fresh body through writeActivity")
+	}
+}
+
+func elsewhereNames(rs []db.ElsewhereRepo) string {
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.RepoFullName)
+	}
+	return strings.Join(out, ",")
+}
+
+// ASVS review G5 (V16.3.2, V16.3.3): the branch's refusals left no trace —
+// an API token at an admin route or at account settings, a token out of
+// scope, a session at the auto-add cap. Each is logged with the user (and
+// token) and the kind, once per user and kind per minute (a probing token
+// or an id-walking session must not flood the log).
+func TestBranchRefusalsAreLogged(t *testing.T) {
+	logs := &lockedBuffer{}
+	s := tokenScopeServer(&fakeSharedWithMe{added: true}, &fakeScopeHelp{repos: map[int64]*model.Repo{}})
+	s.logger = slog.New(slog.NewTextHandler(logs, nil))
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	s.refusals = newRefusalLog(func() time.Time { return now })
+	token := authInfo{UserID: 42, APITokenID: 5, Scope: map[int64]bool{}}
+	req := func(path string, info authInfo) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		return r.WithContext(withIdentity(r.Context(), info))
+	}
+	for i := 0; i < 3; i++ { // three probes, one line per kind
+		s.requireAdmin(httptest.NewRecorder(), req("/api/v1/admin/users", token))
+		s.requireSession(httptest.NewRecorder(), req("/api/v1/me/email", token))
+		s.authorizeRepo(httptest.NewRecorder(), req("/api/v1/repos/99/stats", token), 99)
+	}
+	// A session at the auto-add cap.
+	session := authInfo{UserID: 43, Scope: map[int64]bool{}}
+	for i := 0; i <= sharedWithMeAddsPerHour+2; i++ {
+		s.authorizeRepo(httptest.NewRecorder(), req("/api/v1/repos/"+strconv.Itoa(1000+i)+"/stats", session), int64(1000+i))
+	}
+	out := logs.String()
+	for kind, want := range map[string]int{"token_cannot_administer": 1, "token_cannot_change_account": 1, "token_out_of_scope": 1, "auto_add_cap": 1} {
+		if n := strings.Count(out, "kind="+kind); n != want {
+			t.Errorf("kind=%s logged %d time(s), want %d (once per user and kind per minute):\n%s", kind, n, want, out)
+		}
+	}
+	if !strings.Contains(out, "user_id=42") || !strings.Contains(out, "token_id=5") || !strings.Contains(out, "user_id=43") {
+		t.Fatalf("the lines name the user and the token:\n%s", out)
+	}
+	now = now.Add(time.Minute)
+	s.requireAdmin(httptest.NewRecorder(), req("/api/v1/admin/users", token))
+	if n := strings.Count(logs.String(), "kind=token_cannot_administer"); n != 2 {
+		t.Fatalf("a minute later the kind is logged again: %d", n)
+	}
+}
+
+// ASVS review G7 (V2.2.1, V2.4.1): the refusal's instructions point tokens
+// at POST /groups and POST /groups/{id}/repos, which read unbounded bodies
+// with no name or URL-count limit. Both are bounded, and an over-limit
+// request is refused before any store work.
+func TestGroupWritesAreBounded(t *testing.T) {
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	sess := authInfo{UserID: 7, Scope: map[int64]bool{}}
+	post := func(h http.HandlerFunc, path, body string, pathValue string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		if pathValue != "" {
+			r.SetPathValue("groupID", pathValue)
+		}
+		r = r.WithContext(withIdentity(r.Context(), sess))
+		w := httptest.NewRecorder()
+		h(w, r)
+		return w
+	}
+	if w := post(s.handleGroupCreate, "/api/v1/groups", `{"name":"`+strings.Repeat("g", MaxGroupNameLength+1)+`"}`, ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("a group name over %d characters = %d, want 400", MaxGroupNameLength, w.Code)
+	}
+	// A short name, the body padded past the limit with another field: only
+	// the body limit refuses it (L10 on the ASVS fixes, F1: a long name was
+	// refused by the name check, which left the limit unpinned). Without
+	// the limit the handler reaches the (absent) store and panics.
+	padded := `{"name":"g","pad":"` + strings.Repeat("x", int(groupCreateBodyLimit)) + `"}`
+	if w := post(s.handleGroupCreate, "/api/v1/groups", padded, ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("a body over the limit = %d, want 400", w.Code)
+	}
+	many := make([]string, maxAddURLsPerRequest+1)
+	for i := range many {
+		many[i] = `"https://github.com/o/r` + strconv.Itoa(i) + `"`
+	}
+	w := post(s.handleGroupAddRepo, "/api/v1/groups/1/repos", `{"urls":[`+strings.Join(many, ",")+`],"kind":"repo"}`, "1")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), strconv.Itoa(maxAddURLsPerRequest)) {
+		t.Fatalf("%d URLs in one add = %d %q, want 400 naming the limit", maxAddURLsPerRequest+1, w.Code, w.Body.String())
+	}
+	huge := `{"urls":["` + strings.Repeat("x", int(groupAddBodyLimit)) + `"],"kind":"repo"}`
+	if w := post(s.handleGroupAddRepo, "/api/v1/groups/1/repos", huge, "1"); w.Code != http.StatusBadRequest {
+		t.Fatalf("an add body over the limit = %d, want 400", w.Code)
 	}
 }

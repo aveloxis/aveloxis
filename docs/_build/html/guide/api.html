@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.87 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.88 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=976abb7c"></script>
+      <script src="../_static/documentation_options.js?v=7f7018be"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2678,14 +2678,19 @@ classes: <code class="docutils literal notranslate"><span class="pre">in_scope</
 <p>The per-IP limit (<code class="docutils literal notranslate"><span class="pre">api.rate_limit_rps</span></code>, default 1 request per second with a
 burst of <code class="docutils literal notranslate"><span class="pre">api.rate_limit_burst</span></code>, default 10, and <code class="docutils literal notranslate"><span class="pre">api.rate_limit_daily</span></code>,
 default 1,000 per day) applies only to callers <strong>without a valid token</strong>
-(v0.29.82). Clients on an exempt network (<code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code>) are never
-limited.</p>
+(v0.29.82). Clients on an exempt network (<code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code>) are not
+limited, except an API token: it is counted against its own allowance from
+every address, exempt networks included (v0.29.88).</p>
 <ul class="simple">
-<li><p><strong>A valid session token</strong> (signed in, below) is not limited. Since
-v0.29.85 each account’s session requests are counted per hour for
-observation only: an hour that reaches the API-token default allowance
-(what an issued token may make) is logged, again at each doubling, and
-nothing is refused.</p></li>
+<li><p><strong>A valid session token</strong> (signed in, below) is counted per account per
+hour (v0.29.85), from every address. An hour that reaches the API-token
+default allowance (what an issued token may make) is logged, again at
+each doubling. Past four times that default (20,000 with the default
+5,000: about one repository page every 4 seconds for a whole hour) the
+account is refused <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> until its hour ends
+(v0.29.88) — beyond any person, reached quickly by a scraper. An
+administrator’s session is counted but never refused. Each <code class="docutils literal notranslate"><span class="pre">api</span></code>
+process keeps its own count.</p></li>
 <li><p><strong>An operator-issued API token</strong> (<code class="docutils literal notranslate"><span class="pre">Authorization:</span> <span class="pre">Bearer</span> <span class="pre">avx_…</span></code>) is
 counted against its own hourly allowance (5,000 calls per hour unless the
 operator set another), whatever address the calls come from. Each <code class="docutils literal notranslate"><span class="pre">api</span></code>
@@ -2751,10 +2756,17 @@ those; an already-invalid token gets <code class="docutils literal notranslate">
 <code class="docutils literal notranslate"><span class="pre">204</span></code> otherwise). The GUI’s Sign out calls
 it. Before 0.29.82 a token copied before sign-out stayed valid for its
 30 days.</p></li>
-<li><p>Session tokens are stored only as their SHA-256 hash (v0.29.82): a
-read of the database, or a backup, yields nothing a caller can present.
-Upgrading signs nobody out. Rolling back below v0.29.82 signs every API
-session out once (the older release cannot read hashed tokens). From
+<li><p>Session tokens are stored only as their SHA-256 hash (v0.29.82), tagged
+with the algorithm (<code class="docutils literal notranslate"><span class="pre">sha256$…</span></code>, v0.29.88; API tokens likewise): a read of
+the database, or a backup, yields nothing a caller can present.
+Upgrading signs nobody out, with one exception: a database last migrated
+by v0.29.82–v0.29.86 signs every API session out once at the v0.29.88
+migrate (a session an older release wrote there could be stored raw but
+marked hashed). Rolling back below v0.29.82 signs every API session out
+once (the older release cannot read hashed tokens). Rolling back from
+v0.29.88 to v0.29.82–v0.29.87 makes every session AND every API token
+unusable while the older release runs (it looks for the untagged
+hash); re-upgrading makes them work again — do not re-grant API tokens. From
 v0.29.87, sessions an older release creates — during a rollback, or by a
 process still on the old version during a deploy — are removed by the
 next migrate, so their users sign in again once and nothing they stored
@@ -2813,8 +2825,13 @@ that is no longer queued waits for an administrator’s approval, unless
 the add fits under <code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code>, which adds it at once. Only
 groups that accept additions are listed. A repository id that does not
 exist gets the plain refusal, with no instructions.
-<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code> with an API token answers only for the
-ids in its owner’s groups and leaves the others out.</p></li>
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code> answers a non-administrator — an API
+token or a signed-in session (v0.29.88) — only for the ids in its
+groups and leaves the others out. For an API token,
+<code class="docutils literal notranslate"><span class="pre">/repos/{id}/contributors/elsewhere</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributors/{id}/activity</span></code>
+leave out collected repositories outside its owner’s groups; a
+contributor’s other repositories not collected here stay (v0.29.88).
+Refusals of this kind are logged once a minute per user and kind.</p></li>
 <li><p>Treat the token like a password. <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code> with the
 token as the Bearer ends it (the GUI’s Sign out does this). To end every
 session of an account at once, an operator runs one statement, which also
@@ -3159,7 +3176,8 @@ empty). <code class="docutils literal notranslate"><span class="pre">scope_repo_
 (unscoped); through an API token <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> and the count is
 the owner’s groups’ (v0.29.86). The GUI uses
 <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> to decide whether to render the admin navigation.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email</span></code> — body <code class="docutils literal notranslate"><span class="pre">{&quot;email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code>: stores the address as
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email</span></code> (a signed-in session only: an API token is
+refused <code class="docutils literal notranslate"><span class="pre">403</span></code>, v0.29.88) — body <code class="docutils literal notranslate"><span class="pre">{&quot;email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code>: stores the address as
 pending and mails the confirmation link, for an account whose forge gave
 no email (a private GitHub address). <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">{&quot;sent&quot;:</span> <span class="pre">true}</span></code>, or <code class="docutils literal notranslate"><span class="pre">422</span> <span class="pre">{&quot;sent&quot;:</span> <span class="pre">false,</span> <span class="pre">&quot;message&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> with the reason (not a deliverable
 address; mail not configured — <code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code> and the Gmail settings
@@ -3176,7 +3194,8 @@ expired, already used, another account’s — nothing changes); <code class="do
 (v0.27.84) counts the group’s pending addition requests — the GUI
 renders “N additions awaiting approval” from it, since under the
 v0.27.20 model the GROUP is approved while its ADDITIONS may pend.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups</span></code> with <code class="docutils literal notranslate"><span class="pre">{&quot;name&quot;:</span> <span class="pre">&quot;...&quot;}</span></code> — create a group.
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups</span></code> with <code class="docutils literal notranslate"><span class="pre">{&quot;name&quot;:</span> <span class="pre">&quot;...&quot;}</span></code> — create a group (a name
+of at most 200 characters, v0.29.88).
 Groups are created <code class="docutils literal notranslate"><span class="pre">approved</span></code> (v0.27.20 — the approval unit is the
 ADDITION of not-yet-collected repos/orgs, never the group
 container). Returns <code class="docutils literal notranslate"><span class="pre">{group_id}</span></code>.</p></li>
@@ -3196,7 +3215,9 @@ and the response echoes the effective sort. Non-admins may only
 read their own groups (403 otherwise).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{groupID}/repos</span></code> with
 <code class="docutils literal notranslate"><span class="pre">{&quot;url&quot;:</span> <span class="pre">&quot;https://github.com/owner/repo&quot;,</span> <span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;repo&quot;}</span></code> (or
-<code class="docutils literal notranslate"><span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;org&quot;</span></code> with an org URL) — add a repo or track an org.
+<code class="docutils literal notranslate"><span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;org&quot;</span></code> with an org URL) — add a repo or track an org. A
+<code class="docutils literal notranslate"><span class="pre">urls</span></code> list carries at most 1,000 URLs per add (v0.29.88): paste a
+larger set in parts, or add its organization.
 This is the “request access / request collection” affordance the
 compare picker’s three-class results point at: already-collected
 repos link instantly; new repos in a pending group wait for admin

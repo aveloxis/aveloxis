@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
@@ -58,6 +59,15 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 	// the store failed to resolve a presented token, the 503.
 	if tok := bearerToken(r); tok != "" {
 		info, err := s.auth.resolveToken(r.Context(), tok)
+		if err == nil && info.APITokenID != 0 {
+			// The middleware attaches every resolved token's identity (with
+			// the request-level admin drop, withIdentity), so this path is
+			// not expected; an API token here could not carry that drop, so
+			// it is refused (ASVS review G9).
+			s.logger.Error("an API token reached requireUser without an identity — refused", "path", r.URL.Path, "token_id", info.APITokenID)
+			writeAuthError(w, http.StatusForbidden, "an API token cannot be used here")
+			return authInfo{}, false
+		}
 		if err == nil {
 			setNoStoreHeaders(w.Header())
 			return info, true
@@ -70,6 +80,23 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 	}
 	writeAuthError(w, http.StatusUnauthorized, "this endpoint requires a signed-in session (Bearer token)")
 	return authInfo{}, false
+}
+
+// requireSession is requireUser for account settings: an API token is
+// refused (ASVS review G2: a token could change its owner's account e-mail,
+// redirecting the notification address to whoever held it). Same shape as
+// requireAdmin's token refusal.
+func (s *Server) requireSession(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return authInfo{}, false
+	}
+	if info.APITokenID != 0 {
+		s.logRefusal("token_cannot_change_account", info, "path", r.URL.Path)
+		writeAuthError(w, http.StatusForbidden, "an API token cannot change account settings; sign in to change them")
+		return authInfo{}, false
+	}
+	return info, true
 }
 
 // callerIdentity is the read for routes that serve everyone but answer
@@ -101,6 +128,7 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (authInfo,
 	// never carries IsAdmin, so after the role check this refusal could not
 	// be reached and an admin's token was told it lacked admin access.
 	if info.APITokenID != 0 {
+		s.logRefusal("token_cannot_administer", info, "path", r.URL.Path)
 		writeAuthError(w, http.StatusForbidden, "an API token cannot administer; sign in to use admin routes")
 		return authInfo{}, false
 	}
@@ -188,6 +216,24 @@ func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]any{"groups": out})
 }
 
+// Bounds on the group writes (ASVS review G7: the out-of-scope refusal points
+// API tokens at these routes, which read unbounded bodies).
+const (
+	// MaxGroupNameLength is the longest group name, in characters (the
+	// API-token label's limit).
+	MaxGroupNameLength = 200
+	// maxAddURLsPerRequest is how many URLs one add may carry: a paste of
+	// a large project's repositories fits; a larger set is added as its
+	// organization. Policy number (2026-10-10), stated in api.md.
+	maxAddURLsPerRequest = 1000
+	// groupCreateBodyLimit holds the longest name in UTF-8 with room for
+	// the JSON around it.
+	groupCreateBodyLimit int64 = 1 << 12
+	// groupAddBodyLimit holds maxAddURLsPerRequest URLs of the longest
+	// length the store accepts, plus the JSON around them.
+	groupAddBodyLimit int64 = maxAddURLsPerRequest*(db.MaxAddURLBytes+8) + 1<<16
+)
+
 func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
@@ -196,8 +242,12 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, groupCreateBodyLimit)).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
 		http.Error(w, "body must be {\"name\": \"...\"}", http.StatusBadRequest)
+		return
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(req.Name)) > MaxGroupNameLength {
+		http.Error(w, fmt.Sprintf("a group name is at most %d characters", MaxGroupNameLength), http.StatusBadRequest)
 		return
 	}
 	id, err := s.store.CreateUserGroup(r.Context(), info.UserID, strings.TrimSpace(req.Name))
@@ -343,8 +393,12 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		Kind string   `json:"kind"`
 	}
 	const bodyShape = "body must be {\"url\": \"...\"} or {\"urls\": [\"...\", ...]}, plus \"kind\": \"repo\"|\"org\""
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, groupAddBodyLimit)).Decode(&req); err != nil {
 		http.Error(w, bodyShape, http.StatusBadRequest)
+		return
+	}
+	if len(req.URLs) > maxAddURLsPerRequest {
+		http.Error(w, fmt.Sprintf("at most %d URLs per add: paste in parts, or add the organization", maxAddURLsPerRequest), http.StatusBadRequest)
 		return
 	}
 	urls := make([]string, 0, len(req.URLs)+1)
@@ -939,7 +993,7 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 			var ok bool
 			var retry int
 			if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
-				refuseAutoAdd(w, retry)
+				s.refuseAutoAdd(w, info, retry)
 				return
 			}
 		}

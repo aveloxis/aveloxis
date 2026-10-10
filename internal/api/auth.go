@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,11 @@ func (a *authenticator) identify(rl *rateLimiter, next http.Handler) http.Handle
 			info, cached := a.cached(tok)
 			switch {
 			case cached && info.APITokenID == 0:
+				res.info = info
+			case cached && rl != nil && rl.tokenSpent(info.APITokenID, info.RateLimitPerHour):
+				// Its hour is spent: the limiter answers 429 with no store
+				// lookup (ASVS review G4); a revoked token is rechecked when
+				// its window opens again.
 				res.info = info
 			case cached: // an API token: rechecked, never deferred
 				res.info, res.err = a.resolveToken(r.Context(), tok)
@@ -384,6 +390,20 @@ func withIdentity(ctx context.Context, info authInfo) context.Context {
 	return ctx
 }
 
+// callerCacheID is the caller's part of every per-caller cache key: the
+// user, and whether the request came with an API token. A session and an
+// API token of one user see different repositories (an administrator's
+// session is unscoped, a token never is; v0.29.86), so they never share an
+// entry (Copilot review 5477687920 on PR #228: an admin's cached compare
+// answer was served to that admin's token). One spelling for every key
+// (SR-17).
+func callerCacheID(info authInfo) string {
+	if info.APITokenID != 0 {
+		return strconv.Itoa(info.UserID) + "/token"
+	}
+	return strconv.Itoa(info.UserID)
+}
+
 func bearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
@@ -451,7 +471,7 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 			var ok bool
 			var retry int
 			if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
-				refuseAutoAdd(w, retry)
+				s.refuseAutoAdd(w, info, retry)
 				return false
 			}
 		}

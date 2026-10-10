@@ -362,3 +362,62 @@ func TestRateLimitHeadersAreExposedToAnAllowlistedOrigin(t *testing.T) {
 		}
 	}
 }
+
+// Copilot review 5477687920 on PR #228 (HIGH): an exempt network
+// (api.exempt_cidrs) returned before an API token was charged, so a token
+// used from the LAN or loopback had no hourly allowance and no headers —
+// against "counted against its own allowance, whatever address". A token
+// is charged everywhere; the exemption is for callers without one.
+func TestAPITokenIsChargedFromAnExemptNetwork(t *testing.T) {
+	tok := db.APITokenPrefix + "lan"
+	store := &fakeSessionStore{userID: 7, apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 12, UserID: 7, RateLimitPerHour: 2}},
+		valid: map[string]bool{"sess": true}}
+	opts := tightLimits
+	opts.ExemptCIDRs = []string{"127.0.0.0/8"}
+	h, _ := tokenChain(t, store, opts)
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, tokenReq("127.0.0.1:1", tok))
+		if w.Code != http.StatusOK || w.Header().Get("X-RateLimit-Limit") != "2" {
+			t.Fatalf("call %d from an exempt address: %d, limit header %q", i+1, w.Code, w.Header().Get("X-RateLimit-Limit"))
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, tokenReq("127.0.0.1:1", tok))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("the third call in the hour from an exempt address = %d, want 429", w.Code)
+	}
+	// The exemption still holds for callers without a token, and sessions.
+	for i := 0; i < 5; i++ {
+		for _, bearer := range []string{"", "sess"} {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, tokenReq("127.0.0.1:1", bearer))
+			if w.Code != http.StatusOK {
+				t.Fatalf("an exempt caller (bearer %q) was limited: %d", bearer, w.Code)
+			}
+		}
+	}
+}
+
+// ASVS review G4: a cached API token over its hourly allowance was still
+// rechecked against the store (APITokenActive) on every request before the
+// limiter answered 429. Once its window is spent the 429 needs no lookup.
+func TestExhaustedAPITokenCostsNoRecheck(t *testing.T) {
+	tok := db.APITokenPrefix + "spent"
+	store := &fakeSessionStore{userID: 7, apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 21, UserID: 7, RateLimitPerHour: 2}}}
+	h, _ := tokenChain(t, store, tightLimits)
+	for i := 0; i < 2; i++ {
+		h.ServeHTTP(httptest.NewRecorder(), tokenReq("198.51.100.90:1", tok))
+	}
+	before := store.actives.Load()
+	for i := 0; i < 10; i++ {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, tokenReq("198.51.100.90:1", tok))
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("over its allowance = %d, want 429", w.Code)
+		}
+	}
+	if n := store.actives.Load() - before; n != 0 {
+		t.Fatalf("10 refused requests of an exhausted token cost %d store rechecks, want 0", n)
+	}
+}

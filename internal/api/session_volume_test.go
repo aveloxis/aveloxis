@@ -51,13 +51,13 @@ func TestSessionVolumeIsLoggedNeverLimited(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("session request %d = %d: observation must never refuse", i+1, w.Code)
 		}
-		if i == 8 && strings.Contains(logs.String(), "signed-in session") {
+		if i == 8 && strings.Contains(logs.String(), "than an API token is allowed") {
 			t.Fatalf("logged below the threshold:\n%s", logs.String())
 		}
 	}
 	out := logs.String()
 	// 39 requests: lines at 10 and 20 (each doubling), none at 39.
-	if n := strings.Count(out, "signed-in session"); n != 2 {
+	if n := strings.Count(out, "than an API token is allowed"); n != 2 {
 		t.Fatalf("39 requests against a threshold of 10 logged %d lines, want 2 (at 10 and 20):\n%s", n, out)
 	}
 	for _, want := range []string{"user_id=7", "requests_this_hour=10", "requests_this_hour=20", "threshold=10"} {
@@ -75,7 +75,7 @@ func TestSessionVolumeIsLoggedNeverLimited(t *testing.T) {
 	}
 	var lines []string
 	for _, l := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(l, "signed-in session") {
+		if strings.Contains(l, "than an API token is allowed") {
 			lines = append(lines, l)
 		}
 	}
@@ -93,7 +93,7 @@ func TestSessionVolumeCountsOnlySessions(t *testing.T) {
 		h.ServeHTTP(httptest.NewRecorder(), tokenReq("127.0.0.1:1", ""))
 		h.ServeHTTP(httptest.NewRecorder(), tokenReq("198.51.100.9:1", "junk"))
 	}
-	if strings.Contains(logs.String(), "signed-in session") || len(rl.sessionWindows) != 0 {
+	if strings.Contains(logs.String(), "than an API token is allowed") || len(rl.sessionWindows) != 0 {
 		t.Fatalf("API-token, anonymous and invalid-token requests were counted as a session:\n%s", logs.String())
 	}
 }
@@ -110,7 +110,7 @@ func TestSessionVolumeWithAnUnreadableThresholdLogsNothing(t *testing.T) {
 			t.Fatalf("request %d = %d", i+1, w.Code)
 		}
 	}
-	if strings.Contains(logs.String(), "signed-in session") {
+	if strings.Contains(logs.String(), "than an API token is allowed") {
 		t.Fatalf("logged with no readable threshold:\n%s", logs.String())
 	}
 }
@@ -277,12 +277,73 @@ func TestSessionLogFollowsTheThresholdInForce(t *testing.T) {
 					rl.observeSession(7, p[0], p[0] > 0)
 				}
 			}
-			if n := strings.Count(logs.String(), "signed-in session"); n != tc.wantLines {
+			if n := strings.Count(logs.String(), "than an API token is allowed"); n != tc.wantLines {
 				t.Fatalf("%d lines, want %d:\n%s", n, tc.wantLines, logs.String())
 			}
 			if strings.Contains(logs.String(), "threshold=5000") && tc.name == "raised mid-hour" {
 				t.Fatalf("a line claims the raised threshold was passed:\n%s", logs.String())
 			}
 		})
+	}
+}
+
+// ASVS review G1 (operator, 2026-10-10: "a reasonable cap that
+// approximates a very active user, but breaks if somebody turns a bot
+// against it"). A signed-in session past sessionCeilingMultiple times the
+// API-token default in its hour is refused 429 with Retry-After until the
+// hour ends, from every address (exempt networks included), logged once.
+// The derivation is at sessionCeilingMultiple.
+func TestSessionCeilingRefusesABotNotAPerson(t *testing.T) {
+	h, _, logs, now := sessionVolumeChain(t, func() (int, bool) { return 10, true })
+	ceiling := sessionCeilingMultiple * 10
+	for i := 0; i < ceiling; i++ {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, tokenReq("127.0.0.1:1", "sess")) // an exempt address
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d of %d (at or under the ceiling) = %d", i+1, ceiling, w.Code)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, tokenReq("127.0.0.1:1", "sess"))
+		if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
+			t.Fatalf("request past the ceiling = %d (Retry-After %q), want 429 with Retry-After", w.Code, w.Header().Get("Retry-After"))
+		}
+	}
+	if n := strings.Count(logs.String(), "signed-in session over its hourly ceiling"); n != 1 {
+		t.Fatalf("the refusal must be logged once per hour, got %d:\n%s", n, logs.String())
+	}
+	// The next hour starts over.
+	*now = now.Add(time.Hour)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, tokenReq("127.0.0.1:1", "sess"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a new hour must start over: %d", w.Code)
+	}
+	// An unreadable threshold never refuses (an outage of the settings
+	// read must not lock signed-in users out).
+	h2, _, _, _ := sessionVolumeChain(t, func() (int, bool) { return 0, false })
+	for i := 0; i < 500; i++ {
+		w := httptest.NewRecorder()
+		h2.ServeHTTP(w, tokenReq("198.51.100.1:1", "sess"))
+		if w.Code != http.StatusOK {
+			t.Fatalf("with no readable threshold request %d was refused: %d", i+1, w.Code)
+		}
+	}
+}
+
+// L10 on the ASVS fixes (F4): an administrator's signed-in session is not
+// held to the ceiling — the cache-warm script's documented authenticated
+// mode uses one, and an administrator is unscoped anyway.
+func TestAdministratorSessionIsNotCeilinged(t *testing.T) {
+	store := &fakeSessionStore{userID: 1, admin: true, valid: map[string]bool{"adminsess": true}}
+	h, rl := tokenChain(t, store, Options{RateLimitRPS: 1000, RateLimitBurst: 1000, RateLimitDaily: 1_000_000})
+	rl.sessionBudget = func() (int, bool) { return 5, true }
+	for i := 0; i < sessionCeilingMultiple*5+10; i++ {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, tokenReq("198.51.100.5:1", "adminsess"))
+		if w.Code != http.StatusOK {
+			t.Fatalf("an administrator's session was refused at request %d: %d", i+1, w.Code)
+		}
 	}
 }

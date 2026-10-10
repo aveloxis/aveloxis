@@ -310,7 +310,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 				var ok bool
 				var retry int
 				if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
-					refuseAutoAdd(w, retry)
+					s.refuseAutoAdd(w, info, retry)
 					return nil, "", false
 				}
 			}
@@ -348,6 +348,7 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		}
 		if authed && info.APITokenID != 0 {
 			s.addEntityInstructions(r, info, e, collected, body)
+			s.logRefusal("token_out_of_scope", info, "entity", logSafe(e.Label))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		setNoStoreHeaders(w.Header()) // a refusal is about this caller, signed in or not
@@ -569,7 +570,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	// read each other's cached responses (and the answer is marked
 	// per-caller when there is one).
 	info, _ := callerIdentity(w, r)
-	key := fmt.Sprintf("cmp|%d|%s|%s|%s|%s|%s|rt%d", info.UserID, metric,
+	key := fmt.Sprintf("cmp|%s|%s|%s|%s|%s|%s|rt%d", callerCacheID(info), metric,
 		r.URL.Query().Get("entities"), since.Format("2006-01-02"), until.Format("2006-01-02"), bucket,
 		retentionThreshold)
 	if body, ok := s.cmpCache.get(key); ok {

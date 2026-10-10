@@ -847,14 +847,19 @@ scope-granting auto-add.
 The per-IP limit (`api.rate_limit_rps`, default 1 request per second with a
 burst of `api.rate_limit_burst`, default 10, and `api.rate_limit_daily`,
 default 1,000 per day) applies only to callers **without a valid token**
-(v0.29.82). Clients on an exempt network (`api.exempt_cidrs`) are never
-limited.
+(v0.29.82). Clients on an exempt network (`api.exempt_cidrs`) are not
+limited, except an API token: it is counted against its own allowance from
+every address, exempt networks included (v0.29.88).
 
-- **A valid session token** (signed in, below) is not limited. Since
-  v0.29.85 each account's session requests are counted per hour for
-  observation only: an hour that reaches the API-token default allowance
-  (what an issued token may make) is logged, again at each doubling, and
-  nothing is refused.
+- **A valid session token** (signed in, below) is counted per account per
+  hour (v0.29.85), from every address. An hour that reaches the API-token
+  default allowance (what an issued token may make) is logged, again at
+  each doubling. Past four times that default (20,000 with the default
+  5,000: about one repository page every 4 seconds for a whole hour) the
+  account is refused `429` with `Retry-After` until its hour ends
+  (v0.29.88) — beyond any person, reached quickly by a scraper. An
+  administrator's session is counted but never refused. Each `api`
+  process keeps its own count.
 - **An operator-issued API token** (`Authorization: Bearer avx_…`) is
   counted against its own hourly allowance (5,000 calls per hour unless the
   operator set another), whatever address the calls come from. Each `api`
@@ -922,10 +927,17 @@ Token semantics:
   `204` otherwise). The GUI's Sign out calls
   it. Before 0.29.82 a token copied before sign-out stayed valid for its
   30 days.
-- Session tokens are stored only as their SHA-256 hash (v0.29.82): a
-  read of the database, or a backup, yields nothing a caller can present.
-  Upgrading signs nobody out. Rolling back below v0.29.82 signs every API
-  session out once (the older release cannot read hashed tokens). From
+- Session tokens are stored only as their SHA-256 hash (v0.29.82), tagged
+  with the algorithm (`sha256$…`, v0.29.88; API tokens likewise): a read of
+  the database, or a backup, yields nothing a caller can present.
+  Upgrading signs nobody out, with one exception: a database last migrated
+  by v0.29.82–v0.29.86 signs every API session out once at the v0.29.88
+  migrate (a session an older release wrote there could be stored raw but
+  marked hashed). Rolling back below v0.29.82 signs every API session out
+  once (the older release cannot read hashed tokens). Rolling back from
+  v0.29.88 to v0.29.82–v0.29.87 makes every session AND every API token
+  unusable while the older release runs (it looks for the untagged
+  hash); re-upgrading makes them work again — do not re-grant API tokens. From
   v0.29.87, sessions an older release creates — during a rollback, or by a
   process still on the old version during a deploy — are removed by the
   next migrate, so their users sign in again once and nothing they stored
@@ -985,8 +997,13 @@ Token semantics:
   the add fits under `web.auto_approve_add_limit`, which adds it at once. Only
   groups that accept additions are listed. A repository id that does not
   exist gets the plain refusal, with no instructions.
-  `GET /api/v1/repos/stats?ids=` with an API token answers only for the
-  ids in its owner's groups and leaves the others out.
+  `GET /api/v1/repos/stats?ids=` answers a non-administrator — an API
+  token or a signed-in session (v0.29.88) — only for the ids in its
+  groups and leaves the others out. For an API token,
+  `/repos/{id}/contributors/elsewhere` and `/contributors/{id}/activity`
+  leave out collected repositories outside its owner's groups; a
+  contributor's other repositories not collected here stay (v0.29.88).
+  Refusals of this kind are logged once a minute per user and kind.
 - Treat the token like a password. `POST /api/v1/auth/logout` with the
   token as the Bearer ends it (the GUI's Sign out does this). To end every
   session of an account at once, an operator runs one statement, which also
@@ -1328,7 +1345,8 @@ Per-user:
   (unscoped); through an API token `is_admin` is `false` and the count is
   the owner's groups' (v0.29.86). The GUI uses
   `is_admin` to decide whether to render the admin navigation.
-- `POST /api/v1/me/email` — body `{"email": "…"}`: stores the address as
+- `POST /api/v1/me/email` (a signed-in session only: an API token is
+  refused `403`, v0.29.88) — body `{"email": "…"}`: stores the address as
   pending and mails the confirmation link, for an account whose forge gave
   no email (a private GitHub address). `200 {"sent": true}`, or `422
   {"sent": false, "message": "…"}` with the reason (not a deliverable
@@ -1349,7 +1367,8 @@ Per-user:
   (v0.27.84) counts the group's pending addition requests — the GUI
   renders "N additions awaiting approval" from it, since under the
   v0.27.20 model the GROUP is approved while its ADDITIONS may pend.
-- `POST /api/v1/groups` with `{"name": "..."}` — create a group.
+- `POST /api/v1/groups` with `{"name": "..."}` — create a group (a name
+  of at most 200 characters, v0.29.88).
   Groups are created `approved` (v0.27.20 — the approval unit is the
   ADDITION of not-yet-collected repos/orgs, never the group
   container). Returns `{group_id}`.
@@ -1370,7 +1389,9 @@ Per-user:
   read their own groups (403 otherwise).
 - `POST /api/v1/groups/{groupID}/repos` with
   `{"url": "https://github.com/owner/repo", "kind": "repo"}` (or
-  `"kind": "org"` with an org URL) — add a repo or track an org.
+  `"kind": "org"` with an org URL) — add a repo or track an org. A
+  `urls` list carries at most 1,000 URLs per add (v0.29.88): paste a
+  larger set in parts, or add its organization.
   This is the "request access / request collection" affordance the
   compare picker's three-class results point at: already-collected
   repos link instantly; new repos in a pending group wait for admin

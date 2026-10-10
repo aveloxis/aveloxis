@@ -550,6 +550,11 @@ var deployChecklists = map[string][]deployStep{
 	// an API token is never an administrator for data either (scoped to its
 	// owner's groups) and never auto-adds: out of scope it is refused with
 	// the way to add the repository (operator decision). No schema change.
+	// v0.29.87 (2026-10-09, branch tokenizer): Copilot review 5477367612 —
+	// session tokens an older binary writes (rollback, mixed-version deploy)
+	// are removed by the next migrate (token_hashed default FALSE). No new
+	// table or index.
+	"0.29.87": v02987DeployChecklist,
 	"0.29.86": v02986DeployChecklist,
 	"0.29.85": v02985DeployChecklist,
 	"0.29.84": v02984DeployChecklist,
@@ -573,6 +578,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02987DeployChecklist is 0.29.86's ladder with a note on the start step.
+var v02987DeployChecklist = func() []deployStep {
+	prev := v02986DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.87: a session token written by an older binary (after a rollback, or by a process still running the old version during the deploy) is removed by every migrate from 0.29.87 on (log line 'removed session tokens an older binary wrote', with the count): its user signs in again once — the contract a rollback already had. Below 0.29.82 such tokens were plaintext; they are no longer left behind. One case cannot be told apart: a session a pre-0.29.82 binary created during a rollback from 0.29.82-0.29.86 BEFORE this release first migrates stays in plaintext and no longer signs in; it is deleted at the first sign-in of anyone after it expires (30 days after it was created). No new configuration. A fleet already running 0.29.86 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02986DeployChecklist is 0.29.85's ladder with a note on the start step.
 var v02986DeployChecklist = func() []deployStep {

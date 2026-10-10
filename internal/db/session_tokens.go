@@ -48,8 +48,8 @@ func (s *PostgresStore) CreateSessionToken(ctx context.Context, userID int, life
 	token := hex.EncodeToString(raw)
 	now := time.Now().Unix()
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.user_session_tokens (token, user_id, created_at, expiration)
-		VALUES ($1, $2, $3, $4)`, hashToken(token), userID, now, now+int64(lifetime.Seconds()))
+		INSERT INTO aveloxis_ops.user_session_tokens (token, user_id, created_at, expiration, token_hashed)
+		VALUES ($1, $2, $3, $4, TRUE)`, hashToken(token), userID, now, now+int64(lifetime.Seconds()))
 	if err != nil {
 		return "", fmt.Errorf("create session token: %w", err)
 	}
@@ -95,10 +95,13 @@ func (s *PostgresStore) DeleteSessionToken(ctx context.Context, token string) er
 // token stayed valid; Copilot review 5476192626 on PR #228). where is a
 // constant predicate over user_session_tokens, never caller input.
 func deleteSessionsSQL(where string) string {
+	// It answers the number of sessions deleted (one row).
 	return `WITH gone AS (
 		DELETE FROM aveloxis_ops.user_session_tokens WHERE ` + where + ` RETURNING token
+	), refreshed AS (
+		DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone) RETURNING 1
 	)
-	DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)`
+	SELECT count(*) FROM gone`
 }
 
 // GetUserRepoScope returns every repo in ANY of the user's groups —

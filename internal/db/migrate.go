@@ -3993,7 +3993,34 @@ func addCommitDailyCompleteColumn(ctx context.Context, pg *PostgresStore, logger
 // over no rows. Rolling back to an older binary afterwards signs every API
 // session out (the older binary compares the raw token).
 func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	addColumnWithOneTimeStamp(ctx, pg, logger, errs, "aveloxis_ops", "user_session_tokens", "token_hashed", "BOOLEAN NOT NULL DEFAULT TRUE", hashExistingSessionTokensSQL)
+	// Added already FALSE, and the one-time hash marks what it hashed (L10
+	// round 1 on 0.29.87: added TRUE and flipped later, a pre-0.29.82 binary
+	// still running could insert a raw row marked hashed in between).
+	addColumnWithOneTimeStamp(ctx, pg, logger, errs, "aveloxis_ops", "user_session_tokens", "token_hashed", "BOOLEAN NOT NULL DEFAULT FALSE", hashExistingSessionTokensSQL)
+	// Every migrate (Copilot review 5477367612 on PR #228): a binary older
+	// than 0.29.87 inserts session rows without naming the column — raw
+	// tokens below 0.29.82, hashed ones from 0.29.82 to 0.29.86 — and no row
+	// says which (both are 64 hex characters). They are DELETED, with their
+	// refresh rows, never hashed: hashing a row an older binary had already
+	// hashed made the value a database read or a backup showed BEFORE the
+	// migrate a working credential after it (L10 round 2 on 0.29.87). Their
+	// sessions are signed out once, the contract a rollback already had.
+	// The default is FALSE (CreateSessionToken writes TRUE); SET DEFAULT is
+	// for fleets that added the column TRUE (0.29.82–0.29.86).
+	if _, err := pg.pool.Exec(ctx, `ALTER TABLE aveloxis_ops.user_session_tokens ALTER COLUMN token_hashed SET DEFAULT FALSE`); err != nil {
+		logger.Error("schema migration error", "step", "user_session_tokens.token_hashed default FALSE", "error", err)
+		*errs = append(*errs, fmt.Errorf("token_hashed default: %w", err))
+		return
+	}
+	var removed int64
+	if err := pg.pool.QueryRow(ctx, deleteSessionsSQL("NOT token_hashed")).Scan(&removed); err != nil {
+		logger.Error("schema migration error", "step", "remove session tokens an older binary wrote", "error", err)
+		*errs = append(*errs, fmt.Errorf("remove unmarked session tokens: %w", err))
+		return
+	}
+	if removed > 0 {
+		logger.Info("removed session tokens an older binary wrote (a rollback or a mixed-version deploy); those users sign in again", "sessions", removed)
+	}
 }
 
 // hashExistingSessionTokensSQL hashes every session token and the
@@ -4006,7 +4033,7 @@ const hashExistingSessionTokensSQL = `
 		    RETURNING 1
 		)
 		UPDATE aveloxis_ops.user_session_tokens
-		SET token = encode(sha256(convert_to(token, 'UTF8')), 'hex')`
+		SET token = encode(sha256(convert_to(token, 'UTF8')), 'hex'), token_hashed = TRUE`
 
 // stampCommitDailyCompleteWhereFilledSQL is the one-time stamp of
 // addCommitDailyCompleteColumn: every unstamped repository that has daily

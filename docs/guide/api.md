@@ -924,8 +924,12 @@ Token semantics:
   30 days.
 - Session tokens are stored only as their SHA-256 hash (v0.29.82): a
   read of the database, or a backup, yields nothing a caller can present.
-  Upgrading signs nobody out; rolling back to an older release signs every
-  API session out once.
+  Upgrading signs nobody out. Rolling back below v0.29.82 signs every API
+  session out once (the older release cannot read hashed tokens). From
+  v0.29.87, sessions an older release creates — during a rollback, or by a
+  process still on the old version during a deploy — are removed by the
+  next migrate, so their users sign in again once and nothing they stored
+  is left behind.
 - A token's role and repository scope are cached for 60 seconds per
   process. An admin mutation, and (v0.29.68) an add through
   `POST /api/v1/groups/{id}/repos` that linked or queued repositories,

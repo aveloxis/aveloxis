@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.81 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.89 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
+      <script src="../_static/documentation_options.js?v=db089ca7"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -80,6 +80,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#monitor-dashboard-v0-23-0">Monitor (dashboard, v0.23.0)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#mail-gmail-smtp-optional">Mail (Gmail SMTP, optional)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#logging">Logging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#capacity-fair-use-quotas-v0-29-89">Capacity (fair-use quotas, v0.29.89)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#api-key-sources">API key sources</a></li>
@@ -203,6 +204,12 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-api"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-scancode-worker"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">scancode-worker</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-test-mail"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-signup-escrow"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#aveloxis-signup-escrow-keygen"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">keygen</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#aveloxis-signup-escrow-export"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">export</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#aveloxis-signup-escrow-open"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">open</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-collect"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code></a><ul>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#id3">Flags</a></li>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#id4">Examples</a></li>
@@ -330,6 +337,8 @@
 <li class="toctree-l3"><a class="reference internal" href="#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#dependency-licenses">Dependency Licenses</a></li>
@@ -354,6 +363,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#cors">CORS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#deployment">Deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#rate-limits">Rate limits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
@@ -601,6 +611,15 @@
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#next-steps">Next steps</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="signup-escrow.html">Sign-up address escrow</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#what-is-kept-and-for-how-long">What is kept, and for how long</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#set-it-up-once">Set it up (once)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#open-an-envelope-when-you-are-required-to">Open an envelope when you are required to</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#change-the-key-or-lose-it">Change the key, or lose it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#what-an-envelope-does-and-does-not-show">What an envelope does and does not show</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#what-this-does-not-cover">What this does not cover</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#commits-not-collected-but-issues-and-pull-requests-are-collected">Commits not collected, but Issues and Pull Requests are collected</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#monitor-dashboard-renders-slowly-on-a-large-fleet">Monitor dashboard renders slowly on a large fleet</a></li>
@@ -695,7 +714,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1313,6 +1332,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l15-the-forge-s-cache-and-session-semantics">L15 — The forge’s cache and session semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l16-widening-a-tripwire-is-a-contract-change">L16 — Widening a tripwire is a contract change</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l17-what-the-pr-193-rounds-kept-finding-the-four-blind-spots">L17 — What the PR #193 rounds kept finding (the four blind spots)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l18-consolidate-before-you-add">L18 — Consolidate before you add</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#running-the-pass">Running the pass</a></li>
 </ul>
 </li>
@@ -1808,6 +1828,101 @@ superseded (nothing is written). The api
 process holds no forge API keys, so this adopts the recorded observation;
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code> asks the forge live. Both require an admin Bearer
 session.</p>
+</section>
+<section id="api-tokens-admin-v0-29-82">
+<h3>API tokens (admin, v0.29.82)<a class="headerlink" href="#api-tokens-admin-v0-29-82" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GET</span>  <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">tokens</span>
+<span class="n">POST</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">tokens</span>
+<span class="n">POST</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">tokens</span><span class="o">/</span><span class="p">{</span><span class="n">tokenID</span><span class="p">}</span><span class="o">/</span><span class="n">revoke</span>
+<span class="n">GET</span>  <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">token</span><span class="o">-</span><span class="n">settings</span>
+<span class="n">POST</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">admin</span><span class="o">/</span><span class="n">api</span><span class="o">-</span><span class="n">token</span><span class="o">-</span><span class="n">settings</span>
+</pre></div>
+</div>
+<p>Operator-issued API tokens for people who need more than the per-IP limit
+(see “Rate limits” below). A token belongs to an existing account and
+authenticates as that account, with its repository scope; it is counted
+against its own hourly and daily allowances instead of the per-IP limit.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/api-tokens</span></code> lists every granted token, newest first:
+<code class="docutils literal notranslate"><span class="pre">token_id</span></code>, <code class="docutils literal notranslate"><span class="pre">user_id</span></code>, <code class="docutils literal notranslate"><span class="pre">owner_login</span></code>, <code class="docutils literal notranslate"><span class="pre">label</span></code>, <code class="docutils literal notranslate"><span class="pre">created_by</span></code>,
+<code class="docutils literal notranslate"><span class="pre">created_by_login</span></code>, <code class="docutils literal notranslate"><span class="pre">created_at</span></code>, <code class="docutils literal notranslate"><span class="pre">expires_at</span></code>, <code class="docutils literal notranslate"><span class="pre">rate_limit_per_hour</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rate_limit_per_day</span></code>, <code class="docutils literal notranslate"><span class="pre">last_used_at</span></code> and <code class="docutils literal notranslate"><span class="pre">revoked_at</span></code>, plus the current
+<code class="docutils literal notranslate"><span class="pre">settings</span></code>. It never
+carries a token or its hash: only the hash is stored.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/api-tokens</span></code> grants one. Body:
+<code class="docutils literal notranslate"><span class="pre">{&quot;user_id&quot;:</span> <span class="pre">12,</span> <span class="pre">&quot;label&quot;:</span> <span class="pre">&quot;who</span> <span class="pre">or</span> <span class="pre">what</span> <span class="pre">it</span> <span class="pre">is</span> <span class="pre">for&quot;,</span> <span class="pre">&quot;lifetime_days&quot;:</span> <span class="pre">30,</span> <span class="pre">&quot;rate_limit_per_hour&quot;:</span> <span class="pre">1000,</span> <span class="pre">&quot;rate_limit_per_day&quot;:</span> <span class="pre">10000}</span></code>; the last
+three are optional and default to the current settings. Answers <code class="docutils literal notranslate"><span class="pre">201</span></code> with the token (<code class="docutils literal notranslate"><span class="pre">&quot;token&quot;:</span> <span class="pre">&quot;avx_…&quot;</span></code>), shown this once and sent <code class="docutils literal notranslate"><span class="pre">no-store</span></code>. <code class="docutils literal notranslate"><span class="pre">400</span></code> for a missing or
+unknown <code class="docutils literal notranslate"><span class="pre">user_id</span></code>, an empty <code class="docutils literal notranslate"><span class="pre">label</span></code> or one over 200 characters, a
+lifetime that is not 1 to 365 days, or an allowance that is not a
+positive number. A token’s allowances are fixed when it is granted.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/{tokenID}/revoke</span></code> revokes a token: it stops working on its next
+call to any api process (every call with an API token rechecks it, one
+indexed lookup). Revoking a revoked token is a no-op; <code class="docutils literal notranslate"><span class="pre">404</span></code> for an
+unknown id.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span></code>/<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/api-token-settings</span></code> read and change the
+defaults the grant offers: <code class="docutils literal notranslate"><span class="pre">{&quot;default_rate_limit_per_hour&quot;:</span> <span class="pre">1000,</span> <span class="pre">&quot;default_rate_limit_per_day&quot;:</span> <span class="pre">10000,</span> <span class="pre">&quot;default_lifetime_days&quot;:</span> <span class="pre">30}</span></code> (the
+allowances positive, the lifetime 1 to 365 days; the values shown are
+the initial defaults since v0.29.89). The allowances are the
+<code class="docutils literal notranslate"><span class="pre">token_requests_per_hour</span></code> and <code class="docutils literal notranslate"><span class="pre">token_requests_per_day</span></code> quotas (the same
+values the Capacity page shows); one that <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> sets is
+refused with <code class="docutils literal notranslate"><span class="pre">409</span></code>. An omitted daily value is left unchanged.</p></li>
+</ul>
+<p>All five require an admin <strong>signed-in session</strong>: an API token, even one
+granted to an administrator, is refused (<code class="docutils literal notranslate"><span class="pre">403</span></code>) on every admin route — a
+token works as its owner for data, never to administer — and, since
+v0.29.86, never as an administrator for data either: it reads only the
+repositories in its owner’s groups, like any account’s (see “Shared
+links” below for what a token gets outside them). Grants, revocations
+and changed defaults are logged with who did them; a refused token is
+logged once a minute per address, and a token over an allowance once per
+window, never with the token itself.</p>
+</section>
+<section id="capacity-admin-v0-29-89">
+<h3>Capacity (admin, v0.29.89)<a class="headerlink" href="#capacity-admin-v0-29-89" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET  /api/v1/admin/capacity
+GET  /api/v1/admin/capacity/largest
+POST /api/v1/admin/capacity/quotas/{name}
+POST /api/v1/admin/capacity/contact
+GET  /api/v1/admin/capacity/accounts?login=…  (or ?user_id=…)
+POST /api/v1/admin/capacity/accounts/{userID}
+POST /api/v1/admin/capacity/signup-allowlist
+POST /api/v1/admin/capacity/signup-allowlist/remove
+</pre></div>
+</div>
+<p>The fair-use quotas (see “Rate limits” below and the <code class="docutils literal notranslate"><span class="pre">capacity</span></code> section
+of the configuration guide), for aveloxis-gui’s Capacity page.
+Administrator sessions only, like the token routes.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/capacity</span></code> answers every quota as applied
+(<code class="docutils literal notranslate"><span class="pre">name</span></code>, <code class="docutils literal notranslate"><span class="pre">allowed</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code> — <code class="docutils literal notranslate"><span class="pre">enforce</span></code>, <code class="docutils literal notranslate"><span class="pre">shadow</span></code> or <code class="docutils literal notranslate"><span class="pre">off</span></code> — <code class="docutils literal notranslate"><span class="pre">source</span></code>,
+the <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> word, and <code class="docutils literal notranslate"><span class="pre">editable</span></code>), the <code class="docutils literal notranslate"><span class="pre">contact_email</span></code> refusals
+name, <code class="docutils literal notranslate"><span class="pre">signups_per_day</span></code> (new accounts per UTC day over the last 30
+days), the <code class="docutils literal notranslate"><span class="pre">signup_allowlist</span></code>, the accounts with <code class="docutils literal notranslate"><span class="pre">overrides</span></code>, and the
+<code class="docutils literal notranslate"><span class="pre">busiest_today</span></code> accounts by saved session requests (at most 25).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">…/capacity/largest</span></code> lists the accounts with the most repositories
+in their groups (at most 25). It reads every group link, so the page
+loads it only when asked.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/capacity/quotas/{name}</span></code> <code class="docutils literal notranslate"><span class="pre">{&quot;allowed&quot;:</span> <span class="pre">5000,</span> <span class="pre">&quot;mode&quot;:</span> <span class="pre">&quot;enforce&quot;}</span></code>
+saves one quota; the api processes apply it within a minute. <code class="docutils literal notranslate"><span class="pre">409</span></code> when
+<code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> sets the quota (DEFAULT, SHADOW or OFF), <code class="docutils literal notranslate"><span class="pre">404</span></code> for an
+unknown name, <code class="docutils literal notranslate"><span class="pre">400</span></code> for a value that is not positive or an unknown mode.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/capacity/contact</span></code> <code class="docutils literal notranslate"><span class="pre">{&quot;contact_email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> sets the address
+every refusal invites a heavy user to write to (empty: none offered).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">…/capacity/accounts?login=…</span></code> (or <code class="docutils literal notranslate"><span class="pre">?user_id=…</span></code>) reads one account:
+its <code class="docutils literal notranslate"><span class="pre">user_id</span></code>, <code class="docutils literal notranslate"><span class="pre">login</span></code>, <code class="docutils literal notranslate"><span class="pre">provider</span></code> (the forge of its last sign-in) and
+<code class="docutils literal notranslate"><span class="pre">gitlab_host</span></code>, its <code class="docutils literal notranslate"><span class="pre">override</span></code>, its <code class="docutils literal notranslate"><span class="pre">repos</span></code> (<code class="docutils literal notranslate"><span class="pre">used</span></code>, <code class="docutils literal notranslate"><span class="pre">allowed</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code>,
+<code class="docutils literal notranslate"><span class="pre">exempt</span></code>) and its <code class="docutils literal notranslate"><span class="pre">requests_today</span></code>. <code class="docutils literal notranslate"><span class="pre">404</span></code> for no such account, <code class="docutils literal notranslate"><span class="pre">400</span></code> for a
+<code class="docutils literal notranslate"><span class="pre">user_id</span></code> that is not a positive integer in range. A login that more than
+one account has apart from letter case answers <code class="docutils literal notranslate"><span class="pre">409</span></code> with <code class="docutils literal notranslate"><span class="pre">candidates</span></code>
+(each <code class="docutils literal notranslate"><span class="pre">user_id</span></code>, <code class="docutils literal notranslate"><span class="pre">login</span></code>, <code class="docutils literal notranslate"><span class="pre">provider</span></code>, <code class="docutils literal notranslate"><span class="pre">gitlab_host</span></code>): open the right one by
+<code class="docutils literal notranslate"><span class="pre">?user_id=</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/capacity/accounts/{userID}</span></code> <code class="docutils literal notranslate"><span class="pre">{&quot;repos_allowed&quot;:</span> <span class="pre">5000,</span> <span class="pre">&quot;requests_per_hour&quot;:</span> <span class="pre">null,</span> <span class="pre">&quot;requests_per_day&quot;:</span> <span class="pre">20000,</span> <span class="pre">&quot;links_per_day&quot;:</span> <span class="pre">null,</span> <span class="pre">&quot;note&quot;:</span> <span class="pre">&quot;lab</span> <span class="pre">course,</span> <span class="pre">through</span> <span class="pre">May&quot;}</span></code> raises or lowers one account’s values (<code class="docutils literal notranslate"><span class="pre">null</span></code>:
+the quota’s value; all <code class="docutils literal notranslate"><span class="pre">null</span></code> and no note removes the override).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">…/capacity/signup-allowlist</span></code> <code class="docutils literal notranslate"><span class="pre">{&quot;cidr&quot;:</span> <span class="pre">&quot;192.0.2.0/24&quot;,</span> <span class="pre">&quot;note&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> exempts a network from the sign-up quota (an organization behind
+one address); <code class="docutils literal notranslate"><span class="pre">…/remove</span></code> <code class="docutils literal notranslate"><span class="pre">{&quot;cidr&quot;:</span> <span class="pre">…}</span></code> removes it (<code class="docutils literal notranslate"><span class="pre">404</span></code> when it is not
+listed). Networks are stored normalised.</p></li>
+</ul>
+<p>Every change is logged with who made it.</p>
 </section>
 <section id="batch-statistics">
 <h3>Batch Statistics<a class="headerlink" href="#batch-statistics" title="Link to this heading"></a></h3>
@@ -2547,8 +2662,9 @@ and logs under <code class="docutils literal notranslate"><span class="pre">~/.a
 OAuth, the first admin, upgrades — is
 <a class="reference internal" href="../getting-started/deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
 <p>Each <code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps its own state: the per-repository response cache
-(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets and a short
-authorization cache. Several instances behind a load balancer each compute
+(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor answers when it is unset), its rate-limit buckets (per IP,
+per API token and the per-user cap on repositories added by viewing them;
+all start over when the process restarts) and a short authorization cache. Several instances behind a load balancer each compute
 and hold their own answers, and the per-IP limits are per instance; run one
 per host unless that is what you want.</p>
 <p>The web GUI’s charts fetch the API through the web process, which proxies
@@ -2627,6 +2743,83 @@ classes: <code class="docutils literal notranslate"><span class="pre">in_scope</
 <code class="docutils literal notranslate"><span class="pre">uncollected</span></code> (submit a collection request).</p></li>
 </ul>
 </section>
+<section id="rate-limits">
+<h2>Rate limits<a class="headerlink" href="#rate-limits" title="Link to this heading"></a></h2>
+<p>Aveloxis runs on limited hardware, so callers have fair-use limits. Every
+refusal says which limit was reached, when it resets (or how to make
+room) and whom to write to for more (v0.29.89).</p>
+<p>The per-IP limit (<code class="docutils literal notranslate"><span class="pre">api.rate_limit_rps</span></code>, default 1 request per second with a
+burst of <code class="docutils literal notranslate"><span class="pre">api.rate_limit_burst</span></code>, default 10, and <code class="docutils literal notranslate"><span class="pre">api.rate_limit_daily</span></code>,
+default 1,000 per day) applies only to callers <strong>without a valid token</strong>
+(v0.29.82). Clients on an exempt network (<code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code>) are not
+limited by it. A valid token is counted against its own quotas from every
+address, exempt networks included.</p>
+<ul class="simple">
+<li><p><strong>A valid session token</strong> (signed in, below) is counted per account
+against <code class="docutils literal notranslate"><span class="pre">requests_per_hour</span></code> (5,000, from the hour’s first request) and
+<code class="docutils literal notranslate"><span class="pre">requests_per_day</span></code> (10,000, the UTC day). An administrator can give one
+account other values. An administrator’s own session is counted but
+never refused.</p></li>
+<li><p><strong>An operator-issued API token</strong> (<code class="docutils literal notranslate"><span class="pre">Authorization:</span> <span class="pre">Bearer</span> <span class="pre">avx_…</span></code>) is
+counted against its own hourly and daily allowances (by default 1,000
+an hour and 10,000 a day since v0.29.89; 5,000 an hour for tokens
+granted before), whatever address the calls come from.</p></li>
+<li><p><strong>No token, an unknown token or an expired one</strong> is counted per IP, with
+<code class="docutils literal notranslate"><span class="pre">429</span></code> and <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> past the limit. An address over its limit that
+has just presented an invalid token gets its further tokens refused
+without a lookup for a minute, unless they are already known valid; such
+a refusal past the daily quota has a <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> of when that minute
+ends (an empty bucket’s refusal keeps <code class="docutils literal notranslate"><span class="pre">Retry-After:</span> <span class="pre">1</span></code>).</p></li>
+</ul>
+<p>Each quota runs in a mode the operator chooses: <strong>enforce</strong> (refused past
+the value), <strong>shadow</strong> (counted and logged, never refused: how a new limit
+starts) or <strong>off</strong>. Hours are counted by each <code class="docutils literal notranslate"><span class="pre">api</span></code> process; days are
+shared by all of them through the database, at most a minute behind.</p>
+<p>An answer counted against an enforced quota carries the
+<a class="reference external" href="https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/">IETF <code class="docutils literal notranslate"><span class="pre">RateLimit-Policy</span></code> and <code class="docutils literal notranslate"><span class="pre">RateLimit</span></code> headers</a>
+(for example <code class="docutils literal notranslate"><span class="pre">RateLimit-Policy:</span> <span class="pre">&quot;token_requests_per_hour&quot;;q=1000;w=3600</span></code>
+and <code class="docutils literal notranslate"><span class="pre">RateLimit:</span> <span class="pre">&quot;token_requests_per_hour&quot;;r=998;t=3412</span></code>, the tightest
+quota) and the older <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Limit</span></code>, <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Remaining</span></code> and
+<code class="docutils literal notranslate"><span class="pre">X-RateLimit-Reset</span></code> (Unix seconds) for that quota; all of them and
+<code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> are readable by cross-origin browser clients. A quota in
+shadow is not advertised.</p>
+<p>A refusal by a quota is one JSON shape, never stored:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;capacity_limit&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rate&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;quota&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;requests_per_hour&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;window&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;hour&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;used&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;allowed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;reset_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-10T14:02:11Z&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;retry_after&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1834</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;contact&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis.io@gmail.com&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;This account has reached its limit of 5,000 requests per hour. …&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>A rate quota answers <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>. The repository allocation
+(<code class="docutils literal notranslate"><span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;allocation&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">quota</span></code> <code class="docutils literal notranslate"><span class="pre">repos_per_account</span></code>: at most 1,000
+repositories across an account’s groups, additions waiting for approval
+included) answers <code class="docutils literal notranslate"><span class="pre">403</span></code> with <code class="docutils literal notranslate"><span class="pre">wanted</span></code> (how many more the refused change
+would have added) and no <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>: nothing frees up with time. Make
+room by removing repositories from your groups
+(<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{groupID}/repos/{repoID}/remove</span></code>), or write to the
+contact address. Removing makes room only for repositories you added
+yourself: a group that tracks an organization gets that organization’s
+repositories linked back by the next scan. A repository you already have in
+another group always links.</p>
+<p>Repositories newly added to an account’s groups are also counted per UTC day
+(<code class="docutils literal notranslate"><span class="pre">quota</span></code> <code class="docutils literal notranslate"><span class="pre">repo_links_per_day</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;rate&quot;</span></code>: <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>
+until 00:00 UTC). Removing one does not give the addition back, so the daily
+count bounds adding, reading and removing in a loop. Repositories an
+organization scan links (an administrator approved the organization) are not
+counted. A bulk add or a collection copy that does not fit adds nothing (unless another addition takes the last places while the paste is being linked: then the repositories linked before it stay and the rest are refused).</p>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/me</span></code> carries the caller’s numbers in <code class="docutils literal notranslate"><span class="pre">capacity</span></code>: <code class="docutils literal notranslate"><span class="pre">repos</span></code>
+(<code class="docutils literal notranslate"><span class="pre">used</span></code>, <code class="docutils literal notranslate"><span class="pre">allowed</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code>, <code class="docutils literal notranslate"><span class="pre">exempt</span></code>, <code class="docutils literal notranslate"><span class="pre">contact</span></code>) and <code class="docutils literal notranslate"><span class="pre">requests</span></code> (each
+window’s <code class="docutils literal notranslate"><span class="pre">quota</span></code>, <code class="docutils literal notranslate"><span class="pre">window</span></code>, <code class="docutils literal notranslate"><span class="pre">used</span></code>, <code class="docutils literal notranslate"><span class="pre">allowed</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code> and <code class="docutils literal notranslate"><span class="pre">reset_at</span></code>, as
+this api process counts them).</p>
+</section>
 <section id="authentication-getting-an-api-token">
 <h2>Authentication: getting an API token<a class="headerlink" href="#authentication-getting-an-api-token" title="Link to this heading"></a></h2>
 <p>When <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, every data endpoint (everything
@@ -2667,21 +2860,57 @@ gone”; retry the request.</p></li>
 <li><p>Each visit to <code class="docutils literal notranslate"><span class="pre">/auth/token</span></code> mints a <strong>new</strong> token; existing tokens
 keep working until they expire, so long-running scripts aren’t cut
 off when you log in elsewhere.</p></li>
+<li><p><strong>Signing out ends the token</strong> (v0.29.82): <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code>
+with the session token as the Bearer deletes it server-side (<code class="docutils literal notranslate"><span class="pre">204</span></code>; a
+missing token <code class="docutils literal notranslate"><span class="pre">401</span></code>, an API token <code class="docutils literal notranslate"><span class="pre">400</span></code> — an administrator revokes
+those; an already-invalid token gets <code class="docutils literal notranslate"><span class="pre">401</span></code> when <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is on,
+<code class="docutils literal notranslate"><span class="pre">204</span></code> otherwise). The GUI’s Sign out calls
+it. Before 0.29.82 a token copied before sign-out stayed valid for its
+30 days.</p></li>
+<li><p>Session tokens are stored only as their SHA-256 hash (v0.29.82), tagged
+with the algorithm (<code class="docutils literal notranslate"><span class="pre">sha256$…</span></code>, v0.29.88; API tokens likewise): a read of
+the database, or a backup, yields nothing a caller can present.
+Upgrading signs nobody out, with one exception: a database last migrated
+by v0.29.82–v0.29.86 signs every API session out once at the v0.29.88
+migrate (a session an older release wrote there could be stored raw but
+marked hashed). Rolling back below v0.29.82 signs every API session out
+once (the older release cannot read hashed tokens). Rolling back from
+v0.29.88 to v0.29.82–v0.29.87 makes every session AND every API token
+unusable while the older release runs (it looks for the untagged
+hash); re-upgrading makes them work again — do not re-grant API tokens. From
+v0.29.87, sessions an older release creates — during a rollback, or by a
+process still on the old version during a deploy — are removed by the
+next migrate, so their users sign in again once and nothing they stored
+is left behind.</p></li>
 <li><p>A token’s role and repository scope are cached for 60 seconds per
 process. An admin mutation, and (v0.29.68) an add through
 <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{id}/repos</span></code> that linked or queued repositories,
 drop the cache in the process that served them. An approval decided in
 the <strong>web</strong> process reaches the <strong>api</strong> process only when its cache
-entry expires — up to 60 seconds; the two processes share no memory.</p></li>
+entry expires — up to 60 seconds; the two processes share no memory.
+Signing out (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code>) ends the session at once in the
+api process that served it; another api process may still accept it for
+up to those 60 seconds (one api process, the usual deployment, has no
+such window). An API token is rechecked on every call in every process.</p></li>
 <li><p>A server-side failure is a <strong>500</strong> whose body never carries the cause
 (<code class="docutils literal notranslate"><span class="pre">internal</span> <span class="pre">error;</span> <span class="pre">try</span> <span class="pre">again</span></code>, or a fixed phrase such as <code class="docutils literal notranslate"><span class="pre">package</span> <span class="pre">list</span> <span class="pre">failed</span></code>, v0.29.68); the cause is in the api log. Client-side refusals
 (400/403/404) keep their own messages.</p></li>
 <li><p>Your token carries <strong>your</strong> repository scope — every repo in any
 of your groups (pending included; approval gates new collection,
-not visibility of collected data). Administrators are unscoped.</p></li>
+not visibility of collected data). An administrator’s signed-in
+session is unscoped; an API token never is (v0.29.86), whoever owns it.</p></li>
 <li><p><strong>Shared links (v0.27.82):</strong> requesting a repo outside your groups
 auto-adds it to your implicit <strong>“Shared with Me”</strong> group and the
-request proceeds — repo links are shareable between signed-in
+request proceeds (v0.29.82: at most 100 such additions per user per
+hour across Shared with Me, the compare’s Comparisons group and stars
+of repositories outside your groups — an organization entity counts
+once, and a request that links nothing new counts nothing; each <code class="docutils literal notranslate"><span class="pre">api</span></code>
+process keeps its own count, which starts over when it restarts; past
+that the request is <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> and the <code class="docutils literal notranslate"><span class="pre">capacity_limit</span></code>
+body, <code class="docutils literal notranslate"><span class="pre">quota</span></code> <code class="docutils literal notranslate"><span class="pre">shared_with_me_adds_per_hour</span></code> (v0.29.89), and that
+addition is not made, though entities of the same request resolved
+before it were; with the account’s repository allocation full, the
+request is refused with the <code class="docutils literal notranslate"><span class="pre">capacity_limit</span></code> body, see “Rate limits”) — repo links are shareable between signed-in
 users (the Starred/Comparisons auto-add pattern, triggered by
 viewing). The response that performed the add carries a one-time
 <code class="docutils literal notranslate"><span class="pre">X-Aveloxis-Added-To-Group:</span> <span class="pre">Shared</span> <span class="pre">with</span> <span class="pre">Me</span></code> header (CORS-exposed)
@@ -2692,9 +2921,36 @@ approval principle: approval gates collection, never visibility).
 Repo IDs with no repos row still return the structured 403
 (<code class="docutils literal notranslate"><span class="pre">repo_out_of_scope</span></code>), as do requests when the auto-add cannot be
 performed (fail closed).</p></li>
-<li><p>Treat the token like a password. There is no self-service revoke
-endpoint yet; operators can delete rows from
-<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.user_session_tokens</span></code> to revoke immediately.</p></li>
+<li><p><strong>An API token never auto-adds (v0.29.86).</strong> The auto-add above is for
+a signed-in session following a shared link. A request with an API
+token for a repository outside its owner’s groups (a repository route,
+the compare, a star) is refused <code class="docutils literal notranslate"><span class="pre">403</span></code> and nothing is written. The
+refusal says how to add it: <code class="docutils literal notranslate"><span class="pre">repo_url</span></code> (or, in the compare,
+<code class="docutils literal notranslate"><span class="pre">entity_url</span></code>), <code class="docutils literal notranslate"><span class="pre">your_groups</span></code> (each <code class="docutils literal notranslate"><span class="pre">group_id</span></code> and <code class="docutils literal notranslate"><span class="pre">name</span></code>),
+<code class="docutils literal notranslate"><span class="pre">add_to_existing_group</span></code> (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{group_id}/repos</span></code> with
+the body to send) and <code class="docutils literal notranslate"><span class="pre">create_group</span></code> (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups</span></code> with a
+name; then add to the new group’s id). For an organization in the
+compare, <code class="docutils literal notranslate"><span class="pre">entity_repo_urls</span></code> lists its collected repositories and the
+add sends them all in one call (<code class="docutils literal notranslate"><span class="pre">urls</span></code>); registering the organization
+itself is not suggested, since that only queues tracking for approval.
+A repository still queued for collection is readable once added; one
+that is no longer queued waits for an administrator’s approval, unless
+the add fits under <code class="docutils literal notranslate"><span class="pre">web.auto_approve_add_limit</span></code>, which adds it at once. Only
+groups that accept additions are listed. A repository id that does not
+exist gets the plain refusal, with no instructions.
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code> answers a non-administrator — an API
+token or a signed-in session (v0.29.88) — only for the ids in its
+groups and leaves the others out. For an API token,
+<code class="docutils literal notranslate"><span class="pre">/repos/{id}/contributors/elsewhere</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributors/{id}/activity</span></code>
+leave out collected repositories outside its owner’s groups; a
+contributor’s other repositories not collected here stay (v0.29.88).
+Refusals of this kind are logged once a minute per user and kind.</p></li>
+<li><p>Treat the token like a password. <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code> with the
+token as the Bearer ends it (the GUI’s Sign out does this). To end every
+session of an account at once, an operator runs one statement, which also
+removes any <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.refresh_tokens</span></code> row carried over from Augur that
+points at a session (a plain session delete fails on it):
+<code class="docutils literal notranslate"><span class="pre">WITH</span> <span class="pre">gone</span> <span class="pre">AS</span> <span class="pre">(DELETE</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.user_session_tokens</span> <span class="pre">WHERE</span> <span class="pre">user_id</span> <span class="pre">=</span> <span class="pre">N</span> <span class="pre">RETURNING</span> <span class="pre">token)</span> <span class="pre">DELETE</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.refresh_tokens</span> <span class="pre">WHERE</span> <span class="pre">user_session_token</span> <span class="pre">IN</span> <span class="pre">(SELECT</span> <span class="pre">token</span> <span class="pre">FROM</span> <span class="pre">gone)</span></code>.</p></li>
 </ul>
 </section>
 <section id="vulnerabilities-and-home-tab-v0-27-4">
@@ -2875,7 +3131,8 @@ signed-in user (Bearer required unconditionally). Idempotent.
 Starring a repo outside the caller’s groups auto-adds it to their
 implicit “Starred” group (created on first use) and the response
 carries <code class="docutils literal notranslate"><span class="pre">added_to_group:</span> <span class="pre">&quot;Starred&quot;</span></code> — approval only ever gates NEW
-collection, and stars can only target already-collected repos, so
+collection, and stars can only target already-collected repos (a star
+of an id that names no repository is <code class="docutils literal notranslate"><span class="pre">404</span></code>, v0.29.82), so
 no approval is involved. Unstarring never removes the repo from
 the group (scope stays until the user prunes the group).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/star</span></code> — <code class="docutils literal notranslate"><span class="pre">{&quot;starred&quot;:</span> <span class="pre">bool}</span></code>, the
@@ -3028,9 +3285,12 @@ every login; <code class="docutils literal notranslate"><span class="pre">provid
 <code class="docutils literal notranslate"><span class="pre">email_pending</span></code> added 2026-10-04 for the profile page: <code class="docutils literal notranslate"><span class="pre">email</span></code> is the
 forge’s own address taken at sign-in, or one confirmed through the
 mailed link; <code class="docutils literal notranslate"><span class="pre">email_pending</span></code> is an address awaiting confirmation, or
-empty). <code class="docutils literal notranslate"><span class="pre">scope_repo_count</span></code> is <code class="docutils literal notranslate"><span class="pre">-1</span></code> for admins (unscoped). The GUI uses
+empty). <code class="docutils literal notranslate"><span class="pre">scope_repo_count</span></code> is <code class="docutils literal notranslate"><span class="pre">-1</span></code> for an administrator’s session
+(unscoped); through an API token <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> and the count is
+the owner’s groups’ (v0.29.86). The GUI uses
 <code class="docutils literal notranslate"><span class="pre">is_admin</span></code> to decide whether to render the admin navigation.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email</span></code> — body <code class="docutils literal notranslate"><span class="pre">{&quot;email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code>: stores the address as
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/email</span></code> (a signed-in session only: an API token is
+refused <code class="docutils literal notranslate"><span class="pre">403</span></code>, v0.29.88) — body <code class="docutils literal notranslate"><span class="pre">{&quot;email&quot;:</span> <span class="pre">&quot;…&quot;}</span></code>: stores the address as
 pending and mails the confirmation link, for an account whose forge gave
 no email (a private GitHub address). <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">{&quot;sent&quot;:</span> <span class="pre">true}</span></code>, or <code class="docutils literal notranslate"><span class="pre">422</span> <span class="pre">{&quot;sent&quot;:</span> <span class="pre">false,</span> <span class="pre">&quot;message&quot;:</span> <span class="pre">&quot;…&quot;}</span></code> with the reason (not a deliverable
 address; mail not configured — <code class="docutils literal notranslate"><span class="pre">mail.site_url</span></code> and the Gmail settings
@@ -3047,7 +3307,8 @@ expired, already used, another account’s — nothing changes); <code class="do
 (v0.27.84) counts the group’s pending addition requests — the GUI
 renders “N additions awaiting approval” from it, since under the
 v0.27.20 model the GROUP is approved while its ADDITIONS may pend.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups</span></code> with <code class="docutils literal notranslate"><span class="pre">{&quot;name&quot;:</span> <span class="pre">&quot;...&quot;}</span></code> — create a group.
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups</span></code> with <code class="docutils literal notranslate"><span class="pre">{&quot;name&quot;:</span> <span class="pre">&quot;...&quot;}</span></code> — create a group (a name
+of at most 200 characters, v0.29.88).
 Groups are created <code class="docutils literal notranslate"><span class="pre">approved</span></code> (v0.27.20 — the approval unit is the
 ADDITION of not-yet-collected repos/orgs, never the group
 container). Returns <code class="docutils literal notranslate"><span class="pre">{group_id}</span></code>.</p></li>
@@ -3067,7 +3328,9 @@ and the response echoes the effective sort. Non-admins may only
 read their own groups (403 otherwise).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{groupID}/repos</span></code> with
 <code class="docutils literal notranslate"><span class="pre">{&quot;url&quot;:</span> <span class="pre">&quot;https://github.com/owner/repo&quot;,</span> <span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;repo&quot;}</span></code> (or
-<code class="docutils literal notranslate"><span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;org&quot;</span></code> with an org URL) — add a repo or track an org.
+<code class="docutils literal notranslate"><span class="pre">&quot;kind&quot;:</span> <span class="pre">&quot;org&quot;</span></code> with an org URL) — add a repo or track an org. A
+<code class="docutils literal notranslate"><span class="pre">urls</span></code> list carries at most 1,000 URLs per add (v0.29.88): paste a
+larger set in parts, or add its organization.
 This is the “request access / request collection” affordance the
 compare picker’s three-class results point at: already-collected
 repos link instantly; new repos in a pending group wait for admin
@@ -3098,7 +3361,14 @@ repos already auto-enqueue via the existing registration; an
 auto-approved audit row is still recorded). A non-admin’s add of a
 NEW org returns <code class="docutils literal notranslate"><span class="pre">pending_approval</span></code> — registering a new org is an
 open-ended future-repo commitment, so it awaits admin review.
-Orgs stay one per request — a multi-URL <code class="docutils literal notranslate"><span class="pre">kind:</span> <span class="pre">&quot;org&quot;</span></code> body is a 400.</p></li>
+Orgs stay one per request — a multi-URL <code class="docutils literal notranslate"><span class="pre">kind:</span> <span class="pre">&quot;org&quot;</span></code> body is a 400.
+An add that would take the account past its repository allocation
+(v0.29.89) adds nothing and answers the <code class="docutils literal notranslate"><span class="pre">capacity_limit</span></code> body (see
+“Rate limits”).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/groups/{groupID}/repos/{repoID}/remove</span></code> — removes a
+repository from one of the caller’s groups (v0.29.89). The repository
+stops counting toward the account’s allocation once no other group of
+theirs holds it. <code class="docutils literal notranslate"><span class="pre">404</span></code> for a group that is not the caller’s.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/groups/{groupID}/orgs</span></code> — the organizations tracked in
 the group (2026-07-21; read-only — registration goes through the
 POST above with <code class="docutils literal notranslate"><span class="pre">kind:</span> <span class="pre">&quot;org&quot;</span></code>). Envelope:

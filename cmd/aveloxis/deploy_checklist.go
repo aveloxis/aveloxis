@@ -531,6 +531,45 @@ var deployChecklists = map[string][]deployStep{
 	// v0.29.81 (2026-10-08): PR #226 Copilot review 5460776344 — the daily
 	// arm of top contributors takes a stored identity only while its
 	// contributor is live. No schema change.
+	// v0.29.82 (2026-10-08, branch tokenizer): the per-IP rate limit only
+	// for callers without a valid token; session tokens hashed at rest
+	// (existing rows once); operator-issued API tokens. Schema: two tables,
+	// one column, the hash migration — a migrate, as always.
+	// v0.29.83 (2026-10-09, branch tokenizer): PR #228 CI govulncheck
+	// (Go 1.26.9, golang.org/x/net v0.60.0) and Copilot review 5472987053 —
+	// the limiter maps stay bounded, a link that adds nothing spends no
+	// auto-add slot. No schema change.
+	// v0.29.84 (2026-10-09, branch tokenizer): Copilot review 5475865946 —
+	// a cached API token is never deferred behind a busy address; a partial
+	// organization link drops the cached scope. No schema change.
+	// v0.29.85 (2026-10-09, branch tokenizer): session-volume observation
+	// (logged, never limited); Copilot review 5476192626 — session deletes
+	// take their refresh_tokens rows, rate-limit headers exposed to CORS.
+	// No schema change.
+	// v0.29.86 (2026-10-09, branch tokenizer): Copilot review 5476707567 —
+	// an API token is never an administrator for data either (scoped to its
+	// owner's groups) and never auto-adds: out of scope it is refused with
+	// the way to add the repository (operator decision). No schema change.
+	// v0.29.87 (2026-10-09, branch tokenizer): Copilot review 5477367612 —
+	// session tokens an older binary writes (rollback, mixed-version deploy)
+	// are removed by the next migrate (token_hashed default FALSE). No new
+	// table or index.
+	// v0.29.88 (2026-10-10, branch tokenizer): Copilot review 5477687920 —
+	// per-caller cache keys separate a session from an API token; an API
+	// token is charged on exempt networks too; a database that ran
+	// 0.29.82-0.29.86 signs every session out once. No new table or index.
+	// v0.29.89 (2026-10-10, branch rate-limit-hci): fair-use quotas
+	// (summary/53) — six aveloxis_ops tables born empty and seeded, one
+	// column with a default on api_tokens; api_token_settings' hourly
+	// default kept as a rollback mirror. No index on a fleet-scale table.
+	"0.29.89": v02989DeployChecklist,
+	"0.29.88": v02988DeployChecklist,
+	"0.29.87": v02987DeployChecklist,
+	"0.29.86": v02986DeployChecklist,
+	"0.29.85": v02985DeployChecklist,
+	"0.29.84": v02984DeployChecklist,
+	"0.29.83": v02983DeployChecklist,
+	"0.29.82": v02982DeployChecklist,
 	"0.29.81": v02981DeployChecklist,
 	"0.29.80": v02980DeployChecklist,
 	"0.29.79": v02979DeployChecklist,
@@ -549,6 +588,111 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02989DeployChecklist is 0.29.88's ladder with a note on the start step.
+var v02989DeployChecklist = func() []deployStep {
+	prev := v02988DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.89: fair-use quotas, set on the GUI's new Capacity page (administrators) or per quota in aveloxis.json's optional \"capacity\" section (WEB, DEFAULT, SHADOW or OFF; a missing line is WEB). The migrate adds seven tables to aveloxis_ops (capacity_settings, capacity_quotas, user_capacity, request_counts, account_signups, signup_key_secrets, signup_allowlist), seeds one row per quota, adds api_tokens.rate_limit_per_day (10,000 for existing tokens) and moves the API-token default allowance into the token_requests_per_hour quota (a value an administrator saved is kept, except the old default 5,000, which becomes the new 1,000 — if you chose 5,000 on purpose, set it again on the Capacity page; the old api_token_settings column stays as a mirror for a rollback). Each process logs 'capacity quota in force' per quota at start: check them. Shipped: requests per signed-in account 5,000 an hour and 10,000 a UTC day, repositories per account 1,000 held at once (pending additions included) and 1,000 newly added per UTC day (repo_links_per_day; organization scans an administrator approved are not counted), new accounts 3 per address per day, API-token days 10,000 — all in SHADOW (counted and logged, never refused: grep api.log for 'quota reached (shadow)', and every log for 'repository quota (shadow)', 'daily additions quota (shadow)' and 'sign-up quota (shadow)'); the API-token hour stays enforced, and a NEW token's default is now 1,000 an hour (existing tokens keep theirs). The 0.29.88 session ceiling (20,000 an hour) is gone: no signed-in session is refused until you set requests_per_hour or requests_per_day to enforce. Plan: read a week of shadow lines, then turn each quota on in the Capacity page. Approving an organization for an account collects all of its repositories, but the account links only up to its repository value: raise that account's value on the Capacity page when you approve a large organization. Set web.trusted_proxy to nginx's address (127.0.0.1 on the same host) in aveloxis.json before start, or every sign-up counts as nginx's one address (the web logs a WARN naming web.trusted_proxy when it sees this); sign-up addresses are kept only as a hash that changes every UTC day — to keep each new account's address sealed for a year for a lawful request, make an offline key pair with aveloxis signup-escrow keygen and set web.signup_escrow_recipient (docs/guide/signup-escrow.md; off unless set); and on a public host set api.require_auth true (check with: grep -n require_auth ~/aveloxis.json). The GUI's Capacity page and capacity messages need this API. ROLLBACK to any of 0.29.82-0.29.88: older binaries never prune the sign-up secrets, so after rolling back run, once per database, psql -h \"${PGHOST:?}\" -p \"${PGPORT:?}\" -U \"${PGUSER:?}\" -d \"${PGDATABASE:?}\" -c 'DELETE FROM aveloxis_ops.signup_key_secrets; UPDATE aveloxis_ops.account_signups SET address_key = NULL' (the sign-up counts restart; sealed addresses are untouched); otherwise no extra step: the old API-token default column is kept and kept current (the older binary reads it); a change to the hourly default made on the older binary's API tokens page while rolled back is not carried forward — set it again on the Capacity page after re-upgrading; on 0.29.88 the session ceiling is four times that default, so it becomes 4,000 an hour, not 20,000, and on 0.29.85-0.29.87 the session observation logs from 1,000 an hour (0.29.82-0.29.84, kate's 0.29.83 among them, have neither). A fleet already running 0.29.88 needs only the stop, the migrate and this start; a fleet on an older 0.29.8x (kate ran 0.29.83 on 2026-10-10) takes every note below in the same one migrate — including 0.29.88's one-time sign-out of every API session, since its last migrate was by 0.29.82-0.29.86. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02988DeployChecklist is 0.29.87's ladder with a note on the start step.
+var v02988DeployChecklist = func() []deployStep {
+	prev := v02987DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.88: a signed-in account is refused (429) past four times the API-token default in an hour (20,000 with the default 5,000; log line 'signed-in session over its hourly ceiling'), and batch stats are scoped for every non-administrator; an API token can no longer change its owner's e-mail; a group add carries at most 1,000 URLs and a group name at most 200 characters; refusals are logged once a minute per user and kind; stored token hashes are tagged sha256$ (the migrate tags existing ones; nobody is signed out). ROLLBACK: going back to 0.29.82-0.29.87 makes every session and API token unusable while the older binary runs (it looks for the untagged hash); re-upgrading restores them — do not re-grant API tokens. Stop everything before this migrate (as the ladder does): an older web or api still running would write untagged rows the new api cannot read until the next migrate. An API token is now counted against its own hourly allowance also from an exempt network (api.exempt_cidrs), which no longer bypasses it; a token and its owner's signed-in session never share a cached compare, new-repositories or supply-chain answer. A database whose last migrate was by 0.29.82-0.29.86 signs every API session out once at this migrate (log line 'signed every API session out once', with the count): a session an older binary wrote there could be stored raw but marked hashed, and no row says which; a database that never ran those versions (kate, if it goes from 0.29.81) signs nobody out. NOT detected: a database that ran 0.29.82-0.29.86, then had a binary older than 0.29.82 run against it, and then ran 0.29.87 (0.29.87 cleared the marker). If that can be true here, sign everyone out once by hand, once per database it applies to: psql -h \"${PGHOST:?}\" -p \"${PGPORT:?}\" -U \"${PGUSER:?}\" -d \"${PGDATABASE:?}\" -c 'WITH gone AS (DELETE FROM aveloxis_ops.user_session_tokens RETURNING token) DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)'. Also needed by the GUI's cache checker, which now requires API 0.29.85 or later. No new configuration. A fleet already running 0.29.87 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02987DeployChecklist is 0.29.86's ladder with a note on the start step.
+var v02987DeployChecklist = func() []deployStep {
+	prev := v02986DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.87: a session token written by an older binary (after a rollback, or by a process still running the old version during the deploy) is removed by every migrate from 0.29.87 on (log line 'removed session tokens an older binary wrote', with the count): its user signs in again once — the contract a rollback already had. Below 0.29.82 such tokens were plaintext; they are no longer left behind. One case cannot be told apart: a session a pre-0.29.82 binary created during a rollback from 0.29.82-0.29.86 BEFORE this release first migrates stays in plaintext and no longer signs in; it is deleted at the first sign-in of anyone after it expires (30 days after it was created). No new configuration. A fleet already running 0.29.86 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02986DeployChecklist is 0.29.85's ladder with a note on the start step.
+var v02986DeployChecklist = func() []deployStep {
+	prev := v02985DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.86: an API token reads only the repositories in its owner's groups — also one granted to an administrator (before, it read every repository) — and a request for any other repository is now refused 403 with the way to add it (its URL, the owner's groups, and the calls to add it or create a group), where since 0.29.82 it was auto-added to Shared with Me; a script that relied on that must add the repositories to a group first; the batch stats route (/repos/stats?ids=) likewise answers a token only for its owner's groups. If the cache-warm script runs with AVELOXIS_TOKEN set to an API token, it now reaches only that token owner's groups: run it from an exempt address without a token, or with an administrator's signed-in session token. Signed-in browser sessions are unchanged (they still auto-add). No schema change and no new configuration. A fleet already running 0.29.85 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02985DeployChecklist is 0.29.84's ladder with a note on the start step.
+var v02985DeployChecklist = func() []deployStep {
+	prev := v02984DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.85: signed-in sessions stay unlimited, but an account whose session makes more requests in an hour than an API token is allowed (the default on the API tokens page) is logged in api.log ('signed-in session made more requests this hour than an API token is allowed'), again at each doubling — observation only, nothing is refused; sign-out and the expired-session sweep also remove an old Augur refresh_tokens row that pointed at the session (before, such a session could not be signed out); cross-origin clients can read the rate-limit headers. No schema change and no new configuration. A fleet already running 0.29.84 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02984DeployChecklist is 0.29.83's ladder with a note on the start step.
+var v02984DeployChecklist = func() []deployStep {
+	prev := v02983DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.84: an API token already validated in the last minute is counted against its own hourly allowance even when its address has just sent a bad token and run out of its limit (it used to get the address's 429). No schema change and no new configuration. A fleet already running 0.29.83 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02983DeployChecklist is 0.29.82's ladder (which a fleet that skipped
+// 0.29.82 still needs) with a note on the start step.
+var v02983DeployChecklist = func() []deployStep {
+	prev := v02982DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.83: built with Go 1.26.9 and golang.org/x/net v0.60.0 (security fixes in net/http, crypto/tls and HTTP/2); a star or comparison that links a repository already in your groups no longer counts against the per-user cap on repositories added by viewing them. No schema change and no new configuration. A fleet already running 0.29.82 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02982DeployChecklist is 0.29.81's ladder with a note on the start step.
+var v02982DeployChecklist = func() []deployStep {
+	prev := v02981DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.82: a request with a valid session token is no longer counted by the per-IP rate limit (signed-in visitors stop seeing 429 on large repository pages); the API's session tokens are stored hashed — the migrate hashed the existing ones once (log line 'column added and its one-time stamp applied' for user_session_tokens.token_hashed), so nobody is signed out, but rolling back to an older release afterwards signs every API session out once; and administrators can grant and revoke API tokens on the GUI's API tokens page (defaults 5,000 calls per hour and 30 days, editable there). No new configuration. A fleet already running 0.29.81 needs only the stop, the migrate and this start. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02981DeployChecklist is 0.29.80's ladder with a note on the start step.
 var v02981DeployChecklist = func() []deployStep {
@@ -734,7 +878,7 @@ var v02969DeployChecklist = []deployStep{
 	{"aveloxis migrate --skip-views", "adds repos.metadata_backfill_attempted_at and users.gl_oauth_host (nullable, no default: instant ALTERs); otherwise as 0.29.67 — re-creates the two supply-chain views from Go (--skip-views skips only the 8Knot batch) and creates repo_forge_id_changes if 0.29.62 was skipped"},
 	v02967DeployChecklist[2],
 	v02968DeployChecklist[3],
-	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "` + db.CrossProviderUserAuditSQL() + `"`, "optional audit (observation only): through 0.29.68 a web login was matched to an existing account by its user name alone, so a GitLab user who signed in under a GitHub user's name (or a GitHub user who took over a renamed-away login) was handed that account, administrator rights included. From 0.29.69 an account is found by the forge's numeric user ID, and a name that belongs to another identity is refused. A count above 0 says accounts are linked to both a GitHub and a GitLab user (two IDs, or — the shape the old code left, its other ID stored as 0 — a GitHub login and a GitLab user name on one account): either one person who uses both forges under one name, or such a takeover. To list them replace count(*) with user_id, login_name, admin, oauth_provider, gh_user_id, gh_login, gl_user_id, gl_username, keeping the WHERE clause; check each with its owner, and for a takeover clear the intruder's side (for a GitLab intruder: UPDATE aveloxis_ops.users SET gl_user_id = NULL, gl_username = '', gl_oauth_host = NULL, oauth_provider = 'github' WHERE user_id = N; the GitHub columns likewise for the reverse), revoke admin if it was not the owner's, and end the account's sessions — DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = N for the API, and a web restart for the GUI's in-memory sessions (the owner signs in again)"},
+	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "` + db.CrossProviderUserAuditSQL() + `"`, "optional audit (observation only): through 0.29.68 a web login was matched to an existing account by its user name alone, so a GitLab user who signed in under a GitHub user's name (or a GitHub user who took over a renamed-away login) was handed that account, administrator rights included. From 0.29.69 an account is found by the forge's numeric user ID, and a name that belongs to another identity is refused. A count above 0 says accounts are linked to both a GitHub and a GitLab user (two IDs, or — the shape the old code left, its other ID stored as 0 — a GitHub login and a GitLab user name on one account): either one person who uses both forges under one name, or such a takeover. To list them replace count(*) with user_id, login_name, admin, oauth_provider, gh_user_id, gh_login, gl_user_id, gl_username, keeping the WHERE clause; check each with its owner, and for a takeover clear the intruder's side (for a GitLab intruder: UPDATE aveloxis_ops.users SET gl_user_id = NULL, gl_username = '', gl_oauth_host = NULL, oauth_provider = 'github' WHERE user_id = N; the GitHub columns likewise for the reverse), revoke admin if it was not the owner's, and end the account's sessions — WITH gone AS (DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = N RETURNING token) DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone) for the API (one statement: a refresh_tokens row carried over from Augur references its session, and a plain session DELETE fails on it), and a web restart for the GUI's in-memory sessions (the owner signs in again). From 0.29.82 also revoke its API tokens (UPDATE aveloxis_ops.api_tokens SET revoked_at = NOW() WHERE user_id = N AND revoked_at IS NULL) and review any it granted to others (SELECT token_id, user_id, label FROM aveloxis_ops.api_tokens WHERE created_by = N AND revoked_at IS NULL; revoke the intruder's on the API tokens page)"},
 	{`psql -h "${PGHOST:?}" -p "${PGPORT:?}" -U "${PGUSER:?}" -d "${PGDATABASE:?}" -Atc "` + db.DuplicateForgeIDUserAuditSQL() + `"`, "optional audit (observation only): through 0.29.68 a user who renamed on GitHub or GitLab got a second account at the next sign-in, with the same forge user ID. From 0.29.69 the most recently used account signs in (a WARN names the ID each time). A count above 0 is the number of forge IDs with more than one account; list them with SELECT gh_user_id, array_agg(user_id ORDER BY data_collection_date DESC) FROM aveloxis_ops.users WHERE COALESCE(gh_user_id, 0) <> 0 GROUP BY 1 HAVING count(*) > 1 (for GitLab group by gl_user_id, gl_oauth_host — an ID is an identity only on its instance), then move the older accounts' groups to the kept one or leave them — nothing is merged automatically"},
 	{"aveloxis start all", "the first start runs the repository-metadata backfill once over its current candidates (~5,600 on kate) and stamps each answer; later starts ask only repositories never answered, not answered (a rate limit, a 5xx, an empty key pool — retried) or last asked more than one recollect interval ago (worklist 69). A repository whose last collection FAILED keeps the due date its failure gave it instead of re-running at every start (68). A GraphQL response cut off mid-body is retried, and an exhausted retry is transient (the PR batch subdivides) — the giant repositories that looped on 6–21 h failed attempts should complete, and a failed job's 'job complete' line now names its error (66). A search key that draws a headerless rate-limit 403 rests 60 s before any caller can lease it again (67). Unresolved commits no longer on the default branch (history rewritten upstream) are skipped from the bare clone instead of aborting commit resolution every cycle (73). Unchanged commit messages are no longer rewritten (fewer dead tuples on commit_messages — 70); a stop no longer logs staged processing as ERROR (72); the contributor-activity batch no longer deadlocks with the contributor upsert (74); Gemfile gem names and version requirements are read as Ruby literals — a trailing `if`/`unless` or an interpolated name no longer becomes a fabricated gem, and keyword options no longer skew the requirement's classification (71). Web sign-in finds an account by the forge's numeric user ID (a GitLab ID only on the instance web.gitlab_base_url names; a web start with GitLab sign-in configured records that instance on GitLab accounts from before 0.29.69, so keep web.gitlab_base_url unchanged, and do not turn GitLab sign-in on under another instance, until 0.29.69 has started once that way): a user whose name is already held by another GitHub or GitLab account is refused ('Failed to create user'; the log names the collision; the web GUI guide's Login Flow gives the administrator's fix), a user who renamed on the forge keeps their account and its name follows, and no welcome mail goes to a returning user under a new name. A failed or timed-out token exchange or user request at sign-in is now logged with its provider, and the browser no longer shows the token endpoint's reply. upgrade-tools and the monthly tool check count a scorecard written behind an older copy earlier on PATH as a failure, and a failed scancode install names its real cause (a timeout, pip's error) instead of 'neither pipx nor pip found'. If 0.29.68 was skipped, its start-up notes apply as well: " + v02968DeployChecklist[4].desc},
 }

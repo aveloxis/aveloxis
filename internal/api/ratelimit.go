@@ -24,13 +24,18 @@ package api
 // super-token tiers (§2 of the plan) will layer on top of this.
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 )
 
@@ -108,6 +113,66 @@ type bucket struct {
 	dayCount int
 
 	lastSeen time.Time
+
+	// badTokenAt is when this address last presented a token the store
+	// called invalid (v0.29.82; see deferLookup).
+	badTokenAt time.Time
+}
+
+// badTokenMemory is how long an address that presented an invalid token
+// has its further uncached tokens deferred while its bucket is empty: the
+// token cache's own horizon (authCacheTTL).
+const badTokenMemory = authCacheTTL
+
+// deferLookup reports whether identify should skip the store lookup for an
+// uncached token from r's address (L10 round 1 on 0.29.82): the address is
+// over its limit (no whole token in its bucket, or its daily quota spent)
+// AND it presented an invalid token within badTokenMemory. Without it, an
+// address over its limit could make every request cost a lookup by sending
+// made-up tokens; with the second condition, a signed-in caller behind a
+// busy shared address that has sent no bad token is still resolved. A
+// deferred request the limiter admits anyway is looked up by the auth layer.
+func (rl *rateLimiter) deferLookup(r *http.Request) bool {
+	ip := rl.clientIP(r)
+	if rl.isExempt(ip) || ip == nil {
+		return false
+	}
+	now := rl.clock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	b, ok := rl.visitors[ip.String()]
+	if !ok || b.badTokenAt.IsZero() || now.Sub(b.badTokenAt) >= badTokenMemory {
+		return false
+	}
+	tokens := b.tokens + now.Sub(b.last).Seconds()*rl.opts.RateLimitRPS
+	overQuota := b.day == now.UTC().Format("2006-01-02") && b.dayCount >= rl.opts.RateLimitDaily
+	return tokens < 1 || overQuota
+}
+
+// noteBadToken records that r's address presented an invalid token, and
+// logs it once per address per badTokenMemory (never the token; kind is
+// "api" or "session").
+func (rl *rateLimiter) noteBadToken(r *http.Request, kind string) {
+	ip := rl.clientIP(r)
+	if rl.isExempt(ip) || ip == nil {
+		return
+	}
+	now := rl.clock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	b, ok := rl.visitors[ip.String()]
+	if !ok {
+		if len(rl.visitors) >= maxTrackedIPs {
+			rl.evictOldestLocked()
+		}
+		b = &bucket{tokens: float64(rl.opts.RateLimitBurst), last: now, lastSeen: now}
+		rl.visitors[ip.String()] = b
+	}
+	if rl.logger != nil && (b.badTokenAt.IsZero() || now.Sub(b.badTokenAt) >= badTokenMemory) {
+		rl.logger.Info("invalid token presented — unknown, revoked or expired; the address is counted per IP",
+			"address", ip.String(), "kind", kind)
+	}
+	b.badTokenAt = now
 }
 
 // allow refills by elapsed×rps (capped at burst) and consumes one
@@ -139,6 +204,75 @@ type rateLimiter struct {
 	// uncounted reports a request the visitor already paid for
 	// (Server.frontEndAuthorized, v0.29.73); nil counts everything.
 	uncounted func(*http.Request) bool
+
+	// v0.29.89 (summary/53): every rate quota of a valid token — a session's
+	// requests_per_hour/_per_day, an API token's own hour and day — is
+	// counted by one capacity.Meter, its values and modes from policy (nil
+	// in a bare test limiter: shipped values). now is the clock (a test
+	// seam; time.Now otherwise). Replaces the 0.29.82 token windows, the
+	// 0.29.85 session observation and the 0.29.88 session ceiling.
+	meter  *capacity.Meter
+	policy *capacityPolicy
+	now    func() time.Time
+
+	// logger records refused tokens and exhausted allowances (ASVS V16.3,
+	// the 0.29.82 review A5); nil is silent.
+	logger *slog.Logger
+}
+
+// chargeQuotas counts one request of a valid token against its quotas and
+// reports the result (the meter is made on first use, so a bare test
+// limiter works too).
+func (rl *rateLimiter) chargeQuotas(info authInfo) capacity.Result {
+	m := rl.quotaMeter()
+	if info.APITokenID != 0 {
+		return m.Charge(subjectOf(info), rl.policy.tokenQuotas(info)...)
+	}
+	return m.Charge(subjectOf(info), rl.policy.sessionQuotas(info.UserID, info.IsAdmin)...)
+}
+
+// peekTokenQuotas reports an API token's quotas without counting (a request
+// whose authz subrequest already paid).
+func (rl *rateLimiter) peekTokenQuotas(info authInfo) []capacity.Decision {
+	m := rl.quotaMeter()
+	var ds []capacity.Decision
+	for _, q := range rl.policy.tokenQuotas(info) {
+		if q.Mode == capacity.Off || q.Allowed <= 0 {
+			continue
+		}
+		ds = append(ds, m.Peek(subjectOf(info), q))
+	}
+	return ds
+}
+
+// tokenSpent reports whether an API token has nothing left under an
+// enforced quota (identify skips the store recheck then: the 429 needs
+// none).
+func (rl *rateLimiter) tokenSpent(info authInfo) bool {
+	for _, d := range rl.peekTokenQuotas(info) {
+		if d.Quota.Mode == capacity.Enforce && d.Remaining == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// quotaMeter is the limiter's meter, made on first use with the limiter's
+// clock and logger when the constructor did not set one.
+func (rl *rateLimiter) quotaMeter() *capacity.Meter {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.meter == nil {
+		rl.meter = capacity.NewMeter(capacity.MeterOptions{Now: rl.clock, MaxWindows: maxTrackedIPs})
+	}
+	return rl.meter
+}
+
+func (rl *rateLimiter) clock() time.Time {
+	if rl.now != nil {
+		return rl.now()
+	}
+	return time.Now()
 }
 
 func newRateLimiter(opts Options) (*rateLimiter, error) {
@@ -173,23 +307,7 @@ func newRateLimiter(opts Options) (*rateLimiter, error) {
 // honored only when the direct peer IS the trusted proxy; the
 // RIGHTMOST XFF entry is the address our own proxy appended.
 func (rl *rateLimiter) clientIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer := net.ParseIP(host)
-	if rl.opts.TrustedProxy == "" || host != rl.opts.TrustedProxy {
-		return peer
-	}
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff == "" {
-		return peer
-	}
-	parts := strings.Split(xff, ",")
-	if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
-		return ip
-	}
-	return peer
+	return httpserver.ClientIP(r, rl.opts.TrustedProxy)
 }
 
 func (rl *rateLimiter) isExempt(ip net.IP) bool {
@@ -204,11 +322,44 @@ func (rl *rateLimiter) isExempt(ip net.IP) bool {
 	return false
 }
 
-// middleware enforces the bucket + daily quota for non-exempt IPs.
+// middleware enforces the bucket + daily quota for non-exempt IPs, and an
+// API token's hourly allowance from every address (exempt ones included).
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A request nginx forwards after an admitted authz subrequest
+		// already paid there (Server.frontEndAuthorized): it is neither
+		// observed nor charged again, whatever its token (L10 round 1 on
+		// 0.29.85; API tokens were charged twice per cache miss since
+		// 0.29.82).
+		paid := rl.uncounted != nil && rl.uncounted(r)
+		// A valid token is counted against its own quotas whatever its
+		// address, exempt networks included (Copilot review 5477687920 on PR
+		// #228; a proxy misconfiguration that made every client local must
+		// not hide a session): a session against requests_per_hour/_per_day,
+		// an API token against its own hour and day (v0.29.89, summary/53).
+		// The per-IP limit below is only for callers without a valid token
+		// (v0.29.82, operator 2026-10-08); an unknown or expired token, or
+		// one the store could not resolve, is no token.
 		ip := rl.clientIP(r)
-		if rl.isExempt(ip) || (rl.uncounted != nil && rl.uncounted(r)) {
+		if res, ok := resolutionOf(r); ok && res.presented && res.err == nil && (res.info.APITokenID != 0 || res.info.UserID > 0) {
+			switch {
+			case paid && res.info.APITokenID != 0:
+				setCapacityHeaders(w.Header(), rl.peekTokenQuotas(res.info), rl.clock())
+			case !paid:
+				result := rl.chargeQuotas(res.info)
+				logQuotaOver(rl.logger, res.info, result.FirstOver)
+				setCapacityHeaders(w.Header(), result.Decisions, rl.clock())
+				if !result.Allowed {
+					ex := result.Refusal
+					ex.Subject, ex.Contact = subjectOf(res.info), rl.policy.contact()
+					writeCapacityRefusal(w, ex, rl.clock())
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if paid || rl.isExempt(ip) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -216,7 +367,7 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		if ip != nil {
 			key = ip.String()
 		}
-		now := time.Now()
+		now := rl.clock()
 		rl.mu.Lock()
 		b, ok := rl.visitors[key]
 		if !ok {
@@ -235,14 +386,28 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		b.dayCount++
 		overQuota := b.dayCount > rl.opts.RateLimitDaily
 		allowed := !overQuota && b.allow(now, rl.opts.RateLimitRPS, rl.opts.RateLimitBurst)
+		// A request whose token identify deferred may carry a valid token: it
+		// is refused only until the deferral ends, so its Retry-After says
+		// that, not the daily quota's day (L10 round 2 on 0.29.82).
+		var deferredUntil time.Time
+		if res, ok := resolutionOf(r); ok && errors.Is(res.err, errLookupDeferred) {
+			deferredUntil = b.badTokenAt.Add(badTokenMemory)
+		}
 		rl.mu.Unlock()
 
 		if !allowed {
-			retry := "1"
+			// The per-IP limiter stays its own component (summary/53 §10:
+			// address reputation, the deferral); its Retry-After uses the
+			// one rounding rule (capacity.SecondsUntil). The daily quota
+			// resets at 00:00 UTC (b.day is the UTC date).
+			retry := 1
 			if overQuota {
-				retry = "86400"
+				retry = capacity.SecondsUntil(capacity.UTCDay.End(now), now)
+				if !deferredUntil.IsZero() {
+					retry = capacity.SecondsUntil(deferredUntil, now)
+				}
 			}
-			w.Header().Set("Retry-After", retry)
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}
@@ -274,6 +439,12 @@ func (rl *rateLimiter) evictOldestLocked() {
 // against the ETag the API exposes (v0.29.73).
 const corsAllowHeaders = "Authorization, Content-Type, If-None-Match"
 
+// corsRateLimitExposed are the rate-limit answers a cross-origin browser
+// client may read (they are not CORS-safelisted; Copilot review 5476192626
+// on PR #228). Added, never Set: other layers expose ETag and the
+// Shared-with-Me notice on the same answer.
+const corsRateLimitExposed = "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After, RateLimit, RateLimit-Policy"
+
 // cors is the SINGLE CORS authority (v0.27.1 removed the per-handler
 // wildcard/echo headers that predated it). Empty cors_origins =
 // legacy-compatible `*` (the server-rendered GUI's cross-port fetches
@@ -290,11 +461,13 @@ func (rl *rateLimiter) cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+			w.Header().Add("Access-Control-Expose-Headers", corsRateLimitExposed)
 		} else if origin != "" && rl.origins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			w.Header().Set("Access-Control-Max-Age", "600")
+			w.Header().Add("Access-Control-Expose-Headers", corsRateLimitExposed)
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			w.WriteHeader(http.StatusNoContent)

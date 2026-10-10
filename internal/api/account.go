@@ -57,7 +57,7 @@ func (s *Server) accountFields(r *http.Request, userID int) (provider, email, pe
 // form shows (not a deliverable address, mail not configured here, a
 // failed save or send); 503 when this server has no store.
 func (s *Server) handleMeEmail(w http.ResponseWriter, r *http.Request) {
-	info, ok := s.requireUser(w, r)
+	info, ok := s.requireSession(w, r)
 	if !ok {
 		return
 	}
@@ -94,7 +94,7 @@ func (s *Server) handleMeEmail(w http.ResponseWriter, r *http.Request) {
 // changed); 500 {"status": "error"} when the database failed (the link
 // still works).
 func (s *Server) handleMeEmailConfirm(w http.ResponseWriter, r *http.Request) {
-	info, ok := s.requireUser(w, r)
+	info, ok := s.requireSession(w, r)
 	if !ok {
 		return
 	}

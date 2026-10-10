@@ -2665,6 +2665,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.client_applications (
     redirect_url   TEXT NOT NULL DEFAULT ''
 );
 
+-- v0.29.82: token holds the SHA-256 hex of the session token, never the
+-- token itself (session_tokens.go); a migrate on an older fleet hashes the
+-- existing rows once (addSessionTokenHashedColumn).
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_session_tokens (
     token          TEXT PRIMARY KEY,
     user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
@@ -2672,6 +2675,119 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_session_tokens (
     expiration     BIGINT,
     application_id TEXT REFERENCES aveloxis_ops.client_applications(id) DEFERRABLE INITIALLY DEFERRED
 );
+-- v0.29.82: operator-issued API tokens (api_tokens.go), granted and revoked
+-- on the admin page. Each authenticates as its owner (the owner's repository
+-- scope) and is counted against its own hourly allowance instead of the
+-- per-IP limit. Only the SHA-256 hex of the token is stored. A table born
+-- empty on every fleet, so its unique and indexes live here.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.api_tokens (
+    token_id            BIGSERIAL PRIMARY KEY,
+    token_hash          TEXT NOT NULL UNIQUE,
+    user_id             INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    label               TEXT NOT NULL,
+    created_by          INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    rate_limit_per_hour INT NOT NULL CHECK (rate_limit_per_hour > 0),
+    last_used_at        TIMESTAMPTZ,
+    revoked_at          TIMESTAMPTZ,
+    revoked_by          INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON aveloxis_ops.api_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_created_by ON aveloxis_ops.api_tokens (created_by);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_revoked_by ON aveloxis_ops.api_tokens (revoked_by);
+-- v0.29.82: the defaults the admin page offers when it grants an API token
+-- (one row; the migrate seeds it). Editable on the admin page.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.api_token_settings (
+    id                          SMALLINT PRIMARY KEY CHECK (id = 1),
+    -- v0.29.89: the value lives in capacity_quotas (token_requests_per_hour);
+    -- this column is a mirror kept for a rollback to 0.29.82-0.29.88, whose
+    -- migrate writes it (SetCapacityQuota keeps it current). Drop it only in
+    -- a release no host can roll back below 0.29.89 from.
+    default_rate_limit_per_hour INT NOT NULL DEFAULT 1000 CHECK (default_rate_limit_per_hour > 0),
+    default_lifetime_days       INT NOT NULL CHECK (default_lifetime_days > 0),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by                  INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_api_token_settings_updated_by ON aveloxis_ops.api_token_settings (updated_by);
+
+-- v0.29.89 (summary/53): account capacity. One settings row (the defaults an
+-- administrator edits on the GUI's Capacity page), per-account overrides,
+-- per-day request counts shared by every api process and kept across
+-- restarts, and sign-ups counted per address key (a keyed hash of the IPv4
+-- address or IPv6 /64 under a secret that changes every UTC day) with an
+-- allowlist of ranges; the address itself only sealed to the operator's
+-- offline key, when one is configured.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.capacity_settings (
+    id                 SMALLINT PRIMARY KEY CHECK (id = 1),
+    contact_email      TEXT NOT NULL DEFAULT '',
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by         INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_capacity_settings_updated_by ON aveloxis_ops.capacity_settings (updated_by);
+
+-- One row per quota (summary/53 §9): its value and mode, edited on the
+-- Capacity page when aveloxis.json says WEB for it.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.capacity_quotas (
+    name        TEXT PRIMARY KEY,
+    allowed     INT NOT NULL CHECK (allowed > 0),
+    mode        TEXT NOT NULL CHECK (mode IN ('enforce', 'shadow', 'off')),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by  INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_capacity_quotas_updated_by ON aveloxis_ops.capacity_quotas (updated_by);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.user_capacity (
+    user_id           INT PRIMARY KEY REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    repos_allowed     INT CHECK (repos_allowed > 0),
+    requests_per_hour INT CHECK (requests_per_hour > 0),
+    requests_per_day  INT CHECK (requests_per_day > 0),
+    links_per_day     INT CHECK (links_per_day > 0), -- repo_links_per_day (v0.29.89)
+    note              TEXT NOT NULL DEFAULT '',
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by        INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_user_capacity_updated_by ON aveloxis_ops.user_capacity (updated_by);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.request_counts (
+    subject   TEXT NOT NULL,           -- capacity.CountKey: '<kind>:<id>|<quota>', e.g. 'account:12|requests_per_day'
+    day       DATE NOT NULL,           -- UTC day
+    requests  BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (subject, day)
+);
+CREATE INDEX IF NOT EXISTS idx_request_counts_day ON aveloxis_ops.request_counts (day);
+
+-- The sign-up quota's daily secret (v0.29.89, operator 2026-10-10): one per
+-- UTC day, deleted once its day has passed, so a past day's address keys can
+-- no longer be matched to an address by anyone.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.signup_key_secrets (
+    day    DATE PRIMARY KEY,
+    secret BYTEA NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.account_signups (
+    signup_id   BIGSERIAL PRIMARY KEY,
+    -- HMAC of the IPv4 address or IPv6 /64 under that day's secret; cleared
+    -- once its UTC day has passed.
+    address_key TEXT,
+    -- The full address sealed (age) to the operator's offline public key
+    -- (web.signup_escrow_recipient), opened only offline; NULL when no key
+    -- is configured; cleared after 365 days (the row with it).
+    address_sealed BYTEA,
+    user_id     INT REFERENCES aveloxis_ops.users(user_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_account_signups_key_time ON aveloxis_ops.account_signups (address_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_account_signups_user ON aveloxis_ops.account_signups (user_id);
+CREATE INDEX IF NOT EXISTS idx_account_signups_time ON aveloxis_ops.account_signups (created_at);
+
+CREATE TABLE IF NOT EXISTS aveloxis_ops.signup_allowlist (
+    cidr      CIDR PRIMARY KEY,
+    note      TEXT NOT NULL DEFAULT '',
+    added_by  INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_signup_allowlist_added_by ON aveloxis_ops.signup_allowlist (added_by);
 
 -- v0.20.4 email-confirmation tokens for the manual-entry email flow.
 -- Declared here since v0.27.12 — this table previously existed ONLY as

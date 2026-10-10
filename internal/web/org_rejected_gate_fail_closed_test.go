@@ -530,8 +530,11 @@ func TestLoginLogsAFailedAdminLookup(t *testing.T) {
 		}
 		importNames[name] = true
 	}
-	allowedPkgNames := map[string]bool{"context.Canceled": true, "httpserver.RequestEnded": true, "errors.Is": true, "http.Error": true, "http.Redirect": true, "http.SetCookie": true, "http.StatusFound": true, "http.StatusInternalServerError": true, "mailer.IsSkip": true}
-	allowedBareCalls := map[string]bool{"truncateForLog": true, "len": true, "cap": true, "append": true, "min": true, "max": true, "string": true}
+	// v0.29.89 (summary/53): capacity.AsExceeded (a pure error check) and
+	// writeSignupRefusal (writes the response only) answer the sign-up
+	// quota's refusal; neither reaches a store, a session or a global.
+	allowedPkgNames := map[string]bool{"context.Canceled": true, "httpserver.RequestEnded": true, "errors.Is": true, "http.Error": true, "http.Redirect": true, "http.SetCookie": true, "http.StatusFound": true, "http.StatusInternalServerError": true, "mailer.IsSkip": true, "capacity.AsExceeded": true}
+	allowedBareCalls := map[string]bool{"truncateForLog": true, "writeSignupRefusal": true, "len": true, "cap": true, "append": true, "min": true, "max": true, "string": true}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.SelectorExpr:

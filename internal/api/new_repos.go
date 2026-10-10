@@ -39,7 +39,7 @@ func (s *Server) handleNewRepos(w http.ResponseWriter, r *http.Request) {
 		days = 90
 	}
 
-	key := fmt.Sprintf("newrepos|%d|%d", info.UserID, days)
+	key := fmt.Sprintf("newrepos|%s|%d", callerCacheID(info), days)
 	if body, ok := s.respCache.get(key); ok {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)

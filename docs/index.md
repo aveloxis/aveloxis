@@ -49,6 +49,7 @@ guide/dedicated-scancode-host
 guide/ci-cd
 guide/data-test
 guide/scaling
+guide/signup-escrow
 guide/troubleshooting
 ```
 

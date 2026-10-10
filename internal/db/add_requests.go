@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/jackc/pgx/v5"
@@ -107,7 +108,10 @@ func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID 
 	if err := s.EnqueueRepo(ctx, repoID, 100); err != nil {
 		return 0, fmt.Errorf("enqueue repo: %w", err)
 	}
-	if _, err := s.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
+	// The repository's place is already held (v0.29.89): by the approved
+	// item this pass stamps next (reachSQL counts it until then), or the
+	// caller is an administrator's own session, which the quota exempts.
+	if _, err := s.linkWithinCap(ctx, groupID, []int64{repoID}, linkHeld); err != nil {
 		return 0, err
 	}
 	return repoID, nil
@@ -159,7 +163,17 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 		return out, fmt.Errorf("look up admin flag: %w", err)
 	}
 
+	// Classify every URL first, decide the repository allocation once for
+	// the whole paste (v0.29.89, summary/53: all or nothing — the user
+	// decides what to drop), then write.
+	type item struct {
+		url     string
+		repoID  int64
+		tracked bool
+	}
+	var items []item
 	var unknown []string
+	var trackedIDs []int64
 	seen := make(map[string]bool, len(repoURLs))
 	for _, raw := range repoURLs {
 		repoURL := strings.TrimSpace(raw)
@@ -179,6 +193,20 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 				return out, err
 			}
 		}
+		items = append(items, item{url: repoURL, repoID: repoID, tracked: tracked})
+		switch {
+		case tracked:
+			trackedIDs = append(trackedIDs, repoID)
+		case !isAdmin:
+			unknown = append(unknown, repoURL)
+		}
+	}
+	if err := s.precheckReposAllocation(ctx, userID, trackedIDs, len(unknown)); err != nil {
+		return out, err
+	}
+	unknown = unknown[:0]
+	for _, it := range items {
+		repoURL, repoID, tracked := it.url, it.repoID, it.tracked
 		switch {
 		case tracked:
 			// Known repo: instant link, zero collection load added. Only a
@@ -260,11 +288,29 @@ func (s *PostgresStore) AddReposToGroup(ctx context.Context, userID int, groupID
 // transaction. status is 'pending' for the normal flow or 'approved'
 // for the auto-approve audit path (decided_by = 0, decided_at = NOW()).
 func (s *PostgresStore) createAddRequest(ctx context.Context, userID int, groupID int64, kind, orgURL string, urls []string, status string) (int64, error) {
+	// Each repository item holds a place in the account's allocation from
+	// here until the approval pass links it; decided under the per-owner
+	// lock (v0.29.89; the precheck in AddReposToGroup is unlocked). The
+	// allocation is read before the transaction begins (no pool read inside
+	// it: review round 1 R2-2).
+	var quota capacity.EffectiveQuota
+	var alloc capacity.Allocation
+	if kind == "repos" && len(urls) > 0 {
+		var err error
+		if quota, alloc, err = s.reposAllocation(ctx, userID); err != nil {
+			return 0, err
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	if kind == "repos" {
+		if err := s.holdRepoPlaces(ctx, tx, userID, len(urls), quota, alloc); err != nil {
+			return 0, err
+		}
+	}
 	requestID, err := insertAddRequest(ctx, tx, userID, groupID, kind, orgURL, urls, status)
 	if err != nil {
 		return 0, err

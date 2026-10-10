@@ -3,7 +3,12 @@
 
 package db
 
-import "context"
+import (
+	"context"
+
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/jackc/pgx/v5"
+)
 
 // ReconcileOrgRepoLinks links every TRACKED repo whose URL falls under a
 // registered org into that org's groups (v0.27.93).
@@ -36,8 +41,12 @@ import "context"
 //
 // Returns the number of link rows inserted.
 func (s *PostgresStore) ReconcileOrgRepoLinks(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
+	// The candidates (links the org registrations imply and that do not
+	// exist yet), then each group filled within its owner's repository
+	// allocation (v0.29.89, summary/53 A8): an organization larger than
+	// the room left links what fits; the rest is logged once a day per
+	// account, never retried into a refusal loop.
+	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT o.group_id, r.repo_id
 		FROM aveloxis_ops.user_org_requests o
 		JOIN aveloxis_ops.user_groups g ON g.group_id = o.group_id
@@ -52,9 +61,36 @@ func (s *PostgresStore) ReconcileOrgRepoLinks(ctx context.Context) (int64, error
 		 AND starts_with(LOWER(r.repo_git), LOWER(rtrim(o.org_url, '/')) || '/')
 		JOIN aveloxis_ops.collection_queue q ON q.repo_id = r.repo_id
 		WHERE COALESCE(g.status, 'approved') <> 'rejected'
-		ON CONFLICT DO NOTHING`)
+		  AND NOT EXISTS (SELECT 1 FROM aveloxis_ops.user_repos ur WHERE ur.group_id = o.group_id AND ur.repo_id = r.repo_id)
+		ORDER BY o.group_id, r.repo_id`)
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	// Exported fields: pgx.RowToStructByPos maps only exported ones.
+	type pair struct{ Group, Repo int64 }
+	pairs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[pair])
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for start := 0; start < len(pairs); {
+		end := start
+		ids := []int64{}
+		for end < len(pairs) && pairs[end].Group == pairs[start].Group {
+			ids = append(ids, pairs[end].Repo)
+			end++
+		}
+		n, err := s.linkWithinCap(ctx, pairs[start].Group, ids, linkOrgFill)
+		total += int64(n)
+		if ex, capped := capacity.AsExceeded(err); capped {
+			if s.capacityNotifier().Due("org-reconcile|" + ex.Subject.ID) {
+				s.logger.Warn("organization repositories not linked: the account's repository quota is reached",
+					"group_id", pairs[start].Group, "user_id", ex.Subject.ID, "reach", ex.Used, "allowed", ex.Allowed, "new_repositories_wanted", ex.Wanted)
+			}
+		} else if err != nil {
+			return total, err
+		}
+		start = end
+	}
+	return total, nil
 }

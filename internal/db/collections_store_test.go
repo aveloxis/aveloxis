@@ -95,8 +95,10 @@ func TestCopyCollectionNeverEnqueues(t *testing.T) {
 	if strings.Contains(body, "collection_queue") {
 		t.Error("CopyCollectionToGroup must not reference collection_queue in any form")
 	}
-	if !strings.Contains(body, "ON CONFLICT DO NOTHING") {
-		t.Error("CopyCollectionToGroup must be idempotent (ON CONFLICT DO NOTHING on the user_repos PK)")
+	// v0.29.89: idempotent through the one writer, linkWithinCap (its
+	// ON CONFLICT DO NOTHING is pinned by TestOneWriterOfNewGroupLinks).
+	if !strings.Contains(body, "s.linkWithinCap(") {
+		t.Error("CopyCollectionToGroup must link through linkWithinCap (idempotent: ON CONFLICT DO NOTHING on the user_repos PK)")
 	}
 }
 

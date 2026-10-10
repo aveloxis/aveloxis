@@ -297,6 +297,37 @@ bidirectional at introduction time by deriving the full set from the
 dispatch site (the round-7 rule; the ledger-label registry gap in
 round 13 is the incident).
 
+## L18 — Consolidate before you add
+
+Added 2026-10-10 by the operator, to make the July 2026 tech-debt
+refactoring a permanent part of every feature rather than an occasional
+audit. A feature that solves a problem the codebase already solves
+somewhere else in another shape is how spaghetti grows: each copy is
+correct alone, and they drift apart one review round at a time (the SR-17
+"one shared key/normalizer" class at the scale of a subsystem).
+
+Ask of every new feature in the diff:
+
+- **What already touches this problem?** Search for the existing
+  limiters, caches, clamps, key builders, refusal bodies, once-per-window
+  loggers and store writers that do part of what the feature does. A
+  feature that adds a second one without saying why is a finding.
+- **Did the old sites move onto the new shape?** When the feature
+  introduces a shared package or one owning function, the old copies are
+  migrated in the same change (behavior-preserving, under their existing
+  tests), or the reason they stay apart is written at the site.
+- **Is the owner the deciding layer?** The consolidated rule lives where
+  the decision is made (SR-18), with a pin that a new caller cannot
+  bypass it (count the sites examined, not the violations; L-pin rules
+  above).
+- **Is the decision recorded?** The design note and the release entry
+  say what was consolidated and what was left apart, with the reason.
+
+Exemplar: v0.29.89's `internal/capacity` package (one quota model, one
+meter, one refusal body) replaced three hand-rolled window maps, a
+refusal log and a session threshold in the api, and the store's group
+links all go through one writer.
+
 ## Running the pass
 
 The brief, the verification protocol and the pre-launch checklist are

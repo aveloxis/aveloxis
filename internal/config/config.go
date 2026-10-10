@@ -21,6 +21,8 @@ import (
 
 	"golang.org/x/net/idna"
 
+	"filippo.io/age"
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -66,6 +68,55 @@ type Config struct {
 	// tune nginx shorter, never this below it. Zero, negative or above
 	// MaxHTTPTimeoutSeconds is refused at load.
 	HTTPTimeoutSeconds int `json:"http_timeout_seconds"`
+
+	// Capacity says, per quota, who decides it (v0.29.89, operator
+	// 2026-10-10; summary/53 §9): "WEB" (the admin Capacity page sets the
+	// value and mode; what a missing line means), "DEFAULT" (the shipped
+	// value, enforced), "SHADOW" (the shipped value, observed and logged,
+	// never refused) or "OFF" (not applied). Keys are the quota names
+	// (capacity.QuotaNames); an unknown name or word is refused at load.
+	Capacity map[string]string `json:"capacity"`
+}
+
+// defaultCapacityWords is WEB for every quota: the one default layer (a
+// file's lines are merged over it, so a missing line means WEB).
+func defaultCapacityWords() map[string]string {
+	out := make(map[string]string, len(capacity.Shipped))
+	for _, name := range capacity.QuotaNames() {
+		out[name] = string(capacity.SourceWeb)
+	}
+	return out
+}
+
+// validateTrustedProxy is the one rule for a trusted_proxy value (api and
+// web): compared byte for byte with the peer address, which Go reports in
+// canonical form, so anything else (stray spaces, a host name, a CIDR,
+// ::ffff:127.0.0.1 for 127.0.0.1) would never match and X-Forwarded-For
+// would silently be ignored.
+func validateTrustedProxy(field, tp string) error {
+	if tp == "" {
+		return nil
+	}
+	if ip := net.ParseIP(tp); ip == nil || ip.String() != tp {
+		canonical := ""
+		if ip != nil {
+			canonical = " (written " + ip.String() + ")"
+		}
+		return fmt.Errorf("%s is %q — use the proxy's IP address in canonical form%s, e.g. 127.0.0.1 for nginx on the same host, or omit it", field, tp, canonical)
+	}
+	return nil
+}
+
+// CapacitySources is the capacity section as words the store applies;
+// validate has refused anything unparseable, so this is total.
+func (c *Config) CapacitySources() map[string]capacity.Source {
+	out := make(map[string]capacity.Source, len(c.Capacity))
+	for name, word := range c.Capacity {
+		if src, err := capacity.ParseSource(word); err == nil {
+			out[name] = src
+		}
+	}
+	return out
 }
 
 // HTTPTimeout is http_timeout_seconds as a duration. validate guarantees a
@@ -241,6 +292,22 @@ type WebConfig struct {
 	// registration adds no collection). Already-tracked repos never need
 	// approval (they link instantly for everyone).
 	AutoApproveAddLimit int `json:"auto_approve_add_limit"`
+
+	// TrustedProxy is the peer IP whose X-Forwarded-For the web believes
+	// (v0.29.89): the sign-in callback's client address counts toward
+	// capacity.signups_per_address_per_day. Set it to nginx's address
+	// (127.0.0.1 on the same host) when the web runs behind it; otherwise
+	// every sign-up looks like the proxy's. Canonical form, like
+	// api.trusted_proxy; empty believes no header.
+	TrustedProxy string `json:"trusted_proxy,omitempty"`
+
+	// SignupEscrowRecipient is the operator's age public key ("age1…",
+	// v0.29.89): each new account's network address is sealed to it and
+	// kept for a year, to be opened only offline with the private key (for
+	// a legal requirement; docs/guide/signup-escrow.md). Empty seals
+	// nothing. Generate the pair with `aveloxis signup-escrow keygen`; the
+	// private key never goes on the server. Refused at load if invalid.
+	SignupEscrowRecipient string `json:"signup_escrow_recipient,omitempty"`
 }
 
 // AutoApproveAddLimitValue returns the effective auto-approve limit:
@@ -1521,6 +1588,14 @@ var ErrNotFound = errors.New("config file not found")
 // coercion (SR-10: one default layer, never a clamp the operator cannot
 // see). Every refusal names the JSON key.
 func (c *Config) validate() error {
+	for name, word := range c.Capacity {
+		if _, known := capacity.Shipped[name]; !known {
+			return fmt.Errorf("capacity.%s is not a quota — the quotas are %s", name, strings.Join(capacity.QuotaNames(), ", "))
+		}
+		if _, err := capacity.ParseSource(word); err != nil || strings.TrimSpace(word) == "" {
+			return fmt.Errorf("capacity.%s is %q — use WEB (the admin Capacity page decides; what a missing line means), DEFAULT, SHADOW or OFF", name, word)
+		}
+	}
 	if t := int64(c.HTTPTimeoutSeconds); t <= 0 || t > MaxHTTPTimeoutSeconds {
 		return fmt.Errorf("http_timeout_seconds is %d — use a number of seconds between 1 and %d, or omit it for the %v default", c.HTTPTimeoutSeconds, MaxHTTPTimeoutSeconds, httpserver.DefaultTimeout)
 	}
@@ -1562,17 +1637,15 @@ func (c *Config) validate() error {
 	if n := len(c.API.FrontEndSecret); n > 0 && n < MinFrontEndSecretLen {
 		return fmt.Errorf("api.front_end_secret is %d characters — use at least %d (openssl rand -hex 32), or omit it to count every request", n, MinFrontEndSecretLen)
 	}
-	if tp := c.API.TrustedProxy; tp != "" {
-		// Compared byte for byte with the peer address, which Go reports in
-		// canonical form: anything else (stray spaces, a host name, a CIDR,
-		// ::ffff:127.0.0.1 for 127.0.0.1) never matches, and X-Forwarded-For
-		// and the front-end secret would silently be ignored.
-		if ip := net.ParseIP(tp); ip == nil || ip.String() != tp {
-			canonical := ""
-			if ip != nil {
-				canonical = " (written " + ip.String() + ")"
-			}
-			return fmt.Errorf("api.trusted_proxy is %q — use the proxy's IP address in canonical form%s, e.g. 127.0.0.1 for nginx on the same host, or omit it", tp, canonical)
+	if r := strings.TrimSpace(c.Web.SignupEscrowRecipient); r != "" {
+		if _, err := age.ParseX25519Recipient(r); err != nil {
+			// The value is a public key: safe to name.
+			return fmt.Errorf("web.signup_escrow_recipient is not an age public key (age1…): %v — generate one with aveloxis signup-escrow keygen, or omit it", err)
+		}
+	}
+	for field, tp := range map[string]string{"api.trusted_proxy": c.API.TrustedProxy, "web.trusted_proxy": c.Web.TrustedProxy} {
+		if err := validateTrustedProxy(field, tp); err != nil {
+			return err
 		}
 	}
 	if c.API.FrontEndSecret != "" && c.API.TrustedProxy == "" {
@@ -1874,6 +1947,7 @@ func (c *CollectionConfig) MatviewRebuildDayRecognized() bool {
 func DefaultConfig() *Config {
 	return &Config{
 		HTTPTimeoutSeconds: int(httpserver.DefaultTimeout / time.Second),
+		Capacity:           defaultCapacityWords(),
 		Database: DatabaseConfig{
 			Host:    "localhost",
 			Port:    5432,
@@ -1975,8 +2049,9 @@ type APIConfig struct {
 	// RateLimitDaily is the per-IP daily request quota — the actual
 	// anti-bulk-crawl control. Default 1000.
 	RateLimitDaily int `json:"rate_limit_daily,omitempty"`
-	// ExemptCIDRs lists client networks that bypass limiting
-	// entirely. Default: loopback + RFC1918 (+ ::1).
+	// ExemptCIDRs lists client networks that bypass the per-IP limits
+	// (an API token is still counted against its own allowance, v0.29.88).
+	// Default: loopback + RFC1918 (+ ::1).
 	ExemptCIDRs []string `json:"exempt_cidrs,omitempty"`
 	// CORSOrigins lists browser origins allowed to call the API. Empty
 	// sends Access-Control-Allow-Origin: * (any origin); a list is a

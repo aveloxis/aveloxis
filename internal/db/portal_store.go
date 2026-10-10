@@ -174,7 +174,7 @@ func (s *PostgresStore) GetPortalGroupOrgsForUser(ctx context.Context, userID in
 // email: the forge gave none and nothing was confirmed since (2026-10-04).
 func (s *PostgresStore) GetUserAccount(ctx context.Context, userID int) (provider, email string, err error) {
 	err = s.pool.QueryRow(ctx, `
-		SELECT COALESCE(NULLIF(oauth_provider, ''), 'github'), COALESCE(email, '')
+		SELECT `+effectiveProviderSQL("")+`, COALESCE(email, '')
 		FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&provider, &email)
 	return provider, email, err
 }

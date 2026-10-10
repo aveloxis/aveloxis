@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -210,6 +211,8 @@ func TestAddErrorFlagNamesTheNotice(t *testing.T) {
 		want string
 	}{
 		{"rejected group", db.ErrGroupRejected, "rejected"},
+		{"the repository allocation (v0.29.89)", fmt.Errorf("add: %w", &capacity.Exceeded{Kind: capacity.KindAllocation, Quota: capacity.QuotaReposPerAccount}), "capacity"},
+		{"the daily additions (v0.29.89, r3 F1)", fmt.Errorf("add: %w", &capacity.Exceeded{Kind: capacity.KindRate, Quota: capacity.QuotaRepoLinksPerDay}), "capacity_links"},
 		{"over-long URL", fmt.Errorf("add: %w", db.ErrURLTooLong), "invalid"},
 		{"credentialed URL", platform.ErrURLUserinfo, "invalid"},
 		{"data exception (NUL byte)", fmt.Errorf("add: %w", &pgconn.PgError{Code: "22021", Message: "invalid byte sequence"}), "invalid"},

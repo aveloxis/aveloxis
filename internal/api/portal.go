@@ -26,7 +26,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
@@ -58,6 +60,15 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 	// the store failed to resolve a presented token, the 503.
 	if tok := bearerToken(r); tok != "" {
 		info, err := s.auth.resolveToken(r.Context(), tok)
+		if err == nil && info.APITokenID != 0 {
+			// The middleware attaches every resolved token's identity (with
+			// the request-level admin drop, withIdentity), so this path is
+			// not expected; an API token here could not carry that drop, so
+			// it is refused (ASVS review G9).
+			s.logger.Error("an API token reached requireUser without an identity — refused", "path", r.URL.Path, "token_id", info.APITokenID)
+			writeAuthError(w, http.StatusForbidden, "an API token cannot be used here")
+			return authInfo{}, false
+		}
 		if err == nil {
 			setNoStoreHeaders(w.Header())
 			return info, true
@@ -70,6 +81,23 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (authInfo, 
 	}
 	writeAuthError(w, http.StatusUnauthorized, "this endpoint requires a signed-in session (Bearer token)")
 	return authInfo{}, false
+}
+
+// requireSession is requireUser for account settings: an API token is
+// refused (ASVS review G2: a token could change its owner's account e-mail,
+// redirecting the notification address to whoever held it). Same shape as
+// requireAdmin's token refusal.
+func (s *Server) requireSession(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
+	info, ok := s.requireUser(w, r)
+	if !ok {
+		return authInfo{}, false
+	}
+	if info.APITokenID != 0 {
+		s.logRefusal("token_cannot_change_account", info, "path", r.URL.Path)
+		writeAuthError(w, http.StatusForbidden, "an API token cannot change account settings; sign in to change them")
+		return authInfo{}, false
+	}
+	return info, true
 }
 
 // callerIdentity is the read for routes that serve everyone but answer
@@ -92,6 +120,17 @@ func callerIdentity(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (authInfo, bool) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
+		return authInfo{}, false
+	}
+	// An API token authenticates as its owner for data, never to administer
+	// (OWASP ASVS V8.2.1, the 0.29.82 review A1): a leaked admin-owned token
+	// could otherwise grant itself replacements or change roles. Only a
+	// signed-in session administers. Checked FIRST: since 0.29.86 a token
+	// never carries IsAdmin, so after the role check this refusal could not
+	// be reached and an admin's token was told it lacked admin access.
+	if info.APITokenID != 0 {
+		s.logRefusal("token_cannot_administer", info, "path", r.URL.Path)
+		writeAuthError(w, http.StatusForbidden, "an API token cannot administer; sign in to use admin routes")
 		return authInfo{}, false
 	}
 	if !info.IsAdmin {
@@ -134,6 +173,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"email":         email,
 		"email_pending": pending,
 		"is_admin":      info.IsAdmin,
+		// v0.29.89: the account's fair-use numbers (summary/53); null when
+		// the store cannot answer.
+		"capacity": s.meCapacity(r, info),
 		"scope_repo_count": func() int {
 			if info.IsAdmin {
 				return -1 // unscoped
@@ -178,6 +220,24 @@ func (s *Server) handleGroupsList(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]any{"groups": out})
 }
 
+// Bounds on the group writes (ASVS review G7: the out-of-scope refusal points
+// API tokens at these routes, which read unbounded bodies).
+const (
+	// MaxGroupNameLength is the longest group name, in characters (the
+	// API-token label's limit).
+	MaxGroupNameLength = 200
+	// maxAddURLsPerRequest is how many URLs one add may carry: a paste of
+	// a large project's repositories fits; a larger set is added as its
+	// organization. Policy number (2026-10-10), stated in api.md.
+	maxAddURLsPerRequest = 1000
+	// groupCreateBodyLimit holds the longest name in UTF-8 with room for
+	// the JSON around it.
+	groupCreateBodyLimit int64 = 1 << 12
+	// groupAddBodyLimit holds maxAddURLsPerRequest URLs of the longest
+	// length the store accepts, plus the JSON around them.
+	groupAddBodyLimit int64 = maxAddURLsPerRequest*(db.MaxAddURLBytes+8) + 1<<16
+)
+
 func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireUser(w, r)
 	if !ok {
@@ -186,8 +246,12 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, groupCreateBodyLimit)).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
 		http.Error(w, "body must be {\"name\": \"...\"}", http.StatusBadRequest)
+		return
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(req.Name)) > MaxGroupNameLength {
+		http.Error(w, fmt.Sprintf("a group name is at most %d characters", MaxGroupNameLength), http.StatusBadRequest)
 		return
 	}
 	id, err := s.store.CreateUserGroup(r.Context(), info.UserID, strings.TrimSpace(req.Name))
@@ -333,8 +397,12 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 		Kind string   `json:"kind"`
 	}
 	const bodyShape = "body must be {\"url\": \"...\"} or {\"urls\": [\"...\", ...]}, plus \"kind\": \"repo\"|\"org\""
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, groupAddBodyLimit)).Decode(&req); err != nil {
 		http.Error(w, bodyShape, http.StatusBadRequest)
+		return
+	}
+	if len(req.URLs) > maxAddURLsPerRequest {
+		http.Error(w, fmt.Sprintf("at most %d URLs per add: paste in parts, or add the organization", maxAddURLsPerRequest), http.StatusBadRequest)
 		return
 	}
 	urls := make([]string, 0, len(req.URLs)+1)
@@ -383,8 +451,9 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 			// token would answer 403 for the repository it just added
 			// until the TTL. Admin mutations already bust here. Whatever
 			// the error: an add that fails for some URLs (ErrAddItemsFailed)
-			// has still linked the others (PR #218 review C1).
-			s.auth.invalidateAll()
+			// has still linked the others (PR #218 review C1). Only the
+			// caller's cache: their own scope changed (0.29.82).
+			s.auth.invalidateUser(info.UserID)
 		}
 		if err == nil {
 			resp["linked"] = out.Linked
@@ -398,6 +467,9 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
+		case s.refuseCapacity(w, info, err):
+			// The whole paste would not fit the account's repository
+			// allocation (v0.29.89): nothing was written.
 		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, db.ErrOrgOffGitHubHost):
@@ -903,18 +975,54 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 	// access to data we already have. Unstar needs no scope at all.
 	addedToGroup := ""
 	if r.Method != http.MethodDelete && !info.IsAdmin && !info.Scope[repoID] {
+		// Only a repository that exists is linked (user_repos has no FK on
+		// repo_id; the other implicit-link sites check too — 0.29.82 L10
+		// round 3). A failed lookup is the store's failure (SR-5).
+		repos, lerr := s.store.GetReposBatch(r.Context(), []int64{repoID})
+		if lerr != nil {
+			s.serverError(w, r, "handleStarRepo", lerr)
+			return
+		}
+		if repos[repoID] == nil {
+			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+		// An API token never writes a group link (operator decision
+		// 2026-10-09): refused, with the way to add the repository.
+		if info.APITokenID != 0 {
+			s.refuseTokenOutOfScope(w, r, info, repoID)
+			return
+		}
+		// A signed-in session is not rate limited (0.29.82): the implicit
+		// link is capped per user before it writes (the ASVS review's A2).
+		var slot autoAddSlot // the window a refund goes back to
+		if s.autoAdds != nil {
+			var ok bool
+			var refused *capacity.Exceeded
+			if slot, ok, refused = s.autoAdds.reserve(info.UserID); !ok {
+				s.refuseAutoAdd(w, info, refused)
+				return
+			}
+		}
+		linked := false
 		gid, gerr := s.store.FindOrCreateStarredGroup(r.Context(), info.UserID)
 		if gerr == nil {
-			_, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+			linked, gerr = s.store.AddRepoToGroupByID(r.Context(), gid, repoID)
+		}
+		// Nothing linked (an error, or already linked behind a stale cached
+		// scope or a concurrent star: Copilot review 5472987053 on PR #228)
+		// gives the slot back; the cached scope is dropped per settleAutoAdd.
+		s.settleAutoAdd(info.UserID, slot, linked, gerr)
+		if s.refuseCapacity(w, info, gerr) {
+			return
 		}
 		if gerr != nil {
 			s.serverError(w, r, "handleStarRepo", gerr)
 			return
 		}
-		addedToGroup = db.StarredGroupName
-		// Scope changed — the user's cached token validation must
-		// re-resolve so their next data request sees the repo.
-		s.auth.invalidateAll()
+		if linked {
+			addedToGroup = db.StarredGroupName
+		}
 	}
 	if r.Method == http.MethodDelete {
 		err = s.store.UnstarRepo(r.Context(), info.UserID, repoID)

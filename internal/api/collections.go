@@ -176,11 +176,14 @@ func (s *Server) handleCollectionCopy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "target group is not yours", http.StatusForbidden)
 			return
 		}
+		if s.refuseCapacity(w, info, err) {
+			return // the copy does not fit the allocation; nothing was linked
+		}
 		s.serverError(w, r, "handleCollectionCopy", err)
 		return
 	}
-	// The copy widened the caller's repo scope — bust both caches.
-	s.auth.invalidateAll()
+	// The copy widened the caller's repo scope — bust the caller's caches.
+	s.auth.invalidateUser(info.UserID)
 	s.homeCache.invalidate(info.UserID)
 	jsonResponse(w, map[string]any{"added": added, "group_id": groupID})
 }

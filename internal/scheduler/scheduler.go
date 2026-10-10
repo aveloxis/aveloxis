@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -2496,9 +2497,12 @@ func (s *Scheduler) refreshGitHubOrg(ctx context.Context, g db.OrgGroup) int {
 				}
 			}
 			for _, gid := range userGroupIDs {
-				_, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				_, err := s.store.AddOrgRepoToGroupByID(ctx, gid, repoID)
 				if errors.Is(err, context.Canceled) {
 					return newCount // shutdown, not a failure
+				}
+				if _, capped := capacity.AsExceeded(err); capped {
+					continue // the account's repository quota (the store logs it once a day)
 				}
 				if err != nil {
 					s.logger.Warn("failed to link discovered repo into user_repos",
@@ -2628,9 +2632,12 @@ func (s *Scheduler) refreshGitLabGroup(ctx context.Context, g db.OrgGroup) int {
 				}
 			}
 			for _, gid := range userGroupIDs {
-				_, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				_, err := s.store.AddOrgRepoToGroupByID(ctx, gid, repoID)
 				if errors.Is(err, context.Canceled) {
 					return newCount // shutdown, not a failure
+				}
+				if _, capped := capacity.AsExceeded(err); capped {
+					continue // the account's repository quota (the store logs it once a day)
 				}
 				if err != nil {
 					s.logger.Warn("failed to link discovered repo into user_repos",
@@ -3073,9 +3080,12 @@ func (s *Scheduler) refreshUserOrgs(ctx context.Context, onlyNeverScanned bool) 
 			// claiming the org's full repo count every pass forever
 			// (9.3M bogus new repos in the Aug 7–16 2026 run).
 			for _, gid := range groupIDs {
-				inserted, err := s.store.AddRepoToGroupByID(ctx, gid, repoID)
+				inserted, err := s.store.AddOrgRepoToGroupByID(ctx, gid, repoID)
 				if errors.Is(err, context.Canceled) {
 					return // shutdown, not a failure
+				}
+				if _, capped := capacity.AsExceeded(err); capped {
+					continue // the account's repository quota (the store logs it once a day)
 				}
 				if err != nil {
 					// Same message as refreshGitHubOrg/refreshGitLabGroup so

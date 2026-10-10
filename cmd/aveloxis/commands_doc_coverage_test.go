@@ -14,39 +14,36 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
 
+// registeredCommandNames is every top-level command, read from the cobra
+// tree itself (closing review r3 F8: a scan of Use: strings could not tell
+// a subcommand from a top-level command, and a name-keyed parent map
+// excused a future top-level command of the same name).
 func registeredCommandNames(t *testing.T) map[string]bool {
 	t.Helper()
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	useRe := regexp.MustCompile(`Use:\s*"([a-z-]+)`)
 	names := map[string]bool{}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, m := range useRe.FindAllStringSubmatch(string(src), -1) {
-			if m[1] == "aveloxis" { // root command
-				continue
-			}
-			names[m[1]] = true
-		}
+	for _, c := range newRootCmd().Commands() {
+		names[c.Name()] = true
 	}
 	if len(names) < 20 {
-		t.Fatalf("command scan found only %d commands — scanner broke?", len(names))
+		t.Fatalf("command tree has only %d commands — the root builder changed?", len(names))
 	}
 	return names
+}
+
+// registeredSubcommands is every subcommand as "parent sub", from the tree.
+func registeredSubcommands() []string {
+	var out []string
+	for _, c := range newRootCmd().Commands() {
+		for _, sub := range c.Commands() {
+			out = append(out, c.Name()+" "+sub.Name())
+		}
+	}
+	return out
 }
 
 func TestCommandsDocCoversEveryRegisteredCommand(t *testing.T) {
@@ -61,6 +58,12 @@ func TestCommandsDocCoversEveryRegisteredCommand(t *testing.T) {
 		if !strings.Contains(docStr, header) {
 			t.Errorf("docs/guide/commands.md is missing a %q section — it claims to be "+
 				"the complete reference for every CLI command.", header)
+		}
+	}
+	for _, full := range registeredSubcommands() {
+		header := "### `aveloxis " + full + "`"
+		if !strings.Contains(docStr, header) {
+			t.Errorf("docs/guide/commands.md is missing a %q section under its parent's.", header)
 		}
 	}
 }

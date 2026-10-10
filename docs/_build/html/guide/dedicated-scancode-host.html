@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.81 documentation</title>
+  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.89 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
+      <script src="../_static/documentation_options.js?v=db089ca7"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -80,6 +80,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#monitor-dashboard-v0-23-0">Monitor (dashboard, v0.23.0)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#mail-gmail-smtp-optional">Mail (Gmail SMTP, optional)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#logging">Logging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#capacity-fair-use-quotas-v0-29-89">Capacity (fair-use quotas, v0.29.89)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../getting-started/configuration.html#api-key-sources">API key sources</a></li>
@@ -203,6 +204,12 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-api"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-scancode-worker"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">scancode-worker</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-test-mail"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-signup-escrow"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#aveloxis-signup-escrow-keygen"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">keygen</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#aveloxis-signup-escrow-export"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">export</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="commands.html#aveloxis-signup-escrow-open"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">open</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-collect"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code></a><ul>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#id3">Flags</a></li>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#id4">Examples</a></li>
@@ -330,6 +337,8 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -354,6 +363,7 @@
 <li class="toctree-l2"><a class="reference internal" href="api.html#cors">CORS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#deployment">Deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#rate-limits">Rate limits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
@@ -601,6 +611,15 @@
 <li class="toctree-l2"><a class="reference internal" href="scaling.html#next-steps">Next steps</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="signup-escrow.html">Sign-up address escrow</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#what-is-kept-and-for-how-long">What is kept, and for how long</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#set-it-up-once">Set it up (once)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#open-an-envelope-when-you-are-required-to">Open an envelope when you are required to</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#change-the-key-or-lose-it">Change the key, or lose it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#what-an-envelope-does-and-does-not-show">What an envelope does and does not show</a></li>
+<li class="toctree-l2"><a class="reference internal" href="signup-escrow.html#what-this-does-not-cover">What this does not cover</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#commits-not-collected-but-issues-and-pull-requests-are-collected">Commits not collected, but Issues and Pull Requests are collected</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#monitor-dashboard-renders-slowly-on-a-large-fleet">Monitor dashboard renders slowly on a large fleet</a></li>
@@ -695,7 +714,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1313,6 +1332,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l15-the-forge-s-cache-and-session-semantics">L15 — The forge’s cache and session semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l16-widening-a-tripwire-is-a-contract-change">L16 — Widening a tripwire is a contract change</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l17-what-the-pr-193-rounds-kept-finding-the-four-blind-spots">L17 — What the PR #193 rounds kept finding (the four blind spots)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l18-consolidate-before-you-add">L18 — Consolidate before you add</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#running-the-pass">Running the pass</a></li>
 </ul>
 </li>

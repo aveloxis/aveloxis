@@ -80,6 +80,10 @@ func signalReady(logger *slog.Logger) {
 	}
 }
 
+// serverShutdownTimeout bounds a server's graceful stop: in-flight
+// requests, then (api) the last save of the daily request counts.
+const serverShutdownTimeout = 10 * time.Second
+
 // serveUntilDone serves srv on an already-bound listener until ctx is
 // done or the server fails, then shuts it down. Binding is the caller's
 // (before its pidfile and readiness signal), so a port in use is a
@@ -104,7 +108,7 @@ func serveUntilDone(ctx context.Context, srv *http.Server, ln net.Listener, logg
 		return err
 	case <-ctx.Done():
 	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), serverShutdownTimeout)
 	defer cancelShutdown()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn(component+" shutdown", "error", err)

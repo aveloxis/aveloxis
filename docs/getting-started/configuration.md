@@ -174,7 +174,9 @@ a half against its own reference table below:
     "gitlab_base_url": "https://gitlab.com",
     "api_internal_url": "http://127.0.0.1:8383",
     "spa_url": "",
-    "auto_approve_add_limit": 0
+    "auto_approve_add_limit": 0,
+    "trusted_proxy": "",
+    "signup_escrow_recipient": ""
   },
   "monitor": {
     "refresh_seconds": 60
@@ -193,7 +195,16 @@ a half against its own reference table below:
     "front_end_secret": ""
   },
   "log_level": "info",
-  "http_timeout_seconds": 180
+  "http_timeout_seconds": 180,
+  "capacity": {
+    "repo_links_per_day": "WEB",
+    "repos_per_account": "WEB",
+    "requests_per_day": "WEB",
+    "requests_per_hour": "WEB",
+    "signups_per_address_per_day": "WEB",
+    "token_requests_per_day": "WEB",
+    "token_requests_per_hour": "WEB"
+  }
 }
 ```
 
@@ -382,6 +393,8 @@ The `web` block configures the `aveloxis web` server. Optional — if you only r
 | `web.api_internal_url` | string | `"http://127.0.0.1:8383"` | Server-to-server URL where the web process reaches `aveloxis api`. The web server reverse-proxies `/api/*` requests to this URL so the browser only talks to the web origin. Set this to a remote URL if running the API on a different host. |
 | `web.spa_url` | string | `""` | Trusted origin of the separate-repo SPA (aveloxis-gui), e.g. `https://gui.example.org` (or `http://localhost:8000` in dev). When set, the OAuth flow honors a `?next=` URL under this origin so signing in from the SPA returns the user to the SPA instead of the server-rendered `/dashboard`. Relative `next` paths are always honored; anything else is rejected (open-redirect protection). When set, the emails the web AND api processes send link to that front end's pages (its group, pending-approvals and profile pages; the confirmation link carries its token in the URL fragment) instead of the web process's own — restart both processes after changing it; empty keeps the web process's pages. Must be the origin exactly as the browser's address bar shows it (lowercase scheme and ASCII host, no default port, no path, no trailing slash, query or fragment): the loader refuses anything else and names the key. |
 | `web.auto_approve_add_limit` | int | `0` | Per-add approval (v0.27.20): when > 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). `0` (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility. |
+| `web.trusted_proxy` | string | `""` | The address of the proxy in front of the web GUI (`127.0.0.1` for nginx on the same host), in canonical form (v0.29.89). Only from it is `X-Forwarded-For` believed, which gives the sign-in callback the browser's address for `capacity.signups_per_address_per_day`. Behind nginx without it, every sign-up looks like nginx's address and the quota counts them all as one. Empty believes no header. |
+| `web.signup_escrow_recipient` | string | `""` | Your age public key (`age1…`, v0.29.89). Each new account's network address is sealed to it and kept for one year, so it can be opened offline with the matching private key if a legal requirement demands it; the server can never open it. Empty keeps no address past its UTC day. Make the pair with `aveloxis signup-escrow keygen` on an offline machine. The whole procedure, including opening an envelope, is in [Sign-up address escrow](../guide/signup-escrow.md). An invalid key is refused at startup. |
 
 ### Monitor (dashboard, v0.23.0)
 
@@ -415,6 +428,31 @@ See the [Email section below](#email-gmail-smtp-optional) for setup details. The
 |---|---|---|---|
 | `log_level` | string | `"info"` | Log verbosity level. Options: `debug`, `info`, `warn`, `error`. |
 | `http_timeout_seconds` | int | `180` | Bounds the monitor, api and web servers: reading a request's headers and body, each request's handling (past the bound its database query is cancelled, the client gets a **503** "request exceeded http_timeout_seconds", and a WARN in that process's log names the request), and idle keep-alive connections. The web GUI's `/api` proxy runs under the web's bound, with no wait of its own. A **backstop**, not the latency knob: keep every nginx timeout in front of Aveloxis (`proxy_read_timeout`, `proxy_send_timeout`, `send_timeout`, `client_header_timeout`, `client_body_timeout`) **below** it, so nginx answers first with a 504 you can see in its log. Raise it only if a legitimate request (a large repository's charts, an SBOM download) needs longer than nginx allows. Zero, negative or too large is refused at startup. |
+
+### Capacity (fair-use quotas, v0.29.89)
+
+Aveloxis runs on limited hardware, so each account has fair-use quotas. A caller who reaches one gets a kind refusal that names the limit, says when it resets (or, for repositories, how to make room) and gives the contact address, so heavy users can ask for more. Each quota has one line in `capacity`, saying who decides it:
+
+| Word | Who decides | Value | Mode |
+|---|---|---|---|
+| `WEB` (or no line) | The admin **Capacity** page | The page's value (the shipped one until it is changed) | The page's mode: enforce, shadow or off |
+| `DEFAULT` | This file | The shipped value | Enforced |
+| `SHADOW` | This file | The shipped value | Observed: what enforcement would refuse is logged once per window per account, and nothing is refused |
+| `OFF` | This file | — | Not applied and not counted |
+
+A quota set by `DEFAULT`, `SHADOW` or `OFF` is read-only on the Capacity page. An unknown quota name or word is refused at startup.
+
+| Quota | Counts | Shipped value | Shipped mode |
+|---|---|---|---|
+| `requests_per_hour` | Requests by a signed-in session, per account, per hour from its first request | 5,000 | shadow |
+| `requests_per_day` | The same, per UTC day (shared by every api process) | 10,000 | shadow |
+| `token_requests_per_hour` | Requests by one API token per hour; the value is the default a new token is granted with | 1,000 | enforce |
+| `token_requests_per_day` | The same, per UTC day | 10,000 | shadow |
+| `repos_per_account` | Repositories in an account's groups at one time, pending additions included | 1,000 | shadow |
+| `repo_links_per_day` | Repositories newly added to one account's groups per UTC day (removing one does not give the addition back; repositories of an organization an administrator approved are not counted) | 1,000 | shadow |
+| `signups_per_address_per_day` | New accounts from one network address per UTC day: an IPv4 address, or an IPv6 /64. Everyone behind one shared address (an office, a lab behind NAT) shares the 3; add that network to the sign-up allowlist on the Capacity page | 3 | shadow |
+
+An approved organization is collected in full, but the account links its repositories only up to its repository value: when you approve a large organization for an account, raise that account's value. An administrator can raise or lower one account's repository and request values on the Capacity page; their own signed-in session is never refused (it is still counted). A new quota ships in shadow so its effect can be read in the logs for about a week before it is turned on.
 
 Log level descriptions:
 
@@ -490,7 +528,10 @@ Do not delete this directory while Aveloxis is running. If deleted while stopped
 
 v0.27.0: rate limiting + CORS for the `aveloxis api` process. Limits
 apply ONLY to clients whose resolved IP falls outside `exempt_cidrs` —
-same-box and same-LAN traffic is never limited.
+same-box and same-LAN traffic is not limited per IP. Two limits apply from
+every address, exempt ones included (v0.29.88): an API token's own hourly
+allowance, and a signed-in (non-administrator) account's hourly ceiling of
+four times the API-token default.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -498,7 +539,7 @@ same-box and same-LAN traffic is never limited.
 | `rate_limit_rps` | `1` | Sustained per-IP requests/second (token bucket). |
 | `rate_limit_burst` | `10` | Per-IP burst capacity. |
 | `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
-| `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
+| `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass the per-IP limits (an API token's allowance and a signed-in account's hourly ceiling still apply, v0.29.88). |
 | `cors_origins` | `[]` | Browser origins allowed to call the API. Empty sends `Access-Control-Allow-Origin: *` (any origin); a list makes it a strict allowlist — set it on a public host, naming the origins whose pages fetch the API. |
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set it to the address the API sees the proxy connect from (`127.0.0.1` for nginx on the same host) — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health` and `/public/stats`) behind the Bearer session tokens the web process mints at `/auth/token`. Keep it `false` with the built-in web GUI, whose pages call the API from the browser without a token; turn it on only for a front end that holds the token. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
@@ -510,7 +551,8 @@ same-box and same-LAN traffic is never limited.
 
 The default `127.0.0.1:8383` is loopback-only, and deliberately so:
 the API serves the whole catalog, `require_auth` is `false` by
-default, and `exempt_cidrs` waives rate limiting **and** auth for
+default, and `exempt_cidrs` waives the per-IP rate limits (an API token is
+still counted against its own allowance, v0.29.88) **and** auth for
 loopback and RFC1918. Those three defaults are safe together only
 because nothing outside the machine can connect.
 
@@ -529,7 +571,9 @@ before starting it:
 
 - Set `require_auth: true`. Without it every endpoint is open to
   anyone who can reach the port.
-- Review `exempt_cidrs`. Its entries bypass rate limiting *and* auth,
+- Review `exempt_cidrs`. Its entries bypass the per-IP rate limits (not
+  an API token's allowance or a signed-in account's ceiling, v0.29.88)
+  *and* auth,
   so the RFC1918 defaults hand unauthenticated access to everything
   else on the private network. On a shared network, narrow it.
 - Put a firewall in front of the port regardless.

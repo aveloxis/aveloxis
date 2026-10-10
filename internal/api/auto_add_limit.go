@@ -19,7 +19,8 @@ import (
 // sharedWithMeAddsPerHour is how many repositories one user may add to
 // "Shared with Me" by viewing them in an hour. A person following shared
 // links adds a handful; a script walking repository ids adds thousands.
-// Operator decision 2026-10-08 (the review's A2 fix), stated in api.md.
+// The review's A2 fix (2026-10-08); the number confirmed by the operator
+// 2026-10-09. Stated in api.md.
 const sharedWithMeAddsPerHour = 100
 
 // autoAddWindow is the cap's window.

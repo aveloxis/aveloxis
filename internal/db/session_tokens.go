@@ -55,8 +55,7 @@ func (s *PostgresStore) CreateSessionToken(ctx context.Context, userID int, life
 	}
 	// Opportunistic hygiene — keeps the table from accumulating
 	// expired rows without a dedicated ticker.
-	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM aveloxis_ops.user_session_tokens WHERE expiration < $1`, now); err != nil && !errors.Is(err, context.Canceled) {
+	if _, err := s.pool.Exec(ctx, deleteSessionsSQL("expiration < $1"), now); err != nil && !errors.Is(err, context.Canceled) {
 		// The token was created; only the hygiene failed (old problem O2).
 		s.logger.Warn("expired session tokens could not be deleted — they are removed with the next token", "error", err)
 	}
@@ -84,9 +83,22 @@ func (s *PostgresStore) ValidateSessionToken(ctx context.Context, token string) 
 
 // DeleteSessionToken revokes one token (logout).
 func (s *PostgresStore) DeleteSessionToken(ctx context.Context, token string) error {
-	_, err := s.pool.Exec(ctx,
-		`DELETE FROM aveloxis_ops.user_session_tokens WHERE token = $1`, hashToken(token))
+	_, err := s.pool.Exec(ctx, deleteSessionsSQL("token = $1"), hashToken(token))
 	return err
+}
+
+// deleteSessionsSQL deletes the sessions matching where together with the
+// aveloxis_ops.refresh_tokens rows that reference them, in one statement.
+// refresh_tokens is an Augur leftover Aveloxis never writes, but a fleet
+// carried over from Augur may hold rows; its foreign key is checked at
+// commit, so deleting a session alone failed (logout answered 500 and the
+// token stayed valid; Copilot review 5476192626 on PR #228). where is a
+// constant predicate over user_session_tokens, never caller input.
+func deleteSessionsSQL(where string) string {
+	return `WITH gone AS (
+		DELETE FROM aveloxis_ops.user_session_tokens WHERE ` + where + ` RETURNING token
+	)
+	DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)`
 }
 
 // GetUserRepoScope returns every repo in ANY of the user's groups —

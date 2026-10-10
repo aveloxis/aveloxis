@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.84 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.85 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a0923116"></script>
+      <script src="../_static/documentation_options.js?v=04eab50f"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2678,14 +2678,19 @@ default 1,000 per day) applies only to callers <strong>without a valid token</st
 (v0.29.82). Clients on an exempt network (<code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code>) are never
 limited.</p>
 <ul class="simple">
-<li><p><strong>A valid session token</strong> (signed in, below) is not counted at all.</p></li>
+<li><p><strong>A valid session token</strong> (signed in, below) is not limited. Since
+v0.29.85 each account’s session requests are counted per hour for
+observation only: an hour that reaches the API-token default allowance
+(what an issued token may make) is logged, again at each doubling, and
+nothing is refused.</p></li>
 <li><p><strong>An operator-issued API token</strong> (<code class="docutils literal notranslate"><span class="pre">Authorization:</span> <span class="pre">Bearer</span> <span class="pre">avx_…</span></code>) is
 counted against its own hourly allowance (5,000 calls per hour unless the
 operator set another), whatever address the calls come from. Each <code class="docutils literal notranslate"><span class="pre">api</span></code>
 process keeps its own count, so behind N api processes a token can make
 up to N times its allowance. Every
 answer carries <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Limit</span></code>, <code class="docutils literal notranslate"><span class="pre">X-RateLimit-Remaining</span></code> and
-<code class="docutils literal notranslate"><span class="pre">X-RateLimit-Reset</span></code> (Unix seconds, when the current hour ends); past the
+<code class="docutils literal notranslate"><span class="pre">X-RateLimit-Reset</span></code> (Unix seconds, when the current hour ends; all three
+and <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> are readable by cross-origin browser clients); past the
 allowance the answer is <code class="docutils literal notranslate"><span class="pre">429</span></code> with <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code>. Ask the operator for
 one; it is granted to your account and shown once.</p></li>
 <li><p><strong>No token, an unknown token or an expired one</strong> is counted per IP, with
@@ -2779,9 +2784,12 @@ approval principle: approval gates collection, never visibility).
 Repo IDs with no repos row still return the structured 403
 (<code class="docutils literal notranslate"><span class="pre">repo_out_of_scope</span></code>), as do requests when the auto-add cannot be
 performed (fail closed).</p></li>
-<li><p>Treat the token like a password. There is no self-service revoke
-endpoint yet; operators can delete rows from
-<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.user_session_tokens</span></code> to revoke immediately.</p></li>
+<li><p>Treat the token like a password. <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/auth/logout</span></code> with the
+token as the Bearer ends it (the GUI’s Sign out does this). To end every
+session of an account at once, an operator runs one statement, which also
+removes any <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.refresh_tokens</span></code> row carried over from Augur that
+points at a session (a plain session delete fails on it):
+<code class="docutils literal notranslate"><span class="pre">WITH</span> <span class="pre">gone</span> <span class="pre">AS</span> <span class="pre">(DELETE</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.user_session_tokens</span> <span class="pre">WHERE</span> <span class="pre">user_id</span> <span class="pre">=</span> <span class="pre">N</span> <span class="pre">RETURNING</span> <span class="pre">token)</span> <span class="pre">DELETE</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.refresh_tokens</span> <span class="pre">WHERE</span> <span class="pre">user_session_token</span> <span class="pre">IN</span> <span class="pre">(SELECT</span> <span class="pre">token</span> <span class="pre">FROM</span> <span class="pre">gone)</span></code>.</p></li>
 </ul>
 </section>
 <section id="vulnerabilities-and-home-tab-v0-27-4">

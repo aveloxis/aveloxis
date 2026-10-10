@@ -247,6 +247,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.limiter = rl
 	rl.uncounted = s.frontEndAuthorized
 	rl.logger = s.logger
+	if store != nil {
+		rl.sessionBudget = (&sessionThreshold{read: store.GetAPITokenSettings, now: time.Now, logger: s.logger}).get
+	}
 	s.autoAdds = newAutoAddLimiter()
 	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}

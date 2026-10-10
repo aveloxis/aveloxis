@@ -847,14 +847,19 @@ default 1,000 per day) applies only to callers **without a valid token**
 (v0.29.82). Clients on an exempt network (`api.exempt_cidrs`) are never
 limited.
 
-- **A valid session token** (signed in, below) is not counted at all.
+- **A valid session token** (signed in, below) is not limited. Since
+  v0.29.85 each account's session requests are counted per hour for
+  observation only: an hour that reaches the API-token default allowance
+  (what an issued token may make) is logged, again at each doubling, and
+  nothing is refused.
 - **An operator-issued API token** (`Authorization: Bearer avx_…`) is
   counted against its own hourly allowance (5,000 calls per hour unless the
   operator set another), whatever address the calls come from. Each `api`
   process keeps its own count, so behind N api processes a token can make
   up to N times its allowance. Every
   answer carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
-  `X-RateLimit-Reset` (Unix seconds, when the current hour ends); past the
+  `X-RateLimit-Reset` (Unix seconds, when the current hour ends; all three
+  and `Retry-After` are readable by cross-origin browser clients); past the
   allowance the answer is `429` with `Retry-After`. Ask the operator for
   one; it is granted to your account and shown once.
 - **No token, an unknown token or an expired one** is counted per IP, with
@@ -951,9 +956,12 @@ Token semantics:
   Repo IDs with no repos row still return the structured 403
   (`repo_out_of_scope`), as do requests when the auto-add cannot be
   performed (fail closed).
-- Treat the token like a password. There is no self-service revoke
-  endpoint yet; operators can delete rows from
-  `aveloxis_ops.user_session_tokens` to revoke immediately.
+- Treat the token like a password. `POST /api/v1/auth/logout` with the
+  token as the Bearer ends it (the GUI's Sign out does this). To end every
+  session of an account at once, an operator runs one statement, which also
+  removes any `aveloxis_ops.refresh_tokens` row carried over from Augur that
+  points at a session (a plain session delete fails on it):
+  `WITH gone AS (DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = N RETURNING token) DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)`.
 
 ## Vulnerabilities and home tab (v0.27.4)
 

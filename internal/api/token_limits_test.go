@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,5 +313,52 @@ func TestCachedAPITokenBehindADeferringAddressIsServed(t *testing.T) {
 	}
 	if n := store.validates.Load() - before; n > 0 {
 		t.Fatalf("uncached junk tokens from the deferring address cost %d lookups, want 0", n)
+	}
+}
+
+// Copilot review 5476192626 on PR #228: X-RateLimit-* and Retry-After are
+// not CORS-safelisted, so a cross-origin browser client could not read the
+// headers api.md promises. Every allowed cross-origin answer exposes them.
+func TestRateLimitHeadersAreExposedCrossOrigin(t *testing.T) {
+	tok := db.APITokenPrefix + "good"
+	store := &fakeSessionStore{userID: 7, apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 9, UserID: 7, RateLimitPerHour: 50}}}
+	h, _ := tokenChain(t, store, tightLimits)
+	r := tokenReq("198.51.100.70:1", tok)
+	r.Header.Set("Origin", "https://app.example.org")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ",")
+	for _, name := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"} {
+		if !strings.Contains(exposed, name) {
+			t.Fatalf("%s is not exposed to a cross-origin client (Access-Control-Expose-Headers: %q)", name, exposed)
+		}
+	}
+	// A same-origin request (no Origin) gets no CORS headers at all.
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, tokenReq("198.51.100.70:1", tok))
+	if w.Header().Get("Access-Control-Expose-Headers") != "" {
+		t.Fatal("no Origin, no CORS headers")
+	}
+}
+
+// L10 round 1 on 0.29.85: the allowlisted-origin branch exposes them too.
+func TestRateLimitHeadersAreExposedToAnAllowlistedOrigin(t *testing.T) {
+	tok := db.APITokenPrefix + "good"
+	store := &fakeSessionStore{userID: 7, apiValid: map[string]db.APITokenIdentity{tok: {TokenID: 9, UserID: 7, RateLimitPerHour: 50}}}
+	opts := tightLimits
+	opts.CORSOrigins = []string{"https://app.example.org"}
+	h, _ := tokenChain(t, store, opts)
+	r := tokenReq("198.51.100.71:1", tok)
+	r.Header.Set("Origin", "https://app.example.org")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Header().Get("Access-Control-Allow-Origin") != "https://app.example.org" {
+		t.Fatalf("the allowlisted origin was not allowed: %q", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ",")
+	for _, name := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"} {
+		if !strings.Contains(exposed, name) {
+			t.Fatalf("%s is not exposed to an allowlisted origin (%q)", name, exposed)
+		}
 	}
 }

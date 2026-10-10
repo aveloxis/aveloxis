@@ -209,6 +209,14 @@ type rateLimiter struct {
 	tokenWindows map[int64]*tokenWindow
 	now          func() time.Time
 
+	// v0.29.85 (operator, 2026-10-09; observation only, SR-7): each
+	// signed-in user's session requests this hour (keyed by user id), and
+	// the threshold a session hour is logged at — the API-token default
+	// allowance, read through sessionBudget (false when it cannot be read:
+	// nothing is logged). nil sessionBudget observes nothing.
+	sessionWindows map[int]*tokenWindow
+	sessionBudget  func() (int, bool)
+
 	// logger records refused tokens and exhausted allowances (ASVS V16.3,
 	// the 0.29.82 review A5); nil is silent.
 	logger *slog.Logger
@@ -220,6 +228,21 @@ type tokenWindow struct {
 	start  time.Time
 	count  int
 	warned bool // the over-allowance line was logged for this window
+	// Session windows only: nextLog is the count at which the window is
+	// next logged (threshold·2^k), derived from logBase, the threshold in
+	// force when it was set; a different threshold re-derives it.
+	nextLog int
+	logBase int
+}
+
+// nextSessionMilestone is the smallest threshold·2^k above count: where a
+// session hour is logged next.
+func nextSessionMilestone(threshold, count int) int {
+	n := threshold
+	for n <= count && n <= math.MaxInt/2 {
+		n *= 2
+	}
+	return n
 }
 
 // apiTokenWindow is how long an API token's allowance lasts before it
@@ -282,6 +305,61 @@ func boundWindows[K comparable](m map[K]*tokenWindow, now time.Time, span time.D
 		}
 		delete(m, oldestKey)
 	}
+}
+
+// observeSession counts one request of a signed-in user's session and logs
+// the hour once its count reaches threshold, then at each doubling. It
+// never refuses (operator decision 2026-10-09: sessions stay unlimited; this
+// measures whether anyone uses one as a scraper's unlimited token).
+func (rl *rateLimiter) observeSession(userID, threshold int, ok bool) {
+	now := rl.clock()
+	rl.mu.Lock()
+	if rl.sessionWindows == nil {
+		rl.sessionWindows = map[int]*tokenWindow{}
+	}
+	w, found := rl.sessionWindows[userID]
+	if !found || !now.Before(w.start.Add(apiTokenWindow)) {
+		boundWindows(rl.sessionWindows, now, apiTokenWindow)
+		w = &tokenWindow{start: now}
+		rl.sessionWindows[userID] = w
+	}
+	w.count++
+	logIt := false
+	if ok && threshold > 0 {
+		// The threshold in force decides (L10 round 1 on 0.29.85): raised
+		// mid-hour, no line claims the new one was passed; lowered or first
+		// known after an unknown stretch, one line now, not one per request.
+		if w.logBase != threshold {
+			w.logBase, w.nextLog = threshold, threshold
+		}
+		if w.count >= w.nextLog {
+			logIt = true
+			w.nextLog = nextSessionMilestone(threshold, w.count)
+		}
+	}
+	count, start := w.count, w.start
+	rl.mu.Unlock()
+	if logIt && rl.logger != nil {
+		rl.logger.Warn("signed-in session made more requests this hour than an API token is allowed (observation only, not limited)",
+			"user_id", userID, "requests_this_hour", count, "threshold", threshold, "window_start", start)
+	}
+}
+
+// peekToken reports an API token's current window without charging it (a
+// request whose authz subrequest already paid).
+func (rl *rateLimiter) peekToken(tokenID int64, limit int) (int, time.Time) {
+	now := rl.clock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	w, ok := rl.tokenWindows[tokenID]
+	if !ok || !now.Before(w.start.Add(apiTokenWindow)) {
+		return limit, now.Add(apiTokenWindow)
+	}
+	remaining := limit - w.count
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining, w.start.Add(apiTokenWindow)
 }
 
 func (rl *rateLimiter) clock() time.Time {
@@ -357,6 +435,19 @@ func (rl *rateLimiter) isExempt(ip net.IP) bool {
 // middleware enforces the bucket + daily quota for non-exempt IPs.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A request nginx forwards after an admitted authz subrequest
+		// already paid there (Server.frontEndAuthorized): it is neither
+		// observed nor charged again, whatever its token (L10 round 1 on
+		// 0.29.85; API tokens were charged twice per cache miss since
+		// 0.29.82).
+		paid := rl.uncounted != nil && rl.uncounted(r)
+		// A valid session is observed whatever its address (before the
+		// exempt check: a proxy misconfiguration that made every client
+		// local must not hide it). Observation only.
+		if res, ok := resolutionOf(r); ok && !paid && res.presented && res.err == nil && res.info.APITokenID == 0 && res.info.UserID > 0 && rl.sessionBudget != nil {
+			threshold, known := rl.sessionBudget()
+			rl.observeSession(res.info.UserID, threshold, known)
+		}
 		ip := rl.clientIP(r)
 		if rl.isExempt(ip) {
 			next.ServeHTTP(w, r)
@@ -368,6 +459,15 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		// or expired token, or one the store could not resolve, is no token.
 		if res, ok := resolutionOf(r); ok && res.presented && res.err == nil {
 			if res.info.APITokenID == 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if paid {
+				remaining, reset := rl.peekToken(res.info.APITokenID, res.info.RateLimitPerHour)
+				h := w.Header()
+				h.Set("X-RateLimit-Limit", strconv.Itoa(res.info.RateLimitPerHour))
+				h.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+				h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -388,7 +488,7 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if rl.uncounted != nil && rl.uncounted(r) {
+		if paid {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -468,6 +568,12 @@ func (rl *rateLimiter) evictOldestLocked() {
 // against the ETag the API exposes (v0.29.73).
 const corsAllowHeaders = "Authorization, Content-Type, If-None-Match"
 
+// corsRateLimitExposed are the rate-limit answers a cross-origin browser
+// client may read (they are not CORS-safelisted; Copilot review 5476192626
+// on PR #228). Added, never Set: other layers expose ETag and the
+// Shared-with-Me notice on the same answer.
+const corsRateLimitExposed = "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After"
+
 // cors is the SINGLE CORS authority (v0.27.1 removed the per-handler
 // wildcard/echo headers that predated it). Empty cors_origins =
 // legacy-compatible `*` (the server-rendered GUI's cross-port fetches
@@ -484,11 +590,13 @@ func (rl *rateLimiter) cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+			w.Header().Add("Access-Control-Expose-Headers", corsRateLimitExposed)
 		} else if origin != "" && rl.origins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			w.Header().Set("Access-Control-Max-Age", "600")
+			w.Header().Add("Access-Control-Expose-Headers", corsRateLimitExposed)
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			w.WriteHeader(http.StatusNoContent)

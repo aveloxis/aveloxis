@@ -10,7 +10,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -877,7 +879,7 @@ func TestVacuumGateWaitsForALineServeWrites(t *testing.T) {
 func TestEveryLadderStartsServeOnce(t *testing.T) {
 	// The ladders built by the positional recipe (0.29.73 on) carry the
 	// start step; older ladders predate it and have none.
-	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true, "0.29.82": true, "0.29.83": true, "0.29.84": true}
+	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true, "0.29.82": true, "0.29.83": true, "0.29.84": true, "0.29.85": true}
 	for version, steps := range deployChecklists {
 		n := 0
 		for _, s := range steps {
@@ -991,5 +993,72 @@ func TestTakeoverRemediationRevokesAPITokens(t *testing.T) {
 		if !strings.Contains(desc, want) {
 			t.Errorf("the takeover remediation must include %q", want)
 		}
+	}
+}
+
+// Copilot review 5476192626 on PR #228: a session delete must take the
+// refresh_tokens rows that reference it (an Augur carry-over), or it fails
+// on the foreign key. Every checklist text that deletes sessions, in every
+// release's checklist, deletes them together.
+func TestChecklistSessionDeletesTakeRefreshRows(t *testing.T) {
+	examined := 0
+	for version := range deployChecklists {
+		steps, _ := deployChecklistFor(version)
+		for _, s := range steps {
+			for _, text := range []string{s.cmd, s.desc} {
+				if !strings.Contains(text, "DELETE FROM aveloxis_ops.user_session_tokens") {
+					continue
+				}
+				examined++
+				if !strings.Contains(text, "DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)") {
+					t.Fatalf("%s: a session delete without its refresh rows: %.200s", version, text)
+				}
+			}
+		}
+	}
+	if examined == 0 {
+		t.Fatal("no checklist deletes sessions; the takeover remediation should")
+	}
+	// L10 round 1 on 0.29.85: the operator docs too (api.md told operators
+	// to delete user_session_tokens rows by hand). Every line that deletes
+	// sessions carries the refresh-row delete.
+	docsExamined := 0
+	err := filepath.WalkDir("../../docs", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "_build" {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		// One paragraph or list item at a time, its lines joined: an
+		// instruction wraps across lines.
+		var items []string
+		for _, para := range strings.Split(string(b), "\n\n") {
+			items = append(items, strings.Split(para, "\n- ")...)
+		}
+		for _, item := range items {
+			line := strings.Join(strings.Fields(item), " ")
+			low := strings.ToLower(line)
+			if strings.Contains(low, "delete from aveloxis_ops.user_session_tokens") || strings.Contains(low, "delete rows from") && strings.Contains(low, "user_session_tokens") {
+				docsExamined++
+				if !strings.Contains(line, "DELETE FROM aveloxis_ops.refresh_tokens WHERE user_session_token IN (SELECT token FROM gone)") {
+					t.Errorf("%s: a session delete without its refresh rows: %.200s", path, line)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if docsExamined == 0 {
+		t.Fatal("no doc gives the session delete; api.md's Authentication section should")
 	}
 }

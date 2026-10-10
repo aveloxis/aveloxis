@@ -364,3 +364,27 @@ func TestImplicitLinkThatAddsNothingSpendsNoSlot(t *testing.T) {
 		t.Fatalf("after one star link and one comparison link: %d slots spent, want 2", got)
 	}
 }
+
+// v0.29.85 wiring: the server's session observation reads the stored
+// API-token default allowance (end to end: settings row → threshold).
+func TestSessionObservationReadsTheStoredDefault(t *testing.T) {
+	s, store, admin, _ := apiTokenAdminServer(t)
+	if err := store.SetAPITokenSettings(context.Background(), db.APITokenSettings{DefaultRateLimitPerHour: 4321, DefaultLifetimeDays: 30}, admin); err != nil {
+		t.Fatal(err)
+	}
+	if s.limiter.sessionBudget == nil {
+		t.Fatal("the server must wire the session observation's threshold")
+	}
+	// The read runs off the request path; it lands within moments.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if v, ok := s.limiter.sessionBudget(); ok && v == 4321 {
+			break
+		}
+		if time.Now().After(deadline) {
+			v, ok := s.limiter.sessionBudget()
+			t.Fatalf("threshold = %d, %v; want the stored default 4321", v, ok)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

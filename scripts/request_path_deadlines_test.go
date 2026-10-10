@@ -38,6 +38,10 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 		// writes nothing, so replay itself reports the expiry ("request
 		// deadline exceeded") in the re-warm's WARN.
 		"internal/api/repo_page_rewarm.go": 1,
+		// The session observation's threshold read (v0.29.85) runs on
+		// context.Background() off the request path, bounded by its
+		// refresh period; it logs its own WARN.
+		"internal/api/session_volume.go": 1,
 	}
 	derived := regexp.MustCompile(`context\.With(Timeout|Deadline)(Cause)?\(`)
 	root := srctest.Root(t)

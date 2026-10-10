@@ -229,9 +229,13 @@ func (s *Server) recordComparison(r *http.Request, entities []entity) {
 	if !authed || info.UserID <= 0 {
 		return
 	}
+	// Only repositories already in the caller's scope (admins: any): an
+	// out-of-scope entity is linked by resolveEntityRepos, under the per-user
+	// auto-add cap (0.29.82, the ASVS review's A2 — recording it here first
+	// linked it uncapped).
 	var repoIDs []int64
 	for _, e := range entities {
-		if e.Kind == "repo" {
+		if e.Kind == "repo" && (info.IsAdmin || info.Scope[e.RepoID]) {
 			repoIDs = append(repoIDs, e.RepoID)
 		}
 	}
@@ -276,7 +280,9 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 		}
 		ids = in
 	}
-	if len(ids) == 0 && scoped && len(collected) > 0 {
+	// An API token never auto-adds (operator decision 2026-10-09): it falls
+	// through to the refusal, which says how to add the entity.
+	if len(ids) == 0 && scoped && len(collected) > 0 && info.APITokenID == 0 {
 		// Auto-add path. For repo entities the id came from the URL, so
 		// verify it actually IS a collected repo before linking (org ids
 		// come straight from the repos table and always exist).
@@ -295,33 +301,59 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 			}
 		}
 		if len(collected) > 0 {
+			// A signed-in session is not rate limited (0.29.82), so each
+			// user's auto-adds are capped (one per entity, an org counts
+			// once) and reserved before anything is written (the ASVS
+			// review's A2 and its L10 round: this second auto-add site).
+			var slot autoAddSlot // the window a refund goes back to
+			if s.autoAdds != nil {
+				var ok bool
+				var retry int
+				if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
+					s.refuseAutoAdd(w, info, retry)
+					return nil, "", false
+				}
+			}
+			// The slot is kept when anything was linked, even if a later
+			// link failed; it comes back when nothing was (an already-linked
+			// repository behind a stale cached scope or a concurrent
+			// request: Copilot review 5472987053 on PR #228).
+			linkedAny := false
 			gid, err := s.store.FindOrCreateComparisonsGroup(r.Context(), info.UserID)
 			if err == nil {
 				for _, id := range collected {
-					if _, err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
+					var linked bool
+					if linked, err = s.store.AddRepoToGroupByID(r.Context(), gid, id); err != nil {
 						break
 					}
+					linkedAny = linkedAny || linked
 				}
 			}
+			s.settleAutoAdd(info.UserID, slot, linkedAny, err)
 			if err != nil {
 				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false
 			}
-			// Scope changed — the cached token validation must re-resolve
-			// so the user's next request sees the new repos.
-			s.auth.invalidateAll()
+			if !linkedAny {
+				return collected, "", true
+			}
 			return collected, db.ComparisonsGroupName, true
 		}
 	}
 	if len(ids) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		setNoStoreHeaders(w.Header()) // a refusal is about this caller, signed in or not
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		body := map[string]any{
 			"error":  "entity_out_of_scope",
 			"entity": e.Label,
 			"hint":   "add this repository or organization to one of your groups to request access",
-		})
+		}
+		if authed && info.APITokenID != 0 {
+			s.addEntityInstructions(r, info, e, collected, body)
+			s.logRefusal("token_out_of_scope", info, "entity", logSafe(e.Label))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		setNoStoreHeaders(w.Header()) // a refusal is about this caller, signed in or not
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(body)
 		return nil, "", false
 	}
 	return ids, "", true
@@ -538,7 +570,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	// read each other's cached responses (and the answer is marked
 	// per-caller when there is one).
 	info, _ := callerIdentity(w, r)
-	key := fmt.Sprintf("cmp|%d|%s|%s|%s|%s|%s|rt%d", info.UserID, metric,
+	key := fmt.Sprintf("cmp|%s|%s|%s|%s|%s|%s|rt%d", callerCacheID(info), metric,
 		r.URL.Query().Get("entities"), since.Format("2006-01-02"), until.Format("2006-01-02"), bucket,
 		retentionThreshold)
 	if body, ok := s.cmpCache.get(key); ok {

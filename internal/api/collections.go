@@ -179,8 +179,8 @@ func (s *Server) handleCollectionCopy(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, "handleCollectionCopy", err)
 		return
 	}
-	// The copy widened the caller's repo scope — bust both caches.
-	s.auth.invalidateAll()
+	// The copy widened the caller's repo scope — bust the caller's caches.
+	s.auth.invalidateUser(info.UserID)
 	s.homeCache.invalidate(info.UserID)
 	jsonResponse(w, map[string]any{"added": added, "group_id": groupID})
 }

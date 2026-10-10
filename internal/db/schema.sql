@@ -2665,6 +2665,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.client_applications (
     redirect_url   TEXT NOT NULL DEFAULT ''
 );
 
+-- v0.29.82: token holds the SHA-256 hex of the session token, never the
+-- token itself (session_tokens.go); a migrate on an older fleet hashes the
+-- existing rows once (addSessionTokenHashedColumn).
 CREATE TABLE IF NOT EXISTS aveloxis_ops.user_session_tokens (
     token          TEXT PRIMARY KEY,
     user_id        INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
@@ -2672,6 +2675,37 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.user_session_tokens (
     expiration     BIGINT,
     application_id TEXT REFERENCES aveloxis_ops.client_applications(id) DEFERRABLE INITIALLY DEFERRED
 );
+-- v0.29.82: operator-issued API tokens (api_tokens.go), granted and revoked
+-- on the admin page. Each authenticates as its owner (the owner's repository
+-- scope) and is counted against its own hourly allowance instead of the
+-- per-IP limit. Only the SHA-256 hex of the token is stored. A table born
+-- empty on every fleet, so its unique and indexes live here.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.api_tokens (
+    token_id            BIGSERIAL PRIMARY KEY,
+    token_hash          TEXT NOT NULL UNIQUE,
+    user_id             INT NOT NULL REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    label               TEXT NOT NULL,
+    created_by          INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    rate_limit_per_hour INT NOT NULL CHECK (rate_limit_per_hour > 0),
+    last_used_at        TIMESTAMPTZ,
+    revoked_at          TIMESTAMPTZ,
+    revoked_by          INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON aveloxis_ops.api_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_created_by ON aveloxis_ops.api_tokens (created_by);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_revoked_by ON aveloxis_ops.api_tokens (revoked_by);
+-- v0.29.82: the defaults the admin page offers when it grants an API token
+-- (one row; the migrate seeds it). Editable on the admin page.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.api_token_settings (
+    id                          SMALLINT PRIMARY KEY CHECK (id = 1),
+    default_rate_limit_per_hour INT NOT NULL CHECK (default_rate_limit_per_hour > 0),
+    default_lifetime_days       INT NOT NULL CHECK (default_lifetime_days > 0),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by                  INT REFERENCES aveloxis_ops.users(user_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_api_token_settings_updated_by ON aveloxis_ops.api_token_settings (updated_by);
 
 -- v0.20.4 email-confirmation tokens for the manual-entry email flow.
 -- Declared here since v0.27.12 — this table previously existed ONLY as

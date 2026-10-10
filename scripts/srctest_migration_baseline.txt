@@ -12,7 +12,6 @@ cmd/aveloxis/migrate_only_serve_and_migrate_test.go mainSource
 cmd/aveloxis/migrate_only_serve_and_migrate_test.go stripLineComments
 cmd/aveloxis/scancode_worker_cmd_test.go readScancodeWorkerCmdSource
 cmd/aveloxis/shutdown_join_test.go extractMainFunc
-internal/api/compare_autoadd_test.go stripLineComments
 internal/api/portal_test.go extractFuncBody
 internal/api/testutil_source_test.go mustReadFile
 internal/collector/breadth_concurrency_pins_test.go breadthRunBody

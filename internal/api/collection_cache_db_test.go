@@ -50,7 +50,11 @@ func TestRepoEndpointsCacheByCollectionGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now()
+	// Noon UTC, not the wall clock: the time series' key carries the UTC
+	// day, and the loop advances the clock 5 minutes per call, so a run
+	// started near 00:00 UTC crossed into the next day and missed (found
+	// 2026-10-09 at 23:5x UTC, failing on an untouched HEAD too).
+	now := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
 	s.pageCache.now = func() time.Time { return now }
 	for name, path := range map[string]string{
 		"top contributors": "/contributors/top?limit=20",

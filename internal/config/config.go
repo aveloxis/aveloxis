@@ -1975,8 +1975,9 @@ type APIConfig struct {
 	// RateLimitDaily is the per-IP daily request quota — the actual
 	// anti-bulk-crawl control. Default 1000.
 	RateLimitDaily int `json:"rate_limit_daily,omitempty"`
-	// ExemptCIDRs lists client networks that bypass limiting
-	// entirely. Default: loopback + RFC1918 (+ ::1).
+	// ExemptCIDRs lists client networks that bypass the per-IP limits
+	// (an API token is still counted against its own allowance, v0.29.88).
+	// Default: loopback + RFC1918 (+ ::1).
 	ExemptCIDRs []string `json:"exempt_cidrs,omitempty"`
 	// CORSOrigins lists browser origins allowed to call the API. Empty
 	// sends Access-Control-Allow-Origin: * (any origin); a list is a

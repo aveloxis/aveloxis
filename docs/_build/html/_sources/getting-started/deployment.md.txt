@@ -105,7 +105,7 @@ the ones a public host must get right:
     "addr": "127.0.0.1:8383",            // loopback only; the proxy forwards to it
     "trusted_proxy": "127.0.0.1",        // the proxy's peer IP, in canonical form; X-Forwarded-For is believed only from it
     "require_auth": false,               // keep false for this GUI: its charts fetch the API without a Bearer token
-    "exempt_cidrs": ["127.0.0.0/8", "::1/128"],   // bypass rate limits AND require_auth — narrow the RFC1918 defaults on a shared network
+    "exempt_cidrs": ["127.0.0.0/8", "::1/128"],   // bypass the per-IP limits (not an API token's own) AND require_auth — narrow the RFC1918 defaults on a shared network
     "cors_origins": [],                  // empty = Access-Control-Allow-Origin: * ; list your origin to make it strict
     "response_cache_mb": 0,              // advanced, off by default: megabytes of repository answers the API keeps in memory
     "cache_rewarm_seconds": 60,          // with the cache on: recompute a viewed repository's answers after its collection
@@ -126,7 +126,8 @@ What the values mean:
   loader refuses anything else and names the spelling it wants. Without
   it every request appears to come from the proxy, and the exemptions and
   limits apply to all visitors as one.
-- **`api.exempt_cidrs`** waives rate limiting *and* `require_auth`. The
+- **`api.exempt_cidrs`** waives the per-IP rate limits (an API token is
+  still counted against its own allowance, v0.29.88) *and* `require_auth`. The
   defaults include the RFC1918 ranges; on a host whose private network is
   shared with others, narrow them to loopback as shown.
 - **`api.require_auth`** stays `false` with this GUI: its pages call the

@@ -490,7 +490,10 @@ Do not delete this directory while Aveloxis is running. If deleted while stopped
 
 v0.27.0: rate limiting + CORS for the `aveloxis api` process. Limits
 apply ONLY to clients whose resolved IP falls outside `exempt_cidrs` —
-same-box and same-LAN traffic is never limited.
+same-box and same-LAN traffic is not limited per IP. Two limits apply from
+every address, exempt ones included (v0.29.88): an API token's own hourly
+allowance, and a signed-in (non-administrator) account's hourly ceiling of
+four times the API-token default.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -498,7 +501,7 @@ same-box and same-LAN traffic is never limited.
 | `rate_limit_rps` | `1` | Sustained per-IP requests/second (token bucket). |
 | `rate_limit_burst` | `10` | Per-IP burst capacity. |
 | `rate_limit_daily` | `1000` | Per-IP daily request quota — the anti-bulk-crawl control. Exceeding returns 429 with `Retry-After: 86400`. |
-| `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass limiting entirely. |
+| `exempt_cidrs` | loopback + RFC1918 + `::1/128` | Client networks that bypass the per-IP limits (an API token's allowance and a signed-in account's hourly ceiling still apply, v0.29.88). |
 | `cors_origins` | `[]` | Browser origins allowed to call the API. Empty sends `Access-Control-Allow-Origin: *` (any origin); a list makes it a strict allowlist — set it on a public host, naming the origins whose pages fetch the API. |
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set it to the address the API sees the proxy connect from (`127.0.0.1` for nginx on the same host) — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health` and `/public/stats`) behind the Bearer session tokens the web process mints at `/auth/token`. Keep it `false` with the built-in web GUI, whose pages call the API from the browser without a token; turn it on only for a front end that holds the token. Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
@@ -510,7 +513,8 @@ same-box and same-LAN traffic is never limited.
 
 The default `127.0.0.1:8383` is loopback-only, and deliberately so:
 the API serves the whole catalog, `require_auth` is `false` by
-default, and `exempt_cidrs` waives rate limiting **and** auth for
+default, and `exempt_cidrs` waives the per-IP rate limits (an API token is
+still counted against its own allowance, v0.29.88) **and** auth for
 loopback and RFC1918. Those three defaults are safe together only
 because nothing outside the machine can connect.
 
@@ -529,7 +533,9 @@ before starting it:
 
 - Set `require_auth: true`. Without it every endpoint is open to
   anyone who can reach the port.
-- Review `exempt_cidrs`. Its entries bypass rate limiting *and* auth,
+- Review `exempt_cidrs`. Its entries bypass the per-IP rate limits (not
+  an API token's allowance or a signed-in account's ceiling, v0.29.88)
+  *and* auth,
   so the RFC1918 defaults hand unauthenticated access to everything
   else on the private network. On a shared network, narrow it.
 - Put a firewall in front of the port regardless.

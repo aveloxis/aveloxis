@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.81 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.88 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
+      <script src="../_static/documentation_options.js?v=7f7018be"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -330,6 +330,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -354,6 +355,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#cors">CORS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#deployment">Deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#rate-limits">Rate limits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
@@ -695,7 +697,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-44-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (44 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -2731,7 +2733,10 @@ a half against its own reference table below:</p>
 <h2>Public analytics API (<code class="docutils literal notranslate"><span class="pre">api</span></code>)<a class="headerlink" href="#public-analytics-api-api" title="Link to this heading"></a></h2>
 <p>v0.27.0: rate limiting + CORS for the <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> process. Limits
 apply ONLY to clients whose resolved IP falls outside <code class="docutils literal notranslate"><span class="pre">exempt_cidrs</span></code> —
-same-box and same-LAN traffic is never limited.</p>
+same-box and same-LAN traffic is not limited per IP. Two limits apply from
+every address, exempt ones included (v0.29.88): an API token’s own hourly
+allowance, and a signed-in (non-administrator) account’s hourly ceiling of
+four times the API-token default.</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Field</p></th>
@@ -2758,7 +2763,7 @@ same-box and same-LAN traffic is never limited.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">exempt_cidrs</span></code></p></td>
 <td><p>loopback + RFC1918 + <code class="docutils literal notranslate"><span class="pre">::1/128</span></code></p></td>
-<td><p>Client networks that bypass limiting entirely.</p></td>
+<td><p>Client networks that bypass the per-IP limits (an API token’s allowance and a signed-in account’s hourly ceiling still apply, v0.29.88).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cors_origins</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
@@ -2790,7 +2795,8 @@ same-box and same-LAN traffic is never limited.</p>
 <h3>Reaching the API from another host<a class="headerlink" href="#reaching-the-api-from-another-host" title="Link to this heading"></a></h3>
 <p>The default <code class="docutils literal notranslate"><span class="pre">127.0.0.1:8383</span></code> is loopback-only, and deliberately so:
 the API serves the whole catalog, <code class="docutils literal notranslate"><span class="pre">require_auth</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> by
-default, and <code class="docutils literal notranslate"><span class="pre">exempt_cidrs</span></code> waives rate limiting <strong>and</strong> auth for
+default, and <code class="docutils literal notranslate"><span class="pre">exempt_cidrs</span></code> waives the per-IP rate limits (an API token is
+still counted against its own allowance, v0.29.88) <strong>and</strong> auth for
 loopback and RFC1918. Those three defaults are safe together only
 because nothing outside the machine can connect.</p>
 <p>Changing <code class="docutils literal notranslate"><span class="pre">addr</span></code> alone changes all three. There are two ways to expose
@@ -2806,7 +2812,9 @@ before starting it:</p>
 <ul class="simple">
 <li><p>Set <code class="docutils literal notranslate"><span class="pre">require_auth:</span> <span class="pre">true</span></code>. Without it every endpoint is open to
 anyone who can reach the port.</p></li>
-<li><p>Review <code class="docutils literal notranslate"><span class="pre">exempt_cidrs</span></code>. Its entries bypass rate limiting <em>and</em> auth,
+<li><p>Review <code class="docutils literal notranslate"><span class="pre">exempt_cidrs</span></code>. Its entries bypass the per-IP rate limits (not
+an API token’s allowance or a signed-in account’s ceiling, v0.29.88)
+<em>and</em> auth,
 so the RFC1918 defaults hand unauthenticated access to everything
 else on the private network. On a shared network, narrow it.</p></li>
 <li><p>Put a firewall in front of the port regardless.</p></li>

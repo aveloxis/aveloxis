@@ -130,6 +130,15 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/admin/forge-id-changes":                     {auth: "admin", query: "pending=1"},                                                      // v0.29.63
 	"POST /api/v1/admin/forge-id-changes/{repoID}/adopt":     {auth: "admin", body: `{"old_forge_id":"1","new_forge_id":"2"}`, wantStatus: []int{404}}, // v0.29.63: the fixture repo has nothing pending
 	"POST /api/v1/admin/add-requests/{requestID}/{decision}": {auth: "admin"},                                                                          // v0.27.20 (fixture seeds the pending request)
+	// v0.29.82: operator-issued API tokens. The grant creates one for the
+	// fixture user (cleanup removes it); the revoke names no token (404, the
+	// real query runs); the settings write re-sends the seeded defaults.
+	"POST /api/v1/auth/logout":                       {wantStatus: []int{401}}, // no token: the fixture's own session must survive the run
+	"GET /api/v1/admin/api-tokens":                   {auth: "admin"},
+	"POST /api/v1/admin/api-tokens":                  {auth: "admin", body: `{"user_id":{userID},"label":"smoke"}`, wantStatus: []int{201}},
+	"POST /api/v1/admin/api-tokens/{tokenID}/revoke": {auth: "admin", wantStatus: []int{404}},
+	"GET /api/v1/admin/api-token-settings":           {auth: "admin"},
+	"POST /api/v1/admin/api-token-settings":          {auth: "admin", body: `{"default_rate_limit_per_hour":5000,"default_lifetime_days":30}`},
 
 	// Augur-compat metric routes (metrics.go).
 	"GET /api/v1/owner/{owner}/repo/{repo}":                    {},
@@ -431,6 +440,8 @@ func seedSmokeFixture(t *testing.T, ctx context.Context, store *db.PostgresStore
 		for _, q := range []string{
 			`DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`,
 			`DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id = $1`,
+			`DELETE FROM aveloxis_ops.api_tokens WHERE user_id = $1 OR created_by = $1 OR revoked_by = $1`,
+			`UPDATE aveloxis_ops.api_token_settings SET updated_by = NULL WHERE updated_by = $1`,
 		} {
 			_, _ = pool.Exec(ctx, q, fx.userID)
 		}
@@ -462,6 +473,7 @@ func smokeFill(fx smokeFixture) *strings.Replacer {
 		"{userID}", fmt.Sprint(fx.userID),
 		"{decision}", "approve",
 		"{requestID}", fmt.Sprint(fx.requestID),
+		"{tokenID}", "999999999", // names no token: the revoke recipe expects 404
 		"{collectionID}", fmt.Sprint(fx.collectionID),
 		"{cntrbID}", fx.cntrbID,
 		"{owner}", fx.owner,

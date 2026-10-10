@@ -58,6 +58,11 @@ type Server struct {
 	// authorizeRepo (set to the store at construction; nil in bare
 	// test Servers, which fail closed to the 403).
 	sharedWithMe sharedWithMeStore
+	// scopeHelp reads what an API token's out-of-scope refusal says (the
+	// repository's URL, the owner's groups; v0.29.86).
+	scopeHelp scopeHelpStore
+	autoAdds  *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
+	refusals  *refusalLog     // ASVS review G5: refusals logged once a minute per user and kind
 
 	// accounts serves the profile routes (/me's account fields, the
 	// account-email submission and confirmation); the store, or a fake.
@@ -110,6 +115,9 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		ghAPIBase:    platform.GitHubAPIBaseOrPublic(opts.GitHubAPIBase),
 		sharedWithMe: store}
 	s.homeLoader = store.GetHomeRepos
+	if store != nil { // a nil store in an interface is non-nil and panics when called
+		s.scopeHelp = store
+	}
 	s.seriesCache = newCollectionCache(opts.ResponseCacheMaxAge)
 	s.pageCache = newRepoPageCache(opts.ResponseCacheBytes, opts.ResponseCacheMaxAge)
 	// A method value of a nil store is a non-nil func that panics when
@@ -193,6 +201,14 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/admin/forge-id-changes", s.handleAdminForgeIDChanges)               // v0.29.63
 	s.mux.HandleFunc("POST /api/v1/admin/forge-id-changes/{repoID}/adopt", s.handleAdminForgeIDAdopt) // v0.29.63
 	s.mux.HandleFunc("GET /api/v1/admin/add-requests", s.handleAdminAddRequests)
+	// v0.29.82: sign-out ends the API session token (the ASVS review).
+	s.mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	// v0.29.82: operator-issued API tokens (aveloxis-gui's admin page).
+	s.mux.HandleFunc("GET /api/v1/admin/api-tokens", s.handleAdminAPITokens)
+	s.mux.HandleFunc("POST /api/v1/admin/api-tokens", s.handleAdminAPITokenGrant)
+	s.mux.HandleFunc("POST /api/v1/admin/api-tokens/{tokenID}/revoke", s.handleAdminAPITokenRevoke)
+	s.mux.HandleFunc("GET /api/v1/admin/api-token-settings", s.handleAdminAPITokenSettings)
+	s.mux.HandleFunc("POST /api/v1/admin/api-token-settings", s.handleAdminAPITokenSettingsUpdate)
 	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
@@ -237,6 +253,12 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	}
 	s.limiter = rl
 	rl.uncounted = s.frontEndAuthorized
+	rl.logger = s.logger
+	if store != nil {
+		rl.sessionBudget = (&sessionThreshold{read: store.GetAPITokenSettings, now: time.Now, logger: s.logger}).get
+	}
+	s.autoAdds = newAutoAddLimiter()
+	s.refusals = newRefusalLog(time.Now)
 	s.auth = newAuthenticator(store, opts.RequireAuth, s.logger)
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
@@ -261,11 +283,18 @@ func (s *Server) serverError(w http.ResponseWriter, r *http.Request, handler str
 	http.Error(w, "internal error; try again", http.StatusInternalServerError)
 }
 
-// Handler returns the HTTP handler: CORS outermost (preflights are
-// never rate-limited), then the per-IP limiter, then Bearer auth +
-// scope, then the routes.
+// Handler returns the HTTP handler (requestChain).
 func (s *Server) Handler() http.Handler {
-	return s.limiter.cors(s.limiter.middleware(s.auth.middleware(s.limiter, s.mux)))
+	return requestChain(s.limiter, s.auth, s.mux)
+}
+
+// requestChain is the order every request passes through: CORS outermost
+// (preflights are never rate-limited), then identify (the Bearer token is
+// resolved once, v0.29.82), then the rate limiter (which reads that answer:
+// a valid session is not counted, an API token has its own hourly
+// allowance), then Bearer auth + scope, then the routes.
+func requestChain(rl *rateLimiter, a *authenticator, next http.Handler) http.Handler {
+	return rl.cors(a.identify(rl, rl.middleware(a.middleware(rl, next))))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +355,25 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 	if len(ids) > db.RepoStatsBatchMaxIDs {
 		http.Error(w, fmt.Sprintf("at most %d ids per request", db.RepoStatsBatchMaxIDs), http.StatusBadRequest)
 		return
+	}
+	// A non-administrator reads only its groups here, API token or session
+	// (v0.29.86 for tokens; ASVS review G1b for sessions: 500 ids a call
+	// bypassed the auto-add cap a session's single-repository view goes
+	// through). Out-of-scope ids are left out of the answer. An
+	// administrator's session, and a caller without an identity (an exempt
+	// network, the cache warm), are unscoped.
+	if info, ok := callerIdentity(w, r); ok && !info.IsAdmin {
+		in := ids[:0]
+		for _, id := range ids {
+			if info.Scope[id] {
+				in = append(in, id)
+			}
+		}
+		ids = in
+		if len(ids) == 0 {
+			jsonResponse(w, map[int64]*db.RepoStats{})
+			return
+		}
 	}
 	stats, err := s.store.GetRepoStatsBatch(r.Context(), ids)
 	if err != nil {

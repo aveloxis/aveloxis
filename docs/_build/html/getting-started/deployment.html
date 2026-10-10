@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Production Deployment &mdash; Aveloxis 0.29.81 documentation</title>
+  <title>Production Deployment &mdash; Aveloxis 0.29.88 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f89bafa8"></script>
+      <script src="../_static/documentation_options.js?v=7f7018be"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -330,6 +330,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#public-fleet-stats">Public fleet stats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -354,6 +355,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#cors">CORS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#deployment">Deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#comparison-analytics-v0-27-2">Comparison analytics (v0.27.2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#rate-limits">Rate limits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#authentication-getting-an-api-token">Authentication: getting an API token</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#vulnerabilities-and-home-tab-v0-27-4">Vulnerabilities and home tab (v0.27.4)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#supply-chain-package-view-v0-29-60">Supply-chain package view (v0.29.60)</a></li>
@@ -695,7 +697,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-42-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (42 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-44-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (44 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1813,7 +1815,7 @@ the ones a public host must get right:</p>
 <span class="w">    </span><span class="nt">&quot;addr&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1:8383&quot;</span><span class="p">,</span><span class="w">            </span><span class="c1">// loopback only; the proxy forwards to it</span>
 <span class="w">    </span><span class="nt">&quot;trusted_proxy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1&quot;</span><span class="p">,</span><span class="w">        </span><span class="c1">// the proxy&#39;s peer IP, in canonical form; X-Forwarded-For is believed only from it</span>
 <span class="w">    </span><span class="nt">&quot;require_auth&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w">               </span><span class="c1">// keep false for this GUI: its charts fetch the API without a Bearer token</span>
-<span class="w">    </span><span class="nt">&quot;exempt_cidrs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;127.0.0.0/8&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;::1/128&quot;</span><span class="p">],</span><span class="w">   </span><span class="c1">// bypass rate limits AND require_auth — narrow the RFC1918 defaults on a shared network</span>
+<span class="w">    </span><span class="nt">&quot;exempt_cidrs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;127.0.0.0/8&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;::1/128&quot;</span><span class="p">],</span><span class="w">   </span><span class="c1">// bypass the per-IP limits (not an API token&#39;s own) AND require_auth — narrow the RFC1918 defaults on a shared network</span>
 <span class="w">    </span><span class="nt">&quot;cors_origins&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w">                  </span><span class="c1">// empty = Access-Control-Allow-Origin: * ; list your origin to make it strict</span>
 <span class="w">    </span><span class="nt">&quot;response_cache_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w">              </span><span class="c1">// advanced, off by default: megabytes of repository answers the API keeps in memory</span>
 <span class="w">    </span><span class="nt">&quot;cache_rewarm_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span><span class="w">          </span><span class="c1">// with the cache on: recompute a viewed repository&#39;s answers after its collection</span>
@@ -1834,7 +1836,8 @@ in canonical form — not a host name, a CIDR or <code class="docutils literal n
 loader refuses anything else and names the spelling it wants. Without
 it every request appears to come from the proxy, and the exemptions and
 limits apply to all visitors as one.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code></strong> waives rate limiting <em>and</em> <code class="docutils literal notranslate"><span class="pre">require_auth</span></code>. The
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code></strong> waives the per-IP rate limits (an API token is
+still counted against its own allowance, v0.29.88) <em>and</em> <code class="docutils literal notranslate"><span class="pre">require_auth</span></code>. The
 defaults include the RFC1918 ranges; on a host whose private network is
 shared with others, narrow them to loopback as shown.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code></strong> stays <code class="docutils literal notranslate"><span class="pre">false</span></code> with this GUI: its pages call the

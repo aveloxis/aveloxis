@@ -15,9 +15,19 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 type raceFakeStore struct{}
+
+// ValidateAPIToken knows no API tokens: every one is the store's typed
+// "invalid" answer, as for an unknown token.
+func (raceFakeStore) ValidateAPIToken(context.Context, string) (db.APITokenIdentity, error) {
+	return db.APITokenIdentity{}, db.ErrInvalidAPIToken
+}
+
+func (raceFakeStore) APITokenActive(context.Context, string) (bool, error) { return false, nil }
 
 func (raceFakeStore) ValidateSessionToken(ctx context.Context, token string) (int, error) {
 	if token == "bad" {

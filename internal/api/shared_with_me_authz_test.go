@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 type fakeSharedWithMe struct {
@@ -138,16 +139,16 @@ func TestAuthorizeRepoAutoAddSkipsAdminAndInScope(t *testing.T) {
 	}
 }
 
-// TestAuthorizeRepoAutoAddSourceContract pins the wiring: cache
-// invalidation on a fresh share (auth + per-user home cache), the
+// TestAuthorizeRepoAutoAddSourceContract pins the wiring: the caller's
+// cache invalidation on a fresh share (auth + per-user home cache), the
 // nil-seam guard, and the negative tripwire that auth.go never grows
 // collection machinery.
 func TestAuthorizeRepoAutoAddSourceContract(t *testing.T) {
 	src := mustReadFile(t, "auth.go")
-	body := extractFuncBody(t, src, "authorizeRepo")
+	body := srctest.StripGoComments(extractFuncBody(t, src, "authorizeRepo"))
 	for _, needle := range []string{
 		"EnsureRepoSharedWithUser(",
-		"invalidateAll()",
+		"s.settleAutoAdd(info.UserID, slot, added, err)", // only the caller's cache (0.29.82 A2); settleAutoAdd since 0.29.84
 		"homeCache.invalidate(",
 		"sharedWithMe != nil",
 	} {
@@ -155,7 +156,7 @@ func TestAuthorizeRepoAutoAddSourceContract(t *testing.T) {
 			t.Errorf("authorizeRepo must contain %q", needle)
 		}
 	}
-	stripped := stripLineComments(src)
+	stripped := srctest.StripGoComments(src)
 	for _, forbidden := range []string{"EnqueueRepo", "AddOrgToGroup", "user_org_requests", "collection_add_requests"} {
 		if strings.Contains(stripped, forbidden) {
 			t.Errorf("auth.go must not reference %q — the shared-link flow links existing repos only", forbidden)

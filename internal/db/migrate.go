@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/safego"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/aveloxis/aveloxis/internal/safego"
 )
 
 //go:embed schema.sql
@@ -779,11 +779,22 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	addCommitDailyCompleteColumn(ctx, pg, logger, errs)
 	// v0.29.82: session tokens hashed at rest, existing rows once.
 	addSessionTokenHashedColumn(ctx, pg, logger, errs)
-	// v0.29.82: the API-token defaults' one row (operator decision
-	// 2026-10-08: 5,000 calls per hour, 30 days). Never overwrites an edit.
+	// v0.29.89 (summary/53): the capacity settings row (the contact
+	// address) and one row per quota with its shipped value and
+	// mode; never overwrites a row an administrator saved. It runs before
+	// the API-token settings seed: it moves an edited 0.29.82–0.29.88 hourly
+	// default into its quota row (once, ledgered) and keeps the old column
+	// as the rollback mirror.
+	seedCapacitySettings(ctx, pg, logger, errs)
+	// v0.29.82: the API-token defaults' one row — since 0.29.89 only the
+	// lifetime (30 days); the allowances are quotas. Never overwrites an edit.
 	execMigrationStep(ctx, pg, logger, errs, "v0.29.82 seed api_token_settings",
-		fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_rate_limit_per_hour, default_lifetime_days)
-		VALUES (1, %d, %d) ON CONFLICT (id) DO NOTHING`, DefaultAPITokenRateLimitPerHour, DefaultAPITokenLifetimeDays))
+		fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_lifetime_days)
+		VALUES (1, %d) ON CONFLICT (id) DO NOTHING`, DefaultAPITokenLifetimeDays))
+	// v0.29.89: each API token gets a daily allowance (its own value, like
+	// the hour; the default comes from the token_requests_per_day quota).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.api_tokens", "rate_limit_per_day",
+		fmt.Sprintf("INT NOT NULL DEFAULT %d CHECK (rate_limit_per_day > 0)", capacity.Shipped[capacity.QuotaTokenRequestsPerDay].Allowed))
 	// v0.29.69 (worklist 69): the metadata backfill's attempt stamp (see
 	// schema.sql). NULL on existing rows = never answered = still a candidate.
 	// No index: the candidate query pages the repos PK and this is one more
@@ -3059,6 +3070,77 @@ func checkBlockersFrom(ctx context.Context, pg *PostgresStore, logger *slog.Logg
 				unseen:     w.unknown,
 			}))
 	}
+}
+
+// seedCapacitySettings inserts the capacity settings row once (the
+// contact address; the sign-up quota's secret is per UTC day, in
+// signup_key_secrets) and each quota's row with its shipped value and mode. The API-token hour
+// keeps a value an administrator saved in 0.29.82–0.29.88 (the API tokens
+// page's default, api_token_settings.updated_by set); otherwise it takes
+// the new shipped 1,000 (operator 2026-10-10: 5,000 was too high).
+func seedCapacitySettings(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	err := retryOnDeadlock(ctx, logger, "v0.29.89 seed capacity", func() error {
+		if _, err := pg.pool.Exec(ctx, `
+			INSERT INTO aveloxis_ops.capacity_settings (id, contact_email)
+			VALUES (1, $1) ON CONFLICT (id) DO NOTHING`, DefaultCapacityContactEmail); err != nil {
+			return err
+		}
+		for _, name := range capacity.QuotaNames() {
+			q := capacity.Shipped[name]
+			if _, err := pg.pool.Exec(ctx, `
+				INSERT INTO aveloxis_ops.capacity_quotas (name, allowed, mode) VALUES ($1, $2, $3)
+				ON CONFLICT (name) DO NOTHING`, name, q.Allowed, string(q.Mode)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		logger.Error("schema migration error", "step", "v0.29.89 seed capacity", "error", err)
+		*errs = append(*errs, fmt.Errorf("seed capacity: %w", err))
+		return
+	}
+	// An API-token hourly default an administrator saved in 0.29.82-0.29.88
+	// moves into its quota row, once (ledgered: a later migrate must never
+	// overwrite a Capacity-page edit). Only onto a quota row nobody has
+	// saved (L10 r2 F1: a pre-release 0.29.89 moved the value without a
+	// ledger entry, and its row must not be reset from the re-added column).
+	// Not the old shipped 5,000 (L10 r2 F2): 0.29.82-0.29.88 saved both
+	// columns on any edit, so a lifetime-only edit stored 5,000 with
+	// updated_by set; the operator lowered the default to 1,000 because
+	// 5,000 was too high, and a deliberate 5,000 cannot be told apart (the
+	// deploy note says to set it again on the Capacity page). The old
+	// column stays as the rollback mirror (SetCapacityQuota keeps it
+	// current).
+	// A pre-release 0.29.89 kept one sign-up secret beside the keys it made
+	// (ASVS review I1: any database reader could invert them); the daily
+	// secret replaces it, and the old one is removed. Its NOT NULL address
+	// key becomes clearable, and the sealed envelope is added.
+	execMigrationStep(ctx, pg, logger, errs, "v0.29.89 remove the single sign-up secret",
+		`ALTER TABLE aveloxis_ops.capacity_settings DROP COLUMN IF EXISTS address_key_secret`)
+	execMigrationStep(ctx, pg, logger, errs, "v0.29.89 make the sign-up address key clearable",
+		`ALTER TABLE aveloxis_ops.account_signups ALTER COLUMN address_key DROP NOT NULL`)
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.account_signups", "address_sealed", "BYTEA")
+	// A database a pre-release 0.29.89 migrated has user_capacity without
+	// the repo_links_per_day override (SR-8: CREATE TABLE IF NOT EXISTS is a
+	// no-op there).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.user_capacity", "links_per_day",
+		"INT CHECK (links_per_day > 0)")
+	// A database a pre-release 0.29.89 migrated lost the column (that build
+	// dropped it); put it back before the move reads it.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.api_token_settings", "default_rate_limit_per_hour",
+		"INT NOT NULL DEFAULT 1000 CHECK (default_rate_limit_per_hour > 0)")
+	runOnceStep(ctx, pg, logger, errs, "v0.29.89 move the API-token hourly default into the token_requests_per_hour quota", `
+		UPDATE aveloxis_ops.capacity_quotas q SET allowed = s.default_rate_limit_per_hour,
+		       updated_by = s.updated_by, updated_at = s.updated_at
+		FROM aveloxis_ops.api_token_settings s
+		WHERE q.name = 'token_requests_per_hour' AND q.updated_by IS NULL
+		  AND s.id = 1 AND s.updated_by IS NOT NULL AND s.default_rate_limit_per_hour <> 5000`)
+	// The mirror follows the stored quota on every migrate (idempotent).
+	execMigrationStep(ctx, pg, logger, errs, "v0.29.89 sync the API-token hourly default rollback mirror", `
+		UPDATE aveloxis_ops.api_token_settings s SET default_rate_limit_per_hour = q.allowed
+		FROM aveloxis_ops.capacity_quotas q
+		WHERE s.id = 1 AND q.name = 'token_requests_per_hour' AND s.default_rate_limit_per_hour IS DISTINCT FROM q.allowed`)
 }
 
 // execMigrationStep runs a schema-changing SQL statement, logging the

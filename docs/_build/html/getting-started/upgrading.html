@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.88 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.89 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7f7018be"></script>
+      <script src="../_static/documentation_options.js?v=db089ca7"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -80,6 +80,7 @@
 <li class="toctree-l3"><a class="reference internal" href="configuration.html#monitor-dashboard-v0-23-0">Monitor (dashboard, v0.23.0)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="configuration.html#mail-gmail-smtp-optional">Mail (Gmail SMTP, optional)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="configuration.html#logging">Logging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="configuration.html#capacity-fair-use-quotas-v0-29-89">Capacity (fair-use quotas, v0.29.89)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#api-key-sources">API key sources</a></li>
@@ -203,6 +204,12 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-api"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-scancode-worker"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">scancode-worker</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-test-mail"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow-keygen"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">keygen</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow-export"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">export</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow-open"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">open</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-collect"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code></a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#id3">Flags</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#id4">Examples</a></li>
@@ -331,6 +338,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -603,6 +611,15 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#next-steps">Next steps</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/signup-escrow.html">Sign-up address escrow</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#what-is-kept-and-for-how-long">What is kept, and for how long</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#set-it-up-once">Set it up (once)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#open-an-envelope-when-you-are-required-to">Open an envelope when you are required to</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#change-the-key-or-lose-it">Change the key, or lose it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#what-an-envelope-does-and-does-not-show">What an envelope does and does not show</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#what-this-does-not-cover">What this does not cover</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commits-not-collected-but-issues-and-pull-requests-are-collected">Commits not collected, but Issues and Pull Requests are collected</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#monitor-dashboard-renders-slowly-on-a-large-fleet">Monitor dashboard renders slowly on a large fleet</a></li>
@@ -697,7 +714,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-44-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (44 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1315,6 +1332,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l15-the-forge-s-cache-and-session-semantics">L15 — The forge’s cache and session semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l16-widening-a-tripwire-is-a-contract-change">L16 — Widening a tripwire is a contract change</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l17-what-the-pr-193-rounds-kept-finding-the-four-blind-spots">L17 — What the PR #193 rounds kept finding (the four blind spots)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l18-consolidate-before-you-add">L18 — Consolidate before you add</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#running-the-pass">Running the pass</a></li>
 </ul>
 </li>
@@ -1851,6 +1869,7 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.89 adds fair-use quotas.</strong> Each signed-in account, API token, account’s repositories and network address’s new accounts has a quota (see the configuration guide, “Capacity”, and the API guide, “Rate limits”). The migrate adds seven tables to <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> and seeds one row per quota, adds <code class="docutils literal notranslate"><span class="pre">api_tokens.rate_limit_per_day</span></code>, and moves the API-token default allowance into the <code class="docutils literal notranslate"><span class="pre">token_requests_per_hour</span></code> quota (a value you saved is kept, except the old default 5,000, which becomes the new 1,000: if you chose 5,000 on purpose, set it again on the Capacity page; the old <code class="docutils literal notranslate"><span class="pre">api_token_settings</span></code> column stays, kept current, so an older release still reads its token default). Every new quota starts in shadow: counted and logged (<code class="docutils literal notranslate"><span class="pre">quota</span> <span class="pre">reached</span> <span class="pre">(shadow)</span></code> for requests, <code class="docutils literal notranslate"><span class="pre">repository</span> <span class="pre">quota</span> <span class="pre">(shadow)</span></code>, <code class="docutils literal notranslate"><span class="pre">daily</span> <span class="pre">additions</span> <span class="pre">quota</span> <span class="pre">(shadow)</span></code> and <code class="docutils literal notranslate"><span class="pre">sign-up</span> <span class="pre">quota</span> <span class="pre">(shadow)</span></code> for the others), never refused, until you turn it on in the GUI’s Capacity page. The 0.29.88 session ceiling is replaced by them, so no signed-in session is refused until you do. A new API token’s default is now 1,000 calls an hour. Each process logs <code class="docutils literal notranslate"><span class="pre">capacity</span> <span class="pre">quota</span> <span class="pre">in</span> <span class="pre">force</span></code> for every quota at start. Behind nginx, set <code class="docutils literal notranslate"><span class="pre">web.trusted_proxy</span></code>, or every sign-up counts as nginx’s address (the web logs a warning naming it). Sign-up addresses are kept only as a hash that changes every UTC day; to keep each new account’s address sealed for a year for a lawful request, see <a class="reference internal" href="../guide/signup-escrow.html"><span class="std std-doc">Sign-up address escrow</span></a>. Rolling back to 0.29.82–0.29.88 needs one cleanup, because older releases never delete the sign-up quota’s daily secret: the deploy checklist gives the command. From 0.29.88 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>
 <p><strong>0.29.82 limits only callers without a token, hashes session tokens, and adds API tokens.</strong> A request with a valid session token is no longer counted by the per-IP rate limit; an API token granted on the GUI’s API tokens page is counted against its own hourly allowance (see the API guide, “Rate limits”). The migrate adds <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.api_tokens</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.api_token_settings</span></code> and <code class="docutils literal notranslate"><span class="pre">user_session_tokens.token_hashed</span></code>, and on the run that adds that column replaces every stored session token with its SHA-256 hash: nobody is signed out. Rolling back to an older release afterwards signs every API session out once (the older release compares the raw token). Signing out of the GUI now also ends the API session token. An API token never works on admin routes, lives at most 365 days and stops at once when revoked; a signed-in user can add at most 100 repositories an hour to “Shared with Me” by viewing them. From 0.29.81 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>
 <p><strong>0.29.81 credits a merged contributor’s commits to the contributor it was merged into.</strong> Top contributors read from the daily commit table used to drop the commits of a contributor that a merge had folded into another. No schema change: from 0.29.80 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>
 <p><strong>0.29.80 keeps a quiet collection with a broken clone incremental.</strong> An incremental GitHub or GitLab collection whose clone fails and whose API phase found nothing new now completes with the clone’s error in <code class="docutils literal notranslate"><span class="pre">last_error</span></code>, instead of failing as “no data collected”, so the next collection stays incremental while you fix the clone. A first or forced collection is still judged and still fails that way. No schema change: from 0.29.79 the upgrade is the stop, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> and the start.</p>

@@ -15,12 +15,13 @@ import (
 	"sync"
 	"time"
 
+	"filippo.io/age"
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // PostgresStore implements Store using pgx connection pool.
@@ -33,6 +34,18 @@ type PostgresStore struct {
 	migrateNoWait    bool        // whether to fail fast on advisory-lock contention (--no-wait on migrate)
 	migrateFastPath  bool        // F13: skip RunMigrations entirely when the stamp matches (serve startup only)
 	allowSecondServe bool        // serve may start beside another aveloxis-serve (see SetAllowSecondServe)
+
+	// v0.29.89 (summary/53): this process's aveloxis.json capacity words,
+	// and the once-a-day notifier for shadow allocation decisions.
+	capacity     capacityConfig
+	capacityOnce sync.Once
+	capacityNote *capacity.Notifier
+	// signupEscrow seals each new account's address (v0.29.89; set by the
+	// web at start, SetSignupEscrowRecipient); nil seals nothing.
+	signupEscrow age.Recipient
+	// allocationDecided is a test seam: nil in production; a test sets it to
+	// hold concurrent adds at the decision point (linkWithinCap).
+	allocationDecided func()
 
 	// backendPIDs are the server-side PIDs of THIS process's pool
 	// connections (v0.28.18), maintained by the pool's AfterConnect /

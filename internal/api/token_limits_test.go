@@ -328,8 +328,14 @@ func TestRateLimitHeadersAreExposedCrossOrigin(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	exposed := strings.Join(w.Header().Values("Access-Control-Expose-Headers"), ",")
-	for _, name := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"} {
-		if !strings.Contains(exposed, name) {
+	names := map[string]bool{}
+	for _, n := range strings.Split(exposed, ",") {
+		names[strings.TrimSpace(n)] = true
+	}
+	// Exact names: "RateLimit" is a substring of "X-RateLimit-Limit".
+	// RateLimit and RateLimit-Policy since v0.29.89 (summary/53).
+	for _, name := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After", "RateLimit", "RateLimit-Policy"} {
+		if !names[name] {
 			t.Fatalf("%s is not exposed to a cross-origin client (Access-Control-Expose-Headers: %q)", name, exposed)
 		}
 	}

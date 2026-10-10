@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -79,15 +80,18 @@ func (s *PostgresStore) EnsureRepoSharedWithUser(ctx context.Context, userID int
 	if err != nil {
 		return false, fmt.Errorf("shared-with-me group: %w", err)
 	}
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)
-		ON CONFLICT DO NOTHING`, groupID, repoID)
+	// Within the account's repository allocation (v0.29.89): an enforced
+	// quota refuses with a *capacity.Exceeded, returned as is.
+	n, err := s.linkWithinCap(ctx, groupID, []int64{repoID}, linkAll)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return false, ErrSharedRepoNotFound
 		}
+		if _, capped := capacity.AsExceeded(err); capped {
+			return false, err
+		}
 		return false, fmt.Errorf("shared-with-me link: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return n > 0, nil
 }

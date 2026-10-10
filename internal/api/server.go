@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
@@ -61,8 +62,11 @@ type Server struct {
 	// scopeHelp reads what an API token's out-of-scope refusal says (the
 	// repository's URL, the owner's groups; v0.29.86).
 	scopeHelp scopeHelpStore
-	autoAdds  *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
-	refusals  *refusalLog     // ASVS review G5: refusals logged once a minute per user and kind
+	// newDayWindow wakes RunCapacity when the meter opens a UTC-day window
+	// (v0.29.89); nil without a store.
+	newDayWindow chan struct{}
+	autoAdds     *autoAddLimiter // v0.29.82: the per-user cap on Shared-with-Me auto-adds
+	refusals     *refusalLog     // ASVS review G5: refusals logged once a minute per user and kind
 
 	// accounts serves the profile routes (/me's account fields, the
 	// account-email submission and confirmation); the store, or a fake.
@@ -209,6 +213,17 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/api-tokens/{tokenID}/revoke", s.handleAdminAPITokenRevoke)
 	s.mux.HandleFunc("GET /api/v1/admin/api-token-settings", s.handleAdminAPITokenSettings)
 	s.mux.HandleFunc("POST /api/v1/admin/api-token-settings", s.handleAdminAPITokenSettingsUpdate)
+	// v0.29.89 (summary/53) — the Capacity page; removing a repository
+	// from one of the caller's groups (how an account makes room).
+	s.mux.HandleFunc("GET /api/v1/admin/capacity", s.handleAdminCapacity)
+	s.mux.HandleFunc("GET /api/v1/admin/capacity/largest", s.handleAdminCapacityLargest)
+	s.mux.HandleFunc("POST /api/v1/admin/capacity/quotas/{name}", s.handleAdminCapacityQuota)
+	s.mux.HandleFunc("POST /api/v1/admin/capacity/contact", s.handleAdminCapacityContact)
+	s.mux.HandleFunc("GET /api/v1/admin/capacity/accounts", s.handleAdminCapacityAccount)
+	s.mux.HandleFunc("POST /api/v1/admin/capacity/accounts/{userID}", s.handleAdminCapacityOverride)
+	s.mux.HandleFunc("POST /api/v1/admin/capacity/signup-allowlist", s.handleAdminSignupAllowlistAdd)
+	s.mux.HandleFunc("POST /api/v1/admin/capacity/signup-allowlist/remove", s.handleAdminSignupAllowlistRemove)
+	s.mux.HandleFunc("POST /api/v1/groups/{groupID}/repos/{repoID}/remove", s.handleGroupRemoveRepo)
 	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
@@ -254,8 +269,21 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.limiter = rl
 	rl.uncounted = s.frontEndAuthorized
 	rl.logger = s.logger
+	// v0.29.89 (summary/53): the quotas in force, and the meter that counts
+	// them; daily counts are shared through the store (RunCapacity).
 	if store != nil {
-		rl.sessionBudget = (&sessionThreshold{read: store.GetAPITokenSettings, now: time.Now, logger: s.logger}).get
+		rl.policy = &capacityPolicy{store: store, now: time.Now, logger: s.logger}
+		s.newDayWindow = make(chan struct{}, 1)
+		rl.meter = capacity.NewMeter(capacity.MeterOptions{MaxWindows: maxTrackedIPs,
+			Persister: requestCountsPersister{store: store},
+			// A new UTC-day window saves promptly (RunCapacity) to learn the
+			// shared total (ASVS review I4); never blocks a request.
+			OnNewDayWindow: func() {
+				select {
+				case s.newDayWindow <- struct{}{}:
+				default:
+				}
+			}})
 	}
 	s.autoAdds = newAutoAddLimiter()
 	s.refusals = newRefusalLog(time.Now)

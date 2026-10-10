@@ -558,6 +558,11 @@ var deployChecklists = map[string][]deployStep{
 	// per-caller cache keys separate a session from an API token; an API
 	// token is charged on exempt networks too; a database that ran
 	// 0.29.82-0.29.86 signs every session out once. No new table or index.
+	// v0.29.89 (2026-10-10, branch rate-limit-hci): fair-use quotas
+	// (summary/53) — six aveloxis_ops tables born empty and seeded, one
+	// column with a default on api_tokens; api_token_settings' hourly
+	// default kept as a rollback mirror. No index on a fleet-scale table.
+	"0.29.89": v02989DeployChecklist,
 	"0.29.88": v02988DeployChecklist,
 	"0.29.87": v02987DeployChecklist,
 	"0.29.86": v02986DeployChecklist,
@@ -583,6 +588,19 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02989DeployChecklist is 0.29.88's ladder with a note on the start step.
+var v02989DeployChecklist = func() []deployStep {
+	prev := v02988DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.89: fair-use quotas, set on the GUI's new Capacity page (administrators) or per quota in aveloxis.json's optional \"capacity\" section (WEB, DEFAULT, SHADOW or OFF; a missing line is WEB). The migrate adds seven tables to aveloxis_ops (capacity_settings, capacity_quotas, user_capacity, request_counts, account_signups, signup_key_secrets, signup_allowlist), seeds one row per quota, adds api_tokens.rate_limit_per_day (10,000 for existing tokens) and moves the API-token default allowance into the token_requests_per_hour quota (a value an administrator saved is kept, except the old default 5,000, which becomes the new 1,000 — if you chose 5,000 on purpose, set it again on the Capacity page; the old api_token_settings column stays as a mirror for a rollback). Each process logs 'capacity quota in force' per quota at start: check them. Shipped: requests per signed-in account 5,000 an hour and 10,000 a UTC day, repositories per account 1,000 held at once (pending additions included) and 1,000 newly added per UTC day (repo_links_per_day; organization scans an administrator approved are not counted), new accounts 3 per address per day, API-token days 10,000 — all in SHADOW (counted and logged, never refused: grep api.log for 'quota reached (shadow)', and every log for 'repository quota (shadow)', 'daily additions quota (shadow)' and 'sign-up quota (shadow)'); the API-token hour stays enforced, and a NEW token's default is now 1,000 an hour (existing tokens keep theirs). The 0.29.88 session ceiling (20,000 an hour) is gone: no signed-in session is refused until you set requests_per_hour or requests_per_day to enforce. Plan: read a week of shadow lines, then turn each quota on in the Capacity page. Approving an organization for an account collects all of its repositories, but the account links only up to its repository value: raise that account's value on the Capacity page when you approve a large organization. Set web.trusted_proxy to nginx's address (127.0.0.1 on the same host) in aveloxis.json before start, or every sign-up counts as nginx's one address (the web logs a WARN naming web.trusted_proxy when it sees this); sign-up addresses are kept only as a hash that changes every UTC day — to keep each new account's address sealed for a year for a lawful request, make an offline key pair with aveloxis signup-escrow keygen and set web.signup_escrow_recipient (docs/guide/signup-escrow.md; off unless set); and on a public host set api.require_auth true (check with: grep -n require_auth ~/aveloxis.json). The GUI's Capacity page and capacity messages need this API. ROLLBACK to any of 0.29.82-0.29.88: older binaries never prune the sign-up secrets, so after rolling back run, once per database, psql -h \"${PGHOST:?}\" -p \"${PGPORT:?}\" -U \"${PGUSER:?}\" -d \"${PGDATABASE:?}\" -c 'DELETE FROM aveloxis_ops.signup_key_secrets; UPDATE aveloxis_ops.account_signups SET address_key = NULL' (the sign-up counts restart; sealed addresses are untouched); otherwise no extra step: the old API-token default column is kept and kept current (the older binary reads it); a change to the hourly default made on the older binary's API tokens page while rolled back is not carried forward — set it again on the Capacity page after re-upgrading; on 0.29.88 the session ceiling is four times that default, so it becomes 4,000 an hour, not 20,000, and on 0.29.85-0.29.87 the session observation logs from 1,000 an hour (0.29.82-0.29.84, kate's 0.29.83 among them, have neither). A fleet already running 0.29.88 needs only the stop, the migrate and this start; a fleet on an older 0.29.8x (kate ran 0.29.83 on 2026-10-10) takes every note below in the same one migrate — including 0.29.88's one-time sign-out of every API session, since its last migrate was by 0.29.82-0.29.86. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02988DeployChecklist is 0.29.87's ladder with a note on the start step.
 var v02988DeployChecklist = func() []deployStep {

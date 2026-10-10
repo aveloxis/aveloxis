@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -186,4 +187,31 @@ func truncate(s string, n int) string {
 	}
 	q := strconv.Quote(s)
 	return q[1 : len(q)-1]
+}
+
+// ClientIP is the request's client address: the peer, or — only when the
+// peer IS trustedProxy (canonical form, compared byte for byte) — the
+// RIGHTMOST X-Forwarded-For entry, the one that proxy appended (entries to
+// its left are the client's own claims). The api's per-IP limit and the
+// web's sign-up quota both read it (one rule, SR-17; v0.29.89).
+func ClientIP(r *http.Request, trustedProxy string) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer := net.ParseIP(host)
+	if trustedProxy == "" || host != trustedProxy {
+		return peer
+	}
+	// Every header line, joined: a proxy that appends a separate line (not
+	// a comma) must not leave a client-supplied first line deciding.
+	xff := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	if strings.TrimSpace(xff) == "" {
+		return peer
+	}
+	parts := strings.Split(xff, ",")
+	if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
+		return ip
+	}
+	return peer
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -390,15 +392,27 @@ func (s *PostgresStore) CopyCollectionToGroup(ctx context.Context, collectionID 
 		}
 		return 0, err
 	}
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-		SELECT DISTINCT $2::bigint, ur.repo_id
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ur.repo_id
 		FROM aveloxis_ops.collection_groups cg
 		JOIN aveloxis_ops.user_repos ur USING (group_id)
 		WHERE cg.collection_id = $1
-		ON CONFLICT DO NOTHING`, collectionID, targetGroupID)
+		ORDER BY ur.repo_id`, collectionID)
 	if err != nil {
 		return 0, fmt.Errorf("CopyCollectionToGroup: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return 0, fmt.Errorf("CopyCollectionToGroup: %w", err)
+	}
+	// All or nothing within the owner's allocation (v0.29.89): a copy that
+	// does not fit returns the *capacity.Exceeded and links nothing.
+	n, err := s.linkWithinCap(ctx, targetGroupID, ids, linkAll)
+	if err != nil {
+		if _, capped := capacity.AsExceeded(err); capped {
+			return 0, err
+		}
+		return 0, fmt.Errorf("CopyCollectionToGroup: %w", err)
+	}
+	return int64(n), nil
 }

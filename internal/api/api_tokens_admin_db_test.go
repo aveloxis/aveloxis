@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
@@ -91,7 +92,7 @@ func adminCall(t *testing.T, s *Server, method, path string, body any, userID in
 func TestAPITokenAdminEndpoints(t *testing.T) {
 	s, store, admin, owner := apiTokenAdminServer(t)
 	ctx := context.Background()
-	if err := store.SetAPITokenSettings(ctx, db.APITokenSettings{DefaultRateLimitPerHour: 4321, DefaultLifetimeDays: 12}, admin); err != nil {
+	if err := store.SetAPITokenSettings(ctx, db.APITokenSettings{DefaultRateLimitPerHour: 4321, DefaultRateLimitPerDay: 43210, DefaultLifetimeDays: 12}, admin); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,20 +122,21 @@ func TestAPITokenAdminEndpoints(t *testing.T) {
 		TokenID          int64     `json:"token_id"`
 		ExpiresAt        time.Time `json:"expires_at"`
 		RateLimitPerHour int       `json:"rate_limit_per_hour"`
+		RateLimitPerDay  int       `json:"rate_limit_per_day"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &granted); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(granted.Token, db.APITokenPrefix) || granted.RateLimitPerHour != 4321 {
-		t.Fatalf("granted = %+v (want the default allowance 4321)", granted)
+	if !strings.HasPrefix(granted.Token, db.APITokenPrefix) || granted.RateLimitPerHour != 4321 || granted.RateLimitPerDay != 43210 {
+		t.Fatalf("granted = %+v (want the default allowances 4321/h and 43210/day)", granted)
 	}
 	if d := time.Until(granted.ExpiresAt); d < 11*24*time.Hour || d > 13*24*time.Hour {
 		t.Fatalf("expires %v: want the default 12 days", granted.ExpiresAt)
 	}
 
 	// Grant with explicit values.
-	w = adminCall(t, s, "POST", "/api/v1/admin/api-tokens", map[string]any{"user_id": owner, "label": "short", "lifetime_days": 2, "rate_limit_per_hour": 50}, admin, true)
-	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"rate_limit_per_hour":50`) {
+	w = adminCall(t, s, "POST", "/api/v1/admin/api-tokens", map[string]any{"user_id": owner, "label": "short", "lifetime_days": 2, "rate_limit_per_hour": 50, "rate_limit_per_day": 500}, admin, true)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"rate_limit_per_hour":50`) || !strings.Contains(w.Body.String(), `"rate_limit_per_day":500`) {
 		t.Fatalf("explicit grant = %d %s", w.Code, w.Body.String())
 	}
 
@@ -145,6 +147,8 @@ func TestAPITokenAdminEndpoints(t *testing.T) {
 		"no label":         {"user_id": owner, "label": " "},
 		"zero lifetime":    {"user_id": owner, "label": "x", "lifetime_days": 0},
 		"negative limit":   {"user_id": owner, "label": "x", "rate_limit_per_hour": -5},
+		"zero daily":       {"user_id": owner, "label": "x", "rate_limit_per_day": 0},
+		"daily too big":    {"user_id": owner, "label": "x", "rate_limit_per_day": int64(1) << 40},
 		"lifetime too big": {"user_id": owner, "label": "x", "lifetime_days": 1 << 40},
 	} {
 		if w := adminCall(t, s, "POST", "/api/v1/admin/api-tokens", body, admin, true); w.Code != http.StatusBadRequest {
@@ -192,23 +196,33 @@ func TestAPITokenAdminEndpoints(t *testing.T) {
 	}
 
 	// Settings.
-	w = adminCall(t, s, "POST", "/api/v1/admin/api-token-settings", map[string]any{"default_rate_limit_per_hour": 100, "default_lifetime_days": 7}, admin, true)
+	w = adminCall(t, s, "POST", "/api/v1/admin/api-token-settings", map[string]any{"default_rate_limit_per_hour": 100, "default_rate_limit_per_day": 900, "default_lifetime_days": 7}, admin, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("settings update = %d %s", w.Code, w.Body.String())
 	}
 	w = adminCall(t, s, "GET", "/api/v1/admin/api-token-settings", nil, admin, true)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"default_rate_limit_per_hour":100`) || !strings.Contains(w.Body.String(), `"default_lifetime_days":7`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"default_rate_limit_per_hour":100`) ||
+		!strings.Contains(w.Body.String(), `"default_rate_limit_per_day":900`) || !strings.Contains(w.Body.String(), `"default_lifetime_days":7`) {
 		t.Fatalf("settings read = %d %s", w.Code, w.Body.String())
 	}
 	for name, body := range map[string]map[string]any{
 		"zero allowance": {"default_rate_limit_per_hour": 0, "default_lifetime_days": 7},
 		"zero lifetime":  {"default_rate_limit_per_hour": 10, "default_lifetime_days": 0},
+		"zero daily":     {"default_rate_limit_per_hour": 10, "default_rate_limit_per_day": 0, "default_lifetime_days": 7},
 		"huge lifetime":  {"default_rate_limit_per_hour": 10, "default_lifetime_days": 1 << 40},
 		"missing":        {},
 	} {
 		if w := adminCall(t, s, "POST", "/api/v1/admin/api-token-settings", body, admin, true); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: settings update = %d, want 400", name, w.Code)
 		}
+	}
+	// A quota aveloxis.json sets cannot be changed from the page: 409 with
+	// the reason, not a 500 (v0.29.89).
+	store.SetCapacitySources(map[string]capacity.Source{capacity.QuotaTokenRequestsPerHour: capacity.SourceDefault})
+	t.Cleanup(func() { store.SetCapacitySources(nil) })
+	w = adminCall(t, s, "POST", "/api/v1/admin/api-token-settings", map[string]any{"default_rate_limit_per_hour": 55, "default_lifetime_days": 7}, admin, true)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "aveloxis.json") {
+		t.Errorf("changing a config-owned quota = %d %s; want 409 naming aveloxis.json", w.Code, w.Body.String())
 	}
 }
 
@@ -249,7 +263,7 @@ func TestLogoutEndsTheSessionToken(t *testing.T) {
 	if w := call("POST", "/api/v1/auth/logout", ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("sign-out without a token = %d, want 401", w.Code)
 	}
-	raw, _, err := store.CreateAPIToken(ctx, db.APITokenGrant{UserID: owner, Label: "x", Lifetime: time.Hour, RateLimitPerHour: 10})
+	raw, _, err := store.CreateAPIToken(ctx, db.APITokenGrant{UserID: owner, Label: "x", Lifetime: time.Hour, RateLimitPerHour: 10, RateLimitPerDay: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,12 +328,7 @@ func TestImplicitLinkThatAddsNothingSpendsNoSlot(t *testing.T) {
 	})
 	stale := authInfo{UserID: owner, Scope: map[int64]bool{}} // never sees the link it made
 	slotsUsed := func() int {
-		s.autoAdds.mu.Lock()
-		defer s.autoAdds.mu.Unlock()
-		if w := s.autoAdds.windows[owner]; w != nil {
-			return w.count
-		}
-		return 0
+		return s.autoAdds.quotaMeter().Peek(capacity.Subject{Kind: capacity.KindAccount, ID: strconv.Itoa(owner)}, autoAddQuota).Used
 	}
 
 	star := func() map[string]any {
@@ -365,27 +374,80 @@ func TestImplicitLinkThatAddsNothingSpendsNoSlot(t *testing.T) {
 	}
 }
 
-// v0.29.85 wiring: the server's session observation reads the stored
-// API-token default allowance (end to end: settings row → threshold).
-func TestSessionObservationReadsTheStoredDefault(t *testing.T) {
-	s, store, admin, _ := apiTokenAdminServer(t)
-	if err := store.SetAPITokenSettings(context.Background(), db.APITokenSettings{DefaultRateLimitPerHour: 4321, DefaultLifetimeDays: 30}, admin); err != nil {
+// v0.29.89 end to end on the real store (SR-10: config value → behavior):
+// the stored quota row reaches the server's policy, an enforced day quota
+// refuses a real session past its value, and two api processes share one
+// day count through the store (FlushCapacity → request_counts).
+func TestCapacityQuotaRowRefusesASessionEndToEnd(t *testing.T) {
+	s, store, admin, owner := apiTokenAdminServer(t)
+	ctx := context.Background()
+	before, err := store.GetCapacityQuotas(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if s.limiter.sessionBudget == nil {
-		t.Fatal("the server must wire the session observation's threshold")
+	t.Cleanup(func() {
+		for _, n := range []string{capacity.QuotaRequestsPerHour, capacity.QuotaRequestsPerDay} {
+			if q, ok := before[n]; ok {
+				_ = store.SetCapacityQuota(context.Background(), n, q.Allowed, q.Mode, 0)
+			}
+		}
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.request_counts WHERE subject = $1`, capacity.CountKey(capacity.Subject{Kind: capacity.KindAccount, ID: strconv.Itoa(owner)}, capacity.QuotaRequestsPerDay))
+	})
+	if err := store.SetCapacityQuota(ctx, capacity.QuotaRequestsPerHour, 4321, capacity.Shadow, admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCapacityQuota(ctx, capacity.QuotaRequestsPerDay, 3, capacity.Enforce, admin); err != nil {
+		t.Fatal(err)
 	}
 	// The read runs off the request path; it lands within moments.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if v, ok := s.limiter.sessionBudget(); ok && v == 4321 {
+		qs := s.limiter.policy.sessionQuotas(owner, false)
+		if qs[0].Allowed == 4321 && qs[1].Allowed == 3 && qs[1].Mode == capacity.Enforce {
 			break
 		}
 		if time.Now().After(deadline) {
-			v, ok := s.limiter.sessionBudget()
-			t.Fatalf("threshold = %d, %v; want the stored default 4321", v, ok)
+			t.Fatalf("policy = %+v; want the stored rows (4321 shadow, 3 enforce)", qs)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	tok, err := store.CreateSessionToken(ctx, owner, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(srv *Server) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/v1/me", nil)
+		r.RemoteAddr = "203.0.113.78:1"
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+	for i := 0; i < 2; i++ {
+		if w := call(s); w.Code != http.StatusOK {
+			t.Fatalf("session request %d of 3 = %d %s", i+1, w.Code, w.Body.String())
+		}
+	}
+	// A second api process on the same database learns the shared day
+	// count at its first save (the bound is one save period, authCacheTTL):
+	// request 3 is its own, and after it saves, request 4 is refused.
+	s.FlushCapacity(ctx)
+	other, err := NewWithOptions(store, s.logger, Options{RateLimitRPS: 1, RateLimitBurst: 10, RateLimitDaily: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); other.limiter.policy.sessionQuotas(owner, false)[1].Mode != capacity.Enforce; {
+		if time.Now().After(deadline) {
+			t.Fatal("the second process never read the policy")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if w := call(other); w.Code != http.StatusOK {
+		t.Fatalf("request 3 of 3 (second process) = %d %s", w.Code, w.Body.String())
+	}
+	other.FlushCapacity(ctx)
+	if w := call(other); w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), `"error":"capacity_limit"`) {
+		t.Fatalf("request 4 of 3 = %d %s; want 429 capacity_limit (the day count is shared)", w.Code, w.Body.String())
 	}
 }
 
@@ -541,5 +603,75 @@ func TestCompareCacheSeparatesSessionAndAPIToken(t *testing.T) {
 	}
 	if code := call(session); code != http.StatusOK {
 		t.Fatalf("after the token's refusal, the admin session got %d; want 200", code)
+	}
+}
+
+// ASVS review I4, end to end: a freshly started api process learns the
+// shared day count within moments of its first request (RunCapacity saves
+// when the meter opens a day window), not after a save period — so a
+// restart does not serve a spent day for up to a minute.
+func TestRestartedProcessLearnsTheDayCountPromptly(t *testing.T) {
+	s, store, admin, owner := apiTokenAdminServer(t)
+	ctx := context.Background()
+	before, err := store.GetCapacityQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := capacity.CountKey(capacity.Subject{Kind: capacity.KindAccount, ID: strconv.Itoa(owner)}, capacity.QuotaRequestsPerDay)
+	t.Cleanup(func() {
+		if q, ok := before[capacity.QuotaRequestsPerDay]; ok {
+			_ = store.SetCapacityQuota(context.Background(), capacity.QuotaRequestsPerDay, q.Allowed, q.Mode, 0)
+		}
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.request_counts WHERE subject = $1`, key)
+	})
+	if err := store.SetCapacityQuota(ctx, capacity.QuotaRequestsPerDay, 3, capacity.Enforce, admin); err != nil {
+		t.Fatal(err)
+	}
+	// Another process already counted 2 today.
+	if _, err := store.AddRequestCounts(ctx, time.Now(), map[string]int64{key: 2}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s // the shared fixture's server is not used: this one is fresh
+	fresh, err := NewWithOptions(store, s.logger, Options{RateLimitRPS: 1, RateLimitBurst: 10, RateLimitDaily: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { fresh.RunCapacity(runCtx); close(done) }()
+	t.Cleanup(func() { stop(); <-done })
+	for deadline := time.Now().Add(10 * time.Second); fresh.limiter.policy.sessionQuotas(owner, false)[1].Mode != capacity.Enforce; {
+		if time.Now().After(deadline) {
+			t.Fatal("the fresh process never read the policy")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tok, err := store.CreateSessionToken(ctx, owner, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func() int {
+		r := httptest.NewRequest("GET", "/api/v1/me", nil)
+		r.RemoteAddr = "203.0.113.79:1"
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		fresh.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := call(); code != http.StatusOK {
+		t.Fatalf("request 3 of 3 = %d", code)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if fresh.limiter.quotaMeter().Peek(capacity.Subject{Kind: capacity.KindAccount, ID: strconv.Itoa(owner)},
+			capacity.RateQuota{Name: capacity.QuotaRequestsPerDay, Window: capacity.UTCDay, Allowed: 3}).Used >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fresh process did not learn the shared day count within moments")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code := call(); code != http.StatusTooManyRequests {
+		t.Fatalf("request 4 of 3 = %d; want 429 (the shared day is spent)", code)
 	}
 }

@@ -7,11 +7,14 @@ package db
 //
 // A token is granted to an existing account on the admin page and
 // authenticates as that account (its repository scope). Instead of the
-// per-IP rate limit it is counted against its own hourly allowance
-// (rate_limit_per_hour). It is shown once, when it is granted; the table
-// keeps only its SHA-256 hex. A revoked or expired token is refused. The
-// defaults the admin page offers (5,000 calls per hour, 30 days) live in
-// aveloxis_ops.api_token_settings and are editable there.
+// per-IP rate limit it is counted against its own hourly and daily
+// allowances (rate_limit_per_hour, rate_limit_per_day; v0.29.89). It is
+// shown once, when it is granted; the table keeps only its SHA-256 hex. A
+// revoked or expired token is refused. The defaults a grant takes: the
+// lifetime (30 days) in aveloxis_ops.api_token_settings; since v0.29.89 the
+// allowances are the token_requests_per_hour/_per_day quotas (1,000 and
+// 10,000), with api_token_settings.default_rate_limit_per_hour kept only as
+// the rollback mirror.
 
 import (
 	"context"
@@ -24,6 +27,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -33,8 +37,10 @@ const APITokenPrefix = "avx_"
 
 // The defaults the migrate seeds (operator decision 2026-10-08).
 const (
-	DefaultAPITokenRateLimitPerHour = 5000
-	DefaultAPITokenLifetimeDays     = 30
+	// The hourly and daily allowances' defaults are the quotas
+	// token_requests_per_hour / token_requests_per_day (internal/capacity,
+	// summary/53 §9); only the lifetime's default is kept here.
+	DefaultAPITokenLifetimeDays = 30
 )
 
 // MaxAPITokenLifetimeDays is the longest a token may live, for a grant and
@@ -94,6 +100,7 @@ type APITokenGrant struct {
 	CreatedBy        int
 	Lifetime         time.Duration
 	RateLimitPerHour int
+	RateLimitPerDay  int
 }
 
 // APIToken is one granted token, as the admin page lists it (never the
@@ -108,6 +115,7 @@ type APIToken struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	ExpiresAt        time.Time  `json:"expires_at"`
 	RateLimitPerHour int        `json:"rate_limit_per_hour"`
+	RateLimitPerDay  int        `json:"rate_limit_per_day"`
 	LastUsedAt       *time.Time `json:"last_used_at"`
 	RevokedAt        *time.Time `json:"revoked_at"`
 }
@@ -117,6 +125,7 @@ type APITokenIdentity struct {
 	TokenID          int64
 	UserID           int
 	RateLimitPerHour int
+	RateLimitPerDay  int
 }
 
 // CreateAPIToken grants a token and returns it raw — the only time it is
@@ -136,6 +145,8 @@ func (s *PostgresStore) CreateAPIToken(ctx context.Context, g APITokenGrant) (st
 		return "", APIToken{}, fmt.Errorf("an API token lives at most %d days", MaxAPITokenLifetimeDays)
 	case g.RateLimitPerHour <= 0:
 		return "", APIToken{}, fmt.Errorf("an API token's hourly allowance must be positive")
+	case g.RateLimitPerDay <= 0:
+		return "", APIToken{}, fmt.Errorf("an API token's daily allowance must be positive")
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -146,13 +157,13 @@ func (s *PostgresStore) CreateAPIToken(ctx context.Context, g APITokenGrant) (st
 	if g.CreatedBy > 0 {
 		createdBy = &g.CreatedBy
 	}
-	t := APIToken{UserID: g.UserID, Label: label, RateLimitPerHour: g.RateLimitPerHour}
+	t := APIToken{UserID: g.UserID, Label: label, RateLimitPerHour: g.RateLimitPerHour, RateLimitPerDay: g.RateLimitPerDay}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO aveloxis_ops.api_tokens (token_hash, user_id, label, created_by, expires_at, rate_limit_per_hour)
-		SELECT $1, u.user_id, $3, $4, NOW() + make_interval(secs => $5), $6
+		INSERT INTO aveloxis_ops.api_tokens (token_hash, user_id, label, created_by, expires_at, rate_limit_per_hour, rate_limit_per_day)
+		SELECT $1, u.user_id, $3, $4, NOW() + make_interval(secs => $5), $6, $7
 		FROM aveloxis_ops.users u WHERE u.user_id = $2
 		RETURNING token_id, created_at, expires_at`,
-		hashToken(raw), g.UserID, label, createdBy, g.Lifetime.Seconds(), g.RateLimitPerHour).
+		hashToken(raw), g.UserID, label, createdBy, g.Lifetime.Seconds(), g.RateLimitPerHour, g.RateLimitPerDay).
 		Scan(&t.TokenID, &t.CreatedAt, &t.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", APIToken{}, fmt.Errorf("user id %d: %w", g.UserID, ErrAPITokenOwnerNotFound)
@@ -175,8 +186,8 @@ func (s *PostgresStore) ValidateAPIToken(ctx context.Context, raw string) (APITo
 	err := s.pool.QueryRow(ctx, `
 		UPDATE aveloxis_ops.api_tokens SET last_used_at = NOW()
 		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()
-		RETURNING token_id, user_id, rate_limit_per_hour`, hashToken(raw)).
-		Scan(&id.TokenID, &id.UserID, &id.RateLimitPerHour)
+		RETURNING token_id, user_id, rate_limit_per_hour, rate_limit_per_day`, hashToken(raw)).
+		Scan(&id.TokenID, &id.UserID, &id.RateLimitPerHour, &id.RateLimitPerDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return APITokenIdentity{}, ErrInvalidAPIToken
 	}
@@ -206,7 +217,7 @@ func (s *PostgresStore) ListAPITokens(ctx context.Context) ([]APIToken, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT t.token_id, t.user_id, COALESCE(o.login_name, ''), t.label,
 		       COALESCE(t.created_by, 0), COALESCE(c.login_name, ''), t.created_at, t.expires_at,
-		       t.rate_limit_per_hour, t.last_used_at, t.revoked_at
+		       t.rate_limit_per_hour, t.rate_limit_per_day, t.last_used_at, t.revoked_at
 		FROM aveloxis_ops.api_tokens t
 		LEFT JOIN aveloxis_ops.users o ON o.user_id = t.user_id
 		LEFT JOIN aveloxis_ops.users c ON c.user_id = t.created_by
@@ -219,7 +230,7 @@ func (s *PostgresStore) ListAPITokens(ctx context.Context) ([]APIToken, error) {
 	for rows.Next() {
 		var t APIToken
 		if err := rows.Scan(&t.TokenID, &t.UserID, &t.OwnerLogin, &t.Label, &t.CreatedBy, &t.CreatedByLogin,
-			&t.CreatedAt, &t.ExpiresAt, &t.RateLimitPerHour, &t.LastUsedAt, &t.RevokedAt); err != nil {
+			&t.CreatedAt, &t.ExpiresAt, &t.RateLimitPerHour, &t.RateLimitPerDay, &t.LastUsedAt, &t.RevokedAt); err != nil {
 			return nil, fmt.Errorf("list API tokens: %w", err)
 		}
 		out = append(out, t)
@@ -254,47 +265,84 @@ func (s *PostgresStore) RevokeAPIToken(ctx context.Context, tokenID int64, revok
 	return nil
 }
 
-// APITokenSettings are the defaults the admin page offers.
+// APITokenSettings are the defaults the admin page offers: the hourly and
+// daily allowances are the token quotas' values (internal/capacity, the
+// one home of every quota since 0.29.89); the lifetime is kept here.
 type APITokenSettings struct {
 	DefaultRateLimitPerHour int       `json:"default_rate_limit_per_hour"`
+	DefaultRateLimitPerDay  int       `json:"default_rate_limit_per_day"`
 	DefaultLifetimeDays     int       `json:"default_lifetime_days"`
 	UpdatedBy               int       `json:"updated_by"`
 	UpdatedAt               time.Time `json:"updated_at"`
 }
 
-// GetAPITokenSettings reads the defaults (the migrate seeds the row).
+// GetAPITokenSettings reads the defaults (the migrate seeds both rows).
 func (s *PostgresStore) GetAPITokenSettings(ctx context.Context) (APITokenSettings, error) {
 	var st APITokenSettings
 	err := s.pool.QueryRow(ctx, `
-		SELECT default_rate_limit_per_hour, default_lifetime_days, COALESCE(updated_by, 0), updated_at
+		SELECT default_lifetime_days, COALESCE(updated_by, 0), updated_at
 		FROM aveloxis_ops.api_token_settings WHERE id = 1`).
-		Scan(&st.DefaultRateLimitPerHour, &st.DefaultLifetimeDays, &st.UpdatedBy, &st.UpdatedAt)
+		Scan(&st.DefaultLifetimeDays, &st.UpdatedBy, &st.UpdatedAt)
 	if err != nil {
 		return APITokenSettings{}, fmt.Errorf("read API token settings: %w", err)
 	}
+	quotas, err := s.EffectiveCapacityQuotas(ctx)
+	if err != nil {
+		return APITokenSettings{}, fmt.Errorf("read API token settings: %w", err)
+	}
+	st.DefaultRateLimitPerHour = quotas[capacity.QuotaTokenRequestsPerHour].Allowed
+	st.DefaultRateLimitPerDay = quotas[capacity.QuotaTokenRequestsPerDay].Allowed
 	return st, nil
 }
 
-// SetAPITokenSettings changes the defaults; both must be positive.
+// SetAPITokenSettings changes the defaults; all must be positive. The
+// allowances are written to their quota rows, keeping each quota's mode;
+// changing one whose aveloxis.json word is not WEB is refused.
 func (s *PostgresStore) SetAPITokenSettings(ctx context.Context, st APITokenSettings, updatedBy int) error {
-	if st.DefaultRateLimitPerHour <= 0 || st.DefaultLifetimeDays <= 0 {
-		return fmt.Errorf("the default hourly allowance and lifetime must both be positive")
+	if st.DefaultRateLimitPerHour <= 0 || st.DefaultLifetimeDays <= 0 || st.DefaultRateLimitPerDay < 0 {
+		return fmt.Errorf("the default allowances and lifetime must be positive")
 	}
 	if st.DefaultLifetimeDays > MaxAPITokenLifetimeDays {
 		return fmt.Errorf("the default lifetime is at most %d days", MaxAPITokenLifetimeDays)
+	}
+	quotas, err := s.EffectiveCapacityQuotas(ctx)
+	if err != nil {
+		return err
+	}
+	// Every change is checked before any is saved (review round 1: a
+	// config-owned day refused after the hour was already saved).
+	changes := map[string]int{}
+	for _, name := range []string{capacity.QuotaTokenRequestsPerHour, capacity.QuotaTokenRequestsPerDay} {
+		v := st.DefaultRateLimitPerHour
+		if name == capacity.QuotaTokenRequestsPerDay {
+			v = st.DefaultRateLimitPerDay
+		}
+		q := quotas[name]
+		if v == 0 || v == q.Allowed {
+			continue // unchanged (0: an older client that sends no daily value)
+		}
+		if !q.Editable {
+			return fmt.Errorf("%s is set in aveloxis.json (%s); change it there: %w", name, q.Source, ErrInvalidCapacitySettings)
+		}
+		changes[name] = v
+	}
+	for name, v := range changes {
+		if err := s.SetCapacityQuota(ctx, name, v, quotas[name].Mode, updatedBy); err != nil {
+			return err
+		}
 	}
 	var by *int
 	if updatedBy > 0 {
 		by = &updatedBy
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.api_token_settings (id, default_rate_limit_per_hour, default_lifetime_days, updated_at, updated_by)
-		VALUES (1, $1, $2, NOW(), $3)
-		ON CONFLICT (id) DO UPDATE SET default_rate_limit_per_hour = EXCLUDED.default_rate_limit_per_hour,
-		    default_lifetime_days = EXCLUDED.default_lifetime_days, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
-		st.DefaultRateLimitPerHour, st.DefaultLifetimeDays, by)
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO aveloxis_ops.api_token_settings (id, default_lifetime_days, updated_at, updated_by)
+		VALUES (1, $1, NOW(), $2)
+		ON CONFLICT (id) DO UPDATE SET default_lifetime_days = EXCLUDED.default_lifetime_days,
+		    updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+		st.DefaultLifetimeDays, by)
 	if err != nil {
-		return fmt.Errorf("update API token settings: %w", err)
+		return fmt.Errorf("save API token settings: %w", err)
 	}
 	return nil
 }

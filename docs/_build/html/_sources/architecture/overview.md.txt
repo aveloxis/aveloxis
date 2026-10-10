@@ -43,7 +43,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 103 tables        │  │ 44 tables              │ │
+  │  │ 103 tables        │  │ 51 tables              │ │
   │  │ 22 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -97,7 +97,7 @@ Plus 22 materialized views: 20 for 8Knot compatibility when `collection.material
 
 ScanCode per-file license and copyright detections: `scancode_scans` + `scancode_file_results`, each with a `_history` twin. Written by the decoupled scancode worker pool (180-day cadence per repo).
 
-### `aveloxis_ops` (44 tables)
+### `aveloxis_ops` (51 tables)
 
 Operational and orchestration tables:
 
@@ -110,6 +110,7 @@ Operational and orchestration tables:
 | Users | `users`, `user_sessions`, `user_repos` | User accounts and auth |
 | Config | `config` | Runtime configuration |
 | Workers | `worker_history`, `worker_job` | Worker run history |
+| Capacity | `capacity_settings`, `capacity_quotas`, `user_capacity`, `request_counts`, `account_signups`, `signup_key_secrets`, `signup_allowlist` | Fair-use quotas, per-account overrides, daily request and addition counts, sign-ups per address (a daily secret; addresses only sealed to the operator's offline key) |
 
 ### `aveloxis_augur_data` (6 views)
 
@@ -238,7 +239,7 @@ aveloxis/
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (151 tables)
+      schema.sql          # Full DDL (158 tables)
       matviews.sql        # the 20 8Knot materialized views (the two supply-chain views are built from supply_chain_views.go)
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver

@@ -45,9 +45,11 @@ func TestAddRepoOrgExpansionBridgesToUserRepos(t *testing.T) {
 			"into user_repos. Without this bridge, `aveloxis add-repo " +
 			"<orgURL>` is a one-shot legacy-only insert.")
 	}
-	if !strings.Contains(body, "AddRepoToGroupByID") {
+	// v0.29.89: through the organization variant (within the allocation,
+	// not counted as the account's daily additions).
+	if !strings.Contains(body, "AddOrgRepoToGroupByID") {
 		t.Error("runAddRepo's org-expansion branch must call " +
-			"AddRepoToGroupByID for every discovered repo so user_repos " +
+			"AddOrgRepoToGroupByID for every discovered repo so user_repos " +
 			"linkage stays in sync with the catalog.")
 	}
 }

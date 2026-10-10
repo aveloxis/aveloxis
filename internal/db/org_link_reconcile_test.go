@@ -24,12 +24,12 @@ func TestReconcileOrgRepoLinksShape(t *testing.T) {
 	src := readFileForTest(t, "org_link_reconcile.go")
 
 	needles := map[string]string{
-		"INSERT INTO aveloxis_ops.user_repos": "the reconciler is a pure user_repos link",
-		"JOIN aveloxis_ops.collection_queue":  "the queue join is the tracked-only gate — it structurally excludes dead/sidelined rows (218 of the 227 drift repos were GitHub-404 residue that must NOT be linked)",
-		"<> 'rejected'":                       "rejected groups' orgs are never linked (v0.27.20 abuse lever)",
-		"starts_with(":                        "prefix match must be starts_with, not LIKE — org names can contain LIKE metacharacters (_ is legal in GitLab paths)",
-		"LOWER(":                              "URL prefix match must be case-insensitive (v0.25.32)",
-		"ON CONFLICT DO NOTHING":              "idempotent — re-running each pass must be a no-op for existing links",
+		"s.linkWithinCap(": "the reconciler is a pure user_repos link, through the one writer of a new group link (v0.29.89: within the owner's repository allocation; the INSERT ... ON CONFLICT DO NOTHING lives there)",
+		"NOT EXISTS (SELECT 1 FROM aveloxis_ops.user_repos": "only links that do not exist yet are candidates, so re-running each pass is a no-op",
+		"JOIN aveloxis_ops.collection_queue":                "the queue join is the tracked-only gate — it structurally excludes dead/sidelined rows (218 of the 227 drift repos were GitHub-404 residue that must NOT be linked)",
+		"<> 'rejected'":                                     "rejected groups' orgs are never linked (v0.27.20 abuse lever)",
+		"starts_with(":                                      "prefix match must be starts_with, not LIKE — org names can contain LIKE metacharacters (_ is legal in GitLab paths)",
+		"LOWER(":                                            "URL prefix match must be case-insensitive (v0.25.32)",
 		"split_part(LOWER(r.repo_git), '/', 3) || '/' || split_part(LOWER(r.repo_git), '/', 4)": "v0.29.71: the host/owner key both sides share makes the join a hash join; with starts_with alone it was a nested loop of every org × every repository (kate: 323–338 s per run, 0.7 s keyed, identical 222,699 rows)",
 	}
 	for needle, why := range needles {

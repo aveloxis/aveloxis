@@ -116,8 +116,8 @@ func TestAPITokenOutOfScopeIsRefusedWithInstructions(t *testing.T) {
 	if !strings.Contains(body.Hint, "group") || !strings.Contains(body.Hint, "retry") {
 		t.Fatalf("the hint must say what to do: %q", body.Hint)
 	}
-	if got := s.autoAdds.windows[42]; got != nil && got.count != 0 {
-		t.Fatalf("a refused token spent %d auto-add slots", got.count)
+	if got := autoAddsUsed(s.autoAdds, 42); got != 0 {
+		t.Fatalf("a refused token spent %d auto-add slots", got)
 	}
 	if w.Header().Get("Cache-Control") == "" || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
 		t.Fatal("a refusal is about this caller: never stored")

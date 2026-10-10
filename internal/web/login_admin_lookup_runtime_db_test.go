@@ -254,8 +254,20 @@ func loginWithFailedAdminLookup(t *testing.T, dsn, provider string, returning bo
 	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(DISTINCT tbl), '{}') FROM aveloxis_ops.`+trigger+`_writes`).Scan(&elsewhere); err != nil {
 		t.Fatal(err)
 	}
-	if len(elsewhere) != 0 {
-		t.Errorf("the login wrote %v: it writes aveloxis_ops.users and nothing else — a session token, a group or an approval written here is an escalation (rounds 20–21)", elsewhere)
+	// v0.29.89 (summary/53): a NEW account also inserts its sign-up record
+	// (the per-address quota's count; no privilege, no session). Exactly that
+	// statement is admitted — an UPDATE or DELETE there is still refused.
+	var other []string
+	for _, w := range elsewhere {
+		// v0.29.89: a NEW account also writes its day's sign-up secret (once
+		// per UTC day). A returning login writes neither (review round 1 R2-8).
+		if !returning && (w == "aveloxis_ops.account_signups INSERT" || w == "aveloxis_ops.signup_key_secrets INSERT") {
+			continue
+		}
+		other = append(other, w)
+	}
+	if len(other) != 0 {
+		t.Errorf("the login wrote %v: it writes aveloxis_ops.users (and a new account's sign-up record) and nothing else — a session token, a group or an approval written here is an escalation (rounds 20–21)", other)
 	}
 	var adminNow *bool
 	if err := pool.QueryRow(ctx, `SELECT admin FROM aveloxis_ops.users WHERE user_id = $1`, seen).Scan(&adminNow); err != nil {

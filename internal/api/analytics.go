@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
@@ -308,9 +309,9 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 			var slot autoAddSlot // the window a refund goes back to
 			if s.autoAdds != nil {
 				var ok bool
-				var retry int
-				if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
-					s.refuseAutoAdd(w, info, retry)
+				var refused *capacity.Exceeded
+				if slot, ok, refused = s.autoAdds.reserve(info.UserID); !ok {
+					s.refuseAutoAdd(w, info, refused)
 					return nil, "", false
 				}
 			}
@@ -330,6 +331,9 @@ func (s *Server) resolveEntityRepos(w http.ResponseWriter, r *http.Request, e en
 				}
 			}
 			s.settleAutoAdd(info.UserID, slot, linkedAny, err)
+			if s.refuseCapacity(w, info, err) {
+				return nil, "", false
+			}
 			if err != nil {
 				s.serverError(w, r, "resolveEntityRepos", err)
 				return nil, "", false

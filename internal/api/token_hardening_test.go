@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -195,7 +196,7 @@ func TestTokenRefusalsAreLogged(t *testing.T) {
 	if !strings.Contains(out, "address=203.0.113.50") || !strings.Contains(out, "kind=api") {
 		t.Errorf("the invalid-token line names the address and the token kind:\n%s", out)
 	}
-	if n := strings.Count(out, "API token over its hourly allowance"); n != 1 {
+	if n := strings.Count(out, "quota reached — refused until its window ends"); n != 1 {
 		t.Errorf("two refused calls of one token logged %d allowance lines, want 1 (once per window):\n%s", n, out)
 	}
 	if !strings.Contains(out, "token_id=5") || !strings.Contains(out, "user_id=7") {
@@ -243,13 +244,15 @@ func TestAutoAddCapHoldsUnderConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	granted := 0
+	var kept autoAddSlot
 	for i := 0; i < 3*sharedWithMeAddsPerHour; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, ok, _ := l.reserve(7); ok {
+			if slot, ok, _ := l.reserve(7); ok {
 				mu.Lock()
 				granted++
+				kept = slot
 				mu.Unlock()
 			}
 		}()
@@ -258,7 +261,10 @@ func TestAutoAddCapHoldsUnderConcurrency(t *testing.T) {
 	if granted != sharedWithMeAddsPerHour {
 		t.Fatalf("%d concurrent auto-adds were granted, want exactly %d", granted, sharedWithMeAddsPerHour)
 	}
-	l.refund(autoAddSlot{userID: 7, start: l.windows[7].start}) // nothing was added: the slot comes back
+	if _, ok, _ := l.reserve(7); ok {
+		t.Fatal("past the cap a reservation must be refused")
+	}
+	l.refund(kept) // nothing was added: the slot comes back
 	if _, ok, _ := l.reserve(7); !ok {
 		t.Fatal("a refunded slot must be reservable again")
 	}
@@ -375,23 +381,23 @@ func TestWindowMapsStayBoundedWhenEveryWindowIsActive(t *testing.T) {
 		l.reserve(u)
 		now = now.Add(time.Millisecond) // all inside one hour: every window is active
 	}
-	if got := len(l.windows); got > maxTrackedIPs {
-		t.Fatalf("auto-add map holds %d windows, bound is %d", got, maxTrackedIPs)
+	if got := l.quotaMeter().Len(); got > maxTrackedIPs {
+		t.Fatalf("auto-add meter holds %d windows, bound is %d", got, maxTrackedIPs)
 	}
-	if _, kept := l.windows[maxTrackedIPs+49]; !kept {
+	if autoAddsUsed(l, maxTrackedIPs+49) != 1 {
 		t.Fatal("the newest user's window must be kept")
 	}
-	if _, kept := l.windows[0]; kept {
+	if autoAddsUsed(l, 0) != 0 {
 		t.Fatal("the earliest-started window should be the one evicted")
 	}
 
 	rl := &rateLimiter{now: func() time.Time { return now }}
-	for id := int64(0); id < maxTrackedIPs+50; id++ {
-		rl.allowToken(id, 1, 5000)
+	for id := int64(1); id <= maxTrackedIPs+50; id++ {
+		rl.chargeQuotas(authInfo{UserID: 1, APITokenID: id, RateLimitPerHour: 5000, RateLimitPerDay: 50000})
 		now = now.Add(time.Millisecond)
 	}
-	if got := len(rl.tokenWindows); got > maxTrackedIPs {
-		t.Fatalf("API-token map holds %d windows, bound is %d", got, maxTrackedIPs)
+	if got := rl.quotaMeter().Len(); got > maxTrackedIPs {
+		t.Fatalf("API-token meter holds %d windows, bound is %d", got, maxTrackedIPs)
 	}
 }
 
@@ -408,16 +414,18 @@ func TestAutoAddRefundReturnsToTheWindowItCameFrom(t *testing.T) {
 	if !ok {
 		t.Fatal("first reservation refused")
 	}
-	now = now.Add(autoAddWindow + time.Second) // the window (started at the first reservation) has ended
+	now = now.Add(time.Hour + time.Second) // the window (started at the first reservation) has ended
 	if _, ok, _ := l.reserve(7); !ok {
 		t.Fatal("first reservation of the new window refused")
 	}
 	l.refund(stale)
-	if got := l.windows[7].count; got != 1 {
+	if got := autoAddsUsed(l, 7); got != 1 {
 		t.Fatalf("refunding last hour's slot changed this hour's count to %d, want 1", got)
 	}
-	l.refund(autoAddSlot{userID: 8, start: now}) // a user with no window
-	if _, made := l.windows[8]; made {
+	n := l.quotaMeter().Len()
+	other, _, _ := (&autoAddLimiter{now: l.now}).reserve(8) // a slot from another limiter: user 8 has no window here
+	l.refund(other)
+	if got := l.quotaMeter().Len(); got != n || autoAddsUsed(l, 8) != 0 {
 		t.Fatal("a refund must never create a window")
 	}
 }
@@ -446,7 +454,7 @@ func TestSharedWithMeViewThatAddsNothingSpendsNoSlot(t *testing.T) {
 			if len(tc.fake.calls) != 2 {
 				t.Fatalf("store called %d times, want 2", len(tc.fake.calls))
 			}
-			if got := s.autoAdds.windows[42].count; got != 0 {
+			if got := autoAddsUsed(s.autoAdds, 42); got != 0 {
 				t.Fatalf("two views that added nothing spent %d slots, want 0", got)
 			}
 		})
@@ -486,7 +494,7 @@ func TestSettleAutoAddAfterAPartialLink(t *testing.T) {
 			if still == tc.wantDropped {
 				t.Fatalf("cached scope kept=%v, want dropped=%v", still, tc.wantDropped)
 			}
-			if got := s.autoAdds.windows[7].count; got != tc.wantSlots {
+			if got := autoAddsUsed(s.autoAdds, 7); got != tc.wantSlots {
 				t.Fatalf("slots spent = %d, want %d", got, tc.wantSlots)
 			}
 		})
@@ -549,7 +557,7 @@ func TestSharedWithMeAlreadyLinkedDropsTheStaleScope(t *testing.T) {
 			if _, still := s.auth.cached("sess"); still == tc.wantDropped {
 				t.Fatalf("cached scope kept = %v, want dropped = %v", still, tc.wantDropped)
 			}
-			if got := s.autoAdds.windows[42].count; got != tc.wantSlots {
+			if got := autoAddsUsed(s.autoAdds, 42); got != tc.wantSlots {
 				t.Fatalf("slots spent = %d, want %d", got, tc.wantSlots)
 			}
 		})
@@ -594,4 +602,9 @@ func TestAdminOwnedAPITokenIsScoped(t *testing.T) {
 	if s.authorizeRepo(httptest.NewRecorder(), r, 99) {
 		t.Fatal("an admin's API token read an out-of-scope repository unscoped")
 	}
+}
+
+// autoAddsUsed is a user's auto-adds counted in the current window.
+func autoAddsUsed(l *autoAddLimiter, userID int) int {
+	return l.quotaMeter().Peek(capacity.Subject{Kind: capacity.KindAccount, ID: strconv.Itoa(userID)}, autoAddQuota).Used
 }

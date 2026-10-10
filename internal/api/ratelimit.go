@@ -27,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -35,6 +34,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 )
 
@@ -204,199 +205,67 @@ type rateLimiter struct {
 	// (Server.frontEndAuthorized, v0.29.73); nil counts everything.
 	uncounted func(*http.Request) bool
 
-	// v0.29.82: each operator-issued API token's hourly window (keyed by
-	// token id), and the clock they read (a test seam; time.Now otherwise).
-	tokenWindows map[int64]*tokenWindow
-	now          func() time.Time
-
-	// v0.29.85: each signed-in user's session requests this hour (keyed by
-	// user id), and the threshold a session hour is logged at — the
-	// API-token default allowance, read through sessionBudget (false when it
-	// cannot be read: nothing is logged or refused). Since 0.29.88 a hour
-	// past sessionCeilingMultiple × the threshold is refused (ASVS review
-	// G1; operator decision). nil sessionBudget observes nothing.
-	sessionWindows map[int]*tokenWindow
-	sessionBudget  func() (int, bool)
+	// v0.29.89 (summary/53): every rate quota of a valid token — a session's
+	// requests_per_hour/_per_day, an API token's own hour and day — is
+	// counted by one capacity.Meter, its values and modes from policy (nil
+	// in a bare test limiter: shipped values). now is the clock (a test
+	// seam; time.Now otherwise). Replaces the 0.29.82 token windows, the
+	// 0.29.85 session observation and the 0.29.88 session ceiling.
+	meter  *capacity.Meter
+	policy *capacityPolicy
+	now    func() time.Time
 
 	// logger records refused tokens and exhausted allowances (ASVS V16.3,
 	// the 0.29.82 review A5); nil is silent.
 	logger *slog.Logger
 }
 
-// tokenWindow is one API token's current hour: its start and the calls
-// counted in it.
-type tokenWindow struct {
-	start  time.Time
-	count  int
-	warned bool // the over-allowance line was logged for this window
-	// Session windows only: nextLog is the count at which the window is
-	// next logged (threshold·2^k), derived from logBase, the threshold in
-	// force when it was set; a different threshold re-derives it.
-	nextLog int
-	logBase int
-}
-
-// nextSessionMilestone is the smallest threshold·2^k above count: where a
-// session hour is logged next.
-func nextSessionMilestone(threshold, count int) int {
-	n := threshold
-	for n <= count && n <= math.MaxInt/2 {
-		n *= 2
+// chargeQuotas counts one request of a valid token against its quotas and
+// reports the result (the meter is made on first use, so a bare test
+// limiter works too).
+func (rl *rateLimiter) chargeQuotas(info authInfo) capacity.Result {
+	m := rl.quotaMeter()
+	if info.APITokenID != 0 {
+		return m.Charge(subjectOf(info), rl.policy.tokenQuotas(info)...)
 	}
-	return n
+	return m.Charge(subjectOf(info), rl.policy.sessionQuotas(info.UserID, info.IsAdmin)...)
 }
 
-// apiTokenWindow is how long an API token's allowance lasts before it
-// starts over (the allowance is per hour: operator decision 2026-10-08).
-const apiTokenWindow = time.Hour
+// peekTokenQuotas reports an API token's quotas without counting (a request
+// whose authz subrequest already paid).
+func (rl *rateLimiter) peekTokenQuotas(info authInfo) []capacity.Decision {
+	m := rl.quotaMeter()
+	var ds []capacity.Decision
+	for _, q := range rl.policy.tokenQuotas(info) {
+		if q.Mode == capacity.Off || q.Allowed <= 0 {
+			continue
+		}
+		ds = append(ds, m.Peek(subjectOf(info), q))
+	}
+	return ds
+}
 
-// allowToken counts one call of an API token against its hourly allowance.
-// It returns whether the call is allowed, the calls left in the window and
-// when the window ends.
-func (rl *rateLimiter) allowToken(tokenID int64, userID, limit int) (bool, int, time.Time) {
-	now := rl.clock()
+// tokenSpent reports whether an API token has nothing left under an
+// enforced quota (identify skips the store recheck then: the 429 needs
+// none).
+func (rl *rateLimiter) tokenSpent(info authInfo) bool {
+	for _, d := range rl.peekTokenQuotas(info) {
+		if d.Quota.Mode == capacity.Enforce && d.Remaining == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// quotaMeter is the limiter's meter, made on first use with the limiter's
+// clock and logger when the constructor did not set one.
+func (rl *rateLimiter) quotaMeter() *capacity.Meter {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	if rl.tokenWindows == nil {
-		rl.tokenWindows = map[int64]*tokenWindow{}
+	if rl.meter == nil {
+		rl.meter = capacity.NewMeter(capacity.MeterOptions{Now: rl.clock, MaxWindows: maxTrackedIPs})
 	}
-	w, ok := rl.tokenWindows[tokenID]
-	if !ok || !now.Before(w.start.Add(apiTokenWindow)) {
-		boundWindows(rl.tokenWindows, now, apiTokenWindow)
-		w = &tokenWindow{start: now}
-		rl.tokenWindows[tokenID] = w
-	}
-	reset := w.start.Add(apiTokenWindow)
-	if w.count >= limit {
-		if !w.warned && rl.logger != nil {
-			w.warned = true
-			rl.logger.Warn("API token over its hourly allowance — refused until its window ends",
-				"token_id", tokenID, "user_id", userID, "rate_limit_per_hour", limit, "window_ends", reset)
-		}
-		return false, 0, reset
-	}
-	w.count++
-	return true, limit - w.count, reset
-}
-
-// boundWindows makes room for one more window in a full map: it drops the
-// windows that have ended and, when every window is still active, the one
-// that started earliest (the least allowance left to give back). Without
-// the second step the map grew past maxTrackedIPs whenever all windows were
-// active (Copilot review 5472987053 on PR #228). An evicted key starts a
-// fresh window on its next call; reaching that needs maxTrackedIPs keys
-// active at once, each a real account or an issued token. Called with the
-// owner's mutex held.
-func boundWindows[K comparable](m map[K]*tokenWindow, now time.Time, span time.Duration) {
-	if len(m) < maxTrackedIPs {
-		return
-	}
-	for k, w := range m {
-		if !now.Before(w.start.Add(span)) {
-			delete(m, k)
-		}
-	}
-	for len(m) >= maxTrackedIPs {
-		var oldestKey K
-		var oldest *tokenWindow
-		for k, w := range m {
-			if oldest == nil || w.start.Before(oldest.start) {
-				oldestKey, oldest = k, w
-			}
-		}
-		delete(m, oldestKey)
-	}
-}
-
-// sessionCeilingMultiple sets a signed-in session's hourly ceiling to this
-// many times the API-token default allowance (ASVS review G1; operator
-// 2026-10-10: "approximates a very active user, but breaks if somebody turns
-// a bot against it"). With the default 5,000 the ceiling is 20,000 an hour:
-// a repository page makes about 23 API calls (14 on open, 9 as the page is
-// scrolled), so the ceiling is one repository page every ~4 s for a full
-// hour — beyond any person, a few minutes' work for a scraper. It follows the
-// default an operator sets on the API tokens page.
-const sessionCeilingMultiple = 4
-
-// observeSession counts one request of a signed-in user's session, logs
-// the hour once its count reaches threshold and at each doubling, and
-// reports whether the request is within the hour's ceiling
-// (sessionCeilingMultiple × threshold) with the seconds until the hour
-// ends. An unknown threshold never refuses: a failed settings read must not
-// lock signed-in users out.
-func (rl *rateLimiter) observeSession(userID, threshold int, ok bool) (bool, int) {
-	now := rl.clock()
-	rl.mu.Lock()
-	if rl.sessionWindows == nil {
-		rl.sessionWindows = map[int]*tokenWindow{}
-	}
-	w, found := rl.sessionWindows[userID]
-	if !found || !now.Before(w.start.Add(apiTokenWindow)) {
-		boundWindows(rl.sessionWindows, now, apiTokenWindow)
-		w = &tokenWindow{start: now}
-		rl.sessionWindows[userID] = w
-	}
-	w.count++
-	logIt := false
-	if ok && threshold > 0 {
-		// The threshold in force decides (L10 round 1 on 0.29.85): raised
-		// mid-hour, no line claims the new one was passed; lowered or first
-		// known after an unknown stretch, one line now, not one per request.
-		if w.logBase != threshold {
-			w.logBase, w.nextLog = threshold, threshold
-		}
-		if w.count >= w.nextLog {
-			logIt = true
-			w.nextLog = nextSessionMilestone(threshold, w.count)
-		}
-	}
-	over := ok && threshold > 0 && w.count > sessionCeilingMultiple*threshold
-	warnOver := over && !w.warned
-	if warnOver {
-		w.warned = true
-	}
-	count, start := w.count, w.start
-	rl.mu.Unlock()
-	if logIt && rl.logger != nil {
-		rl.logger.Warn("signed-in session made more requests this hour than an API token is allowed",
-			"user_id", userID, "requests_this_hour", count, "threshold", threshold, "ceiling", sessionCeilingMultiple*threshold, "window_start", start)
-	}
-	if warnOver && rl.logger != nil {
-		rl.logger.Warn("signed-in session over its hourly ceiling — refused until its hour ends",
-			"user_id", userID, "ceiling", sessionCeilingMultiple*threshold, "window_ends", start.Add(apiTokenWindow))
-	}
-	if !over {
-		return true, 0
-	}
-	retry := int(math.Ceil(start.Add(apiTokenWindow).Sub(rl.clock()).Seconds()))
-	if retry < 1 {
-		retry = 1
-	}
-	return false, retry
-}
-
-// peekToken reports an API token's current window without charging it (a
-// request whose authz subrequest already paid).
-func (rl *rateLimiter) peekToken(tokenID int64, limit int) (int, time.Time) {
-	now := rl.clock()
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	w, ok := rl.tokenWindows[tokenID]
-	if !ok || !now.Before(w.start.Add(apiTokenWindow)) {
-		return limit, now.Add(apiTokenWindow)
-	}
-	remaining := limit - w.count
-	if remaining < 0 {
-		remaining = 0
-	}
-	return remaining, w.start.Add(apiTokenWindow)
-}
-
-// tokenSpent reports whether an API token's current window has no calls
-// left (identify skips the store recheck then: the 429 needs none).
-func (rl *rateLimiter) tokenSpent(tokenID int64, limit int) bool {
-	remaining, _ := rl.peekToken(tokenID, limit)
-	return remaining == 0
+	return rl.meter
 }
 
 func (rl *rateLimiter) clock() time.Time {
@@ -438,23 +307,7 @@ func newRateLimiter(opts Options) (*rateLimiter, error) {
 // honored only when the direct peer IS the trusted proxy; the
 // RIGHTMOST XFF entry is the address our own proxy appended.
 func (rl *rateLimiter) clientIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer := net.ParseIP(host)
-	if rl.opts.TrustedProxy == "" || host != rl.opts.TrustedProxy {
-		return peer
-	}
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff == "" {
-		return peer
-	}
-	parts := strings.Split(xff, ",")
-	if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
-		return ip
-	}
-	return peer
+	return httpserver.ClientIP(r, rl.opts.TrustedProxy)
 }
 
 func (rl *rateLimiter) isExempt(ip net.IP) bool {
@@ -479,59 +332,29 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		// 0.29.85; API tokens were charged twice per cache miss since
 		// 0.29.82).
 		paid := rl.uncounted != nil && rl.uncounted(r)
-		// A valid session is counted whatever its address (before the
-		// exempt check: a proxy misconfiguration that made every client
-		// local must not hide it) and refused past its hourly ceiling
-		// (sessionCeilingMultiple; ASVS review G1).
-		if res, ok := resolutionOf(r); ok && !paid && res.presented && res.err == nil && res.info.APITokenID == 0 && res.info.UserID > 0 && rl.sessionBudget != nil {
-			threshold, known := rl.sessionBudget()
-			// An administrator's session is counted but never refused (the
-			// cache warm's authenticated mode uses one; an administrator is
-			// unscoped anyway — L10 on the ASVS fixes, F4).
-			if allowed, retry := rl.observeSession(res.info.UserID, threshold, known); !allowed && !res.info.IsAdmin {
-				setNoStoreHeaders(w.Header())
-				w.Header().Set("Retry-After", strconv.Itoa(retry))
-				http.Error(w, "too many requests from this account this hour; try again later", http.StatusTooManyRequests)
-				return
-			}
-		}
-		ip := rl.clientIP(r)
-		// An API token is charged against its own allowance from EVERY
+		// A valid token is counted against its own quotas whatever its
 		// address, exempt networks included (Copilot review 5477687920 on PR
-		// #228: the exemption returned first). The exemption below is for
-		// callers without a valid token.
-		// v0.29.82 (operator, 2026-10-08): the per-IP limit is only for
-		// callers without a valid token. A valid session is not counted
-		// here (its own hourly ceiling is above, 0.29.88); an API token is
-		// counted against its own hourly allowance. An unknown or expired
-		// token, or one the store could not resolve, is no token.
-		if res, ok := resolutionOf(r); ok && res.presented && res.err == nil {
-			if res.info.APITokenID == 0 {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if paid {
-				remaining, reset := rl.peekToken(res.info.APITokenID, res.info.RateLimitPerHour)
-				h := w.Header()
-				h.Set("X-RateLimit-Limit", strconv.Itoa(res.info.RateLimitPerHour))
-				h.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
-				h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
-				next.ServeHTTP(w, r)
-				return
-			}
-			allowed, remaining, reset := rl.allowToken(res.info.APITokenID, res.info.UserID, res.info.RateLimitPerHour)
-			h := w.Header()
-			h.Set("X-RateLimit-Limit", strconv.Itoa(res.info.RateLimitPerHour))
-			h.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
-			h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
-			if !allowed {
-				retry := int(math.Ceil(reset.Sub(rl.clock()).Seconds()))
-				if retry < 1 {
-					retry = 1
+		// #228; a proxy misconfiguration that made every client local must
+		// not hide a session): a session against requests_per_hour/_per_day,
+		// an API token against its own hour and day (v0.29.89, summary/53).
+		// The per-IP limit below is only for callers without a valid token
+		// (v0.29.82, operator 2026-10-08); an unknown or expired token, or
+		// one the store could not resolve, is no token.
+		ip := rl.clientIP(r)
+		if res, ok := resolutionOf(r); ok && res.presented && res.err == nil && (res.info.APITokenID != 0 || res.info.UserID > 0) {
+			switch {
+			case paid && res.info.APITokenID != 0:
+				setCapacityHeaders(w.Header(), rl.peekTokenQuotas(res.info), rl.clock())
+			case !paid:
+				result := rl.chargeQuotas(res.info)
+				logQuotaOver(rl.logger, res.info, result.FirstOver)
+				setCapacityHeaders(w.Header(), result.Decisions, rl.clock())
+				if !result.Allowed {
+					ex := result.Refusal
+					ex.Subject, ex.Contact = subjectOf(res.info), rl.policy.contact()
+					writeCapacityRefusal(w, ex, rl.clock())
+					return
 				}
-				h.Set("Retry-After", strconv.Itoa(retry))
-				http.Error(w, "API token's hourly allowance exceeded", http.StatusTooManyRequests)
-				return
 			}
 			next.ServeHTTP(w, r)
 			return
@@ -573,18 +396,18 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		rl.mu.Unlock()
 
 		if !allowed {
-			retry := "1"
+			// The per-IP limiter stays its own component (summary/53 §10:
+			// address reputation, the deferral); its Retry-After uses the
+			// one rounding rule (capacity.SecondsUntil). The daily quota
+			// resets at 00:00 UTC (b.day is the UTC date).
+			retry := 1
 			if overQuota {
-				retry = "86400"
+				retry = capacity.SecondsUntil(capacity.UTCDay.End(now), now)
 				if !deferredUntil.IsZero() {
-					secs := int(math.Ceil(deferredUntil.Sub(now).Seconds()))
-					if secs < 1 {
-						secs = 1
-					}
-					retry = strconv.Itoa(secs)
+					retry = capacity.SecondsUntil(deferredUntil, now)
 				}
 			}
-			w.Header().Set("Retry-After", retry)
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}
@@ -620,7 +443,7 @@ const corsAllowHeaders = "Authorization, Content-Type, If-None-Match"
 // client may read (they are not CORS-safelisted; Copilot review 5476192626
 // on PR #228). Added, never Set: other layers expose ETag and the
 // Shared-with-Me notice on the same answer.
-const corsRateLimitExposed = "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After"
+const corsRateLimitExposed = "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After, RateLimit, RateLimit-Policy"
 
 // cors is the SINGLE CORS authority (v0.27.1 removed the per-handler
 // wildcard/echo headers that predated it). Empty cors_origins =

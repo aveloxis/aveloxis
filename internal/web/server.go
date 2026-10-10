@@ -12,18 +12,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -38,12 +41,14 @@ import (
 
 // Server is the web GUI server.
 type Server struct {
-	store   *db.PostgresStore
-	cfg     config.WebConfig
-	logger  *slog.Logger
-	ghOAuth *oauth2.Config
-	glOAuth *oauth2.Config
-	ghKeys  *platform.KeyPool // for immediate org scanning
+	store *db.PostgresStore
+	cfg   config.WebConfig
+	// trustedProxyWarn logs a missing web.trusted_proxy once (v0.29.89).
+	trustedProxyWarn sync.Once
+	logger           *slog.Logger
+	ghOAuth          *oauth2.Config
+	glOAuth          *oauth2.Config
+	ghKeys           *platform.KeyPool // for immediate org scanning
 	// ghAPIBase is the GitHub REST host those keys belong to, normalised by
 	// New through platform.GitHubAPIBaseOrPublic so it is never empty. A
 	// REQUIRED parameter of New, next to the pool, so a
@@ -673,6 +678,8 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		GHUserID:  ghUser.ID,
 		GHLogin:   ghUser.Login,
 		Provider:  "github",
+		// v0.29.89: the browser's address, for the sign-up quota.
+		SignupAddr: s.signupAddr(r),
 	}, "GitHub")
 }
 
@@ -735,6 +742,12 @@ func (s *Server) completeOAuthLogin(w http.ResponseWriter, r *http.Request, info
 	userID, wasNewUser, err := s.store.SignInOAuthUser(r.Context(), info)
 	if httpserver.RequestEnded(r.Context(), err) {
 		return // the browser left mid-callback: nothing to serve, not a failure
+	}
+	if ex, capped := capacity.AsExceeded(err); capped {
+		// The kind refusal (operator 2026-10-10): the limit, why, and whom to
+		// write; logged once a day per address by the store.
+		writeSignupRefusal(w, ex)
+		return
 	}
 	if err != nil {
 		s.logger.Error("failed to upsert OAuth user", "error", err)
@@ -929,6 +942,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request) {
 		GLHost:     glBase, // the instance that answered; the store normalizes it (GitLabOAuthHost)
 		GLUsername: glUser.Username,
 		Provider:   "gitlab",
+		SignupAddr: s.signupAddr(r), // v0.29.89: for the sign-up quota
 	}, "GitLab")
 }
 
@@ -1516,6 +1530,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		"Query":      query,
 		"PageWindow": pageWindow,
 		"AddError":   r.URL.Query().Get("add_error"),
+		"Capacity":   s.capacityNotice(r, sess.UserID),
 		"OrgError":   r.URL.Query().Get("org_error"),
 		// A number the handler parsed, never the query string itself: the
 		// notice is styled as the site's own, so a reflected string would
@@ -1738,6 +1753,7 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 
 	added := 0
 	newlyQueued := 0
+	refusedAtQuota := 0 // links the account's repository quota refused (v0.29.89)
 	alreadyExisted := 0
 
 	// Try /orgs/ first. If that 404s, fall back to /users/ (personal accounts).
@@ -1799,8 +1815,14 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 				}
 				if repoID > 0 {
 					// Already exists — just add the user_repos reference.
-					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
-						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: linking existing repo failed", "repo_id", repoID, "error", err)
+					linked := true
+					if _, err := s.store.AddOrgRepoToGroupByID(ctx, groupID, repoID); err != nil {
+						linked = false
+						if _, capped := capacity.AsExceeded(err); capped {
+							refusedAtQuota++ // the store logs the refusal once a day per account
+						} else {
+							httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: linking existing repo failed", "repo_id", repoID, "error", err)
+						}
 					}
 					// v0.27.102: opportunistic forge-ID backfill (fill-
 					// empty-only) so the org-tracked cohort gains rename
@@ -1809,7 +1831,9 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, idErr, "org scan: platform_repo_id backfill failed", "repo_id", repoID, "error", idErr)
 					}
 					alreadyExisted++
-					added++
+					if linked {
+						added++
+					}
 				} else {
 					// New repo — create it and enqueue for collection.
 					repoID, err = s.store.UpsertRepo(ctx, &model.Repo{
@@ -1829,11 +1853,16 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 					if err := s.store.EnqueueRepo(ctx, repoID, 100); err != nil {
 						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: enqueue failed", "repo_id", repoID, "url", logURL(item.HTMLURL), "error", err)
 					}
-					if _, err := s.store.AddRepoToGroupByID(ctx, groupID, repoID); err != nil {
-						httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: linking new repo failed", "repo_id", repoID, "error", err)
-					}
 					newlyQueued++
-					added++
+					if _, err := s.store.AddOrgRepoToGroupByID(ctx, groupID, repoID); err != nil {
+						if _, capped := capacity.AsExceeded(err); capped {
+							refusedAtQuota++ // queued for the approved org; not linked past the account's quota
+						} else {
+							httpserver.LogFailure(ctx, s.logger, slog.LevelWarn, err, "org scan: linking new repo failed", "repo_id", repoID, "error", err)
+						}
+					} else {
+						added++
+					}
 				}
 			}
 			page++
@@ -1845,7 +1874,8 @@ func (s *Server) scanOrgRepos(ctx context.Context, groupID int64, orgURL string)
 	}
 
 	s.logger.Info("scan complete", "name", name,
-		"total_added", added, "newly_queued", newlyQueued, "already_existed", alreadyExisted)
+		"total_added", added, "newly_queued", newlyQueued, "already_existed", alreadyExisted,
+		"not_linked_at_quota", refusedAtQuota)
 }
 
 func (s *Server) handleRemoveRepo(w http.ResponseWriter, r *http.Request) {
@@ -2221,8 +2251,102 @@ func addErrorFlag(err error) string {
 	switch {
 	case errors.Is(err, db.ErrGroupRejected):
 		return "rejected"
+	case isCapacityRefusal(err):
+		// Which quota refused decides the notice (closing review r3 F1:
+		// the daily-additions refusal read as the allocation's).
+		if ex, _ := capacity.AsExceeded(err); ex.Quota == capacity.QuotaRepoLinksPerDay {
+			return "capacity_links"
+		}
+		return "capacity"
 	case errors.Is(err, db.ErrURLTooLong), errors.Is(err, platform.ErrURLUserinfo), db.IsRejectedValue(err):
 		return "invalid"
 	}
 	return "1"
+}
+
+// isCapacityRefusal reports a quota's refusal (v0.29.89, summary/53).
+func isCapacityRefusal(err error) bool {
+	_, ok := capacity.AsExceeded(err)
+	return ok
+}
+
+// capacityNotice is the group page's text after a paste the repository
+// allocation refused (add_error=capacity): the one wording every surface
+// shows, with the account's current numbers. Empty otherwise, or when the
+// numbers cannot be read (logged; the generic notice is shown instead).
+func (s *Server) capacityNotice(r *http.Request, userID int) string {
+	switch r.URL.Query().Get("add_error") {
+	case "capacity":
+	case "capacity_links":
+		st, err := s.store.AccountDailyAdditions(r.Context(), userID)
+		if err != nil {
+			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "could not read the daily additions for the group page", "user_id", userID, "error", err)
+			return ""
+		}
+		return st.Refusal(time.Now()).Message()
+	default:
+		return ""
+	}
+	st, err := s.store.AccountRepoAllocation(r.Context(), userID)
+	if err != nil {
+		httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "could not read the repository allocation for the group page", "user_id", userID, "error", err)
+		return ""
+	}
+	return st.Refusal().Message()
+}
+
+// signupAddr is the browser's address on an OAuth callback, for
+// capacity.signups_per_address_per_day (v0.29.89): web.trusted_proxy
+// decides whether X-Forwarded-For is believed (httpserver.ClientIP, the
+// rule the api uses). Zero when it cannot be read: not counted.
+func (s *Server) signupAddr(r *http.Request) netip.Addr {
+	s.warnMissingTrustedProxy(r)
+	if ip := httpserver.ClientIP(r, s.cfg.TrustedProxy); ip != nil {
+		if addr, ok := netip.AddrFromSlice(ip); ok {
+			return addr.Unmap()
+		}
+	}
+	return netip.Addr{}
+}
+
+// warnMissingTrustedProxy logs once per process when a sign-in comes from a
+// loopback peer that sent X-Forwarded-For while web.trusted_proxy is empty:
+// nginx in front, unconfigured, so every sign-up looks like nginx's own
+// address and an enforced sign-up quota would refuse every new user after
+// the third of the day (ASVS review I1/I3).
+func (s *Server) warnMissingTrustedProxy(r *http.Request) {
+	if s.cfg.TrustedProxy != "" || len(r.Header.Values("X-Forwarded-For")) == 0 {
+		return
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return
+	}
+	s.trustedProxyWarn.Do(func() {
+		s.logger.Warn("sign-in arrived through a proxy on this host but web.trusted_proxy is empty: every new account counts as the proxy's own address for the sign-up quota — set web.trusted_proxy to the proxy's address (127.0.0.1 for nginx on the same host)",
+			"peer", host)
+	})
+}
+
+// writeSignupRefusal answers a sign-up the quota refused: 429, Retry-After
+// until 00:00 UTC, never stored, and a page with the one wording every
+// surface shows (capacity.Exceeded.Message), HTML-escaped.
+func writeSignupRefusal(w http.ResponseWriter, ex *capacity.Exceeded) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	// A static, escaped page: nothing to load, never framed (ASVS V3.4).
+	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Retry-After", strconv.Itoa(int(ex.RetryAfter(time.Now()).Seconds())))
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign-up limit reached</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 16px;line-height:1.5">
+<h1 style="font-size:1.4rem">Sign-up limit reached</h1>
+<p>%s</p>
+<p><a href="/">Back to Aveloxis</a></p>
+</body></html>`, html.EscapeString(ex.Message()))
 }

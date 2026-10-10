@@ -18,10 +18,13 @@ import (
 func TestAddRepoToGroupByIDReportsInsertion(t *testing.T) {
 	body := extractFunctionBody(t, "web_store.go", "AddRepoToGroupByID")
 
-	if !strings.Contains(body, "RowsAffected()") {
+	// v0.29.89: the link goes through linkWithinCap, which returns the
+	// links its INSERT inserted (RowsAffected(), pinned with the one-writer
+	// rule in TestOneWriterOfNewGroupLinks); the bool is that count.
+	if !strings.Contains(body, "s.linkWithinCap(") || !strings.Contains(body, "return n > 0, nil") {
 		t.Error("AddRepoToGroupByID must derive its inserted-bool from the " +
-			"command tag's RowsAffected() — ON CONFLICT DO NOTHING returns a " +
-			"nil error whether or not a row was inserted")
+			"links linkWithinCap inserted (its command tag's RowsAffected()) — " +
+			"ON CONFLICT DO NOTHING returns a nil error whether or not a row was inserted")
 	}
 	// The signature itself: (inserted/linked bool, err error).
 	src := readFileForTest(t, "web_store.go")

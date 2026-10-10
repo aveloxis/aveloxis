@@ -358,3 +358,42 @@ func TestFlushWindowFailureIsSaid(t *testing.T) {
 		t.Errorf("a flush window that could not be set must be a WARN:\n%s", logs.String())
 	}
 }
+
+// v0.29.89: ClientIP believes X-Forwarded-For only from the trusted proxy,
+// and then only its rightmost entry (the one that proxy appended).
+func TestClientIPBelievesOnlyTheTrustedProxy(t *testing.T) {
+	req := func(peer, xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = peer
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+	for _, c := range []struct {
+		peer, xff, trusted, want string
+	}{
+		{"203.0.113.5:1", "198.51.100.1", "", "203.0.113.5"},                  // no proxy configured
+		{"203.0.113.5:1", "198.51.100.1", "127.0.0.1", "203.0.113.5"},         // not from the proxy
+		{"127.0.0.1:1", "6.6.6.6, 198.51.100.1", "127.0.0.1", "198.51.100.1"}, // rightmost entry
+		{"127.0.0.1:1", "", "127.0.0.1", "127.0.0.1"},                         // no header
+		{"127.0.0.1:1", "not-an-ip", "127.0.0.1", "127.0.0.1"},                // junk: the peer
+		{"[::1]:1", "2001:db8::7", "::1", "2001:db8::7"},                      // IPv6 proxy
+	} {
+		if got := ClientIP(req(c.peer, c.xff), c.trusted); got == nil || got.String() != c.want {
+			t.Errorf("peer %s xff %q trusted %q = %v; want %s", c.peer, c.xff, c.trusted, got, c.want)
+		}
+	}
+}
+
+// ASVS review (V15.3.4): a proxy that appends a separate X-Forwarded-For
+// line must not leave a client-supplied first line deciding.
+func TestClientIPReadsTheLastOfEveryHeaderLine(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Add("X-Forwarded-For", "6.6.6.6")      // the client's own claim
+	r.Header.Add("X-Forwarded-For", "198.51.100.4") // the proxy's line
+	if got := ClientIP(r, "127.0.0.1"); got == nil || got.String() != "198.51.100.4" {
+		t.Fatalf("ClientIP = %v; want the proxy's last line, 198.51.100.4", got)
+	}
+}

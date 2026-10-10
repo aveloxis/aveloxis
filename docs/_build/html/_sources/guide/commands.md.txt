@@ -222,6 +222,33 @@ Use at deploy time so the first user signup isn't the first SMTP attempt.
 
 ---
 
+## `aveloxis signup-escrow`
+
+The sign-up address escrow (v0.29.89). New accounts' network addresses are
+kept only sealed to the operator's offline public key
+(`web.signup_escrow_recipient`), for one year, so that one can be opened if a
+legal requirement demands it; the server can seal but never open them. The
+whole procedure, with the reasons for each step, is in
+[Sign-up address escrow](signup-escrow.md).
+
+### `aveloxis signup-escrow keygen`
+
+Run on the offline machine. Writes the private key to the file named by
+`--out` (mode 600; refuses to overwrite) and prints the public key line for
+`aveloxis.json`. Needs no database.
+
+### `aveloxis signup-escrow export`
+
+Run on the server. Writes one account's sealed records (`--user` id or
+`--login`) to the file named by `--out`. Needs no key; the envelopes stay
+sealed. Logs the export.
+
+### `aveloxis signup-escrow open`
+
+Run on the offline machine. Decrypts an export file with the private key
+(`--identity`) and prints each record's id, user id, login, sign-up time
+(UTC) and address. Needs no database and no network.
+
 ## `aveloxis collect`
 
 One-shot collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.
@@ -395,10 +422,10 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 151 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 158 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
 - **`aveloxis_data`** (103 tables + 22 materialized views) -- all collected data
-- **`aveloxis_ops`** (44 tables) -- operational state
+- **`aveloxis_ops`** (51 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.

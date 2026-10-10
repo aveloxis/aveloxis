@@ -176,6 +176,9 @@ func (s *Server) handleCollectionCopy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "target group is not yours", http.StatusForbidden)
 			return
 		}
+		if s.refuseCapacity(w, info, err) {
+			return // the copy does not fit the allocation; nothing was linked
+		}
 		s.serverError(w, r, "handleCollectionCopy", err)
 		return
 	}

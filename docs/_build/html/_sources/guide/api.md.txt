@@ -134,29 +134,34 @@ POST /api/v1/admin/api-token-settings
 Operator-issued API tokens for people who need more than the per-IP limit
 (see "Rate limits" below). A token belongs to an existing account and
 authenticates as that account, with its repository scope; it is counted
-against its own hourly allowance instead of the per-IP limit.
+against its own hourly and daily allowances instead of the per-IP limit.
 
 - `GET /api/v1/admin/api-tokens` lists every granted token, newest first:
   `token_id`, `user_id`, `owner_login`, `label`, `created_by`,
   `created_by_login`, `created_at`, `expires_at`, `rate_limit_per_hour`,
-  `last_used_at` and `revoked_at`, plus the current `settings`. It never
+  `rate_limit_per_day`, `last_used_at` and `revoked_at`, plus the current
+  `settings`. It never
   carries a token or its hash: only the hash is stored.
 - `POST /api/v1/admin/api-tokens` grants one. Body:
   `{"user_id": 12, "label": "who or what it is for", "lifetime_days": 30,
-  "rate_limit_per_hour": 5000}`; the last two are optional and default to
-  the current settings. Answers `201` with the token (`"token":
+  "rate_limit_per_hour": 1000, "rate_limit_per_day": 10000}`; the last
+  three are optional and default to the current settings. Answers `201` with the token (`"token":
   "avx_…"`), shown this once and sent `no-store`. `400` for a missing or
   unknown `user_id`, an empty `label` or one over 200 characters, a
   lifetime that is not 1 to 365 days, or an allowance that is not a
-  positive number.
+  positive number. A token's allowances are fixed when it is granted.
 - `POST …/{tokenID}/revoke` revokes a token: it stops working on its next
   call to any api process (every call with an API token rechecks it, one
   indexed lookup). Revoking a revoked token is a no-op; `404` for an
   unknown id.
 - `GET`/`POST /api/v1/admin/api-token-settings` read and change the
-  defaults the grant offers: `{"default_rate_limit_per_hour": 5000,
-  "default_lifetime_days": 30}` (the allowance positive, the lifetime 1 to
-  365 days; the values shown are the initial defaults).
+  defaults the grant offers: `{"default_rate_limit_per_hour": 1000,
+  "default_rate_limit_per_day": 10000, "default_lifetime_days": 30}` (the
+  allowances positive, the lifetime 1 to 365 days; the values shown are
+  the initial defaults since v0.29.89). The allowances are the
+  `token_requests_per_hour` and `token_requests_per_day` quotas (the same
+  values the Capacity page shows); one that `aveloxis.json` sets is
+  refused with `409`. An omitted daily value is left unchanged.
 
 All five require an admin **signed-in session**: an API token, even one
 granted to an administrator, is refused (`403`) on every admin route — a
@@ -165,8 +170,59 @@ v0.29.86, never as an administrator for data either: it reads only the
 repositories in its owner's groups, like any account's (see "Shared
 links" below for what a token gets outside them). Grants, revocations
 and changed defaults are logged with who did them; a refused token is
-logged once a minute per address, and a token over its allowance once per
-hour, never with the token itself.
+logged once a minute per address, and a token over an allowance once per
+window, never with the token itself.
+
+### Capacity (admin, v0.29.89)
+
+```
+GET  /api/v1/admin/capacity
+GET  /api/v1/admin/capacity/largest
+POST /api/v1/admin/capacity/quotas/{name}
+POST /api/v1/admin/capacity/contact
+GET  /api/v1/admin/capacity/accounts?login=…  (or ?user_id=…)
+POST /api/v1/admin/capacity/accounts/{userID}
+POST /api/v1/admin/capacity/signup-allowlist
+POST /api/v1/admin/capacity/signup-allowlist/remove
+```
+
+The fair-use quotas (see "Rate limits" below and the `capacity` section
+of the configuration guide), for aveloxis-gui's Capacity page.
+Administrator sessions only, like the token routes.
+
+- `GET /api/v1/admin/capacity` answers every quota as applied
+  (`name`, `allowed`, `mode` — `enforce`, `shadow` or `off` — `source`,
+  the `aveloxis.json` word, and `editable`), the `contact_email` refusals
+  name, `signups_per_day` (new accounts per UTC day over the last 30
+  days), the `signup_allowlist`, the accounts with `overrides`, and the
+  `busiest_today` accounts by saved session requests (at most 25).
+- `GET …/capacity/largest` lists the accounts with the most repositories
+  in their groups (at most 25). It reads every group link, so the page
+  loads it only when asked.
+- `POST …/capacity/quotas/{name}` `{"allowed": 5000, "mode": "enforce"}`
+  saves one quota; the api processes apply it within a minute. `409` when
+  `aveloxis.json` sets the quota (DEFAULT, SHADOW or OFF), `404` for an
+  unknown name, `400` for a value that is not positive or an unknown mode.
+- `POST …/capacity/contact` `{"contact_email": "…"}` sets the address
+  every refusal invites a heavy user to write to (empty: none offered).
+- `GET …/capacity/accounts?login=…` (or `?user_id=…`) reads one account:
+  its `user_id`, `login`, `provider` (the forge of its last sign-in) and
+  `gitlab_host`, its `override`, its `repos` (`used`, `allowed`, `mode`,
+  `exempt`) and its `requests_today`. `404` for no such account, `400` for a
+  `user_id` that is not a positive integer in range. A login that more than
+  one account has apart from letter case answers `409` with `candidates`
+  (each `user_id`, `login`, `provider`, `gitlab_host`): open the right one by
+  `?user_id=`.
+- `POST …/capacity/accounts/{userID}` `{"repos_allowed": 5000,
+  "requests_per_hour": null, "requests_per_day": 20000,
+  "links_per_day": null, "note": "lab course, through May"}` raises or lowers one account's values (`null`:
+  the quota's value; all `null` and no note removes the override).
+- `POST …/capacity/signup-allowlist` `{"cidr": "192.0.2.0/24", "note":
+  "…"}` exempts a network from the sign-up quota (an organization behind
+  one address); `…/remove` `{"cidr": …}` removes it (`404` when it is not
+  listed). Networks are stored normalised.
+
+Every change is logged with who made it.
 
 ### Batch Statistics
 
@@ -844,38 +900,87 @@ scope-granting auto-add.
 
 ## Rate limits
 
+Aveloxis runs on limited hardware, so callers have fair-use limits. Every
+refusal says which limit was reached, when it resets (or how to make
+room) and whom to write to for more (v0.29.89).
+
 The per-IP limit (`api.rate_limit_rps`, default 1 request per second with a
 burst of `api.rate_limit_burst`, default 10, and `api.rate_limit_daily`,
 default 1,000 per day) applies only to callers **without a valid token**
 (v0.29.82). Clients on an exempt network (`api.exempt_cidrs`) are not
-limited, except an API token: it is counted against its own allowance from
-every address, exempt networks included (v0.29.88).
+limited by it. A valid token is counted against its own quotas from every
+address, exempt networks included.
 
-- **A valid session token** (signed in, below) is counted per account per
-  hour (v0.29.85), from every address. An hour that reaches the API-token
-  default allowance (what an issued token may make) is logged, again at
-  each doubling. Past four times that default (20,000 with the default
-  5,000: about one repository page every 4 seconds for a whole hour) the
-  account is refused `429` with `Retry-After` until its hour ends
-  (v0.29.88) — beyond any person, reached quickly by a scraper. An
-  administrator's session is counted but never refused. Each `api`
-  process keeps its own count.
+- **A valid session token** (signed in, below) is counted per account
+  against `requests_per_hour` (5,000, from the hour's first request) and
+  `requests_per_day` (10,000, the UTC day). An administrator can give one
+  account other values. An administrator's own session is counted but
+  never refused.
 - **An operator-issued API token** (`Authorization: Bearer avx_…`) is
-  counted against its own hourly allowance (5,000 calls per hour unless the
-  operator set another), whatever address the calls come from. Each `api`
-  process keeps its own count, so behind N api processes a token can make
-  up to N times its allowance. Every
-  answer carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
-  `X-RateLimit-Reset` (Unix seconds, when the current hour ends; all three
-  and `Retry-After` are readable by cross-origin browser clients); past the
-  allowance the answer is `429` with `Retry-After`. Ask the operator for
-  one; it is granted to your account and shown once.
+  counted against its own hourly and daily allowances (by default 1,000
+  an hour and 10,000 a day since v0.29.89; 5,000 an hour for tokens
+  granted before), whatever address the calls come from.
 - **No token, an unknown token or an expired one** is counted per IP, with
   `429` and `Retry-After` past the limit. An address over its limit that
   has just presented an invalid token gets its further tokens refused
   without a lookup for a minute, unless they are already known valid; such
   a refusal past the daily quota has a `Retry-After` of when that minute
   ends (an empty bucket's refusal keeps `Retry-After: 1`).
+
+Each quota runs in a mode the operator chooses: **enforce** (refused past
+the value), **shadow** (counted and logged, never refused: how a new limit
+starts) or **off**. Hours are counted by each `api` process; days are
+shared by all of them through the database, at most a minute behind.
+
+An answer counted against an enforced quota carries the
+[IETF `RateLimit-Policy` and `RateLimit` headers](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/)
+(for example `RateLimit-Policy: "token_requests_per_hour";q=1000;w=3600`
+and `RateLimit: "token_requests_per_hour";r=998;t=3412`, the tightest
+quota) and the older `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+`X-RateLimit-Reset` (Unix seconds) for that quota; all of them and
+`Retry-After` are readable by cross-origin browser clients. A quota in
+shadow is not advertised.
+
+A refusal by a quota is one JSON shape, never stored:
+
+```json
+{
+  "error": "capacity_limit",
+  "kind": "rate",
+  "quota": "requests_per_hour",
+  "window": "hour",
+  "used": 5000,
+  "allowed": 5000,
+  "reset_at": "2026-10-10T14:02:11Z",
+  "retry_after": 1834,
+  "contact": "aveloxis.io@gmail.com",
+  "message": "This account has reached its limit of 5,000 requests per hour. …"
+}
+```
+
+A rate quota answers `429` with `Retry-After`. The repository allocation
+(`"kind": "allocation"`, `quota` `repos_per_account`: at most 1,000
+repositories across an account's groups, additions waiting for approval
+included) answers `403` with `wanted` (how many more the refused change
+would have added) and no `Retry-After`: nothing frees up with time. Make
+room by removing repositories from your groups
+(`POST /api/v1/groups/{groupID}/repos/{repoID}/remove`), or write to the
+contact address. Removing makes room only for repositories you added
+yourself: a group that tracks an organization gets that organization's
+repositories linked back by the next scan. A repository you already have in
+another group always links.
+
+Repositories newly added to an account's groups are also counted per UTC day
+(`quota` `repo_links_per_day`, `"kind": "rate"`: `429` with `Retry-After`
+until 00:00 UTC). Removing one does not give the addition back, so the daily
+count bounds adding, reading and removing in a loop. Repositories an
+organization scan links (an administrator approved the organization) are not
+counted. A bulk add or a collection copy that does not fit adds nothing (unless another addition takes the last places while the paste is being linked: then the repositories linked before it stay and the rest are refused).
+
+`GET /api/v1/me` carries the caller's numbers in `capacity`: `repos`
+(`used`, `allowed`, `mode`, `exempt`, `contact`) and `requests` (each
+window's `quota`, `window`, `used`, `allowed`, `mode` and `reset_at`, as
+this api process counts them).
 
 ## Authentication: getting an API token
 
@@ -967,9 +1072,11 @@ Token semantics:
   of repositories outside your groups — an organization entity counts
   once, and a request that links nothing new counts nothing; each `api`
   process keeps its own count, which starts over when it restarts; past
-  that the request is `429` with `Retry-After` and that
+  that the request is `429` with `Retry-After` and the `capacity_limit`
+  body, `quota` `shared_with_me_adds_per_hour` (v0.29.89), and that
   addition is not made, though entities of the same request resolved
-  before it were) — repo links are shareable between signed-in
+  before it were; with the account's repository allocation full, the
+  request is refused with the `capacity_limit` body, see "Rate limits") — repo links are shareable between signed-in
   users (the Starred/Comparisons auto-add pattern, triggered by
   viewing). The response that performed the add carries a one-time
   `X-Aveloxis-Added-To-Group: Shared with Me` header (CORS-exposed)
@@ -1423,6 +1530,13 @@ Per-user:
   NEW org returns `pending_approval` — registering a new org is an
   open-ended future-repo commitment, so it awaits admin review.
   Orgs stay one per request — a multi-URL `kind: "org"` body is a 400.
+  An add that would take the account past its repository allocation
+  (v0.29.89) adds nothing and answers the `capacity_limit` body (see
+  "Rate limits").
+- `POST /api/v1/groups/{groupID}/repos/{repoID}/remove` — removes a
+  repository from one of the caller's groups (v0.29.89). The repository
+  stops counting toward the account's allocation once no other group of
+  theirs holds it. `404` for a group that is not the caller's.
 - `GET /api/v1/groups/{groupID}/orgs` — the organizations tracked in
   the group (2026-07-21; read-only — registration goes through the
   POST above with `kind: "org"`). Envelope:

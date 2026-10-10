@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/capacity"
 )
 
 func tokenTestStore(t *testing.T) (*PostgresStore, context.Context) {
@@ -143,7 +145,7 @@ func TestAPITokenLifecycle(t *testing.T) {
 	owner := tokenTestUser(t, store, ctx, "avx-it-apitok-owner")
 	admin := tokenTestUser(t, store, ctx, "avx-it-apitok-admin")
 
-	raw, tok, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: "research script", CreatedBy: admin, Lifetime: 48 * time.Hour, RateLimitPerHour: 1234})
+	raw, tok, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: "research script", CreatedBy: admin, Lifetime: 48 * time.Hour, RateLimitPerHour: 1234, RateLimitPerDay: 4321})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,7 @@ func TestAPITokenLifecycle(t *testing.T) {
 	}
 
 	// Expired on arrival: a lifetime that has already passed.
-	expired, _, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: "expired", CreatedBy: admin, Lifetime: time.Nanosecond, RateLimitPerHour: 1})
+	expired, _, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: "expired", CreatedBy: admin, Lifetime: time.Nanosecond, RateLimitPerHour: 1, RateLimitPerDay: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,11 +225,11 @@ func TestAPITokenLifecycle(t *testing.T) {
 
 	// A grant must name a real owner and positive limits.
 	for name, g := range map[string]APITokenGrant{
-		"no owner":       {UserID: 0, Label: "x", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 1},
-		"unknown owner":  {UserID: -7, Label: "x", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 1},
-		"zero lifetime":  {UserID: owner, Label: "x", CreatedBy: admin, Lifetime: 0, RateLimitPerHour: 1},
-		"zero allowance": {UserID: owner, Label: "x", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 0},
-		"no label":       {UserID: owner, Label: "  ", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 1},
+		"no owner":       {UserID: 0, Label: "x", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 1, RateLimitPerDay: 1},
+		"unknown owner":  {UserID: -7, Label: "x", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 1, RateLimitPerDay: 1},
+		"zero lifetime":  {UserID: owner, Label: "x", CreatedBy: admin, Lifetime: 0, RateLimitPerHour: 1, RateLimitPerDay: 1},
+		"zero allowance": {UserID: owner, Label: "x", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 0, RateLimitPerDay: 1},
+		"no label":       {UserID: owner, Label: "  ", CreatedBy: admin, Lifetime: time.Hour, RateLimitPerHour: 1, RateLimitPerDay: 1},
 	} {
 		if _, _, err := store.CreateAPIToken(ctx, g); err == nil {
 			t.Errorf("%s: the grant must be refused", name)
@@ -243,30 +245,62 @@ func TestAPITokenSettingsDefaultsAndUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = store.SetAPITokenSettings(context.Background(), APITokenSettings{DefaultRateLimitPerHour: before.DefaultRateLimitPerHour, DefaultLifetimeDays: before.DefaultLifetimeDays}, 0)
+		_ = store.SetAPITokenSettings(context.Background(), APITokenSettings{DefaultRateLimitPerHour: before.DefaultRateLimitPerHour,
+			DefaultRateLimitPerDay: before.DefaultRateLimitPerDay, DefaultLifetimeDays: before.DefaultLifetimeDays}, 0)
 	})
-	// The seeded defaults (operator decision 2026-10-08): this package's
-	// database is fresh, and nothing else in it changes the settings.
-	if DefaultAPITokenRateLimitPerHour != 5000 || DefaultAPITokenLifetimeDays != 30 {
-		t.Fatalf("defaults %d/h, %d days; the operator chose 5,000/h and 30 days", DefaultAPITokenRateLimitPerHour, DefaultAPITokenLifetimeDays)
+	// The seeded defaults: 30 days (operator decision 2026-10-08) and, since
+	// v0.29.89, the token quotas' values, 1,000/h and 10,000/day (operator
+	// decision 2026-10-10, summary/53). This package's database is fresh.
+	if DefaultAPITokenLifetimeDays != 30 || capacity.Shipped[capacity.QuotaTokenRequestsPerHour].Allowed != 1000 ||
+		capacity.Shipped[capacity.QuotaTokenRequestsPerDay].Allowed != 10000 {
+		t.Fatalf("shipped token defaults changed; the operator chose 1,000/h, 10,000/day and 30 days")
 	}
-	if before.DefaultRateLimitPerHour != DefaultAPITokenRateLimitPerHour || before.DefaultLifetimeDays != DefaultAPITokenLifetimeDays {
-		t.Fatalf("the migrate seeds %+v, want %d/h and %d days", before, DefaultAPITokenRateLimitPerHour, DefaultAPITokenLifetimeDays)
+	if before.DefaultRateLimitPerHour != 1000 || before.DefaultRateLimitPerDay != 10000 || before.DefaultLifetimeDays != 30 {
+		t.Fatalf("the migrate seeds %+v, want 1,000/h, 10,000/day and 30 days", before)
 	}
-	if err := store.SetAPITokenSettings(ctx, APITokenSettings{DefaultRateLimitPerHour: 777, DefaultLifetimeDays: 9}, admin); err != nil {
+	if err := store.SetAPITokenSettings(ctx, APITokenSettings{DefaultRateLimitPerHour: 777, DefaultRateLimitPerDay: 7777, DefaultLifetimeDays: 9}, admin); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.GetAPITokenSettings(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.DefaultRateLimitPerHour != 777 || got.DefaultLifetimeDays != 9 || got.UpdatedBy != admin {
+	if got.DefaultRateLimitPerHour != 777 || got.DefaultRateLimitPerDay != 7777 || got.DefaultLifetimeDays != 9 || got.UpdatedBy != admin {
 		t.Fatalf("settings after update = %+v", got)
 	}
-	for _, bad := range []APITokenSettings{{0, 9, 0, time.Time{}}, {777, 0, 0, time.Time{}}, {-1, 9, 0, time.Time{}}} {
+	// The quota rows are the one place the values live.
+	q, err := store.GetCapacityQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q[capacity.QuotaTokenRequestsPerHour].Allowed != 777 || q[capacity.QuotaTokenRequestsPerDay].Allowed != 7777 {
+		t.Errorf("quota rows after the settings update = %+v; want 777 and 7,777", q)
+	}
+	for _, bad := range []APITokenSettings{
+		{DefaultRateLimitPerHour: 0, DefaultLifetimeDays: 9},
+		{DefaultRateLimitPerHour: 777, DefaultLifetimeDays: 0},
+		{DefaultRateLimitPerHour: -1, DefaultLifetimeDays: 9},
+		{DefaultRateLimitPerHour: 777, DefaultRateLimitPerDay: -1, DefaultLifetimeDays: 9},
+	} {
 		if err := store.SetAPITokenSettings(ctx, bad, admin); err == nil {
 			t.Errorf("settings %+v must be refused", bad)
 		}
+	}
+	// A quota aveloxis.json sets (DEFAULT) cannot be changed from the page.
+	store.SetCapacitySources(map[string]capacity.Source{capacity.QuotaTokenRequestsPerHour: capacity.SourceDefault})
+	t.Cleanup(func() { store.SetCapacitySources(nil) })
+	if err := store.SetAPITokenSettings(ctx, APITokenSettings{DefaultRateLimitPerHour: 555, DefaultLifetimeDays: 9}, admin); !errors.Is(err, ErrInvalidCapacitySettings) {
+		t.Errorf("changing a config-owned quota = %v; want ErrInvalidCapacitySettings", err)
+	}
+	// Review round 1 (L10 r2 F6: the DAY owned by aveloxis.json, so a
+	// check-and-save loop would already have saved the hour): nothing is
+	// saved when any change is refused.
+	store.SetCapacitySources(map[string]capacity.Source{capacity.QuotaTokenRequestsPerDay: capacity.SourceDefault})
+	if err := store.SetAPITokenSettings(ctx, APITokenSettings{DefaultRateLimitPerHour: 556, DefaultRateLimitPerDay: 8888, DefaultLifetimeDays: 9}, admin); !errors.Is(err, ErrInvalidCapacitySettings) {
+		t.Errorf("a mixed change = %v; want ErrInvalidCapacitySettings", err)
+	}
+	if q, err := store.GetCapacityQuotas(ctx); err != nil || q[capacity.QuotaTokenRequestsPerHour].Allowed != 777 {
+		t.Errorf("a refused change saved part of itself: hour = %+v, %v; want 777", q[capacity.QuotaTokenRequestsPerHour], err)
 	}
 }
 
@@ -280,13 +314,13 @@ func TestAPITokenLimitsAndActiveCheck(t *testing.T) {
 		t.Fatalf("MaxAPITokenLifetimeDays = %d; the operator chose 365", MaxAPITokenLifetimeDays)
 	}
 	day := 24 * time.Hour
-	if _, _, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: "x", Lifetime: (MaxAPITokenLifetimeDays + 1) * day, RateLimitPerHour: 1}); err == nil {
+	if _, _, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: "x", Lifetime: (MaxAPITokenLifetimeDays + 1) * day, RateLimitPerHour: 1, RateLimitPerDay: 1}); err == nil {
 		t.Error("a lifetime past the maximum must be refused by the store")
 	}
-	if _, _, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: strings.Repeat("é", MaxAPITokenLabelLength+1), Lifetime: day, RateLimitPerHour: 1}); err == nil {
+	if _, _, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: strings.Repeat("é", MaxAPITokenLabelLength+1), Lifetime: day, RateLimitPerHour: 1, RateLimitPerDay: 1}); err == nil {
 		t.Error("a label longer than the maximum (in characters) must be refused by the store")
 	}
-	raw, tok, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: strings.Repeat("é", MaxAPITokenLabelLength), Lifetime: MaxAPITokenLifetimeDays * day, RateLimitPerHour: 1})
+	raw, tok, err := store.CreateAPIToken(ctx, APITokenGrant{UserID: owner, Label: strings.Repeat("é", MaxAPITokenLabelLength), Lifetime: MaxAPITokenLifetimeDays * day, RateLimitPerHour: 1, RateLimitPerDay: 1})
 	if err != nil {
 		t.Fatalf("the maximum lifetime and label length are allowed: %v", err)
 	}

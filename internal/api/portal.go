@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
@@ -172,6 +173,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"email":         email,
 		"email_pending": pending,
 		"is_admin":      info.IsAdmin,
+		// v0.29.89: the account's fair-use numbers (summary/53); null when
+		// the store cannot answer.
+		"capacity": s.meCapacity(r, info),
 		"scope_repo_count": func() int {
 			if info.IsAdmin {
 				return -1 // unscoped
@@ -463,6 +467,9 @@ func (s *Server) handleGroupAddRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
+		case s.refuseCapacity(w, info, err):
+			// The whole paste would not fit the account's repository
+			// allocation (v0.29.89): nothing was written.
 		case errors.Is(err, db.ErrGroupNotOwned), errors.Is(err, db.ErrGroupRejected):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, db.ErrOrgOffGitHubHost):
@@ -991,9 +998,9 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		var slot autoAddSlot // the window a refund goes back to
 		if s.autoAdds != nil {
 			var ok bool
-			var retry int
-			if slot, ok, retry = s.autoAdds.reserve(info.UserID); !ok {
-				s.refuseAutoAdd(w, info, retry)
+			var refused *capacity.Exceeded
+			if slot, ok, refused = s.autoAdds.reserve(info.UserID); !ok {
+				s.refuseAutoAdd(w, info, refused)
 				return
 			}
 		}
@@ -1006,6 +1013,9 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 		// scope or a concurrent star: Copilot review 5472987053 on PR #228)
 		// gives the slot back; the cached scope is dropped per settleAutoAdd.
 		s.settleAutoAdd(info.UserID, slot, linked, gerr)
+		if s.refuseCapacity(w, info, gerr) {
+			return
+		}
 		if gerr != nil {
 			s.serverError(w, r, "handleStarRepo", gerr)
 			return

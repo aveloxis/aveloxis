@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/jackc/pgx/v5"
 )
 
 // HomeRepo is one row of the home-tab repo list.
@@ -229,14 +232,24 @@ func (s *PostgresStore) RecordComparisonRepos(ctx context.Context, userID int, r
 	if err != nil {
 		return 0, fmt.Errorf("comparison record group: %w", err)
 	}
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-		SELECT $1, r.repo_id FROM aveloxis_data.repos r WHERE r.repo_id = ANY($2)
-		ON CONFLICT DO NOTHING`, gid, repoIDs)
+	// Only repositories that exist; linked within the allocation, as many as
+	// fit (a best-effort record: it never fails the compare for the cap).
+	rows, err := s.pool.Query(ctx, `SELECT repo_id FROM aveloxis_data.repos WHERE repo_id = ANY($1) ORDER BY repo_id`, repoIDs)
+	if err != nil {
+		return 0, fmt.Errorf("comparison record repos: %w", err)
+	}
+	real, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return 0, fmt.Errorf("comparison record repos: %w", err)
+	}
+	n, err := s.linkWithinCap(ctx, gid, real, linkFill)
+	if _, capped := capacity.AsExceeded(err); capped {
+		return n, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("comparison record link: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	return n, nil
 }
 
 // ScorecardOverallName is the reserved row name under which the

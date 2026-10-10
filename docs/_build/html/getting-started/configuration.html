@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.88 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.89 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7f7018be"></script>
+      <script src="../_static/documentation_options.js?v=db089ca7"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -80,6 +80,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#monitor-dashboard-v0-23-0">Monitor (dashboard, v0.23.0)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#mail-gmail-smtp-optional">Mail (Gmail SMTP, optional)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#logging">Logging</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#capacity-fair-use-quotas-v0-29-89">Capacity (fair-use quotas, v0.29.89)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#api-key-sources">API key sources</a></li>
@@ -203,6 +204,12 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-api"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-scancode-worker"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">scancode-worker</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-test-mail"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">test-mail</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow-keygen"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">keygen</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow-export"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">export</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#aveloxis-signup-escrow-open"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">open</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-collect"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code></a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#id3">Flags</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#id4">Examples</a></li>
@@ -331,6 +338,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-statistics">Repository Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#forge-id-changes-admin-v0-29-63">Forge-ID changes (admin, v0.29.63)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#api-tokens-admin-v0-29-82">API tokens (admin, v0.29.82)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
@@ -603,6 +611,15 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/scaling.html#next-steps">Next steps</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/signup-escrow.html">Sign-up address escrow</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#what-is-kept-and-for-how-long">What is kept, and for how long</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#set-it-up-once">Set it up (once)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#open-an-envelope-when-you-are-required-to">Open an envelope when you are required to</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#change-the-key-or-lose-it">Change the key, or lose it</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#what-an-envelope-does-and-does-not-show">What an envelope does and does not show</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/signup-escrow.html#what-this-does-not-cover">What this does not cover</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/troubleshooting.html">Troubleshooting</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#commits-not-collected-but-issues-and-pull-requests-are-collected">Commits not collected, but Issues and Pull Requests are collected</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#monitor-dashboard-renders-slowly-on-a-large-fleet">Monitor dashboard renders slowly on a large fleet</a></li>
@@ -697,7 +714,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-44-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (44 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1315,6 +1332,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l15-the-forge-s-cache-and-session-semantics">L15 — The forge’s cache and session semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l16-widening-a-tripwire-is-a-contract-change">L16 — Widening a tripwire is a contract change</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l17-what-the-pr-193-rounds-kept-finding-the-four-blind-spots">L17 — What the PR #193 rounds kept finding (the four blind spots)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#l18-consolidate-before-you-add">L18 — Consolidate before you add</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../contributing/review-lenses.html#running-the-pass">Running the pass</a></li>
 </ul>
 </li>
@@ -1867,7 +1885,9 @@ a half against its own reference table below:</p>
 <span class="w">    </span><span class="nt">&quot;gitlab_base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.com&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;api_internal_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://127.0.0.1:8383&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;spa_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;auto_approve_add_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span>
+<span class="w">    </span><span class="nt">&quot;auto_approve_add_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;trusted_proxy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;signup_escrow_recipient&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="nt">&quot;monitor&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;refresh_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span>
@@ -1886,7 +1906,16 @@ a half against its own reference table below:</p>
 <span class="w">    </span><span class="nt">&quot;front_end_secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="nt">&quot;log_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;info&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;http_timeout_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span>
+<span class="w">  </span><span class="nt">&quot;http_timeout_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;capacity&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;repo_links_per_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repos_per_account&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;requests_per_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;requests_per_hour&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;signups_per_address_per_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;token_requests_per_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;token_requests_per_hour&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;WEB&quot;</span>
+<span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -2547,6 +2576,16 @@ a half against its own reference table below:</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 <td><p>Per-add approval (v0.27.20): when &gt; 0, a non-admin batch of NOT-yet-tracked repo URLs at or under this size is collected immediately (with an auto-approved audit request); larger batches — and a NEW org registration — wait for admin approval on the Approvals page. An org already registered in a group that is not rejected auto-approves (it adds no new collection). <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) = every non-admin addition of new repos requires approval. Already-collected repos always link instantly for everyone; approval gates collection load, never visibility.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">web.trusted_proxy</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
+<td><p>The address of the proxy in front of the web GUI (<code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code> for nginx on the same host), in canonical form (v0.29.89). Only from it is <code class="docutils literal notranslate"><span class="pre">X-Forwarded-For</span></code> believed, which gives the sign-in callback the browser’s address for <code class="docutils literal notranslate"><span class="pre">capacity.signups_per_address_per_day</span></code>. Behind nginx without it, every sign-up looks like nginx’s address and the quota counts them all as one. Empty believes no header.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">web.signup_escrow_recipient</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
+<td><p>Your age public key (<code class="docutils literal notranslate"><span class="pre">age1…</span></code>, v0.29.89). Each new account’s network address is sealed to it and kept for one year, so it can be opened offline with the matching private key if a legal requirement demands it; the server can never open it. Empty keeps no address past its UTC day. Make the pair with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">signup-escrow</span> <span class="pre">keygen</span></code> on an offline machine. The whole procedure, including opening an envelope, is in <a class="reference internal" href="../guide/signup-escrow.html"><span class="std std-doc">Sign-up address escrow</span></a>. An invalid key is refused at startup.</p></td>
+</tr>
 </tbody>
 </table>
 </section>
@@ -2644,6 +2683,89 @@ a half against its own reference table below:</p>
 </tr>
 </tbody>
 </table>
+</section>
+<section id="capacity-fair-use-quotas-v0-29-89">
+<h3>Capacity (fair-use quotas, v0.29.89)<a class="headerlink" href="#capacity-fair-use-quotas-v0-29-89" title="Link to this heading"></a></h3>
+<p>Aveloxis runs on limited hardware, so each account has fair-use quotas. A caller who reaches one gets a kind refusal that names the limit, says when it resets (or, for repositories, how to make room) and gives the contact address, so heavy users can ask for more. Each quota has one line in <code class="docutils literal notranslate"><span class="pre">capacity</span></code>, saying who decides it:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Word</p></th>
+<th class="head"><p>Who decides</p></th>
+<th class="head"><p>Value</p></th>
+<th class="head"><p>Mode</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">WEB</span></code> (or no line)</p></td>
+<td><p>The admin <strong>Capacity</strong> page</p></td>
+<td><p>The page’s value (the shipped one until it is changed)</p></td>
+<td><p>The page’s mode: enforce, shadow or off</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DEFAULT</span></code></p></td>
+<td><p>This file</p></td>
+<td><p>The shipped value</p></td>
+<td><p>Enforced</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SHADOW</span></code></p></td>
+<td><p>This file</p></td>
+<td><p>The shipped value</p></td>
+<td><p>Observed: what enforcement would refuse is logged once per window per account, and nothing is refused</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
+<td><p>This file</p></td>
+<td><p>—</p></td>
+<td><p>Not applied and not counted</p></td>
+</tr>
+</tbody>
+</table>
+<p>A quota set by <code class="docutils literal notranslate"><span class="pre">DEFAULT</span></code>, <code class="docutils literal notranslate"><span class="pre">SHADOW</span></code> or <code class="docutils literal notranslate"><span class="pre">OFF</span></code> is read-only on the Capacity page. An unknown quota name or word is refused at startup.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Quota</p></th>
+<th class="head"><p>Counts</p></th>
+<th class="head"><p>Shipped value</p></th>
+<th class="head"><p>Shipped mode</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">requests_per_hour</span></code></p></td>
+<td><p>Requests by a signed-in session, per account, per hour from its first request</p></td>
+<td><p>5,000</p></td>
+<td><p>shadow</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">requests_per_day</span></code></p></td>
+<td><p>The same, per UTC day (shared by every api process)</p></td>
+<td><p>10,000</p></td>
+<td><p>shadow</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">token_requests_per_hour</span></code></p></td>
+<td><p>Requests by one API token per hour; the value is the default a new token is granted with</p></td>
+<td><p>1,000</p></td>
+<td><p>enforce</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">token_requests_per_day</span></code></p></td>
+<td><p>The same, per UTC day</p></td>
+<td><p>10,000</p></td>
+<td><p>shadow</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repos_per_account</span></code></p></td>
+<td><p>Repositories in an account’s groups at one time, pending additions included</p></td>
+<td><p>1,000</p></td>
+<td><p>shadow</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_links_per_day</span></code></p></td>
+<td><p>Repositories newly added to one account’s groups per UTC day (removing one does not give the addition back; repositories of an organization an administrator approved are not counted)</p></td>
+<td><p>1,000</p></td>
+<td><p>shadow</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">signups_per_address_per_day</span></code></p></td>
+<td><p>New accounts from one network address per UTC day: an IPv4 address, or an IPv6 /64. Everyone behind one shared address (an office, a lab behind NAT) shares the 3; add that network to the sign-up allowlist on the Capacity page</p></td>
+<td><p>3</p></td>
+<td><p>shadow</p></td>
+</tr>
+</tbody>
+</table>
+<p>An approved organization is collected in full, but the account links its repositories only up to its repository value: when you approve a large organization for an account, raise that account’s value. An administrator can raise or lower one account’s repository and request values on the Capacity page; their own signed-in session is never refused (it is still counted). A new quota ships in shadow so its effect can be read in the logs for about a week before it is turned on.</p>
 <p>Log level descriptions:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">debug</span></code></strong> – Very verbose. Includes individual API calls, staging writes, and contributor resolution details. Use for troubleshooting.</p></li>

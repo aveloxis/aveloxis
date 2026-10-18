@@ -4,7 +4,10 @@
 package collector
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // ============================================================
@@ -255,17 +258,17 @@ func TestParseCsprojEmpty(t *testing.T) {
 	}
 }
 
-// Verify .csproj is picked up by extension-based matching.
+// .csproj is picked up by extension on the dependency walk itself and in
+// the manifest parser's default arm (v0.29.98: the test used to read a
+// list production never consulted, `manifestExtensions`, and passed on it).
 func TestCsprojInManifestFiles(t *testing.T) {
-	// .csproj files use extension-based detection, not the manifestFiles map.
-	// Verify the extension list includes it.
-	found := false
-	for _, ext := range manifestExtensions {
-		if ext == ".csproj" {
-			found = true
-		}
+	src := srctest.StripGoComments(srctest.Read(t, "internal/collector/analysis.go"))
+	walk := srctest.FuncBody(t, src, "func (ac *AnalysisCollector) scanDependencies(")
+	if !strings.Contains(walk, `ext == ".csproj"`) {
+		t.Error("scanDependencies must match *.csproj by extension beside the manifestFiles map")
 	}
-	if !found {
-		t.Error("manifestExtensions should include .csproj")
+	parse := srctest.FuncBody(t, src, "func parseDependencyFile(")
+	if !strings.Contains(parse, `".csproj"`) || !strings.Contains(parse, "parseCsprojDeps(") {
+		t.Error("parseDependencyFile's default arm must route *.csproj to parseCsprojDeps")
 	}
 }

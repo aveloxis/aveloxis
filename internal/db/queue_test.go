@@ -55,17 +55,21 @@ func TestEnqueueRepoResetsStatusAndDueAt(t *testing.T) {
 	}
 }
 
-// TestMakeQueuedReposDueExists verifies the store has a method to reset all
-// queued repos to due_at=NOW(). Called on scheduler startup so repos with
-// future due_at (from prior collection cycles) become immediately eligible.
-func TestMakeQueuedReposDueExists(t *testing.T) {
+// Startup realigns due_at from last_collected + the configured interval
+// (RealignDueDates, v0.16.6). The older MakeQueuedReposDue, which forced
+// every queued row due at once, had no caller and was deleted in v0.29.98;
+// a blanket "everything is due now" must not return.
+func TestStartupRealignsDueDatesAndNeverForcesThemDue(t *testing.T) {
 	data, err := os.ReadFile("queue.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, "MakeQueuedReposDue") {
-		t.Error("queue.go must have a MakeQueuedReposDue method to reset due_at on startup")
+	if !strings.Contains(src, "func (s *PostgresStore) RealignDueDates(") {
+		t.Error("queue.go must define RealignDueDates — the startup due_at realignment")
+	}
+	if strings.Contains(src, "MakeQueuedReposDue") {
+		t.Error("queue.go defines MakeQueuedReposDue again: startup realigns due_at per row, it never forces every queued row due")
 	}
 }
 

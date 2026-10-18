@@ -36,26 +36,6 @@ func (s *PostgresStore) GetUserEmail(ctx context.Context, userID int) (string, e
 	return *email, nil
 }
 
-// UpdateUserEmail writes the email column for the given user_id.
-// Used by the v0.19.10 POST handler for /account/email when the OAuth
-// flow couldn't surface an email automatically. Returns an error if
-// the user doesn't exist or the write fails.
-func (s *PostgresStore) UpdateUserEmail(ctx context.Context, userID int, email string) error {
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return errors.New("email cannot be empty")
-	}
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE aveloxis_ops.users SET email = $2 WHERE user_id = $1`, userID, email)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("user_id %d not found", userID)
-	}
-	return nil
-}
-
 // ErrEmptyLogin is returned by UpsertOAuthUser when the supplied
 // OAuthUserInfo.Login is empty (or whitespace-only). An empty login
 // is never a legitimate OAuth result; allowing it through inserts a

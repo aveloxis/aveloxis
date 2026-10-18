@@ -89,7 +89,7 @@ func cleanupExecRetry(ctx context.Context, pg *PostgresStore, sql string, args .
 func testMigrate(ctx context.Context, t testing.TB, store *PostgresStore) {
 	t.Helper()
 	// Fast path: steady-state stamped DB — no lock traffic at all.
-	if store.GetSchemaVersion(ctx) == ToolVersion {
+	if v, err := store.SchemaVersion(ctx); err == nil && v == ToolVersion {
 		return
 	}
 	// v0.27.125 (Copilot round 16, suppressed — real): the bare check
@@ -141,7 +141,7 @@ func testMigrate(ctx context.Context, t testing.TB, store *PostgresStore) {
 		case <-time.After(time.Second):
 		}
 	}
-	if store.GetSchemaVersion(ctx) == ToolVersion {
+	if v, err := store.SchemaVersion(ctx); err == nil && v == ToolVersion {
 		return // another test binary migrated while we waited
 	}
 	if err := store.Migrate(ctx); err != nil {

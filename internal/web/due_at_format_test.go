@@ -4,9 +4,10 @@
 package web
 
 import (
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestWebQueueDueAtIncludesDate — mirror of TestDueAtIncludesDate in the
@@ -14,15 +15,11 @@ import (
 // HH:MM:SS-only format, which is unreadable once due_at is days out (post
 // v0.16.6 realignment). Pin it to a format that contains a date token.
 func TestWebQueueDueAtIncludesDate(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleMonitor(")
 
 	idx := strings.Index(code, "row.Due = j.DueAt.Format(")
 	if idx < 0 {
-		t.Fatal("cannot find row.Due = j.DueAt.Format(...) in web/server.go")
+		t.Fatal("cannot find row.Due = j.DueAt.Format(...) in handleMonitor")
 	}
 	tail := code[idx+len("row.Due = j.DueAt.Format("):]
 	end := strings.Index(tail, ")")

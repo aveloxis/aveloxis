@@ -15,9 +15,10 @@ package web
 
 import (
 	"bytes"
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestPaginationNavTemplateDefined asserts the shared block exists.
@@ -144,11 +145,7 @@ func TestPaginationNavDisablesNextLastOnLastPage(t *testing.T) {
 // TestMonitorTemplateUsesPaginationNav — the /monitor view must call
 // the shared template, so any future fix there benefits both pages.
 func TestMonitorTemplateUsesPaginationNav(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	idx := strings.Index(code, `{{define "monitor"}}`)
 	if idx < 0 {
@@ -168,11 +165,7 @@ func TestMonitorTemplateUsesPaginationNav(t *testing.T) {
 
 // TestGroupTemplateUsesPaginationNav — ditto for /groups.
 func TestGroupTemplateUsesPaginationNav(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	idx := strings.Index(code, `{{define "group"}}`)
 	if idx < 0 {
@@ -196,21 +189,7 @@ func TestGroupTemplateUsesPaginationNav(t *testing.T) {
 // 10000) on the still-rendered old page. Batching the repo lookup
 // makes page renders constant-time regardless of page size.
 func TestHandleMonitorUsesGetReposBatch(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	idx := strings.Index(code, "func (s *Server) handleMonitor(")
-	if idx < 0 {
-		t.Fatal("cannot find handleMonitor")
-	}
-	body := code[idx:]
-	end := strings.Index(body[1:], "\nfunc ")
-	if end > 0 {
-		body = body[:end+1]
-	}
+	body := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleMonitor(")
 
 	if !strings.Contains(body, "GetReposBatch") {
 		t.Error("handleMonitor must use GetReposBatch for a single round-trip " +

@@ -463,7 +463,7 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 	// again would reserve a second auto-add slot — at the last slot, a 429
 	// for a request that did add the repository (v0.29.91 whole-PR
 	// follow-up). The mark names one repository id.
-	if id, ok := r.Context().Value(repoAuthorizedKey{}).(int64); ok && id == repoID {
+	if id, ok := repoAuthorizedFor(r); ok && id == repoID {
 		return true
 	}
 	// An API token reads only its owner's groups: refused, never
@@ -531,6 +531,14 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, repoID in
 // wrapper already decided (servePageCached): the repository id it was
 // decided for.
 type repoAuthorizedKey struct{}
+
+// repoAuthorizedFor is the one reader of the mark: the repository id a
+// wrapper decided this request for, if any (authorizeRepo honours it for
+// that id; repoFromPath skips its existence read for it).
+func repoAuthorizedFor(r *http.Request) (int64, bool) {
+	id, ok := r.Context().Value(repoAuthorizedKey{}).(int64)
+	return id, ok
+}
 
 // withRepoAuthorized returns r marked as authorized for repoID. The mark
 // lives in this request's context only (it never outlives the request) and

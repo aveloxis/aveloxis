@@ -102,8 +102,8 @@ func TestReviewCommentUpsertsWriteRefRowWithLineMetadata(t *testing.T) {
 			t.Errorf("prReviewMsgRefFromCommentSQL missing line-metadata column %s", col)
 		}
 	}
-	if strings.Count(s, "prReviewMsgRefFromCommentSQL,") < 2 {
-		t.Error("both UpsertReviewComment AND UpsertReviewCommentBatch must write the ref row via the shared prReviewMsgRefFromCommentSQL")
+	if strings.Count(s, "prReviewMsgRefFromCommentSQL,") < 1 {
+		t.Error("UpsertReviewCommentBatch must write the ref row via the shared prReviewMsgRefFromCommentSQL")
 	}
 }
 

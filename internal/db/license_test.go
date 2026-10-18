@@ -22,9 +22,9 @@ func TestGetRepoLicensesQueryNormalizesEmptyToUnknown(t *testing.T) {
 	}
 	src := string(data)
 
-	// Find GetRepoLicenses function.
-	// v0.27.46: the SQL moved into GetRepoLicensesScoped (GetRepoLicenses
-	// is a thin shim); the TRIM/Unknown contract rides with it.
+	// v0.27.46: the SQL lives in GetRepoLicensesScoped (the unscoped
+	// GetRepoLicenses shim had no caller and went in v0.29.98); the
+	// TRIM/Unknown contract rides with it.
 	idx := strings.Index(src, "func (s *PostgresStore) GetRepoLicensesScoped")
 	if idx < 0 {
 		t.Fatal("cannot find GetRepoLicensesScoped function")
@@ -83,11 +83,7 @@ func TestUnknownLicenseIsNotOSI(t *testing.T) {
 // "Unknown" license rows with a visual indicator (italic or color) so
 // they stand out from named licenses.
 func TestLicensePageShowsUnknownDistinctly(t *testing.T) {
-	data, err := os.ReadFile("../web/templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := string(data)
+	tmpl := srctest.Read(t, "internal/web/templates/repo_detail.html")
 	// The license rendering JavaScript should check for "Unknown" and
 	// style it distinctly (e.g., italic, color, or a class).
 	if !strings.Contains(tmpl, "Unknown") || !strings.Contains(tmpl, "italic") {

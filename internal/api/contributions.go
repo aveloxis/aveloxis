@@ -5,7 +5,6 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -53,12 +52,8 @@ func parseWindow(r *http.Request) (since, until time.Time, ok bool) {
 // store-side GetRepoContributors docstring and docs/guide/api.md for
 // the full inclusion list and known limitations.
 func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	since, until, ok := parseWindow(r)
@@ -85,12 +80,8 @@ func (s *Server) handleRepoContributors(w http.ResponseWriter, r *http.Request) 
 // GetRepoContributionsCoverage and docs/guide/api.md for the full
 // semantics of each field.
 func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	since, until, ok := parseWindow(r)
@@ -112,12 +103,8 @@ func (s *Server) handleRepoContributionsCoverage(w http.ResponseWriter, r *http.
 // for the same window. The "(unknown)" bucket is included in the
 // response so the caller can decide whether to surface or hide it.
 func (s *Server) handleRepoAffiliations(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	since, until, ok := parseWindow(r)

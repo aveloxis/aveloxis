@@ -1,0 +1,414 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aveloxis - Compare Repos</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f6f8;color:#333;line-height:1.6}
+a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}
+.container{max-width:1400px;margin:0 auto;padding:20px}
+.card{background:white;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.12);padding:24px;margin-bottom:20px}
+.nav{background:#24292e;color:white;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
+.nav a{color:white}.nav-user{display:flex;align-items:center;gap:10px}
+.nav-user img{width:28px;height:28px;border-radius:50%}
+.breadcrumb{background:#fff;border-bottom:1px solid #e1e4e8;padding:10px 20px;font-size:14px}
+.breadcrumb a{color:#586069}.breadcrumb a:hover{color:#0366d6}
+.breadcrumb span.sep{margin:0 6px;color:#d1d5da}
+.breadcrumb .current{color:#24292e;font-weight:500}
+.btn{display:inline-block;padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:14px;font-weight:500}
+.btn-primary{background:#0366d6;color:white}.btn-primary:hover{background:#0256b9;text-decoration:none}
+.btn-danger{background:#d73a49;color:white;font-size:12px;padding:4px 10px}
+.btn-github{background:#24292e;color:white;padding:12px 24px;font-size:16px}
+.btn-gitlab{background:#fc6d26;color:white;padding:12px 24px;font-size:16px}
+input[type=text],input[type=url],input[type=search]{padding:8px 12px;border:1px solid #d1d5da;border-radius:6px;font-size:14px;width:100%}
+.form-row{display:flex;gap:10px;margin-top:12px}
+.form-row input{flex:1}
+.search-form{display:flex;gap:10px;margin-bottom:16px}
+.search-form input{flex:1}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #eee}
+th{font-weight:600;color:#586069;font-size:13px;text-transform:uppercase}
+.group-list{list-style:none}
+.group-list li{padding:12px 0;border-bottom:1px solid #eee}
+.group-list li:last-child{border-bottom:none}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:500}
+.badge-github{background:#f1f8ff;color:#0366d6}
+.badge-gitlab{background:#fef3e8;color:#fc6d26}
+.badge-org{background:#e6ffed;color:#22863a}
+.badge-git{background:#f3e8ff;color:#7c3aed}
+.login-box{max-width:400px;margin:100px auto;text-align:center}
+.login-box h1{margin-bottom:8px;font-size:28px}
+.login-box p{color:#586069;margin-bottom:32px}
+.login-buttons{display:flex;flex-direction:column;gap:16px}
+.empty{color:#586069;font-style:italic;padding:20px 0}
+h2{font-size:20px;margin-bottom:16px}
+h3{font-size:16px;margin-bottom:12px;color:#24292e}
+.section{margin-top:24px}
+.pagination{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:20px;padding-top:16px;border-top:1px solid #eee}
+.pagination a,.pagination span{padding:6px 12px;border-radius:4px;font-size:14px}
+.pagination a{border:1px solid #d1d5da;color:#0366d6}.pagination a:hover{background:#f6f8fa;text-decoration:none}
+.pagination span.current-page{background:#0366d6;color:white;border:1px solid #0366d6}
+.pagination span.disabled{color:#d1d5da;border:1px solid #eee}
+.result-info{color:#586069;font-size:13px;margin-bottom:12px}
+</style>
+<script>
+
+
+
+
+
+
+function avxEl(tag, props) {
+  if (['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base'].indexOf(String(tag).toLowerCase()) >= 0) {
+    throw new Error('avxEl: refused tag ' + tag);
+  }
+  const e = document.createElement(tag);
+  const p = props || {};
+  Object.keys(p).forEach(function (k) {
+    const v = p[k];
+    if (k === 'style') e.style.cssText = v;
+    else if (k === 'dataset') Object.keys(v).forEach(function (d) { e.dataset[d] = String(v[d]); });
+    else if (k.slice(0, 2) === 'on' && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else if (k === 'className' || k === 'title' || k === 'type' || k === 'colSpan') e[k] = v;
+    else throw new Error('avxEl: unsupported property ' + k);
+  });
+  for (let i = 2; i < arguments.length; i++) {
+    const c = arguments[i];
+    if (c == null || c === false) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+</script>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+.compare-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.repo-tag{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:500}
+.repo-tag button{background:none;border:none;cursor:pointer;color:inherit;font-size:14px;padding:0 2px}
+.mode-toggle{display:flex;border:1px solid #d1d5da;border-radius:6px;overflow:hidden}
+.mode-toggle button{padding:6px 14px;border:none;background:white;cursor:pointer;font-size:13px}
+.mode-toggle button.active{background:#0366d6;color:white}
+.date-range{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.date-range label{font-size:12px;color:#586069;font-weight:500}
+.date-range input[type=date]{padding:5px 8px;border:1px solid #d1d5da;border-radius:6px;font-size:13px;font-family:inherit}
+.date-range .preset-btn{padding:5px 10px;border:1px solid #d1d5da;border-radius:6px;background:white;cursor:pointer;font-size:12px}
+.date-range .preset-btn.active{background:#0366d6;color:white;border-color:#0366d6}
+.date-range .apply-btn{padding:5px 12px;border:1px solid #0366d6;border-radius:6px;background:#0366d6;color:white;cursor:pointer;font-size:13px;font-weight:500}
+.date-range .apply-btn:hover{background:#0255b3}
+</style>
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+<img src="https://avatars.example/7.png" alt="">
+<span>golden</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="breadcrumb">
+<a href="/dashboard">Home</a><span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">/</span><span class="current">Compare Repos</span>
+</div>
+<div class="container">
+<div class="card">
+<h2>Compare Repositories</h2>
+<p style="color:#586069;font-size:13px;margin-bottom:12px">Select up to 5 repositories from your groups to compare side-by-side. Use 100% mode to normalize by relative size, or Z-Score to compare trends controlling for community size.</p>
+
+<div class="compare-controls">
+<div style="position:relative;width:350px">
+<input type="text" id="repo-search" placeholder="Type to search repositories..." autocomplete="off" style="width:100%">
+<div id="search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5da;border-top:none;border-radius:0 0 6px 6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:250px;overflow-y:auto;z-index:100"></div>
+</div>
+<div id="selected-repos" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+</div>
+
+<div class="compare-controls">
+<div class="mode-toggle">
+<button id="mode-raw" class="active" onclick="setMode('raw')">Raw Counts</button>
+<button id="mode-pct" onclick="setMode('pct')">100%</button>
+<button id="mode-zscore" onclick="setMode('zscore')">Z-Score</button>
+</div>
+</div>
+
+<div class="compare-controls date-range" aria-label="Time range">
+<label for="date-since">From</label>
+<input type="date" id="date-since">
+<label for="date-until">To</label>
+<input type="date" id="date-until">
+<button class="preset-btn" data-preset="1m" onclick="applyPreset('1m')">1M</button>
+<button class="preset-btn" data-preset="6m" onclick="applyPreset('6m')">6M</button>
+<button class="preset-btn" data-preset="1y" onclick="applyPreset('1y')">1Y</button>
+<button class="preset-btn active" data-preset="2y" onclick="applyPreset('2y')">2Y</button>
+<button class="preset-btn" data-preset="5y" onclick="applyPreset('5y')">5Y</button>
+<button class="preset-btn" data-preset="all" onclick="applyPreset('all')">All</button>
+<button class="apply-btn" onclick="applyDateRange()">Apply</button>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+<div><canvas id="cmp-commits" height="220"></canvas></div>
+<div><canvas id="cmp-prs-opened" height="220"></canvas></div>
+<div><canvas id="cmp-prs-merged" height="220"></canvas></div>
+<div><canvas id="cmp-issues" height="220"></canvas></div>
+</div>
+</div>
+</div>
+
+<script>
+
+
+
+const API_BASE = '';
+const CHART_COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+let selectedRepos = [];
+let allRepoData = {};
+let currentMode = 'raw';
+let charts = {};
+
+
+
+function fmtDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+function initDateRange() {
+  const now = new Date();
+  const since = new Date(now);
+  since.setFullYear(since.getFullYear() - 2);
+  document.getElementById('date-since').value = fmtDate(since);
+  document.getElementById('date-until').value = fmtDate(now);
+}
+function applyPreset(preset) {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector('.preset-btn[data-preset="' + preset + '"]');
+  if (btn) btn.classList.add('active');
+  const now = new Date();
+  const since = new Date(now);
+  if (preset === '1m') since.setMonth(since.getMonth() - 1);
+  else if (preset === '6m') since.setMonth(since.getMonth() - 6);
+  else if (preset === '1y') since.setFullYear(since.getFullYear() - 1);
+  else if (preset === '2y') since.setFullYear(since.getFullYear() - 2);
+  else if (preset === '5y') since.setFullYear(since.getFullYear() - 5);
+  else if (preset === 'all') since.setFullYear(1970);
+  document.getElementById('date-since').value = fmtDate(since);
+  document.getElementById('date-until').value = fmtDate(now);
+  applyDateRange();
+}
+function clearPresetHighlight() {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+}
+document.getElementById('date-since').addEventListener('change', clearPresetHighlight);
+document.getElementById('date-until').addEventListener('change', clearPresetHighlight);
+function getDateRangeQuery() {
+  const s = document.getElementById('date-since').value;
+  const u = document.getElementById('date-until').value;
+  const parts = [];
+  if (s) parts.push('since=' + encodeURIComponent(s));
+  if (u) parts.push('until=' + encodeURIComponent(u));
+  return parts.length ? '?' + parts.join('&') : '';
+}
+function applyDateRange() {
+  const s = document.getElementById('date-since').value;
+  const u = document.getElementById('date-until').value;
+  if (s && u && s >= u) {
+    alert('The "From" date must be earlier than the "To" date.');
+    return;
+  }
+  
+  allRepoData = {};
+  if (selectedRepos.length === 0) { renderAllCharts(); return; }
+  Promise.all(selectedRepos.map(repo =>
+    fetch(API_BASE + '/api/v1/repos/' + repo.id + '/timeseries' + getDateRangeQuery())
+      .then(r => r.json())
+      .then(ts => { allRepoData[repo.id] = ts; })
+      .catch(err => console.error('Failed to refresh repo ' + repo.id + ':', err))
+  )).then(() => renderAllCharts());
+}
+initDateRange();
+
+
+const searchInput = document.getElementById('repo-search');
+const searchResults = document.getElementById('search-results');
+let searchTimer;
+
+searchInput.addEventListener('input', function() {
+  clearTimeout(searchTimer);
+  const q = this.value.trim();
+  if (q.length < 2) { searchResults.style.display = 'none'; return; }
+  searchTimer = setTimeout(() => {
+    fetch(API_BASE + '/api/v1/repos/search?q=' + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(data => {
+        if (!data || data.length === 0) {
+          searchResults.innerHTML = '<div style="padding:10px 12px;color:#586069;font-size:13px">No repos found</div>';
+          searchResults.style.display = 'block';
+          return;
+        }
+        
+        searchResults.textContent = '';
+        data.slice(0, 15).forEach(r => {
+          const repo = { id: Number(r.id), owner: String(r.owner), name: String(r.name) };
+          searchResults.append(avxEl('div', {
+            style: 'padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0',
+            onmouseover: function () { this.style.background = '#f6f8fa'; },
+            onmouseout: function () { this.style.background = 'white'; },
+            onclick: () => {
+              addRepo(repo);
+              searchResults.style.display = 'none';
+              searchInput.value = '';
+            },
+          }, repo.owner + '/', avxEl('strong', null, repo.name)));
+        });
+        searchResults.style.display = 'block';
+      })
+      .catch(() => { searchResults.style.display = 'none'; });
+  }, 200);
+});
+
+searchInput.addEventListener('focus', function() {
+  if (searchResults.innerHTML && this.value.length >= 2) searchResults.style.display = 'block';
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#repo-search') && !e.target.closest('#search-results'))
+    searchResults.style.display = 'none';
+});
+
+function addRepo(repo) {
+  if (selectedRepos.length >= 5) { alert('Maximum 5 repos for comparison.'); return; }
+  if (selectedRepos.find(r => r.id === repo.id)) return;
+  selectedRepos.push(repo);
+  renderTags();
+  fetchAndRender(repo);
+}
+
+function removeRepo(id) {
+  selectedRepos = selectedRepos.filter(r => r.id !== id);
+  delete allRepoData[id];
+  renderTags();
+  renderAllCharts();
+}
+
+function renderTags() {
+  const container = document.getElementById('selected-repos');
+  container.textContent = '';
+  selectedRepos.forEach((r, i) => {
+    container.append(avxEl('span', { className: 'repo-tag', style: 'background:' + CHART_COLORS[i] + '20;color:' + CHART_COLORS[i] },
+      r.owner + '/' + r.name + ' ',
+      avxEl('button', { type: 'button', onclick: () => removeRepo(r.id) }, '\u00d7')));
+  });
+}
+
+function fetchAndRender(repo) {
+  fetch(API_BASE + '/api/v1/repos/' + repo.id + '/timeseries' + getDateRangeQuery())
+    .then(r => r.json())
+    .then(ts => {
+      allRepoData[repo.id] = ts;
+      renderAllCharts();
+    });
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-toggle button').forEach(b => b.classList.remove('active'));
+  document.getElementById('mode-' + mode).classList.add('active');
+  renderAllCharts();
+}
+
+function renderAllCharts() {
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+
+  if (selectedRepos.length === 0) return;
+
+  renderComparisonChart('cmp-commits', 'Commits / week', 'commits');
+  renderComparisonChart('cmp-prs-opened', 'PRs Opened / week', 'prs_opened');
+  renderComparisonChart('cmp-prs-merged', 'PRs Merged / week', 'prs_merged');
+  renderComparisonChart('cmp-issues', 'Issues / week', 'issues');
+}
+
+function renderComparisonChart(canvasId, title, metricKey) {
+  
+  const allWeeks = new Set();
+  selectedRepos.forEach(r => {
+    const ts = allRepoData[r.id];
+    if (ts && ts[metricKey]) ts[metricKey].forEach(d => allWeeks.add(d.week_start.substring(0, 10)));
+  });
+  const labels = Array.from(allWeeks).sort();
+  if (labels.length === 0) return;
+
+  const datasets = selectedRepos.map((repo, i) => {
+    const ts = allRepoData[repo.id];
+    const dataMap = {};
+    if (ts && ts[metricKey]) ts[metricKey].forEach(d => dataMap[d.week_start.substring(0, 10)] = d.count);
+
+    let values = labels.map(w => dataMap[w] || 0);
+
+    if (currentMode === 'pct') {
+      
+      const max = Math.max(...values, 1);
+      values = values.map(v => (v / max) * 100);
+    } else if (currentMode === 'zscore') {
+      
+      const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
+      const stddev = Math.sqrt(variance) || 1;
+      values = values.map(v => (v - mean) / stddev);
+    }
+
+    return {
+      label: repo.owner + '/' + repo.name,
+      data: values,
+      borderColor: CHART_COLORS[i],
+      backgroundColor: CHART_COLORS[i] + '20',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 0,
+      borderWidth: 2,
+    };
+  });
+
+  const yLabel = currentMode === 'pct' ? '% of max' : currentMode === 'zscore' ? 'Z-Score (std dev)' : 'Count';
+
+  charts[canvasId] = new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: {display: true, position: 'top', labels: {font: {size: 11}}},
+        title: {display: true, text: title, font: {size: 14}},
+      },
+      scales: {
+        x: {ticks: {maxTicksLimit: 12, font: {size: 10}}},
+        y: {beginAtZero: currentMode !== 'zscore', title: {display: true, text: yLabel, font: {size: 11}}},
+      },
+      interaction: {intersect: false, mode: 'index'},
+    }
+  });
+}
+
+
+
+
+const urlRepos = '2,3'.split(',').filter(Boolean);
+if (urlRepos.length > 0) {
+  urlRepos.forEach(id => {
+    fetch(API_BASE + '/api/v1/repos/' + id + '/timeseries' + getDateRangeQuery())
+      .then(r => r.json())
+      .then(ts => {
+        const repo = {id: parseInt(id), owner: ts.repo_owner || 'unknown', name: ts.repo_name || id};
+        selectedRepos.push(repo);
+        allRepoData[repo.id] = ts;
+        renderTags();
+        renderAllCharts();
+      })
+      .catch(err => console.error('Failed to load repo ' + id + ':', err));
+  });
+}
+</script>
+</body></html>

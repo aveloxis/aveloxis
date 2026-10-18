@@ -138,9 +138,8 @@ func upgradeOne(ctx context.Context, tool collector.ExternalTool) error {
 // helper (v0.27.6): scancode is installed here (upgradeOne only runs
 // for tools on PATH), so EnsureScancodeCurrent(true) runs
 // `pipx upgrade scancode-toolkit-mini` and ALWAYS re-injects
-// typecode-libmagic (via collector.InjectTypecodeLibmagic's
-// underlying `pipx inject` — pipx upgrade may have rebuilt the venv,
-// dropping the prior injection).
+// typecode-libmagic (its `pipx inject`; pipx upgrade may have rebuilt
+// the venv, dropping the prior injection).
 //
 // Pre-v0.27.6 this file carried its own upgrade+inject sequence while
 // the monthly CheckAndUpdateTools path ran a bare `pipx install` that

@@ -33,12 +33,6 @@ func GithubUUID(ghUserID int64) uuid.UUID {
 	return platformUUIDInternal(1, ghUserID)
 }
 
-// GitLabUUID generates deterministic UUIDs for GitLab users.
-// Same layout as GithubUUID but with platform ID = 2.
-func GitLabUUID(glUserID int64) uuid.UUID {
-	return platformUUIDInternal(2, glUserID)
-}
-
 // PlatformUUID generates a deterministic UUID for a platform user ID.
 func PlatformUUID(platformID int, userID int64) uuid.UUID {
 	return platformUUIDInternal(byte(platformID), userID)

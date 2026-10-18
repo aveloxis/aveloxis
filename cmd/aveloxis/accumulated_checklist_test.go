@@ -67,7 +67,7 @@ func versions(vs []versionSteps) []string {
 func TestStartPrintsEverySkippedVersionsSteps(t *testing.T) {
 	g := &fakeGate{hasData: true, stamp: "0.29.68", latestAck: "0.29.64"}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.68", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.68", false, os.Stdin, &out)
 	if err != nil || proceed {
 		t.Fatalf("proceed=%v err=%v; want a refusal (non-interactive, un-acked)", proceed, err)
 	}
@@ -82,7 +82,7 @@ func TestStartPrintsEverySkippedVersionsSteps(t *testing.T) {
 	// No ack ever recorded: from the stamp, inclusive.
 	g = &fakeGate{hasData: true, stamp: "0.29.67"}
 	out.Reset()
-	if _, err := checkDeployReadiness(context.Background(), g, "0.29.68", true, os.Stdin, &out); err != nil {
+	if _, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.68", true, os.Stdin, &out); err != nil {
 		t.Fatal(err)
 	}
 	for _, v := range []string{"0.29.67", "0.29.68"} {
@@ -110,7 +110,7 @@ func TestAccumulatedChecklistCollapsesIdenticalBlocks(t *testing.T) {
 	}
 	g := &fakeGate{hasData: true, stamp: "0.29.13"}
 	var out bytes.Buffer
-	if _, err := checkDeployReadiness(context.Background(), g, "0.29.68", true, os.Stdin, &out); err != nil {
+	if _, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.68", true, os.Stdin, &out); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(out.String(), "Deployment steps for aveloxis"); n >= 20 {
@@ -130,7 +130,8 @@ func TestAccumulatedChecklistCollapsesIdenticalBlocks(t *testing.T) {
 func TestUnreadableAcksPrintThisVersionsStepsOnly(t *testing.T) {
 	g := &fakeGate{hasData: true, stamp: "0.29.66", latestAckErr: errors.New("boom")}
 	var out bytes.Buffer
-	printDeploySteps(context.Background(), g, &out, g.stamp, "0.29.69")
+	list, origin, ackErr := deployRange(context.Background(), g, g.stamp, "0.29.69")
+	printRange(&out, list, origin, ackErr)
 	s := out.String()
 	if !strings.Contains(s, "could not read the deploy acknowledgements: boom") {
 		t.Errorf("the read error must be reported:\n%s", s)
@@ -155,7 +156,7 @@ func TestUnreadableAcksPrintThisVersionsStepsOnly(t *testing.T) {
 // read as "nothing to do".
 func TestDeployChecklistSinceSharesThePrinter(t *testing.T) {
 	var out bytes.Buffer
-	if err := runDeployChecklist(&out, "0.29.0", "0.29.20"); err != nil {
+	if err := runDeployChecklistRange(&out, "0.29.0", false, "0.29.20"); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
@@ -173,7 +174,7 @@ func TestDeployChecklistSinceSharesThePrinter(t *testing.T) {
 			continue // "" is "no --since": the binary's own list
 		}
 		out.Reset()
-		err := runDeployChecklist(&out, bad, "0.29.69")
+		err := runDeployChecklistRange(&out, bad, false, "0.29.69")
 		if err == nil {
 			t.Errorf("--since %q: nil error; an unparseable version must exit non-zero (printed %q)", bad, out.String())
 			continue
@@ -184,7 +185,7 @@ func TestDeployChecklistSinceSharesThePrinter(t *testing.T) {
 	}
 	// A valid --since with nothing after it still exits 0.
 	out.Reset()
-	if err := runDeployChecklist(&out, "0.29.69", "0.29.69"); err != nil || !strings.Contains(out.String(), "no release after 0.29.69") {
+	if err := runDeployChecklistRange(&out, "0.29.69", false, "0.29.69"); err != nil || !strings.Contains(out.String(), "no release after 0.29.69") {
 		t.Errorf("--since at the binary's version = %v, %q; want nil and the nothing-after line", err, out.String())
 	}
 }
@@ -211,7 +212,7 @@ func TestMultiReleaseHeaderRunsTheLadderOnce(t *testing.T) {
 		{"0.29.64", "0.29.69", "`aveloxis migrate --skip-views`"}, // none does
 	} {
 		var out bytes.Buffer
-		if err := runDeployChecklist(&out, tc.since, tc.upTo); err != nil {
+		if err := runDeployChecklistRange(&out, tc.since, false, tc.upTo); err != nil {
 			t.Fatal(err)
 		}
 		s := out.String()
@@ -242,7 +243,8 @@ func TestMultiReleaseHeaderRunsTheLadderOnce(t *testing.T) {
 	// The gate's path prints the same header.
 	g := &fakeGate{hasData: true, stamp: "0.29.69", latestAck: "0.29.64"}
 	var out bytes.Buffer
-	printDeploySteps(context.Background(), g, &out, g.stamp, "0.29.69")
+	list, origin, ackErr := deployRange(context.Background(), g, g.stamp, "0.29.69")
+	printRange(&out, list, origin, ackErr)
 	if !strings.Contains(out.String(), "`aveloxis migrate --skip-views` (the migrate this range needs)") {
 		t.Errorf("printDeploySteps must print the once-only header:\n%s", out.String()[:min(600, out.Len())])
 	}
@@ -297,7 +299,7 @@ func TestGateNamesTheRangesMigrate(t *testing.T) {
 	for _, skip := range []bool{false, true} {
 		g := &fakeGate{hasData: true, stamp: "0.29.56"}
 		var out bytes.Buffer
-		if _, err := checkDeployReadiness(context.Background(), g, "0.29.69", skip, os.Stdin, &out); err != nil {
+		if _, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.69", skip, os.Stdin, &out); err != nil {
 			t.Fatal(err)
 		}
 		advice := out.String()
@@ -313,7 +315,7 @@ func TestGateNamesTheRangesMigrate(t *testing.T) {
 	// refusal must not label it "step 2 of the deploy steps for 0.29.69".
 	for _, skip := range []bool{false, true} {
 		var out bytes.Buffer
-		if _, err := checkDeployReadiness(context.Background(), &fakeGate{hasData: true, stamp: "0.29.56"}, "0.29.69", skip, os.Stdin, &out); err != nil {
+		if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.56"}, "0.29.69", skip, os.Stdin, &out); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(out.String(), "deploy steps for 0.29.69 (`aveloxis migrate`)") || !strings.Contains(out.String(), "the migrate of the deploy steps from the schema stamp (0.29.56") {
@@ -326,7 +328,7 @@ func TestGateNamesTheRangesMigrate(t *testing.T) {
 	// stamp (0.29.58)" named a range that asks for no plain migrate.
 	for _, skip := range []bool{false, true} {
 		var out bytes.Buffer
-		if _, err := checkDeployReadiness(context.Background(), &fakeGate{hasData: true, stamp: "0.29.58", latestAck: "0.29.56"}, "0.29.69", skip, os.Stdin, &out); err != nil {
+		if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.58", latestAck: "0.29.56"}, "0.29.69", skip, os.Stdin, &out); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(out.String(), "from 0.29.58") || !strings.Contains(out.String(), "the migrate of the deploy steps since the last acknowledged deploy (0.29.56) (`aveloxis migrate`)") {
@@ -336,7 +338,7 @@ func TestGateNamesTheRangesMigrate(t *testing.T) {
 	// With an ack at 0.29.64 the range is 0.29.65–0.29.69: --skip-views.
 	g := &fakeGate{hasData: true, stamp: "0.29.64", latestAck: "0.29.64"}
 	var out bytes.Buffer
-	if _, err := checkDeployReadiness(context.Background(), g, "0.29.69", false, os.Stdin, &out); err != nil {
+	if _, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.69", false, os.Stdin, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "(`aveloxis migrate --skip-views`)") {
@@ -395,7 +397,7 @@ func TestAckAheadOfTheStampDoesNotHideTheStampsRange(t *testing.T) {
 		t.Errorf("stamp 0.29.56 with an ack at 0.29.65 names %q; want the range's plain `aveloxis migrate`", got)
 	}
 	var out bytes.Buffer
-	if _, err := checkDeployReadiness(context.Background(), g, "0.29.69", true, os.Stdin, &out); err != nil {
+	if _, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.69", true, os.Stdin, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Deployment steps for aveloxis 0.29.57") {
@@ -492,7 +494,7 @@ func TestPendingSaysNothingWhenTheGateWouldPass(t *testing.T) {
 // the verb when rangePhrase put it inside the refusal.
 func TestAckAheadRefusalReadsAsOneSentence(t *testing.T) {
 	var out bytes.Buffer
-	if _, err := checkDeployReadiness(context.Background(), &fakeGate{hasData: true, stamp: "0.29.56", latestAck: "0.29.65"}, "0.29.69", false, os.Stdin, &out); err != nil {
+	if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.56", latestAck: "0.29.65"}, "0.29.69", false, os.Stdin, &out); err != nil {
 		t.Fatal(err)
 	}
 	line := strings.SplitN(out.String(), "\n", 2)[0]
@@ -539,7 +541,7 @@ func TestPendingAgreesWithTheGateOnEveryShape(t *testing.T) {
 						shapes++
 						g := &fakeGate{hasData: hasData, stamp: st.stamp, stampErr: st.err, latestAck: ak.latest, latestAckErr: ak.err, acked: acked.v, ackedErr: acked.err}
 						var gateOut bytes.Buffer
-						proceed, gateErr := checkDeployReadiness(context.Background(), g, version, false, nil, &gateOut)
+						proceed, _, gateErr := checkDeployReadinessNaming(context.Background(), g, version, false, nil, &gateOut)
 						gateSilent := gateErr == nil && proceed && gateOut.Len() == 0
 						var out bytes.Buffer
 						if err := runDeployChecklistPending(context.Background(), g, &out, version); err != nil {
@@ -681,7 +683,7 @@ func TestDeployChecklistCommandWiring(t *testing.T) {
 func TestStampRefusalSaysWhereTheStepsAre(t *testing.T) {
 	for _, version := range []string{"0.29.69", "0.29.999"} {
 		var out bytes.Buffer
-		if _, err := checkDeployReadiness(context.Background(), &fakeGate{hasData: true, stamp: "0.29.60", latestAck: "0.29.60"}, version, false, nil, &out); err != nil {
+		if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.60", latestAck: "0.29.60"}, version, false, nil, &out); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(out.String(), "`aveloxis deploy-checklist --pending` lists them") {

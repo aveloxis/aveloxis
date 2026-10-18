@@ -19,7 +19,7 @@ import (
 func testMigrate(ctx context.Context, t testing.TB, store *db.PostgresStore) {
 	t.Helper()
 	// Fast path: steady-state stamped DB — no lock traffic.
-	if store.GetSchemaVersion(ctx) == db.ToolVersion {
+	if v, err := store.SchemaVersion(ctx); err == nil && v == db.ToolVersion {
 		return
 	}
 	// v0.27.125 (Copilot round 16): recheck under the shared test-scoped
@@ -62,7 +62,7 @@ func testMigrate(ctx context.Context, t testing.TB, store *db.PostgresStore) {
 		case <-time.After(time.Second):
 		}
 	}
-	if store.GetSchemaVersion(ctx) == db.ToolVersion {
+	if v, err := store.SchemaVersion(ctx); err == nil && v == db.ToolVersion {
 		return // another test binary migrated while we waited
 	}
 	if err := store.Migrate(ctx); err != nil {

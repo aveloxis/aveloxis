@@ -596,20 +596,17 @@ func makeCDXLicenses(raw, acknowledgement string) []cdxLicense {
 	return []cdxLicense{cdxLicenseForNormalized(n, acknowledgement, inCDXLicenseEnum)}
 }
 
-// cdxLicenseFor picks the licenseChoice arm for one stored license, after
-// normalization (db.NormalizeLicenseToSPDX):
+// cdxLicenseForNormalized picks the licenseChoice arm for one stored license,
+// already normalized (makeCDXLicenses normalizes once with
+// db.NormalizeLicenseToSPDX):
 //   - license.id for an SPDX ID the target schema's enum lists (inEnum);
 //   - expression for any other valid SPDX expression: a compound, or a
 //     single ID newer than the enum (a one-term expression is valid in every
 //     schema version, and the enum is frozen per version, decision 6);
 //   - license.name for anything else (free text, house family labels).
-func cdxLicenseFor(raw, acknowledgement string, inEnum func(string) bool) cdxLicense {
-	return cdxLicenseForNormalized(db.NormalizeLicenseToSPDX(raw), acknowledgement, inEnum)
-}
-
-// cdxLicenseForNormalized is the production path (makeCDXLicenses normalizes
-// once); it applies the arm rules documented on cdxLicenseFor, which remains
-// the raw-input convenience the tests use.
+//
+// The raw-input convenience the tests use (cdxLicenseFor) lives in
+// test_only_helpers_test.go (v0.29.98, P-4).
 func cdxLicenseForNormalized(n, acknowledgement string, inEnum func(string) bool) cdxLicense {
 	if spdx.IsLicenseID(n) && inEnum(n) {
 		return cdxLicense{License: &cdxLicenseObj{ID: n, Acknowledgement: acknowledgement}}
@@ -949,19 +946,6 @@ func spdxPackageID(eco, name, version string) string {
 	h := sha256.Sum256([]byte(db.LockfileGraphKey(eco, name) + "@" + version))
 	return fmt.Sprintf("SPDXRef-Package-%x", h[:8])
 }
-
-func orNoAssertion(s string) string {
-	if s == "" {
-		return "NOASSERTION"
-	}
-	return s
-}
-
-// isSPDXLicense reports whether a string is an SPDX license identifier, as
-// spelled by the official list. The list is internal/spdx's (worklist 53,
-// SR-17); the collector's own embedded copy (v0.27.23) was retired in
-// v0.29.67.
-func isSPDXLicense(license string) bool { return spdx.IsLicenseID(license) }
 
 // cdxLicenseIDsRaw is the CycloneDX 1.7 schema's license-ID enum; see the
 // file's header for why it is not the SPDX list.

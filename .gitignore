@@ -4,6 +4,7 @@ aveloxis.io
 nginx.conf
 /rules/
 REVIEW.md
+*.old
 long-jobs/
 *.1
 loadorgs

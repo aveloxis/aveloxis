@@ -37,9 +37,3 @@ type CommitMessage struct {
 	Hash    string
 	Message string
 }
-
-// CommitParent links a commit to its parent(s) in the DAG.
-type CommitParent struct {
-	CommitID int64
-	ParentID int64
-}

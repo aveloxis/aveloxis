@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema migrations &mdash; Aveloxis 0.29.96 documentation</title>
+  <title>Schema migrations &mdash; Aveloxis 0.29.98 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=57ddef21"></script>
+      <script src="../_static/documentation_options.js?v=1bbfc8fa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1329,6 +1329,7 @@
 <li class="toctree-l3"><a class="reference internal" href="testing.html#when-not-to-use-a-source-contract-test">When NOT to use a source-contract test</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#the-v0-21-1-lesson">The v0.21.1 lesson</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#shared-helpers-internal-srctest-v0-27-118">Shared helpers: <code class="docutils literal notranslate"><span class="pre">internal/srctest</span></code> (v0.27.118)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing.html#finding-a-subject-across-a-package-v0-29-98-stage-0-5">Finding a subject across a package (v0.29.98, stage 0.5)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#sql-write-scanning-internal-srctest-sqlscan-v0-27-124">SQL write scanning: <code class="docutils literal notranslate"><span class="pre">internal/srctest/sqlscan</span></code> (v0.27.124)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#column-write-policy-registry-v0-27-126">Column write-policy registry (v0.27.126)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#standing-rules-registry-v0-27-127">Standing-rules registry (v0.27.127)</a></li>
@@ -1405,7 +1406,10 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-foreign-key">Adding a foreign key</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#migration-ordering">Migration ordering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#migration-ordering">Migration ordering</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#where-a-new-step-goes-stages-are-subjects-v0-29-98-n29">Where a new step goes: stages are subjects (v0.29.98, N29)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#materialized-views">Materialized views</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#the-aveloxis-migrate-skip-views-flag">The <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> flag</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#version-bump-checklist-for-a-schema-touching-change">Version-bump checklist for a schema-touching change</a></li>
@@ -1996,6 +2000,67 @@ SPDX-License-Identifier: MIT
 <li><p><strong>A data step must come after every <code class="docutils literal notranslate"><span class="pre">addColumnIfMissing</span></code> it reads or writes.</strong> <code class="docutils literal notranslate"><span class="pre">TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded</span></code> scans every literal-SQL <code class="docutils literal notranslate"><span class="pre">execMigrationStep</span></code> / <code class="docutils literal notranslate"><span class="pre">runOnceStep</span></code> and fails when the SQL names a table and a column that is only added <em>later</em> in <code class="docutils literal notranslate"><span class="pre">RunMigrations</span></code>. Fresh databases never notice (the base DDL creates the column), and a populated fleet on the current version never notices (the column already exists) — only a fleet upgrading from <em>before</em> the column fails, with SQLSTATE 42703 on the first migrate and success on the retry. That “fails once, passes on retry” shape is the tell: the failed run added the column. It shipped twice (the v0.28.7 <code class="docutils literal notranslate"><span class="pre">vuln_scan_last_run</span></code> backfill and the v0.27.37 GitLab force-full step) before the analyzer landed.</p></li>
 <li><p><strong>Index every FK child before a step bulk-deletes the parent.</strong> A <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> on a parent fires one FK check per child table per deleted row; with <code class="docutils literal notranslate"><span class="pre">DEFERRABLE</span> <span class="pre">INITIALLY</span> <span class="pre">DEFERRED</span></code> FKs those checks run at commit, and an unindexed child column makes each one a sequential scan. The v0.27.17 <code class="docutils literal notranslate"><span class="pre">repo_groups</span></code> consolidation spent ~1.6 h deleting 873 loser groups against a 12 GB unindexed <code class="docutils literal notranslate"><span class="pre">email_message.repo_group_id</span></code>; <code class="docutils literal notranslate"><span class="pre">ensureRepoGroupFKIndexes</span></code> now precedes that step and <code class="docutils literal notranslate"><span class="pre">TestEveryRepoGroupsFKChildIsIndexed</span></code> requires every <code class="docutils literal notranslate"><span class="pre">REFERENCES</span> <span class="pre">repo_groups</span></code> column to be indexed. When you add an FK to a parent whose rows a migration may delete, add the child index (migration-owned, CONCURRENTLY) in the same change.</p></li>
 </ul>
+<section id="where-a-new-step-goes-stages-are-subjects-v0-29-98-n29">
+<h3>Where a new step goes: stages are subjects (v0.29.98, N29)<a class="headerlink" href="#where-a-new-step-goes-stages-are-subjects-v0-29-98-n29" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">RunMigrations</span></code> runs ten stage functions in a fixed order (<code class="docutils literal notranslate"><span class="pre">migrateStage1CoreColumns</span></code> … <code class="docutils literal notranslate"><span class="pre">migrateStage10RecentReleases</span></code>).
+They were cut from one 1,570-line function by subject, and the subject — not the version — decides where a new
+step goes. The names lag the contents in two places, recorded here so nobody guesses:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Stage</p></th>
+<th class="head"><p>Subject (what it actually holds)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1 <code class="docutils literal notranslate"><span class="pre">CoreColumns</span></code></p></td>
+<td><p>repo, queue and contributor columns of the core pipeline; activity backfills</p></td>
+</tr>
+<tr class="row-odd"><td><p>2 <code class="docutils literal notranslate"><span class="pre">MailingList</span></code></p></td>
+<td><p>mailing-list columns and indexes</p></td>
+</tr>
+<tr class="row-even"><td><p>3 <code class="docutils literal notranslate"><span class="pre">ScancodeDistribution</span></code></p></td>
+<td><p>scancode and distribution worker columns — <strong>and</strong> the users/sessions/capacity work appended since v0.29.75 (session-token hashing, the capacity settings seed, the API-token settings seed and columns)</p></td>
+</tr>
+<tr class="row-odd"><td><p>4 <code class="docutils literal notranslate"><span class="pre">DedupAndIndexes</span></code></p></td>
+<td><p>commit dedup, repo-name cleanup, case-insensitive uniques, performance indexes</p></td>
+</tr>
+<tr class="row-even"><td><p>5 <code class="docutils literal notranslate"><span class="pre">DistributionRepairs</span></code></p></td>
+<td><p>distribution resets and repairs</p></td>
+</tr>
+<tr class="row-odd"><td><p>6 <code class="docutils literal notranslate"><span class="pre">CountBackfills</span></code></p></td>
+<td><p>count and placeholder backfills</p></td>
+</tr>
+<tr class="row-even"><td><p>7 <code class="docutils literal notranslate"><span class="pre">UsersAndGroups</span></code></p></td>
+<td><p>web users, e-mail and group columns; the legacy pending-group conversion; <code class="docutils literal notranslate"><span class="pre">dedupeUsers</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>8 <code class="docutils literal notranslate"><span class="pre">FKHardening</span></code></p></td>
+<td><p>FK cascade, index and DEFERRABLE hardening</p></td>
+</tr>
+<tr class="row-even"><td><p>9 <code class="docutils literal notranslate"><span class="pre">DataQuality</span></code></p></td>
+<td><p>languages, vulnerability lifecycle, login history, matview-era fixes</p></td>
+</tr>
+<tr class="row-odd"><td><p>10 <code class="docutils literal notranslate"><span class="pre">RecentReleases</span></code></p></td>
+<td><p>repo_labor history, message-ref metadata, lockfiles, and most steps since v0.27</p></td>
+</tr>
+</tbody>
+</table>
+<p>The rule:</p>
+<ol class="arabic simple">
+<li><p><strong>A new step goes at the END of its subject’s stage.</strong> Users, sessions, tokens and capacity go to stage 3’s
+tail (where that work already lives), not to stage 7, until stage 3 is renamed; a step with no subject goes to
+the end of stage 10.</p></li>
+<li><p><strong>If the step depends on anything in a LATER stage</strong> — a column add, an index (including one built
+CONCURRENTLY), a ledgered backfill, a seed — it goes <strong>after that dependency, in the later stage</strong>, with a
+comment naming the dependency. <code class="docutils literal notranslate"><span class="pre">TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded</span></code> catches column adds
+only; indexes, backfills and seeds are the author’s responsibility and the reviewer’s.</p></li>
+<li><p><strong>Stages are never reordered, and an existing step moves only with the step-order golden</strong>
+(<code class="docutils literal notranslate"><span class="pre">scripts/migrate_step_order.txt</span></code>, the execution-ordered list of every step label, column add and
+CONCURRENTLY index; its test accepts insertions and deletions of lines and fails on any reorder) <strong>and a
+fresh-empty-database migrate</strong> (<code class="docutils literal notranslate"><span class="pre">TestRunMigrationsOnFreshDB</span></code>) in the same change. A “tidy” move between stages
+is a reorder.</p></li>
+<li><p>Renaming a stage function to match its subject is a later pure move (G3-proven), never part of a step change.</p></li>
+</ol>
+</section>
 </section>
 <section id="materialized-views">
 <h2>Materialized views<a class="headerlink" href="#materialized-views" title="Link to this heading"></a></h2>

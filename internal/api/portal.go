@@ -936,9 +936,9 @@ func (s *Server) handleAdminPrioritizeRepo(w http.ResponseWriter, r *http.Reques
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	repoID, err := parseRepoID(r)
 	if err != nil {
-		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := s.store.PrioritizeRepo(r.Context(), repoID); err != nil {
@@ -962,9 +962,9 @@ func (s *Server) handleStarRepo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	repoID, err := parseRepoID(r)
 	if err != nil {
-		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// v0.27.4 (operator decision): starring an out-of-scope repo
@@ -1051,9 +1051,9 @@ func (s *Server) handleRepoStarState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
+	repoID, err := parseRepoID(r)
 	if err != nil {
-		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	starred, err := s.store.IsRepoStarred(r.Context(), info.UserID, repoID)

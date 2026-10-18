@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func readWebSource(t *testing.T, name string) string {
@@ -26,15 +28,7 @@ func readWebSource(t *testing.T, name string) string {
 // carrying the configured auto-approve limit, not a per-URL loop over
 // the legacy single-add.
 func TestHandleAddRepoBatchesThroughAddReposToGroup(t *testing.T) {
-	s := readWebSource(t, "server.go")
-	start := strings.Index(s, "func (s *Server) handleAddRepo(")
-	if start < 0 {
-		t.Fatal("handleAddRepo not found")
-	}
-	body := s[start:]
-	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
-		body = body[:end+1]
-	}
+	body := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleAddRepo(")
 	if !strings.Contains(body, "s.store.AddReposToGroup(") {
 		t.Error("handleAddRepo must route the whole paste through ONE AddReposToGroup call")
 	}
@@ -51,15 +45,7 @@ func TestHandleAddRepoBatchesThroughAddReposToGroup(t *testing.T) {
 // scan fires ONLY when the registration actually happened (admin
 // path) — a non-admin's pending request must not scan anything.
 func TestHandleAddOrgHonorsPendingOutcome(t *testing.T) {
-	s := readWebSource(t, "server.go")
-	start := strings.Index(s, "func (s *Server) handleAddOrg(")
-	if start < 0 {
-		t.Fatal("handleAddOrg not found")
-	}
-	body := s[start:]
-	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
-		body = body[:end+1]
-	}
+	body := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleAddOrg(")
 	if !strings.Contains(body, "out.Registered") {
 		t.Error("handleAddOrg must branch on OrgAddOutcome.Registered — scanning an " +
 			"unregistered (pending) org would bypass the per-add approval rule")
@@ -71,15 +57,7 @@ func TestHandleAddOrgHonorsPendingOutcome(t *testing.T) {
 // status check here at all (the ApproveGroup comment claiming
 // otherwise was false — audited 2026-07-16).
 func TestScanOrgReposCarriesRejectedGate(t *testing.T) {
-	s := readWebSource(t, "server.go")
-	start := strings.Index(s, "func (s *Server) scanOrgRepos(")
-	if start < 0 {
-		t.Fatal("scanOrgRepos not found")
-	}
-	body := s[start:]
-	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
-		body = body[:end+1]
-	}
+	body := srctest.PackageFunc(t, "internal/web", "func (s *Server) scanOrgRepos(")
 	if !strings.Contains(body, "GetGroupStatus") || !strings.Contains(body, `"rejected"`) {
 		t.Error("scanOrgRepos must skip scanning when the owning group is 'rejected' — " +
 			"the group-level abuse lever must stop org-driven enqueue")
@@ -89,13 +67,13 @@ func TestScanOrgReposCarriesRejectedGate(t *testing.T) {
 // TestAddRequestAdminRoutesRegistered pins the web admin decision
 // routes + their requireAdmin gating.
 func TestAddRequestAdminRoutesRegistered(t *testing.T) {
-	s := readWebSource(t, "server.go")
+	s := srctest.PackageFunc(t, "internal/web", "func (s *Server) Handler(")
 	for _, needle := range []string{
 		`mux.HandleFunc("POST /admin/add-requests/{id}/approve", s.requireAdmin(s.handleApproveAddRequest))`,
 		`mux.HandleFunc("POST /admin/add-requests/{id}/reject", s.requireAdmin(s.handleRejectAddRequest))`,
 	} {
 		if !strings.Contains(s, needle) {
-			t.Errorf("server.go must register (admin-gated): %s", needle)
+			t.Errorf("Handler must register (admin-gated): %s", needle)
 		}
 	}
 }

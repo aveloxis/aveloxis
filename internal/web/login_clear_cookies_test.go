@@ -4,7 +4,6 @@
 package web
 
 import (
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,23 +25,7 @@ func newTestServer(t *testing.T) *Server {
 		cfg:      config.WebConfig{},
 		sessions: make(map[string]*Session),
 	}
-	s.tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-		"truncate": func(str string, n int) string {
-			if len(str) <= n {
-				return str
-			}
-			return str[:n] + "..."
-		},
-		"dict": func(values ...interface{}) map[string]interface{} {
-			m := make(map[string]interface{})
-			for i := 0; i < len(values)-1; i += 2 {
-				m[values[i].(string)] = values[i+1]
-			}
-			return m
-		},
-		"add":      func(a, b int) int { return a + b },
-		"subtract": func(a, b int) int { return a - b },
-	}).Parse(allTemplates))
+	s.tmpl = parseTemplates() // the production parse (one FuncMap, v0.29.98)
 	return s
 }
 

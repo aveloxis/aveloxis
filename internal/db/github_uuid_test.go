@@ -60,8 +60,10 @@ func TestGithubUUID_LargeUserID(t *testing.T) {
 	}
 }
 
+// GitLab user UUIDs are made by PlatformUUID(2, id) (the GitLabUUID
+// wrapper, same bytes, was deleted in v0.29.98 with no caller).
 func TestGitLabUUID_PlatformByte(t *testing.T) {
-	u := GitLabUUID(42)
+	u := PlatformUUID(2, 42)
 	if u[0] != 2 {
 		t.Errorf("first byte = %d, want 2 (GitLab)", u[0])
 	}
@@ -75,8 +77,7 @@ func TestPlatformUUID_MatchesSpecific(t *testing.T) {
 	}
 
 	gl := PlatformUUID(2, 42)
-	glDirect := GitLabUUID(42)
-	if gl != glDirect {
-		t.Errorf("PlatformUUID(2, 42) = %s, GitLabUUID(42) = %s", gl, glDirect)
+	if gl == gh || gl[0] != 2 {
+		t.Errorf("PlatformUUID(2, 42) = %s: must carry platform byte 2 and differ from the GitHub id", gl)
 	}
 }

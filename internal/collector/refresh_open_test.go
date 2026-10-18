@@ -17,7 +17,7 @@ func TestRefreshOpenFileExists(t *testing.T) {
 	}
 	code := string(src)
 
-	for _, fn := range []string{"OpenItemRefresher", "RefreshOpenItems", "NewOpenItemRefresher"} {
+	for _, fn := range []string{"OpenItemRefresher", "RefreshOpenItems", "NewOpenItemRefresherWithMode"} {
 		if !strings.Contains(code, fn) {
 			t.Errorf("refresh_open.go must contain %s", fn)
 		}

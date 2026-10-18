@@ -1,0 +1,25 @@
+{{define "account_email"}}
+{{template "head" (dict "Title" "Confirm your email")}}
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+{{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
+<span>{{.Session.LoginName}}</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="container">
+<div class="card">
+<h2>Confirm your email</h2>
+<p style="color:#586069">We need an email address to coordinate with you about your account and notify you when your groups are approved. Your OAuth provider did not return a verified public email for this account, so please confirm one below.</p>
+{{if .Error}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">{{.Error}}</p>{{end}}
+<form method="POST" action="/account/email" class="form-row" style="margin-top:12px">
+<input type="email" name="email" placeholder="you@example.com" required autofocus>
+<button type="submit" class="btn btn-primary">Save email</button>
+</form>
+<p style="color:#586069;font-size:13px;margin-top:12px">Your email is used only by aveloxis administrators for coordination and approval notifications.</p>
+</div>
+</div>
+</body></html>
+{{end}}
+

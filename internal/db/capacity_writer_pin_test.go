@@ -175,7 +175,7 @@ func assertModeUses(t *testing.T, mode string, want map[string]int) {
 				}
 				where = d.Name.Name
 			case *ast.GenDecl:
-				where = "(package level)"
+				where = srctest.PackageLevel
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
 				if vs, ok := n.(*ast.ValueSpec); ok {
@@ -220,12 +220,14 @@ func assertModeUses(t *testing.T, mode string, want map[string]int) {
 func TestOrgLinkDoorHasOnlyReviewedCallers(t *testing.T) {
 	reviewed := map[string]map[string]int{
 		".AddOrgRepoToGroupByID(": {
-			"internal/scheduler/scheduler.go": 3, // the GitHub org, GitLab group and demand scans
-			"internal/web/server.go":          2, // scanOrgRepos: existing and new repositories
-			"cmd/aveloxis/main.go":            1, // add-repo's org expansion
+			srctest.SiteKey("internal/scheduler", "refreshGitHubOrg"):   1, // the GitHub org scan
+			srctest.SiteKey("internal/scheduler", "refreshGitLabGroup"): 1, // the GitLab group scan
+			srctest.SiteKey("internal/scheduler", "refreshUserOrgs"):    1, // the demand scan
+			srctest.SiteKey("internal/web", "scanOrgRepos"):             2, // existing and new repositories (stage 1 deletes it)
+			srctest.SiteKey("cmd/aveloxis", "runAddRepo"):               1, // add-repo's org expansion
 		},
 		".AddOperatorRepoToGroupByID(": {
-			"cmd/aveloxis/import_foundations.go": 1, // the foundation loader's dashboard groups (an operator command)
+			srctest.SiteKey("cmd/aveloxis", "runImportFoundations"): 1, // the foundation loader's dashboard groups (an operator command)
 		},
 	}
 	root := srctest.Root(t)
@@ -245,13 +247,17 @@ func TestOrgLinkDoorHasOnlyReviewedCallers(t *testing.T) {
 			}
 			examined++
 			src := srctest.StripGoComments(string(b))
-			for door := range reviewed {
-				if n := strings.Count(src, door); n > 0 {
-					rel, _ := filepath.Rel(root, path)
-					if got[door] == nil {
-						got[door] = map[string]int{}
+			rel, _ := filepath.Rel(root, path)
+			// Keyed dir|func (srctest.SiteKey, v0.29.98): a split of the
+			// file holding a door does not churn the registry.
+			for name, part := range srctest.FuncParts(t, src) {
+				for door := range reviewed {
+					if n := strings.Count(part, door); n > 0 {
+						if got[door] == nil {
+							got[door] = map[string]int{}
+						}
+						got[door][srctest.SiteKey(srctest.SiteDir(filepath.ToSlash(rel)), name)] += n
 					}
-					got[door][filepath.ToSlash(rel)] = n
 				}
 			}
 			return nil

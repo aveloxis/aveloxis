@@ -71,8 +71,8 @@ func TestSPDXListSourceContract(t *testing.T) {
 	if strings.Contains(code, "spdx_license_ids.txt") {
 		t.Error("sbom.go embeds its own SPDX list again; internal/spdx is the one list")
 	}
-	if !strings.Contains(code, "spdx.IsLicenseID(license)") {
-		t.Error("isSPDXLicense must delegate to internal/spdx")
+	if !strings.Contains(code, "spdx.IsLicenseID(") {
+		t.Error("the license-choice arm must ask internal/spdx whether a string is a license ID")
 	}
 	if _, err := os.Stat("spdx_license_ids.txt"); err == nil {
 		t.Error("spdx_license_ids.txt is back; internal/spdx/spdx_data.tsv replaced it")

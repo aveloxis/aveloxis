@@ -4,6 +4,8 @@
 package srctest
 
 import (
+	"fmt"
+	"go/build"
 	"strings"
 	"testing"
 )
@@ -331,6 +333,7 @@ type recordingTB struct {
 }
 
 func (r *recordingTB) Helper()                   {}
+func (r *recordingTB) Name() string              { return "recordingTB" }
 func (r *recordingTB) Fatalf(f string, a ...any) { r.failed = true; panic("fatal") }
 func (r *recordingTB) Fatal(a ...any)            { r.failed = true; panic("fatal") }
 func (r *recordingTB) Errorf(f string, a ...any) { r.failed = true }
@@ -516,5 +519,141 @@ const (
 func TestModulePath(t *testing.T) {
 	if got := ModulePath(t); got != "github.com/aveloxis/aveloxis" {
 		t.Errorf("ModulePath = %q, want the module declared in go.mod", got)
+	}
+}
+
+// --- Package-scope lookups (v0.29.98, P-1): every rule as a fixture ---
+
+const pkgFuncFixture = "internal/srctest/testdata/pkgfunc"
+
+func TestPackageFuncFindsTheOneDeclaration(t *testing.T) {
+	body, file := PackageFuncAt(t, pkgFuncFixture, "func Target(")
+	if !strings.Contains(body, "TARGET_BODY") || strings.Contains(body, "TargetTwin") {
+		t.Errorf("PackageFuncAt returned the wrong span: %q", body)
+	}
+	if file != pkgFuncFixture+"/a.go" {
+		t.Errorf("file = %q, want the declaring file", file)
+	}
+	if got := PackageFunc(t, pkgFuncFixture, "func TargetTwin("); !strings.HasPrefix(got, "func TargetTwin()") {
+		t.Errorf("PackageFunc(TargetTwin) = %q", got)
+	}
+}
+
+func TestPackageFuncIgnoresTestFilesAndCommentMentions(t *testing.T) {
+	// a_test.go also declares Target: production source only, so one match.
+	if body := PackageFunc(t, pkgFuncFixture, "func Target("); !strings.Contains(body, "TARGET_BODY") {
+		t.Errorf("the _test.go declaration must not be a candidate: %q", body)
+	}
+	// "func Ghost(" exists only inside a comment.
+	if !runFails(func(tb testing.TB) { PackageFunc(tb, pkgFuncFixture, "func Ghost(") }) {
+		t.Error("a signature mentioned only in a comment must not match (zero matches is fatal)")
+	}
+}
+
+func TestPackageFuncRefusesZeroAndSeveralMatches(t *testing.T) {
+	if !runFails(func(tb testing.TB) { PackageFunc(tb, pkgFuncFixture, "func Missing(") }) {
+		t.Error("zero matches must be fatal — a moved or renamed subject turns the pin red, never silent")
+	}
+	// Two files declare Dup: the failure names both files.
+	var msg string
+	if !runFails(func(tb testing.TB) {
+		PackageFunc(&captureTB{TB: tb, out: &msg}, "internal/srctest/testdata/pkgfunc_dup", "func Dup(")
+	}) {
+		t.Fatal("two matching declarations must be fatal")
+	}
+	for _, want := range []string{"pkgfunc_dup/a.go", "pkgfunc_dup/b.go"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the failure must name both files, got %q", msg)
+		}
+	}
+}
+
+func TestPackageFuncAndFuncBodyRequireACompleteName(t *testing.T) {
+	// "func Target" matches Target AND TargetTwin: the S4 rule refuses the
+	// signature before looking, for every lookup.
+	if !runFails(func(tb testing.TB) { PackageFunc(tb, pkgFuncFixture, "func Target") }) {
+		t.Error("PackageFunc must refuse a signature that does not end with ( or [")
+	}
+	src := "package x\nfunc Target() {}\nfunc TargetTwin() {}\n"
+	if !runFails(func(tb testing.TB) { FuncBody(tb, src, "func Target") }) {
+		t.Error("FuncBody must refuse a signature that does not end with ( or [")
+	}
+	if !runFails(func(tb testing.TB) { FuncBody(tb, "package x\nfunc a() {}\nfunc a() {}\n", "func a(") }) {
+		t.Error("FuncBody must refuse several matching declarations")
+	}
+	if got := FuncBody(t, "package x\nfunc G[T any](v T) T { return v }\n", "func G["); !strings.Contains(got, "return v") {
+		t.Errorf("a generic signature ends with [: %q", got)
+	}
+}
+
+func TestPackageFuncHonoursBuildConstraints(t *testing.T) {
+	// clock_linux.go (//go:build linux) and clock_other.go (//go:build
+	// !linux) both declare now(): exactly one builds under each GOOS, so a
+	// pin on it is one match on a darwin developer host and one on Linux CI.
+	for goos, want := range map[string]string{"linux": "LINUX_CLOCK", "darwin": "OTHER_CLOCK", "windows": "OTHER_CLOCK"} {
+		ctxt := build.Default
+		ctxt.GOOS = goos
+		m := packageFuncIn(t, &ctxt, "PackageFunc", "internal/srctest/testdata/pkgfunc_tags", "func now(")
+		if !strings.Contains(m.src, want) {
+			t.Errorf("GOOS=%s: PackageFunc(now) = %q, want the %s twin", goos, m.src, want)
+		}
+	}
+	// PackageFiles (the tripwire corpus) deliberately reads BOTH twins —
+	// a policy scan must see every writer whatever the host.
+	if n := len(PackageFiles(t, "internal/srctest/testdata/pkgfunc_tags", 2)); n != 2 {
+		t.Errorf("PackageFiles must not apply build constraints, got %d files", n)
+	}
+}
+
+func TestPackageSourceIsForNegativeNeedles(t *testing.T) {
+	src := PackageSource(t, pkgFuncFixture, 1)
+	if !strings.Contains(src, "// file: "+pkgFuncFixture+"/a.go") || !strings.Contains(src, "TARGET_BODY") {
+		t.Errorf("PackageSource must concatenate the package's production files with their names: %q", src[:min(80, len(src))])
+	}
+	if strings.Contains(src, "package pkgfunc\n\n// A test file") {
+		t.Error("PackageSource must leave _test.go files out")
+	}
+	if !runFails(func(tb testing.TB) { PackageSource(tb, pkgFuncFixture, 50) }) {
+		t.Error("the minFiles guard must be fatal when the walk finds fewer files")
+	}
+}
+
+// captureTB records the fatal message for assertions on its wording.
+type captureTB struct {
+	testing.TB
+	out *string
+}
+
+func (c *captureTB) Fatalf(f string, a ...any) { *c.out = fmt.Sprintf(f, a...); c.TB.Fatalf(f, a...) }
+
+func TestSiteKeyIsDirFuncThenDiscriminators(t *testing.T) {
+	if got := SiteKey("internal/api", "handleX"); got != "internal/api|handleX" {
+		t.Errorf("SiteKey = %q", got)
+	}
+	if got := SiteKey("internal/web", "f", "a message"); got != "internal/web|f|a message" {
+		t.Errorf("SiteKey with extra = %q", got)
+	}
+	if got := SiteDir("internal/web/server.go"); got != "internal/web" {
+		t.Errorf("SiteDir = %q", got)
+	}
+	if got := SiteDir(`cmd\aveloxis\main.go`); got != "cmd/aveloxis" {
+		t.Errorf("SiteDir on a backslash path = %q", got)
+	}
+}
+
+func TestFuncPartsSplitsByDeclaration(t *testing.T) {
+	src := "package x\n\nvar top = 1 // TOP\n\n// doc of a\nfunc a() { _ = \"A_BODY\" }\n\nfunc (s *S) m() { _ = \"M_BODY\" }\n\nconst tail = 2 // TAIL\n"
+	parts := FuncParts(t, src)
+	if !strings.Contains(parts["a"], "A_BODY") || strings.Contains(parts["a"], "doc of a") || strings.Contains(parts["a"], "M_BODY") {
+		t.Errorf("a = %q", parts["a"])
+	}
+	if !strings.Contains(parts["m"], "M_BODY") {
+		t.Errorf("m = %q", parts["m"])
+	}
+	if top := parts[PackageLevel]; !strings.Contains(top, "TOP") || !strings.Contains(top, "TAIL") || strings.Contains(top, "A_BODY") {
+		t.Errorf("package level = %q", top)
+	}
+	if !runFails(func(tb testing.TB) { FuncParts(tb, "not go") }) {
+		t.Error("an unparseable source must be fatal")
 	}
 }

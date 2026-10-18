@@ -17,7 +17,7 @@ import (
 // B5 — the fork owner was decoded on BOTH rails and dropped before
 // storage, leaving pull_request_repo.pr_cntrb_id at 0 of 41.2M rows.
 func TestFetchPRReposCapturesOwnerRef(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/client.go"), "func (c *Client) FetchPRRepos")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/client.go"), "func (c *Client) FetchPRRepos(")
 	if strings.Count(body, "OwnerRef:") < 2 {
 		t.Error("FetchPRRepos must set OwnerRef via ghUserToRef on BOTH head and base repos")
 	}
@@ -28,7 +28,7 @@ func TestFetchPRReposCapturesOwnerRef(t *testing.T) {
 }
 
 func TestRepoFromGraphQLCapturesOwnerRef(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/graphql_pr_batch.go"), "func repoFromGraphQL")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/graphql_pr_batch.go"), "func repoFromGraphQL(")
 	if !strings.Contains(body, "OwnerRef") {
 		t.Error("repoFromGraphQL must map the already-selected owner{login,databaseId,__typename} into OwnerRef")
 	}
@@ -37,7 +37,7 @@ func TestRepoFromGraphQLCapturesOwnerRef(t *testing.T) {
 // B7 + B8 — repositoryTopics and createdAt are one selection away in the
 // repo-info query we already run every Phase 0 cycle.
 func TestRepoInfoQuerySelectsTopicsAndCreatedAt(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/client.go"), "func repoInfoGraphQL")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/github/client.go"), "func repoInfoGraphQL(")
 	if !strings.Contains(body, "repositoryTopics(first: 20)") {
 		t.Error("repoInfoGraphQL must select repositoryTopics — repo_info.keywords was bound-but-never-set")
 	}

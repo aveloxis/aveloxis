@@ -590,6 +590,14 @@ var deployChecklists = map[string][]deployStep{
 	// 5559632343 on PR #229 — the organization reconcile's warning names
 	// the quota that refused; the skip census prints failed tests' output
 	// and CI keeps it. No schema change.
+	// v0.29.97 (2026-10-17, hotfix): the migrate's api_token_settings seed
+	// works on a schema born on 0.29.82–0.29.88 (NOT NULL mirror column
+	// without a default). No new schema object.
+	// v0.29.98 (2026-10-17, stage 0.5 of summary/59): test infrastructure
+	// (package-scope source lookups), the web server file split, templates
+	// embedded, the dead-code sweep. No schema change.
+	"0.29.98": v02998DeployChecklist,
+	"0.29.97": v02997DeployChecklist,
 	"0.29.96": v02996DeployChecklist,
 	"0.29.95": v02995DeployChecklist,
 	"0.29.94": v02994DeployChecklist,
@@ -623,6 +631,34 @@ var deployChecklists = map[string][]deployStep{
 // ALTER): repository answers are cached until the repository changes; it
 // carries 0.29.72's notes for a fleet that skipped it.
 var v02974DeployChecklist = v02974Checklist()
+
+// v02998DeployChecklist is 0.29.97's ladder with a note on the start step.
+var v02998DeployChecklist = func() []deployStep {
+	prev := v02997DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.98: no schema change and nothing new for the running services — a maintenance release (stage 0.5 of the admin-console program): the web GUI's handlers moved into files by concern and its page templates are embedded files, the :5555 monitor's unused POST /api/repos route is gone, and dead store/collector functions were removed. The migrate's step order is unchanged (the step-order golden pins it). A fleet already running 0.29.97 needs only the stop, the migrate and this start; a fleet on an older release takes 0.29.97's notes below in the same one migrate. " + out[i].desc
+		}
+	}
+	return out
+}()
+
+// v02997DeployChecklist is 0.29.96's ladder with a note on the start step
+// (the ladder's migrate step is shared; the note tells a fleet whose
+// migrate logged the error to rerun it before starting).
+var v02997DeployChecklist = func() []deployStep {
+	prev := v02996DeployChecklist
+	out := make([]deployStep, len(prev))
+	copy(out, prev)
+	for i := range out {
+		if out[i].cmd == "aveloxis start all" {
+			out[i].desc = "0.29.97: no new schema object. The migrate's 'v0.29.82 seed api_token_settings' step failed with SQLSTATE 23502 (null value in column default_rate_limit_per_hour) on a database whose api_token_settings table was born on 0.29.82–0.29.88 and had no row 1 yet; the step now supplies the rollback mirror and the column gets the DEFAULT 1000 schema.sql declares. A fleet whose 0.29.96 migrate logged that ERROR reruns the migrate on this version before starting; nothing else changed for the running services. A fleet already running 0.29.96 needs only the stop, the migrate and this start; a fleet on an older release takes 0.29.96's notes below in the same one migrate. " + out[i].desc
+		}
+	}
+	return out
+}()
 
 // v02996DeployChecklist is 0.29.95's ladder with a note on the start step.
 var v02996DeployChecklist = func() []deployStep {
@@ -1158,7 +1194,9 @@ func deployStepsFrom(after string, inclusive bool, upTo string) []versionSteps {
 	return out
 }
 
-// printDeploySteps prints every release's steps since the last acknowledged
+// printRange prints a range deployRange computed, saying first when the
+// acknowledgements could not be read (the list is then the binary's own).
+// Together they print every release's steps since the last acknowledged
 // deploy (worklist §1 item 2): a fleet acked at 0.29.64 and migrated to
 // 0.29.68 saw only 0.29.68's steps, and the skipped releases' heals never
 // ran. The range starts after the latest ack; with no ack at all it starts
@@ -1167,13 +1205,6 @@ func deployStepsFrom(after string, inclusive bool, upTo string) []versionSteps {
 // cannot be read, the binary's own steps print alone as well — the stamp
 // fallback is skipped (PR #218 review D1: it printed every release since
 // the stamp under a message that said "this version's steps only").
-func printDeploySteps(ctx context.Context, g deployGate, out io.Writer, stamp, version string) {
-	list, origin, ackErr := deployRange(ctx, g, stamp, version)
-	printRange(out, list, origin, ackErr)
-}
-
-// printRange prints a range deployRange computed, saying first when the
-// acknowledgements could not be read (the list is then the binary's own).
 func printRange(out io.Writer, list []versionSteps, origin string, ackErr error) {
 	if ackErr != nil {
 		fmt.Fprintf(out, "(could not read the deploy acknowledgements: %v — printing this version's steps only)\n", ackErr)
@@ -1465,15 +1496,11 @@ func deployStepsProvablyUnrun(stamp, binary string) bool {
 // invocations refuse unless skip is set. A fresh fleet, a version with
 // no checklist on a current stamp, and an already-acked version proceed
 // silently.
-func checkDeployReadiness(ctx context.Context, g deployGate, version string, skip bool, in *os.File, out io.Writer) (proceed bool, err error) {
-	proceed, _, err = checkDeployReadinessNaming(ctx, g, version, skip, in, out)
-	return proceed, err
-}
-
-// checkDeployReadinessNaming is checkDeployReadiness that also returns the
-// migrate its refusal named (the printed range's strongest, PR #218 fix
-// review r1 F2), so start's abort line names the same one. migrate is ""
-// when nothing was refused on a range.
+// It also returns the migrate its refusal named (the printed range's
+// strongest, PR #218 fix review r1 F2), so start's abort line names the
+// same one; migrate is "" when nothing was refused on a range. (v0.29.98:
+// the two-value wrapper checkDeployReadiness, which production stopped
+// calling in 3289742f, is gone; the tests take the production entry.)
 func checkDeployReadinessNaming(ctx context.Context, g deployGate, version string, skip bool, in *os.File, out io.Writer) (proceed bool, migrate string, err error) {
 	fleetHasData, err := g.FleetHasCollectedData(ctx)
 	if err != nil {
@@ -1670,19 +1697,14 @@ func startAbortMessage(version, migrate string) string {
 	return fmt.Sprintf("start aborted: see the reason printed above (un-acknowledged deploy steps — `aveloxis deploy-checklist --pending` lists them, `aveloxis ack-deploy` records them — or %s); --skip-deploy-check bypasses", stamp)
 }
 
-// runDeployChecklist is deploy-checklist's body: the binary's own steps, or
-// with since every release's after it through printStepBlocks. An
-// unparseable --since is an error (non-zero exit, PR #218 review D2): it
-// printed "no release after X" and exited 0, so a typo read as "nothing to
-// do".
-func runDeployChecklist(out io.Writer, since, version string) error {
-	return runDeployChecklistRange(out, since, false, version)
-}
-
-// runDeployChecklistRange is runDeployChecklist with --inclusive: the
-// --since release's own block prints too (PR #218 fix review r1 F4). A
-// fleet that never acknowledged a deploy passes its schema stamp, whose
-// own steps are unacknowledged — the range the start gate prints.
+// runDeployChecklistRange is deploy-checklist's body: the binary's own
+// steps, or with since every release's after it through printStepBlocks;
+// with inclusive the --since release's own block prints too (PR #218 fix
+// review r1 F4) — a fleet that never acknowledged a deploy passes its
+// schema stamp, whose own steps are unacknowledged, the range the start
+// gate prints. An unparseable --since is an error (non-zero exit, PR #218
+// review D2): it printed "no release after X" and exited 0, so a typo read
+// as "nothing to do".
 func runDeployChecklistRange(out io.Writer, since string, inclusive bool, version string) error {
 	if inclusive && since == "" {
 		return fmt.Errorf("--inclusive needs --since")

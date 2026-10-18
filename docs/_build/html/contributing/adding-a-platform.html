@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adding a new platform &mdash; Aveloxis 0.29.96 documentation</title>
+  <title>Adding a new platform &mdash; Aveloxis 0.29.98 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=57ddef21"></script>
+      <script src="../_static/documentation_options.js?v=1bbfc8fa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1329,6 +1329,7 @@
 <li class="toctree-l3"><a class="reference internal" href="testing.html#when-not-to-use-a-source-contract-test">When NOT to use a source-contract test</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#the-v0-21-1-lesson">The v0.21.1 lesson</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#shared-helpers-internal-srctest-v0-27-118">Shared helpers: <code class="docutils literal notranslate"><span class="pre">internal/srctest</span></code> (v0.27.118)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing.html#finding-a-subject-across-a-package-v0-29-98-stage-0-5">Finding a subject across a package (v0.29.98, stage 0.5)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#sql-write-scanning-internal-srctest-sqlscan-v0-27-124">SQL write scanning: <code class="docutils literal notranslate"><span class="pre">internal/srctest/sqlscan</span></code> (v0.27.124)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#column-write-policy-registry-v0-27-126">Column write-policy registry (v0.27.126)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="testing.html#standing-rules-registry-v0-27-127">Standing-rules registry (v0.27.127)</a></li>
@@ -1405,7 +1406,10 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="schema-migrations.html#adding-a-foreign-key">Adding a foreign key</a></li>
-<li class="toctree-l2"><a class="reference internal" href="schema-migrations.html#migration-ordering">Migration ordering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="schema-migrations.html#migration-ordering">Migration ordering</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="schema-migrations.html#where-a-new-step-goes-stages-are-subjects-v0-29-98-n29">Where a new step goes: stages are subjects (v0.29.98, N29)</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="schema-migrations.html#materialized-views">Materialized views</a></li>
 <li class="toctree-l2"><a class="reference internal" href="schema-migrations.html#the-aveloxis-migrate-skip-views-flag">The <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> flag</a></li>
 <li class="toctree-l2"><a class="reference internal" href="schema-migrations.html#version-bump-checklist-for-a-schema-touching-change">Version-bump checklist for a schema-touching change</a></li>
@@ -1904,7 +1908,7 @@ SPDX-License-Identifier: MIT
 <section id="likely">
 <h3>Likely<a class="headerlink" href="#likely" title="Link to this heading"></a></h3>
 <ol class="arabic simple" start="10">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/web/server.go</span></code></strong> — bulk-paste-URL parsing. If you want operators to be able to paste a Bugzilla product URL into the web GUI and have it routed correctly, the URL parser dispatch needs to recognize Bugzilla URLs.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/web/groups.go</span></code></strong> — bulk-paste-URL parsing. If you want operators to be able to paste a Bugzilla product URL into the web GUI and have it routed correctly, the URL parser dispatch needs to recognize Bugzilla URLs.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/main.go</span></code></strong> — <code class="docutils literal notranslate"><span class="pre">add-repo</span></code> command needs URL parsing that recognizes Bugzilla.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/collector/prelim.go</span></code></strong> — Bugzilla products don’t 301-redirect on rename; you may need to add a Bugzilla-specific liveness check OR accept that prelim is a no-op for Bugzilla. The latter is fine.</p></li>
 </ol>
@@ -2159,8 +2163,8 @@ SPDX-License-Identifier: MIT
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>The scheduler dispatches on URL → platform; you’ll need to wire that in <code class="docutils literal notranslate"><span class="pre">internal/web/server.go</span></code>’s URL-router and <code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/main.go</span></code>’s <code class="docutils literal notranslate"><span class="pre">add-repo</span></code> command. Pattern:</p>
-<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/web/server.go (and add-repo) — URL dispatch</span>
+<p>The scheduler dispatches on URL → platform; you’ll need to wire that in <code class="docutils literal notranslate"><span class="pre">internal/web/groups.go</span></code>’s URL-router and <code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/main.go</span></code>’s <code class="docutils literal notranslate"><span class="pre">add-repo</span></code> command. Pattern:</p>
+<div class="highlight-go notranslate"><div class="highlight"><pre><span></span><span class="c1">// internal/web/groups.go (and add-repo) — URL dispatch</span>
 <span class="kd">func</span><span class="w"> </span><span class="nx">detectPlatform</span><span class="p">(</span><span class="nx">url</span><span class="w"> </span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="nx">model</span><span class="p">.</span><span class="nx">Platform</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">switch</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nx">strings</span><span class="p">.</span><span class="nx">Contains</span><span class="p">(</span><span class="nx">url</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;github.com&quot;</span><span class="p">):</span>

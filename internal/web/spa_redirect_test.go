@@ -12,9 +12,10 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 
 	"github.com/aveloxis/aveloxis/internal/config"
 )
@@ -87,22 +88,23 @@ func TestPostLoginRedirectWithoutSPAURL(t *testing.T) {
 }
 
 func TestOAuthFlowCarriesNext(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	if strings.Count(s, "s.stashNext(w, r)") < 2 {
-		t.Error("both handleGitHubAuth and handleGitLabAuth must stash the ?next= destination")
+	// Each site by its own function (v0.29.98): the old whole-file counts
+	// could be met by one function twice.
+	for _, h := range []string{"handleGitHubAuth", "handleGitLabAuth"} {
+		if !strings.Contains(srctest.PackageFunc(t, "internal/web", "func (s *Server) "+h+"("), "s.stashNext(w, r)") {
+			t.Errorf("%s must stash the ?next= destination", h)
+		}
 	}
 	// v0.27.42: both callbacks route through completeOAuthLogin, the
 	// single home of the postLoginRedirect call — one call site + two
 	// handoffs is the deduplicated equivalent of the old two-site pin.
-	if strings.Count(s, "s.postLoginRedirect(r)") < 1 {
+	if !strings.Contains(srctest.PackageFunc(t, "internal/web", "func (s *Server) completeOAuthLogin("), "s.postLoginRedirect(r)") {
 		t.Error("completeOAuthLogin must resolve the redirect via postLoginRedirect")
 	}
-	if strings.Count(s, "s.completeOAuthLogin(w, r,") < 2 {
-		t.Error("both OAuth callbacks must hand off to completeOAuthLogin")
+	for _, h := range []string{"handleGitHubCallback", "handleGitLabCallback"} {
+		if !strings.Contains(srctest.PackageFunc(t, "internal/web", "func (s *Server) "+h+"("), "s.completeOAuthLogin(w, r,") {
+			t.Errorf("%s must hand off to completeOAuthLogin", h)
+		}
 	}
 }
 

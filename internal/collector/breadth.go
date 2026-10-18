@@ -93,8 +93,8 @@ const (
 //
 // v0.27.8: the per-row MarkBreadthAttempted / InsertContributorRepo
 // methods are replaced by their batch forms — the worker no longer
-// issues single-row writes on the hot path. The single-row store
-// methods remain on *db.PostgresStore for other callers.
+// issues single-row writes on the hot path (v0.29.98: the single-row
+// store methods, which nothing called, are gone).
 type breadthStore interface {
 	GetContributorsForBreadth(ctx context.Context, limit int, cooldown time.Duration) ([]db.BreadthContributor, error)
 	MarkBreadthAttemptedBatch(ctx context.Context, cntrbIDs []string) error

@@ -296,25 +296,3 @@ func (s *PostgresStore) MailingListCoverage(ctx context.Context) (MailingListCov
 	}
 	return cov, rows.Err()
 }
-
-// ListsForSystem returns the registered lists for a system (diagnostic).
-func (s *PostgresStore) ListsForSystem(ctx context.Context, system string) ([]ListJob, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT rgls_id, repo_group_id, COALESCE(rgls_email, ''), COALESCE(mlls_system, ''), COALESCE(mlls_last_month, '')
-		FROM aveloxis_data.repo_groups_list_serve
-		WHERE mlls_system = $1 AND COALESCE(rgls_email, '') <> ''
-		ORDER BY rgls_id`, system)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ListJob
-	for rows.Next() {
-		var j ListJob
-		if err := rows.Scan(&j.RglsID, &j.RepoGroupID, &j.ListAddress, &j.System, &j.LastMonth); err != nil {
-			return nil, err
-		}
-		out = append(out, j)
-	}
-	return out, rows.Err()
-}

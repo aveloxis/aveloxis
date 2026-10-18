@@ -113,8 +113,9 @@ func TestRepoAuthorizedMarkIsForItsRepositoryOnly(t *testing.T) {
 // Counted as identifiers with go/ast (a composite-literal or call-only
 // match missed a second WithValue, a `var k repoAuthorizedKey` and a
 // method-value alias): repoAuthorizedKey is used exactly twice outside its
-// type declaration, both in auth.go (the read in authorizeRepo, the
-// WithValue in withRepoAuthorized); withRepoAuthorized is referenced
+// type declaration, both in auth.go (the one reader repoAuthorizedFor —
+// authorizeRepo and, since stage 1b, repoFromPath read through it — and
+// the WithValue in withRepoAuthorized); withRepoAuthorized is referenced
 // exactly once outside its declaration, called or not.
 func TestRepoAuthorizedMarkHasOneReviewedSetter(t *testing.T) {
 	keyUses := map[string]int{}
@@ -137,9 +138,9 @@ func TestRepoAuthorizedMarkHasOneReviewedSetter(t *testing.T) {
 						if id, ok := m.(*ast.Ident); ok {
 							switch id.Name {
 							case "repoAuthorizedKey":
-								keyUses[name+"|withRepoAuthorized"]++
+								keyUses[srctest.SiteKey(srctest.SiteDir(name), "withRepoAuthorized")]++
 							case "withRepoAuthorized":
-								setterUses[name+"|withRepoAuthorized"]++
+								setterUses[srctest.SiteKey(srctest.SiteDir(name), "withRepoAuthorized")]++
 							}
 						}
 						return true
@@ -157,9 +158,9 @@ func TestRepoAuthorizedMarkHasOneReviewedSetter(t *testing.T) {
 			return true
 		})
 	}
-	wantKey := map[string]int{"internal/api/auth.go": 1, "internal/api/auth.go|withRepoAuthorized": 1}
+	wantKey := map[string]int{"internal/api/auth.go": 1, srctest.SiteKey("internal/api", "withRepoAuthorized"): 1}
 	if len(keyUses) != len(wantKey) {
-		t.Errorf("repoAuthorizedKey uses = %v; want %v (the read in authorizeRepo, the WithValue in withRepoAuthorized)", keyUses, wantKey)
+		t.Errorf("repoAuthorizedKey uses = %v; want %v (the read in repoAuthorizedFor, the WithValue in withRepoAuthorized)", keyUses, wantKey)
 	}
 	for k, n := range wantKey {
 		if keyUses[k] != n {
@@ -176,10 +177,12 @@ func TestRepoAuthorizedMarkHasOneReviewedSetter(t *testing.T) {
 	if gate < 0 || mark < gate {
 		t.Fatal("servePageCached must mark the request only after its own authorizeRepo returned true")
 	}
-	// Every handler run after the mark gets the marked request.
+	// Every handler run after the mark gets the marked request (stage 1b:
+	// the unlisted-route arm and runOnce; the unknown-repository arm became
+	// the wrapper's own 404 before the mark).
 	after := body[mark:]
 	if strings.Contains(after, "h(w, r)") || strings.Contains(after, "runOnce(c, key, r,") ||
-		strings.Count(after, "h(w, authed)") != 2 || !strings.Contains(after, "runOnce(c, key, authed,") {
+		strings.Count(after, "h(w, authed)") != 1 || !strings.Contains(after, "runOnce(c, key, authed,") {
 		t.Error("after the mark, servePageCached must run the handler only with the marked request (authed)")
 	}
 }

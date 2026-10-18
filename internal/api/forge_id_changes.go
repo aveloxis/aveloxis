@@ -63,9 +63,9 @@ func (s *Server) handleAdminForgeIDAdopt(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil || repoID <= 0 {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
+	repoID, err := parseRepoID(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// The body names the change the admin chose (review of v0.29.63:

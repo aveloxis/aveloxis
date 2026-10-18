@@ -852,7 +852,7 @@ func TestTestMigrateRechecksUnderAdvisoryLock(t *testing.T) {
 		if strings.Contains(s, "SELECT pg_advisory_lock(") {
 			t.Errorf("%s: blocking pg_advisory_lock is banned in testMigrate — it deadlocks against the holder's CREATE INDEX CONCURRENTLY (the v0.27.20 class)", f)
 		}
-		if strings.Count(s, "GetSchemaVersion(ctx)") < 2 {
+		if strings.Count(s, "SchemaVersion(ctx)") < 2 {
 			t.Errorf("%s: testMigrate must RECHECK the stamp after acquiring the lock (fast path + under-lock check)", f)
 		}
 	}

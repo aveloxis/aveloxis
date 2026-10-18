@@ -107,7 +107,7 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 	testMigrate(ctx, t, store)
-	if v := store.GetSchemaVersion(ctx); v != ToolVersion {
+	if v := stampOf(ctx, t, store); v != ToolVersion {
 		t.Fatalf("precondition: stamp %q != ToolVersion %q", v, ToolVersion)
 	}
 
@@ -323,7 +323,7 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 	if indexExists() {
 		t.Error("the refusal must run NO migration step — the probe index was recreated")
 	}
-	if v := store.GetSchemaVersion(ctx); v != bogus {
+	if v := stampOf(ctx, t, store); v != bogus {
 		t.Errorf("the refusal must not stamp: stamp = %q", v)
 	}
 
@@ -337,7 +337,7 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 	if err := RunMigrations(ctx, store, quiet); err != nil {
 		t.Fatalf("`aveloxis migrate` beside a live serve must not be refused by the serve-startup gate: %v", err)
 	}
-	if !indexExists() || store.GetSchemaVersion(ctx) != ToolVersion {
+	if !indexExists() || stampOf(ctx, t, store) != ToolVersion {
 		t.Fatal("the fast-path-off run must heal the index and re-stamp")
 	}
 
@@ -369,7 +369,7 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 	if !indexExists() {
 		t.Error("the full run must heal the dropped index")
 	}
-	if v := store.GetSchemaVersion(ctx); v != ToolVersion {
+	if v := stampOf(ctx, t, store); v != ToolVersion {
 		t.Errorf("the full run must re-stamp ToolVersion, got %q", v)
 	}
 }
@@ -803,7 +803,7 @@ func TestOtherServeAdviceIsTheOneVerdictSpelling(t *testing.T) {
 		if rendererPath != "" {
 			t.Fatalf("two OtherServe.Advice declarations (%s and %s) — SR-17 wants exactly one", rendererPath, path)
 		}
-		rendererPath, rendererDecl = path, m
+		rendererPath, rendererDecl = path, strings.TrimSuffix(m, ")") // the lookup's sig ends with "("
 	}
 	if rendererPath == "" {
 		t.Fatal("no OtherServe.Advice declaration found — the shared verdict renderer is the whole contract (SR-17)")

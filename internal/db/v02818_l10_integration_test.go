@@ -311,7 +311,7 @@ func TestRefreshAllRepoAggregatesRefusesWhenLockHeld(t *testing.T) {
 func TestRunOnceSeedRecordsWhenStampProvesApplied(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
-	stamp := store.GetSchemaVersion(ctx)
+	stamp := stampOf(ctx, t, store)
 	if stamp == "" {
 		t.Fatal("scratch DB carries no schema stamp after Migrate")
 	}
@@ -566,9 +566,6 @@ func TestRunOnceSeedFailsClosedWhenTheStampCannotBeRead(t *testing.T) {
 
 	if _, err := store.schemaVersionProbe(dead); err == nil {
 		t.Error("schemaVersionProbe swallowed a failed read — SR-5: a lookup ERROR is not \"no stamp\"")
-	}
-	if v := store.GetSchemaVersion(dead); v != "" {
-		t.Errorf("GetSchemaVersion on a failed read = %q, want \"\" (its lossy contract is preserved for its other callers)", v)
 	}
 
 	label := "_avseed failclosed " + t.Name()

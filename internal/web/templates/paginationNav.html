@@ -1,0 +1,63 @@
+{{/*
+  paginationNav — shared pagination control used by /monitor and /groups.
+  Parameters (passed as a map via the dict template func):
+    BasePath    string  — e.g. "/monitor" or "/groups/42"
+    Page        int     — 1-based current page
+    TotalPages  int     — always >= 1
+    Query       string  — search term (optional; empty means no search)
+    PageWindow  []int   — sliding window of page numbers to display
+
+  Renders First / Previous / page-numbers / Next / Last controls.
+  Disabled boundaries render as span.disabled. Every link preserves
+  Query via &q= when Query is non-empty. Inline variants were prone
+  to drift and subtle breakage — the original /monitor inline block
+  had correct hrefs in unit tests but failed in practice because the
+  10s auto-refresh raced with click navigation on slow page renders.
+*/}}
+{{/*
+  compareSearchWidget: the type-to-search autocomplete used on the
+  dashboard and the group detail page to pick up to 5 repos to compare.
+  Takes a Prefix string (e.g. "dash", "grp") which scopes all DOM IDs so
+  multiple widgets can coexist if ever needed.
+
+  Extracted from two near-identical copies that had drifted apart in the
+  past — the group-page copy never worked correctly because the hardcoded
+  API URL (pre-v0.18.18) resolved to the user's own machine. Sharing a
+  single definition eliminates that drift class: a fix on one page is a
+  fix on both, and the source-contract test below asserts every compare
+  page invokes this template by name.
+
+  Not used by the full /compare page's widget (#repo-search): that one is
+  interleaved with charts and date-range state and would require a
+  heavier refactor. The compareSearchWidget invariants (endpoint, debounce,
+  dropdown behavior) still apply there and are covered by runtime tests.
+*/}}
+{{define "paginationNav"}}
+{{if gt .TotalPages 1}}
+<div class="pagination">
+{{if gt .Page 1}}
+<a href="{{.BasePath}}?page=1{{if .Query}}&q={{.Query}}{{end}}" title="First page">First</a>
+<a href="{{.BasePath}}?page={{subtract .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Previous</a>
+{{else}}
+<span class="disabled">First</span>
+<span class="disabled">Previous</span>
+{{end}}
+
+{{range .PageWindow}}
+{{if eq . $.Page}}
+<span class="current-page">{{.}}</span>
+{{else}}
+<a href="{{$.BasePath}}?page={{.}}{{if $.Query}}&q={{$.Query}}{{end}}">{{.}}</a>
+{{end}}
+{{end}}
+
+{{if lt .Page .TotalPages}}
+<a href="{{.BasePath}}?page={{add .Page 1}}{{if .Query}}&q={{.Query}}{{end}}">Next</a>
+<a href="{{.BasePath}}?page={{.TotalPages}}{{if .Query}}&q={{.Query}}{{end}}" title="Last page">Last</a>
+{{else}}
+<span class="disabled">Next</span>
+<span class="disabled">Last</span>
+{{end}}
+</div>
+{{end}}
+{{end}}

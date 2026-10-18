@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 // "not rejected" and scanned. The error arm logs at ERROR and returns before
 // the scan starts (SR-5).
 func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
-	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/web/server.go"), "func (s *Server) scanOrgRepos("))
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", "func (s *Server) scanOrgRepos("))
 	lookup := strings.Index(body, "GetGroupStatus(")
 	rejected := strings.Index(body, `"rejected"`)
 	if lookup < 0 || rejected < 0 || lookup > rejected {
@@ -109,8 +110,9 @@ func TestScanOrgReposRejectedGateFailsClosed(t *testing.T) {
 // The runtime twin is TestLoginWithFailedAdminLookupIsNonAdminAndNotRefused
 // (DB tier).
 func TestLoginLogsAFailedAdminLookup(t *testing.T) {
+	_, file := srctest.PackageFuncAt(t, "internal/web", "func (s *Server) completeOAuthLogin(")
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "server.go", nil, 0)
+	f, err := parser.ParseFile(fset, filepath.Join(srctest.Root(t), filepath.FromSlash(file)), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

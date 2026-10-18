@@ -1,0 +1,8 @@
+# Deliberate production symbols that only tests use (scripts/unused-ratchet.sh).
+# Format: "<file> <kind> <symbol>", as staticcheck -checks U1000 -tests=false
+# prints them without the location. Shrink-only.
+internal/db/app_name.go func appNameForHostWith
+internal/scheduler/pool_demand.go var perWorkerLoops
+internal/scheduler/pool_demand.go var nonDBGoroutines
+internal/testdb/testdb.go var originalBase
+scripts/standing_rules.go var standingRules

@@ -1,0 +1,374 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aveloxis - golden</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f6f8;color:#333;line-height:1.6}
+a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}
+.container{max-width:1400px;margin:0 auto;padding:20px}
+.card{background:white;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.12);padding:24px;margin-bottom:20px}
+.nav{background:#24292e;color:white;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
+.nav a{color:white}.nav-user{display:flex;align-items:center;gap:10px}
+.nav-user img{width:28px;height:28px;border-radius:50%}
+.breadcrumb{background:#fff;border-bottom:1px solid #e1e4e8;padding:10px 20px;font-size:14px}
+.breadcrumb a{color:#586069}.breadcrumb a:hover{color:#0366d6}
+.breadcrumb span.sep{margin:0 6px;color:#d1d5da}
+.breadcrumb .current{color:#24292e;font-weight:500}
+.btn{display:inline-block;padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:14px;font-weight:500}
+.btn-primary{background:#0366d6;color:white}.btn-primary:hover{background:#0256b9;text-decoration:none}
+.btn-danger{background:#d73a49;color:white;font-size:12px;padding:4px 10px}
+.btn-github{background:#24292e;color:white;padding:12px 24px;font-size:16px}
+.btn-gitlab{background:#fc6d26;color:white;padding:12px 24px;font-size:16px}
+input[type=text],input[type=url],input[type=search]{padding:8px 12px;border:1px solid #d1d5da;border-radius:6px;font-size:14px;width:100%}
+.form-row{display:flex;gap:10px;margin-top:12px}
+.form-row input{flex:1}
+.search-form{display:flex;gap:10px;margin-bottom:16px}
+.search-form input{flex:1}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #eee}
+th{font-weight:600;color:#586069;font-size:13px;text-transform:uppercase}
+.group-list{list-style:none}
+.group-list li{padding:12px 0;border-bottom:1px solid #eee}
+.group-list li:last-child{border-bottom:none}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:500}
+.badge-github{background:#f1f8ff;color:#0366d6}
+.badge-gitlab{background:#fef3e8;color:#fc6d26}
+.badge-org{background:#e6ffed;color:#22863a}
+.badge-git{background:#f3e8ff;color:#7c3aed}
+.login-box{max-width:400px;margin:100px auto;text-align:center}
+.login-box h1{margin-bottom:8px;font-size:28px}
+.login-box p{color:#586069;margin-bottom:32px}
+.login-buttons{display:flex;flex-direction:column;gap:16px}
+.empty{color:#586069;font-style:italic;padding:20px 0}
+h2{font-size:20px;margin-bottom:16px}
+h3{font-size:16px;margin-bottom:12px;color:#24292e}
+.section{margin-top:24px}
+.pagination{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:20px;padding-top:16px;border-top:1px solid #eee}
+.pagination a,.pagination span{padding:6px 12px;border-radius:4px;font-size:14px}
+.pagination a{border:1px solid #d1d5da;color:#0366d6}.pagination a:hover{background:#f6f8fa;text-decoration:none}
+.pagination span.current-page{background:#0366d6;color:white;border:1px solid #0366d6}
+.pagination span.disabled{color:#d1d5da;border:1px solid #eee}
+.result-info{color:#586069;font-size:13px;margin-bottom:12px}
+</style>
+<script>
+
+
+
+
+
+
+function avxEl(tag, props) {
+  if (['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base'].indexOf(String(tag).toLowerCase()) >= 0) {
+    throw new Error('avxEl: refused tag ' + tag);
+  }
+  const e = document.createElement(tag);
+  const p = props || {};
+  Object.keys(p).forEach(function (k) {
+    const v = p[k];
+    if (k === 'style') e.style.cssText = v;
+    else if (k === 'dataset') Object.keys(v).forEach(function (d) { e.dataset[d] = String(v[d]); });
+    else if (k.slice(0, 2) === 'on' && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else if (k === 'className' || k === 'title' || k === 'type' || k === 'colSpan') e[k] = v;
+    else throw new Error('avxEl: unsupported property ' + k);
+  });
+  for (let i = 2; i < arguments.length; i++) {
+    const c = arguments[i];
+    if (c == null || c === false) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+</script>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+<img src="https://avatars.example/7.png" alt="">
+<span>golden</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="breadcrumb">
+<a href="/dashboard">Home</a><span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">/</span>
+<a href="/groups/1">Golden group</a><span class="sep">/</span>
+<span class="current">example/golden</span>
+</div>
+<div class="container">
+<div class="card">
+<h2>example/golden</h2>
+<p style="margin-bottom:8px"><a href="https://github.com/example/golden" style="color:#586069;font-size:13px">https://github.com/example/golden</a></p>
+
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+<div class="stat"><div class="value">3</div><div class="label">Issues</div></div>
+<div class="stat"><div class="value">4</div><div class="label">PRs</div></div>
+<div class="stat"><div class="value">10</div><div class="label">Commits</div></div>
+<div class="stat"><div class="value" style="color:#dc2626">5</div><div class="label">Vulns (1 crit) · 2 version unknown</div></div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div><canvas id="chart-commits" height="200"></canvas></div>
+<div><canvas id="chart-prs-opened" height="200"></canvas></div>
+<div><canvas id="chart-prs-merged" height="200"></canvas></div>
+<div><canvas id="chart-issues" height="200"></canvas></div>
+</div>
+
+<div class="section" id="license-section" style="margin-top:24px">
+<h3>Dependency Licenses</h3>
+<table id="license-table" style="max-width:600px">
+<tr><th>License</th><th style="text-align:right">Count</th><th style="text-align:center">OSI</th></tr>
+<tr><td colspan="3" class="empty">Loading...</td></tr>
+</table>
+</div>
+
+<div class="section" style="margin-top:24px">
+<h3>Source Code Licenses</h3>
+<p style="font-size:13px;color:#6b7280;margin-bottom:4px">Detected by <a href="https://github.com/aboutcode-org/scancode-toolkit" target="_blank">ScanCode</a> from source file analysis. Each repo is rescanned on a configurable cadence (default 6 months — see <code>collection.scancode_cadence_days</code>).</p>
+<p id="scancode-freshness" style="font-size:13px;color:#6b7280;margin-bottom:8px">Last run: <em>loading…</em></p>
+<table id="scancode-license-table" style="max-width:600px">
+<tr><th>License (SPDX)</th><th style="text-align:right">Files</th><th style="text-align:center">OSI</th></tr>
+<tr><td colspan="3" class="empty">Loading...</td></tr>
+</table>
+<div id="scancode-files-section" style="margin-top:16px">
+<h4 style="font-size:14px;margin-bottom:4px">File-Level Detections <span style="font-weight:normal;color:#6b7280;font-size:12px">(click column to sort)</span></h4>
+<div style="max-height:400px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px">
+<table id="scancode-files-table" style="width:100%;font-size:12px;border-collapse:collapse">
+<thead style="position:sticky;top:0;background:#f9fafb"><tr>
+<th style="text-align:left;padding:6px 8px;cursor:pointer;border-bottom:1px solid #e5e7eb" onclick="sortScancodeFiles(0)">File</th>
+<th style="text-align:left;padding:6px 8px;cursor:pointer;border-bottom:1px solid #e5e7eb;max-width:160px" onclick="sortScancodeFiles(1)">License</th>
+<th style="text-align:left;padding:6px 8px;cursor:pointer;border-bottom:1px solid #e5e7eb;max-width:300px" onclick="sortScancodeFiles(2)">Copyright</th>
+</tr></thead>
+<tbody id="scancode-files-body"><tr><td colspan="3" class="empty">Loading...</td></tr></tbody>
+</table>
+</div>
+<div id="copyright-section" style="margin-top:16px;display:none">
+<h4 style="font-size:14px;margin-bottom:4px">Copyright Holders</h4>
+<ul id="copyright-list" style="font-size:13px;color:#374151;padding-left:20px"></ul>
+</div>
+</div>
+</div>
+
+<div class="section">
+<h3>Downloads</h3>
+<div style="display:flex;gap:8px">
+<a href="/groups/1/repos/2/sbom?format=cyclonedx" class="btn btn-primary" style="font-size:13px">Download CycloneDX SBOM</a>
+<a href="/groups/1/repos/2/sbom?format=spdx" class="btn btn-primary" style="font-size:13px">Download SPDX SBOM</a>
+</div>
+</div>
+</div>
+</div>
+
+<script>
+
+
+
+const API_BASE = '';
+const REPO_ID =  2 ;
+
+
+const COLORS = {
+  commits: {bg: 'rgba(37, 99, 235, 0.15)', border: '#2563eb'},
+  prsOpened: {bg: 'rgba(16, 185, 129, 0.15)', border: '#10b981'},
+  prsMerged: {bg: 'rgba(139, 92, 246, 0.15)', border: '#8b5cf6'},
+  issues: {bg: 'rgba(245, 158, 11, 0.15)', border: '#f59e0b'},
+};
+
+function makeChart(canvasId, label, color, data) {
+  const labels = data.map(d => d.week_start.substring(0, 10));
+  const values = data.map(d => d.count);
+  new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: label,
+        data: values,
+        borderColor: color.border,
+        backgroundColor: color.bg,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {legend: {display: true, position: 'top'}},
+      scales: {
+        x: {display: true, ticks: {maxTicksLimit: 12, font: {size: 10}}},
+        y: {display: true, beginAtZero: true, ticks: {font: {size: 10}}}
+      },
+      interaction: {intersect: false, mode: 'index'},
+    }
+  });
+}
+
+
+fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/timeseries')
+  .then(r => r.json())
+  .then(ts => {
+    makeChart('chart-commits', 'Commits / week', COLORS.commits, ts.commits || []);
+    makeChart('chart-prs-opened', 'PRs Opened / week', COLORS.prsOpened, ts.prs_opened || []);
+    makeChart('chart-prs-merged', 'PRs Merged / week', COLORS.prsMerged, ts.prs_merged || []);
+    makeChart('chart-issues', 'Issues / week', COLORS.issues, ts.issues || []);
+  })
+  .catch(err => {
+    console.error('Failed to load time series:', err);
+    document.querySelectorAll('canvas').forEach(c => {
+      c.parentElement.innerHTML = '<p class="empty">Chart data unavailable. Is <code>aveloxis api</code> running?</p>';
+    });
+  });
+
+
+function osiMark(isOSI) {
+  return isOSI ? avxEl('span', { style: 'color:#059669' }, '\u2713') : avxEl('span', { style: 'color:#d1d5da' }, '\u2014');
+}
+function licenseRow(table, name, count, isOSI) {
+  (table.tBodies[0] || table).append(avxEl('tr', null,
+    avxEl('td', null, name),
+    avxEl('td', { style: 'text-align:right' }, String(Number(count) || 0)),
+    avxEl('td', { style: 'text-align:center' }, osiMark(isOSI))));
+}
+
+
+fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/licenses')
+  .then(r => r.json())
+  .then(licenses => {
+    const table = document.getElementById('license-table');
+    if (!licenses || licenses.length === 0) {
+      table.innerHTML = '<tr><th>License</th><th style="text-align:right">Count</th><th style="text-align:center">OSI</th></tr>' +
+        '<tr><td colspan="3" class="empty">No dependency license data yet.</td></tr>';
+      return;
+    }
+    table.innerHTML = '<tr><th>License</th><th style="text-align:right">Count</th><th style="text-align:center">OSI Compliant</th></tr>';
+    
+    licenses.forEach(l => {
+      
+      const name = l.license === 'Unknown'
+        ? avxEl('span', { style: 'color:#b45309;font-style:italic', title: 'No license declared by this dependency' }, 'Unknown')
+        : String(l.license || '');
+      licenseRow(table, name, l.count, l.is_osi);
+    });
+  })
+  .catch(() => {
+    document.getElementById('license-table').innerHTML =
+      '<tr><td colspan="3" class="empty">License data unavailable.</td></tr>';
+  });
+
+
+fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-licenses')
+  .then(r => r.json())
+  .then(data => {
+    const table = document.getElementById('scancode-license-table');
+    const licenses = data.licenses || [];
+    const copyrights = data.copyrights || [];
+
+    
+    
+    
+    const freshEl = document.getElementById('scancode-freshness');
+    if (freshEl) {
+      if (data.last_run) {
+        freshEl.textContent = 'Last run: ';
+        freshEl.append(avxEl('strong', null, String(data.last_run)),
+          data.scancode_version ? ' (scancode ' + data.scancode_version + ')' : '');
+      } else {
+        freshEl.innerHTML = 'Last run: <em>not yet run — will run in the next scancode worker cycle</em>';
+      }
+    }
+
+    if (licenses.length === 0) {
+      table.innerHTML = '<tr><th>License (SPDX)</th><th style="text-align:right">Files</th><th style="text-align:center">OSI</th></tr>' +
+        '<tr><td colspan="3" class="empty">No ScanCode data yet. Install scancode via <code>aveloxis install-tools</code>.</td></tr>';
+      return;
+    }
+
+    table.innerHTML = '<tr><th>License (SPDX)</th><th style="text-align:right">Files</th><th style="text-align:center">OSI</th></tr>';
+    licenses.forEach(l => {
+      const name = l.license === 'Unknown'
+        ? avxEl('span', { style: 'color:#b45309;font-style:italic', title: 'No license detected in these files' }, 'Unknown')
+        : String(l.license || '');
+      licenseRow(table, name, l.file_count, l.is_osi);
+    });
+
+    
+    if (copyrights.length > 0) {
+      const section = document.getElementById('copyright-section');
+      section.style.display = 'block';
+      const list = document.getElementById('copyright-list');
+      
+      list.textContent = '';
+      copyrights.forEach(c => {
+        const n = Number(c.file_count) || 0;
+        list.append(avxEl('li', null, String(c.holder || ''), ' ',
+          avxEl('span', { style: 'color:#9ca3af' }, '(' + n + ' file' + (n !== 1 ? 's' : '') + ')')));
+      });
+    }
+
+  })
+  .catch(() => {
+    document.getElementById('scancode-license-table').innerHTML =
+      '<tr><td colspan="3" class="empty">Source code license data unavailable.</td></tr>';
+  });
+
+
+let scancodeFilesData = [];
+let scancodeSortCol = 0;
+let scancodeSortAsc = true;
+
+function renderScancodeFiles() {
+  const tbody = document.getElementById('scancode-files-body');
+  if (scancodeFilesData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No file-level ScanCode data.</td></tr>';
+    return;
+  }
+  const sorted = [...scancodeFilesData].sort((a, b) => {
+    const keys = ['path', 'license', 'copyright'];
+    const key = keys[scancodeSortCol];
+    const cmp = (a[key] || '').localeCompare(b[key] || '');
+    return scancodeSortAsc ? cmp : -cmp;
+  });
+  
+  
+  tbody.textContent = '';
+  sorted.forEach(f => {
+    const lic = f.license === 'Unknown'
+      ? avxEl('span', { style: 'color:#b45309;font-style:italic' }, 'Unknown')
+      : String(f.license || '');
+    const cr = f.copyright
+      ? avxEl('span', { title: String(f.copyright) }, String(f.copyright))
+      : avxEl('span', { style: 'color:#d1d5da' }, '\u2014');
+    tbody.append(avxEl('tr', null,
+      avxEl('td', { style: 'padding:4px 8px;word-break:break-all;max-width:280px;font-family:monospace;font-size:11px' }, String(f.path || '')),
+      avxEl('td', { style: 'padding:4px 8px;max-width:160px' }, lic),
+      avxEl('td', { style: 'padding:4px 8px;max-width:300px;font-size:11px' }, cr)));
+  });
+}
+
+function sortScancodeFiles(col) {
+  if (scancodeSortCol === col) {
+    scancodeSortAsc = !scancodeSortAsc;
+  } else {
+    scancodeSortCol = col;
+    scancodeSortAsc = true;
+  }
+  renderScancodeFiles();
+}
+
+fetch(API_BASE + '/api/v1/repos/' + REPO_ID + '/scancode-files')
+  .then(r => r.json())
+  .then(files => {
+    scancodeFilesData = files || [];
+    renderScancodeFiles();
+  })
+  .catch(() => {
+    document.getElementById('scancode-files-body').innerHTML =
+      '<tr><td colspan="3" class="empty">File data unavailable.</td></tr>';
+  });
+</script>
+</body></html>

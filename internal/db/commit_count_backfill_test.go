@@ -7,32 +7,58 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
-// TestShouldBackfillCommitCount — pure decision helper covering the four
-// combinations of (apiCommitCount, gatheredCommitCount). The backfill only
-// fires when the API returned 0 AND facade found at least one commit: this
-// avoids overwriting a real non-zero API count, and avoids writing a no-op
-// 0 when facade also has nothing.
-func TestShouldBackfillCommitCount(t *testing.T) {
+// TestBackfillGitLabCommitCountFourCases drives the SQL's rule through
+// the four (api count, gathered count) combinations (v0.29.98, S5): the
+// Go copy of the rule, ShouldBackfillCommitCount, was test-only and could
+// drift from the statement that runs; the statement is now the oracle.
+// Only "API reported 0 AND facade gathered at least one commit" writes:
+// a real non-zero API count is never overwritten, and a zero stays a
+// zero when facade saw nothing.
+func TestBackfillGitLabCommitCountFourCases(t *testing.T) {
 	cases := []struct {
-		name     string
-		api      int
-		gathered int
-		wantFill bool
+		name      string
+		api       int
+		commits   int
+		wantWrite bool
+		wantCount int64
 	}{
-		{"api zero, gathered positive — backfill", 0, 500, true},
-		{"api positive — never overwrite", 1234, 500, false},
-		{"api positive, gathered zero (pre-facade) — never overwrite", 1234, 0, false},
-		{"both zero — nothing to do", 0, 0, false},
-		{"api zero, gathered 1 — still backfill (smallest non-zero case)", 0, 1, true},
+		{"api zero, gathered positive — backfill", 0, 2, true, 2},
+		{"api positive, gathered positive — never overwrite", 1234, 2, false, 1234},
+		{"api positive, gathered zero — never overwrite", 1234, 0, false, 1234},
+		{"both zero — nothing to do", 0, 0, false, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ShouldBackfillCommitCount(tc.api, tc.gathered)
-			if got != tc.wantFill {
-				t.Errorf("ShouldBackfillCommitCount(%d,%d) = %v, want %v",
-					tc.api, tc.gathered, got, tc.wantFill)
+			store, ctx := retentionConnect(t)
+			t.Cleanup(store.Close)
+			seed := newRetentionSeed(ctx, t, store)
+			author := seed.contributor("_avgt-four-"+t.Name()[len(t.Name())-8:], "User", 0)
+			for i := 0; i < tc.commits; i++ {
+				seed.commit(author, time.Date(2025, 2, 1+i, 12, 0, 0, 0, time.UTC), 1)
+			}
+			if _, err := store.pool.Exec(ctx, `
+				INSERT INTO aveloxis_data.repo_info (repo_id, commit_count, data_collection_date)
+				VALUES ($1, $2, NOW())`, seed.repoID, tc.api); err != nil {
+				t.Fatalf("seed repo_info: %v", err)
+			}
+			wrote, err := store.BackfillGitLabCommitCount(ctx, seed.repoID)
+			if err != nil {
+				t.Fatalf("backfill: %v", err)
+			}
+			if wrote != tc.wantWrite {
+				t.Errorf("backfill wrote = %v, want %v", wrote, tc.wantWrite)
+			}
+			var count int64
+			if err := store.pool.QueryRow(ctx, `
+				SELECT commit_count FROM aveloxis_data.repo_info
+				WHERE repo_id = $1 ORDER BY data_collection_date DESC LIMIT 1`, seed.repoID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != tc.wantCount {
+				t.Errorf("stored commit_count = %d, want %d", count, tc.wantCount)
 			}
 		})
 	}

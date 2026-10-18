@@ -15,7 +15,6 @@
 package collector
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -2276,22 +2275,6 @@ func parseGoModVersions(path string) []libyearDep {
 	return deps
 }
 
-// parseCargoVersions extracts crates.io deps from Cargo.toml through the
-// shared table scanner (manifest_toml.go).
-//
-// v0.27.44 (summary/19 P1): [dev-dependencies] = tests/examples/benches,
-// [build-dependencies] = build scripts. v0.27.71: a table carries a
-// version only under an explicit version key; a workspace-inherited dep
-// has none (the unpinned pathway). v0.29.56: git- and
-// alternative-registry-sourced deps are not crates.io packages, and a
-// path dep counts only with the version it is published as, so none of
-// them is looked up on crates.io.
-func parseCargoVersions(path string) []libyearDep {
-	// A lone manifest: its own directory is the only workspace root in
-	// scope (scanLibyear passes one index for the whole clone instead).
-	return parseCargoVersionsIn(newCargoWorkspaceIndex(filepath.Dir(path), nil), path)
-}
-
 // parseGemfileVersions extracts deps with versions from Gemfile.
 func parseGemfileVersions(path string) []libyearDep {
 	data, err := readManifest(path)
@@ -2982,11 +2965,6 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	return nil
 }
 
-type sccLanguage struct {
-	Name  string    `json:"Name"`
-	Files []sccFile `json:"Files"`
-}
-
 // sccOutputLargeBytes marks a report big enough to be worth noticing. On
 // 2026-09-15 repo 144636 drove the old stdout bytes.Buffer to a 1 GiB
 // CAPACITY and the doubling to 2 GiB was refused by the kernel.
@@ -3507,10 +3485,6 @@ func parseCsprojVersions(content string) []libyearDep {
 	}
 	return deps
 }
-
-// manifestExtensions lists file extensions that are detected in addition to the
-// exact filename matches in manifestFiles. These are checked during filepath.Walk.
-var manifestExtensions = []string{".csproj"}
 
 // parseComposerJSON extracts dependency names from composer.json (PHP).
 func parseComposerJSON(data []byte) ([]string, error) {
@@ -4692,26 +4666,6 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		Libyear:            calcLibyear(currentDate, latestDate),
 		Purl:               buildPurl("hackage", dep.Name, dep.Version),
 	}, nil
-}
-
-// ============================================================
-// Scanning via git ls-files (for bare repos without full clone)
-// ============================================================
-
-// ListRepoFiles returns file paths from a bare clone using git ls-tree.
-func ListRepoFiles(ctx context.Context, barePath string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", barePath, "ls-tree", "-r", "--name-only", "HEAD")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil, execErr(ctx, err)
-	}
-	var files []string
-	scanner := bufio.NewScanner(&out)
-	for scanner.Scan() {
-		files = append(files, scanner.Text())
-	}
-	return files, scanner.Err()
 }
 
 // scanScanCode was the v0.20-and-earlier per-job wrapper around

@@ -673,7 +673,7 @@ These are documented for transparency, not blocking issues. Closing them would r
 | `CommitResolver.ResolveCommits` | `internal/collector/commit_resolver.go` | Layer 2: per-job commit-author chain (calls `ResolveEmailViaAPI` as step 7). |
 | `MailingListProcessor` | `internal/collector/mailinglist_processor.go` | Drains staged mailing-list messages; resolves senders via `ResolveEmailToIdentity`. |
 | `ParseNoreplyEmail` | `internal/collector/noreply.go` | R12 strategy 3 / shared-chain strategy 1. |
-| `PlatformUUID` / `GithubUUID` / `GitLabUUID` | `internal/db/github_uuid.go` | R1 deterministic encoding. |
+| `PlatformUUID` / `GithubUUID` | `internal/db/github_uuid.go` | R1 deterministic encoding (GitLab: `PlatformUUID(2, id)`). |
 
 ---
 

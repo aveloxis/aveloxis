@@ -579,7 +579,7 @@ func pipInstallScancodeFresh(ctx context.Context) error {
 // with custom pipx configurations or air-gapped networks may legitimately
 // fail this step, and the scancode install itself remains functional.
 //
-// Exported as InjectTypecodeLibmagic for the v0.23.6 `aveloxis
+// Reached through EnsureScancodeCurrent, also by the v0.23.6 `aveloxis
 // upgrade-tools` command in cmd/aveloxis/upgrade_tools_cmd.go.
 func injectTypecodeLibmagic(ctx context.Context, pipxPath, scancodePkg string) error {
 	fmt.Printf("Injecting typecode-libmagic into %s venv...\n", scancodePkg)
@@ -587,12 +587,6 @@ func injectTypecodeLibmagic(ctx context.Context, pipxPath, scancodePkg string) e
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return runToolCommand(ctx, cmd)
-}
-
-// InjectTypecodeLibmagic is the public alias for injectTypecodeLibmagic.
-// Used by cmd/aveloxis/upgrade_tools_cmd.go's RunE handler.
-func InjectTypecodeLibmagic(ctx context.Context, pipxPath, scancodePkg string) error {
-	return injectTypecodeLibmagic(ctx, pipxPath, scancodePkg)
 }
 
 // installLibmagicIfNeeded installs the libmagic native library if it's not

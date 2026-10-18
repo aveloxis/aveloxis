@@ -6,7 +6,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 )
 
 // handleTopContributors (v0.27.61) — GET /repos/{repoID}/contributors/top
@@ -23,12 +22,8 @@ import (
 // enrichment interval. The wrapper runs authorizeRepo BEFORE any cache
 // lookup — a cached body must never leak past repo scope (pinned by test).
 func (s *Server) handleTopContributors(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	args, ok := parseTopContributorsArgs(r)

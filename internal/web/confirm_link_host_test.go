@@ -339,22 +339,22 @@ func (f *fakeConfirmMailer) SendEmailConfirmation(to, login, link string, lifeti
 // DERIVED from the package's sources, so a second path added anywhere
 // fails here, not only a change inside handleAccountEmail.
 func TestAccountEmailSubmissionHasOneEntryPoint(t *testing.T) {
-	src := srctest.Read(t, "internal/web/server.go")
-	handler := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) handleAccountEmail("))
+	handler := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", "func (s *Server) handleAccountEmail("))
 	const call = "submitAccountEmail(r.Context(), s.store, s.confirmationPolicy(), s.logger, r, sess)"
 	if n := strings.Count(handler, call); n != 1 {
 		t.Errorf("handleAccountEmail contains %q %d times, want exactly once", call, n)
 	}
 	// The form reader delegates to the address-taking core exactly once;
 	// the API's SubmitAccountEmail is the other caller of that core.
-	wrapper := srctest.StripGoComments(srctest.FuncBody(t, src, "func submitAccountEmail("))
+	wrapper := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", "func submitAccountEmail("))
 	if n := strings.Count(wrapper, "submitAccountEmailAddress("); n != 1 || !strings.Contains(wrapper, `r.FormValue("email")`) {
 		t.Errorf("submitAccountEmail must read the form once and delegate to submitAccountEmailAddress once; got %d delegations", n)
 	}
-	submit := srctest.StripGoComments(srctest.FuncBody(t, src, "func submitAccountEmailAddress(")) + wrapper
+	core, coreFile := srctest.PackageFuncAt(t, "internal/web", "func submitAccountEmailAddress(")
+	submit := srctest.StripGoComments(core) + wrapper
 	files := srctest.PackageFiles(t, "internal/web", 4)
-	if _, ok := files["internal/web/server.go"]; !ok {
-		t.Fatalf("package scan did not include server.go (found %d files) — the derived call-site count would be vacuous", len(files))
+	if _, ok := files[coreFile]; !ok {
+		t.Fatalf("package scan did not include %s (found %d files) — the derived call-site count would be vacuous", coreFile, len(files))
 	}
 	// Selectors, with the receiver's dot and without the call parenthesis:
 	// the narrow interfaces declare these methods without a dot, and a

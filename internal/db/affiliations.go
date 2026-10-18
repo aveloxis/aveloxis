@@ -130,15 +130,6 @@ func (r *AffiliationResolver) queryAll(ctx context.Context) (map[string]string, 
 	return out, nil
 }
 
-// Reload forces a reload of affiliations from the database.
-func (r *AffiliationResolver) Reload(ctx context.Context) {
-	r.mu.Lock()
-	r.loaded = false
-	r.failedAt = time.Time{} // an explicit reload retries at once
-	r.mu.Unlock()
-	r.loadAll(ctx)
-}
-
 // extractDomain gets the domain part of an email address, lowercased.
 func extractDomain(email string) string {
 	at := strings.LastIndex(email, "@")

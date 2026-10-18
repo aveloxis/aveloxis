@@ -21,31 +21,6 @@ import (
 	"testing"
 )
 
-// extractOrderBy returns the ORDER BY clause from a function body,
-// trimmed so callers can substring-match with confidence. The helper
-// stops at LIMIT, the closing backtick, or the end of the function —
-// whichever comes first — so trailing SQL like LIMIT/OFFSET and Go
-// boilerplate (rows.Scan) don't pollute the match.
-func extractOrderBy(t *testing.T, fnBody string) string {
-	t.Helper()
-	idx := strings.Index(fnBody, "ORDER BY")
-	if idx < 0 {
-		t.Fatal("ORDER BY not found in function body")
-	}
-	clause := fnBody[idx:]
-	// Stop at the earliest of LIMIT, closing backtick, or 500 chars.
-	if cut := strings.Index(clause, "LIMIT"); cut > 0 {
-		clause = clause[:cut]
-	}
-	if cut := strings.Index(clause, "`"); cut > 0 && cut < len(clause) {
-		clause = clause[:cut]
-	}
-	if len(clause) > 500 {
-		clause = clause[:500]
-	}
-	return clause
-}
-
 // extractFn returns just the body of the named method from queue.go.
 func extractFn(t *testing.T, src, marker string) string {
 	t.Helper()
@@ -100,25 +75,15 @@ func TestListQueuePageOrderByIncludesRepoIDTiebreaker(t *testing.T) {
 	}
 }
 
-func TestListQueueOrderByIncludesRepoIDTiebreaker(t *testing.T) {
+// The unbounded ListQueue (every row of the fleet in one answer) had no
+// caller — the monitor paginates through ListQueuePage — and was deleted
+// in v0.29.98; it must not return.
+func TestUnboundedListQueueIsGone(t *testing.T) {
 	data, err := os.ReadFile("queue.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFn(t, string(data), "func (s *PostgresStore) ListQueue(")
-	clause := extractOrderBy(t, body)
-
-	if !strings.Contains(clause, "repo_id") {
-		t.Errorf("ListQueue ORDER BY must end with repo_id as a stable tiebreaker.\n"+
-			"Got: %q\n"+
-			"Reason: the monitor JSON API /api/queue consumes this; clients "+
-			"that diff successive responses (or paginate through a snapshot) "+
-			"need deterministic row order.", clause)
-	}
-	priIdx := strings.Index(clause, "priority")
-	dueIdx := strings.Index(clause, "due_at")
-	repoIdx := strings.LastIndex(clause, "repo_id")
-	if repoIdx < priIdx || repoIdx < dueIdx {
-		t.Errorf("repo_id must appear AFTER priority and due_at.\nGot: %q", clause)
+	if strings.Contains(string(data), "func (s *PostgresStore) ListQueue(") {
+		t.Error("queue.go defines the unbounded ListQueue again; every queue listing paginates (ListQueuePage)")
 	}
 }

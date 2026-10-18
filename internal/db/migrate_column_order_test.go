@@ -152,87 +152,27 @@ type columnOrderResult struct {
 	viaHelper       int
 	unresolvedFuncs []string
 	err             error
-}
-
-type migFunc struct {
-	name       string
-	file       string
-	start, end int
+	// order is every resolved event in execution order ("add table.col" /
+	// "step label", with its file) — the ExecOrder equivalence dump
+	// (stage 0.5 P-1, risk strategy §2 guard 3).
+	order []string
 }
 
 // migrationColumnOrderViolations orders every literal-SQL migration step
-// and every addColumnIfMissing by EXECUTION position: an event inside a
-// function other than RunMigrations sits at its enclosing function's
-// first call site (resolved recursively), so file order and helper files
-// cannot hide a step that runs before its column exists.
+// and every addColumnIfMissing by EXECUTION position (srctest.ExecOrder,
+// lifted from here in v0.29.98): an event inside a function other than
+// RunMigrations sits at its enclosing function's first call site
+// (resolved recursively), so file order and helper files cannot hide a
+// step that runs before its column exists.
 func migrationColumnOrderViolations(files map[string]string) columnOrderResult {
 	var res columnOrderResult
-	funcRe := regexp.MustCompile(`(?m)^func (?:\([^)]*\)\s*)?(\w+)\(`)
-	var funcs []migFunc
-	byName := map[string][]migFunc{}
+	order := srctest.NewExecOrder(files, "RunMigrations")
 	names := make([]string, 0, len(files))
 	for f := range files {
 		names = append(names, f)
 	}
 	sort.Strings(names)
-	for _, f := range names {
-		src := files[f]
-		ms := funcRe.FindAllStringSubmatchIndex(src, -1)
-		for i, m := range ms {
-			end := len(src)
-			if i+1 < len(ms) {
-				end = ms[i+1][0]
-			}
-			fn := migFunc{name: src[m[2]:m[3]], file: f, start: m[0], end: end}
-			funcs = append(funcs, fn)
-			byName[fn.name] = append(byName[fn.name], fn)
-		}
-	}
-	enclosing := func(file string, pos int) *migFunc {
-		for i := range funcs {
-			if funcs[i].file == file && funcs[i].start <= pos && pos < funcs[i].end {
-				return &funcs[i]
-			}
-		}
-		return nil
-	}
-	// key resolves (file, pos) to an execution path from RunMigrations.
-	var key func(file string, pos int, depth int) ([]int, bool)
-	key = func(file string, pos int, depth int) ([]int, bool) {
-		fn := enclosing(file, pos)
-		if fn == nil || depth > 8 {
-			return nil, false
-		}
-		if fn.name == "RunMigrations" {
-			return []int{pos}, true
-		}
-		callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(fn.name) + `\(`)
-		var best []int
-		found := false
-		for _, cf := range names {
-			for _, m := range callRe.FindAllStringIndex(files[cf], -1) {
-				def := enclosing(cf, m[0])
-				if def != nil && def.name == fn.name && cf == fn.file && m[0] == def.start+len("func ") {
-					continue // the definition line itself
-				}
-				if def != nil && def.name == fn.name {
-					continue // recursion / self-reference
-				}
-				k, ok := key(cf, m[0], depth+1)
-				if !ok {
-					continue
-				}
-				if !found || less(k, best) {
-					best, found = k, true
-				}
-			}
-		}
-		if !found {
-			return nil, false
-		}
-		return append(append([]int{}, best...), pos), true
-	}
-
+	less := srctest.KeyLess
 	type event struct {
 		table, column string
 		label, sql    string
@@ -252,10 +192,10 @@ func migrationColumnOrderViolations(files map[string]string) columnOrderResult {
 		src := files[f]
 		for _, m := range addRe.FindAllStringSubmatchIndex(src, -1) {
 			res.adds++
-			k, ok := key(f, m[0], 0)
+			k, ok := order.Key(f, m[0])
 			if !ok {
-				if fn := enclosing(f, m[0]); fn != nil {
-					unresolved[fn.name] = true
+				if fn, ok := order.Enclosing(f, m[0]); ok {
+					unresolved[fn] = true
 				}
 				continue
 			}
@@ -266,10 +206,10 @@ func migrationColumnOrderViolations(files map[string]string) columnOrderResult {
 			if m[2] < 0 { // the CONCURRENTLY alternative: label = index name
 				m[2], m[3], m[4], m[5] = m[6], m[7], m[8], m[9]
 			}
-			k, ok := key(f, m[0], 0)
+			k, ok := order.Key(f, m[0])
 			if !ok {
-				if fn := enclosing(f, m[0]); fn != nil {
-					unresolved[fn.name] = true
+				if fn, ok := order.Enclosing(f, m[0]); ok {
+					unresolved[fn] = true
 				}
 				continue
 			}
@@ -283,6 +223,15 @@ func migrationColumnOrderViolations(files map[string]string) columnOrderResult {
 		res.unresolvedFuncs = append(res.unresolvedFuncs, n)
 	}
 	sort.Strings(res.unresolvedFuncs)
+	all := append(append([]event{}, adds...), steps...)
+	sort.SliceStable(all, func(i, j int) bool { return less(all[i].key, all[j].key) })
+	for _, e := range all {
+		if e.label != "" {
+			res.order = append(res.order, fmt.Sprintf("step %s (%s)", e.label, e.file))
+		} else {
+			res.order = append(res.order, fmt.Sprintf("add %s.%s (%s)", e.table, e.column, e.file))
+		}
+	}
 	// The FIRST execution of each (table, column) add is what matters.
 	firstAdd := map[string][]int{}
 	for _, a := range adds {
@@ -306,15 +255,6 @@ func migrationColumnOrderViolations(files map[string]string) columnOrderResult {
 	}
 	sort.Strings(res.violations)
 	return res
-}
-
-func less(a, b []int) bool {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] != b[i] {
-			return a[i] < b[i]
-		}
-	}
-	return len(a) < len(b)
 }
 
 // The specific incident, pinned by position so a refactor that moves

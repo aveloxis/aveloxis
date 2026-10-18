@@ -24,7 +24,6 @@ import (
 // TestGitHubCallbackEmailsReadIsBounded (round 7: reaching it completes the
 // login, which needs a store).
 func TestOAuthCallbacksAreBounded(t *testing.T) {
-	src := srctest.StripGoComments(srctest.Read(t, "internal/web/server.go"))
 	for _, fn := range []struct {
 		sig     string
 		handler bool // wraps r.Context() itself; the helper receives the bounded ctx
@@ -33,7 +32,7 @@ func TestOAuthCallbacksAreBounded(t *testing.T) {
 		{"func (s *Server) handleGitLabCallback(", true},
 		{"func fetchGitHubPrimaryEmail(", false},
 	} {
-		body := srctest.FuncBody(t, src, fn.sig)
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", fn.sig))
 		if fn.handler && !strings.Contains(body, "context.WithTimeout(r.Context(), oauthCallbackTimeout)") {
 			t.Errorf("%s must bound its forge round trips with context.WithTimeout(r.Context(), oauthCallbackTimeout)", fn.sig)
 		}

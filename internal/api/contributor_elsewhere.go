@@ -36,12 +36,8 @@ import (
 const elsewhereWindowDays = 180 // the v0.27.58 default history window
 
 func (s *Server) handleContributorsElsewhere(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	since := db.UTCDay(time.Now()).AddDate(0, 0, -elsewhereWindowDays) // a UTC midnight: the daily commit table serves it (summary/49)

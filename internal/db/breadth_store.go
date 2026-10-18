@@ -117,21 +117,6 @@ func (s *PostgresStore) GetContributorsForBreadth(ctx context.Context, limit int
 	return result, rows.Err()
 }
 
-// MarkBreadthAttempted stamps cntrb_last_breadth_at = NOW() for a
-// contributor. The breadth worker uses the batch form; the stamp, set
-// whether or not events were found, is what makes the cooldown-based
-// queue actually drain —
-// a contributor with zero public events still exits the
-// unprocessed-queue and won't reappear until the cooldown window
-// passes.
-func (s *PostgresStore) MarkBreadthAttempted(ctx context.Context, cntrbID string) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE aveloxis_data.contributors
-		SET cntrb_last_breadth_at = NOW()
-		WHERE cntrb_id = $1::uuid`, cntrbID)
-	return err
-}
-
 // breadthMarkChunkSize bounds how many cntrb_ids a single
 // MarkBreadthAttemptedBatch UPDATE carries. 500 keeps each statement's
 // array parameter and row-lock footprint small while still collapsing
@@ -143,8 +128,9 @@ const breadthMarkChunkSize = 500
 // set of contributors in chunked multi-row UPDATEs (v0.27.8). Same
 // semantics as the single-row MarkBreadthAttempted — the stamp, set
 // whether or not events were found, drains the cooldown queue — but one statement per
-// breadthMarkChunkSize IDs instead of one per contributor. The
-// single-row method is kept for compatibility.
+// breadthMarkChunkSize IDs instead of one per contributor. It is the ONE
+// breadth stamp (v0.29.98: the single-row MarkBreadthAttempted had no
+// caller and is gone; TestBreadthStampIsBatched bans a per-row stamp).
 //
 // ORDERING CONTRACT (v0.27.8): callers must invoke this only AFTER the
 // contributors' events are durably inserted into contributor_repo. A
@@ -217,20 +203,4 @@ func (s *PostgresStore) InsertContributorRepoBatch(ctx context.Context, rows []*
 			row.Category, row.EventID, row.CreatedAt, ToolVersion)
 	}
 	return s.pool.SendBatch(ctx, batch).Close()
-}
-
-// InsertContributorRepo inserts a contributor-repo event. Returns nil on
-// duplicate (ON CONFLICT DO NOTHING).
-func (s *PostgresStore) InsertContributorRepo(ctx context.Context, row *ContributorRepoRow) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.contributor_repo
-			(cntrb_id, repo_git, repo_name, gh_repo_id, cntrb_category,
-			 event_id, created_at,
-			 tool_source, tool_version, data_source, data_collection_date)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7,
-			'aveloxis-breadth', $8, 'GitHub API', NOW())
-		ON CONFLICT (event_id, tool_version) DO NOTHING`,
-		row.CntrbID, row.RepoGit, row.RepoName, row.GHRepoID,
-		row.Category, row.EventID, row.CreatedAt, ToolVersion)
-	return err
 }

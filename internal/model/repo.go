@@ -39,15 +39,6 @@ func (p Platform) IsGitOnly() bool {
 	return p == PlatformGenericGit
 }
 
-// RepoGroup is a collection of repositories (e.g. an org or user-defined group).
-type RepoGroup struct {
-	ID          int64
-	Name        string
-	Description string
-	Website     string
-	Type        string // e.g. "GitHub Org", "GitLab Group", "User Created"
-}
-
 // Repo represents a single repository, independent of platform.
 type Repo struct {
 	ID              int64

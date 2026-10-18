@@ -344,12 +344,8 @@ func (s *Server) handleMailingListStats(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleRepoStats(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	stats, err := s.store.GetRepoStats(r.Context(), repoID)
@@ -417,12 +413,8 @@ func (s *Server) handleRepoStatsBatch(w http.ResponseWriter, r *http.Request) {
 // handleSBOMDownload generates and returns an SBOM for a repo.
 // Query param: format=cyclonedx (default) or format=spdx
 func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	args := parseSBOMArgs(r)
@@ -502,12 +494,8 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	// Default window: last 2 years to now, day-aligned (v0.29.71) so the
@@ -555,12 +543,8 @@ func (s *Server) handleRepoSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	// v0.27.46 (summary/19 P3, decision #8): ?scope=runtime filters
@@ -598,12 +582,8 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 // handleScancodeLicenses returns source code license detections from ScanCode.
 // Response includes per-license file counts, copyrights, and scan metadata.
 func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 
@@ -649,12 +629,8 @@ func (s *Server) handleScancodeLicenses(w http.ResponseWriter, r *http.Request) 
 // handleScancodeFiles returns per-file scancode data for the sortable web GUI table.
 // Each entry has: path, normalized SPDX license, truncated copyright holder.
 func (s *Server) handleScancodeFiles(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	files, err := s.store.GetScancodeFileEntries(r.Context(), repoID)

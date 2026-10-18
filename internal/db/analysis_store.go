@@ -134,56 +134,6 @@ func (s *PostgresStore) InsertSBOMWithFormat(ctx context.Context, repoID int64, 
 	return err
 }
 
-// InsertRepoDependencyBatch inserts multiple dependencies in a single round-trip
-// using pgx.Batch. This is significantly faster than individual inserts when
-// processing repos with many dependencies (e.g., node_modules with 100+ deps).
-func (s *PostgresStore) InsertRepoDependencyBatch(ctx context.Context, repoID int64, deps []struct {
-	Name     string
-	Count    int
-	Language string
-}) error {
-	if len(deps) == 0 {
-		return nil
-	}
-	// No ON CONFLICT (v0.27.17): repo_dependencies and repo_deps_libyear
-	// have NO unique arbiter, so the previous blanket ON CONFLICT DO
-	// NOTHING was dead code (the v0.27.7 repo_labor lesson). Write
-	// idempotency comes from snapshot-replace: RotateLibyearToHistory
-	// deletes the repo's current rows before every fresh insert, and a
-	// failed rotation now ABORTS the insert (analysis.go).
-	batch := &pgx.Batch{}
-	for _, d := range deps {
-		batch.Queue(`
-			INSERT INTO aveloxis_data.repo_dependencies
-				(repo_id, dep_name, dep_count, dep_language,
-				 tool_source, data_source, data_collection_date)
-			VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())`,
-			repoID, d.Name, d.Count, d.Language)
-	}
-	return s.pool.SendBatch(ctx, batch).Close()
-}
-
-// InsertRepoLibyearBatch inserts multiple libyear records in a single round-trip.
-func (s *PostgresStore) InsertRepoLibyearBatch(ctx context.Context, repoID int64, rows []*LibyearRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	batch := &pgx.Batch{}
-	for _, row := range rows {
-		batch.Queue(`
-			INSERT INTO aveloxis_data.repo_deps_libyear
-				(repo_id, name, requirement, type, package_manager,
-				 current_version, latest_version, current_release_date, latest_release_date,
-				 libyear, license, purl, tool_source, data_source, data_collection_date)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				'aveloxis-analysis', 'package registry', NOW())`,
-			repoID, row.Name, row.Requirement, row.Type, row.PackageManager,
-			row.CurrentVersion, row.LatestVersion, row.CurrentReleaseDate, row.LatestReleaseDate,
-			row.Libyear, row.License, row.Purl)
-	}
-	return s.pool.SendBatch(ctx, batch).Close()
-}
-
 // ReplaceRepoLaborSnapshot atomically replaces a repo's current
 // repo_labor snapshot: rotates every existing row for the repo into
 // repo_labor_history and inserts the fresh per-file rows, all inside

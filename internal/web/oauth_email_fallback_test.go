@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestGitHubCallbackFallsBackToUserEmails pins that handleGitHubCallback
@@ -18,19 +20,8 @@ import (
 // we can pick the primary one. Operator-reported issue from new-user
 // signup test on 2026-05-08: "their email was not captured".
 func TestGitHubCallbackFallsBackToUserEmails(t *testing.T) {
-	data, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
-
-	fnIdx := strings.Index(src, "func (s *Server) handleGitHubCallback(")
-	if fnIdx < 0 {
-		t.Fatal("cannot find handleGitHubCallback")
-	}
-	rest := src[fnIdx:]
-	end := strings.Index(rest[1:], "\nfunc ")
-	body := rest[:end+1]
+	// The callback hands the primary-email fallback to fetchGitHubPrimaryEmail.
+	body := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleGitHubCallback(") + srctest.PackageFunc(t, "internal/web", "func fetchGitHubPrimaryEmail(")
 
 	if !strings.Contains(body, "/user/emails") {
 		t.Error("handleGitHubCallback must fall back to GitHub's " +
@@ -47,23 +38,16 @@ func TestGitHubCallbackFallsBackToUserEmails(t *testing.T) {
 // redirected to a form where they enter an email manually before
 // reaching the dashboard. Two routes: GET form, POST handler.
 func TestServerRegistersAccountEmailRoute(t *testing.T) {
-	data, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
+	src := srctest.PackageFunc(t, "internal/web", "func (s *Server) Handler(")
 
 	if !strings.Contains(src, `"/account/email"`) {
-		t.Error("server.go must register the /account/email route. " +
+		t.Error("Handler must register the /account/email route. " +
 			"This is the Option B fallback for new users whose OAuth " +
 			"emails (both /user and /user/emails) returned nothing — " +
 			"they get prompted to enter an email manually before " +
 			"reaching the dashboard.")
 	}
-	if !strings.Contains(src, "handleAccountEmail") {
-		t.Error("server.go must define handleAccountEmail (the GET/POST " +
-			"handler for the email-collection form).")
-	}
+	srctest.PackageFunc(t, "internal/web", "func (s *Server) handleAccountEmail(") // the GET/POST form handler, fatal when gone
 }
 
 // TestDashboardEnforcesEmail pins that handleDashboard (or a middleware
@@ -71,18 +55,11 @@ func TestServerRegistersAccountEmailRoute(t *testing.T) {
 // users.email = "". Without this, the user reaches the dashboard with
 // no email collected and the operator has no way to coordinate.
 func TestDashboardEnforcesEmail(t *testing.T) {
-	data, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
-
-	// Pin the existence of an email-gate helper called from the
-	// dashboard path. Implementation flexible: a `requireEmail`
-	// middleware OR an inline `GetUserEmail` check inside
-	// handleDashboard. Either is fine; just need ONE of them present.
-	if !strings.Contains(src, "GetUserEmail") && !strings.Contains(src, "requireEmail") {
-		t.Error("server.go must gate dashboard access on users.email " +
+	// The gate is dashboardEmailGate, called from handleDashboard; it
+	// reads the addresses through the accountEmailLookup interface.
+	src := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleDashboard(") + srctest.PackageFunc(t, "internal/web", "func dashboardEmailGate(")
+	if !strings.Contains(src, "dashboardEmailGate(") || !strings.Contains(src, "GetUserEmail") {
+		t.Error("handleDashboard must gate dashboard access on users.email " +
 			"being non-empty. Add either a requireEmail middleware OR " +
 			"call store.GetUserEmail in handleDashboard and redirect " +
 			"to /account/email when empty.")
@@ -102,9 +79,12 @@ func TestStoreHasUserEmailMethods(t *testing.T) {
 			"(string, error) — used by the email-gate check on the " +
 			"dashboard path.")
 	}
-	if !strings.Contains(src, "func (s *PostgresStore) UpdateUserEmail(") {
-		t.Error("web_store.go must define UpdateUserEmail(ctx, userID, email) " +
-			"error — used by the POST handler for the /account/email form.")
+	// v0.29.98: the form's address goes through the confirmation flow
+	// (email_pending, then ConfirmEmailToken); a direct unconfirmed write of
+	// users.email is banned by the store's own writer scan
+	// (TestUsersEmailIsWrittenOnlyBySignInAndConfirmation).
+	if strings.Contains(src, "func (s *PostgresStore) UpdateUserEmail(") {
+		t.Error("web_store.go defines UpdateUserEmail again — an unconfirmed address must never be written to users.email")
 	}
 }
 
@@ -113,11 +93,7 @@ func TestStoreHasUserEmailMethods(t *testing.T) {
 // their account is awaiting administrator approval. Without this they
 // see an empty dashboard indistinguishable from a fresh admin login.
 func TestDashboardTemplateShowsPendingBanner(t *testing.T) {
-	data, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
+	src := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	dashIdx := strings.Index(src, `{{define "dashboard"}}`)
 	if dashIdx < 0 {

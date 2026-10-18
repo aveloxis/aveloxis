@@ -14,24 +14,14 @@ import (
 
 // TestMonitorRouteRegistered verifies the web server registers a /monitor route.
 func TestMonitorRouteRegistered(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "/monitor") {
-		t.Error("web server.go must register a /monitor route for the integrated monitor dashboard")
+	if !strings.Contains(srctest.PackageFunc(t, "internal/web", "func (s *Server) Handler("), `"/monitor"`) {
+		t.Error("Handler must register a /monitor route for the integrated monitor dashboard")
 	}
 }
 
 // TestMonitorTemplateExists verifies the monitor template is defined.
 func TestMonitorTemplateExists(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	if !strings.Contains(code, `"monitor"`) {
 		t.Error("templates.go must define a 'monitor' template for the integrated monitor dashboard")
@@ -41,11 +31,7 @@ func TestMonitorTemplateExists(t *testing.T) {
 // TestMonitorNavLinkExists verifies the nav bar has a "Monitor" link
 // next to "Home" across all page templates.
 func TestMonitorNavLinkExists(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	// The dashboard breadcrumb should have Monitor link.
 	if !strings.Contains(code, "/monitor") {
@@ -55,34 +41,12 @@ func TestMonitorNavLinkExists(t *testing.T) {
 
 // TestMonitorHandlerExists verifies the web server has a handleMonitor method.
 func TestMonitorHandlerExists(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "handleMonitor") {
-		t.Error("web server.go must have a handleMonitor method for the monitor dashboard")
-	}
+	srctest.PackageFunc(t, "internal/web", "func (s *Server) handleMonitor(") // fatal when it is gone
 }
 
 // TestMonitorPagination verifies the monitor supports pagination.
 func TestMonitorPagination(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	// Find the function definition, not just a reference.
-	idx := strings.Index(code, "func (s *Server) handleMonitor(")
-	if idx < 0 {
-		t.Fatal("source structure changed (a skip would hide it): handleMonitor function not found")
-	}
-	fnBody := code[idx:]
-	if len(fnBody) > 3000 {
-		fnBody = fnBody[:3000]
-	}
+	fnBody := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleMonitor(")
 
 	if !strings.Contains(fnBody, "page") {
 		t.Error("handleMonitor must support pagination (read 'page' query parameter)")
@@ -107,11 +71,9 @@ func TestListQueuePageExists(t *testing.T) {
 // any signed-in account read the queue and boost any repository). The
 // behavior: TestMonitorRoutesAreAdministratorOnly.
 func TestMonitorBehindAuth(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := srctest.StripGoComments(string(src))
+	// The whole package (PackageSource, v0.29.98): a second registration
+	// in any file is one reference too many.
+	code := srctest.StripGoComments(srctest.PackageSource(t, "internal/web", 4))
 	// Each handler is referenced exactly once, and that reference is its
 	// requireAdmin registration (a second, bare registration escapes a
 	// presence check).

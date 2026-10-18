@@ -30,7 +30,3 @@ type CollectionState struct {
 	MLDataLastCollected        *string
 	MLWeight                   *int64
 }
-
-// Convenience aliases used by the collector.
-func (s *CollectionState) CoreLastCollected() *string     { return s.CoreDataLastCollected }
-func (s *CollectionState) SetCoreLastCollected(v *string) { s.CoreDataLastCollected = v }

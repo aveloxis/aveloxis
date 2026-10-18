@@ -86,7 +86,7 @@ This is the complete list of files a new platform needs. Some are mandatory; som
 
 ### Likely
 
-10. **`internal/web/server.go`** — bulk-paste-URL parsing. If you want operators to be able to paste a Bugzilla product URL into the web GUI and have it routed correctly, the URL parser dispatch needs to recognize Bugzilla URLs.
+10. **`internal/web/groups.go`** — bulk-paste-URL parsing. If you want operators to be able to paste a Bugzilla product URL into the web GUI and have it routed correctly, the URL parser dispatch needs to recognize Bugzilla URLs.
 11. **`cmd/aveloxis/main.go`** — `add-repo` command needs URL parsing that recognizes Bugzilla.
 12. **`internal/collector/prelim.go`** — Bugzilla products don't 301-redirect on rename; you may need to add a Bugzilla-specific liveness check OR accept that prelim is a no-op for Bugzilla. The latter is fine.
 
@@ -355,10 +355,10 @@ func (c *Client) ParseRepoURL(rawURL string) (owner, repo string, err error) {
 }
 ```
 
-The scheduler dispatches on URL → platform; you'll need to wire that in `internal/web/server.go`'s URL-router and `cmd/aveloxis/main.go`'s `add-repo` command. Pattern:
+The scheduler dispatches on URL → platform; you'll need to wire that in `internal/web/groups.go`'s URL-router and `cmd/aveloxis/main.go`'s `add-repo` command. Pattern:
 
 ```go
-// internal/web/server.go (and add-repo) — URL dispatch
+// internal/web/groups.go (and add-repo) — URL dispatch
 func detectPlatform(url string) model.Platform {
     switch {
     case strings.Contains(url, "github.com"):

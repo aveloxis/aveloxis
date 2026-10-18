@@ -25,11 +25,13 @@ import (
 // value — not a route list. Each call site is
 // reviewed, and the two account-facing ones are checked for their gate.
 func TestEveryPrioritizeCallerIsAnAdminOrOperatorPath(t *testing.T) {
+	// Keyed dir|func (srctest.SiteKey, v0.29.98): a split of the file
+	// holding a caller does not churn the registry.
 	reviewed := map[string]string{
-		"internal/api/portal.go|handleAdminPrioritizeRepo": "the API's admin route: s.requireAdmin first (checked below)",
-		"internal/web/server.go|handleMonitorPrioritize":   "the web GUI's boost: registered only behind requireAdmin (checked below)",
-		"internal/monitor/monitor.go|handlePrioritize":     "serve's own :5555 monitor: no accounts; the operator binds it (--monitor, 127.0.0.1 by default in the docs)",
-		"cmd/aveloxis/main.go|runPrioritize":               "the operator's `aveloxis prioritize` command",
+		srctest.SiteKey("internal/api", "handleAdminPrioritizeRepo"): "the API's admin route: s.requireAdmin first (checked below)",
+		srctest.SiteKey("internal/web", "handleMonitorPrioritize"):   "the web GUI's boost: registered only behind requireAdmin (checked below)",
+		srctest.SiteKey("internal/monitor", "handlePrioritize"):      "serve's own :5555 monitor: no accounts; the operator binds it (--monitor, 127.0.0.1 by default in the docs)",
+		srctest.SiteKey("cmd/aveloxis", "runPrioritize"):             "the operator's `aveloxis prioritize` command",
 	}
 	root := srctest.Root(t)
 	found := map[string]int{}
@@ -47,7 +49,7 @@ func TestEveryPrioritizeCallerIsAnAdminOrOperatorPath(t *testing.T) {
 			rel, _ := filepath.Rel(root, path)
 			for _, decl := range f.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
-				where := "(package level)"
+				where := srctest.PackageLevel
 				if ok {
 					where = fn.Name.Name
 				}
@@ -58,7 +60,7 @@ func TestEveryPrioritizeCallerIsAnAdminOrOperatorPath(t *testing.T) {
 				// identifiers, not selectors, so neither is counted.
 				ast.Inspect(decl, func(n ast.Node) bool {
 					if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "PrioritizeRepo" {
-						found[filepath.ToSlash(rel)+"|"+where]++
+						found[srctest.SiteKey(srctest.SiteDir(rel), where)]++
 					}
 					return true
 				})
@@ -85,8 +87,8 @@ func TestEveryPrioritizeCallerIsAnAdminOrOperatorPath(t *testing.T) {
 	if gate, call := strings.Index(api, "s.requireAdmin(w, r)"), strings.Index(api, ".PrioritizeRepo("); gate < 0 || gate > call {
 		t.Error("handleAdminPrioritizeRepo must check requireAdmin before PrioritizeRepo")
 	}
-	web := srctest.StripGoComments(srctest.Read(t, "internal/web/server.go"))
-	if strings.Count(web, "s.handleMonitorPrioritize") != 1 || !strings.Contains(web, "s.requireAdmin(s.handleMonitorPrioritize)") {
+	web := srctest.StripGoComments(srctest.PackageSource(t, "internal/web", 4))
+	if strings.Count(web, "s.handleMonitorPrioritize") != 1 || !strings.Contains(srctest.PackageFunc(t, "internal/web", "func (s *Server) Handler("), "s.requireAdmin(s.handleMonitorPrioritize)") {
 		t.Error("handleMonitorPrioritize must be referenced exactly once, registered behind requireAdmin")
 	}
 }

@@ -159,11 +159,13 @@ func TestInsertEmailMessageRefIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed repo: %v", err)
 	}
-	msgID, err := store.UpsertMessage(ctx, &model.Message{
-		RepoID: repoID, PlatformMsgID: 0, PlatformID: model.Platform(6),
-		NodeID: "emtest-ref-<ccc@dev.arrow.apache.org>", Text: "body",
-	})
-	if err != nil {
+	// Seeded through the one shared message INSERT (the single-row
+	// UpsertMessage had no production caller; v0.29.98).
+	var msgID int64
+	if err := store.pool.QueryRow(ctx, upsertMessageSQL,
+		repoID, 0, int16(6), MsgKindComment,
+		"emtest-ref-<ccc@dev.arrow.apache.org>", nil, "body", nil, "",
+	).Scan(&msgID); err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
 	emID, err := store.UpsertEmailMessage(ctx, &model.EmailMessage{

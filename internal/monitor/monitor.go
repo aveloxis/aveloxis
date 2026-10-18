@@ -193,7 +193,6 @@ func newServer(store monitorStore, logger *slog.Logger, opts Options) *Server {
 	s.mux.HandleFunc("GET /api/queue", s.handleQueue)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("POST /api/prioritize/{repoID}", s.handlePrioritize)
-	s.mux.HandleFunc("POST /api/repos", s.handleAddRepo)
 	s.mux.HandleFunc("GET /icon.png", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -348,26 +347,6 @@ func (s *Server) handlePrioritize(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		URL      string `json:"url"`
-		Priority int    `json:"priority"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON body", http.StatusBadRequest)
-		return
-	}
-	if req.URL == "" {
-		http.Error(w, "url is required", http.StatusBadRequest)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "info",
-		"message": "Use 'aveloxis add-repo " + req.URL + "' CLI command to add repos",
-	})
-}
-
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	params := parsePageParams(r)
@@ -444,12 +423,10 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// v0.23.0: meta-refresh cadence is operator-configurable via
-	// monitor.refresh_seconds. s.refreshSeconds was set at New time
-	// from the config (falls back to DefaultDashboardRefreshSeconds).
+	// monitor.refresh_seconds: the config accessor clamps the range and
+	// newServer defaults a zero Option (SR-10, v0.29.98: a third clamp here
+	// was removed; TestDashboardRefreshFollowsTheConfigEndToEnd).
 	refreshSecs := s.refreshSeconds
-	if refreshSecs <= 0 {
-		refreshSecs = DefaultDashboardRefreshSeconds
-	}
 	// v0.23.0: mobile-friendly bodyclass when a known mobile UA is
 	// observed. The desktop CSS below applies for everyone; the
 	// inline @media block AND the body.is-mobile class override the

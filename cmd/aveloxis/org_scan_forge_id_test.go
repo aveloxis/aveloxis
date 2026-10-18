@@ -31,7 +31,7 @@ func TestAddRepoOrgExpansionCapturesForgeRepoID(t *testing.T) {
 		t.Error("orgRepo must carry ForgeID so the listers' decoded id reaches UpsertRepo")
 	}
 
-	for _, fn := range []string{"func listGitHubOrgRepos", "func listGitLabGroupRepos"} {
+	for _, fn := range []string{"func listGitHubOrgRepos(", "func listGitLabGroupRepos("} {
 		body := srctest.FuncBody(t, s, fn)
 		if !strings.Contains(body, "`json:\"id\"`") {
 			t.Errorf("%s must decode the listing's numeric `id` field", fn)

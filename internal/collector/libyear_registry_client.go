@@ -85,34 +85,6 @@ var (
 	registryPaceLastLog = map[string]time.Time{}
 )
 
-// registryHostInterval returns the pacing interval for host (0 = unpaced).
-func registryHostInterval(host string) time.Duration {
-	registryPaceMu.Lock()
-	defer registryPaceMu.Unlock()
-	return registryHostIntervals[host]
-}
-
-// setRegistryHostIntervalForTest paces an httptest host; TEST-ONLY.
-func setRegistryHostIntervalForTest(host string, d time.Duration) (restore func()) {
-	registryPaceMu.Lock()
-	old, had := registryHostIntervals[host]
-	registryHostIntervals[host] = d
-	registryPaceMu.Unlock()
-	return func() {
-		registryPaceMu.Lock()
-		defer registryPaceMu.Unlock()
-		if had {
-			registryHostIntervals[host] = old
-		} else {
-			delete(registryHostIntervals, host)
-		}
-		delete(registryNextSlot, host)
-		// The deep-queue report is throttled per host for a minute; a later
-		// test reusing this httptest port would otherwise see no line.
-		delete(registryPaceLastLog, host)
-	}
-}
-
 // paceRegistryHost reserves the host's next request slot and waits for
 // it. Reservation under the lock makes the spacing hold across workers.
 //
@@ -400,17 +372,6 @@ func (c *ttlCache[V]) finish(key string, call *inflightCall[V], val V, err error
 	close(call.done)
 }
 
-func (c *ttlCache[V]) get(key string) (V, error, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.entries[key]
-	if !ok || !c.now().Before(e.expires) {
-		var zero V
-		return zero, nil, false
-	}
-	return e.val, e.err, true
-}
-
 // put stores an answer and sweeps expired entries at most once per TTL,
 // so an entry lives at most two TTLs.
 func (c *ttlCache[V]) put(key string, val V, err error) {
@@ -426,12 +387,6 @@ func (c *ttlCache[V]) put(key string, val V, err error) {
 		c.lastSweep = now
 	}
 	c.entries[key] = ttlEntry[V]{val: val, err: err, expires: now.Add(c.ttl)}
-}
-
-func (c *ttlCache[V]) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries)
 }
 
 // libyearRowCache and githubLicenseCache are shared by every analysis in

@@ -231,11 +231,7 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 	if err := store.ClearRepoGone(ctx, repoID); err != nil {
 		t.Fatal(err)
 	}
-	ga, err := store.GetRepoGoneAt(ctx, repoID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ga != nil {
+	if ga := repoGoneAt(ctx, t, store, repoID); ga != nil {
 		t.Error("ClearRepoGone must null the stamp")
 	}
 	// v0.29.7 (review round 2): the check stamp goes with it — a
@@ -291,11 +287,7 @@ func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
 	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
 		t.Fatal(err)
 	}
-	ga, err := store.GetRepoGoneAt(ctx, repoID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ga != nil {
+	if ga := repoGoneAt(ctx, t, store, repoID); ga != nil {
 		t.Error("ResurrectRepo must clear the gone stamp")
 	}
 	var status string

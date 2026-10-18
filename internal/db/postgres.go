@@ -1516,46 +1516,6 @@ func (s *PostgresStore) UpsertPREvent(ctx context.Context, event *model.PullRequ
 // Messages
 // ============================================================
 
-func (s *PostgresStore) UpsertMessage(ctx context.Context, msg *model.Message) (int64, error) {
-	var id int64
-	err := s.withRetry(ctx, func(ctx context.Context) error {
-		return s.pool.QueryRow(ctx, upsertMessageSQL,
-			msg.RepoID, msg.PlatformMsgID, int16(msg.PlatformID), MsgKindComment,
-			msg.NodeID, msg.ContributorID, msg.Text, NullTime(msg.Timestamp),
-			msg.Origin.DataSource,
-		).Scan(&id)
-	})
-	return id, err
-}
-
-func (s *PostgresStore) UpsertIssueMessageRef(ctx context.Context, ref *model.IssueMessageRef) error {
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
-			INSERT INTO aveloxis_data.issue_message_ref
-				(issue_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
-			VALUES ($1,$2,$3,$4,$5,
-			        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
-			ON CONFLICT (issue_id, msg_id) DO NOTHING`,
-			ref.IssueID, ref.RepoID, ref.MsgID, ref.PlatformSrcID, ref.PlatformNodeID,
-		)
-		return err
-	})
-}
-
-func (s *PostgresStore) UpsertPRMessageRef(ctx context.Context, ref *model.PullRequestMessageRef) error {
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
-			INSERT INTO aveloxis_data.pull_request_message_ref
-				(pull_request_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
-			VALUES ($1,$2,$3,$4,$5,
-			        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
-			ON CONFLICT (pull_request_id, msg_id) DO NOTHING`,
-			ref.PRID, ref.RepoID, ref.MsgID, ref.PlatformSrcID, ref.PlatformNodeID,
-		)
-		return err
-	})
-}
-
 // prReviewMsgRefFromCommentSQL writes the Augur-compat
 // pull_request_review_message_ref row for an INLINE review comment,
 // carrying the full line-anchoring metadata (v0.27.15 — these columns
@@ -1577,57 +1537,6 @@ const prReviewMsgRefFromCommentSQL = `
 	ON CONFLICT (pr_review_id, msg_id) DO UPDATE SET
 		pr_review_msg_diff_hunk = EXCLUDED.pr_review_msg_diff_hunk,
 		pr_review_msg_updated_at = EXCLUDED.pr_review_msg_updated_at`
-
-func (s *PostgresStore) UpsertReviewComment(ctx context.Context, c *model.ReviewComment) error {
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
-			INSERT INTO aveloxis_data.review_comments
-				(pr_review_id, repo_id, msg_id, platform_src_id, node_id,
-				 diff_hunk, file_path, position, original_position,
-				 commit_id, original_commit_id, line, original_line,
-				 side, start_line, original_start_line, start_side,
-				 author_association, html_url, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-			ON CONFLICT (repo_id, platform_src_id) DO UPDATE SET
-				diff_hunk = EXCLUDED.diff_hunk,
-				updated_at = EXCLUDED.updated_at`,
-			c.ReviewID, c.RepoID, c.MsgID, c.PlatformSrcID, c.NodeID,
-			c.DiffHunk, c.Path, c.Position, c.OriginalPosition,
-			c.CommitID, c.OriginalCommitID, c.Line, c.OriginalLine,
-			c.Side, c.StartLine, c.OriginalStartLine, c.StartSide,
-			c.AuthorAssociation, c.HTMLURL, NullTime(c.UpdatedAt),
-		)
-		if err != nil {
-			return err
-		}
-		// v0.27.15: mirror the comment into the Augur-compat ref table
-		// with its full line metadata. Comments whose review is not in
-		// the DB (ReviewID 0) are skipped — the ref's pr_review_id is
-		// NOT NULL; the v0.27.15 backfill picks them up if the review
-		// arrives later. data_source comes from the message row (exact
-		// provenance). Both statements are idempotent, so a failure
-		// between them is healed by the caller's retry.
-		if c.ReviewID != 0 {
-			var ds string
-			if err := s.pool.QueryRow(ctx,
-				`SELECT COALESCE(data_source, '') FROM aveloxis_data.messages WHERE msg_id = $1`,
-				c.MsgID).Scan(&ds); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			if _, err := s.pool.Exec(ctx, prReviewMsgRefFromCommentSQL,
-				c.ReviewID, c.RepoID, c.MsgID, c.PlatformSrcID, c.NodeID,
-				c.DiffHunk, c.Path, c.Position, c.OriginalPosition,
-				c.CommitID, c.OriginalCommitID, NullTime(c.UpdatedAt),
-				c.HTMLURL, c.AuthorAssociation,
-				c.StartLine, c.OriginalStartLine, c.StartSide,
-				c.Line, c.OriginalLine, c.Side, ds,
-			); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
 
 // ============================================================
 // Batch message upserts (transaction)
@@ -2668,39 +2577,6 @@ func (s *PostgresStore) UpsertRepoClone(ctx context.Context, clone *model.RepoCl
 // ============================================================
 // Collection status
 // ============================================================
-
-func (s *PostgresStore) GetCollectionStatus(ctx context.Context, repoID int64) (*CollectionState, error) {
-	state := &CollectionState{RepoID: repoID}
-	err := s.pool.QueryRow(ctx, `
-		SELECT core_status, COALESCE(core_task_id,''),
-		       core_data_last_collected::text,
-		       secondary_status, COALESCE(secondary_task_id,''),
-		       secondary_data_last_collected::text,
-		       facade_status, COALESCE(facade_task_id,''),
-		       facade_data_last_collected::text,
-		       COALESCE(ml_status,'Pending'), COALESCE(ml_task_id,''),
-		       ml_data_last_collected::text
-		FROM aveloxis_ops.collection_status
-		WHERE repo_id = $1`, repoID,
-	).Scan(
-		&state.CoreStatus, &state.CoreTaskID,
-		&state.CoreDataLastCollected,
-		&state.SecondaryStatus, &state.SecondaryTaskID,
-		&state.SecondaryDataLastCollected,
-		&state.FacadeStatus, &state.FacadeTaskID,
-		&state.FacadeDataLastCollected,
-		&state.MLStatus, &state.MLTaskID,
-		&state.MLDataLastCollected,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		state.CoreStatus = "Pending"
-		state.SecondaryStatus = "Pending"
-		state.FacadeStatus = "Pending"
-		state.MLStatus = "Pending"
-		return state, nil
-	}
-	return state, err
-}
 
 func (s *PostgresStore) UpdateCollectionStatus(ctx context.Context, state *CollectionState) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {

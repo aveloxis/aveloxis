@@ -1,0 +1,54 @@
+{{define "dashboard"}}
+{{template "head" (dict "Title" "Dashboard")}}
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+{{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
+<span>{{.Session.LoginName}}</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="breadcrumb"><span class="current">Home</span>{{if .Session.IsAdmin}}<span class="sep">|</span><a href="/monitor">Monitor</a>{{end}}</div>
+<div class="container">
+{{if .PendingEmail}}
+<div class="card" style="background:#dbeafe;border:1px solid #3b82f6">
+<strong>Check your inbox to confirm your email.</strong>
+<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>{{.PendingEmail}}</code>. Click the link in that email to finish setting up your account. Confirmation links are valid for {{.ConfirmationLifetime}} after they are sent. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
+</div>
+{{end}}
+{{if .PendingOnly}}
+<div class="card" style="background:#fff8c5;border:1px solid #d4a72c">
+<strong>Your account is awaiting administrator approval.</strong>
+<p style="margin:8px 0 0 0;color:#5a4500">An aveloxis administrator will review your registration shortly. You'll be notified by email once your groups are approved and collection begins. While you wait, you can continue to add repositories and organizations to your group; they will be queued for collection automatically once your account is approved.</p>
+</div>
+{{end}}
+<div class="card">
+<h2>Your Groups</h2>
+<form method="POST" action="/groups/new" class="form-row">
+<input type="text" name="name" placeholder="New group name..." required>
+<button type="submit" class="btn btn-primary">Create Group</button>
+</form>
+{{if .Groups}}
+<ul class="group-list" style="margin-top:16px">
+{{range .Groups}}
+<li>
+<a href="/groups/{{.GroupID}}" style="font-size:16px;font-weight:500">{{.Name}}</a>
+<span style="color:#586069;margin-left:8px">{{.RepoCount}} repos</span>
+{{if .Favorited}} ★{{end}}
+</li>
+{{end}}
+</ul>
+{{else}}
+<p class="empty" style="margin-top:16px">No groups yet. Create one to start tracking repos.</p>
+{{end}}
+</div>
+
+<div class="card" id="compare-card">
+<h2>Compare Repositories</h2>
+<p style="color:#586069;font-size:14px;margin-bottom:12px">Search and select up to 5 repositories to compare side-by-side with weekly activity charts. Use 100% or Z-Score modes to normalize for community size.</p>
+{{template "compareSearchWidget" (dict "Prefix" "dash")}}
+</div>
+</div>
+</body></html>
+{{end}}
+

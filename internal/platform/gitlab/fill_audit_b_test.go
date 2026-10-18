@@ -29,7 +29,7 @@ import (
 // (it would cross-match the GLOBAL cntrb_login table); groups stay
 // honestly NULL.
 func TestFetchGLProjectAsRepoCapturesOwnerRef(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) fetchGLProjectAsRepo")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) fetchGLProjectAsRepo(")
 	if !strings.Contains(body, "OwnerRef") {
 		t.Error("fetchGLProjectAsRepo must populate OwnerRef")
 	}
@@ -39,7 +39,7 @@ func TestFetchGLProjectAsRepoCapturesOwnerRef(t *testing.T) {
 	if !strings.Contains(body, "lookupGLUserRef(") {
 		t.Error("user namespaces must resolve through the /users?username= lookup (real numeric ID), never a login-only ref")
 	}
-	helper := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) lookupGLUserRef")
+	helper := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) lookupGLUserRef(")
 	if !strings.Contains(helper, "/users?username=") {
 		t.Error("lookupGLUserRef must resolve via the users endpoint")
 	}
@@ -102,7 +102,7 @@ func TestFetchGLProjectAsRepoNamespaceResolution(t *testing.T) {
 
 // B7 + B8 — topics + created_at from the project payload we already fetch.
 func TestGitLabRepoInfoMapsKeywordsAndCreatedAt(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) FetchRepoInfo")
+	body := srctest.FuncBody(t, srctest.Read(t, "internal/platform/gitlab/client.go"), "func (c *Client) FetchRepoInfo(")
 	if !strings.Contains(body, "Keywords:") {
 		t.Error("gitlab FetchRepoInfo must populate RepoInfo.Keywords from project topics")
 	}

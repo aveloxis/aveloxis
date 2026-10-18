@@ -1,0 +1,127 @@
+{{define "group"}}
+{{template "head" (dict "Title" .Group.Name)}}
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+{{if .Session.AvatarURL}}<img src="{{.Session.AvatarURL}}" alt="">{{end}}
+<span>{{.Session.LoginName}}</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="breadcrumb">
+<a href="/dashboard">Home</a>{{if .Session.IsAdmin}}<span class="sep">|</span><a href="/monitor">Monitor</a>{{end}}<span class="sep">/</span><span class="current">{{.Group.Name}}</span>
+</div>
+<div class="container">
+<div class="card">
+<h2>{{.Group.Name}}</h2>
+{{if eq .AddError "rejected"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">These repositories were not added: an administrator rejected this group.</p>{{else if eq .AddError "invalid"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">Some of those lines were not valid repository URLs (a URL must not carry credentials &mdash; user:token@ &mdash; must not be over-long, and must not carry control characters). Fix them and paste again; if a line was over-long, nothing from that paste was added.</p>{{else if eq .AddError "capacity"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">{{if .Capacity}}{{.Capacity}}{{else}}These repositories were not added: your groups have reached their repository limit. Remove repositories you no longer need, then paste again.{{end}}</p>{{else if eq .AddError "capacity_links"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">{{if .Capacity}}{{.Capacity}}{{else}}These repositories were not added: this account has added as many repositories as it can today. Try again after 00:00 UTC.{{end}}</p>{{else if eq .AddError "1"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">Some of those repositories could not be added. You can try adding them again.</p>{{end}}
+{{if eq .OrgError "host"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">That organization was not added: it is not on {{.GitHubHost}}, this deployment&#39;s GitHub host. GitLab groups are recognized by a host name containing &quot;gitlab&quot;.</p>{{end}}
+{{if eq .OrgError "invalid"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">That organization was not added: its URL is invalid. It must not carry credentials (user:token@), must not be over-long, and must not carry control characters.</p>{{end}}
+{{if eq .OrgError "1"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">That organization could not be added. You can try adding it again.</p>{{end}}
+{{if eq .OrgError "rejected"}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">That organization was not added: an administrator rejected this group.</p>{{end}}
+{{if .Pending}}<p style="color:#735c0f;background:#fffbdd;padding:8px;border-radius:4px;margin:12px 0">{{.Pending}} {{if eq .Pending 1}}repository is{{else}}repositories are{{end}} waiting for an administrator&#39;s approval, and will be added to the group and queued for collection when approved.</p>{{end}}
+{{if eq .OrgPending "1"}}<p style="color:#735c0f;background:#fffbdd;padding:8px;border-radius:4px;margin:12px 0">That organization is waiting for an administrator&#39;s approval; its repositories are added to the group when approved.</p>{{end}}
+
+<div class="section">
+<h3>Add Repositories</h3>
+<p style="color:#586069;font-size:13px;margin-bottom:8px">Paste one or more repository URLs, one per line.</p>
+<form method="POST" action="/groups/add-repo">
+<input type="hidden" name="group_id" value="{{.Group.GroupID}}">
+<textarea name="repo_urls" rows="4" placeholder="https://github.com/owner/repo1
+https://github.com/owner/repo2
+https://gitlab.com/group/project" style="width:100%;padding:8px 12px;border:1px solid #d1d5da;border-radius:6px;font-size:14px;font-family:inherit;resize:vertical"></textarea>
+<div style="margin-top:8px"><button type="submit" class="btn btn-primary">Add Repos</button></div>
+</form>
+</div>
+
+<div class="section">
+<h3>Add a GitHub Organization or GitLab Group</h3>
+<p style="color:#586069;font-size:13px;margin-bottom:8px">All repos in the org will be added and automatically updated when new repos appear.</p>
+<form method="POST" action="/groups/add-org" class="form-row">
+<input type="hidden" name="group_id" value="{{.Group.GroupID}}">
+<input type="url" name="org_url" placeholder="https://github.com/chaoss" required>
+<button type="submit" class="btn btn-primary">Add Org</button>
+</form>
+</div>
+
+{{if .Group.Orgs}}
+<div class="section">
+<h3>Tracked Organizations</h3>
+<table>
+<tr><th>Organization</th><th>Platform</th><th>Last Scanned</th></tr>
+{{range .Group.Orgs}}
+<tr>
+<td><a href="{{.OrgURL}}">{{.OrgName}}</a></td>
+<td>{{if eq .Platform "github"}}<span class="badge badge-github">GitHub</span>{{else}}<span class="badge badge-gitlab">GitLab</span>{{end}}</td>
+<td>{{if .LastScanned}}{{.LastScanned.Format "2006-01-02 15:04"}}{{else}}Never{{end}}</td>
+</tr>
+{{end}}
+</table>
+</div>
+{{end}}
+
+<div class="section" id="grp-compare-card">
+<h3>Compare Repositories</h3>
+<p style="color:#586069;font-size:13px;margin-bottom:8px">Search and select up to 5 repositories to compare activity charts side-by-side.</p>
+{{template "compareSearchWidget" (dict "Prefix" "grp")}}
+</div>
+
+<div class="section">
+<h3>Repositories ({{.TotalRepos}})</h3>
+
+<form method="GET" action="/groups/{{.Group.GroupID}}" class="search-form">
+<input type="search" name="q" placeholder="Search repositories..." value="{{.Query}}">
+<button type="submit" class="btn btn-primary">Search</button>
+{{if .Query}}<a href="/groups/{{.Group.GroupID}}" class="btn" style="border:1px solid #d1d5da">Clear</a>{{end}}
+</form>
+
+{{if .Query}}
+<p class="result-info">Showing {{len .Group.Repos}} of {{.TotalRepos}} repositories matching "{{.Query}}"</p>
+{{end}}
+
+{{if .Group.Repos}}
+<div style="overflow-x:auto">
+<table style="table-layout:auto;width:100%">
+<tr><th style="min-width:200px">Repository</th><th>Owner</th>
+<th style="text-align:right">Issues</th><th style="text-align:right;color:#999">Meta</th>
+<th style="text-align:right">PRs</th><th style="text-align:right;color:#999">Meta</th>
+<th style="text-align:right">Commits</th><th style="text-align:right;color:#999">Meta</th>
+<th>SBOM</th><th></th></tr>
+{{range .Group.Repos}}
+<tr>
+<td><a href="/groups/{{$.Group.GroupID}}/repos/{{.RepoID}}" title="{{.RepoOwner}}/{{.RepoName}}">{{.RepoName}}</a>{{if eq .PlatformID 3}} <span class="badge badge-git" title="Git-only: facade, analysis, scorecard, SBOM only">Git-only</span>{{end}}</td>
+<td>{{.RepoOwner}}</td>
+<td style="text-align:right">{{.GatheredIssues}}</td><td style="text-align:right;color:#999;font-size:0.85em">{{if .MetaIssues}}{{.MetaIssues}}{{else}}<span style="color:#ccc">--</span>{{end}}</td>
+<td style="text-align:right">{{.GatheredPRs}}</td><td style="text-align:right;color:#999;font-size:0.85em">{{if .MetaPRs}}{{.MetaPRs}}{{else}}<span style="color:#ccc">--</span>{{end}}</td>
+<td style="text-align:right">{{.GatheredCommits}}</td><td style="text-align:right;color:#999;font-size:0.85em">{{if .MetaCommits}}{{.MetaCommits}}{{else}}<span style="color:#ccc">--</span>{{end}}</td>
+<td style="white-space:nowrap">
+<a href="/groups/{{$.Group.GroupID}}/repos/{{.RepoID}}/sbom?format=cyclonedx" class="btn" style="font-size:11px;padding:2px 6px" title="Download CycloneDX SBOM">CDX</a>
+<a href="/groups/{{$.Group.GroupID}}/repos/{{.RepoID}}/sbom?format=spdx" class="btn" style="font-size:11px;padding:2px 6px" title="Download SPDX SBOM">SPDX</a>
+</td>
+<td>
+<form method="POST" action="/groups/remove-repo" style="display:inline"
+  onsubmit="return confirm('Remove {{.RepoOwner}}/{{.RepoName}} from this group? The repo will continue to be collected by Aveloxis.')">
+<input type="hidden" name="group_id" value="{{$.Group.GroupID}}">
+<input type="hidden" name="repo_id" value="{{.RepoID}}">
+<button type="submit" class="btn btn-danger">Remove</button>
+</form>
+</td>
+</tr>
+{{end}}
+</table>
+</div>
+
+{{template "paginationNav" (dict "BasePath" (printf "/groups/%d" .Group.GroupID) "Page" .Page "TotalPages" .TotalPages "Query" .Query "PageWindow" .PageWindow)}}
+{{else}}
+{{if .Query}}
+<p class="empty">No repositories match your search.</p>
+{{else}}
+<p class="empty">No repos in this group yet.</p>
+{{end}}
+{{end}}
+</div>
+</div>
+</div>
+</body></html>
+{{end}}
+

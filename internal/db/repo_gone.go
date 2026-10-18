@@ -192,15 +192,3 @@ func (s *PostgresStore) GetGoneProbeCandidates(ctx context.Context, limit int) (
 	}
 	return out, rows.Err()
 }
-
-// GetRepoGoneAt returns the gone stamp; nil = reachable / never
-// probed.
-func (s *PostgresStore) GetRepoGoneAt(ctx context.Context, repoID int64) (*time.Time, error) {
-	var ts *time.Time
-	err := s.pool.QueryRow(ctx,
-		`SELECT repo_gone_at FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&ts)
-	if err != nil {
-		return nil, err
-	}
-	return ts, nil
-}

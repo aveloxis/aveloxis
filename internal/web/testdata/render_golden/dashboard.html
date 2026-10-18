@@ -1,0 +1,221 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aveloxis - Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f6f8;color:#333;line-height:1.6}
+a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}
+.container{max-width:1400px;margin:0 auto;padding:20px}
+.card{background:white;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.12);padding:24px;margin-bottom:20px}
+.nav{background:#24292e;color:white;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
+.nav a{color:white}.nav-user{display:flex;align-items:center;gap:10px}
+.nav-user img{width:28px;height:28px;border-radius:50%}
+.breadcrumb{background:#fff;border-bottom:1px solid #e1e4e8;padding:10px 20px;font-size:14px}
+.breadcrumb a{color:#586069}.breadcrumb a:hover{color:#0366d6}
+.breadcrumb span.sep{margin:0 6px;color:#d1d5da}
+.breadcrumb .current{color:#24292e;font-weight:500}
+.btn{display:inline-block;padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:14px;font-weight:500}
+.btn-primary{background:#0366d6;color:white}.btn-primary:hover{background:#0256b9;text-decoration:none}
+.btn-danger{background:#d73a49;color:white;font-size:12px;padding:4px 10px}
+.btn-github{background:#24292e;color:white;padding:12px 24px;font-size:16px}
+.btn-gitlab{background:#fc6d26;color:white;padding:12px 24px;font-size:16px}
+input[type=text],input[type=url],input[type=search]{padding:8px 12px;border:1px solid #d1d5da;border-radius:6px;font-size:14px;width:100%}
+.form-row{display:flex;gap:10px;margin-top:12px}
+.form-row input{flex:1}
+.search-form{display:flex;gap:10px;margin-bottom:16px}
+.search-form input{flex:1}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #eee}
+th{font-weight:600;color:#586069;font-size:13px;text-transform:uppercase}
+.group-list{list-style:none}
+.group-list li{padding:12px 0;border-bottom:1px solid #eee}
+.group-list li:last-child{border-bottom:none}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:500}
+.badge-github{background:#f1f8ff;color:#0366d6}
+.badge-gitlab{background:#fef3e8;color:#fc6d26}
+.badge-org{background:#e6ffed;color:#22863a}
+.badge-git{background:#f3e8ff;color:#7c3aed}
+.login-box{max-width:400px;margin:100px auto;text-align:center}
+.login-box h1{margin-bottom:8px;font-size:28px}
+.login-box p{color:#586069;margin-bottom:32px}
+.login-buttons{display:flex;flex-direction:column;gap:16px}
+.empty{color:#586069;font-style:italic;padding:20px 0}
+h2{font-size:20px;margin-bottom:16px}
+h3{font-size:16px;margin-bottom:12px;color:#24292e}
+.section{margin-top:24px}
+.pagination{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:20px;padding-top:16px;border-top:1px solid #eee}
+.pagination a,.pagination span{padding:6px 12px;border-radius:4px;font-size:14px}
+.pagination a{border:1px solid #d1d5da;color:#0366d6}.pagination a:hover{background:#f6f8fa;text-decoration:none}
+.pagination span.current-page{background:#0366d6;color:white;border:1px solid #0366d6}
+.pagination span.disabled{color:#d1d5da;border:1px solid #eee}
+.result-info{color:#586069;font-size:13px;margin-bottom:12px}
+</style>
+<script>
+
+
+
+
+
+
+function avxEl(tag, props) {
+  if (['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base'].indexOf(String(tag).toLowerCase()) >= 0) {
+    throw new Error('avxEl: refused tag ' + tag);
+  }
+  const e = document.createElement(tag);
+  const p = props || {};
+  Object.keys(p).forEach(function (k) {
+    const v = p[k];
+    if (k === 'style') e.style.cssText = v;
+    else if (k === 'dataset') Object.keys(v).forEach(function (d) { e.dataset[d] = String(v[d]); });
+    else if (k.slice(0, 2) === 'on' && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else if (k === 'className' || k === 'title' || k === 'type' || k === 'colSpan') e[k] = v;
+    else throw new Error('avxEl: unsupported property ' + k);
+  });
+  for (let i = 2; i < arguments.length; i++) {
+    const c = arguments[i];
+    if (c == null || c === false) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return e;
+}
+</script>
+</head>
+<body>
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+<img src="https://avatars.example/7.png" alt="">
+<span>golden</span>
+<a href="/logout">Logout</a>
+</div>
+</div>
+<div class="breadcrumb"><span class="current">Home</span><span class="sep">|</span><a href="/monitor">Monitor</a></div>
+<div class="container">
+
+<div class="card" style="background:#dbeafe;border:1px solid #3b82f6">
+<strong>Check your inbox to confirm your email.</strong>
+<p style="margin:8px 0 0 0;color:#1e3a8a">We sent a confirmation link to <code>pending@example.org</code>. Click the link in that email to finish setting up your account. Confirmation links are valid for two days after they are sent. If you don't see it, check spam, or <a href="/account/email">submit a different email address</a>.</p>
+</div>
+
+
+<div class="card" style="background:#fff8c5;border:1px solid #d4a72c">
+<strong>Your account is awaiting administrator approval.</strong>
+<p style="margin:8px 0 0 0;color:#5a4500">An aveloxis administrator will review your registration shortly. You'll be notified by email once your groups are approved and collection begins. While you wait, you can continue to add repositories and organizations to your group; they will be queued for collection automatically once your account is approved.</p>
+</div>
+
+<div class="card">
+<h2>Your Groups</h2>
+<form method="POST" action="/groups/new" class="form-row">
+<input type="text" name="name" placeholder="New group name..." required>
+<button type="submit" class="btn btn-primary">Create Group</button>
+</form>
+
+<ul class="group-list" style="margin-top:16px">
+
+<li>
+<a href="/groups/1" style="font-size:16px;font-weight:500">Golden group</a>
+<span style="color:#586069;margin-left:8px">1 repos</span>
+ ★
+</li>
+
+</ul>
+
+</div>
+
+<div class="card" id="compare-card">
+<h2>Compare Repositories</h2>
+<p style="color:#586069;font-size:14px;margin-bottom:12px">Search and select up to 5 repositories to compare side-by-side with weekly activity charts. Use 100% or Z-Score modes to normalize for community size.</p>
+
+<form id="dash-compare-form" action="/compare" method="GET" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+<div style="position:relative;flex:1;min-width:250px">
+<input type="text" id="dash-repo-search" placeholder="Type to search repositories..." autocomplete="off" style="width:100%">
+<div id="dash-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5da;border-top:none;border-radius:0 0 6px 6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:220px;overflow-y:auto;z-index:100"></div>
+</div>
+<input type="hidden" id="dash-repo-ids" name="repos" value="">
+<button type="submit" class="btn btn-primary">Compare</button>
+</form>
+<div id="dash-selected" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+<script>
+(function() {
+  
+  
+  
+  const API = '';
+  const prefix = "dash";
+  const input = document.getElementById(prefix + '-repo-search');
+  const results = document.getElementById(prefix + '-search-results');
+  const selected = document.getElementById(prefix + '-selected');
+  const hiddenIds = document.getElementById(prefix + '-repo-ids');
+  const COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+  let repos = [];
+  let timer;
+
+  input.addEventListener('input', function() {
+    clearTimeout(timer);
+    const q = this.value.trim();
+    if (q.length < 2) { results.style.display = 'none'; return; }
+    timer = setTimeout(() => {
+      fetch(API + '/api/v1/repos/search?q=' + encodeURIComponent(q))
+        .then(r => r.json())
+        .then(data => {
+          if (!data || data.length === 0) { results.style.display = 'none'; return; }
+          
+          results.textContent = '';
+          data.slice(0, 15).forEach(r => {
+            const id = Number(r.id), owner = String(r.owner), name = String(r.name);
+            results.append(avxEl('div', {
+              style: 'padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0',
+              onmouseover: function () { this.style.background = '#f6f8fa'; },
+              onmouseout: function () { this.style.background = 'white'; },
+              onclick: () => addRepo(id, owner, name),
+            }, owner + '/', avxEl('strong', null, name)));
+          });
+          results.style.display = 'block';
+        })
+        .catch(() => { results.style.display = 'none'; });
+    }, 200);
+  });
+
+  input.addEventListener('focus', function() {
+    if (results.innerHTML && this.value.length >= 2) results.style.display = 'block';
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#' + prefix + '-repo-search') && !e.target.closest('#' + prefix + '-search-results'))
+      results.style.display = 'none';
+  });
+
+  function addRepo(id, owner, name) {
+    if (repos.length >= 5) { alert('Maximum 5 repos.'); return; }
+    if (repos.find(r => r.id === id)) return;
+    repos.push({id, owner, name});
+    results.style.display = 'none';
+    input.value = '';
+    render();
+  }
+
+  function removeRepo(id) {
+    repos = repos.filter(r => r.id !== id);
+    render();
+  }
+  function render() {
+    selected.textContent = '';
+    repos.forEach((r, i) => {
+      selected.append(avxEl('span', {
+        style: 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:500;background:' +
+          COLORS[i] + '20;color:' + COLORS[i],
+      }, r.owner + '/' + r.name + ' ',
+      avxEl('button', { type: 'button', style: 'background:none;border:none;cursor:pointer;color:inherit;font-size:14px', onclick: () => removeRepo(r.id) }, '\u00d7')));
+    });
+    hiddenIds.value = repos.map(r => r.id).join(',');
+  }
+})();
+</script>
+
+</div>
+</div>
+</body></html>

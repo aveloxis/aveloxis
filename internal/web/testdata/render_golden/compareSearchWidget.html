@@ -1,0 +1,86 @@
+
+<form id="dash-compare-form" action="/compare" method="GET" style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+<div style="position:relative;flex:1;min-width:250px">
+<input type="text" id="dash-repo-search" placeholder="Type to search repositories..." autocomplete="off" style="width:100%">
+<div id="dash-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5da;border-top:none;border-radius:0 0 6px 6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-height:220px;overflow-y:auto;z-index:100"></div>
+</div>
+<input type="hidden" id="dash-repo-ids" name="repos" value="">
+<button type="submit" class="btn btn-primary">Compare</button>
+</form>
+<div id="dash-selected" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+<script>
+(function() {
+  
+  
+  
+  const API = '';
+  const prefix = "dash";
+  const input = document.getElementById(prefix + '-repo-search');
+  const results = document.getElementById(prefix + '-search-results');
+  const selected = document.getElementById(prefix + '-selected');
+  const hiddenIds = document.getElementById(prefix + '-repo-ids');
+  const COLORS = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+  let repos = [];
+  let timer;
+
+  input.addEventListener('input', function() {
+    clearTimeout(timer);
+    const q = this.value.trim();
+    if (q.length < 2) { results.style.display = 'none'; return; }
+    timer = setTimeout(() => {
+      fetch(API + '/api/v1/repos/search?q=' + encodeURIComponent(q))
+        .then(r => r.json())
+        .then(data => {
+          if (!data || data.length === 0) { results.style.display = 'none'; return; }
+          
+          results.textContent = '';
+          data.slice(0, 15).forEach(r => {
+            const id = Number(r.id), owner = String(r.owner), name = String(r.name);
+            results.append(avxEl('div', {
+              style: 'padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0',
+              onmouseover: function () { this.style.background = '#f6f8fa'; },
+              onmouseout: function () { this.style.background = 'white'; },
+              onclick: () => addRepo(id, owner, name),
+            }, owner + '/', avxEl('strong', null, name)));
+          });
+          results.style.display = 'block';
+        })
+        .catch(() => { results.style.display = 'none'; });
+    }, 200);
+  });
+
+  input.addEventListener('focus', function() {
+    if (results.innerHTML && this.value.length >= 2) results.style.display = 'block';
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#' + prefix + '-repo-search') && !e.target.closest('#' + prefix + '-search-results'))
+      results.style.display = 'none';
+  });
+
+  function addRepo(id, owner, name) {
+    if (repos.length >= 5) { alert('Maximum 5 repos.'); return; }
+    if (repos.find(r => r.id === id)) return;
+    repos.push({id, owner, name});
+    results.style.display = 'none';
+    input.value = '';
+    render();
+  }
+
+  function removeRepo(id) {
+    repos = repos.filter(r => r.id !== id);
+    render();
+  }
+  function render() {
+    selected.textContent = '';
+    repos.forEach((r, i) => {
+      selected.append(avxEl('span', {
+        style: 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:500;background:' +
+          COLORS[i] + '20;color:' + COLORS[i],
+      }, r.owner + '/' + r.name + ' ',
+      avxEl('button', { type: 'button', style: 'background:none;border:none;cursor:pointer;color:inherit;font-size:14px', onclick: () => removeRepo(r.id) }, '\u00d7')));
+    });
+    hiddenIds.value = repos.map(r => r.id).join(',');
+  }
+})();
+</script>

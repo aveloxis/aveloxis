@@ -91,7 +91,7 @@ func TestMigrateFastPathSkipsAndFullRunHeals(t *testing.T) {
 
 	// Ensure the stamp is current (full migrate if needed).
 	testMigrate(ctx, t, store)
-	if v := store.GetSchemaVersion(ctx); v != ToolVersion {
+	if v := stampOf(ctx, t, store); v != ToolVersion {
 		t.Fatalf("precondition: stamp %q != ToolVersion %q", v, ToolVersion)
 	}
 

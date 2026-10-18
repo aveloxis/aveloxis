@@ -43,7 +43,7 @@ func TestNoUnboundedResponseBodyRead(t *testing.T) {
 				return rerr
 			}
 			for _, fn := range unboundedBodyReads(t, rel, string(src), &examined) {
-				found[filepath.ToSlash(rel)+" "+fn]++
+				found[srctest.SiteKey(srctest.SiteDir(filepath.ToSlash(rel)), fn)]++
 			}
 			return nil
 		})
@@ -66,16 +66,16 @@ var unboundedDataBodyReads = map[string]struct {
 	reads  int
 	reason string
 }{
-	"internal/collector/analysis.go fetchRegistryJSON": {1, "O5 data body: limit pending the operator decision (registry documents: an npm packument runs to tens of MB)"},
-	"internal/importers/apache/apache.go fetchJSON":    {1, "O5 data body: limit pending the operator decision"},
-	"internal/importers/cncf/cncf.go Fetch":            {1, "O5 data body: limit pending the operator decision"},
-	"internal/importers/numfocus/crawler.go crawlURL":  {1, "O5 data body: limit pending the operator decision"},
-	"internal/mailinglist/ponymail.go get":             {1, "O5 data body: limit pending the operator decision"},
-	"internal/mailinglist/ponymail.go FetchMonth":      {1, "O5 data body: limit pending the operator decision (a month's mbox)"},
-	"internal/platform/graphql.go GraphQLAt":           {1, "O5 data body: limit pending the operator decision (a GraphQL page; giant repositories)"},
-	"internal/web/server.go handleGitHubCallback":      {1, "O5 data body: limit pending the operator decision (the OAuth token and user answers)"},
-	"internal/web/server.go handleGitLabCallback":      {1, "O5 data body: limit pending the operator decision (the OAuth token and user answers)"},
-	"internal/mailinglist/archive.go parseRFC822":      {1, "not a network response: a mail message already parsed from bytes held in memory"},
+	srctest.SiteKey("internal/collector", "fetchRegistryJSON"): {1, "O5 data body: limit pending the operator decision (registry documents: an npm packument runs to tens of MB)"},
+	srctest.SiteKey("internal/importers/apache", "fetchJSON"):  {1, "O5 data body: limit pending the operator decision"},
+	srctest.SiteKey("internal/importers/cncf", "Fetch"):        {1, "O5 data body: limit pending the operator decision"},
+	srctest.SiteKey("internal/importers/numfocus", "crawlURL"): {1, "O5 data body: limit pending the operator decision"},
+	srctest.SiteKey("internal/mailinglist", "get"):             {1, "O5 data body: limit pending the operator decision"},
+	srctest.SiteKey("internal/mailinglist", "FetchMonth"):      {1, "O5 data body: limit pending the operator decision (a month's mbox)"},
+	srctest.SiteKey("internal/platform", "GraphQLAt"):          {1, "O5 data body: limit pending the operator decision (a GraphQL page; giant repositories)"},
+	srctest.SiteKey("internal/web", "handleGitHubCallback"):    {1, "O5 data body: limit pending the operator decision (the OAuth token and user answers)"},
+	srctest.SiteKey("internal/web", "handleGitLabCallback"):    {1, "O5 data body: limit pending the operator decision (the OAuth token and user answers)"},
+	srctest.SiteKey("internal/mailinglist", "parseRFC822"):     {1, "not a network response: a mail message already parsed from bytes held in memory"},
 }
 
 // unboundedReadMismatches reports every function whose unbounded body
@@ -178,23 +178,27 @@ func TestUnboundedDataReadsLogTheirSize(t *testing.T) {
 		if !strings.HasPrefix(e.reason, "O5 data body") {
 			continue // not a network response
 		}
-		file, fn, _ := strings.Cut(key, " ")
-		if !funcCallsAny(t, file, fn, "NoteResponseSize", "CountResponseBody") {
+		dir, fn, _ := strings.Cut(key, "|")
+		if !funcCallsAny(t, dir, fn, "NoteResponseSize", "CountResponseBody") {
 			t.Errorf("%s: an unbounded data read that does not log its size (platform.NoteResponseSize)", key)
 		}
 	}
 }
 
-// funcCallsAny reports whether the function or method fn in file calls any
-// of names (a bare or package-qualified call), by the file's AST.
-func funcCallsAny(t *testing.T, file, fn string, names ...string) bool {
+// funcCallsAny reports whether the function or method fn in the package at
+// dir calls any of names (a bare or package-qualified call), by the AST of
+// the file declaring it (found across the package, v0.29.98).
+func funcCallsAny(t *testing.T, dir, fn string, names ...string) bool {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, file, srctest.Read(t, file), parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatalf("parse %s: %v", file, err)
+	var decls []ast.Decl
+	for file, src := range srctest.PackageFiles(t, dir, 1) {
+		f, err := parser.ParseFile(token.NewFileSet(), file, src, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		decls = append(decls, f.Decls...)
 	}
-	for _, d := range f.Decls {
+	for _, d := range decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || fd.Name.Name != fn || fd.Body == nil {
 			continue
@@ -221,6 +225,6 @@ func funcCallsAny(t *testing.T, file, fn string, names ...string) bool {
 		})
 		return found
 	}
-	t.Fatalf("function %s not found in %s", fn, file)
+	t.Fatalf("function %s not found in %s", fn, dir)
 	return false
 }

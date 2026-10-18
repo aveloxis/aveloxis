@@ -310,15 +310,13 @@ func TestSharedLinkEndToEnd(t *testing.T) {
 		t.Errorf("shared-link flow must NEVER touch collection_queue.\nbefore: %s\nafter:  %s", queueBefore, queueAfter)
 	}
 
-	// (5) Nonexistent repo: structured 403 unchanged, no group residue.
+	// (5) Nonexistent repo: a 404 before any scope decision (stage 1b,
+	// D5; it was the structured 403 before), no group residue.
 	var maxRepoID int64
 	_ = pool.QueryRow(ctx, `SELECT COALESCE(MAX(repo_id),0) FROM aveloxis_data.repos`).Scan(&maxRepoID)
 	rec = get(fmt.Sprintf("/api/v1/repos/%d/stats", maxRepoID+1000000), tok)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("nonexistent repo must stay a structured 403, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "repo_out_of_scope") {
-		t.Errorf("403 shape must be preserved, got %q", rec.Body.String())
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "repo not found") {
+		t.Errorf("nonexistent repo = %d %q; want a 404 (repo not found)", rec.Code, rec.Body.String())
 	}
 
 	// (6) Admin: allowed without any group creation.

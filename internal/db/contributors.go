@@ -385,14 +385,3 @@ func (r *ContributorResolver) GetThinContributorLogins(ctx context.Context, limi
 func (r *ContributorResolver) MarkContributorEnriched(ctx context.Context, login string) error {
 	return r.store.MarkContributorEnriched(ctx, login)
 }
-
-// ResolveIfKnown performs a cache-only lookup and returns the cntrb_id if
-// the contributor was previously resolved. Returns ("", false, nil) if
-// the contributor is not in the cache.
-func (r *ContributorResolver) ResolveIfKnown(ctx context.Context, platformID int16, userID int64) (string, bool, error) {
-	key := resolverCacheKey(platformID, userID, "")
-	if id, ok := r.cache[key]; ok {
-		return id, true, nil
-	}
-	return "", false, nil
-}

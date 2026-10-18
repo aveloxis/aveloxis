@@ -81,7 +81,7 @@ func TestRunDeployGateBoundsTheDialOnly(t *testing.T) {
 func TestSkipDeployCheckStillPrintsTheChecklist(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: false, stamp: "0.29.2"}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", true, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", true, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("--skip-deploy-check must proceed: proceed=%v err=%v", proceed, err)
 	}

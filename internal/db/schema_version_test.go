@@ -52,17 +52,21 @@ func TestMigrateStampsSchemaVersion(t *testing.T) {
 	}
 }
 
-// TestGetSchemaVersionExists verifies the PostgresStore has a method to
-// read the current schema version from the database.
-func TestGetSchemaVersionExists(t *testing.T) {
+// TestSchemaVersionKeepsItsErrorArm: the store reads the stored schema
+// version through SchemaVersion, whose error arm is kept (SR-5). The lossy
+// GetSchemaVersion (every failure → "", read as "unstamped") was deleted in
+// v0.29.98 with no production caller; it must not come back.
+func TestSchemaVersionKeepsItsErrorArm(t *testing.T) {
 	src, err := os.ReadFile("migrate.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	code := string(src)
-
-	if !strings.Contains(code, "GetSchemaVersion") {
-		t.Error("migrate.go must define GetSchemaVersion to read the stored schema version")
+	if !strings.Contains(code, "func (s *PostgresStore) SchemaVersion(ctx context.Context) (string, error)") {
+		t.Error("migrate.go must define SchemaVersion(ctx) (string, error) to read the stored schema version")
+	}
+	if strings.Contains(code, "func (s *PostgresStore) GetSchemaVersion(") {
+		t.Error("a schema-version reader that maps a failed read to \"\" is back (SR-5)")
 	}
 }
 

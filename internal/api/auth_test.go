@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/srctest"
+
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
@@ -210,25 +212,14 @@ func TestAuthorizeRepoScopeEnforcement(t *testing.T) {
 }
 
 func TestRepoHandlersEnforceScope(t *testing.T) {
-	// Every repo-scoped handler must call authorizeRepo right after
-	// parsing repoID.
-	for _, f := range []struct {
-		file string
-		min  int
-	}{
-		{"server.go", 6},
-		{"contributions.go", 3},
-		{"metrics.go", 20},
-	} {
-		src := mustReadFile(t, f.file)
-		if n := strings.Count(src, "s.authorizeRepo(w, r, repoID)"); n < f.min {
-			t.Errorf("%s: expected ≥%d authorizeRepo call sites, found %d — a repo "+
-				"endpoint without the scope check leaks data to any logged-in user", f.file, f.min, n)
-		}
-	}
-	// The web process must expose the token-mint endpoint.
-	web := mustReadFile(t, "../web/server.go")
-	if !strings.Contains(web, `"/auth/token"`) || !strings.Contains(web, "CreateSessionToken(") {
+	// Every repository route decides scope through the prelude
+	// (repoFromPath → authorizeRepo): TestRepositoryRoutesReachThePrelude
+	// walks the registrations (stage 1b replaced the per-file count of
+	// `s.authorizeRepo(w, r, repoID)`, which a route could pass out of
+	// order). The web process must expose the token-mint endpoint.
+	routes := srctest.PackageFunc(t, "internal/web", "func (s *Server) Handler(")
+	mint := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleAuthToken(")
+	if !strings.Contains(routes, `"/auth/token"`) || !strings.Contains(mint, "CreateSessionToken(") {
 		t.Error("web process must expose /auth/token minting DB-backed session tokens for the SPA")
 	}
 }

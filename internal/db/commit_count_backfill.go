@@ -5,27 +5,20 @@ package db
 
 import "context"
 
-// ShouldBackfillCommitCount returns true when repo_info.commit_count should
-// be patched with the facade-derived gathered count. The rule is strict:
-// only fire when the API returned 0 AND facade has observed at least one
-// commit. This avoids overwriting a real non-zero API count and avoids
-// writing a no-op zero when facade also saw nothing.
-//
-// Used specifically for GitLab, where the API's `statistics.commit_count`
-// can be 0 for two reasons that look identical from the client side:
-//  1. token lacks Reporter+ access on a private project (`statistics` is nil),
-//  2. GitLab's async stats worker has not yet computed the count for a
-//     freshly-imported / mirrored / recently-pushed project.
-//
-// In both cases the facade's `git log` walk produces the correct count.
-func ShouldBackfillCommitCount(apiCommitCount, gatheredCommitCount int) bool {
-	return apiCommitCount == 0 && gatheredCommitCount > 0
-}
-
 // BackfillGitLabCommitCount patches the latest aveloxis_data.repo_info row
 // for the given repo when:
 //   - the existing row's commit_count is 0 (API reported no data), AND
 //   - aveloxis_data.commits has a non-zero distinct-hash count (facade ran).
+//
+// The rule is strict on purpose — only "API returned 0 AND facade observed
+// at least one commit" writes — because GitLab's `statistics.commit_count`
+// is 0 for two reasons that look identical from the client side: the token
+// lacks Reporter+ access on a private project (`statistics` is nil), or the
+// async stats worker has not computed the count yet for a freshly imported,
+// mirrored or recently pushed project. In both the facade's `git log` walk
+// has the correct count. The statement below IS the rule
+// (TestBackfillGitLabCommitCountFourCases drives its four cases, v0.29.98);
+// there is no Go copy of it to drift.
 //
 // Safe by construction:
 //   - scoped to a single repo_id via $1,

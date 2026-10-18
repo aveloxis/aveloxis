@@ -786,11 +786,7 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// default into its quota row (once, ledgered) and keeps the old column
 	// as the rollback mirror.
 	seedCapacitySettings(ctx, pg, logger, errs)
-	// v0.29.82: the API-token defaults' one row — since 0.29.89 only the
-	// lifetime (30 days); the allowances are quotas. Never overwrites an edit.
-	execMigrationStep(ctx, pg, logger, errs, "v0.29.82 seed api_token_settings",
-		fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_lifetime_days)
-		VALUES (1, %d) ON CONFLICT (id) DO NOTHING`, DefaultAPITokenLifetimeDays))
+	seedAPITokenSettings(ctx, pg, logger, errs)
 	// v0.29.89: each API token gets a daily allowance (its own value, like
 	// the hour; the default comes from the token_requests_per_day quota).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.api_tokens", "rate_limit_per_day",
@@ -3143,6 +3139,33 @@ func seedCapacitySettings(ctx context.Context, pg *PostgresStore, logger *slog.L
 		WHERE s.id = 1 AND q.name = 'token_requests_per_hour' AND s.default_rate_limit_per_hour IS DISTINCT FROM q.allowed`)
 }
 
+// seedAPITokenSettings (v0.29.82) seeds the API-token defaults' one row —
+// since 0.29.89 only the lifetime (30 days) is decided here; the
+// allowances are quotas. Never overwrites an edit.
+//
+// v0.29.97: the row carries the rollback mirror too. A schema born on
+// 0.29.82–0.29.88 declares default_rate_limit_per_hour NOT NULL with no
+// default (schema.sql gained DEFAULT 1000 in 0.29.89, and
+// addColumnIfMissing above is a no-op on a column that exists), so the
+// 0.29.89–0.29.96 seed — which stopped supplying the column — failed with
+// 23502 on every such fleet whose row 1 was not there yet (the operator's
+// 2026-10-17 migrate on 0.29.96). The INSERT supplies the shipped hourly
+// allowance (the mirror's own sync step then follows the stored quota on
+// every migrate), and the column gets the default schema.sql declares.
+func seedAPITokenSettings(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	execMigrationStep(ctx, pg, logger, errs, "v0.29.97 default_rate_limit_per_hour carries the default schema.sql declares",
+		`ALTER TABLE aveloxis_ops.api_token_settings ALTER COLUMN default_rate_limit_per_hour SET DEFAULT 1000`)
+	// The mirror is born equal to the STORED hourly quota (an edited value
+	// too — review B3: the mirror sync runs before this seed, so a row born
+	// with the shipped value was wrong until the next migrate), the shipped
+	// value only when the quota row is absent.
+	execMigrationStep(ctx, pg, logger, errs, "v0.29.82 seed api_token_settings",
+		fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_rate_limit_per_hour, default_lifetime_days)
+		VALUES (1, COALESCE((SELECT allowed FROM aveloxis_ops.capacity_quotas WHERE name = 'token_requests_per_hour'), %d), %d)
+		ON CONFLICT (id) DO NOTHING`,
+			capacity.Shipped[capacity.QuotaTokenRequestsPerHour].Allowed, DefaultAPITokenLifetimeDays))
+}
+
 // execMigrationStep runs a schema-changing SQL statement, logging the
 // step at INFO before and recording any error in the collector. Used
 // by RunMigrations for ALTER TABLE / CREATE INDEX / etc. statements
@@ -3236,13 +3259,6 @@ func stampSchemaVersion(ctx context.Context, pg *PostgresStore, logger *slog.Log
 		return fmt.Errorf("stamp schema version %s: no aveloxis_ops.schema_meta row (id = TRUE) to stamp", ToolVersion)
 	}
 	return nil
-}
-
-// GetSchemaVersion reads the schema version from the database. Returns an
-// empty string if the schema_meta table doesn't exist yet (pre-v0.14.5 DB).
-func (s *PostgresStore) GetSchemaVersion(ctx context.Context) string {
-	v, _ := s.schemaVersionProbe(ctx)
-	return v
 }
 
 // SchemaVersion is schemaVersionProbe for callers outside the package

@@ -252,6 +252,42 @@ Two ordering rules are now build-time invariants (v0.28.15):
 - **A data step must come after every `addColumnIfMissing` it reads or writes.** `TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded` scans every literal-SQL `execMigrationStep` / `runOnceStep` and fails when the SQL names a table and a column that is only added *later* in `RunMigrations`. Fresh databases never notice (the base DDL creates the column), and a populated fleet on the current version never notices (the column already exists) — only a fleet upgrading from *before* the column fails, with SQLSTATE 42703 on the first migrate and success on the retry. That "fails once, passes on retry" shape is the tell: the failed run added the column. It shipped twice (the v0.28.7 `vuln_scan_last_run` backfill and the v0.27.37 GitLab force-full step) before the analyzer landed.
 - **Index every FK child before a step bulk-deletes the parent.** A `DELETE` on a parent fires one FK check per child table per deleted row; with `DEFERRABLE INITIALLY DEFERRED` FKs those checks run at commit, and an unindexed child column makes each one a sequential scan. The v0.27.17 `repo_groups` consolidation spent ~1.6 h deleting 873 loser groups against a 12 GB unindexed `email_message.repo_group_id`; `ensureRepoGroupFKIndexes` now precedes that step and `TestEveryRepoGroupsFKChildIsIndexed` requires every `REFERENCES repo_groups` column to be indexed. When you add an FK to a parent whose rows a migration may delete, add the child index (migration-owned, CONCURRENTLY) in the same change.
 
+### Where a new step goes: stages are subjects (v0.29.98, N29)
+
+`RunMigrations` runs ten stage functions in a fixed order (`migrateStage1CoreColumns` … `migrateStage10RecentReleases`).
+They were cut from one 1,570-line function by subject, and the subject — not the version — decides where a new
+step goes. The names lag the contents in two places, recorded here so nobody guesses:
+
+| Stage | Subject (what it actually holds) |
+|---|---|
+| 1 `CoreColumns` | repo, queue and contributor columns of the core pipeline; activity backfills |
+| 2 `MailingList` | mailing-list columns and indexes |
+| 3 `ScancodeDistribution` | scancode and distribution worker columns — **and** the users/sessions/capacity work appended since v0.29.75 (session-token hashing, the capacity settings seed, the API-token settings seed and columns) |
+| 4 `DedupAndIndexes` | commit dedup, repo-name cleanup, case-insensitive uniques, performance indexes |
+| 5 `DistributionRepairs` | distribution resets and repairs |
+| 6 `CountBackfills` | count and placeholder backfills |
+| 7 `UsersAndGroups` | web users, e-mail and group columns; the legacy pending-group conversion; `dedupeUsers` |
+| 8 `FKHardening` | FK cascade, index and DEFERRABLE hardening |
+| 9 `DataQuality` | languages, vulnerability lifecycle, login history, matview-era fixes |
+| 10 `RecentReleases` | repo_labor history, message-ref metadata, lockfiles, and most steps since v0.27 |
+
+The rule:
+
+1. **A new step goes at the END of its subject's stage.** Users, sessions, tokens and capacity go to stage 3's
+   tail (where that work already lives), not to stage 7, until stage 3 is renamed; a step with no subject goes to
+   the end of stage 10.
+2. **If the step depends on anything in a LATER stage** — a column add, an index (including one built
+   CONCURRENTLY), a ledgered backfill, a seed — it goes **after that dependency, in the later stage**, with a
+   comment naming the dependency. `TestMigrationStepsReferenceColumnsOnlyAfterTheyAreAdded` catches column adds
+   only; indexes, backfills and seeds are the author's responsibility and the reviewer's.
+3. **Stages are never reordered, and an existing step moves only with the step-order golden**
+   (`scripts/migrate_step_order.txt`, the execution-ordered list of every step label, column add and
+   CONCURRENTLY index; its test requires the file to equal today's execution order exactly, naming the first
+   position that differs — a new step is added at its line, a removed step deletes its line, a moved step fails
+   until the golden is regenerated) **and a fresh-empty-database migrate** (`TestRunMigrationsOnFreshDB`) in the same change. A "tidy" move between stages
+   is a reorder.
+4. Renaming a stage function to match its subject is a later pure move (G3-proven), never part of a step change.
+
 ## Materialized views
 
 The 20 real materialized views (`explorer_*`, `api_get_*`) are declared in `matviews.sql` and created/refreshed via `internal/db/matviews.go`. Do NOT confuse them with `dm_repo_annual/monthly/weekly` (+ group variants) — those are ordinary aggregate TABLES rebuilt by SQL in `internal/db/aggregates.go` on the matview-rebuild day, not matviews. Refresh helpers:

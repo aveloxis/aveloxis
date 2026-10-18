@@ -4,11 +4,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // newTestServer creates a Server with a nil store for route/parameter testing.
@@ -18,7 +21,17 @@ func newTestServer() *Server {
 	logger := slog.Default()
 	// Use New() which registers all routes including metric routes.
 	// Nil store is fine — we only test routing and parameter validation.
-	return New(nil, logger)
+	s := New(nil, logger)
+	// Stage 1b: a repository route proves the repository exists before it
+	// reads its parameters (repoFromPath); a bare server knows every id.
+	s.repoStates = func(_ context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
+		out := map[int64]db.RepoCacheState{}
+		for _, id := range ids {
+			out[id] = db.RepoCacheState{HasQueueRow: true}
+		}
+		return out, nil
+	}
+	return s
 }
 
 // ============================================================

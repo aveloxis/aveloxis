@@ -28,7 +28,7 @@ func TestSafegoAdoptionAtAuditedSites(t *testing.T) {
 		"../collector/staged.go":              4, // 3 parallel collectors + PR shard
 		"../collector/scancode_worker.go":     5,
 		"../collector/distribution/worker.go": 2,
-		"../web/server.go":                    1, // org-repo-scan
+		"../web/groups.go":                    1, // org-repo-scan (handleAddOrg launches scanOrgRepos; stage 1 deletes both)
 		"../web/admin.go":                     1, // group-approved-email
 		// O6 (v0.29.71): goroutines on external data or a subprocess.
 		"../platform/github/contributor_history.go": 1, // per-window fetch (RecoverWith: a panic fails the contributor)

@@ -76,7 +76,7 @@ func TestCheckDeployReadinessNonInteractiveRefuses(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: false}
 	var out bytes.Buffer
 	// os.Stdin under `go test` is not a char device → non-interactive.
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.0", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.0", false, os.Stdin, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestCheckDeployReadinessNonInteractiveRefuses(t *testing.T) {
 func TestCheckDeployReadinessSkipBypasses(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: false}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.0", true, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.0", true, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("--skip-deploy-check must proceed: proceed=%v err=%v", proceed, err)
 	}
@@ -102,7 +102,7 @@ func TestCheckDeployReadinessSkipBypasses(t *testing.T) {
 func TestCheckDeployReadinessAckedPasses(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: true}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.0", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.0", false, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("acked release must proceed: proceed=%v err=%v", proceed, err)
 	}
@@ -115,7 +115,7 @@ func TestCheckDeployReadinessAckedPasses(t *testing.T) {
 func TestCheckDeployReadinessFreshInstallPasses(t *testing.T) {
 	g := &fakeGate{hasData: false, acked: false}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.0", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.0", false, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("fresh install must proceed: proceed=%v err=%v", proceed, err)
 	}
@@ -214,7 +214,7 @@ func TestDeployStepsProvablyUnrun(t *testing.T) {
 func TestCheckDeployReadinessRefusesWhenStampBehindBinary(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: true, stamp: "0.29.2"}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestCheckDeployReadinessRefusesWhenStampBehindBinary(t *testing.T) {
 func TestCheckDeployReadinessSkipProceedsWhenStampBehind(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: false, stamp: "0.29.2"}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", true, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", true, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("--skip-deploy-check must proceed: proceed=%v err=%v", proceed, err)
 	}
@@ -260,7 +260,7 @@ func TestCheckDeployReadinessSkipProceedsWhenStampBehind(t *testing.T) {
 func TestCheckDeployReadinessStampProbeErrorFailsClosed(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: true, stampErr: errors.New("boom")}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err == nil || proceed {
 		t.Fatalf("a stamp probe error must surface: proceed=%v err=%v", proceed, err)
 	}
@@ -274,13 +274,13 @@ func TestCheckDeployReadinessStampProbeErrorFailsClosed(t *testing.T) {
 func TestCheckDeployReadinessStampCurrentKeepsPromptFlow(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: true, stamp: "0.29.3"}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err != nil || !proceed || out.Len() != 0 {
 		t.Fatalf("current stamp + ack must pass silently: proceed=%v err=%v out=%q", proceed, err, out.String())
 	}
 	g = &fakeGate{hasData: true, acked: false, stamp: "0.29.3"}
 	out.Reset()
-	proceed, err = checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err = checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err != nil || proceed {
 		t.Fatalf("current stamp, un-acked, non-interactive must refuse with the checklist: proceed=%v err=%v", proceed, err)
 	}
@@ -298,7 +298,7 @@ func TestCheckDeployReadinessStampCurrentKeepsPromptFlow(t *testing.T) {
 func TestCheckDeployReadinessNotesAnotherServe(t *testing.T) {
 	g := &fakeGate{hasData: true, acked: true, stamp: "0.29.3", otherServe: true}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("another serve is a note, never a refusal: proceed=%v err=%v", proceed, err)
 	}
@@ -310,21 +310,21 @@ func TestCheckDeployReadinessNotesAnotherServe(t *testing.T) {
 
 	g = &fakeGate{hasData: true, acked: true, stamp: "0.29.2", otherServe: true}
 	out.Reset()
-	proceed, _ = checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, _ = checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if proceed || !strings.Contains(out.String(), "another aveloxis-serve") {
 		t.Errorf("a stamp refusal still carries the note:\n%s", out.String())
 	}
 
 	g = &fakeGate{hasData: true, acked: true, stamp: "0.29.3", otherErr: errors.New("boom")}
 	out.Reset()
-	proceed, err = checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err = checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err != nil || !proceed || !strings.Contains(out.String(), "could not check") || !strings.Contains(out.String(), "boom") {
 		t.Errorf("a failed probe is said, not folded into all-clear: proceed=%v err=%v\n%s", proceed, err, out.String())
 	}
 
 	g = &fakeGate{hasData: false, otherServe: true}
 	out.Reset()
-	if proceed, err := checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out); err != nil || !proceed || g.otherProbed || out.Len() != 0 {
+	if proceed, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out); err != nil || !proceed || g.otherProbed || out.Len() != 0 {
 		t.Errorf("a fresh fleet is neither probed nor noted: proceed=%v err=%v probed=%v out=%q", proceed, err, g.otherProbed, out.String())
 	}
 
@@ -333,7 +333,7 @@ func TestCheckDeployReadinessNotesAnotherServe(t *testing.T) {
 	// printed, with the address honestly unrecorded.
 	g = &fakeGate{hasData: true, acked: true, stamp: "0.29.3", otherServe: true, listErr: errors.New("boom")}
 	out.Reset()
-	proceed, err = checkDeployReadiness(context.Background(), g, "0.29.3", false, os.Stdin, &out)
+	proceed, _, err = checkDeployReadinessNaming(context.Background(), g, "0.29.3", false, os.Stdin, &out)
 	if err != nil || !proceed {
 		t.Fatalf("a listing failure is not a probe failure: proceed=%v err=%v", proceed, err)
 	}
@@ -360,14 +360,14 @@ func TestCheckDeployReadinessStampGateIsIndependentOfTheChecklist(t *testing.T) 
 	}
 	g := &fakeGate{hasData: true, acked: false, stamp: "0.0.0"}
 	var out bytes.Buffer
-	proceed, err := checkDeployReadiness(context.Background(), g, noChecklist, false, os.Stdin, &out)
+	proceed, _, err := checkDeployReadinessNaming(context.Background(), g, noChecklist, false, os.Stdin, &out)
 	if err != nil || proceed || g.recorded || !strings.Contains(out.String(), "Refusing to start") {
 		t.Errorf("stamp behind the binary must refuse even without a checklist: proceed=%v err=%v recorded=%v\n%s", proceed, err, g.recorded, out.String())
 	}
 
 	g = &fakeGate{hasData: true, acked: false, stamp: noChecklist, otherServe: true}
 	out.Reset()
-	proceed, err = checkDeployReadiness(context.Background(), g, noChecklist, false, os.Stdin, &out)
+	proceed, _, err = checkDeployReadinessNaming(context.Background(), g, noChecklist, false, os.Stdin, &out)
 	if err != nil || !proceed || strings.Contains(out.String(), "Deployment steps") {
 		t.Errorf("a current stamp without a checklist proceeds with no prompt: proceed=%v err=%v\n%s", proceed, err, out.String())
 	}
@@ -377,7 +377,7 @@ func TestCheckDeployReadinessStampGateIsIndependentOfTheChecklist(t *testing.T) 
 
 	g = &fakeGate{hasData: false, stamp: "0.0.0"}
 	out.Reset()
-	if proceed, err := checkDeployReadiness(context.Background(), g, noChecklist, false, os.Stdin, &out); err != nil || !proceed || out.Len() != 0 {
+	if proceed, _, err := checkDeployReadinessNaming(context.Background(), g, noChecklist, false, os.Stdin, &out); err != nil || !proceed || out.Len() != 0 {
 		t.Errorf("a fresh fleet still starts silently: proceed=%v err=%v out=%q", proceed, err, out.String())
 	}
 	// Wiring: runDeployGate must not short-circuit on "no checklist"
@@ -412,7 +412,7 @@ func TestDeployGateBoundsItsPrePromptQueries(t *testing.T) {
 	defer cancel()
 	var out bytes.Buffer
 	start := time.Now()
-	proceed, err := checkDeployReadiness(ctx, &blockingGate{}, "0.29.4", false, nil, &out)
+	proceed, _, err := checkDeployReadinessNaming(ctx, &blockingGate{}, "0.29.4", false, nil, &out)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -664,7 +664,7 @@ func TestDeployGateNamesThisReleasesMigrateStep(t *testing.T) {
 	for _, skip := range []bool{false, true} {
 		g := &fakeGate{hasData: true, stamp: "0.29.55"}
 		var out bytes.Buffer
-		if _, err := checkDeployReadiness(context.Background(), g, "0.29.57", skip, os.Stdin, &out); err != nil {
+		if _, _, err := checkDeployReadinessNaming(context.Background(), g, "0.29.57", skip, os.Stdin, &out); err != nil {
 			t.Fatal(err)
 		}
 		// Everything BEFORE the printed checklist is the gate's own advice;
@@ -879,7 +879,7 @@ func TestVacuumGateWaitsForALineServeWrites(t *testing.T) {
 func TestEveryLadderStartsServeOnce(t *testing.T) {
 	// The ladders built by the positional recipe (0.29.73 on) carry the
 	// start step; older ladders predate it and have none.
-	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true, "0.29.82": true, "0.29.83": true, "0.29.84": true, "0.29.85": true, "0.29.86": true, "0.29.87": true, "0.29.88": true, "0.29.89": true, "0.29.90": true, "0.29.91": true, "0.29.92": true, "0.29.93": true, "0.29.94": true, "0.29.95": true, "0.29.96": true}
+	recipe := map[string]bool{"0.29.73": true, "0.29.74": true, "0.29.75": true, "0.29.76": true, "0.29.77": true, "0.29.78": true, "0.29.79": true, "0.29.80": true, "0.29.81": true, "0.29.82": true, "0.29.83": true, "0.29.84": true, "0.29.85": true, "0.29.86": true, "0.29.87": true, "0.29.88": true, "0.29.89": true, "0.29.90": true, "0.29.91": true, "0.29.92": true, "0.29.93": true, "0.29.94": true, "0.29.95": true, "0.29.96": true, "0.29.97": true, "0.29.98": true}
 	for version, steps := range deployChecklists {
 		n := 0
 		for _, s := range steps {

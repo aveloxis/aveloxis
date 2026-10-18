@@ -36,6 +36,12 @@ jobs:
         # SA-class findings (e.g. SA4010 dead append) are bug-shaped.
         run: staticcheck ./...
 
+      # v0.29.98 (stage 0.5 P-4): production symbols only tests reach are
+      # the test-only-entry-point class (tests passing on a path production
+      # never takes). The baseline names the deliberate seams and only shrinks.
+      - name: Unused-symbol ratchet
+        run: scripts/unused-ratchet.sh
+
       # golangci-lint is the third blocking tier (v0.27.36, summary/18
       # Phase 0a): errcheck + govet + ineffassign + staticcheck + unused
       # per .golangci.yml, which carries the exclusion philosophy. The

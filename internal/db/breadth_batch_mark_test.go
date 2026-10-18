@@ -46,11 +46,10 @@ func TestMarkBreadthAttemptedBatchExists(t *testing.T) {
 		t.Error("MarkBreadthAttemptedBatch must stamp via " +
 			"`WHERE cntrb_id = ANY($1::uuid[])` — one UPDATE per chunk, not one per row")
 	}
-	// The single-row method stays for compatibility (interface stability;
-	// callers outside the breadth worker's hot path).
-	if !strings.Contains(src, "func (s *PostgresStore) MarkBreadthAttempted(") {
-		t.Error("the single-row MarkBreadthAttempted must be kept for compatibility — " +
-			"v0.27.8 adds the batch method alongside it, it does not replace it")
+	// v0.29.98: the single-row stamp had no caller and is gone; a per-row
+	// UPDATE (18,000 statements per fleet cycle) must not come back.
+	if strings.Contains(src, "func (s *PostgresStore) MarkBreadthAttempted(") {
+		t.Error("the single-row MarkBreadthAttempted is back — stamping is batched (MarkBreadthAttemptedBatch)")
 	}
 }
 

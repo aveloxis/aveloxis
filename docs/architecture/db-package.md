@@ -54,13 +54,11 @@ Several operations support batching via `pgx.Batch` to reduce network round-trip
 | `UpsertPRLabels` | Batch label upsert via `pgx.Batch` |
 | `UpsertPRAssignees` | Batch via `pgx.Batch` |
 | `UpsertPRReviewers` | Batch via `pgx.Batch` |
-| `InsertRepoDependencyBatch` | Batch dependency insert via `pgx.Batch` |
-| `InsertRepoLibyearBatch` | Batch libyear insert via `pgx.Batch` |
-| `InsertRepoLaborBatch` | Batch code complexity insert via `pgx.Batch` |
+| `ReplaceRepoLaborSnapshot` | Rotate-and-insert of the repo_labor snapshot in one transaction |
 | `InsertContributorRepoBatch` | Batch breadth events via `pgx.Batch` |
 | `StagingWriter.Stage/Flush` | Buffers staging inserts, flushes every 500 rows |
 
-The single-row variants (`InsertRepoDependency`, `InsertRepoLibyear`, `InsertRepoLabor`, `InsertContributorRepo`) remain available for callers that process items one at a time.
+The single-row variants `InsertRepoDependency` and `InsertRepoLibyear` remain for callers that process items one at a time; the breadth and labor writers are batch-only (`InsertContributorRepoBatch`, `ReplaceRepoLaborSnapshot`).
 
 ---
 
@@ -83,7 +81,7 @@ The collection queue (`aveloxis_ops.collection_queue`) is a PostgreSQL-backed pr
 - `CompleteJob` -- marks done and re-queues with a future due time
 - `PrioritizeRepo` -- pushes a repo to priority 0 (immediate)
 - `RecoverStaleLocks` -- resets jobs locked longer than a timeout (crash recovery)
-- `ListQueue` / `QueueStats` -- observability
+- `ListQueuePage` / `QueueStats` -- observability (paginated; nothing lists the whole fleet in one answer)
 
 ---
 

@@ -7,15 +7,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestMonitorSearchBarExists verifies the monitor template has a search bar.
 func TestMonitorSearchBarExists(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	// Find the monitor template.
 	idx := strings.Index(code, `{{define "monitor"}}`)
@@ -39,11 +37,7 @@ func TestMonitorSearchBarExists(t *testing.T) {
 // than inline inside the monitor template — so this check now targets
 // the shared block.
 func TestMonitorFirstLastPageNav(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	idx := strings.Index(code, `{{define "paginationNav"}}`)
 	if idx < 0 {
@@ -65,11 +59,7 @@ func TestMonitorFirstLastPageNav(t *testing.T) {
 
 // TestMonitorPaginationPreservesSearch verifies page links include the search query.
 func TestMonitorPaginationPreservesSearch(t *testing.T) {
-	src, err := os.ReadFile("templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
+	code := allTemplates // the embedded set, the bytes templates.go held (v0.29.98)
 
 	idx := strings.Index(code, `{{define "monitor"}}`)
 	if idx < 0 {
@@ -90,20 +80,7 @@ func TestMonitorPaginationPreservesSearch(t *testing.T) {
 
 // TestMonitorHandlerReadsSearchParam verifies handleMonitor reads the q parameter.
 func TestMonitorHandlerReadsSearchParam(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	idx := strings.Index(code, "func (s *Server) handleMonitor(")
-	if idx < 0 {
-		t.Fatal("cannot find handleMonitor")
-	}
-	fnBody := code[idx:]
-	if len(fnBody) > 4000 {
-		fnBody = fnBody[:4000]
-	}
+	fnBody := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleMonitor(")
 
 	if !strings.Contains(fnBody, `Get("q")`) {
 		t.Error("handleMonitor must read the 'q' query parameter for search")

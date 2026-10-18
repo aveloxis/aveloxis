@@ -23,6 +23,9 @@
 package srctest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -32,6 +35,32 @@ import (
 	"sync"
 	"testing"
 )
+
+// census is the G6 recorder (summary/59-stage-0.5-risk-strategy.md §1):
+// with SRCTEST_CENSUS=<file> set, every body lookup appends one line —
+// test name, signature, match count, file, sha256 of the body — so a
+// refactor of the matcher or a split of a source file can prove that
+// every pin still finds the same bytes. Env-gated and append-only; off
+// in every normal run. Reused by every later split.
+var censusMu sync.Mutex
+
+func recordCensus(t testing.TB, helper, sig string, matches int, file, body string) {
+	path := os.Getenv("SRCTEST_CENSUS")
+	if path == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(body))
+	censusMu.Lock()
+	defer censusMu.Unlock()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("srctest census: %v", err)
+	}
+	_, werr := fmt.Fprintf(f, "%s\t%s\t%s\t%d\t%s\t%s\n", t.Name(), helper, sig, matches, file, hex.EncodeToString(sum[:]))
+	if cerr := f.Close(); werr != nil || cerr != nil {
+		t.Fatalf("srctest census: write %v, close %v", werr, cerr)
+	}
+}
 
 var rootOnce = sync.OnceValues(func() (string, error) {
 	dir, err := os.Getwd()
@@ -138,30 +167,25 @@ func FuncBody(t testing.TB, src, sig string) string {
 	// (round 13), and brace counting returned early on signatures
 	// containing type literals (`func f(v struct{ X int })` — the
 	// parameter type's braces balance before the body opens). Parsing
-	// kills both structurally: declarations come from the AST, and the
-	// returned span is the ORIGINAL source text from the `func` keyword
-	// through the body's closing brace (token offsets into src), so
-	// comments INSIDE the body are preserved for pins that target them.
-	// The sig contract is unchanged: the declaration's gofmt'd source
-	// must start with sig (e.g. "func (s *PostgresStore) UpsertRepo(").
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("srctest.FuncBody: source does not parse (%v) — this helper takes whole valid Go files", err)
+	// kills both structurally (matchDecls, shared with PackageFunc since
+	// v0.29.98): declarations come from the AST, and the returned span is
+	// the ORIGINAL source text from the `func` keyword through the body's
+	// closing brace (token offsets into src), so comments INSIDE the body
+	// are preserved for pins that target them. The sig contract: the
+	// declaration's gofmt'd source must start with sig (e.g. "func (s
+	// *PostgresStore) UpsertRepo("); since v0.29.98 (S4) sig ends with
+	// "(" or "[" and exactly one declaration may match.
+	requireTerminatedSig(t, "FuncBody", sig)
+	found := matchDecls(t, "FuncBody", "-", src, sig)
+	switch len(found) {
+	case 0:
+		t.Fatalf("srctest.FuncBody: no declaration starts with %q", sig)
+	case 1:
+		recordCensus(t, "FuncBody", sig, 1, "-", found[0].src)
+		return found[0].src
 	}
-	for _, d := range f.Decls {
-		fn, ok := d.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		start := fset.Position(fn.Pos()).Offset // fn.Pos() = the `func` keyword (doc comment excluded)
-		end := fset.Position(fn.End()).Offset
-		decl := src[start:end]
-		if strings.HasPrefix(decl, sig) {
-			return decl
-		}
-	}
-	t.Fatalf("srctest.FuncBody: no declaration starts with %q", sig)
+	recordCensus(t, "FuncBody", sig, len(found), "-", "")
+	t.Fatalf("srctest.FuncBody: %d declarations start with %q — the pin names neither; use the complete signature", len(found), sig)
 	return ""
 }
 

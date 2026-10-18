@@ -26,25 +26,29 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 		// OAuth callbacks: the forge exchange and user fetch are bounded by
 		// oauthCallbackTimeout; their failures go to logOAuthFailure (WARN
 		// with provider and phase), never serverError.
-		"internal/web/server.go": 3,
-		// (the third: submitAccountEmail's detached pending-email clean-up,
+		srctest.SiteKey("internal/web", "handleGitHubCallback"): 1,
+		srctest.SiteKey("internal/web", "handleGitLabCallback"): 1,
+		// submitAccountEmail's detached pending-email clean-up,
 		// pendingEmailCleanupTimeout — its failure is a plain WARN, never
-		// through RequestEnded; NET-6 review r7 F1.)
+		// through RequestEnded (NET-6 review r7 F1).
+		srctest.SiteKey("internal/web", "submitAccountEmailAddress"): 1,
 		// The home-repos background refresh runs on context.Background(),
 		// outside any request; it logs its own WARN.
-		"internal/api/portal.go": 1,
+		srctest.SiteKey("internal/api", "refreshHomeRepos"): 1,
 		// The re-warm's replay bound (http_timeout_seconds, v0.29.73): the
 		// replayed handler's error helper drops its expiry to Debug and
 		// writes nothing, so replay itself reports the expiry ("request
 		// deadline exceeded") in the re-warm's WARN.
-		"internal/api/repo_page_rewarm.go": 1,
+		srctest.SiteKey("internal/api", "replay"): 1,
 		// The capacity policy's read (v0.29.89; the 0.29.85 session
 		// threshold read before it) runs on context.Background() off the
 		// request path, bounded by its refresh period; it logs its own WARN.
 		// The other three (v0.29.91) bound RunCapacity's tick steps (the
 		// flush and the two prunes) on its own loop context, never a
 		// request's; each logs its own WARN with timed_out.
-		"internal/api/capacity_limits.go": 4,
+		srctest.SiteKey("internal/api", "refresh"):      1,
+		srctest.SiteKey("internal/api", "boundedFlush"): 1,
+		srctest.SiteKey("internal/api", "capacityTick"): 2,
 	}
 	derived := regexp.MustCompile(`context\.With(Timeout|Deadline)(Cause)?\(`)
 	root := srctest.Root(t)
@@ -61,8 +65,8 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 			}
 			examined++
 			rel, _ := filepath.Rel(root, path)
-			if n := len(derived.FindAllString(srctest.StripGoComments(string(b)), -1)); n > 0 {
-				found[filepath.ToSlash(rel)] = n
+			for key, n := range perFuncMatches(t, srctest.SiteDir(filepath.ToSlash(rel)), srctest.StripGoComments(string(b)), derived) {
+				found[key] += n // += (review A1): a same-named method in another file adds to the key
 			}
 			return nil
 		})
@@ -98,12 +102,14 @@ func TestRequestEndIsClassifiedInOnePlace(t *testing.T) {
 		// live request is that bound's own expiry (ERROR, naming it); and
 		// submitAccountEmail's clean-up runs on WithoutCancel on purpose —
 		// the second half of committed writes (NET-6 review r7 F1).
-		"internal/web/server.go": 2,
+		srctest.SiteKey("internal/web", "logOAuthFailure"):           1,
+		srctest.SiteKey("internal/web", "submitAccountEmailAddress"): 1,
 		// RunCapacity's tick steps and FlushCapacity (v0.29.91) run on the
 		// api's loop or stop context, never a request's: a cancelled one is
 		// a stop (silent); a step's own DeadlineExceeded is logged as
 		// timed_out.
-		"internal/api/capacity_limits.go": 4,
+		srctest.SiteKey("internal/api", "capacityTick"):  2,
+		srctest.SiteKey("internal/api", "FlushCapacity"): 2,
 	}
 	bare := regexp.MustCompile(`context\.(Canceled|DeadlineExceeded|WithoutCancel)\b`)
 	root := srctest.Root(t)
@@ -120,8 +126,8 @@ func TestRequestEndIsClassifiedInOnePlace(t *testing.T) {
 			}
 			examined++
 			rel, _ := filepath.Rel(root, path)
-			if n := len(bare.FindAllString(srctest.StripGoComments(string(b)), -1)); n > 0 {
-				found[filepath.ToSlash(rel)] = n
+			for key, n := range perFuncMatches(t, srctest.SiteDir(filepath.ToSlash(rel)), srctest.StripGoComments(string(b)), bare) {
+				found[key] += n // += (review A1): a same-named method in another file adds to the key
 			}
 			return nil
 		})
@@ -140,4 +146,19 @@ func TestRequestEndIsClassifiedInOnePlace(t *testing.T) {
 		}
 	}
 	srctest.MinCount(t, "api/web/monitor Go files examined", examined, 20)
+}
+
+// perFuncMatches counts re's matches per top-level function of one
+// comment-stripped file, keyed dir|func (srctest.SiteKey, v0.29.98: the
+// registries were keyed by file, and every split of a handler file churned
+// them); matches outside any function key on srctest.PackageLevel.
+func perFuncMatches(t *testing.T, dir, src string, re *regexp.Regexp) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for name, part := range srctest.FuncParts(t, src) {
+		if n := len(re.FindAllString(part, -1)); n > 0 {
+			out[srctest.SiteKey(dir, name)] = n
+		}
+	}
+	return out
 }

@@ -78,21 +78,30 @@ func TestUpgradeToolsCallsPipxUpgrade(t *testing.T) {
 	}
 }
 
+// After upgrading scancode, typecode-libmagic is re-injected: pipx upgrade
+// may have rebuilt the venv and lost the injection from install-tools. The
+// real path is upgrade-tools → collector.EnsureScancodeCurrent → the
+// unexported injectTypecodeLibmagic, read comment-stripped (v0.29.98: the
+// old pin matched the helper's name inside a comment and passed on that).
 func TestUpgradeToolsReInjectsLibmagic(t *testing.T) {
-	src, err := os.ReadFile("upgrade_tools_cmd.go")
-	if err != nil {
-		t.Fatal(err)
+	cmdSrc := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/upgrade_tools_cmd.go"))
+	if !strings.Contains(cmdSrc, "collector.EnsureScancodeCurrent(ctx, true)") {
+		t.Error("upgrade-tools must run collector.EnsureScancodeCurrent(ctx, true) — the one scancode install/upgrade/inject path")
 	}
-	code := string(src)
-	// After upgrading scancode, re-inject typecode-libmagic. Necessary
-	// because pipx upgrade may have rebuilt the venv (depending on the
-	// pipx version) and the injection from install-tools may not have
-	// survived.
-	if !strings.Contains(code, "InjectTypecodeLibmagic") &&
-		!strings.Contains(code, "injectTypecodeLibmagic") {
-		t.Error("upgrade-tools must call the libmagic injection helper " +
-			"after scancode upgrade — pipx upgrade may have rebuilt the " +
-			"venv, losing the prior injection")
+	tools := srctest.StripGoComments(srctest.Read(t, "internal/collector/tools.go"))
+	exported := srctest.FuncBody(t, tools, "func EnsureScancodeCurrent(")
+	if !strings.Contains(exported, "ensureScancodeCurrent(ctx, alreadyInstalled)") {
+		t.Error("EnsureScancodeCurrent must delegate to ensureScancodeCurrent")
+	}
+	ensure := srctest.FuncBody(t, tools, "func ensureScancodeCurrent(")
+	for _, arm := range []string{"func pipxUpgradeScancode(", "func pipxFreshInstallScancode("} {
+		name := strings.TrimSuffix(strings.TrimPrefix(arm, "func "), "(")
+		if !strings.Contains(ensure, name+"(") {
+			t.Errorf("EnsureScancodeCurrent must reach %s", name)
+		}
+		if !strings.Contains(srctest.FuncBody(t, tools, arm), "injectTypecodeLibmagic(ctx, pipxPath, scancodePipxPackage)") {
+			t.Errorf("%s must inject typecode-libmagic after pipx (re)builds the venv", name)
+		}
 	}
 }
 

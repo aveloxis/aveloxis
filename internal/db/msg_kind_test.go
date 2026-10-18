@@ -43,15 +43,18 @@ func TestAllMessageInsertsCarryKindedArbiter(t *testing.T) {
 	}
 	s := string(src)
 	if strings.Contains(s, "INSERT INTO aveloxis_data.messages") {
-		t.Error("postgres.go must not carry inline messages INSERTs — all four sites route through upsertMessageSQL (Phase 4.6 const hoisting)")
+		t.Error("postgres.go must not carry inline messages INSERTs — every site routes through upsertMessageSQL (Phase 4.6 const hoisting)")
 	}
 	for _, kind := range []string{"MsgKindReviewBody", "MsgKindComment", "MsgKindReviewComment"} {
 		if !strings.Contains(s, kind) {
 			t.Errorf("postgres.go must stamp %s at its write site", kind)
 		}
 	}
-	if got := strings.Count(s, "upsertMessageSQL"); got < 4 {
-		t.Errorf("expected all 4 postgres.go message writes on upsertMessageSQL, found %d references", got)
+	// Three writers since v0.29.98 (the single-row UpsertMessage had no
+	// production caller): the review-body batch, the comment batch and the
+	// inline review-comment batch.
+	if got := strings.Count(s, "upsertMessageSQL"); got < 3 {
+		t.Errorf("expected all 3 postgres.go message writes on upsertMessageSQL, found %d references", got)
 	}
 }
 

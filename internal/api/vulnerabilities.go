@@ -21,7 +21,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -116,12 +115,8 @@ func advisoryURLs(vulnID, cveID string) (osv, cve string) {
 }
 
 func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.store.GetRepoVulnerabilities(r.Context(), repoID)
@@ -400,12 +395,8 @@ func cdxSeverity(s string) string {
 // a repo (v0.27.4 — repo page + comparison page tables). Thresholds
 // are a GUI concern; scores ship raw (0–10, -1 = not applicable).
 func (s *Server) handleRepoScorecard(w http.ResponseWriter, r *http.Request) {
-	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid repo_id", http.StatusBadRequest)
-		return
-	}
-	if !s.authorizeRepo(w, r, repoID) {
+	repoID, ok := s.repoFromPath(w, r)
+	if !ok {
 		return
 	}
 	checks, overall, asOf, mode, err := s.store.GetRepoScorecard(r.Context(), repoID)

@@ -36,12 +36,6 @@ type OpenItemRefresher struct {
 	prChildMode string // see CollectionConfig.PRChildMode
 }
 
-// NewOpenItemRefresher creates an open item refresher using the REST
-// per-PR child waterfall. For GraphQL-mode, call NewOpenItemRefresherWithMode.
-func NewOpenItemRefresher(store *db.PostgresStore, client platform.Client, logger *slog.Logger) *OpenItemRefresher {
-	return NewOpenItemRefresherWithMode(store, client, logger, "rest")
-}
-
 // NewOpenItemRefresherWithMode is the explicit-mode constructor.
 // Unknown modes collapse to "rest".
 func NewOpenItemRefresherWithMode(store *db.PostgresStore, client platform.Client, logger *slog.Logger, mode string) *OpenItemRefresher {

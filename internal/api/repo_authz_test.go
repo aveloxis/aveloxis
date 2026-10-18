@@ -32,11 +32,27 @@ func TestRepoAuthzAnswersTheScopeDecision(t *testing.T) {
 		}
 	}
 
+	// Stage 1b: the route's prelude proves the repository exists before
+	// deciding the scope (D5); these servers know every id but 404000.
+	knowing := func(s *Server) *Server {
+		s.repoStates = func(_ context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
+			out := map[int64]db.RepoCacheState{}
+			for _, id := range ids {
+				if id != 404000 {
+					out[id] = db.RepoCacheState{HasQueueRow: true}
+				}
+			}
+			return out, nil
+		}
+		return s
+	}
+
 	t.Run("open API, anonymous caller: allowed", func(t *testing.T) {
 		s, err := NewWithOptions(nil, logger, Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		knowing(s)
 		w := serve(s, httptest.NewRequest(http.MethodGet, "/api/v1/authz/repos/7", nil))
 		if w.Code != http.StatusNoContent || w.Body.Len() != 0 {
 			t.Errorf("got %d %q, want a bodyless 204", w.Code, w.Body.String())
@@ -67,14 +83,24 @@ func TestRepoAuthzAnswersTheScopeDecision(t *testing.T) {
 	}
 
 	t.Run("in scope: allowed", func(t *testing.T) {
-		s := autoAddServer(&fakeSharedWithMe{})
+		s := knowing(autoAddServer(&fakeSharedWithMe{}))
 		if w := direct(s, scoped("/api/v1/authz/repos/42")); w.Code != http.StatusNoContent {
 			t.Errorf("got %d, want 204", w.Code)
 		}
 	})
 
-	t.Run("out of scope, repository does not exist: the structured 403", func(t *testing.T) {
-		s := autoAddServer(&fakeSharedWithMe{err: db.ErrSharedRepoNotFound})
+	t.Run("repository does not exist: 404 before any scope decision (D5)", func(t *testing.T) {
+		fake := &fakeSharedWithMe{added: true}
+		s := knowing(autoAddServer(fake))
+		w := direct(s, scoped("/api/v1/authz/repos/404000"))
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "repo not found") || len(fake.calls) != 0 {
+			t.Errorf("got %d %q (link calls %d), want a 404 with no auto-add", w.Code, w.Body.String(), len(fake.calls))
+		}
+		noStore(t, w)
+	})
+
+	t.Run("out of scope, deleted after the prelude proved it: the structured 403", func(t *testing.T) {
+		s := knowing(autoAddServer(&fakeSharedWithMe{err: db.ErrSharedRepoNotFound}))
 		w := direct(s, scoped("/api/v1/authz/repos/99"))
 		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "repo_out_of_scope") {
 			t.Errorf("got %d %q, want the structured 403", w.Code, w.Body.String())
@@ -84,7 +110,7 @@ func TestRepoAuthzAnswersTheScopeDecision(t *testing.T) {
 
 	t.Run("out of scope, existing repository: auto-added with the notice", func(t *testing.T) {
 		fake := &fakeSharedWithMe{added: true}
-		s := autoAddServer(fake)
+		s := knowing(autoAddServer(fake))
 		w := direct(s, scoped("/api/v1/authz/repos/99"))
 		if w.Code != http.StatusNoContent || w.Header().Get(sharedWithMeHeader) != db.SharedWithMeGroupName {
 			t.Errorf("got %d %v, want 204 carrying the one-time notice", w.Code, w.Header())

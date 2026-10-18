@@ -5,7 +5,7 @@
 //   - /admin/groups/pending  list + approve/reject of pending submissions
 //   - /admin/users           list + toggle admin role
 //
-// All routes here are gated by Server.requireAdmin (defined in server.go),
+// All routes here are gated by Server.requireAdmin (session.go),
 // which checks Session.IsAdmin. Non-admin authenticated users get a 403;
 // unauthenticated users get redirected to /login.
 

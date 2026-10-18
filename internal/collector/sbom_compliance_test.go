@@ -23,8 +23,9 @@ func TestCDXUsesLicenseID(t *testing.T) {
 	}
 	code := string(src)
 
-	// Must have logic to choose between ID and Name based on SPDX validity.
-	if !strings.Contains(code, "isSPDXLicense") && !strings.Contains(code, "spdxLicenses") {
+	// Must have logic to choose between ID and Name based on SPDX validity
+	// (cdxLicenseForNormalized asks internal/spdx; v0.29.98).
+	if !strings.Contains(code, "spdx.IsLicenseID(") {
 		t.Error("sbom.go must validate license strings against the SPDX license list " +
 			"and use license.id for valid identifiers, license.name for non-standard strings")
 	}

@@ -39,7 +39,6 @@ internal/db/matview_8knot_test.go readMatviewsSQL
 internal/db/queue_drain_lock_test.go extractDrainFunc
 internal/db/queue_drain_lock_test.go mustReadStoreSource
 internal/db/queue_order_test.go extractFn
-internal/db/queue_order_test.go extractOrderBy
 internal/db/rename_dedup_test.go extractFuncBody
 internal/db/repo_dedup_test.go readRepoDedupSource
 internal/db/repo_labor_history_test.go extractPlainFunctionBody
@@ -75,6 +74,5 @@ internal/scheduler/org_demand_scan_test.go stripLineComments
 internal/scheduler/scancode_worker_wiring_test.go readSchedulerSourceForScancodeTest
 internal/scheduler/scorecard_phase_test.go schedulerFuncBody
 internal/showcase/mobile_css_test.go templatesSrc
-internal/web/admin_routes_test.go mustReadServerSource
 internal/web/oauth_callback_validation_test.go extractWebFunc
 internal/web/per_add_approval_test.go readWebSource

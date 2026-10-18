@@ -69,12 +69,6 @@ type GapFiller struct {
 	prChildMode string // see CollectionConfig.PRChildMode
 }
 
-// NewGapFiller creates a gap filler using the REST per-PR child
-// waterfall. For GraphQL-mode, call NewGapFillerWithMode.
-func NewGapFiller(store *db.PostgresStore, client platform.Client, logger *slog.Logger) *GapFiller {
-	return NewGapFillerWithMode(store, client, logger, "rest")
-}
-
 // NewGapFillerWithMode is the explicit-mode constructor. Unknown modes
 // collapse to "rest" so a misspelled config doesn't fail closed.
 func NewGapFillerWithMode(store *db.PostgresStore, client platform.Client, logger *slog.Logger, mode string) *GapFiller {

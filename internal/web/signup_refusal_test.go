@@ -49,16 +49,15 @@ func TestSignupRefusalPage(t *testing.T) {
 // SignupAddress (web.trusted_proxy, the one rule httpserver.ClientIP), and the
 // shared tail answers the quota's refusal with the page, not the 500.
 func TestOAuthCallbackCountsTheBrowsersAddress(t *testing.T) {
-	src := srctest.Read(t, "internal/web/server.go")
 	for _, cb := range []string{"func (s *Server) handleGitHubCallback(", "func (s *Server) handleGitLabCallback("} {
-		if body := srctest.StripGoComments(srctest.FuncBody(t, src, cb)); !strings.Contains(body, "SignupAddr: s.SignupAddress(r)") {
+		if body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", cb)); !strings.Contains(body, "SignupAddr: s.SignupAddress(r)") {
 			t.Errorf("%s does not pass the browser's address", cb)
 		}
 	}
-	if body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) SignupAddress(")); !strings.Contains(body, "httpserver.ClientIP(r, s.cfg.TrustedProxy)") {
+	if body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", "func (s *Server) SignupAddress(")); !strings.Contains(body, "httpserver.ClientIP(r, s.cfg.TrustedProxy)") {
 		t.Error("SignupAddress must read the address through web.trusted_proxy")
 	}
-	tail := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *Server) completeOAuthLogin("))
+	tail := srctest.StripGoComments(srctest.PackageFunc(t, "internal/web", "func (s *Server) completeOAuthLogin("))
 	if !strings.Contains(tail, "writeSignupRefusal(w, ex)") ||
 		strings.Index(tail, "capacity.AsExceeded(err)") > strings.Index(tail, `s.logger.Error("failed to upsert OAuth user"`) {
 		t.Error("completeOAuthLogin must answer the quota's refusal before the generic failure")

@@ -45,13 +45,19 @@ func TestMigrateAddsCntrbLastBreadthAtColumn(t *testing.T) {
 	}
 }
 
-func TestMarkBreadthAttemptedExists(t *testing.T) {
+// The worker stamps through the batch form, whether or not events were
+// found, so contributors with zero public events still exit the
+// unprocessed queue. The single-row form had no caller (deleted v0.29.98).
+func TestBreadthStampsThroughTheBatchForm(t *testing.T) {
 	data, err := os.ReadFile("breadth_store.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "func (s *PostgresStore) MarkBreadthAttempted(") {
-		t.Error("MarkBreadthAttempted store method must exist — kept for compatibility; the worker stamps through the batch form, whether or not events were found, so contributors with zero public events still exit the unprocessed-queue")
+	if !strings.Contains(string(data), "func (s *PostgresStore) MarkBreadthAttemptedBatch(") {
+		t.Error("MarkBreadthAttemptedBatch store method must exist — the one breadth stamp")
+	}
+	if strings.Contains(string(data), "func (s *PostgresStore) MarkBreadthAttempted(") {
+		t.Error("the single-row MarkBreadthAttempted is back")
 	}
 }
 

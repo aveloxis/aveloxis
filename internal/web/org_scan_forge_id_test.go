@@ -7,7 +7,6 @@
 package web
 
 import (
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -16,19 +15,7 @@ import (
 )
 
 func TestScanOrgReposCapturesForgeRepoID(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	i := strings.Index(s, "func (s *Server) scanOrgRepos")
-	if i < 0 {
-		t.Fatal("scanOrgRepos not found")
-	}
-	body := s[i:]
-	if j := strings.Index(body, "\nfunc "); j > 0 {
-		body = body[:j]
-	}
+	body := srctest.PackageFunc(t, "internal/web", "func (s *Server) scanOrgRepos(")
 	if !strings.Contains(body, "`json:\"id\"`") {
 		t.Error("scanOrgRepos must decode the listing's numeric `id` field")
 	}

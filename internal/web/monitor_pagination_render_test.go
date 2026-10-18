@@ -15,28 +15,12 @@ import (
 	"testing"
 )
 
-// buildMonitorTmpl parses templates.go the same way Server does, so the
-// template funcmap and definitions match production. Keeps the test
-// independent of Server/DB/OAuth wiring.
+// buildMonitorTmpl is the production parse (parseTemplates: one FuncMap
+// and one template set, v0.29.98), so the test cannot drift from what New
+// builds. Keeps the test independent of Server/DB/OAuth wiring.
 func buildMonitorTmpl(t *testing.T) *template.Template {
 	t.Helper()
-	return template.Must(template.New("").Funcs(template.FuncMap{
-		"truncate": func(s string, n int) string {
-			if len(s) <= n {
-				return s
-			}
-			return s[:n] + "..."
-		},
-		"dict": func(values ...interface{}) map[string]interface{} {
-			m := make(map[string]interface{})
-			for i := 0; i < len(values)-1; i += 2 {
-				m[values[i].(string)] = values[i+1]
-			}
-			return m
-		},
-		"add":      func(a, b int) int { return a + b },
-		"subtract": func(a, b int) int { return a - b },
-	}).Parse(allTemplates))
+	return parseTemplates()
 }
 
 // sessionStub carries just the fields the monitor template reads.

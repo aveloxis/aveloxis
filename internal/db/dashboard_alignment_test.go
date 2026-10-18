@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestGetRepoStatsReadsFromQueueCache pins the v0.27.85 contract for
@@ -139,17 +141,14 @@ func TestStagedCollectorFetchesRepoInfo(t *testing.T) {
 // refactor adds a parallel commit-counting query in the API or
 // monitor layer, the alignment property breaks silently.
 func TestDashboardsConvergeOnRepoStats(t *testing.T) {
-	files := []string{
-		"../api/server.go",
-		"../monitor/monitor.go",
-		"../web/server.go",
+	files := map[string]string{
+		"../api/server.go":      srctest.Read(t, "internal/api/server.go"),
+		"../monitor/monitor.go": srctest.Read(t, "internal/monitor/monitor.go"),
+		// The web GUI's pages live in several files since v0.29.98 (P-2);
+		// the property is the package's.
+		"internal/web": srctest.PackageSource(t, "internal/web", 4),
 	}
-	for _, path := range files {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("cannot read %s: %v", path, err)
-		}
-		src := string(data)
+	for path, src := range files {
 		// Each dashboard-rendering source must call at least one of
 		// GetRepoStats / GetRepoStatsBatch. The web GUI uses both
 		// (group page = batch, repo detail = single); the api uses

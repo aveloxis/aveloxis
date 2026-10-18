@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestEmailConfirmationStoreMethodsExist pins the v0.20.4 store
@@ -70,11 +72,7 @@ func TestMailerHasSendEmailConfirmation(t *testing.T) {
 
 // TestServerHasEmailConfirmRoute pins the new HTTP route + handler.
 func TestServerHasEmailConfirmRoute(t *testing.T) {
-	data, err := os.ReadFile("../web/server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
+	src := srctest.PackageFunc(t, "internal/web", "func (s *Server) Handler(")
 	if !strings.Contains(src, `"/account/email/confirm"`) {
 		t.Error("server.go must register the /account/email/confirm route " +
 			"so the confirmation links in v0.20.4 emails resolve to a " +
@@ -92,11 +90,7 @@ func TestServerHasEmailConfirmRoute(t *testing.T) {
 // generates a token + sends mail, instead of the v0.19.10 behavior of
 // writing directly to users.email.
 func TestAccountEmailPostUsesPendingFlow(t *testing.T) {
-	data, err := os.ReadFile("../web/server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
+	src := srctest.PackageFunc(t, "internal/web", "func submitAccountEmailAddress(")
 	// The handler must reference at least one of the new pieces.
 	if !strings.Contains(src, "SetUserPendingEmail") &&
 		!strings.Contains(src, "CreateEmailConfirmation") {
@@ -119,21 +113,15 @@ func TestAccountEmailPostUsesPendingFlow(t *testing.T) {
 // The gate's redirect behavior is tested through the handler in
 // internal/web (TestDashboardEmailGateThroughTheHandler).
 func TestDashboardShowsPendingEmail(t *testing.T) {
-	srv, err := os.ReadFile("../web/server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(srv), "PendingEmail") &&
-		!strings.Contains(string(srv), "GetUserLivePendingEmail") {
+	srv := srctest.PackageFunc(t, "internal/web", "func (s *Server) handleDashboard(") + srctest.PackageFunc(t, "internal/web", "func dashboardEmailGate(")
+	if !strings.Contains(srv, "PendingEmail") &&
+		!strings.Contains(srv, "GetUserLivePendingEmail") {
 		t.Error("handleDashboard must look up the user's email_pending " +
 			"and pass it to the template (e.g., as a PendingEmail key) so " +
 			"the v0.20.4 \"check your inbox\" banner can render.")
 	}
-	tmpl, err := os.ReadFile("../web/templates.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(tmpl), "PendingEmail") {
+	tmpl := srctest.Read(t, "internal/web/templates/dashboard.html")
+	if !strings.Contains(tmpl, "PendingEmail") {
 		t.Error("dashboard template must reference .PendingEmail so the " +
 			"banner renders when set.")
 	}

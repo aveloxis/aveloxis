@@ -23,14 +23,11 @@
 package web
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
-
-const serverSourceFile = "server.go"
 
 // TestGitHubCallbackChecksHTTPStatus pins that the GitHub callback
 // rejects a non-200 response from /user. Without this, a transient
@@ -135,23 +132,10 @@ func TestGitLabCallbackRejectsEmptyUsername(t *testing.T) {
 	}
 }
 
-// extractWebFunc reads server.go and returns the body of the named
-// method on *Server. Boundary is the next "\nfunc " token.
+// extractWebFunc returns the body of the named method on *Server wherever
+// it lives in the package (v0.29.98: it read server.go by name and
+// returned "" — a vacuous pass — when the method was not there).
 func extractWebFunc(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(serverSourceFile)
-	if err != nil {
-		t.Fatalf("read %s: %v", serverSourceFile, err)
-	}
-	src := string(data)
-	marker := "func (s *Server) " + name + "("
-	idx := strings.Index(src, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := src[idx:]
-	if end := strings.Index(rest[1:], "\nfunc "); end > 0 {
-		return rest[:end+1]
-	}
-	return rest
+	return srctest.PackageFunc(t, "internal/web", "func (s *Server) "+name+"(")
 }

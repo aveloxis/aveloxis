@@ -43,7 +43,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 103 tables        │  │ 51 tables              │ │
+  │  │ 108 tables        │  │ 51 tables              │ │
   │  │ 22 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -71,7 +71,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 
-### `aveloxis_data` (103 tables + 22 materialized views)
+### `aveloxis_data` (108 tables + 22 materialized views)
 
 All collected open source community health data:
 
@@ -84,7 +84,7 @@ All collected open source community health data:
 | Messages | 3 | `messages`, `review_comments`, `pull_request_teams` |
 | Commits | 3 | `commits`, `commit_parents`, `commit_messages` |
 | Releases | 1 | `releases` |
-| Repo metadata | 6 | `repo_info`, `repo_clones`, `repo_badging`, `dei_badging`, `repo_insights`, `repo_insights_records` |
+| Repo metadata | 11 | `repo_info`, `repo_clones`, `repo_views`, `repo_traffic_paths`, `repo_traffic_referrers`, `repo_traffic_windows`, `repo_traffic_weeks`, `repo_badging`, `dei_badging`, `repo_insights`, `repo_insights_records` |
 | Dependencies | 5 | `repo_dependencies`, `repo_deps_libyear`, `repo_deps_scorecard`, `repo_sbom_scans`, `libraries` |
 | Aggregates | 6 | `dm_repo_annual`, `dm_repo_monthly`, `dm_repo_weekly`, `dm_repo_group_annual`, `dm_repo_group_monthly`, `dm_repo_group_weekly` |
 | Code complexity | 4 | `repo_labor`, `repo_meta`, `repo_stats`, `repo_test_coverage` |
@@ -212,7 +212,7 @@ The following data is available from GitHub but not from GitLab due to platform 
 
 - **Community profile files** (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) — not yet fetched for GitLab, but closable via `/repository/tree` and `/repository/files` endpoints.
 - **Watcher count** — GitLab has no public watchers API (`star_count` is captured instead).
-- **Clone statistics** — GitLab exposes these only via admin-only endpoints.
+- **Unique cloners, page views, top paths and referrers** — GitLab has no API for them. Its daily HTTP clone and pull counts are collected through `GET /projects/:id/statistics`.
 - **GraphQL node IDs** — GitLab uses numeric project/user IDs rather than GitHub-style GraphQL node IDs. Stored in `SrcRepoID` (numeric) instead of `SrcNodeID`.
 - **Contributor URL fields** — GitHub returns 10+ URL fields per user (followers, gists, starred, etc.) that GitLab's API does not provide.
 - **Contributor type** — GitHub distinguishes User/Bot/Organization; GitLab does not expose this distinction.
@@ -239,7 +239,7 @@ aveloxis/
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (158 tables)
+      schema.sql          # Full DDL (163 tables)
       matviews.sql        # the 20 8Knot materialized views (the two supply-chain views are built from supply_chain_views.go)
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver

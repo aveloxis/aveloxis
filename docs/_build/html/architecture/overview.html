@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Architecture Overview &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>Architecture Overview &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -362,6 +362,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -775,7 +776,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1613,6 +1614,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-insights">repo_insights</a></li>
@@ -1826,7 +1832,7 @@
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 103 tables        │  │ 51 tables              │ │
+  │  │ 108 tables        │  │ 51 tables              │ │
   │  │ 22 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -1853,8 +1859,8 @@
 <section id="four-schemas">
 <h2>Four schemas<a class="headerlink" href="#four-schemas" title="Link to this heading"></a></h2>
 <p>Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.</p>
-<section id="aveloxis-data-103-tables-22-materialized-views">
-<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)<a class="headerlink" href="#aveloxis-data-103-tables-22-materialized-views" title="Link to this heading"></a></h3>
+<section id="aveloxis-data-108-tables-22-materialized-views">
+<h3><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)<a class="headerlink" href="#aveloxis-data-108-tables-22-materialized-views" title="Link to this heading"></a></h3>
 <p>All collected open source community health data:</p>
 <table class="docutils align-default">
 <thead>
@@ -1893,8 +1899,8 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">releases</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Repo metadata</p></td>
-<td><p>6</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">repo_info</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_badging</span></code>, <code class="docutils literal notranslate"><span class="pre">dei_badging</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_insights</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_insights_records</span></code></p></td>
+<td><p>11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repo_info</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_views</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_paths</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_referrers</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_windows</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_weeks</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_badging</span></code>, <code class="docutils literal notranslate"><span class="pre">dei_badging</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_insights</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_insights_records</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>Dependencies</p></td>
 <td><p>5</p></td>
@@ -2084,7 +2090,7 @@ Done -&gt; repo re-queued with new due time
 <ul class="simple">
 <li><p><strong>Community profile files</strong> (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) — not yet fetched for GitLab, but closable via <code class="docutils literal notranslate"><span class="pre">/repository/tree</span></code> and <code class="docutils literal notranslate"><span class="pre">/repository/files</span></code> endpoints.</p></li>
 <li><p><strong>Watcher count</strong> — GitLab has no public watchers API (<code class="docutils literal notranslate"><span class="pre">star_count</span></code> is captured instead).</p></li>
-<li><p><strong>Clone statistics</strong> — GitLab exposes these only via admin-only endpoints.</p></li>
+<li><p><strong>Unique cloners, page views, top paths and referrers</strong> — GitLab has no API for them. Its daily HTTP clone and pull counts are collected through <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code>.</p></li>
 <li><p><strong>GraphQL node IDs</strong> — GitLab uses numeric project/user IDs rather than GitHub-style GraphQL node IDs. Stored in <code class="docutils literal notranslate"><span class="pre">SrcRepoID</span></code> (numeric) instead of <code class="docutils literal notranslate"><span class="pre">SrcNodeID</span></code>.</p></li>
 <li><p><strong>Contributor URL fields</strong> — GitHub returns 10+ URL fields per user (followers, gists, starred, etc.) that GitLab’s API does not provide.</p></li>
 <li><p><strong>Contributor type</strong> — GitHub distinguishes User/Bot/Organization; GitLab does not expose this distinction.</p></li>
@@ -2112,7 +2118,7 @@ Done -&gt; repo re-queued with new due time
       <span class="n">postgres</span><span class="o">.</span><span class="n">go</span>         <span class="c1"># All upsert methods</span>
       <span class="n">staging</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># JSONB staging writer and processor</span>
       <span class="n">migrate</span><span class="o">.</span><span class="n">go</span>          <span class="c1"># Schema migration</span>
-      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (158 tables)</span>
+      <span class="n">schema</span><span class="o">.</span><span class="n">sql</span>          <span class="c1"># Full DDL (163 tables)</span>
       <span class="n">matviews</span><span class="o">.</span><span class="n">sql</span>        <span class="c1"># the 20 8Knot materialized views (the two supply-chain views are built from supply_chain_views.go)</span>
       <span class="n">contributors</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Contributor resolver with cache</span>
       <span class="n">affiliations</span><span class="o">.</span><span class="n">go</span>     <span class="c1"># Email domain -&gt; org resolver</span>

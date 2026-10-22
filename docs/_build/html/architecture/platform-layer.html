@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>Platform Abstraction Layer &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -362,6 +362,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -775,7 +776,7 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1613,6 +1614,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-insights">repo_insights</a></li>
@@ -1796,6 +1802,7 @@
   <span class="o">|--</span> <span class="n">RepoCollector</span>
   <span class="o">|</span>     <span class="o">|--</span> <span class="n">FetchRepoInfo</span>
   <span class="o">|</span>     <span class="o">|--</span> <span class="n">FetchCloneStats</span>
+  <span class="o">|</span>     <span class="o">|--</span> <span class="n">FetchTraffic</span>
   <span class="o">|--</span> <span class="n">IssueCollector</span>
   <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssues</span>
   <span class="o">|</span>     <span class="o">|--</span> <span class="n">ListIssueLabels</span>
@@ -2032,25 +2039,30 @@ the first response.</p>
 </tr>
 <tr class="row-even"><td><p>Clone stats</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/traffic/clones</span></code></p></td>
-<td><p>Admin-only API</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">repo_clones</span></code> table empty for GitLab</p></td>
+<td><p>Daily HTTP clone and pull counts for the last 30 days through <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code> (at least the Reporter role), no unique counts</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">repo_clones.unique_clones</span></code> is NULL for GitLab</p></td>
 </tr>
-<tr class="row-odd"><td><p>GraphQL node IDs</p></td>
+<tr class="row-odd"><td><p>Traffic (views, top paths and referrers, 14-day and weekly uniques)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/traffic/views</span></code> (daily and weekly), <code class="docutils literal notranslate"><span class="pre">/traffic/clones?per=week</span></code>, <code class="docutils literal notranslate"><span class="pre">/traffic/popular/paths</span></code>, <code class="docutils literal notranslate"><span class="pre">/traffic/popular/referrers</span></code> (push access, or “Administration” read for a fine-grained token)</p></td>
+<td><p>No API for page views, popular paths, referrers or unique visitors and cloners</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">FetchTraffic</span></code> returns nil without a request; <code class="docutils literal notranslate"><span class="pre">repo_views</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_paths</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_referrers</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_windows</span></code> and <code class="docutils literal notranslate"><span class="pre">repo_traffic_weeks</span></code> empty for GitLab</p></td>
+</tr>
+<tr class="row-even"><td><p>GraphQL node IDs</p></td>
 <td><p>Available on all entities</p></td>
 <td><p>Not applicable (uses numeric IDs)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">pr_src_node_id</span></code> empty for GitLab; <code class="docutils literal notranslate"><span class="pre">pr_src_repo_id</span></code> always populated</p></td>
 </tr>
-<tr class="row-even"><td><p>Contributor identity URLs</p></td>
+<tr class="row-odd"><td><p>Contributor identity URLs</p></td>
 <td><p>10+ per-user URL fields (followers, gists, starred, etc.)</p></td>
 <td><p>Not available</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">gh_*_url</span></code> columns empty for GitLab contributors</p></td>
 </tr>
-<tr class="row-odd"><td><p>Contributor type</p></td>
+<tr class="row-even"><td><p>Contributor type</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">User</span></code>, <code class="docutils literal notranslate"><span class="pre">Bot</span></code>, <code class="docutils literal notranslate"><span class="pre">Organization</span></code></p></td>
 <td><p>Not distinguished</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cntrb_type</span></code> not populated for GitLab</p></td>
 </tr>
-<tr class="row-even"><td><p>Contributor breadth</p></td>
+<tr class="row-odd"><td><p>Contributor breadth</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/users/{login}/events</span></code> endpoint</p></td>
 <td><p>No equivalent</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">contributor_repo</span></code> only populated for GitHub contributors</p></td>

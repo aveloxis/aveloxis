@@ -12,9 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// fkExtraConstraint is one of the 50 FKs identified by the
-// 2026-05-17 audit that needs ON UPDATE CASCADE ON DELETE
-// RESTRICT DEFERRABLE INITIALLY DEFERRED applied. Same
+// fkExtraConstraint is one of the 55 FKs (the original 50 identified
+// by the 2026-05-17 audit, plus the five v0.29.118 appended below) that
+// need ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY
+// DEFERRED applied. Same
 // (child_table, child_column) groupings as fkExtraIndexes.
 //
 // constraintName is Postgres's auto-generated name for the FK
@@ -22,6 +23,9 @@ import (
 // pattern is `<table>_<column>_fkey`. Same convention v0.22.1
 // relied on for the cntrb_id FKs; verified empirically against
 // the live production schema before v0.22.7.
+//
+// v0.29.118 appended the repo_id FKs of the five GitHub traffic
+// tables, shaped like repo_clones (55 entries).
 //
 // Adding a new FK to this set requires extending fkExtraIndexes
 // AND schema.sql AND this list. Tests in fk_extra_test.go pin
@@ -94,6 +98,13 @@ var fkExtraConstraints = []fkExtraConstraint{
 	{"repo_topic", "repo_id", "repos", "repo_id", "repo_topic_repo_id_fkey"},
 	{"review_comments", "repo_id", "repos", "repo_id", "review_comments_repo_id_fkey"},
 	{"topic_model_meta", "repo_id", "repos", "repo_id", "topic_model_meta_repo_id_fkey"},
+
+	// repos(repo_id) ← v0.29.118 GitHub traffic tables, shaped like repo_clones
+	{"repo_views", "repo_id", "repos", "repo_id", "repo_views_repo_id_fkey"},
+	{"repo_traffic_paths", "repo_id", "repos", "repo_id", "repo_traffic_paths_repo_id_fkey"},
+	{"repo_traffic_referrers", "repo_id", "repos", "repo_id", "repo_traffic_referrers_repo_id_fkey"},
+	{"repo_traffic_windows", "repo_id", "repos", "repo_id", "repo_traffic_windows_repo_id_fkey"},
+	{"repo_traffic_weeks", "repo_id", "repos", "repo_id", "repo_traffic_weeks_repo_id_fkey"},
 }
 
 // constraintStateMatches checks whether a FK already has the
@@ -158,8 +169,9 @@ func applyFullBehaviorFK(ctx context.Context, pg *PostgresStore, logger *slog.Lo
 
 // ensureExtraFKConstraints is the v0.22.7 migration step that
 // applies ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE
-// INITIALLY DEFERRED to the 50 child FKs identified by the
-// 2026-05-17 audit.
+// INITIALLY DEFERRED to the 55 child FKs of fkExtraConstraints (the
+// original 50 identified by the 2026-05-17 audit, plus the five
+// v0.29.118 traffic tables).
 //
 // Idempotent via constraintStateMatches — already-migrated FKs
 // (constraint already in the desired state) are skipped. Fresh

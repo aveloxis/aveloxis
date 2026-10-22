@@ -26,9 +26,11 @@ internal/mailinglist TestPonyMailLiveCanary
 internal/platform/depsdev TestLiveDepsDevReverseLookupForSeaborn
 internal/platform/ecosystems TestLiveEcosystemsLookupForSeaborn
 internal/platform/github TestLiveFetchContributorActivity
+internal/platform/github TestLiveGitHubTrafficContract
 internal/platform/github TestLiveGraphQLListingAndPRBatchParityFields
 internal/platform/github TestLiveRootTreeAcceptsHEAD
 internal/platform/github TestSearchCommitByAuthorEmailLive
+internal/platform/gitlab TestLiveGitLabProjectStatisticsContract
 internal/platform/gitlab TestLiveGitLabRepoInfoForGitLabRunner
 #
 # External tool canaries (AVELOXIS_TEST_TOOLS=1; scc, scancode, scorecard installed):

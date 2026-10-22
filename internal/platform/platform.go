@@ -94,8 +94,23 @@ type RepoCollector interface {
 	// FetchRepoInfo returns a point-in-time metadata snapshot.
 	FetchRepoInfo(ctx context.Context, owner, repo string) (*model.RepoInfo, error)
 
-	// FetchCloneStats returns clone/traffic data (may require elevated perms).
+	// FetchCloneStats returns the daily clone counts (may require
+	// elevated perms). GitHub returns its 14 daily buckets with unique
+	// cloners; GitLab returns the 30 UTC days ending today from its
+	// statistics endpoint, absent days as 0 and UniqueClones nil.
 	FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, error)
+
+	// FetchTraffic returns the rest of the repository's traffic in one
+	// call: the daily views, the 14-day uniques and weekly buckets of
+	// views and clones, and the top paths and referrers (the daily
+	// clones stay with FetchCloneStats). SnapshotDate, Windows and Weeks
+	// are left for the collector. On GitHub it reads five /traffic
+	// endpoints with the access FetchCloneStats needs; the first failure
+	// aborts with an error naming the endpoint, so a 403 still classifies
+	// as ClassSkip. GitLab returns (nil, nil) without a request: it has no
+	// views, paths, referrers or unique counts, and its clone counts come
+	// from FetchCloneStats.
+	FetchTraffic(ctx context.Context, owner, repo string) (*model.RepoTraffic, error)
 }
 
 // IssueAndPRBatch bundles the result of a unified issue + PR enumeration

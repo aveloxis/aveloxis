@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="_static/documentation_options.js?v=c9c5df34"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -361,6 +361,7 @@
 <li class="toctree-l3"><a class="reference internal" href="guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="guide/api.html#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="guide/api.html#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="guide/api.html#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="guide/api.html#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="guide/api.html#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -774,7 +775,7 @@
 <li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1612,6 +1613,11 @@
 <li class="toctree-l3"><a class="reference internal" href="#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-insights">repo_insights</a></li>
@@ -4981,7 +4987,7 @@ preserved (SR-6). See the identity chapter in
 <hr class="docutils" />
 <section id="repo-clones">
 <h4>repo_clones<a class="headerlink" href="#repo-clones" title="Link to this heading"></a></h4>
-<p>Clone traffic data. Only available for repos where you have push access (GitHub-only feature).</p>
+<p>Daily clone counts. GitHub serves them to a key with push access. GitLab serves HTTP clones and pulls together, never SSH, for the last 30 days to a key with at least the Reporter role and <code class="docutils literal notranslate"><span class="pre">read_api</span></code>; days it omits are stored as 0. A key without access gets <code class="docutils literal notranslate"><span class="pre">403</span></code> and nothing is stored.</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Column</p></th>
@@ -5003,18 +5009,18 @@ preserved (SR-6). See the identity chapter in
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">clone_timestamp</span></code></p></td>
 <td><p>TIMESTAMPTZ NOT NULL</p></td>
-<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code></p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code>, GitLab API v4: <code class="docutils literal notranslate"><span class="pre">/projects/{id}/statistics</span></code></p></td>
 <td><p>Date of the clone data point.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_clones</span></code></p></td>
 <td><p>INT</p></td>
-<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code></p></td>
-<td><p>Total clones.</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code>, GitLab API v4: <code class="docutils literal notranslate"><span class="pre">/projects/{id}/statistics</span></code></p></td>
+<td><p>Total clones (GitLab: HTTP clones and pulls).</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unique_clones</span></code></p></td>
 <td><p>INT</p></td>
 <td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code></p></td>
-<td><p>Unique cloners.</p></td>
+<td><p>Unique cloners. NULL for GitLab, which does not count them.</p></td>
 </tr>
 <tr class="row-odd"><td><p></p></td>
 <td><p></p></td>
@@ -5024,6 +5030,261 @@ preserved (SR-6). See the identity chapter in
 </tbody>
 </table>
 <p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">clone_timestamp)</span></code></p>
+</section>
+<hr class="docutils" />
+<section id="repo-views">
+<h4>repo_views<a class="headerlink" href="#repo-views" title="Link to this heading"></a></h4>
+<p>Daily page views on GitHub (v0.29.118), shaped like <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>: zeros are stored, so a day without a row was not read. A later read of a day replaces its counts. Same GitHub key access as <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_view_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Auto-generated</p></td>
+<td><p>Primary key.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL (FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">view_timestamp</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=day</span></code> (<code class="docutils literal notranslate"><span class="pre">views[].timestamp</span></code>)</p></td>
+<td><p>Start of the UTC day of the bucket.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_views</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=day</span></code> (<code class="docutils literal notranslate"><span class="pre">views[].count</span></code>)</p></td>
+<td><p>Views that day.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unique_views</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=day</span></code> (<code class="docutils literal notranslate"><span class="pre">views[].uniques</span></code>)</p></td>
+<td><p>Distinct visitors that day.</p></td>
+</tr>
+<tr class="row-odd"><td><p></p></td>
+<td><p></p></td>
+<td><p></p></td>
+<td><p><em>Standard metadata columns</em></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">view_timestamp)</span></code></p>
+</section>
+<hr class="docutils" />
+<section id="repo-traffic-paths">
+<h4>repo_traffic_paths<a class="headerlink" href="#repo-traffic-paths" title="Link to this heading"></a></h4>
+<p>The repository’s top 10 viewed paths over GitHub’s 14-day period (v0.29.118), kept as a daily snapshot keyed by the UTC collection date and replaced as a whole when that date is collected again. Same GitHub key access as <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_traffic_path_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Auto-generated</p></td>
+<td><p>Primary key.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL (FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snapshot_date</span></code></p></td>
+<td><p>DATE NOT NULL</p></td>
+<td><p>Computed</p></td>
+<td><p>UTC date of the collection that read the list.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">path</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/paths</span></code> (<code class="docutils literal notranslate"><span class="pre">path</span></code>)</p></td>
+<td><p>The viewed path (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;/acme/widget/blob/main/README.md&quot;</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">title</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/paths</span></code> (<code class="docutils literal notranslate"><span class="pre">title</span></code>)</p></td>
+<td><p>The page title GitHub reports for the path.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_views</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/paths</span></code> (<code class="docutils literal notranslate"><span class="pre">count</span></code>)</p></td>
+<td><p>Views of the path over GitHub’s 14-day period.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unique_views</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/paths</span></code> (<code class="docutils literal notranslate"><span class="pre">uniques</span></code>)</p></td>
+<td><p>Distinct visitors of the path over that period.</p></td>
+</tr>
+<tr class="row-odd"><td><p></p></td>
+<td><p></p></td>
+<td><p></p></td>
+<td><p><em>Standard metadata columns</em></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">snapshot_date,</span> <span class="pre">path)</span></code></p>
+</section>
+<hr class="docutils" />
+<section id="repo-traffic-referrers">
+<h4>repo_traffic_referrers<a class="headerlink" href="#repo-traffic-referrers" title="Link to this heading"></a></h4>
+<p>The repository’s top 10 referring sites over GitHub’s 14-day period (v0.29.118), kept as a daily snapshot and replaced as a whole like <code class="docutils literal notranslate"><span class="pre">repo_traffic_paths</span></code>. Same GitHub key access as <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_traffic_referrer_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Auto-generated</p></td>
+<td><p>Primary key.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL (FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snapshot_date</span></code></p></td>
+<td><p>DATE NOT NULL</p></td>
+<td><p>Computed</p></td>
+<td><p>UTC date of the collection that read the list.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">referrer</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/referrers</span></code> (<code class="docutils literal notranslate"><span class="pre">referrer</span></code>)</p></td>
+<td><p>The referring site (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;github.com&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;Google&quot;</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_views</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/referrers</span></code> (<code class="docutils literal notranslate"><span class="pre">count</span></code>)</p></td>
+<td><p>Views from that site over GitHub’s 14-day period.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unique_views</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/popular/referrers</span></code> (<code class="docutils literal notranslate"><span class="pre">uniques</span></code>)</p></td>
+<td><p>Distinct visitors from that site over that period.</p></td>
+</tr>
+<tr class="row-even"><td><p></p></td>
+<td><p></p></td>
+<td><p></p></td>
+<td><p><em>Standard metadata columns</em></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">snapshot_date,</span> <span class="pre">referrer)</span></code></p>
+</section>
+<hr class="docutils" />
+<section id="repo-traffic-windows">
+<h4>repo_traffic_windows<a class="headerlink" href="#repo-traffic-windows" title="Link to this heading"></a></h4>
+<p>Distinct visitors (views) or cloners (clones) over one 14-day window, as GitHub computes them (v0.29.118). Every successful read writes one row per kind (only the views window when the daily clones read failed), even when <code class="docutils literal notranslate"><span class="pre">uniques</span></code> is 0, so the rows record which windows were read. Distinct counts cannot be summed from the daily rows. Same GitHub key access as <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_traffic_window_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Auto-generated</p></td>
+<td><p>Primary key.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL (FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">traffic_kind</span></code></p></td>
+<td><p>TEXT NOT NULL CHECK</p></td>
+<td><p>Computed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">'views'</span></code> or <code class="docutils literal notranslate"><span class="pre">'clones'</span></code> (a CHECK constraint refuses any other value).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">window_start</span></code></p></td>
+<td><p>DATE NOT NULL</p></td>
+<td><p>Computed from GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=day</span></code> (views) or <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code> (clones)</p></td>
+<td><p>UTC day of the read’s first daily bucket.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">window_end</span></code></p></td>
+<td><p>DATE NOT NULL</p></td>
+<td><p>Computed from GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=day</span></code> (views) or <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones</span></code> (clones)</p></td>
+<td><p>UTC day of the read’s last daily bucket, included. A repository with traffic gets the 14 days before the collection day; one without any traffic gets the 14 days ending on it.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">uniques</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=day</span></code> (top-level <code class="docutils literal notranslate"><span class="pre">uniques</span></code>, views) or <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones?per=week</span></code> (top-level <code class="docutils literal notranslate"><span class="pre">uniques</span></code>, clones)</p></td>
+<td><p>Distinct visitors or cloners over the window.</p></td>
+</tr>
+<tr class="row-even"><td><p></p></td>
+<td><p></p></td>
+<td><p></p></td>
+<td><p><em>Standard metadata columns</em></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">traffic_kind,</span> <span class="pre">window_start,</span> <span class="pre">window_end)</span></code></p>
+</section>
+<hr class="docutils" />
+<section id="repo-traffic-weeks">
+<h4>repo_traffic_weeks<a class="headerlink" href="#repo-traffic-weeks" title="Link to this heading"></a></h4>
+<p>Distinct visitors (views) or cloners (clones) of one complete Monday-to-Sunday week, as GitHub computes them (v0.29.118). Partial first and last weeks are not stored. A week’s total is the sum of its seven daily rows. Same GitHub key access as <code class="docutils literal notranslate"><span class="pre">repo_clones</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_traffic_week_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Auto-generated</p></td>
+<td><p>Primary key.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL (FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">traffic_kind</span></code></p></td>
+<td><p>TEXT NOT NULL CHECK</p></td>
+<td><p>Computed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">'views'</span></code> or <code class="docutils literal notranslate"><span class="pre">'clones'</span></code> (a CHECK constraint refuses any other value).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">week_start</span></code></p></td>
+<td><p>DATE NOT NULL</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=week</span></code> or <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones?per=week</span></code> (bucket <code class="docutils literal notranslate"><span class="pre">timestamp</span></code>)</p></td>
+<td><p>The week’s Monday (UTC).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uniques</span></code></p></td>
+<td><p>INT</p></td>
+<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/views?per=week</span></code> or <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}/traffic/clones?per=week</span></code> (bucket <code class="docutils literal notranslate"><span class="pre">uniques</span></code>)</p></td>
+<td><p>Distinct visitors or cloners that week.</p></td>
+</tr>
+<tr class="row-odd"><td><p></p></td>
+<td><p></p></td>
+<td><p></p></td>
+<td><p><em>Standard metadata columns</em></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">traffic_kind,</span> <span class="pre">week_start)</span></code></p>
 </section>
 <hr class="docutils" />
 <section id="repo-badging">

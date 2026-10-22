@@ -306,6 +306,12 @@ var loserRepoIDDeletes = []string{
 	"aveloxis_data.releases",
 	"aveloxis_data.repo_info",
 	"aveloxis_data.repo_clones",
+	// v0.29.118 GitHub traffic: per-repo reads like repo_clones above.
+	"aveloxis_data.repo_views",
+	"aveloxis_data.repo_traffic_paths",
+	"aveloxis_data.repo_traffic_referrers",
+	"aveloxis_data.repo_traffic_windows",
+	"aveloxis_data.repo_traffic_weeks",
 	"aveloxis_data.repo_badging",
 	"aveloxis_data.dei_badging",
 	"aveloxis_data.repo_insights_records",

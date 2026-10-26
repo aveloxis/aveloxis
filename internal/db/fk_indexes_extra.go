@@ -27,9 +27,12 @@ import (
 // and lstm_anomaly_models look like dead-code legacy tables that
 // deserve audit before indexing.
 //
+// v0.29.118 appended the repo_id of the five GitHub traffic tables,
+// shaped like repo_clones, so the list now has 55 entries.
+//
 // Companion to v0.22.7's fkExtraConstraints, which adds
 // ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY
-// DEFERRED to the same 50 FKs. Indexes are built CONCURRENTLY
+// DEFERRED to the same 55 FKs. Indexes are built CONCURRENTLY
 // BEFORE the constraint flip so the new RESTRICT/CASCADE
 // behavior runs against indexed lookups from minute one.
 //
@@ -102,11 +105,19 @@ var fkExtraIndexes = []fkExtraIndex{
 	{"repo_topic", "repo_id", "idx_repo_topic_repo_id"},
 	{"review_comments", "repo_id", "idx_review_comments_repo_id"},
 	{"topic_model_meta", "repo_id", "idx_topic_model_meta_repo_id"},
+
+	// repos(repo_id) ← v0.29.118 GitHub traffic tables, shaped like repo_clones
+	{"repo_views", "repo_id", "idx_repo_views_repo_id"},
+	{"repo_traffic_paths", "repo_id", "idx_repo_traffic_paths_repo_id"},
+	{"repo_traffic_referrers", "repo_id", "idx_repo_traffic_referrers_repo_id"},
+	{"repo_traffic_windows", "repo_id", "idx_repo_traffic_windows_repo_id"},
+	{"repo_traffic_weeks", "repo_id", "idx_repo_traffic_weeks_repo_id"},
 }
 
 // ensureExtraFKIndexes is the v0.22.7 migration step that adds
-// btree indexes on the 50 unindexed FK columns identified by the
-// 2026-05-17 audit. Uses execCreateIndexConcurrently so production
+// btree indexes on the 55 FK columns of fkExtraIndexes (the original
+// 50 unindexed ones identified by the 2026-05-17 audit, plus the five
+// v0.29.118 traffic tables). Uses execCreateIndexConcurrently so production
 // keeps accepting writes during the build.
 //
 // The largest tables — pull_request_commits (~42M rows on

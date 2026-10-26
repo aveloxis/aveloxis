@@ -17,9 +17,10 @@ import (
 //  1. Have a btree index on the child column.
 //  2. Declare ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED.
 //
-// 50 FKs total: 11 PR children + 4 issues children + 3 messages
+// The original 50 FKs: 11 PR children + 4 issues children + 3 messages
 // children + 2 PR-reviews children + 30 repos children (including
 // issue_assignees.repo_id per operator decision on 2026-05-17).
+// v0.29.118 added the five GitHub traffic tables' repo_id (55 total).
 //
 // Each row is (child_table, child_column, target_table, target_column,
 // index_name, constraint_name). The local fixture (not borrowed from
@@ -140,10 +141,22 @@ var fkExtraFixture = []fkExtraSpec{
 		"idx_review_comments_repo_id", "review_comments_repo_id_fkey"},
 	{"topic_model_meta", "repo_id", "repos", "repo_id",
 		"idx_topic_model_meta_repo_id", "topic_model_meta_repo_id_fkey"},
+
+	// repos(repo_id) ← v0.29.118 GitHub traffic tables, shaped like repo_clones
+	{"repo_views", "repo_id", "repos", "repo_id",
+		"idx_repo_views_repo_id", "repo_views_repo_id_fkey"},
+	{"repo_traffic_paths", "repo_id", "repos", "repo_id",
+		"idx_repo_traffic_paths_repo_id", "repo_traffic_paths_repo_id_fkey"},
+	{"repo_traffic_referrers", "repo_id", "repos", "repo_id",
+		"idx_repo_traffic_referrers_repo_id", "repo_traffic_referrers_repo_id_fkey"},
+	{"repo_traffic_windows", "repo_id", "repos", "repo_id",
+		"idx_repo_traffic_windows_repo_id", "repo_traffic_windows_repo_id_fkey"},
+	{"repo_traffic_weeks", "repo_id", "repos", "repo_id",
+		"idx_repo_traffic_weeks_repo_id", "repo_traffic_weeks_repo_id_fkey"},
 }
 
 // TestSchemaDeclaresExtraFKIndexes pins fresh-install: schema.sql
-// declares a CREATE INDEX for every one of the 50 child FK columns.
+// declares a CREATE INDEX for every one of the 55 child FK columns.
 func TestSchemaDeclaresExtraFKIndexes(t *testing.T) {
 	src, err := os.ReadFile("schema.sql")
 	if err != nil {
@@ -160,7 +173,7 @@ func TestSchemaDeclaresExtraFKIndexes(t *testing.T) {
 }
 
 // TestSchemaDeclaresFullBehaviorOnExtraFKs pins the inline FK
-// behavior in schema.sql for fresh installs: each of the 50
+// behavior in schema.sql for fresh installs: each of the 55
 // specific (table, column) FKs in fkExtraFixture must declare
 // ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY
 // DEFERRED.
@@ -212,7 +225,7 @@ func TestSchemaDeclaresFullBehaviorOnExtraFKs(t *testing.T) {
 		if _, isEnumerated := want[key]; !isEnumerated {
 			continue
 		}
-		// This is one of the 50. Must contain all three clauses.
+		// This is one of the 55. Must contain all three clauses.
 		hasCascade := strings.Contains(line, "ON UPDATE CASCADE")
 		hasRestrict := strings.Contains(line, "ON DELETE RESTRICT")
 		hasDeferred := strings.Contains(line, "DEFERRABLE INITIALLY DEFERRED")
@@ -316,7 +329,7 @@ func TestSchemaDeclaresDeferredOnCntrbIDFKs(t *testing.T) {
 
 // TestMigrationCreatesExtraFKIndexes pins the migration source for
 // existing-deployment upgrades: migrate.go (and/or
-// fk_indexes_extra.go) references each of the 50 index names via
+// fk_indexes_extra.go) references each of the 55 index names via
 // execCreateIndexConcurrently.
 func TestMigrationCreatesExtraFKIndexes(t *testing.T) {
 	parts := [][]byte{}
@@ -341,7 +354,7 @@ func TestMigrationCreatesExtraFKIndexes(t *testing.T) {
 
 // TestMigrationAddsFullBehaviorToExtraFKs pins the constraint
 // alteration step: migrate.go (and/or fk_constraints_extra.go)
-// references each of the 50 constraint names AND the keywords for
+// references each of the 55 constraint names AND the keywords for
 // the full v0.22.7 clause set.
 func TestMigrationAddsFullBehaviorToExtraFKs(t *testing.T) {
 	parts := [][]byte{}

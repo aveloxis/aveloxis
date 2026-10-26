@@ -29,7 +29,7 @@ tags:
   - name: Service
     description: Liveness and the anonymous fleet figures.
   - name: Repositories
-    description: One collected repository's statistics, series, licenses, SBOMs and scan results.
+    description: One collected repository's statistics, series, licenses, SBOMs, scan results and traffic.
   - name: Vulnerabilities
     description: Vulnerability findings and the OpenSSF Scorecard.
   - name: Contributors
@@ -1747,6 +1747,97 @@ paths:
           $ref: '#/components/responses/RepoOutOfScope'
         "404":
           $ref: '#/components/responses/RepoNotFound'
+        "429":
+          $ref: '#/components/responses/TooManyRequests'
+        "500":
+          $ref: '#/components/responses/ServerError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/repos/{repoID}/traffic:
+    get:
+      operationId: repositoryTraffic
+      summary: Returns a repository's stored traffic history.
+      description: |
+        Everything stored from the forge's traffic and statistics APIs, in
+        one answer without paging: every daily row of clones and views,
+        every 14-day window and complete week, and the latest top paths and
+        referrers. A day with a row was read, even when its counts are 0. A
+        GitLab repository answers its daily clones with `uniques` null,
+        empty lists for the rest and a `null` `snapshot_date`. So does a
+        repository whose key the forge refuses, and an id with no
+        repository, to an unscoped caller (a scoped caller gets the `403`).
+        Grows by about 730 daily rows a year; the read is indexed by
+        repository.
+
+        Handler: `handleRepoTraffic`.
+      tags: [Repositories]
+      security: [{sessionToken: []}, {apiToken: []}, {}]
+      parameters:
+        - $ref: '#/components/parameters/RepoID'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        "200":
+          description: The stored traffic.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            X-Cache:
+              $ref: '#/components/headers/XCache'
+            X-Aveloxis-Added-To-Group:
+              $ref: '#/components/headers/AddedToGroup'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repo_id, clones, views, windows, weeks, snapshot_date, paths, referrers]
+                properties:
+                  repo_id:
+                    type: integer
+                    format: int64
+                  clones:
+                    type: array
+                    description: Daily clones and distinct cloners.
+                    items:
+                      $ref: '#/components/schemas/TrafficDay'
+                  views:
+                    type: array
+                    description: Daily views and distinct visitors.
+                    items:
+                      $ref: '#/components/schemas/TrafficDay'
+                  windows:
+                    type: array
+                    description: One row per kind for each successful read.
+                    items:
+                      $ref: '#/components/schemas/TrafficWindow'
+                  weeks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrafficWeek'
+                  snapshot_date:
+                    type: [string, "null"]
+                    format: date
+                    description: |
+                      The latest UTC collection date that stored a path or a
+                      referrer; `paths` and `referrers` are that date's
+                      snapshot. `null` when none was ever stored.
+                  paths:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrafficPath'
+                  referrers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrafficReferrer'
+        "304":
+          $ref: '#/components/responses/NotModified'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/RepoOutOfScope'
         "429":
           $ref: '#/components/responses/TooManyRequests'
         "500":
@@ -7659,6 +7750,81 @@ components:
         score:
           type: number
           description: 0 to 10; `-1` when the stored value could not be read (not applicable).
+    TrafficDay:
+      type: object
+      description: One stored UTC day of clones or views (`db.TrafficDay`).
+      required: [date, count, uniques]
+      properties:
+        date:
+          type: string
+          format: date
+        count:
+          type: [integer, "null"]
+          description: Clones or views that day.
+        uniques:
+          type: [integer, "null"]
+          description: Distinct cloners or visitors that day; `null` when the forge does not count them (GitLab clones).
+    TrafficWindow:
+      type: object
+      description: One 14-day window GitHub reported, from its first to its last daily bucket (`db.TrafficWindow`).
+      required: [kind, start, end, uniques]
+      properties:
+        kind:
+          type: string
+          enum: [views, clones]
+        start:
+          type: string
+          format: date
+        end:
+          type: string
+          format: date
+          description: The window's last day, included.
+        uniques:
+          type: [integer, "null"]
+          description: Distinct visitors or cloners over the window, as GitHub computes them; not the sum of the daily uniques.
+    TrafficWeek:
+      type: object
+      description: One complete Monday-to-Sunday week inside a read's window (`db.TrafficWeek`).
+      required: [kind, week_start, uniques]
+      properties:
+        kind:
+          type: string
+          enum: [views, clones]
+        week_start:
+          type: string
+          format: date
+          description: The week's Monday.
+        uniques:
+          type: [integer, "null"]
+          description: Distinct visitors or cloners over the week.
+    TrafficPath:
+      type: object
+      description: One of the top paths GitHub reported for its 14-day period (`db.TrafficPath`).
+      required: [path, title, count, uniques]
+      properties:
+        path:
+          type: string
+        title:
+          type: string
+        count:
+          type: [integer, "null"]
+          description: Views of the path over GitHub's 14-day period.
+        uniques:
+          type: [integer, "null"]
+          description: Distinct visitors of the path over that period.
+    TrafficReferrer:
+      type: object
+      description: One of the top referring sites GitHub reported for its 14-day period (`db.TrafficReferrer`).
+      required: [referrer, count, uniques]
+      properties:
+        referrer:
+          type: string
+        count:
+          type: [integer, "null"]
+          description: Views the site sent over GitHub's 14-day period.
+        uniques:
+          type: [integer, "null"]
+          description: Distinct visitors the site sent over that period.
     CollectionSummary:
       type: object
       description: One collection in the list (`db.CollectionSummary`).

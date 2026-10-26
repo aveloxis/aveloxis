@@ -42,6 +42,10 @@ var pageCacheTables = []string{
 	"repo_lockfiles", "repo_lockfile_packages", "repo_lockfile_edges",
 	// The SBOM's license (GetRepoForSBOM reads the latest repo_info row).
 	"repo_info",
+	// The traffic answer (v0.29.118): the daily clones and the five
+	// GitHub traffic tables, all stored history, no time bound.
+	"repo_clones", "repo_views", "repo_traffic_paths",
+	"repo_traffic_referrers", "repo_traffic_windows", "repo_traffic_weeks",
 }
 
 type pageWriterCoverage struct {
@@ -67,6 +71,9 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	// heal-collection-gaps, the leftover drain), so they stamp themselves.
 	"RotateRepoInfoToHistory":   {"stamps", "staged repo_info processing, in or out of a job"},
 	"InsertRepoInfo":            {"stamps", "staged repo_info processing, in or out of a job"},
+	"UpsertRepoClone":           {"stamps", "staged clone stats processing, in or out of a job"},
+	"UpsertRepoClones":          {"stamps", "staged clone stats processing, in or out of a job"},
+	"UpsertRepoTraffic":         {"stamps", "staged traffic processing, in or out of a job"},
 	"BackfillGitLabCommitCount": {"job", "the scheduler's facade phase (commit_count, which no cached answer reads)"},
 }
 

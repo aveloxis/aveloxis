@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adding a new platform &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>Adding a new platform &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -362,6 +362,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -775,7 +776,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1613,6 +1614,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-insights">repo_insights</a></li>
@@ -1906,7 +1912,7 @@ SPDX-License-Identifier: MIT
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">internal/platform/bugzilla/</span></code></strong> — new package implementing <code class="docutils literal notranslate"><span class="pre">platform.Client</span></code>. At minimum:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">client.go</span></code> — the <code class="docutils literal notranslate"><span class="pre">Client</span></code> struct, constructor, all interface methods (most return empty iterators).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">repos.go</span></code> — <code class="docutils literal notranslate"><span class="pre">FetchRepoInfo</span></code> and <code class="docutils literal notranslate"><span class="pre">FetchCloneStats</span></code> (stubbed; Bugzilla products don’t have clone stats).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">repos.go</span></code> — <code class="docutils literal notranslate"><span class="pre">FetchRepoInfo</span></code>, <code class="docutils literal notranslate"><span class="pre">FetchCloneStats</span></code> and <code class="docutils literal notranslate"><span class="pre">FetchTraffic</span></code> (stubbed; Bugzilla products don’t have clone or traffic stats).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">issues.go</span></code> — <code class="docutils literal notranslate"><span class="pre">ListIssues</span></code>, <code class="docutils literal notranslate"><span class="pre">ListIssueLabels</span></code>, <code class="docutils literal notranslate"><span class="pre">ListIssueAssignees</span></code>, <code class="docutils literal notranslate"><span class="pre">FetchIssueByNumber</span></code>, plus the unified <code class="docutils literal notranslate"><span class="pre">ListIssuesAndPRs</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">messages.go</span></code> — comment-related methods.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">events.go</span></code> — <code class="docutils literal notranslate"><span class="pre">ListIssueEvents</span></code> from bug history.</p></li>
@@ -2478,6 +2484,10 @@ SPDX-License-Identifier: MIT
 
 <span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">c</span><span class="w"> </span><span class="o">*</span><span class="nx">Client</span><span class="p">)</span><span class="w"> </span><span class="nx">FetchCloneStats</span><span class="p">(</span><span class="nx">_</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="p">([]</span><span class="nx">model</span><span class="p">.</span><span class="nx">RepoClone</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="nx">platform</span><span class="p">.</span><span class="nx">ErrNotFound</span><span class="w">  </span><span class="c1">// Bugzilla has no clone stats</span>
+<span class="p">}</span>
+
+<span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">c</span><span class="w"> </span><span class="o">*</span><span class="nx">Client</span><span class="p">)</span><span class="w"> </span><span class="nx">FetchTraffic</span><span class="p">(</span><span class="nx">_</span><span class="w"> </span><span class="nx">context</span><span class="p">.</span><span class="nx">Context</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="nx">model</span><span class="p">.</span><span class="nx">RepoTraffic</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="w">  </span><span class="c1">// no traffic API: nil without a request, as GitLab does</span>
 <span class="p">}</span>
 </pre></div>
 </div>

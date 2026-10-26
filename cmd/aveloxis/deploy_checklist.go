@@ -699,6 +699,13 @@ var deployChecklists = map[string][]deployStep{
 	// signed-out account's tokens by user; test-only — 0.29.116's ladder
 	// with a note on the start step.
 	"0.29.117": v029117DeployChecklist,
+	// v0.29.118 (aveloxis/aveloxis#239, closes #234): GitHub repository
+	// traffic kept past GitHub's 14 days and GitLab's daily clone counts —
+	// five aveloxis_data tables born empty, one read-only route, and traffic
+	// errors other than a skip recorded as collection errors. No index on
+	// a fleet-scale table, no view change — 0.29.117's ladder with a note
+	// on the start step.
+	"0.29.118": v029118DeployChecklist,
 	"0.29.103": v029102DeployChecklist,
 	"0.29.102": v029102DeployChecklist,
 	"0.29.101": v029101DeployChecklist,
@@ -1848,3 +1855,8 @@ var v029116DeployChecklist = withStartNote(v029115DeployChecklist, "0.29.116: no
 // v0.29.117 (2026-10-21): Copilot's third review of PR #241 (CI script only).
 // 0.29.116's ladder; the notes accumulate.
 var v029117DeployChecklist = withStartNote(v029116DeployChecklist, "0.29.117: no schema change and no runtime change. The CI check that signing out removes the web proxy's token now counts the account's tokens, which a surviving token cannot escape. Nothing to change in aveloxis.json. ")
+
+// v0.29.118: GitHub repository traffic kept past GitHub's 14 days and
+// GitLab's daily clone counts (aveloxis/aveloxis#234, PR #239).
+// 0.29.117's ladder; the notes accumulate.
+var v029118DeployChecklist = withStartNote(v029117DeployChecklist, "0.29.118: GitHub repository traffic is now kept past the 14 days GitHub serves, and GitLab's daily clone counts are now collected (aveloxis/aveloxis#234). The migrate adds five empty tables to aveloxis_data (repo_views, repo_traffic_paths, repo_traffic_referrers, repo_traffic_windows, repo_traffic_weeks) and changes no existing table; nothing is backfilled: GitHub returns only the last 14 days, so each repository's history starts at its first collection on this release. New read-only route GET /api/v1/repos/{repoID}/traffic: the stored daily views and clones, the 14-day and complete-week uniques, and the latest popular paths and referrers. Reading traffic needs push access to the repository with a classic token, or the 'Administration' repository permission set to read with a fine-grained token. A key without it gets 403 on the daily clones read (a request earlier releases already made): the collection logs one Info line 'skipping traffic endpoints' per repository and collection, records no error and makes no further traffic request. Any other traffic error is now recorded as a collection error, as a releases error is: the job completes with success=false and the first error's message in last_error (for a traffic error, 'clone stats: ...' for the daily clones read, whose errors earlier releases dropped silently, or 'traffic <endpoint>: ...'), and the collection's other phases still run. A key that can read traffic makes five more GitHub requests per repository and collection (views by day and by week, clones by week, popular paths, popular referrers). GitLab repositories get no views, paths, referrers, windows or weeks, but a key with at least the Reporter role (and read_api for a personal token) now gets the project's daily HTTP clone and pull counts for the 30 UTC days GitLab serves: repo_clones rows with unique_clones NULL, a day GitLab omits stored as 0 and data source 'GitLab API'. That is one more request per GitLab project and collection; a 403 or 404 logs the same Info line and records no error, and any other error, such as a 5xx, is recorded as 'clone stats: ...' and fails the job as above, which is new for GitLab. Nothing older than those 30 days is backfilled. A fleet already running 0.29.117 needs only the stop, the migrate and this start; a fleet on an older release takes the notes below in the same one migrate. ")

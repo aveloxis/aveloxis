@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -362,6 +362,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -775,7 +776,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1613,6 +1614,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-insights">repo_insights</a></li>
@@ -2284,6 +2290,86 @@ GET /api/v1/repos/{repoID}/sbom?format=spdx
 </table>
 <p>Returns JSON with <code class="docutils literal notranslate"><span class="pre">Content-Disposition:</span> <span class="pre">attachment</span></code> header for download.</p>
 </section>
+<section id="traffic-v0-29-118">
+<h3>Traffic (v0.29.118)<a class="headerlink" href="#traffic-v0-29-118" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GET</span> <span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">v1</span><span class="o">/</span><span class="n">repos</span><span class="o">/</span><span class="p">{</span><span class="n">repoID</span><span class="p">}</span><span class="o">/</span><span class="n">traffic</span>
+</pre></div>
+</div>
+<p>Returns everything Aveloxis stored from the forge’s traffic and statistics APIs for the repository, in one answer, without paging or date parameters. GitHub keeps traffic for 14 days only; Aveloxis keeps every read, so this history grows by about 730 daily rows a year.</p>
+<div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;repo_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;clones&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;date&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-05&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;date&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-06&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">}</span>
+<span class="w">    </span><span class="cm">/* ... one row per stored day */</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;views&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;date&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-05&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">}</span>
+<span class="w">    </span><span class="cm">/* ... */</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;windows&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;clones&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;start&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-05&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;end&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-18&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;views&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;start&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-05&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;end&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-18&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">11</span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;weeks&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;views&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;week_start&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-05&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;snapshot_date&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-10-19&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;paths&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/acme/widget&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;title&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;acme/widget&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;referrers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;referrer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;github.com&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;uniques&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>The repository.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">clones</span></code>, <code class="docutils literal notranslate"><span class="pre">views</span></code></p></td>
+<td><p>One row per stored UTC day: <code class="docutils literal notranslate"><span class="pre">date</span></code> (<code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code>), <code class="docutils literal notranslate"><span class="pre">count</span></code> (clones or views that day) and <code class="docutils literal notranslate"><span class="pre">uniques</span></code> (distinct cloners or visitors that day; <code class="docutils literal notranslate"><span class="pre">null</span></code> when the forge does not count them, which today is GitLab’s clones).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">windows</span></code></p></td>
+<td><p>One row per kind (<code class="docutils literal notranslate"><span class="pre">views</span></code> or <code class="docutils literal notranslate"><span class="pre">clones</span></code>) for each successful read: <code class="docutils literal notranslate"><span class="pre">kind</span></code>, <code class="docutils literal notranslate"><span class="pre">start</span></code> and <code class="docutils literal notranslate"><span class="pre">end</span></code> (the first and last day of the read’s 14 daily buckets, both included) and <code class="docutils literal notranslate"><span class="pre">uniques</span></code>, GitHub’s distinct visitors or cloners over that window.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">weeks</span></code></p></td>
+<td><p>Complete Monday-to-Sunday weeks inside a read’s window: <code class="docutils literal notranslate"><span class="pre">kind</span></code>, <code class="docutils literal notranslate"><span class="pre">week_start</span></code> (the Monday) and <code class="docutils literal notranslate"><span class="pre">uniques</span></code>. A partial first or last week is never stored.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snapshot_date</span></code></p></td>
+<td><p>The latest UTC collection date that stored a top path or referrer; <code class="docutils literal notranslate"><span class="pre">null</span></code> when none was ever stored.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">paths</span></code></p></td>
+<td><p>That date’s top paths: <code class="docutils literal notranslate"><span class="pre">path</span></code>, <code class="docutils literal notranslate"><span class="pre">title</span></code>, <code class="docutils literal notranslate"><span class="pre">count</span></code> (views over GitHub’s 14-day period) and <code class="docutils literal notranslate"><span class="pre">uniques</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">referrers</span></code></p></td>
+<td><p>That date’s top referring sites: <code class="docutils literal notranslate"><span class="pre">referrer</span></code>, <code class="docutils literal notranslate"><span class="pre">count</span></code> and <code class="docutils literal notranslate"><span class="pre">uniques</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+<p>How to read it:</p>
+<ul class="simple">
+<li><p><strong>Zeros are observations.</strong> Every daily bucket GitHub returns, and every day of GitLab’s 30-day period, is stored, zeros included, so a day with a row of <code class="docutils literal notranslate"><span class="pre">0</span></code> was read and had no traffic, and a day without a row was not read (a missed or failed collection). A repository with no rows at all is one Aveloxis cannot read.</p></li>
+<li><p><strong>No totals are stored.</strong> A period’s clones or views are the sum of its daily rows. Distinct visitors and cloners cannot be summed, so they exist only for the windows (<code class="docutils literal notranslate"><span class="pre">windows[].uniques</span></code>) and complete weeks (<code class="docutils literal notranslate"><span class="pre">weeks[].uniques</span></code>), as GitHub computed them.</p></li>
+<li><p><strong>The latest read wins.</strong> GitHub can still revise its newest day; each day, window and week holds the figures of the latest read that returned it. The path and referrer snapshot of a date is replaced as a whole by a later read on that date; <code class="docutils literal notranslate"><span class="pre">paths</span></code> and <code class="docutils literal notranslate"><span class="pre">referrers</span></code> always come from the one <code class="docutils literal notranslate"><span class="pre">snapshot_date</span></code>, so an empty referrer list on that date answers <code class="docutils literal notranslate"><span class="pre">[]</span></code>, never an older date’s referrers.</p></li>
+<li><p><strong>Order.</strong> Days, windows and weeks are in date order (then kind); paths and referrers by <code class="docutils literal notranslate"><span class="pre">count</span></code>, then <code class="docutils literal notranslate"><span class="pre">uniques</span></code>, descending, as GitHub lists its top 10.</p></li>
+<li><p><strong>No traffic.</strong> A repository whose collection key cannot read its forge’s traffic answers empty arrays and <code class="docutils literal notranslate"><span class="pre">&quot;snapshot_date&quot;:</span> <span class="pre">null</span></code>. GitHub serves traffic only to a key with push access (classic token) or the “Administration” repository permission set to read (fine-grained token). A GitLab repository answers its daily HTTP clone and pull counts (30 days, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code>, Reporter role or higher) in <code class="docutils literal notranslate"><span class="pre">clones</span></code> with <code class="docutils literal notranslate"><span class="pre">uniques</span></code> null, and empty <code class="docutils literal notranslate"><span class="pre">views</span></code>, <code class="docutils literal notranslate"><span class="pre">windows</span></code>, <code class="docutils literal notranslate"><span class="pre">weeks</span></code>, <code class="docutils literal notranslate"><span class="pre">paths</span></code> and <code class="docutils literal notranslate"><span class="pre">referrers</span></code> with <code class="docutils literal notranslate"><span class="pre">&quot;snapshot_date&quot;:</span> <span class="pre">null</span></code>, because GitLab has no API for page views, popular paths, referrers or unique visitors and cloners. An id with no repository answers the same to an unscoped caller (an administrator’s session, or an anonymous call where <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is off or from an exempt network); any other session, and an API token, gets <code class="docutils literal notranslate"><span class="pre">403</span></code>.</p></li>
+</ul>
+<p>Reading it from a script with an <a class="reference internal" href="#authentication-getting-an-api-token">API token</a>: the token reads the repositories in its owner’s groups, so add the repositories to one of the owner’s groups first. A repository outside them is refused with <code class="docutils literal notranslate"><span class="pre">403</span> <span class="pre">repo_out_of_scope</span></code> and a body that says how to add it.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">SITE</span><span class="o">=</span>aveloxis.example.org
+curl<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$AVELOXIS_API_TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">     </span><span class="s2">&quot;https://</span><span class="nv">$SITE</span><span class="s2">/api/v1/repos/42/traffic&quot;</span>
+</pre></div>
+</div>
+<p>The answer is response-cached like the repository’s other pages (send its <code class="docutils literal notranslate"><span class="pre">ETag</span></code> back as <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> for a <code class="docutils literal notranslate"><span class="pre">304</span></code>); every traffic write moves the repository’s cache state, so a new read is served after the next collection.</p>
+</section>
 <section id="contributor-identities-in-a-window">
 <h3>Contributor identities in a window<a class="headerlink" href="#contributor-identities-in-a-window" title="Link to this heading"></a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET /api/v1/repos/{repoID}/contributions/identities
@@ -2440,7 +2526,7 @@ inclusive); <code class="docutils literal notranslate"><span class="pre">limit</
 <p><strong>Caching (since 0.29.71; 0.29.73).</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, a
 repository’s own GET answers (this endpoint, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/licenses</span></code>,
 <code class="docutils literal notranslate"><span class="pre">/deps</span></code>, <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">/scancode-*</span></code>, <code class="docutils literal notranslate"><span class="pre">/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">/scorecard</span></code>,
-<code class="docutils literal notranslate"><span class="pre">/sbom</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected
+<code class="docutils literal notranslate"><span class="pre">/traffic</span></code>, <code class="docutils literal notranslate"><span class="pre">/sbom</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected
 again or scanned; with it unset (the default) only this endpoint and
 <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code> are, up to 1,000 answers. Answers that name contributors are also recomputed after
 <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> (default 30). These answers carry an

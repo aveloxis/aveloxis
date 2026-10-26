@@ -5,11 +5,13 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -19,6 +21,10 @@ import (
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
+
+// The GitLab client must implement every platform.Client method; this
+// fails the build when the interface grows a method GitLab lacks.
+var _ platform.Client = (*Client)(nil)
 
 // Client implements platform.Client for GitLab (API v4).
 // Supports both gitlab.com and self-hosted instances.
@@ -33,6 +39,10 @@ type Client struct {
 	// userRefCache: username → glUserRefCacheEntry (v0.27.122) — see
 	// lookupGLUserRef. Zero value is ready to use.
 	userRefCache sync.Map
+	// now reads the clock for the collection day of FetchCloneStats
+	// when the response carries no readable Date header; nil means
+	// time.Now. Tests set it to pin the day.
+	now func() time.Time
 }
 
 // New creates a GitLab client. baseURL should be like "https://gitlab.com/api/v4".
@@ -1543,9 +1553,108 @@ func (c *Client) mrCountsViaGraphQL(ctx context.Context, owner, repo string) (ma
 // "zero". Callers mark the count unknown so the prior snapshot carries.
 var errCountUnavailable = errors.New("X-Total header absent (GitLab omits it above 10,000 records)")
 
-func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, error) {
-	// GitLab doesn't expose clone statistics via the API for non-admins.
-	// Return empty; the facade/git layer can provide this from git operations.
+// cloneStatsDays is the length of the period GitLab's statistics endpoint
+// serves: the 30 UTC days ending on the current one.
+const cloneStatsDays = 30
+
+// cloneStatsSource is the data_source of the daily rows below.
+const cloneStatsSource = "GitLab API"
+
+// FetchCloneStats returns one row per day of the 30 UTC days ending on
+// the collection day, oldest first, from GET /projects/:id/statistics.
+// GitLab lists only days that had a fetch, so an omitted day is stored
+// as 0. The counts are HTTP clones and pulls together (never SSH) and
+// GitLab counts no distinct cloners, so UniqueClones stays nil. Below
+// the Reporter role (GitLab's permissions table, docs.gitlab.com/user/
+// permissions, lists "View project traffic statistics" from Reporter
+// up) the endpoint answers 403 (404 for an unreadable
+// project), both ClassSkip.
+func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, int, error) {
+	const endpoint = "GET /projects/:id/statistics"
+	var raw glProjectStatistics
+	// Read through Get, not GetJSON, for the response's Date header:
+	// the window below is the one GitLab computed, and only GitLab's
+	// own clock states it. WithoutETag keeps a repeat read a full
+	// answer rather than a 304 with no header to read.
+	resp, err := c.http.Get(platform.WithoutETag(ctx), fmt.Sprintf("/projects/%s/statistics", projectPath(owner, repo)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", endpoint, err)
+	}
+	if raw.Fetches == nil {
+		return nil, 0, fmt.Errorf("%s: answer has no fetches member", endpoint)
+	}
+	// A malformed answer must be an error, never a period of zeros: a
+	// day with a missing count is not a day of 0 fetches, and 30 stored
+	// zeros would overwrite counts already collected.
+	if raw.Fetches.Days == nil {
+		return nil, 0, fmt.Errorf("%s: fetches has no days array", endpoint)
+	}
+
+	today := cloneStatsToday(resp, c.now)
+	oldest := today.AddDate(0, 0, 1-cloneStatsDays)
+
+	counts := make(map[string]int, len(*raw.Fetches.Days))
+	for _, listed := range *raw.Fetches.Days {
+		day, err := time.Parse(time.DateOnly, listed.Date)
+		if err != nil {
+			return nil, 0, fmt.Errorf("%s: unreadable date %q: %w", endpoint, listed.Date, err)
+		}
+		if listed.Count == nil {
+			return nil, 0, fmt.Errorf("%s: day %s has no count", endpoint, listed.Date)
+		}
+		// A day listed twice would be a GitLab bug; the last listing
+		// wins. A day outside the period (a clock edge between GitLab
+		// and this host) is never looked up below, so it is not stored.
+		counts[day.Format(time.DateOnly)] = *listed.Count
+	}
+
+	clones := make([]model.RepoClone, cloneStatsDays)
+	for i := range clones {
+		day := oldest.AddDate(0, 0, i)
+		clones[i] = model.RepoClone{
+			Timestamp:   day,
+			TotalClones: counts[day.Format(time.DateOnly)],
+			Origin:      model.DataOrigin{DataSource: cloneStatsSource},
+		}
+	}
+	return clones, 0, nil
+}
+
+// cloneStatsToday is the UTC day the statistics window ends on: the
+// response's Date header, or the host clock when the header is absent or
+// unreadable (a proxy that strips it, a clock that cannot be parsed).
+//
+// The endpoint's 30 days are computed on GitLab's clock, and the header
+// is the only statement of it in the answer. Zero-filling from this
+// host's day instead erases a stored count whenever the two disagree:
+// GitLab has crossed midnight and expired its oldest day, so it lists
+// nothing for the day this host still includes, and the 0 written over
+// it is one no later read can recover (the daily row is keyed by day and
+// the latest read wins). The header cannot be stale here: the read is
+// ETag-free, so every answer carries one.
+func cloneStatsToday(resp *http.Response, now func() time.Time) time.Time {
+	if d := resp.Header.Get("Date"); d != "" {
+		if t, err := http.ParseTime(d); err == nil {
+			y, m, day := t.UTC().Date()
+			return time.Date(y, m, day, 0, 0, 0, 0, time.UTC)
+		}
+	}
+	if now == nil {
+		now = time.Now
+	}
+	y, m, day := now().UTC().Date()
+	return time.Date(y, m, day, 0, 0, 0, 0, time.UTC)
+}
+
+// FetchTraffic returns (nil, nil) without a request: GitLab has no API
+// for page views, popular paths, referrers or unique visitors and
+// cloners, so there is no traffic to collect. Its daily HTTP clone and
+// pull counts are read by FetchCloneStats (GET /projects/:id/statistics).
+func (c *Client) FetchTraffic(ctx context.Context, owner, repo string) (*model.RepoTraffic, error) {
 	return nil, nil
 }
 

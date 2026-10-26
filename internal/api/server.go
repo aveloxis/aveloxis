@@ -276,6 +276,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/groups", s.handleAdminCollectionAddGroup)
 	s.mux.HandleFunc("POST /api/v1/admin/collections/{collectionID}/groups/{groupID}/remove", s.handleAdminCollectionRemoveGroup)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scorecard", s.cachedRepoGET(pageExact, s.handleRepoScorecard))
+	// v0.29.118 — the stored GitHub traffic history (aveloxis/aveloxis#234).
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/traffic", s.cachedRepoGET(pageExact, s.handleRepoTraffic))
 	// v0.27.61 — ranked per-contributor activity for the repo page's
 	// "Top contributors" card.
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/contributors/top", s.cachedRepoGET(pageEnrichedKept, s.handleTopContributors))

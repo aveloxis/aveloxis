@@ -367,6 +367,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/api-tokens/{tokenID}/revoke", s.requireAdmin(s.handleAdminAPITokenRevoke))
 	mux.HandleFunc("POST /admin/api-token-settings", s.requireAdmin(s.handleAdminAPITokenDefaults))
 	mux.HandleFunc("GET /admin/capacity", s.requireAdmin(s.handleAdminCapacity))
+	// The API cache's view (0.29.123): a shell; its script reads the api's
+	// /api/v1/admin/cache routes through the /api/ proxy (the caches live in
+	// the api process).
+	mux.HandleFunc("GET /admin/cache", s.requireAdmin(s.handleAdminCachePage))
 	mux.HandleFunc("POST /admin/capacity/quotas/{name}", s.requireAdmin(s.handleAdminCapacityQuota))
 	mux.HandleFunc("POST /admin/capacity/contact", s.requireAdmin(s.handleAdminCapacityContact))
 	mux.HandleFunc("POST /admin/capacity/accounts/{userID}", s.requireAdmin(s.handleAdminCapacityOverride))

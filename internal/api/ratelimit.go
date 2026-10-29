@@ -53,21 +53,18 @@ type Options struct {
 	// (ASVS V7.5.1); zero means no such rule (a server nobody configured).
 	SessionIdle time.Duration
 
-	// ResponseCacheMaxAge is the longest a per-repository answer is reused
-	// within one collection generation (collection_cache.go): the
-	// contributor enrichment interval, collection.enrich_interval_minutes
-	// (v0.29.71, O11 option 4). Zero keeps the 60 s TTL.
-	ResponseCacheMaxAge time.Duration
-
 	// ResponseCacheBytes bounds the repository-page response cache
 	// (repo_page_cache.go, v0.29.73): api.response_cache_mb in bytes. Zero
-	// keeps only /timeseries and /contributors/top answers, bounded by count
-	// as main kept them (0.29.78); ETags and 304s work either way.
+	// keeps only /timeseries and /contributors/top answers, and /metric-series
+	// answers in a pool of their own, each bounded by count as main kept them
+	// (0.29.78; 0.29.123); ETags and 304s work either way.
 	ResponseCacheBytes int64
 
-	// RewarmInterval is how often the API looks for repositories whose
-	// cached answers a finished collection made outdated, and recomputes
-	// them (api.cache_rewarm_seconds). Zero turns the re-warm off.
+	// RewarmInterval is how often the API looks for cached answers that are
+	// no longer current — their repository changed, or their window moved —
+	// and recomputes the ones visitors came back to, saving that list so a
+	// restart replays it (api.cache_rewarm_seconds, 0.29.122). Zero turns the
+	// re-warm, and its saved list, off.
 	RewarmInterval time.Duration
 
 	// RequestTimeout is http_timeout_seconds: the bound every request runs

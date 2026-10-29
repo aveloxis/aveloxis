@@ -8,6 +8,52 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.123
+
+Three administrator routes show the api process's caches, read-only:
+`GET /api/v1/admin/cache` (sizes, budgets and counters since the process
+started, the re-warm's last pass), `GET /api/v1/admin/cache/repos?sort=`
+(the repositories with cached answers, at most 100) and
+`GET /api/v1/admin/cache/repos/{repoID}` (each cached answer, current or
+why not). A signed-in administrator session only, like every admin route;
+the fields are in the reference.
+
+## Changes for API clients in 0.29.121
+
+`/compare` takes each repository entity's series from the repository-page
+cache: the series in its answer equals `/api/v1/repos/{repoID}/metric-series`
+for the same `metric`, `since`, `until`, `bucket` and `retention_threshold`,
+and both are computed once until the repository is collected again.
+Organization entities are unchanged. The answer's shape is unchanged.
+
+## Changes for API clients in 0.29.120
+
+Cached answers no longer expire on a timer: an answer is valid until its
+repository is collected again, scanned, or changed by a per-repository
+repair command that writes it (the leftover-staging drain, `heal-messages`,
+`heal-commit-daily`, `dedup-repos`, the mailing-list and Jira drains and
+their backfills), or until its window moves. Answers that name contributors
+were recomputed every `collection.enrich_interval_minutes` before; a name
+the enrichment sweep fills in between collections now shows after the
+repository's next collection. Fleet-wide contributor operations — contributor merges (`merge-cntrb-collisions`, `migrate-cntrb-ids`), identity backfills (`backfill-identities`) and the enrichment, search, affiliation and breadth sweeps — show in a repository's cached answers at its next collection. The default window of `/timeseries`, `/contributors/top` and
+`/contributions/*` starts two years before the Monday (UTC) that starts
+the current week, instead of two years before today, so the window, and the
+cached answer, moves once a week rather than daily; a given `since` is used
+as given. `/compare`'s per-entity series follow its repositories' collection
+state with no age limit.
+
+## Changes for API clients in 0.29.119
+
+`GET /api/v1/repos/{repoID}/metric-series?metric=…` answers one temporal
+metric's series for one repository: the body `/compare` answers for
+`entities=repo:{repoID}` with the same parameters, served by the
+repository-page cache (`ETag`, `304`, valid until the repository is
+collected again). aveloxis-gui's repository page draws its metric charts
+from it instead of `/compare`, so opening a repository page there no longer
+records the repository in the viewer's "Comparisons" group; comparing it on
+a comparison page still does. (The built-in GUI's repository page draws no
+metric charts.)
+
 ## Changes for API clients in 0.29.114
 
 `POST /api/v1/me/sessions/revoke` is never refused by a spent request quota
@@ -450,11 +496,30 @@ Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues
 
 Every commit window on this API — this series, `/contributors/top`, `/contributions/*`, `/compare` — ends no later than the latest plausible commit time, two UTC days after now, and starts no earlier than the earliest, 1970-01-02, whatever `since` and `until` say. An author timestamp is an absolute instant, so only a wrong committer clock can place one in the future (the margin is a day of skew rounded to a day-aligned edge), and a Unix clock cannot place one before the epoch, which is what an unset clock stamps. Repositories carry the occasional author date in 2080 or 1970, and such a date must not stretch a window. The rows stay stored; only the windows are bounded.
 
-`since` (default: two years ago) and `until` (default: the latest plausible
+`since` (default: two years before the Monday, UTC, that starts the current
+week; two years before today until 0.29.120) and `until` (default: the latest plausible
 commit time; the last day of the window, inclusive) are `YYYY-MM-DD`; a value
 that does not parse is a `400` (since 0.29.99). The fields are in the [reference](../api/reference.rst) (`repositoryTimeSeries`).
 
 Weeks are Monday-aligned via PostgreSQL `date_trunc('week', timestamp)`. Queries use indexed timestamp columns for fast responses even on large databases.
+
+### Metric series (v0.29.119)
+
+```
+GET /api/v1/repos/{repoID}/metric-series?metric=burstiness
+GET /api/v1/repos/{repoID}/metric-series?metric=contributor_retention&bucket=month&retention_threshold=4
+```
+
+One temporal metric (see [Comparison analytics](#comparison-analytics-v0272)
+and `docs/guide/metrics.md`) for one repository. The parameters, the window
+rules and the body are `/compare`'s for `entities=repo:{repoID}`; the
+difference is the cache: the answer carries an `ETag`, a repeat is
+`X-Cache: hit`, and it stays valid until the repository's collection state
+changes or its window moves (the default window moves each Monday, UTC, for
+`bucket=week`, and on the 1st for `bucket=month`), where `/compare` caches
+whole answers for 60 seconds per caller.
+Nothing is recorded in the caller's "Comparisons" group. The fields are in
+the [reference](../api/reference.rst) (`repositoryMetricSeries`).
 
 ### Dependency Licenses
 
@@ -574,7 +639,7 @@ Returns every distinct contributor who made any kind of contribution to the repo
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `since` | date (YYYY-MM-DD) | 2 years ago | Window lower bound (inclusive) |
+| `since` | date (YYYY-MM-DD) | two years before the Monday (UTC) that starts the current week | Window lower bound (inclusive) |
 | `until` | date (YYYY-MM-DD) | unbounded (now) | Window upper bound (inclusive — see note below) |
 
 The `until` date is treated as **inclusive** of the entire calendar day — the server shifts it by +1 day before comparing against the half-open `< upper` SQL filter, so passing `until=2024-12-31` captures everything through `2024-12-31T23:59:59.999Z`.
@@ -663,16 +728,21 @@ GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&until=2024-12-31&li
 
 The ranked "who does the work here" table behind the repo page's Top
 contributors card. Same `since`/`until` window semantics as the
-`/contributions/*` endpoints (default: trailing 2 years; `until` is
-inclusive); `limit` defaults to 20 and is capped at 100.
+`/contributions/*` endpoints (default: from two years before the Monday,
+UTC, that starts the current week; `until` is inclusive); `limit` defaults to 20 and is capped at 100.
 
 **Caching (since 0.29.71; 0.29.73).** With `api.response_cache_mb` set, a
 repository's own GET answers (this endpoint, `/timeseries`, `/licenses`,
 `/deps`, `/libyear`, `/scancode-*`, `/vulnerabilities`, `/scorecard`,
-`/traffic`, `/sbom` and `/contributions/*`) are reused until the repository is collected
+`/traffic`, `/sbom`, `/metric-series` and `/contributions/*`) are reused until the repository is collected
 again or scanned; with it unset (the default) only this endpoint and
-`/timeseries` are, up to 1,000 answers. Answers that name contributors are also recomputed after
-`collection.enrich_interval_minutes` (default 30). These answers carry an
+`/timeseries` are, up to 1,000 answers, and `/metric-series`, up to another
+1,000. No answer
+expires on a timer (since 0.29.120; answers that name contributors were
+recomputed every `collection.enrich_interval_minutes` before): a name
+filled in between collections shows after the repository's next
+collection, and an answer whose window starts from the current date is
+recomputed when its window moves, once a week for the defaults. These answers carry an
 `ETag` (weak for answers that depend only on the repository's state); a
 request whose `If-None-Match` names the current one gets
 `304 Not Modified`. A response served from the cache carries `X-Cache: hit`.
@@ -820,7 +890,7 @@ Operators surface this floor-and-ceiling on dashboards rather than reporting `(u
 | `enrichment_oldest_pending` | `MIN(data_collection_date)` among rows with NULL `cntrb_last_enriched_at` | How long the most-delayed unenriched contributor has been waiting — compare against your configured `enrich_interval_minutes` cadence |
 | `enrichment_stalest` | `MIN(cntrb_last_enriched_at)` among enriched rows | Oldest "last refreshed" timestamp — surfaces the long tail of "enriched 18 months ago and never refreshed" |
 
-**Spotting a stuck enrichment ticker.** If `enrichment_oldest_pending` is more than ~2× your configured `enrich_interval_minutes` behind `NOW()`, the ticker may be stuck. Investigation:
+**Spotting a stuck enrichment ticker.** If `enrichment_oldest_pending` is more than ~2× your configured `enrich_interval_minutes` behind `NOW()`, the ticker may be stuck. With `api.response_cache_mb` set, this answer is the one computed at the repository's last collection (since 0.29.120 the enrichment sweep does not move it, and a repeat says `X-Cache: hit`), so a healthy ticker can look stuck here: confirm with the log lines and the SQL below, which read the live state. Investigation:
 
 ```bash
 # What does the enrich interval look like?
@@ -954,8 +1024,8 @@ OAuth, the first admin, upgrades — is
 [Production Deployment](../getting-started/deployment.md).
 
 Each `api` process keeps its own state: the per-repository response cache
-(up to `api.response_cache_mb`, or 1,000 weekly-series and top-contributor
-answers when it is unset), a short authorization cache, and these rate-limit
+(up to `api.response_cache_mb`, or, when it is unset, 1,000 weekly-series and
+top-contributor answers and 1,000 metric-series answers), a short authorization cache, and these rate-limit
 counts: the per-IP buckets, the hour windows of session and API-token quotas
 (`requests_per_hour`, `token_requests_per_hour`) and the per-user cap on
 repositories added to Shared with Me by viewing them. All of those start over
@@ -1015,10 +1085,13 @@ scope-granting auto-add.
 - `GET /api/v1/compare?entities=repo:1,org:github.com/chaoss&metric=contributors&since=2023-07-01&until=2026-07-01&bucket=week`
   — temporal metrics; window defaults to the trailing 3 years; bucket
   week (default) or month; buckets are densified (aligned x-axes).
-  Whole responses are cached 60s per (user, query) (`X-Cache: hit`); each
-  entity's series is also reused under its repositories' collection state,
-  for at most `collection.enrich_interval_minutes` (see the caching note
-  under the top-contributors endpoint). The default window starts on the
+  Whole responses are cached 60s per (user, query) (`X-Cache: hit`). A
+  repository entity's series is the repository-page cache's answer of
+  `/api/v1/repos/{repoID}/metric-series` with the same parameters (since
+  0.29.121), shared with the repository page; an organization entity's is
+  reused until one of its repositories is collected again (no age limit
+  since 0.29.120; see the caching note under the top-contributors
+  endpoint). The default window starts on the
   bucket boundary three years before the last complete bucket.
   - **Per-entity window clamp (v0.27.24):** each entity's series is
     densified from `max(since, its first activity)` — the least of

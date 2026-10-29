@@ -25,6 +25,7 @@ type fakeProcStore struct {
 	stagedLists    []int64 // keyset source for ListsWithStaging (default [7])
 	drainedLists   []int64 // every rgls_id GetMailingListStagingBatch was asked for
 	refreshedRepos []int64
+	stampedRepos   []int64 // StampReposChangedOutsideJob (D7, 0.29.120)
 	refreshErr     error
 	rows           []db.StagedMailingListRow // staged input, returned in one batch then empty
 
@@ -123,6 +124,11 @@ func (f *fakeProcStore) GetMailingListStagingBatch(_ context.Context, rglsID, af
 func (f *fakeProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int64) error {
 	f.refreshedRepos = append(f.refreshedRepos, repoID)
 	return f.refreshErr
+}
+
+func (f *fakeProcStore) StampReposChangedOutsideJob(_ context.Context, repoIDs []int64) error {
+	f.stampedRepos = append(f.stampedRepos, repoIDs...)
+	return nil
 }
 
 func (f *fakeProcStore) MarkMailingListStagingProcessed(_ context.Context, ids []int64) error {

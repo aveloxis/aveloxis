@@ -386,8 +386,11 @@ func (s *PostgresStore) lastActivityByRepo(ctx context.Context, repoIDs []int64)
 // and scans the repository's per-file rows only while that column is
 // unfilled — there is still deliberately no (repo_id,
 // cmt_author_timestamp) index on the fleet's largest table. The API
-// layer also memoizes per entity for the process lifetime (first
-// activity is immutable — history does not grow backward).
+// layer keeps each entity's floor in its series cache under the
+// entity's collection generation (0.29.123): history can grow backward
+// (an older history landing in a later collection), so the floor is
+// read again when the repositories' state moves, never memoised for
+// the process's life.
 func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	if len(repoIDs) == 0 {
 		return time.Time{}, false, nil

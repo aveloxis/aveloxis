@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.123 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=70fe169d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,10 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +363,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +783,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1832,7 +1837,7 @@ Phase 3: Messages (sequential, after parallel phase)
 <ul class="simple">
 <li><p>A <code class="docutils literal notranslate"><span class="pre">403</span></code> from a key without access, or any other routine skip such as a <code class="docutils literal notranslate"><span class="pre">404</span></code>, is skipped as for releases: one Info line <code class="docutils literal notranslate"><span class="pre">skipping</span> <span class="pre">traffic</span> <span class="pre">endpoints</span></code> with the owner, repository and reason, nothing recorded and no further traffic request, so a key without access spends one request per collection.</p></li>
 <li><p>Any other error is recorded as an error of the repository’s collection, as a releases error is (<code class="docutils literal notranslate"><span class="pre">clone</span> <span class="pre">stats:</span> <span class="pre">&lt;cause&gt;</span></code>, or <code class="docutils literal notranslate"><span class="pre">traffic</span> <span class="pre">&lt;endpoint&gt;:</span> <span class="pre">&lt;cause&gt;</span></code> naming the failed read), and the later phases still run. The first failing read of the five stops the rest, and nothing of that read is stored. A failed daily clones read does not stop the five: their read is stored with the views window only. An error caused by a shutdown is neither recorded nor logged.</p></li>
-<li><p>On GitLab only the daily clones read exists, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code>: the 30 UTC days ending on the collection day, days it omits stored as 0, with no unique counts. A key below the Reporter role gets a <code class="docutils literal notranslate"><span class="pre">403</span></code> (a project it cannot read, a <code class="docutils literal notranslate"><span class="pre">404</span></code>), skipped as above with the same Info line; any other error is recorded as <code class="docutils literal notranslate"><span class="pre">clone</span> <span class="pre">stats:</span> <span class="pre">&lt;cause&gt;</span></code>. Views, paths, referrers, windows and weeks are never read or stored for GitLab. An answer that is not the entity’s shape — no <code class="docutils literal notranslate"><span class="pre">fetches</span></code> member, no <code class="docutils literal notranslate"><span class="pre">days</span></code> array, a day without a <code class="docutils literal notranslate"><span class="pre">count</span></code>, or an unreadable date — is an error, never a period of zeros: stored zeros for a malformed answer would overwrite counts already collected.</p></li>
+<li><p>On GitLab only the daily clones read exists, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code>: the 30 UTC days ending on the day GitLab’s own <code class="docutils literal notranslate"><span class="pre">Date</span></code> response header names (the host clock only when a proxy strips it), days it omits stored as 0, with no unique counts. A key below the Reporter role (GitLab’s <a class="reference external" href="https://docs.gitlab.com/user/permissions/">permissions table</a> lists “View project traffic statistics” from Reporter up; see also the <a class="reference external" href="https://docs.gitlab.com/api/project_statistics/">Project statistics API</a>) gets a <code class="docutils literal notranslate"><span class="pre">403</span></code> (a project it cannot read, a <code class="docutils literal notranslate"><span class="pre">404</span></code>), skipped as above with the same Info line; any other error is recorded as <code class="docutils literal notranslate"><span class="pre">clone</span> <span class="pre">stats:</span> <span class="pre">&lt;cause&gt;</span></code>. Views, paths, referrers, windows and weeks are never read or stored for GitLab. An answer that is not the entity’s shape — no <code class="docutils literal notranslate"><span class="pre">fetches</span></code> member, no <code class="docutils literal notranslate"><span class="pre">days</span></code> array, a day without a <code class="docutils literal notranslate"><span class="pre">count</span></code>, or an unreadable date — is an error, never a period of zeros: stored zeros for a malformed answer would overwrite counts already collected.</p></li>
 </ul>
 <p>A successful read is staged as one row (beside the daily clones rows) and written in one transaction: the daily views (<code class="docutils literal notranslate"><span class="pre">repo_views</span></code>), one 14-day window per kind with GitHub’s unique visitors or cloners (<code class="docutils literal notranslate"><span class="pre">repo_traffic_windows</span></code>), the complete Monday-to-Sunday weeks inside that window (<code class="docutils literal notranslate"><span class="pre">repo_traffic_weeks</span></code>), and the top paths and referrers (<code class="docutils literal notranslate"><span class="pre">repo_traffic_paths</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_referrers</span></code>) as the snapshot of the UTC collection date, which replaces any earlier snapshot of that date. A week is stored only when its seven days lie inside the window and it has ended by the snapshot date: a zero-traffic read includes the collection day, so on a Sunday the current Monday-to-Sunday bucket is still counting and is not stored as a complete week. Days, windows and weeks take the latest read’s figures. Zeros are stored, never skipped, so a stored day was read even when nobody visited; no totals are stored, a period’s views or clones being the sum of its daily rows. The writer refuses a read without a snapshot date. See <a class="reference internal" href="../schema.html#repo-views"><span class="std std-ref">the schema</span></a> and <a class="reference internal" href="api.html#traffic-v0-29-118"><span class="std std-ref">the API</span></a>.</p>
 <p>The 3 extra goroutines claim parallel slots tracked by an atomic counter. The scheduler’s <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> pauses new job starts while the total active count (semaphore + parallel slots) exceeds the configured worker limit.</p>

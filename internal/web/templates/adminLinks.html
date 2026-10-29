@@ -3,4 +3,4 @@
   shown only to an administrator (D-21, stage 3a): the one place a console
   page is added. A non-admin's link would only lead to a 403. Needs .Session.
 */}}
-{{define "adminLinks"}}{{if .Session.IsAdmin}}<span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">|</span><a href="/admin/groups/pending">Approvals</a><span class="sep">|</span><a href="/admin/users">Users</a><span class="sep">|</span><a href="/admin/capacity">Capacity</a><span class="sep">|</span><a href="/admin/api-tokens">API tokens</a><span class="sep">|</span><a href="/admin/collections">Collections</a>{{end}}{{end}}
+{{define "adminLinks"}}{{if .Session.IsAdmin}}<span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">|</span><a href="/admin/groups/pending">Approvals</a><span class="sep">|</span><a href="/admin/users">Users</a><span class="sep">|</span><a href="/admin/capacity">Capacity</a><span class="sep">|</span><a href="/admin/api-tokens">API tokens</a><span class="sep">|</span><a href="/admin/collections">Collections</a><span class="sep">|</span><a href="/admin/cache">Cache</a>{{end}}{{end}}

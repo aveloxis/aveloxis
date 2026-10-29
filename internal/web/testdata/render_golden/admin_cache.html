@@ -1,0 +1,41 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aveloxis - Cache</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/avx.js"></script>
+</head>
+<body>
+<div class="nav">
+<a href="/dashboard" style="display:flex;align-items:center;gap:8px"><img src="/icon.png" alt="" style="height:28px;border-radius:4px"><strong>Aveloxis</strong></a>
+<div class="nav-user">
+<img src="https://avatars.example/7.png" alt="">
+<a href="/account" class="nav-link nav-login" title="Your sessions">golden</a>
+<form method="post" action="/logout" class="nav-form"><input type="hidden" name="csrf_token" value=""><button type="submit" class="nav-link">Logout</button></form>
+</div>
+</div>
+<div class="breadcrumb"><a href="/dashboard">Home</a><span class="sep">|</span><a href="/monitor">Monitor</a><span class="sep">|</span><a href="/admin/groups/pending">Approvals</a><span class="sep">|</span><a href="/admin/users">Users</a><span class="sep">|</span><a href="/admin/capacity">Capacity</a><span class="sep">|</span><a href="/admin/api-tokens">API tokens</a><span class="sep">|</span><a href="/admin/collections">Collections</a><span class="sep">|</span><a href="/admin/cache">Cache</a><span class="sep">/</span><span class="current">Cache</span></div>
+<div class="container">
+<div class="card">
+<h2>API cache</h2>
+<p style="color:#586069;font-size:13px">What the api process's caches hold and did since it started (with several api processes, the one answering). An answer stays valid until its repository is collected again or its window moves; the re-warm (on when the cache has a budget) recomputes the ones visitors came back to and saves that list, so a restart forgets nothing.</p>
+<div id="cache-status" class="form-msg">Loading&hellip;</div>
+<table id="cache-totals" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Cache</th><th>Figures</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card">
+<h2>Repositories</h2>
+<div class="form-stack"><label for="cache-sort">Sort by <select id="cache-sort"><option value="bytes">Bytes</option><option value="entries">Answers</option><option value="hits">Hits</option></select></label></div>
+<p id="cache-repos-note" style="color:#586069;font-size:13px"></p>
+<table id="cache-repos" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Repository</th><th>Answers</th><th>Bytes</th><th>Hits</th><th>Saved requests</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card" id="cache-repo-card" hidden>
+<h2 id="cache-repo-title">Repository</h2>
+<table id="cache-repo-answers" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Request</th><th>Status</th><th>Computed</th><th>Cost</th><th>Hits</th><th>Bytes</th></tr></thead><tbody></tbody></table>
+<p id="cache-repo-saved" style="color:#586069;font-size:13px"></p>
+</div>
+</div>
+<script src="/static/admin-cache.js"></script>
+</body></html>

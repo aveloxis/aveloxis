@@ -163,6 +163,12 @@ func TestJiraDrainRefreshesOnPartialCommit(t *testing.T) {
 	if len(store.refreshedRepos) != 1 || store.refreshedRepos[0] != repoID {
 		t.Fatalf("refreshedRepos = %v — a repo whose issue committed before a comment failure must still refresh the activity cache", store.refreshedRepos)
 	}
+	// The envelope failed after its issue committed: not a final write, it
+	// is retried next drain — the stamp waits for its success (round 1
+	// finding 3 of 0.29.123; the activity refresh above still runs).
+	if len(store.stampedRepos) != 0 {
+		t.Fatalf("stampedRepos = %v — a failed envelope is not a final write; it stamps when its retry succeeds", store.stampedRepos)
+	}
 }
 
 // TestMailingListDrainRefreshesOnAllDeferredBatch (Copilot round 18):

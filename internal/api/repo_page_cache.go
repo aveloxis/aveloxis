@@ -30,10 +30,12 @@ import (
 // one copy serves every caller. An answer is valid
 // for exactly as long as the repository's db.RepoCacheState is unchanged:
 // a collection, a scancode run or a vulnerability scan replaces it, and an
-// unchanged repository is never recomputed. Answers that carry contributor
-// identities are also bounded by the enrichment interval, because the
-// enrichment sweep fills names and logins outside any collection (the
-// v0.29.71 collectionCache contract).
+// unchanged repository is never recomputed. No answer expires on a timer
+// (D6, 0.29.120, summary/63: durable until recollection — the enrichment
+// interval that used to age the contributor answers made them recompute
+// every 17 minutes on kate; a name the enrichment sweep fills in now shows
+// at the repository's next collection). Time enters a key only through a
+// windowed route's effective window (pageWindows).
 //
 // Each cacheable answer carries an ETag. A client (or proxy) that already
 // holds it gets a 304 after the authorization check and one primary-key read
@@ -44,11 +46,12 @@ import (
 // step enforced by a test:
 //  1. Decide: does the answer depend only on the repository and the query
 //     (not on who asks)? Then register it through s.cachedRepoGET with its
-//     policy (pageExact; pageEnriched for contributor identities; a route
-//     whose default window is anchored at today needs a
-//     pagePolicy{nowRelative: true} of its own, since the Kept policies
-//     are only for the two routes main always cached); otherwise add it to
-//     uncachedRepoGETs with the reason (TestEveryRepoScopedGETIsCachedOrReviewed).
+//     policy (pageExact; pageEnriched for contributor identities; the Kept
+//     policies are only for the routes main always cached); otherwise add
+//     it to uncachedRepoGETs with the reason
+//     (TestEveryRepoScopedGETIsCachedOrReviewed). A route whose default
+//     window moves with the clock adds its parser's window to pageWindows
+//     (TestWindowedRoutesKeyOnTheirEffectiveWindow).
 //  2. List the query parameters its handler reads in pageParams
 //     (TestPageParamsMatchTheHandlers).
 //  3. A failure the handler serves past goes through s.partialAnswer, never
@@ -62,13 +65,10 @@ import (
 // pagePolicy is how one route's answers age.
 type pagePolicy struct {
 	// enriched: the body carries contributor names, logins or affiliations,
-	// which the enrichment sweep changes outside collection — the entry is
-	// recomputed after the enrichment interval.
+	// which the enrichment sweep changes outside collection, so two
+	// computations under one key can differ: the ETag names the body, and a
+	// process without the body never assumes it (no 304 from the key alone).
 	enriched bool
-	// nowRelative: the handler's default window is anchored at the current
-	// time, so the UTC day is part of the key (a quantized clock; an
-	// unquantized time.Now() in a key never hits).
-	nowRelative bool
 	// keptWhenOff: main kept this route's answers in the collection-
 	// generation cache unconditionally (v0.29.71). With api.response_cache_mb
 	// unset (0, the default) the page cache still keeps them, bounded by that
@@ -77,19 +77,87 @@ type pagePolicy struct {
 	// route stays uncached until the operator sets a budget (final whole-PR
 	// review A1).
 	keptWhenOff bool
+	// keptPool names the zero-budget bound a kept answer counts against
+	// ("" is keptPoolPage): each pool holds collectionCacheMaxEntries, as
+	// main held the page cache's two routes and its series cache apart
+	// (round 1 finding 3 of 0.29.123: one shared bound let ten series per
+	// repository page push the time series and top contributors out).
+	keptPool string
 }
+
+// The zero-budget pools: the routes main kept in the page cache, and the
+// metric series main kept in the collection-generation series cache.
+const (
+	keptPoolPage   = ""
+	keptPoolSeries = "series"
+)
+
+// zeroBudgetPools lists every pool a keptWhenOff policy names (pinned by
+// TestKeptPoliciesNameARegisteredPool); the start-up line reports its size
+// beside the per-pool bound, so the logged total is the enforced one.
+var zeroBudgetPools = []string{keptPoolPage, keptPoolSeries}
 
 var (
 	// pageExact: valid until the repository's state changes.
 	pageExact = pagePolicy{}
-	// pageEnriched: contributor identities, over a default window ending now.
-	pageEnriched = pagePolicy{enriched: true, nowRelative: true}
-	// pageDatedKept: the default window starts relative to today; kept with
-	// a zero budget too (/timeseries). pageEnrichedKept: pageEnriched, kept
-	// with a zero budget too (/contributors/top).
-	pageDatedKept    = pagePolicy{nowRelative: true, keptWhenOff: true}
-	pageEnrichedKept = pagePolicy{enriched: true, nowRelative: true, keptWhenOff: true}
+	// pageEnriched: contributor identities (the body-naming ETag).
+	pageEnriched = pagePolicy{enriched: true}
+	// pageExactKept: pageExact, kept with a zero budget too (/timeseries).
+	// pageEnrichedKept: pageEnriched, kept with a zero budget too
+	// (/contributors/top). Both count against the page pool.
+	pageExactKept    = pagePolicy{keptWhenOff: true}
+	pageEnrichedKept = pagePolicy{enriched: true, keptWhenOff: true}
+	// pageSeriesKept: pageExact, kept with a zero budget in the series pool
+	// (/metric-series, which main kept in its series cache).
+	pageSeriesKept = pagePolicy{keptWhenOff: true, keptPool: keptPoolSeries}
 )
+
+// pageWindows maps each cached route whose default window moves with the
+// clock to its window function: the window the route's own parser computes,
+// as a key fragment, or false when the parser refuses the request (a 400,
+// answered live). The key carries it instead of the day (D6, summary/63), so
+// an answer lasts until the repository changes or the window itself moves —
+// for the defaults, when a week completes (windowAnchor) — and a parser
+// change can never leave a key behind the window it computes. The one clock
+// read the window does not cover is the plausibility bound of an open upper
+// end (db.BoundedUpper, two UTC days ahead): a commit whose author date was
+// in the future when an answer was computed joins it at the repository's
+// next collection or the window's next move (decided, summary/63 §6).
+var pageWindows = map[string]func(*http.Request) (string, bool){
+	"GET /api/v1/repos/{repoID}/timeseries":                 windowKeyOf(parseWindow),
+	"GET /api/v1/repos/{repoID}/contributions/identities":   windowKeyOf(parseWindow),
+	"GET /api/v1/repos/{repoID}/contributions/affiliations": windowKeyOf(parseWindow),
+	"GET /api/v1/repos/{repoID}/contributions/coverage":     windowKeyOf(parseWindow),
+	"GET /api/v1/repos/{repoID}/contributors/top": func(r *http.Request) (string, bool) {
+		a, err := parseTopContributorsArgs(r)
+		return windowKey(a.since, a.until, ""), err == nil
+	},
+	"GET /api/v1/repos/{repoID}/metric-series": func(r *http.Request) (string, bool) {
+		a, err := parseMetricSeriesArgs(r)
+		return windowKey(a.since, a.until, a.bucket), err == nil
+	},
+}
+
+// windowKeyOf is the window function of a route that parses its window with
+// parse.
+func windowKeyOf(parse func(*http.Request) (time.Time, time.Time, error)) func(*http.Request) (string, bool) {
+	return func(r *http.Request) (string, bool) {
+		since, until, err := parse(r)
+		return windowKey(since, until, ""), err == nil
+	}
+}
+
+// windowKey is a window's key fragment: both ends to the nanosecond (a zero
+// end is "open") and the bucket.
+func windowKey(since, until time.Time, bucket string) string {
+	end := func(t time.Time) string {
+		if t.IsZero() {
+			return "open"
+		}
+		return t.UTC().Format(time.RFC3339Nano)
+	}
+	return end(since) + "|" + end(until) + "|" + bucket
+}
 
 // pageParams lists, for each cached route, the query parameters its handler
 // reads. Only these are part of the key, so a parameter the handler ignores
@@ -100,6 +168,7 @@ var (
 var pageParams = map[string][]string{
 	"GET /api/v1/repos/{repoID}/sbom":                       {"format", "scope", "vulns"},
 	"GET /api/v1/repos/{repoID}/timeseries":                 {"since", "until"},
+	"GET /api/v1/repos/{repoID}/metric-series":              {"metric", "bucket", "since", "until", "retention_threshold"},
 	"GET /api/v1/repos/{repoID}/licenses":                   {"scope"},
 	"GET /api/v1/repos/{repoID}/scancode-licenses":          {},
 	"GET /api/v1/repos/{repoID}/scancode-files":             {},
@@ -168,21 +237,51 @@ type pageEntry struct {
 	repoID      int64
 	uri         string // request URI, replayed by the re-warm
 	fingerprint string // db.RepoCacheState.Fingerprint() when computed
+	window      string // the effective window it was computed for (pageWindows; "" when not windowed)
 	body        []byte
 	contentType string
 	disposition string
 	computed    time.Time
 	cost        time.Duration // handler run time, orders the re-warm
-	enriched    bool
-	keptWhenOff bool   // stored under a zero budget too (pagePolicy.keptWhenOff)
-	hits        int    // served from the cache since computed; the re-warm replays only answers asked for again
-	triedFor    string // the state a failed re-warm of this answer was attempted for: retried only under a newer one
+	keptWhenOff bool          // stored under a zero budget too (pagePolicy.keptWhenOff)
+	keptPool    string        // its zero-budget pool (pagePolicy.keptPool)
+	replayed    bool          // stored by a re-warm replay: it carries the demand that earned the replay, so the saved list keeps it (round 1 finding 1)
+	hits        int           // served from the cache since computed; the re-warm replays only answers asked for again
+	triedFor    string        // the state (entryState) a failed re-warm of this answer was attempted for: retried only under a newer one
+}
+
+// pageCacheStats counts what the cache did since the process started (D4,
+// 0.29.123), the re-warm's replays included: a hit served a stored body, a
+// revalidation answered 304 (a client held the tag), a miss computed the
+// answer, a store kept one, an eviction dropped one for the budget.
+type pageCacheStats struct {
+	Hits, Revalidated, Misses, Stores, Evictions int64
+}
+
+// count adds one to a counter, under the cache's lock.
+func (c *repoPageCache) count(f func(*pageCacheStats)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f(&c.stats)
+}
+
+// entryState is what an answer is current against: its repository's state
+// and its window. An answer whose request now computes another of either is
+// outdated (D6: a week completing moves a default window as a collection
+// moves the state).
+func entryState(fingerprint, window string) string { return fingerprint + "\x00" + window }
+
+// pageSeed is a request loaded from the saved re-warm list at start
+// (aveloxis_ops.page_cache_replay, 0.29.122) and not yet replayed.
+type pageSeed struct {
+	cost     time.Duration
+	triedFor string // as pageEntry.triedFor
 }
 
 func (e *pageEntry) size() int64 {
 	// The body dominates; the strings are counted so a flood of tiny
 	// answers still meets the bound.
-	return int64(len(e.body) + len(e.key) + len(e.etag) + len(e.uri) + len(e.fingerprint) + len(e.contentType) + len(e.disposition))
+	return int64(len(e.body) + len(e.key) + len(e.etag) + len(e.uri) + len(e.fingerprint) + len(e.window) + len(e.contentType) + len(e.disposition))
 }
 
 // pageResult is what one handler run produced.
@@ -202,7 +301,7 @@ type pageFlight struct {
 }
 
 // repoPageCache is the byte-bounded LRU. A zero maxBytes stores only the
-// keptWhenOff routes' answers, at most collectionCacheMaxEntries of them;
+// keptWhenOff routes' answers, at most collectionCacheMaxEntries per pool;
 // ETags and 304s work either way.
 type repoPageCache struct {
 	mu       sync.Mutex
@@ -212,55 +311,71 @@ type repoPageCache struct {
 	m        map[string]*list.Element
 	byRepo   map[int64]map[*list.Element]struct{}
 	inflight map[string]*pageFlight
-	ttl      time.Duration // enriched entries' lifetime
-	now      func() time.Time
+	seeds    map[int64]map[string]*pageSeed // the saved re-warm list's requests not yet replayed, by repository and URI
+	stats    pageCacheStats                 // what the cache did since start (the administrator's view, D4)
+	now      func() time.Time               // stamps pageEntry.computed
 }
 
-func newRepoPageCache(maxBytes int64, ttl time.Duration) *repoPageCache {
-	if ttl <= 0 {
-		ttl = compareCacheTTL
-	}
+func newRepoPageCache(maxBytes int64) *repoPageCache {
 	if maxBytes < 0 {
 		// The exported api.Options can carry one; it means no budget, and
 		// put's branches assume maxBytes >= 0 (SR-18: the cache enforces it).
 		maxBytes = 0
 	}
 	return &repoPageCache{maxBytes: maxBytes, ll: list.New(), m: map[string]*list.Element{},
-		byRepo: map[int64]map[*list.Element]struct{}{}, inflight: map[string]*pageFlight{}, ttl: ttl, now: time.Now}
+		byRepo: map[int64]map[*list.Element]struct{}{}, inflight: map[string]*pageFlight{},
+		seeds: map[int64]map[string]*pageSeed{}, now: time.Now}
 }
 
-// get returns a fresh entry for key; an enriched entry past the TTL is a
-// miss (and is dropped).
+// get returns the entry for key (no entry expires: D6).
 func (c *repoPageCache) get(key string) (*pageEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.getLocked(key)
 }
 
-// getLocked is get's rule with c.mu held: the one spelling of "a fresh
-// entry", read by get and by runOnce's re-check (SR-17).
+// getLocked is get's rule with c.mu held: the one spelling of "the entry",
+// read by get and by runOnce's re-check (SR-17).
 func (c *repoPageCache) getLocked(key string) (*pageEntry, bool) {
 	el, ok := c.m[key]
 	if !ok {
 		return nil, false
 	}
 	e := el.Value.(*pageEntry)
-	if e.enriched && c.now().Sub(e.computed) >= c.ttl {
-		c.removeLocked(el)
-		return nil, false
-	}
 	c.ll.MoveToFront(el)
 	e.hits++
 	return e, true
 }
 
-// keptWithoutBudget is how many keptWhenOff answers a zero budget holds
+// poolCountLocked is how many answers of one zero-budget pool are held.
+func (c *repoPageCache) poolCountLocked(pool string) int {
+	n := 0
+	for el := c.ll.Front(); el != nil; el = el.Next() {
+		if el.Value.(*pageEntry).keptPool == pool {
+			n++
+		}
+	}
+	return n
+}
+
+// keptWithoutBudget is how many keptWhenOff answers of each pool a zero
+// budget holds
 // (main's collection-generation bound), and 0 when a budget is set (the
 // byte bound applies instead). put enforces it and the start-up line
 // reports it, so the logged value is the enforced one (SR-10).
 func (c *repoPageCache) keptWithoutBudget() int {
 	if c.maxBytes == 0 {
 		return collectionCacheMaxEntries
+	}
+	return 0
+}
+
+// keptPools is how many pools keptWithoutBudget bounds apart: every one
+// with no budget, none with one (round 2 finding 4 of 0.29.123: the start-up
+// line's per-pool bound read as the total).
+func (c *repoPageCache) keptPools() int {
+	if c.maxBytes == 0 {
+		return len(zeroBudgetPools)
 	}
 	return 0
 }
@@ -278,6 +393,7 @@ func (c *repoPageCache) put(e *pageEntry) {
 		return // larger than the whole budget: never stored
 	}
 	el := c.ll.PushFront(e)
+	c.stats.Stores++
 	c.m[e.key] = el
 	set := c.byRepo[e.repoID]
 	if set == nil {
@@ -287,15 +403,22 @@ func (c *repoPageCache) put(e *pageEntry) {
 	set[el] = struct{}{}
 	c.bytes += e.size()
 	if c.maxBytes == 0 {
-		// Off: only keptWhenOff answers are here, bounded by count as main
-		// bounded them.
-		for c.ll.Len() > c.keptWithoutBudget() {
-			c.removeLocked(c.ll.Back())
+		// Off: only keptWhenOff answers are here, each pool bounded by
+		// count as main bounded them: the pool's least recently used goes.
+		for c.poolCountLocked(e.keptPool) > c.keptWithoutBudget() {
+			for el := c.ll.Back(); el != nil; el = el.Prev() {
+				if el.Value.(*pageEntry).keptPool == e.keptPool {
+					c.removeLocked(el)
+					c.stats.Evictions++
+					break
+				}
+			}
 		}
 		return
 	}
 	for c.bytes > c.maxBytes {
 		c.removeLocked(c.ll.Back())
+		c.stats.Evictions++
 	}
 }
 
@@ -312,7 +435,8 @@ func (c *repoPageCache) removeLocked(el *list.Element) {
 	c.bytes -= e.size()
 }
 
-// repoIDs lists the repositories with at least one cached answer.
+// repoIDs lists the repositories with at least one cached answer or a seed
+// not yet replayed.
 func (c *repoPageCache) repoIDs() []int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -320,27 +444,47 @@ func (c *repoPageCache) repoIDs() []int64 {
 	for id := range c.byRepo {
 		ids = append(ids, id)
 	}
+	for id := range c.seeds {
+		if _, cached := c.byRepo[id]; !cached {
+			ids = append(ids, id)
+		}
+	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
 }
 
 // outdatedToReplay returns the request URIs of repoID worth recomputing
-// under fingerprint: answers computed under another state that were asked
-// for again after they were computed (a returning visitor, a front end
-// revalidating), not yet current, and not already tried under this state —
+// under fingerprint: answers that are no longer current — computed under
+// another state, or for another window than their request computes now
+// (window, D6) — that were asked for again after they were computed (a
+// returning visitor, a front end revalidating), not already tried under the
+// current state, and the seeds loaded at start (D2) not yet replayed —
 // costliest first, each once. Outdated answers requested only once (a
 // one-off, or a crafted URL) are dropped without a replay, so the re-warm's
 // work is bounded by what visitors come back to; outdated copies whose
-// current successor is already stored are removed too. The outdated entries
-// that are returned stay until a replay stores their successor
-// (completeReplay), so a failed replay can be tried again under a later
-// state (PR #226 review).
-func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []string {
+// current successor is already stored are removed too, and so are seeds
+// whose answer is already current. The outdated entries that are returned
+// stay until a replay stores their successor (completeReplay), so a failed
+// replay can be tried again under a later state (PR #226 review). An answer
+// or seed whose request no longer has a window (window answers false) is
+// dropped.
+func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string, window func(uri string) (string, bool)) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	type item struct {
 		uri  string
 		cost time.Duration
+	}
+	states := map[string]string{} // uri → its current entryState ("" when it has none)
+	stateOf := func(uri string) string {
+		st, seen := states[uri]
+		if !seen {
+			if w, ok := window(uri); ok {
+				st = entryState(fingerprint, w)
+			}
+			states[uri] = st
+		}
+		return st
 	}
 	best := map[string]time.Duration{}
 	current := map[string]bool{}
@@ -348,13 +492,16 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []str
 	var drop []*list.Element
 	for el := range c.byRepo[repoID] {
 		e := el.Value.(*pageEntry)
+		cur := stateOf(e.uri)
 		switch {
-		case e.fingerprint == fingerprint:
+		case cur == "":
+			drop = append(drop, el)
+		case entryState(e.fingerprint, e.window) == cur:
 			current[e.uri] = true
 		case e.hits == 0:
 			drop = append(drop, el)
 		default:
-			if e.triedFor == fingerprint {
+			if e.triedFor == cur {
 				tried[e.uri] = true
 			}
 			if prev, seen := best[e.uri]; !seen || e.cost > prev {
@@ -366,12 +513,25 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []str
 	// computed it first) has nothing left to replay: remove it now, or it
 	// would stay until the LRU evicted it (fix-review round, PR #226).
 	for el := range c.byRepo[repoID] {
-		if e := el.Value.(*pageEntry); e.fingerprint != fingerprint && e.hits > 0 && current[e.uri] {
+		if e := el.Value.(*pageEntry); current[e.uri] && e.hits > 0 && entryState(e.fingerprint, e.window) != stateOf(e.uri) {
 			drop = append(drop, el)
 		}
 	}
 	for _, el := range drop {
 		c.removeLocked(el)
+	}
+	for uri, sd := range c.seeds[repoID] {
+		cur := stateOf(uri)
+		switch {
+		case cur == "" || current[uri]:
+			c.dropSeedLocked(repoID, uri)
+		case sd.triedFor == cur:
+			tried[uri] = true
+		default:
+			if prev, seen := best[uri]; !seen || sd.cost > prev {
+				best[uri] = sd.cost
+			}
+		}
 	}
 	items := make([]item, 0, len(best))
 	for uri, cost := range best {
@@ -392,12 +552,12 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string) []str
 	return uris
 }
 
-// completeReplay records one replay of uri under fingerprint: when an
-// answer under that state is now stored, the outdated ones it replaces are
-// removed and true is returned; otherwise (a degraded answer, an error, a
-// refusal — nothing stored) the outdated ones stay, marked tried for this
-// state, and false is returned.
-func (c *repoPageCache) completeReplay(repoID int64, uri, fingerprint string) bool {
+// completeReplay records one replay of uri under state (entryState): when
+// an answer under that state is now stored, the outdated ones it replaces
+// and its seed are removed and true is returned; otherwise (a degraded
+// answer, an error, a refusal — nothing stored) they stay, marked tried for
+// this state, and false is returned.
+func (c *repoPageCache) completeReplay(repoID int64, uri, state string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	stored := false
@@ -407,7 +567,7 @@ func (c *repoPageCache) completeReplay(repoID int64, uri, fingerprint string) bo
 		if e.uri != uri {
 			continue
 		}
-		if e.fingerprint == fingerprint {
+		if entryState(e.fingerprint, e.window) == state {
 			stored = true
 		} else {
 			outdated = append(outdated, el)
@@ -417,19 +577,93 @@ func (c *repoPageCache) completeReplay(repoID int64, uri, fingerprint string) bo
 		if stored {
 			c.removeLocked(el)
 		} else {
-			el.Value.(*pageEntry).triedFor = fingerprint
+			el.Value.(*pageEntry).triedFor = state
+		}
+	}
+	if sd := c.seeds[repoID][uri]; sd != nil {
+		if stored {
+			c.dropSeedLocked(repoID, uri)
+		} else {
+			sd.triedFor = state
 		}
 	}
 	return stored
 }
 
-// dropRepo removes every entry of a repository that no longer exists.
+// addSeed records a saved re-warm request loaded at start.
+func (c *repoPageCache) addSeed(repoID int64, uri string, cost time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seeds[repoID] == nil {
+		c.seeds[repoID] = map[string]*pageSeed{}
+	}
+	c.seeds[repoID][uri] = &pageSeed{cost: cost}
+}
+
+// dropSeed removes one seed (its replay was refused: the request is no
+// longer one the API answers).
+func (c *repoPageCache) dropSeed(repoID int64, uri string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dropSeedLocked(repoID, uri)
+}
+
+func (c *repoPageCache) dropSeedLocked(repoID int64, uri string) {
+	delete(c.seeds[repoID], uri)
+	if len(c.seeds[repoID]) == 0 {
+		delete(c.seeds, repoID)
+	}
+}
+
+// replaySet is the re-warm list as it would be saved: every answer visitors
+// asked for again (hits > 0), current or not — a restart empties memory, and
+// these are what come back — every answer a replay stored (it carries the
+// demand that earned the replay, so a second restart before the next visit
+// does not forget it), and every seed not yet replayed, each request with
+// its largest cost.
+//
+// A restart restores what the stopped process held (D2: "a restart forgets
+// nothing"), so an answer a replay stored is restored at every restart until
+// its state or window moves (an unvisited one is then dropped, as in one
+// process) or the budget evicts it. DECLINED in round 2 of 0.29.123 (finding
+// 1): carrying the demand across one restart only. Two restarts close
+// together — a deploy, then a configuration fix — would forget every answer
+// nobody visited between them, which is round 1's finding 1 again; the cost
+// is one recomputation per restart of what memory held, bounded by the budget
+// (summary/63 §8).
+func (c *repoPageCache) replaySet() map[db.PageCacheReplayKey]time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[db.PageCacheReplayKey]time.Duration{}
+	add := func(k db.PageCacheReplayKey, cost time.Duration) {
+		if prev, ok := out[k]; !ok || cost > prev {
+			out[k] = cost
+		}
+	}
+	for repoID, set := range c.byRepo {
+		for el := range set {
+			if e := el.Value.(*pageEntry); e.hits > 0 || e.replayed {
+				add(db.PageCacheReplayKey{RepoID: repoID, URI: e.uri}, e.cost)
+			}
+		}
+	}
+	for repoID, set := range c.seeds {
+		for uri, sd := range set {
+			add(db.PageCacheReplayKey{RepoID: repoID, URI: uri}, sd.cost)
+		}
+	}
+	return out
+}
+
+// dropRepo removes every entry and seed of a repository that no longer
+// exists.
 func (c *repoPageCache) dropRepo(repoID int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for el := range c.byRepo[repoID] {
 		c.removeLocked(el)
 	}
+	delete(c.seeds, repoID)
 }
 
 // fingerprints returns the distinct states repoID's entries were computed
@@ -447,8 +681,8 @@ func (c *repoPageCache) fingerprints(repoID int64) map[string]bool {
 // pageKey is the lookup key of one answer: route pattern, repository,
 // canonical query (canonicalQuery: the route's own parameters, sorted), the
 // state, the binary's version (a deploy can change any body's shape) and,
-// for a now-relative route, the UTC day.
-func pageKey(pattern string, repoID int64, query string, st db.RepoCacheState, pol pagePolicy, now time.Time) string {
+// for a windowed route, its effective window (pageWindows; "" otherwise).
+func pageKey(pattern string, repoID int64, query, window string, st db.RepoCacheState) string {
 	var b strings.Builder
 	b.WriteString(db.ToolVersion)
 	b.WriteByte('\n')
@@ -459,10 +693,8 @@ func pageKey(pattern string, repoID int64, query string, st db.RepoCacheState, p
 	b.WriteString(query)
 	b.WriteByte('\n')
 	b.WriteString(st.Fingerprint())
-	if pol.nowRelative {
-		b.WriteByte('\n')
-		b.WriteString(now.UTC().Format("2006-01-02"))
-	}
+	b.WriteByte('\n')
+	b.WriteString(window)
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:16])
 }
@@ -607,12 +839,16 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 		return
 	}
 	query, keyable := canonicalQuery(r, params)
+	window := ""
+	if win, windowed := pageWindows[r.Pattern]; keyable && windowed {
+		window, keyable = win(r)
+	}
 	if !keyable {
-		h(w, authed) // a value the key cannot express (an invalid date): live, no-store, the handler's 400
+		h(w, authed) // a value the key cannot express (an invalid date, a refused window): live, no-store, the handler's 400
 		return
 	}
 	c := s.pageCache
-	key := pageKey(r.Pattern, repoID, query, st, pol, c.now())
+	key := pageKey(r.Pattern, repoID, query, window, st)
 
 	if e, ok := c.get(key); ok {
 		if perCaller {
@@ -620,10 +856,12 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 		} else {
 			setShareableHeaders(w.Header(), e.etag)
 			if etagMatches(r.Header.Get("If-None-Match"), e.etag, true) {
+				c.count(func(st *pageCacheStats) { st.Revalidated++ })
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
 		}
+		c.count(func(st *pageCacheStats) { st.Hits++ })
 		writeEntry(w, e.contentType, e.disposition, e.body, "hit")
 		return
 	}
@@ -632,19 +870,22 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 	// restart, an eviction). An enriched answer's ETag also names the
 	// body, which is known only after computing.
 	if !pol.enriched && !perCaller && etagMatches(r.Header.Get("If-None-Match"), exactETag(key), false) {
+		c.count(func(st *pageCacheStats) { st.Revalidated++ })
 		setShareableHeaders(w.Header(), exactETag(key))
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	c.count(func(st *pageCacheStats) { st.Misses++ })
 
 	uri := r.URL.EscapedPath()
 	if query != "" {
 		uri += "?" + query
 	}
+	_, replaying := r.Context().Value(rewarmExpectKey{}).(string)
 	res, e := s.runOnce(c, key, authed, h, func(res pageResult, cost time.Duration) *pageEntry {
-		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(),
+		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(), window: window,
 			body: res.body, contentType: res.contentType, disposition: res.disposition,
-			computed: c.now(), cost: cost, enriched: pol.enriched, keptWhenOff: pol.keptWhenOff}
+			computed: c.now(), cost: cost, keptWhenOff: pol.keptWhenOff, keptPool: pol.keptPool, replayed: replaying}
 		if pol.enriched {
 			sum := sha256.Sum256(res.body)
 			e.etag = `"` + key + "." + hex.EncodeToString(sum[:6]) + `"`
@@ -673,8 +914,8 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 		setShareableHeaders(w.Header(), e.etag)
 		// The answer was just computed, so its ETag is known: a client
 		// already holding it gets a 304 instead of the same body again (an
-		// enriched answer recomputed after its TTL, an eviction or a restart;
-		// whole-branch review).
+		// enriched answer recomputed after its repository changed, an
+		// eviction or a restart; whole-branch review).
 		if etagMatches(r.Header.Get("If-None-Match"), e.etag, true) {
 			w.WriteHeader(http.StatusNotModified)
 			return

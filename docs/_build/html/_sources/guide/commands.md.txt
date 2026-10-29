@@ -423,10 +423,10 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 163 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 164 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
 - **`aveloxis_data`** (108 tables + 22 materialized views) -- all collected data
-- **`aveloxis_ops`** (51 tables) -- operational state
+- **`aveloxis_ops`** (52 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.

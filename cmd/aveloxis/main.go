@@ -562,14 +562,9 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
 		// Outside the queue no CompleteJob marks the end of this run: stamp
 		// the repository so the API replaces its cached answers (v0.29.73).
-		// Also after a failure — the run may have written part of its data.
-		// On a context the interrupt cannot cancel (Ctrl-C is the commonest
-		// failure of a one-shot run, after part of the data was written),
-		// bounded so a dead database cannot hold the command.
-		stampCtx, stampCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		stampErr := store.StampRepoDataChanged(stampCtx, repoID)
-		stampCancel()
-		if stampErr != nil {
+		// Also after a failure — the run may have written part of its data;
+		// the store stamps on a context the interrupt cannot cancel, bounded.
+		if stampErr := store.StampReposChangedOutsideJob(ctx, []int64{repoID}); stampErr != nil {
 			logger.Warn("could not stamp the repository's cache state — its cached API answers may stay until its next collection",
 				"url", platform.RedactURLUserinfo(repoURL), "error", stampErr)
 		}
@@ -2286,9 +2281,6 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
 		GitHubAPIBase:       cfg.GitHub.GitHubAPIBase(),
 		GitLabAPIBase:       cfg.GitLab.BaseURL,
-		// O11 option 4 (v0.29.71): a per-repository answer is reused within
-		// its collection generation for at most one enrichment interval.
-		ResponseCacheMaxAge: cfg.Collection.EnrichIntervalDuration(),
 		// v0.29.73: the repository-page cache's budget, its re-warm
 		// cadence, and the request bound each re-warm request runs under.
 		ResponseCacheBytes: cfg.API.ResponseCacheBytes(),

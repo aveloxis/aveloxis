@@ -1,0 +1,26 @@
+{{define "admin_cache"}}
+{{template "head" (dict "Title" "Cache")}}
+{{template "nav" .}}
+<div class="breadcrumb"><a href="/dashboard">Home</a>{{template "adminLinks" .}}<span class="sep">/</span><span class="current">Cache</span></div>
+<div class="container">
+<div class="card">
+<h2>API cache</h2>
+<p style="color:#586069;font-size:13px">What the api process's caches hold and did since it started (with several api processes, the one answering). An answer stays valid until its repository is collected again or its window moves; the re-warm (on when the cache has a budget) recomputes the ones visitors came back to and saves that list, so a restart forgets nothing.</p>
+<div id="cache-status" class="form-msg">Loading&hellip;</div>
+<table id="cache-totals" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Cache</th><th>Figures</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card">
+<h2>Repositories</h2>
+<div class="form-stack"><label for="cache-sort">Sort by <select id="cache-sort"><option value="bytes">Bytes</option><option value="entries">Answers</option><option value="hits">Hits</option></select></label></div>
+<p id="cache-repos-note" style="color:#586069;font-size:13px"></p>
+<table id="cache-repos" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Repository</th><th>Answers</th><th>Bytes</th><th>Hits</th><th>Saved requests</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card" id="cache-repo-card" hidden>
+<h2 id="cache-repo-title">Repository</h2>
+<table id="cache-repo-answers" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Request</th><th>Status</th><th>Computed</th><th>Cost</th><th>Hits</th><th>Bytes</th></tr></thead><tbody></tbody></table>
+<p id="cache-repo-saved" style="color:#586069;font-size:13px"></p>
+</div>
+</div>
+<script src="/static/admin-cache.js"></script>
+</body></html>
+{{end}}

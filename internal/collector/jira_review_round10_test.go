@@ -120,6 +120,10 @@ func TestJiraDrainRefreshesActivityCache(t *testing.T) {
 	if len(store.refreshedRepos) != 1 || store.refreshedRepos[0] != repoID {
 		t.Fatalf("refreshedRepos = %v, want exactly [%d] — one refresh per drained repo, none for the nil-repo row", store.refreshedRepos, repoID)
 	}
+	// D7 (0.29.120): the drain stamps what it wrote, for the API's cache.
+	if len(store.stampedRepos) != 1 || store.stampedRepos[0] != repoID {
+		t.Fatalf("stampedRepos = %v, want exactly [%d] — the drained repository's cached API answers must move", store.stampedRepos, repoID)
+	}
 }
 
 // The mailing-list drain refreshes the list's repo once per drained
@@ -146,6 +150,24 @@ func TestMailingListDrainRefreshesActivityCache(t *testing.T) {
 	if len(store.refreshedRepos) != 1 || store.refreshedRepos[0] != 42 {
 		t.Fatalf("refreshedRepos = %v, want exactly [42]", store.refreshedRepos)
 	}
+	if len(store.stampedRepos) != 1 || store.stampedRepos[0] != 42 {
+		t.Fatalf("stampedRepos = %v, want [42]: a processed row is a final write (D7)", store.stampedRepos)
+	}
+
+	// A row deferred for retry (its sender lookup failed) is not final: it
+	// comes back next drain, so it refreshes the activity cache but does not
+	// stamp (round 1 finding 3: a lasting failure would stamp every drain).
+	store3 := &fakeProcStore{primaryRepoID: 42, primaryRepoOK: true, resolveErr: errors.New("connection reset"),
+		rows: []db.StagedMailingListRow{{MlsID: 9, RepoGroupID: &rg, Message: model.MailingListStagedMessage{
+			MessageID: "m-retry@x", ListAddress: "dev@arrow.apache.org", SenderEmail: "someone@x", Subject: "s", Body: "b",
+		}}}}
+	p3 := NewMailingListProcessor(store3, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p3.DrainList(context.Background(), 7); err != nil {
+		t.Fatalf("DrainList with a deferred row: %v", err)
+	}
+	if len(store3.stampedRepos) != 0 || len(store3.refreshedRepos) != 1 {
+		t.Fatalf("a deferred row: stampedRepos %v (want none), refreshedRepos %v (want [42])", store3.stampedRepos, store3.refreshedRepos)
+	}
 
 	// Empty drain: no refresh (the cache only moves when rows landed).
 	store2 := &fakeProcStore{primaryRepoID: 42, primaryRepoOK: true}
@@ -153,7 +175,33 @@ func TestMailingListDrainRefreshesActivityCache(t *testing.T) {
 	if _, err := p2.DrainList(context.Background(), 7); err != nil {
 		t.Fatalf("empty DrainList: %v", err)
 	}
-	if len(store2.refreshedRepos) != 0 {
-		t.Fatalf("refreshedRepos = %v on an empty drain, want none", store2.refreshedRepos)
+	if len(store2.refreshedRepos) != 0 || len(store2.stampedRepos) != 0 {
+		t.Fatalf("refreshedRepos = %v, stampedRepos = %v on an empty drain, want none", store2.refreshedRepos, store2.stampedRepos)
+	}
+}
+
+// Round 1 finding 3 (0.29.123): the cache-state stamp follows a write that
+// is final — an envelope that fully processed — not a row merely reached:
+// an envelope that never parses is retried every drain interval and would
+// otherwise move its repository's state every 30 s forever. The activity
+// refresh keeps the reached rule (a partial commit refreshes it).
+func TestJiraDrainStampsOnlyWhatItWrote(t *testing.T) {
+	bad, good := int64(42), int64(43)
+	store := &fakeJiraProcStore{
+		batches: [][]db.JiraStagingRow{{
+			{JsID: 1, IssueKey: "AVJP-BAD", RepoID: &bad, Envelope: []byte(`{not json`)},
+			{JsID: 2, IssueKey: "AVJP-1", RepoID: &good, Envelope: []byte(jiraEnvelope)},
+		}},
+		identities: map[string][3]any{"alice-gh": {"cntrb-alice", "login", false}},
+	}
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainOnce(context.Background()); err != nil {
+		t.Fatalf("DrainOnce: %v", err)
+	}
+	if len(store.stampedRepos) != 1 || store.stampedRepos[0] != good {
+		t.Errorf("stampedRepos = %v, want only [%d] (the envelope that wrote)", store.stampedRepos, good)
+	}
+	if len(store.refreshedRepos) != 2 {
+		t.Errorf("refreshedRepos = %v, want both reached repositories", store.refreshedRepos)
 	}
 }

@@ -138,7 +138,11 @@ func (s *Server) labelEntities(r *http.Request, entities []entity) {
 	}
 	repos, err := s.store.GetReposBatch(r.Context(), ids)
 	if err != nil {
-		return // labels fall back to the raw entity tokens
+		// The labels fall back to the raw entity tokens: a degraded answer,
+		// never stored by the repository-page cache (0.29.119; the error was
+		// dropped without a log before).
+		s.partialAnswer(r, err, "entity labels unreadable — answering with the raw entity tokens", "error", logSafe(err.Error()))
+		return
 	}
 	for i := range entities {
 		switch entities[i].Kind {
@@ -388,7 +392,7 @@ func compareWindow(r *http.Request) (since, until time.Time, bucket string, err 
 	}
 	bucket = r.URL.Query().Get("bucket")
 	if bucket == "" {
-		bucket = "week"
+		bucket = defaultCompareBucket
 	}
 	if bucket != "week" && bucket != "month" {
 		return since, until, "", fmt.Errorf("bucket must be week or month")
@@ -449,49 +453,64 @@ type compareSeries struct {
 	DataStart string `json:"data_start,omitempty"`
 }
 
-// firstActivityCache memoizes per-entity first-activity floors for
-// the LIFETIME of the process — first activity is immutable once
-// known (history does not grow backward). The one soft staleness: an
-// org entity whose newly-collected repo carries OLDER history keeps
-// its later floor until restart, which only delays the clamp — it
-// never hides data inside the window. Negative results (no activity
-// yet) are NOT cached, so a repo's first collection unclamps
-// immediately.
-type firstActivityCache struct {
-	mu sync.Mutex
-	m  map[string]time.Time
-}
-
-func (c *firstActivityCache) get(key string) (time.Time, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	t, ok := c.m[key]
-	return t, ok
-}
-
-func (c *firstActivityCache) put(key string, t time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.m) > 10000 {
-		c.m = map[string]time.Time{} // bounded like compareCache
-	}
-	c.m[key] = t
-}
-
-// entityFirstActivity resolves the floor for a resolved repo-id set,
-// consulting the cache first. Errors fail OPEN (no clamp — today's
-// pre-v0.27.24 behavior) at the caller.
-func (s *Server) entityFirstActivity(ctx context.Context, ids []int64) (time.Time, bool, error) {
-	key := fmt.Sprint(ids) // resolveEntityRepos returns ORDER BY repo_id — stable
-	if t, ok := s.faCache.get(key); ok {
-		return t, true, nil
-	}
-	t, ok, err := s.store.FirstActivityAt(ctx, ids)
+// entityFirstActivity resolves the floor for a resolved repo-id set. Errors
+// fail OPEN (no clamp — today's pre-v0.27.24 behavior) at the caller. Read
+// on every computation; the repository chart route takes it as is, since the
+// page cache holds its answer under the repository's state. A floor memoised
+// for the process's life (firstActivityCache, v0.27.24–0.29.122) stayed
+// behind a repository whose older history landed later (round 1 of
+// 0.29.123).
+func (s *Server) entityFirstActivity(r *http.Request, ids []int64) (time.Time, bool, error) {
+	t, ok, err := s.store.FirstActivityAt(r.Context(), ids)
 	if err != nil || !ok {
 		return time.Time{}, false, err
 	}
-	s.faCache.put(key, t)
 	return t, true, nil
+}
+
+// cachedFirstActivity is entityFirstActivity in the series cache, under the
+// same collection generation as the series it clamps (cachedMetricSeries),
+// so the one rule that retires a series retires its floor; /compare's
+// computed entities (organisations, and a repository whose page-cache answer
+// failed) use the pair. Read per computation, FirstActivityAt — per-
+// repository arms over up to 500 repositories, and a scan of the commits
+// while a first_commit_at is unfilled — ran on every /compare body-cache
+// miss of an organisation (round 2 of 0.29.123). Errors are never cached.
+func (s *Server) cachedFirstActivity(r *http.Request, ids []int64) (time.Time, bool, error) {
+	key, cacheable := s.generationKey(r.Context(), r, "cachedFirstActivity", "floor|"+idSetDigest(ids), ids)
+	if cacheable {
+		if v, ok := s.seriesCache.get(key); ok {
+			f := v.(firstActivityFloor)
+			return f.at, f.ok, nil
+		}
+	}
+	t, ok, err := s.entityFirstActivity(r, ids)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if cacheable {
+		s.seriesCache.put(key, firstActivityFloor{at: t, ok: ok})
+	}
+	return t, ok, nil
+}
+
+// firstActivityFloor is one entity's floor as the series cache holds it
+// (ok false: no dateable activity).
+type firstActivityFloor struct {
+	at time.Time
+	ok bool
+}
+
+// idSetDigest names a repository-id set inside a series-cache key: its size
+// and a sha256 over the ids in order — not a 64-bit hash (review round 1 of
+// v0.29.71): the key carries no user, so two sets that collided would serve
+// one scope the other's answer.
+func idSetDigest(ids []int64) string {
+	h := sha256.New()
+	for _, id := range ids {
+		_, _ = fmt.Fprintf(h, "%d,", id)
+	}
+	return fmt.Sprintf("ids=%d:%x", len(ids), h.Sum(nil))
 }
 
 // compareCache is a small TTL cache for hot compare responses.
@@ -547,7 +566,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	metric := r.URL.Query().Get("metric")
 	def := catalogEntry(metric)
 	if def == nil || def.Kind != "temporal" {
-		http.Error(w, "metric must be one of the temporal catalog ids (see /api/v1/metrics)", http.StatusBadRequest)
+		http.Error(w, errNotTemporalMetric.Error(), http.StatusBadRequest)
 		return
 	}
 	entities, err := parseEntities(r.URL.Query().Get("entities"))
@@ -595,50 +614,23 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		if addedGroup != "" {
 			added = append(added, map[string]string{"entity": e.Label, "group": addedGroup})
 		}
-		// v0.27.24: clamp this ENTITY's window start to its first
-		// activity so young repos' series begin when their data
-		// begins instead of padding fabricated zeros back to the
-		// requested window start. The clamp is per-entity (not
-		// per-metric) ON PURPOSE: a repo whose issues start a year
-		// after its commits must show that year as REAL flat zeros —
-		// only buckets before the repo existed at all are phantom.
-		// Downstream this also un-biases the composite metrics
-		// (project_velocity's z-mean, burstiness's activity window)
-		// and the GUI's OLS trend fits, all of which previously
-		// consumed the padded head as data. Floor-lookup errors fail
-		// OPEN to the unclamped window (pre-v0.27.24 behavior).
-		entitySince := since
-		dataStart := ""
-		if fa, ok, err := s.entityFirstActivity(r.Context(), ids); err != nil {
-			httpserver.LogFailure(r.Context(), s.logger, slog.LevelWarn, err, "first-activity floor lookup failed — serving unclamped window",
-				"entity", logSafe(e.Label), "error", logSafe(err.Error()))
-		} else if ok {
-			dataStart = fa.Format("2006-01-02")
-			// Truncate to the bucket grid so the first bucket is the
-			// one CONTAINING the first activity (fillBuckets and the
-			// SQL date_trunc share this alignment).
-			if fb := truncBucket(fa, bucket); fb.After(entitySince) {
-				entitySince = fb
-			}
+		// A repository entity: the repository-page cache's answer, shared
+		// with the repository page (D5, 0.29.121); otherwise, or when that
+		// fails, computed here under the series cache.
+		if cs, ok := s.repoSeriesFromPage(r, e, metric); ok {
+			series = append(series, cs)
+			continue
 		}
-		// v0.27.16: routed through metricSeriesAndParts (retention.go)
-		// so multi-series metrics deliver named component series;
-		// single-series metrics behave exactly as before (densified
-		// points, nil parts).
-		points, parts, err := s.cachedMetricSeries(r, ids, metric, bucket, entitySince, until, retentionThreshold)
+		cs, err := s.entitySeriesFor(r, e, ids, metric, bucket, since, until, retentionThreshold, s.cachedFirstActivity, s.cachedMetricSeries)
 		if err != nil {
 			httpserver.LogFailure(r.Context(), s.logger, slog.LevelError, err, "compare series failed", "metric", logSafe(metric), "entity", logSafe(e.Label), "error", logSafe(err.Error()))
 			http.Error(w, "series computation failed", http.StatusInternalServerError)
 			return
 		}
-		series = append(series, compareSeries{Entity: e, Points: points, Parts: parts, DataStart: dataStart})
+		series = append(series, cs)
 	}
 
-	resp := map[string]any{
-		"metric": def, "bucket": bucket,
-		"since": since.Format("2006-01-02"), "until": until.Format("2006-01-02"),
-		"series": series,
-	}
+	resp := compareBody(def, bucket, since, until, series)
 	if len(added) > 0 {
 		resp["added_to_group"] = added
 	}
@@ -656,6 +648,69 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// floorFunc resolves one entity's first-activity floor: entityFirstActivity,
+// or /compare's cachedFirstActivity over it.
+type floorFunc func(r *http.Request, ids []int64) (time.Time, bool, error)
+
+// seriesFunc computes one entity's series and parts: metricSeriesAndParts,
+// or /compare's cachedMetricSeries over it.
+type seriesFunc func(r *http.Request, ids []int64, metric, bucket string, since, until time.Time, retentionThreshold int) ([]db.WeeklyPoint, map[string][]db.WeeklyPoint, error)
+
+// entitySeriesFor is one entity's series over the window, as /compare and
+// the repository's metric series (0.29.119) both answer it. The caller
+// passes the floor and the series together, cached or not: /compare's
+// computed entities through the series cache (cachedFirstActivity,
+// cachedMetricSeries), the repository chart route directly
+// (entityFirstActivity, metricSeriesAndParts) — the page cache holds its
+// answer, and its floors in the series cache flooded the 1,000-entry map
+// with one per repository a warm run visits (round 3 of 0.29.123; D5).
+//
+// v0.27.24: the ENTITY's window start is clamped to its first activity so
+// young repos' series begin when their data begins instead of padding
+// fabricated zeros back to the requested window start. The clamp is
+// per-entity (not per-metric) ON PURPOSE: a repo whose issues start a year
+// after its commits must show that year as REAL flat zeros — only buckets
+// before the repo existed at all are phantom. Downstream this also
+// un-biases the composite metrics (project_velocity's z-mean, burstiness's
+// activity window) and the GUI's OLS trend fits, all of which previously
+// consumed the padded head as data. A floor-lookup error fails OPEN to the
+// unclamped window (pre-v0.27.24 behavior): a degraded answer
+// (partialAnswer), never stored by the repository-page cache.
+func (s *Server) entitySeriesFor(r *http.Request, e entity, ids []int64, metric, bucket string, since, until time.Time, retentionThreshold int, floor floorFunc, series seriesFunc) (compareSeries, error) {
+	entitySince := since
+	dataStart := ""
+	if fa, ok, err := floor(r, ids); err != nil {
+		s.partialAnswer(r, err, "first-activity floor lookup failed — serving unclamped window",
+			"entity", logSafe(e.Label), "error", logSafe(err.Error()))
+	} else if ok {
+		dataStart = fa.Format("2006-01-02")
+		// Truncate to the bucket grid so the first bucket is the one
+		// CONTAINING the first activity (fillBuckets and the SQL date_trunc
+		// share this alignment).
+		if fb := truncBucket(fa, bucket); fb.After(entitySince) {
+			entitySince = fb
+		}
+	}
+	// v0.27.16: metricSeriesAndParts (retention.go) delivers named component
+	// series for multi-series metrics; single-series metrics are densified
+	// points with nil parts.
+	points, parts, err := series(r, ids, metric, bucket, entitySince, until, retentionThreshold)
+	if err != nil {
+		return compareSeries{}, err
+	}
+	return compareSeries{Entity: e, Points: points, Parts: parts, DataStart: dataStart}, nil
+}
+
+// compareBody is a series answer's body: /compare's, and the repository
+// metric series' (one entity), so one renderer reads both.
+func compareBody(def *MetricDef, bucket string, since, until time.Time, series []compareSeries) map[string]any {
+	return map[string]any{
+		"metric": def, "bucket": bucket,
+		"since": since.Format("2006-01-02"), "until": until.Format("2006-01-02"),
+		"series": series,
+	}
+}
+
 // entitySeries is one compare entity's computed series, as cached.
 type entitySeries struct {
 	points []db.WeeklyPoint
@@ -668,14 +723,8 @@ type entitySeries struct {
 // computed once per collection instead of per page view. The whole-body
 // compare cache keeps its 60 s (its responses carry per-request notices).
 func (s *Server) cachedMetricSeries(r *http.Request, ids []int64, metric, bucket string, since, until time.Time, retentionThreshold int) ([]db.WeeklyPoint, map[string][]db.WeeklyPoint, error) {
-	// sha256, not a 64-bit hash (review round 1): the key carries no user,
-	// so two id sets that collided would serve one scope the other's series.
-	h := sha256.New()
-	for _, id := range ids {
-		_, _ = fmt.Fprintf(h, "%d,", id)
-	}
 	key, cacheable := s.generationKey(r.Context(), r, "handleCompare",
-		fmt.Sprintf("series|%s|%s|%s|%s|rt%d|ids=%d:%x", metric, bucket, since.Format(time.RFC3339), until.Format(time.RFC3339), retentionThreshold, len(ids), h.Sum(nil)), ids)
+		fmt.Sprintf("series|%s|%s|%s|%s|rt%d|%s", metric, bucket, since.Format(time.RFC3339), until.Format(time.RFC3339), retentionThreshold, idSetDigest(ids)), ids)
 	if cacheable {
 		if v, ok := s.seriesCache.get(key); ok {
 			e := v.(entitySeries)

@@ -26,8 +26,9 @@ import (
 //   - data_changed_at, stamped through stampRepoCacheStateSQL, in the same
 //     transaction as the data, by the writers that can run outside the job
 //     (scorecard, scancode snapshot, vulnerability insert/resolve/rescore,
-//     heal-libyear), and by StampRepoDataChanged at the end of a run outside
-//     the queue (`aveloxis collect`). The authoritative list, enforced, is
+//     heal-libyear, and since 0.29.120 the out-of-job writers of the windowed
+//     and contributor answers), and by StampReposChangedOutsideJob at the end
+//     of a run outside the queue (`aveloxis collect`, the drains, the heals). The authoritative list, enforced, is
 //     pageCacheWriters in page_cache_writers_test.go. The completion stamps
 //     above are separate statements that can fail after the data commits
 //     (PR #226 review), so the data writers stamp themselves. A new writer
@@ -75,7 +76,7 @@ func (st RepoCacheState) Fingerprint() string {
 // gone repository is dequeued with its data kept, so a queue stamp missed
 // it. Used, in the same transaction as their data, by every stamping writer
 // (pageCacheWriters in page_cache_writers_test.go is the enforced list) and
-// by StampRepoDataChanged; the caller appends the WHERE clause on repo_id.
+// by StampReposChangedOutsideJob; the caller appends the WHERE clause.
 const stampRepoCacheStateSQL = `UPDATE aveloxis_data.repos SET data_changed_at = NOW()`
 
 // RepoCacheStates reads the cache state of each repository in repoIDs. An id
@@ -125,12 +126,28 @@ func (s *PostgresStore) RepoCacheStates(ctx context.Context, repoIDs []int64) (m
 	return out, nil
 }
 
-// StampRepoDataChanged moves one repository's cache state: the stamp for a
-// whole run that writes the repository's data outside the collection queue
-// (the one-shot `aveloxis collect`), whose end no CompleteJob marks.
-func (s *PostgresStore) StampRepoDataChanged(ctx context.Context, repoID int64) error {
-	if _, err := s.pool.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
-		return fmt.Errorf("stamp repository data changed (repo %d): %w", repoID, err)
+// outOfJobStampTimeout bounds StampReposChangedOutsideJob, so a dead
+// database cannot hold the command or drain that ends with it (the bound
+// `collect` used since 0.29.73).
+const outOfJobStampTimeout = 10 * time.Second
+
+// StampReposChangedOutsideJob moves the cache state of repoIDs: the stamp
+// for a run that wrote their data outside the collection queue, whose end no
+// CompleteJob marks — the one-shot `aveloxis collect`, the leftover-staging
+// drain, heal-messages, the mailing-list and Jira drains and the backfill
+// commands (D7, 0.29.120, summary/63). It runs on a context the caller's
+// cancel cannot stop, bounded by outOfJobStampTimeout: an interrupted run has
+// usually written part of its data, and the interrupt is the commonest end
+// of one. The one spelling of that stamp (SR-17): callers only log its error.
+// No repositories is a no-op; a repeated id is stamped once.
+func (s *PostgresStore) StampReposChangedOutsideJob(ctx context.Context, repoIDs []int64) error {
+	if len(repoIDs) == 0 {
+		return nil
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outOfJobStampTimeout)
+	defer cancel()
+	if _, err := s.pool.Exec(sctx, stampRepoCacheStateSQL+` WHERE repo_id = ANY($1::bigint[])`, repoIDs); err != nil {
+		return fmt.Errorf("stamp repository data changed (%d repositories): %w", len(repoIDs), err)
 	}
 	return nil
 }

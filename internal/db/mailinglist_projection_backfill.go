@@ -107,7 +107,7 @@ func (s *PostgresStore) bodyMsgID(ctx context.Context, messageIDHeader string) (
 // BackfillKeyedIssueProjection projects one batch of un-projected issue_event
 // rows that carry an external_key. Returns the number processed (0 when none
 // remain).
-func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch int) (int, error) {
+func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch int) (n int, err error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT email_message_id, repo_id, message_id_header, subject, linked_external_key, sent_at
 		FROM aveloxis_data.email_message
@@ -119,6 +119,7 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 		return 0, fmt.Errorf("backfill keyed: select: %w", err)
 	}
 	var items []backfillRow
+	defer func() { s.stampBackfillRepos(ctx, items) }()
 	for rows.Next() {
 		var r backfillRow
 		var sent *time.Time
@@ -136,7 +137,6 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 		return 0, err
 	}
 
-	n := 0
 	for _, r := range items {
 		issueID, _, perr := s.LinkOrCreateIssueFromEmail(ctx, r.repoID, r.key, mlBackfillTitle(r.subject, r.key), "", "JIRA", nil, r.sentAt)
 		if perr != nil {
@@ -192,7 +192,7 @@ func (s *PostgresStore) BackfillKeyedIssueProjection(ctx context.Context, batch 
 // to the issue their thread was already projected onto (#1 inheritance), and
 // marks the rest mailing_list_only. MUST run after BackfillKeyedIssueProjection
 // has drained, so every thread with a keyed message already has its issue.
-func (s *PostgresStore) BackfillThreadInheritance(ctx context.Context, batch int) (int, error) {
+func (s *PostgresStore) BackfillThreadInheritance(ctx context.Context, batch int) (n int, err error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT email_message_id, repo_id, message_id_header, thread_root_id
 		FROM aveloxis_data.email_message
@@ -204,6 +204,7 @@ func (s *PostgresStore) BackfillThreadInheritance(ctx context.Context, batch int
 		return 0, fmt.Errorf("backfill thread: select: %w", err)
 	}
 	var items []backfillRow
+	defer func() { s.stampBackfillRepos(ctx, items) }()
 	for rows.Next() {
 		var r backfillRow
 		if err := rows.Scan(&r.emID, &r.repoID, &r.msgHdr, &r.thread); err != nil {
@@ -217,7 +218,6 @@ func (s *PostgresStore) BackfillThreadInheritance(ctx context.Context, batch int
 		return 0, err
 	}
 
-	n := 0
 	for _, r := range items {
 		issueID, ok, _ := s.FindIssueForThread(ctx, r.thread, r.repoID)
 		if ok && issueID > 0 {
@@ -243,6 +243,26 @@ func (s *PostgresStore) BackfillThreadInheritance(ctx context.Context, batch int
 		n++
 	}
 	return n, nil
+}
+
+// stampBackfillRepos stamps the repositories of a projection batch: the
+// backfill writes their issues and bridges outside any job, so the API's
+// cached answers move with it (D7, 0.29.120, summary/63) — also when the
+// batch stopped partway, after some of its writes. A failed stamp is logged,
+// never the batch's error (StampReposChangedOutsideJob's rule; round 1
+// finding 5 of 0.29.123: joined into the error, it aborted the command).
+func (s *PostgresStore) stampBackfillRepos(ctx context.Context, items []backfillRow) {
+	var ids []int64
+	for _, r := range items {
+		ids = append(ids, r.repoID)
+	}
+	// Detached: a stop after the batch's writes still stamps them, so a
+	// cancellation cannot end the stamp and is not classified here.
+	detached := context.WithoutCancel(ctx)
+	if err := s.StampReposChangedOutsideJob(detached, ids); err != nil {
+		s.logger.Warn("mailing-list projection backfill: cache-state stamp failed — the repositories' cached API answers stay until their next collection",
+			"repositories", len(ids), "error", err)
+	}
 }
 
 // BackfillMarkRemainingProjected bulk-marks every still-unprojected

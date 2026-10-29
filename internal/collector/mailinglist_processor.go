@@ -32,7 +32,8 @@ type mlProcessorStore interface {
 	ListsWithStaging(ctx context.Context, system string, afterID int64, limit int) ([]int64, error)
 	GetMailingListStagingBatch(ctx context.Context, rglsID, afterID int64, limit int) ([]db.StagedMailingListRow, error)
 	MarkMailingListStagingProcessed(ctx context.Context, mlsIDs []int64) error
-	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
+	// The drain-side refresh: the activity counts and the cache-state stamp.
+	activityRefresher
 
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
@@ -198,6 +199,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 	threadIssue := map[string]int64{} // thread root → projected issue_id (#1 inheritance)
 	var repoID int64
 	repoResolved := false
+	repoWrote := false // a row processed or dropped (marked done): a final write, so the cache-state stamp
 	// Copilot round 10 on PR #193: the home ranking reads the queue's
 	// cached last_activity_90d, which only CompleteJob and the gap
 	// healer refresh — issues this drain projects were invisible to it
@@ -213,7 +215,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 		// an all-deferred batch (processed==0) can still have committed
 		// issues whose activity the home ranking must see.
 		if repoResolved {
-			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain")
+			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain", repoWrote)
 		}
 	}()
 
@@ -284,6 +286,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 					"rgls_id", rglsID, "message_id", row.Message.MessageID, "error", err)
 			}
 			done = append(done, row.MlsID)
+			repoWrote = true
 		}
 		if dropped > 0 {
 			p.logger.Error("mailing-list processor: batch completed with dropped messages",

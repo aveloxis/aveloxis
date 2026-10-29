@@ -8,43 +8,38 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
 
-// collectionCache caches per-repository answers under the repositories'
-// collection generation (db.CollectionGeneration: a digest of every
-// member's queue row, updated_at and last_collected), O11 option 4
-// (v0.29.71; measured on kate: summary/43 §2 item 9). A job that ends over
-// any member changes the key, so an answer is not served past it; the TTL bounds what changes outside a
-// collection — contributor names and logins filled by the enrichment sweep —
-// and is that sweep's interval (collection.enrich_interval_minutes). The
-// 60 s body caches it replaces missed on every page view more than a minute
-// apart.
+// collectionCache caches /compare's per-entity series under the
+// repositories' collection generation (db.CollectionGeneration: a digest of
+// every member's queue row, updated_at and last_collected, and its
+// data_changed_at), O11 option 4 (v0.29.71; measured on kate: summary/43 §2
+// item 9). A job that ends over any member, or a writer outside a job that
+// stamps one, changes the key, so an answer is not served past it. It has no
+// age limit (D6, 0.29.120, summary/63: durable until recollection; the
+// enrichment-interval TTL it had made every chart recompute every 17 minutes
+// on kate).
 type collectionCache struct {
-	mu  sync.Mutex
-	m   map[string]collectionCacheEntry
-	ttl time.Duration
-	now func() time.Time
+	mu sync.Mutex
+	m  map[string]collectionCacheEntry
+	// What it did since start (the administrator's view, D4, 0.29.123):
+	// resets counts the whole-map clears at collectionCacheMaxEntries, the
+	// figure D5 left the organization path's eviction rule to.
+	hits, misses, resets int64
 }
 
 type collectionCacheEntry struct {
-	val     any
-	expires time.Time
+	val any
 }
 
 // collectionCacheMaxEntries is compareCache's bound: past it the map starts
 // over (bodies are small; the hot set refills in one page view each).
 const collectionCacheMaxEntries = 1000
 
-// newCollectionCache returns a cache with the given TTL; zero (a Server
-// built by New, as tests do) keeps the 60 s compareCacheTTL.
-func newCollectionCache(ttl time.Duration) *collectionCache {
-	if ttl <= 0 {
-		ttl = compareCacheTTL
-	}
-	return &collectionCache{m: map[string]collectionCacheEntry{}, ttl: ttl, now: time.Now}
+func newCollectionCache() *collectionCache {
+	return &collectionCache{m: map[string]collectionCacheEntry{}}
 }
 
 // collectionKey joins a request key and a collection generation.
@@ -57,9 +52,11 @@ func (c *collectionCache) get(key string) (any, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[key]
-	if !ok || c.now().After(e.expires) {
+	if !ok {
+		c.misses++
 		return nil, false
 	}
+	c.hits++
 	return e.val, true
 }
 
@@ -71,8 +68,9 @@ func (c *collectionCache) put(key string, v any) {
 	defer c.mu.Unlock()
 	if len(c.m) >= collectionCacheMaxEntries {
 		c.m = map[string]collectionCacheEntry{}
+		c.resets++
 	}
-	c.m[key] = collectionCacheEntry{val: v, expires: c.now().Add(c.ttl)}
+	c.m[key] = collectionCacheEntry{val: v}
 }
 
 // generationKey returns the request key joined with the repositories'

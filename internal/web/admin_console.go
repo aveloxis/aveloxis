@@ -678,3 +678,11 @@ func (s *Server) handleAdminCollectionRemoveGroup(w http.ResponseWriter, r *http
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/collections/%d?ok=group_removed", id), http.StatusFound)
 }
+
+// handleAdminCachePage renders the API cache's console page (0.29.123,
+// summary/63 §9): a shell. Its script (static/admin-cache.js) reads the
+// api's cache view through the /api/ proxy, because the caches live in the
+// api process's memory, not in this one or the database.
+func (s *Server) handleAdminCachePage(w http.ResponseWriter, r *http.Request, sess *Session) {
+	s.render(w, r, "admin_cache", map[string]any{"Session": sess})
+}

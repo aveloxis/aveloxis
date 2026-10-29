@@ -13,6 +13,12 @@
 // protected column's ONE policy; this engine verifies every UPDATE SET
 // assignment conforms.
 //
+// A registered column assigned in a multiple-column SET, (a, col) = (...),
+// is a violation: no matcher reads that form (closed-world, as below).
+// Known boundary (round 6 of 0.29.123): a single-column SET of a quoted,
+// subscripted or field target (`SET "col" =`, `col[1] =`, `col.f =`) is not
+// read at all; Aveloxis' SQL does not spell a registered column so.
+//
 // Matchers are ORDER-SENSITIVE and closed-world per registered column:
 // an RHS matching no recognized shape for the policy FAILS
 // ("unrecognized write shape") — new idioms must conform, extend the
@@ -128,6 +134,16 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 			if w.WritesColumn(reg.Table, reg.Column) {
 				seenWriter = true
 			}
+			violate := func(expr, detail string) {
+				if i := findException(exceptions, reg, w); i >= 0 {
+					used[i] = true
+					return
+				}
+				rep.Violations = append(rep.Violations, Violation{
+					Table: reg.Table, Column: reg.Column, File: w.File,
+					Expr: expr, Want: reg.Policy, Detail: detail,
+				})
+			}
 			for _, expr := range w.SetExprs(reg.Column) {
 				var ok bool
 				var detail string
@@ -136,17 +152,18 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 				} else {
 					ok, detail = exprConforms(w, expr, reg.Column, reg.Policy)
 				}
-				if ok {
-					continue
+				if !ok {
+					violate(expr, detail)
 				}
-				if i := findException(exceptions, reg, w); i >= 0 {
-					used[i] = true
-					continue
-				}
-				rep.Violations = append(rep.Violations, Violation{
-					Table: reg.Table, Column: reg.Column, File: w.File,
-					Expr: expr, Want: reg.Policy, Detail: detail,
-				})
+			}
+			// A multiple-column assignment, SET (a, col) = (...): its right
+			// side is one row, not a value per column, so no matcher can
+			// judge it — fail closed (round 3 finding 5 of 0.29.123: the
+			// form escaped every policy), on any spelling of the column as a
+			// list member (setListMember, round 7). Spell the column's
+			// assignment on its own, or take a reviewed Exception.
+			if m, ok := setListMember(w.SQL, reg.Column); ok {
+				violate(m, "multiple-column SET: the policy cannot be checked on this form; assign the column on its own, or take a reviewed Exception")
 			}
 		}
 		if !seenWriter {

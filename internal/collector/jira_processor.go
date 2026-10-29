@@ -43,7 +43,8 @@ type jiraProcStore interface {
 	UpsertJiraComment(ctx context.Context, in db.JiraAPIComment) (int64, error)
 	RecountIssueComments(ctx context.Context, issueID int64) error
 	MarkJiraStagingProcessed(ctx context.Context, jsIDs []int64) error
-	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
+	// The drain-side refresh: the activity counts and the cache-state stamp.
+	activityRefresher
 }
 
 const (
@@ -92,9 +93,10 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 	// the set have already committed their writes even when a later
 	// batch's mark fails.
 	drainedRepos := map[int64]struct{}{}
+	wroteRepos := map[int64]bool{} // an envelope fully processed: a final write (the cache-state stamp)
 	defer func() {
 		for repoID := range drainedRepos {
-			refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain")
+			refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain", wroteRepos[repoID])
 		}
 	}()
 	for _, jpsID := range projects {
@@ -143,6 +145,7 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 					}
 					break // shutdown: rows drained so far still mark below
 				}
+				wroteRepos[*row.RepoID] = true
 				done = append(done, row.JsID)
 			}
 			if len(done) > 0 {

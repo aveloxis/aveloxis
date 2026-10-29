@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.123 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=70fe169d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,10 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +363,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +783,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -2157,7 +2162,9 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dd>
 </dl>
 <p><strong>Returns a repository’s weekly commits, pull requests opened and merged, and issues opened.</strong></p>
-<p>The window starts two years before today’s UTC midnight by default.
+<p>The window starts two years before the Monday (UTC midnight) that
+starts the current week by default (two years before today’s UTC
+midnight until 0.29.120).
 An omitted <code class="docutils literal notranslate"><span class="pre">until</span></code> ends it at the latest plausible commit time, UTC
 midnight two days ahead; a given <code class="docutils literal notranslate"><span class="pre">until</span></code> is inclusive (the window
 ends at the next midnight) and is never later than that bound. The
@@ -2226,6 +2233,114 @@ and the Augur-compatible metrics carry <code class="docutils literal notranslate
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/404">404 Not Found</a></span> – No repository has this id (<code class="docutils literal notranslate"><span class="pre">repo</span> <span class="pre">not</span> <span class="pre">found</span></code>). <a class="reference internal" href="#shared-response-reponotfound"><span class="std std-ref">Shared response RepoNotFound</span></a>.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/500">500 Internal Server Error</a></span> – A server-side failure; also an unscoped caller’s id with no repository.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Response Headers<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>ETag</strong> (<span><em>string</em></span>) – The answer’s validator, weak (<code class="docutils literal notranslate"><span class="pre">W/&quot;…&quot;</span></code>) when the answer depends only
+on the repository’s stored state. Send it back as <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code>.</p></li>
+<li><p><strong>Cache-Control</strong> (<span><em>string:enum</em></span>) – <code class="docutils literal notranslate"><span class="pre">no-cache</span></code> for an answer any caller may be given (revalidate each
+time); <code class="docutils literal notranslate"><span class="pre">private,</span> <span class="pre">no-store</span></code> for an answer about this caller, which
+nothing may store.</p></li>
+<li><p><strong>X-Cache</strong> (<span><em>string</em></span>) – <code class="docutils literal notranslate"><span class="pre">hit</span></code> when the answer came from the server’s response cache; absent otherwise.</p></li>
+<li><p><strong>X-Aveloxis-Added-To-Group</strong> (<span><em>string</em></span>) – Present once, on the answer whose request added the repository to
+the caller’s “Shared with Me” group (a signed-in session following a
+link to a repository outside its groups). Its value is the group’s
+name. The addition happens before the operation runs, so the header
+rides on whatever that request answers, a <code class="docutils literal notranslate"><span class="pre">400</span></code>, <code class="docutils literal notranslate"><span class="pre">404</span></code>, <code class="docutils literal notranslate"><span class="pre">429</span></code> or
+<code class="docutils literal notranslate"><span class="pre">500</span></code> included; the reference declares it on the success response.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="http get">
+<dt class="sig sig-object http" id="get--api-v1-repos-repoID-metric-series">
+<span class="sig-name descname"><span class="pre">GET</span> </span><span class="sig-name descname"><span class="pre">/api/v1/repos/{repoID}/metric-series</span></span><a class="headerlink" href="#get--api-v1-repos-repoID-metric-series" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Operation<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">repositoryMetricSeries</span></code></p>
+</dd>
+<dt class="field-even">Access<span class="colon">:</span></dt>
+<dd class="field-even"><p>a session or an API token; anonymous callers too while <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is off or from an exempt network.</p>
+</dd>
+</dl>
+<p><strong>Returns one temporal metric’s series for one repository (the repository page’s charts).</strong></p>
+<p>The answer <code class="docutils literal notranslate"><span class="pre">/compare</span></code> gives for <code class="docutils literal notranslate"><span class="pre">entities=repo:{repoID}</span></code> with the
+same <code class="docutils literal notranslate"><span class="pre">metric</span></code>, <code class="docutils literal notranslate"><span class="pre">since</span></code>, <code class="docutils literal notranslate"><span class="pre">until</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code> and
+<code class="docutils literal notranslate"><span class="pre">retention_threshold</span></code> (the same window rules and the same body),
+served by the repository-page cache: valid until the repository’s
+collection state changes or its window moves (the default window
+moves each Monday, UTC, for <code class="docutils literal notranslate"><span class="pre">bucket=week</span></code>, and on the 1st for
+<code class="docutils literal notranslate"><span class="pre">bucket=month</span></code>), with an <code class="docutils literal notranslate"><span class="pre">ETag</span></code> and <code class="docutils literal notranslate"><span class="pre">304``s.</span> <span class="pre">Unlike</span>
+<span class="pre">``/compare</span></code>, nothing is recorded in the caller’s “Comparisons”
+group, and access is the repository routes’ (an out-of-scope
+repository a signed-in session reads is linked into “Shared with
+Me”, as on every repository route). Since 0.29.119.</p>
+<p>Handler: <code class="docutils literal notranslate"><span class="pre">handleRepoMetricSeries</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Request Headers<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>If-None-Match</strong> (<span><em>string</em></span>) – An <code class="docutils literal notranslate"><span class="pre">ETag</span></code> from an earlier answer. When it names the current one the answer is <code class="docutils literal notranslate"><span class="pre">304</span></code> with no body.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Parameters<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>repoID</strong> (<em>integer:int64, required</em>) – A repository’s id (<code class="docutils literal notranslate"><span class="pre">repo_id</span></code>). A value that is not a positive integer is a <code class="docutils literal notranslate"><span class="pre">400</span></code>; an id no repository has is a <code class="docutils literal notranslate"><span class="pre">404</span></code> on every repository route (since 0.29.99).</p></li>
+</ul>
+</dd>
+<dt class="field-odd">Query Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>metric</strong> (<em>string:enum, required</em>) – A <code class="docutils literal notranslate"><span class="pre">temporal</span></code> id from the metric catalog.</p></li>
+<li><p><strong>since</strong> (<em>string:date</em>) – First day (<code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code>). Default as on <code class="docutils literal notranslate"><span class="pre">/compare</span></code>. A value that does not parse is a <code class="docutils literal notranslate"><span class="pre">400</span></code>.</p></li>
+<li><p><strong>until</strong> (<em>string:date</em>) – A day (<code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code>), as on <code class="docutils literal notranslate"><span class="pre">/compare</span></code>. A value that does not parse is a <code class="docutils literal notranslate"><span class="pre">400</span></code>.</p></li>
+<li><p><strong>bucket</strong> (<em>string:enum</em>)</p></li>
+<li><p><strong>retention_threshold</strong> (<em>integer</em>) – <code class="docutils literal notranslate"><span class="pre">contributor_retention</span></code> only, as on <code class="docutils literal notranslate"><span class="pre">/compare</span></code>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Response JSON Object<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>metric</strong> (<em>object, required</em>) – One metric of the comparison catalog (<code class="docutils literal notranslate"><span class="pre">MetricDef</span></code>).</p></li>
+<li><p><strong>metric.id</strong> (<em>string, required</em>) – The value to pass as <code class="docutils literal notranslate"><span class="pre">metric</span></code>.</p></li>
+<li><p><strong>metric.name</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>metric.definition</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>metric.unit</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>metric.kind</strong> (<em>string:enum, required</em>) – <code class="docutils literal notranslate"><span class="pre">temporal</span></code> metrics are compared by <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/compare</span></code>, <code class="docutils literal notranslate"><span class="pre">snapshot</span></code> metrics by <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/compare/snapshot</span></code>.</p></li>
+<li><p><strong>metric.improves_on_chaoss</strong> (<em>object, required</em>)</p></li>
+<li><p><strong>metric.improves_on_chaoss.chaoss_url</strong> (<em>string:uri, required</em>)</p></li>
+<li><p><strong>metric.improves_on_chaoss.delta_note</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>metric.our_reference_url</strong> (<em>string:uri, required</em>)</p></li>
+<li><p><strong>bucket</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>since</strong> (<em>string:date, required</em>) – The effective window start.</p></li>
+<li><p><strong>until</strong> (<em>string:date, required</em>) – The effective window end (exclusive bucket boundary).</p></li>
+<li><p><strong>series[]</strong> (<em>object</em>) – One entity’s series (<code class="docutils literal notranslate"><span class="pre">compareSeries</span></code>).</p></li>
+<li><p><strong>series[].entity</strong> (<em>object, required</em>) – A compared repository or organization, as parsed from <code class="docutils literal notranslate"><span class="pre">entities</span></code> (<code class="docutils literal notranslate"><span class="pre">entity</span></code>).</p></li>
+<li><p><strong>series[].entity.kind</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>series[].entity.repo_id</strong> (<em>integer:int64</em>) – <code class="docutils literal notranslate"><span class="pre">repo</span></code> entities only.</p></li>
+<li><p><strong>series[].entity.host</strong> (<em>string</em>) – <code class="docutils literal notranslate"><span class="pre">org</span></code> entities only.</p></li>
+<li><p><strong>series[].entity.login</strong> (<em>string</em>) – <code class="docutils literal notranslate"><span class="pre">org</span></code> entities only.</p></li>
+<li><p><strong>series[].entity.label</strong> (<em>string, required</em>) – <code class="docutils literal notranslate"><span class="pre">owner/name</span></code> for a repository, <code class="docutils literal notranslate"><span class="pre">login</span> <span class="pre">(org)</span></code> for an organization; the raw entity token when the lookup of labels failed.</p></li>
+<li><p><strong>series[].points[]</strong> (<em>object</em>) – One bucket of a series (<code class="docutils literal notranslate"><span class="pre">db.WeeklyPoint</span></code>).</p></li>
+<li><p><strong>series[].points[].bucket</strong> (<em>string:date-time, required</em>) – The bucket’s first instant (UTC); a Monday for <code class="docutils literal notranslate"><span class="pre">week</span></code>, the 1st for <code class="docutils literal notranslate"><span class="pre">month</span></code>.</p></li>
+<li><p><strong>series[].points[].value</strong> (<em>number, required</em>)</p></li>
+<li><p><strong>series[].parts</strong> (<em>object</em>) – <code class="docutils literal notranslate"><span class="pre">contributor_retention</span></code> only: the component series <code class="docutils literal notranslate"><span class="pre">drive_by</span></code> and <code class="docutils literal notranslate"><span class="pre">repeat</span></code>, whose sum is <code class="docutils literal notranslate"><span class="pre">points</span></code>.</p></li>
+<li><p><strong>series[].parts.{part}[]</strong> (<em>object</em>) – One bucket of a series (<code class="docutils literal notranslate"><span class="pre">db.WeeklyPoint</span></code>).</p></li>
+<li><p><strong>series[].parts.{part}[].bucket</strong> (<em>string:date-time, required</em>) – The bucket’s first instant (UTC); a Monday for <code class="docutils literal notranslate"><span class="pre">week</span></code>, the 1st for <code class="docutils literal notranslate"><span class="pre">month</span></code>.</p></li>
+<li><p><strong>series[].parts.{part}[].value</strong> (<em>number, required</em>)</p></li>
+<li><p><strong>series[].data_start</strong> (<em>string:date</em>) – The entity’s first dateable activity (first issue, change request, commit, or the forge’s creation date). Absent when it has none.</p></li>
+</ul>
+</dd>
+<dt class="field-odd">Status Codes<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/200">200 OK</a></span> – The series, one entity.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304">304 Not Modified</a></span> – The <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> validator names the current answer. <a class="reference internal" href="#shared-response-notmodified"><span class="std std-ref">Shared response NotModified</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/400">400 Bad Request</a></span> – An id that is not a positive integer, a <code class="docutils literal notranslate"><span class="pre">metric</span></code> that is not a temporal catalog id, a date that does not parse, <code class="docutils literal notranslate"><span class="pre">since</span></code> not before <code class="docutils literal notranslate"><span class="pre">until</span></code>, a <code class="docutils literal notranslate"><span class="pre">bucket</span></code> other than week or month, or a <code class="docutils literal notranslate"><span class="pre">retention_threshold</span></code> that is not a positive integer.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/401">401 Unauthorized</a></span> – No valid Bearer token: missing, unknown, expired or revoked. <a class="reference internal" href="#shared-response-unauthorized"><span class="std std-ref">Shared response Unauthorized</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/403">403 Forbidden</a></span> – The repository is outside the caller’s scope (<code class="docutils literal notranslate"><span class="pre">repo_out_of_scope</span></code>), or a signed-in session’s automatic addition of it would exceed the account’s repository allocation (<code class="docutils literal notranslate"><span class="pre">capacity_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">kind</span></code> <code class="docutils literal notranslate"><span class="pre">allocation</span></code>). <a class="reference internal" href="#shared-response-repooutofscope"><span class="std std-ref">Shared response RepoOutOfScope</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/404">404 Not Found</a></span> – No repository has this id (<code class="docutils literal notranslate"><span class="pre">repo</span> <span class="pre">not</span> <span class="pre">found</span></code>). <a class="reference internal" href="#shared-response-reponotfound"><span class="std std-ref">Shared response RepoNotFound</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/500">500 Internal Server Error</a></span> – A server-side failure.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
 </ul>
 </dd>
@@ -2992,8 +3107,9 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 <p>A contribution is a commit authored, an issue opened or closed, an
 issue or pull-request event, a pull request opened, a review
 submitted, or any comment. Commits whose author was never resolved
-to a contributor are not counted. The window defaults to the last
-two years; ordered by login then full name.</p>
+to a contributor are not counted. The window defaults to the two
+years before the Monday (UTC) that starts the current week; ordered
+by login then full name.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleRepoContributors</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Request Headers<span class="colon">:</span></dt>
@@ -3237,7 +3353,8 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dl>
 <p><strong>Returns a repository’s contributors ranked by commits, issues, pull requests, reviews and comments.</strong></p>
 <p>Events (labels, assignments, closes) do not count here. The window
-defaults to the last two years. The envelope echoes the window in
+defaults to the two years before the Monday (UTC) that starts the
+current week. The envelope echoes the window in
 effect: <code class="docutils literal notranslate"><span class="pre">until</span></code> is the exclusive upper bound (the day after the
 requested <code class="docutils literal notranslate"><span class="pre">until</span></code>), or <code class="docutils literal notranslate"><span class="pre">0001-01-01T00:00:00Z</span></code> when none was given.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleTopContributors</span></code>.</p>
@@ -3534,7 +3651,9 @@ its “Comparisons” group, silently.</p>
 (<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>). No <code class="docutils literal notranslate"><span class="pre">ETag</span></code> is sent.</p>
 <p>Cost: one aggregate per entity and metric over the window, each
 entity’s series reused while its repositories’ collection state is
-unchanged.</p>
+unchanged. A repository entity’s series is the repository-page
+cache’s answer of <code class="docutils literal notranslate"><span class="pre">repositoryMetricSeries</span></code> for the same parameters
+(since 0.29.121), shared with the repository page.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleCompare</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Query Parameters<span class="colon">:</span></dt>
@@ -5299,6 +5418,182 @@ read is labelled with its id.</p>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/500">500 Internal Server Error</a></span> – A server-side failure. <a class="reference internal" href="#shared-response-servererror"><span class="std std-ref">Shared response ServerError</span></a>.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="http get">
+<dt class="sig sig-object http" id="get--api-v1-admin-cache">
+<span class="sig-name descname"><span class="pre">GET</span> </span><span class="sig-name descname"><span class="pre">/api/v1/admin/cache</span></span><a class="headerlink" href="#get--api-v1-admin-cache" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Operation<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">adminCacheSummary</span></code></p>
+</dd>
+<dt class="field-even">Access<span class="colon">:</span></dt>
+<dd class="field-even"><p>an administrator’s signed-in session.</p>
+</dd>
+</dl>
+<p><strong>Returns what the api process’s caches hold and did since it started.</strong></p>
+<p>The repository-page cache’s budget, size and counters (hits served
+stored bodies, revalidations answered <code class="docutils literal notranslate"><span class="pre">304</span></code>, misses computed the
+answer, stores kept one, evictions dropped one for the budget — or,
+with no budget, for the 1,000-answer bound of its pool; the
+re-warm’s own replays are counted with visitors’), the re-warm’s
+interval, its last pass and the size of its saved list, the
+comparison series cache’s size, hits, misses and whole-map resets,
+and the comparison answer cache’s size. The caches live in this
+process’s memory: with several api processes each answers for
+itself. Read-only. Since 0.29.123.</p>
+<p>Handler: <code class="docutils literal notranslate"><span class="pre">handleAdminCache</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Response JSON Object<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>page_cache</strong> (<em>object</em>)</p></li>
+<li><p><strong>page_cache.max_bytes</strong> (<em>integer:int64, required</em>) – <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> in bytes; 0 keeps only the time series and top contributors (at most 1,000 answers) and the metric series (at most another 1,000).</p></li>
+<li><p><strong>page_cache.bytes</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>page_cache.entries</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>page_cache.repositories</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>page_cache.saved_requests</strong> (<em>integer, required</em>) – Requests loaded from the saved re-warm list at start and not yet replayed.</p></li>
+<li><p><strong>page_cache.hits</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>page_cache.revalidated</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>page_cache.misses</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>page_cache.stores</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>page_cache.evictions</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>rewarm</strong> (<em>object, required</em>)</p></li>
+<li><p><strong>rewarm.interval_seconds</strong> (<em>integer:int64, required</em>) – <code class="docutils literal notranslate"><span class="pre">api.cache_rewarm_seconds</span></code> in effect; 0 is off.</p></li>
+<li><p><strong>rewarm.saved_requests</strong> (<em>integer, required</em>) – Rows of the saved re-warm list as last saved or loaded.</p></li>
+<li><p><strong>rewarm.last_pass_at</strong> (<em>string:date-time</em>)</p></li>
+<li><p><strong>rewarm.last_pass_repositories</strong> (<em>integer</em>)</p></li>
+<li><p><strong>rewarm.last_pass_requests</strong> (<em>integer</em>)</p></li>
+<li><p><strong>rewarm.last_pass_duration_ms</strong> (<em>integer:int64</em>)</p></li>
+<li><p><strong>series_cache</strong> (<em>object</em>)</p></li>
+<li><p><strong>series_cache.entries</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>series_cache.max_entries</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>series_cache.hits</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>series_cache.misses</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>series_cache.resets</strong> (<em>integer:int64, required</em>) – Times the map was cleared on reaching max_entries.</p></li>
+<li><p><strong>compare_body_cache</strong> (<em>object</em>)</p></li>
+<li><p><strong>compare_body_cache.entries</strong> (<em>integer, required</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Status Codes<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/200">200 OK</a></span> – The totals.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/401">401 Unauthorized</a></span> – No valid Bearer token: missing, unknown, expired or revoked. <a class="reference internal" href="#shared-response-unauthorized"><span class="std std-ref">Shared response Unauthorized</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/403">403 Forbidden</a></span> – The token is valid but may not do this: an API token on an administrator or account-settings route, or a session that is not an administrator’s. <a class="reference internal" href="#shared-response-forbidden"><span class="std std-ref">Shared response Forbidden</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="http get">
+<dt class="sig sig-object http" id="get--api-v1-admin-cache-repos">
+<span class="sig-name descname"><span class="pre">GET</span> </span><span class="sig-name descname"><span class="pre">/api/v1/admin/cache/repos</span></span><a class="headerlink" href="#get--api-v1-admin-cache-repos" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Operation<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">adminCacheRepositories</span></code></p>
+</dd>
+<dt class="field-even">Access<span class="colon">:</span></dt>
+<dd class="field-even"><p>an administrator’s signed-in session.</p>
+</dd>
+</dl>
+<p><strong>Returns the repositories with answers in the repository-page cache, at most 100.</strong></p>
+<p>One row per repository with held answers or saved requests, sorted
+by <code class="docutils literal notranslate"><span class="pre">sort</span></code> (an unknown key sorts by bytes, and <code class="docutils literal notranslate"><span class="pre">sort</span></code> in the answer
+is the key applied), ties by id. <code class="docutils literal notranslate"><span class="pre">total</span></code> counts every such
+repository. Read-only. Since 0.29.123.</p>
+<p>Handler: <code class="docutils literal notranslate"><span class="pre">handleAdminCacheRepos</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Query Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>sort</strong> (<em>string:enum</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Response JSON Object<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>sort</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>total</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>repositories[]</strong> (<em>object</em>)</p></li>
+<li><p><strong>repositories[].repo_id</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>repositories[].entries</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>repositories[].bytes</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>repositories[].hits</strong> (<em>integer, required</em>) – Times its held answers were served from the cache.</p></li>
+<li><p><strong>repositories[].saved_requests</strong> (<em>integer, required</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-odd">Status Codes<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/200">200 OK</a></span> – The repositories.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/401">401 Unauthorized</a></span> – No valid Bearer token: missing, unknown, expired or revoked. <a class="reference internal" href="#shared-response-unauthorized"><span class="std std-ref">Shared response Unauthorized</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/403">403 Forbidden</a></span> – The token is valid but may not do this: an API token on an administrator or account-settings route, or a session that is not an administrator’s. <a class="reference internal" href="#shared-response-forbidden"><span class="std std-ref">Shared response Forbidden</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="http get">
+<dt class="sig sig-object http" id="get--api-v1-admin-cache-repos-repoID">
+<span class="sig-name descname"><span class="pre">GET</span> </span><span class="sig-name descname"><span class="pre">/api/v1/admin/cache/repos/{repoID}</span></span><a class="headerlink" href="#get--api-v1-admin-cache-repos-repoID" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Operation<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">adminCacheRepository</span></code></p>
+</dd>
+<dt class="field-even">Access<span class="colon">:</span></dt>
+<dd class="field-even"><p>an administrator’s signed-in session.</p>
+</dd>
+</dl>
+<p><strong>Returns one repository’s answers in the repository-page cache, each current or why not.</strong></p>
+<p>Each held answer with its request, when it was computed, what it
+cost, how often it was served and its size, and <code class="docutils literal notranslate"><span class="pre">status</span></code>:
+<code class="docutils literal notranslate"><span class="pre">current</span></code>, or <code class="docutils literal notranslate"><span class="pre">outdated:</span></code> and the reason (the repository changed,
+its window moved, or the request is no longer a cached one) — the re-warm’s own rule. Also the saved
+requests not yet replayed. Read-only. Since 0.29.123.</p>
+<p>Handler: <code class="docutils literal notranslate"><span class="pre">handleAdminCacheRepo</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>repoID</strong> (<em>integer:int64, required</em>) – A repository’s id (<code class="docutils literal notranslate"><span class="pre">repo_id</span></code>). A value that is not a positive integer is a <code class="docutils literal notranslate"><span class="pre">400</span></code>; an id no repository has is a <code class="docutils literal notranslate"><span class="pre">404</span></code> on every repository route (since 0.29.99).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Response JSON Object<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>repo_id</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>collecting</strong> (<em>boolean, required</em>)</p></li>
+<li><p><strong>answers[]</strong> (<em>object</em>)</p></li>
+<li><p><strong>answers[].uri</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>answers[].computed_at</strong> (<em>string:date-time, required</em>)</p></li>
+<li><p><strong>answers[].cost_ms</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>answers[].hits</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>answers[].bytes</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>answers[].status</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>saved_requests[]</strong> (<em>string</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-odd">Status Codes<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/200">200 OK</a></span> – The repository’s held answers.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/400">400 Bad Request</a></span> – An id that is not a positive integer.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/401">401 Unauthorized</a></span> – No valid Bearer token: missing, unknown, expired or revoked. <a class="reference internal" href="#shared-response-unauthorized"><span class="std std-ref">Shared response Unauthorized</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/403">403 Forbidden</a></span> – The token is valid but may not do this: an API token on an administrator or account-settings route, or a session that is not an administrator’s. <a class="reference internal" href="#shared-response-forbidden"><span class="std std-ref">Shared response Forbidden</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/404">404 Not Found</a></span> – No repository has this id (<code class="docutils literal notranslate"><span class="pre">repo</span> <span class="pre">not</span> <span class="pre">found</span></code>). <a class="reference internal" href="#shared-response-reponotfound"><span class="std std-ref">Shared response RepoNotFound</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/500">500 Internal Server Error</a></span> – A server-side failure. <a class="reference internal" href="#shared-response-servererror"><span class="std std-ref">Shared response ServerError</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Response Headers<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>X-Aveloxis-Added-To-Group</strong> (<span><em>string</em></span>) – Present once, on the answer whose request added the repository to
+the caller’s “Shared with Me” group (a signed-in session following a
+link to a repository outside its groups). Its value is the group’s
+name. The addition happens before the operation runs, so the header
+rides on whatever that request answers, a <code class="docutils literal notranslate"><span class="pre">400</span></code>, <code class="docutils literal notranslate"><span class="pre">404</span></code>, <code class="docutils literal notranslate"><span class="pre">429</span></code> or
+<code class="docutils literal notranslate"><span class="pre">500</span></code> included; the reference declares it on the success response.</p></li>
 </ul>
 </dd>
 </dl>

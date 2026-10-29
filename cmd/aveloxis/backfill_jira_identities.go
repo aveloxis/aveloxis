@@ -227,6 +227,13 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 						}
 						return nil
 					})
+				// The walk wrote this repository's issues outside any job:
+				// stamp it whatever the walk's end, so the API's cached
+				// answers follow (D7, summary/63).
+				if serr := store.StampReposChangedOutsideJob(ctx, []int64{*c.RepoID}); serr != nil {
+					logger.Warn("jira backfill: cache-state stamp failed — the repository's cached API answers stay until its next collection",
+						"project", c.ProjectKey, "error", serr)
+				}
 				if walkErr != nil {
 					switch {
 					case errors.Is(walkErr, errBackfillLimitHit):

@@ -324,7 +324,8 @@ each cached answer with what it cost and whether it is current — or
 outdated because the repository changed, its window moved, or the request
 is no longer a cached one. It changes nothing. The caches live in the api process, so the page reads the API's
 `/api/v1/admin/cache` routes; with several api processes it shows the one
-that answers.
+that answers, and only the process that owns the saved re-warm list (the
+first to start) reports its size.
 
 An administrator can open any account's group read-only (`/groups/{id}`):
 the page says so, offers nothing to add or remove, and the read is logged

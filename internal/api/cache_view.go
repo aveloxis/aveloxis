@@ -53,6 +53,10 @@ type cacheAnswerView struct {
 }
 
 // repoSummaries is one summary per repository with held answers or seeds.
+// It walks every entry under the cache lock, as replaySet does once per
+// re-warm pass, so requests wait on the lock for one walk — linear in the
+// entries the budget holds — each time an administrator opens the view
+// (whole-branch review of 0.29.119–0.29.123, A12).
 func (c *repoPageCache) repoSummaries() []cacheRepoSummary {
 	c.mu.Lock()
 	defer c.mu.Unlock()

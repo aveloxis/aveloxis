@@ -46,23 +46,33 @@ import (
 //
 // A new writer of these tables fails this test until it is classified here.
 
-// pageCacheTables are the tables the exact answers read.
-var pageCacheTables = []string{
-	"repo_deps_vulnerabilities", "repo_deps_scorecard",
-	"scancode_file_results", "scancode_scans",
-	"repo_dependencies", "repo_deps_libyear",
-	"repo_lockfiles", "repo_lockfile_packages", "repo_lockfile_edges",
-	// The SBOM's license (GetRepoForSBOM reads the latest repo_info row).
-	"repo_info",
-	// The traffic answer (v0.29.118): the daily clones and the five
-	// GitHub traffic tables, all stored history, no time bound.
-	"repo_clones", "repo_views", "repo_traffic_paths",
-	"repo_traffic_referrers", "repo_traffic_windows", "repo_traffic_weeks",
-	// The windowed and contributor answers (0.29.120, D6): the time series,
-	// the metric series, top contributors and /contributions/*.
-	"commits", "issues", "pull_requests", "messages", "issue_events", "pull_request_events",
-	"pull_request_reviews", "issue_message_ref", "pull_request_message_ref",
-	"contributors", "contributor_affiliations", "repo_commit_daily",
+// pageCacheTablesFile lists the tables the exact answers read; the API's
+// TestPageCacheTablesAreWhatTheCachedHandlersRead derives the same set from
+// the cached handlers' store calls (A11; its doc states the call shapes the
+// walk cannot follow).
+const pageCacheTablesFile = "testdata/page_cache_tables.txt"
+
+// pageCacheTables reads pageCacheTablesFile: one table per line, "#"
+// comments.
+func pageCacheTables(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile(pageCacheTablesFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
+	}
+	// Only a reader that broke reads none; the list's exact contents are the
+	// API test's to check against what the cached handlers read.
+	srctest.MinCount(t, "page-cache tables listed", len(out), 1)
+	return out
 }
 
 // repoColumnWriteRE matches a SET of one of the read repos columns in an
@@ -113,21 +123,27 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"BackfillGitLabCommitCount": {"job", "the scheduler's facade phase (commit_count, which no cached answer reads)"},
 
 	// 0.29.120 (D6/D7): the tables of the windowed and contributor answers.
-	"RecordCommitBounds":                {"stamps", "the facade and the gone-recheck sweep: data_changed_at in the same UPDATE, when a bound moves"},
-	"UpdateRepoMetadata":                {"stamps", "Phase 0, the metadata backfill sweep and backfill-repo-metadata: data_changed_at in the same UPDATE, when it fills created_at"},
-	"FillRepoCommitDailyFromCommits":    {"stamps", "heal-commit-daily, in its transaction"},
-	"dedupOnePair":                      {"stamps", "dedup-repos / reconcile-repos: the winner, in the merge's transaction"},
-	"UpsertCommit":                      {"job", "the facade phase (the job, or collect, which stamps)"},
-	"UpsertCommitBatch":                 {"job", "the facade phase"},
-	"ReplaceRepoCommitDaily":            {"job", "the facade phase"},
-	"InvalidateCommitDailyComplete":     {"job", "the facade phase"},
-	"BackfillCommitAuthorIDs":           {"job", "commit resolution (the job, or collect)"},
-	"UpsertIssue":                       {"processor", "staged issues"},
-	"UpsertPullRequest":                 {"processor", "staged pull requests"},
-	"UpsertPRReview":                    {"processor", "staged reviews"},
-	"UpsertIssueEvent":                  {"processor", "staged issue events"},
-	"UpsertPREvent":                     {"processor", "staged pull request events"},
-	"UpsertMessageBatch":                {"processor", "staged messages and their bridges"},
+	"RecordCommitBounds":             {"stamps", "the facade and the gone-recheck sweep: data_changed_at in the same UPDATE, when a bound moves"},
+	"UpdateRepoMetadata":             {"stamps", "Phase 0, the metadata backfill sweep and backfill-repo-metadata: data_changed_at in the same UPDATE, when it fills created_at"},
+	"FillRepoCommitDailyFromCommits": {"stamps", "heal-commit-daily, in its transaction"},
+	"dedupOnePair":                   {"stamps", "dedup-repos / reconcile-repos: the winner, in the merge's transaction"},
+	"UpsertCommit":                   {"job", "the facade phase (the job, or collect, which stamps)"},
+	"UpsertCommitBatch":              {"job", "the facade phase"},
+	"ReplaceRepoCommitDaily":         {"job", "the facade phase"},
+	"InvalidateCommitDailyComplete":  {"job", "the facade phase"},
+	"BackfillCommitAuthorIDs":        {"job", "commit resolution (the job, or collect)"},
+	"UpsertIssue":                    {"processor", "staged issues"},
+	"UpsertPullRequest":              {"processor", "staged pull requests"},
+	"UpsertPRReview":                 {"processor", "staged reviews"},
+	"UpsertIssueEvent":               {"processor", "staged issue events"},
+	"UpsertPREvent":                  {"processor", "staged pull request events"},
+	"UpsertMessageBatch":             {"processor", "staged messages and their bridges"},
+	// Found once the scan read SQL held in package-level constants (A11).
+	"UpsertReviewCommentBatch":          {"processor", "staged inline review comments (staged.go), through upsertMessageSQL"},
+	"ensurePRMetaLinks":                 {"migrate", "migrate's PR meta link backfill"},
+	"addCommitDailyCompleteColumn":      {"migrate", "the column's one-time stamp, a migration step"},
+	"EnsureContributorAlias":            {"fleet", "a contributor alias (the commit resolver, mailing-list sender linking): it attributes an address's commits in every repository that has it — D7, identity waits for each repository's next collection"},
+	"ensureAliasTx":                     {"fleet", "CreateEmailOnlyContributor's alias for a mailing-list sender: identity, D7 as EnsureContributorAlias"},
 	"DeriveIssueClosedByFromEvents":     {"processor", "staged issue closers"},
 	"DeleteStaleConversationRefs":       {"drain", "heal-messages, which stamps its batch's repositories"},
 	"ApplyTrackerAction":                {"drain", "the mailing-list drain; backfill-mailing-list-projection (BackfillKeyedIssueProjection stamps its batch)"},
@@ -205,6 +221,8 @@ var jobCallers = map[string]map[string]string{
 		srctest.SiteKey("internal/collector", "processStagedIssueEvent"): "phase",
 		srctest.SiteKey("internal/collector", "processStagedPREvent"):    "phase",
 		srctest.SiteKey("internal/collector", "processStagedMessage"):    "phase",
+		// Visible once the scan read named SQL (A11): UpsertReviewCommentBatch.
+		srctest.SiteKey("internal/collector", "processStagedReviewComment"): "phase",
 	},
 	// The drains' row processors run only under DrainList / DrainOnce, which
 	// stamp through refreshRepoActivity (checked below).
@@ -310,19 +328,70 @@ var dbDrainCallers = map[string]string{
 	"BridgeEmailToIssue":           "drain",
 }
 
+// sqlOf is a function's statements as the writer scan reads them: its own
+// body plus the value of every package-level const or var it names,
+// followed through the names those values hold in turn (whole-branch review
+// of 0.29.119–0.29.123, A11: UpsertReviewCommentBatch wrote messages through
+// upsertMessageSQL, and a scan of function bodies alone never saw it).
+func sqlOf(part string, values map[string]string) string {
+	identRE := regexp.MustCompile(`\b[A-Za-z_]\w*\b`)
+	var b strings.Builder
+	b.WriteString(part)
+	seen := map[string]bool{}
+	queue := identRE.FindAllString(part, -1)
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		v, ok := values[name]
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		b.WriteString("\n")
+		b.WriteString(v)
+		queue = append(queue, identRE.FindAllString(v, -1)...)
+	}
+	return b.String()
+}
+
+func TestSQLOfFollowsNamedStatements(t *testing.T) {
+	values := map[string]string{
+		"upsertThingSQL": "`INSERT INTO aveloxis_data.messages (a) VALUES ($1)`",
+		"wrappedSQL":     "upsertThingSQL + ` ON CONFLICT DO NOTHING`",
+		"unrelated":      "`DELETE FROM aveloxis_data.commits`",
+	}
+	got := sqlOf("func F() { exec(wrappedSQL) }", values)
+	if !strings.Contains(got, "INSERT INTO aveloxis_data.messages") {
+		t.Errorf("a statement named through another constant must be read: %q", got)
+	}
+	if strings.Contains(got, "DELETE FROM aveloxis_data.commits") {
+		t.Errorf("a constant the function never names must not be read: %q", got)
+	}
+	if got := sqlOf("func F() { exec(upsertThingSQLv2) }", values); strings.Contains(got, "INSERT") {
+		t.Errorf("a longer identifier is another name: %q", got)
+	}
+}
+
 func TestPageCacheTableWritersAreCovered(t *testing.T) {
 	files := srctest.PackageFiles(t, "internal/db", 20)
-	tableRE := regexp.MustCompile(`(?i)(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:aveloxis_\w+\.)?(` + strings.Join(pageCacheTables, "|") + `)\b`)
+	tableRE := regexp.MustCompile(`(?i)(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:aveloxis_\w+\.)?(` + strings.Join(pageCacheTables(t), "|") + `)\b`)
 	bodies := map[string]string{}
 	found := map[string]bool{}
+	values := map[string]string{}
+	stripped := map[string]string{}
 	for name, src := range files {
-		src = srctest.StripGoComments(src)
+		stripped[name] = srctest.StripGoComments(src)
+		for n, v := range srctest.PackageValues(t, stripped[name]) {
+			values[n] = v
+		}
+	}
+	for name, src := range stripped {
 		for fn, part := range srctest.FuncParts(t, src) {
 			if fn == srctest.PackageLevel {
 				continue
 			}
 			bodies[fn] += part
-			sql := withoutSQLComments(part)
+			sql := withoutSQLComments(sqlOf(part, values))
 			if tableRE.MatchString(sql) || repoColumnWriteRE.MatchString(sql) {
 				found[fn] = true
 				if _, ok := pageCacheWriters[fn]; !ok {

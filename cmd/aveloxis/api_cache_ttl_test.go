@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/api"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestAPICachesIgnoreTheEnrichmentInterval — D6 (0.29.120, summary/63),
@@ -78,5 +79,30 @@ func TestAPIRepositoryPageCacheFollowsTheConfig(t *testing.T) {
 				t.Errorf("%s: an explicit 0 must turn the re-warm off; log %q", json, logs.String())
 			}
 		}
+	}
+}
+
+// Whole-branch review of 0.29.119–0.29.123, A7: the re-warm saves the
+// replay list when it stops and then releases the list's lock, and runAPI
+// waits for that — bounded by the shutdown timeout — before the deferred
+// store.Close takes the pool away. The re-warm runs on its own cancel, so a
+// server that stopped on an error (ctx still live) stops it too.
+func TestRunAPIWaitsForTheRewarmsLastSave(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runAPI("))
+	steps := []string{
+		"rewarmCtx, cancelRewarm := context.WithCancel(ctx)",
+		"defer close(rewarmDone)",
+		"apiServer.RunRewarm(rewarmCtx)",
+		"err = serveUntilDone(",
+		"cancelRewarm()",
+		"<-rewarmDone",
+	}
+	at := -1
+	for _, s := range steps {
+		i := strings.Index(body[at+1:], s)
+		if i < 0 {
+			t.Fatalf("runAPI must %q after the step before it (stop the re-warm, then wait for its save within the bound)", s)
+		}
+		at += 1 + i
 	}
 }

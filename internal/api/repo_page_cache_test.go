@@ -1153,7 +1153,7 @@ func TestConfigurationDocStatesTheZeroBudgetBound(t *testing.T) {
 	// Every statement of the bound is required on its own (round 3 of 0.29.78:
 	// an OR of two spellings let api.md pass on one of its two statements).
 	for f, needles := range map[string][]string{
-		"docs/getting-started/configuration.md": {"up to " + n + " weekly time series and top-contributor answers and up to " + n + " metric series", "at most " + n + " answers, and the metric series, at most another " + n},
+		"docs/getting-started/configuration.md": {"up to " + n + " weekly time series and top-contributor answers and up to " + n + " metric series", "at most " + n + " answers, as they were before the setting existed, and the metric series (0.29.119), at most another " + n},
 		"docs/getting-started/upgrading.md":     {"up to " + n + " answers"},
 		"cmd/aveloxis/deploy_checklist.go":      {"up to " + n + " answers"},
 		"docs/guide/scaling.md":                 {"keeps only up to " + n + " weekly-series and top-contributor answers and up to " + n + " metric-series answers"},
@@ -1303,5 +1303,31 @@ func TestKeptPoliciesNameARegisteredPool(t *testing.T) {
 	}
 	if len(registered) != len(zeroBudgetPools) {
 		t.Errorf("zeroBudgetPools lists a pool twice: %q", zeroBudgetPools)
+	}
+}
+
+// ASVS pass of 0.29.124 (V2.2.1/V2.4.1, L-1): only contributor_retention
+// reads retention_threshold (metricSeriesAndParts), so for every other
+// metric each threshold was another key for the same answer — a computation
+// and a stored copy per value. A valid threshold is not part of another
+// metric's key; an invalid one stays (the handler answers it 400, and it
+// must never share a valid request's key or its 304).
+func TestRetentionThresholdKeysOnlyTheRetentionMetric(t *testing.T) {
+	const ms = "GET /api/v1/repos/{repoID}/metric-series"
+	key := func(q string) string {
+		k, keyable := canonicalQuery(httptest.NewRequest(http.MethodGet, "/x?"+q, nil), pageParams[ms])
+		if !keyable {
+			t.Fatalf("?%s is not keyable", q)
+		}
+		return k
+	}
+	if key("metric=committers&retention_threshold=7") != key("metric=committers") {
+		t.Error("a threshold on a metric that ignores it must not split the key")
+	}
+	if key("metric="+retentionMetricID+"&retention_threshold=7") == key("metric="+retentionMetricID) {
+		t.Error("the retention metric's threshold is its own answer")
+	}
+	if key("metric=committers&retention_threshold=0") == key("metric=committers") {
+		t.Error("an invalid threshold (a 400) must not share the valid request's key")
 	}
 }

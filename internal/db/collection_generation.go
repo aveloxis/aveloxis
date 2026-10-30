@@ -12,8 +12,9 @@ import (
 // (O11 option 4, v0.29.71). The API keys its per-repository caches on it, so
 // an answer cached before a job over any member finished is not served after
 // it. It digests every member's queue row: updated_at, which the claim,
-// CompleteJob (success AND failure), the gap healer's count refresh and a
-// re-queue all stamp, and last_collected. The latest last_collected alone
+// CompleteJob (success AND failure), the gap healer's drain lock and
+// release, the count refresh when a count changes (A2 of the 0.29.124
+// review) and a re-queue all stamp, and last_collected. The latest last_collected alone
 // (the first shape) missed a failed job, which writes rows without advancing
 // it, and a member finishing after a member with a newer start anchor
 // (review round 1). Since 0.29.120 it also digests repos.data_changed_at,

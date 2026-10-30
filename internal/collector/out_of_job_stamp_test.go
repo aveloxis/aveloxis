@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -120,5 +121,73 @@ func TestMessageHealPassStampsAfterItsWrites(t *testing.T) {
 	fn := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func stampHealBatch("))
 	if !strings.Contains(fn, "StampReposChangedOutsideJob(") || !strings.Contains(fn, "healBatchRepos(items)") {
 		t.Error("stampHealBatch must stamp healBatchRepos(items)")
+	}
+}
+
+// Whole-branch review of 0.29.119–0.29.123, A5: a staged row can commit
+// part of its writes and then fail (a Jira envelope whose issue landed and
+// whose comment did not; a mail row whose issue and message landed and
+// whose tracker action did not). The partial write is in the tables the
+// API's answers read, and a repository without a queue row (a gone one,
+// its data kept) has no next collection to show it — so the first partial
+// write of a row stamps its repository. Only the first: the row is retried
+// every drain, and a lasting failure must not move the state each time
+// (round 1 finding 3). Its final write stamps again.
+func TestJiraDrainStampsAPartialWriteOnce(t *testing.T) {
+	repoID := int64(42)
+	store := &fakeJiraProcStore{
+		perProject: map[int64][]db.JiraStagingRow{7: {{JsID: 1, IssueKey: "AVJP-1", RepoID: &repoID, Envelope: []byte(jiraEnvelope)}}},
+		identities: map[string][3]any{"alice-gh": {"cntrb-alice", "login", false}},
+		commentErr: errors.New("deadlock detected"), // the issue lands, its comments do not
+	}
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	drain := func() {
+		t.Helper()
+		if _, err := p.DrainOnce(context.Background()); err != nil {
+			t.Fatalf("DrainOnce: %v", err)
+		}
+	}
+	drain()
+	if len(store.issues) == 0 || len(store.stampedRepos) != 1 {
+		t.Fatalf("a committed issue whose comments failed: issues %d, stampedRepos %v — want the repository stamped once", len(store.issues), store.stampedRepos)
+	}
+	drain()
+	if len(store.stampedRepos) != 1 {
+		t.Errorf("the same row failing again stamped again: %v (a lasting failure must not move the state every drain)", store.stampedRepos)
+	}
+	store.commentErr = nil
+	drain()
+	if len(store.stampedRepos) != 2 {
+		t.Errorf("the row's final write must stamp: %v", store.stampedRepos)
+	}
+}
+
+func TestMailingListDrainStampsAPartialWriteOnce(t *testing.T) {
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows:             []db.StagedMailingListRow{mlRetryRow(1)}, // [Resolved]: commits its issue, then the action fails
+		applyActionFails: 2,
+	}
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	drain := func() {
+		t.Helper()
+		// A deferred row stays staged in the real store; the fake serves
+		// each row once, so it is staged again before every drain.
+		store.rows = []db.StagedMailingListRow{mlRetryRow(1)}
+		if _, err := p.DrainList(context.Background(), 7); err != nil {
+			t.Fatalf("DrainList: %v", err)
+		}
+	}
+	drain()
+	if len(store.stampedRepos) != 1 || store.stampedRepos[0] != 42 {
+		t.Fatalf("a row whose issue and message landed before its deferral: stampedRepos %v, want [42]", store.stampedRepos)
+	}
+	drain()
+	if len(store.stampedRepos) != 1 {
+		t.Errorf("the same row deferring again stamped again: %v", store.stampedRepos)
+	}
+	drain()
+	if len(store.stampedRepos) != 2 {
+		t.Errorf("the row's final write must stamp: %v (processed %v, tracker-action calls %d, applied %v)", store.stampedRepos, store.processed, store.applyActionCalls, store.appliedActions)
 	}
 }

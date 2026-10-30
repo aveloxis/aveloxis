@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -22,11 +23,61 @@ type PageCacheReplayRow struct {
 	CostMS int64
 }
 
-// LoadPageCacheReplay reads the API's saved re-warm list (0.29.122, summary/63
-// §8). The rows are a hint written by the API; it validates each before it
-// replays one.
-func (s *PostgresStore) LoadPageCacheReplay(ctx context.Context) ([]PageCacheReplayRow, error) {
-	rows, err := s.pool.Query(ctx, `SELECT repo_id, uri, cost_ms FROM aveloxis_ops.page_cache_replay`)
+// PageCacheReplayAdvisoryLockID is the saved re-warm list's owner lock
+// ("AVLXRPLY" packed into 64 bits).
+const PageCacheReplayAdvisoryLockID int64 = 0x41564C5852504C59
+
+// ErrPageCacheReplayHeld is ClaimPageCacheReplay's answer when another
+// session owns the list.
+var ErrPageCacheReplayHeld = errors.New("the saved re-warm list is held by another session (advisory lock held)")
+
+// PageCacheReplayList is the saved re-warm list (0.29.122, summary/63 §8)
+// while this process owns it.
+type PageCacheReplayList struct {
+	lock *heldAdvisoryLock
+}
+
+// ClaimPageCacheReplay takes ownership of the saved re-warm list for one
+// API process, or answers ErrPageCacheReplayHeld when another holds it. The
+// list has one owner per database (whole-branch review of
+// 0.29.119–0.29.123, A1, operator decision 2026-10-29): each owner saves the
+// difference from what it last saved itself, so a second writer deleted
+// rows the first still held. The owner holds an advisory lock until
+// Release, and its loads and saves run on the lock's own session: once
+// that session is gone, so is the lock — another process may then claim
+// the list — and the old owner's saves fail instead of writing unowned
+// (the api then gives it up and claims it again at its next pass). A
+// session-level lock needs a direct or session-mode connection: behind a
+// transaction pooler two processes' statements share server sessions, and
+// an advisory lock is reentrant within one. Two stated limits (ASVS pass of 0.29.124):
+// any role that can connect may take the lock first and keep every api off
+// the list — they then re-warm from memory and say so, nothing is written
+// unowned; and the held connection is exempt from the pool's
+// MaxConnLifetime recycling, which costs nothing here (a session keeps its
+// credentials across a rotation, and a failover ends it — the re-claim).
+func (s *PostgresStore) ClaimPageCacheReplay(ctx context.Context) (*PageCacheReplayList, error) {
+	lock, held, err := s.tryHoldAdvisoryLock(ctx, PageCacheReplayAdvisoryLockID)
+	if err != nil {
+		return nil, fmt.Errorf("claim page cache replay list: %w", err)
+	}
+	if !held {
+		return nil, ErrPageCacheReplayHeld
+	}
+	return &PageCacheReplayList{lock: lock}, nil
+}
+
+// Release gives the list up (the next process to claim it owns it).
+func (l *PageCacheReplayList) Release() { l.lock.release() }
+
+// Held reports whether the list's lock is still held: false once the lock's
+// database session ended (a database restart, a dropped connection), after
+// which its loads and saves fail and another process may claim it.
+func (l *PageCacheReplayList) Held() bool { return !l.lock.conn.Conn().IsClosed() }
+
+// LoadPageCacheReplay reads the saved re-warm list. The rows are a hint
+// written by the API; it validates each before it replays one.
+func (l *PageCacheReplayList) LoadPageCacheReplay(ctx context.Context) ([]PageCacheReplayRow, error) {
+	rows, err := l.lock.conn.Query(ctx, `SELECT repo_id, uri, cost_ms FROM aveloxis_ops.page_cache_replay`)
 	if err != nil {
 		return nil, fmt.Errorf("load page cache replay list: %w", err)
 	}
@@ -48,11 +99,11 @@ func (s *PostgresStore) LoadPageCacheReplay(ctx context.Context) ([]PageCacheRep
 // SavePageCacheReplay applies one difference to the saved re-warm list in one
 // transaction: each upsert stores its row (a key already saved takes the new
 // cost), each delete removes its key. An empty difference writes nothing.
-func (s *PostgresStore) SavePageCacheReplay(ctx context.Context, upserts []PageCacheReplayRow, deletes []PageCacheReplayKey) error {
+func (l *PageCacheReplayList) SavePageCacheReplay(ctx context.Context, upserts []PageCacheReplayRow, deletes []PageCacheReplayKey) error {
 	if len(upserts) == 0 && len(deletes) == 0 {
 		return nil
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := l.lock.conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("save page cache replay list: %w", err)
 	}

@@ -71,6 +71,7 @@ type MailingListProcessor struct {
 	// drain goroutine shares this Processor: a list being drained by one
 	// goroutine is skipped by the others until it's released. Default config
 	// runs a single goroutine, so this is a no-op there.
+	partial  partialWriteStamps // staged rows whose partial writes were stamped (A5)
 	mu       sync.Mutex
 	inflight map[int64]bool
 	cursor   int64 // round-13 rotation cursor over rgls_id (guarded by mu — DrainOnce runs on N goroutines)
@@ -257,7 +258,11 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 			if ctx.Err() != nil {
 				return processed, ctx.Err() // shutdown mid-batch: nothing marked, the rows drain next start (pass 37)
 			}
+			counters.rowCommitted = false
 			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue, counters); err != nil {
+				if counters.rowCommitted && (errors.Is(err, context.Canceled) || errors.Is(err, errMailingListRowRetry)) && p.partial.first(row.MlsID) {
+					repoWrote = true // its message landed and it stays staged: stamp once, not every retry (A5)
+				}
 				if errors.Is(err, context.Canceled) {
 					return processed, err // not a drop: the row stays staged
 				}
@@ -285,6 +290,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 				p.logger.Error("mailing-list processor: write failed, DROPPING message",
 					"rgls_id", rglsID, "message_id", row.Message.MessageID, "error", err)
 			}
+			p.partial.done(row.MlsID)
 			done = append(done, row.MlsID)
 			repoWrote = true
 		}
@@ -343,6 +349,11 @@ var errMailingListRowRetry = errors.New("mailing-list row deferred for retry (a 
 type drainCounters struct {
 	nodeResolveFailures int
 	firstNodeErr        error
+	// rowCommitted is set by processRow once the row's own message landed
+	// (UpsertEmailMessage, after any issue projection): every deferral it
+	// returns after that point left a partial write (A5). DrainList clears
+	// it before each row.
+	rowCommitted bool
 }
 
 func (c *drainCounters) noteNodeResolveFailure(err error) {
@@ -566,6 +577,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	if err != nil {
 		return err
 	}
+	c.rowCommitted = true
 
 	// C1: apply the notification's ACTION to the issue's state. Must be
 	// an explicit call on the LINK path — for an already-existing issue

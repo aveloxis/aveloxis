@@ -5,7 +5,7 @@
 <div class="container">
 <div class="card">
 <h2>API cache</h2>
-<p style="color:#586069;font-size:13px">What the api process's caches hold and did since it started (with several api processes, the one answering). An answer stays valid until its repository is collected again or its window moves; the re-warm (on when the cache has a budget) recomputes the ones visitors came back to and saves that list, so a restart forgets nothing.</p>
+<p style="color:#586069;font-size:13px">What the api process's caches hold and did since it started (with several api processes, the one answering). An answer stays valid until its repository is collected again or its window moves; the re-warm (on when the cache has a budget) recomputes the ones visitors came back to and saves that list at each pass and at a stop, so a restart recomputes them (one api process per database owns the list; another shows 0 saved).</p>
 <div id="cache-status" class="form-msg">Loading&hellip;</div>
 <table id="cache-totals" class="repo-table tbl-stack" style="width:100%"><thead><tr><th>Cache</th><th>Figures</th></tr></thead><tbody></tbody></table>
 </div>

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Security &mdash; Aveloxis 0.29.123 documentation</title>
+  <title>Security &mdash; Aveloxis 0.29.124 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=70fe169d"></script>
+      <script src="../_static/documentation_options.js?v=bb778650"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
@@ -2012,6 +2013,24 @@ file’s secrets. Shown to nobody: a token is shown once, at its mint.</p></li>
 <li><p><strong>Operational data</strong> — the queue, the logs, capacity counters, the sign-up
 escrow envelopes.</p></li>
 </ul>
+<p><strong>Cached copies of the public data.</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, the
+<code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps answers in memory — contributor names and e-mail
+addresses among them (<code class="docutils literal notranslate"><span class="pre">/contributions/identities</span></code>, <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code>) —
+until the repository’s state moves: its next collection or scan, or a repair
+that stamps it. No answer expires on a timer (0.29.120), and an nginx disk
+cache in front of it revalidates against the API, so a disk copy lasts as
+long. A contributor row changed or removed by hand (an erasure request, an
+identity merge) is therefore still served for each repository that names it
+until that repository is collected again. To stop that at once, move the
+affected repositories’ state —
+<code class="docutils literal notranslate"><span class="pre">UPDATE</span> <span class="pre">aveloxis_data.repos</span> <span class="pre">SET</span> <span class="pre">data_changed_at</span> <span class="pre">=</span> <span class="pre">NOW()</span> <span class="pre">WHERE</span> <span class="pre">repo_id</span> <span class="pre">=</span> <span class="pre">ANY('{…}')</span></code>
+— which changes their answers’ ETags, so the API recomputes and nginx’s
+revalidation replaces its copy. Restarting the <code class="docutils literal notranslate"><span class="pre">api</span></code> process does not do it
+for every answer: an exact answer’s ETag comes from the state alone, so after
+a restart nginx’s revalidation still gets a 304 and keeps its disk copy; the
+contributor answers above name their body in their ETag, so they are replaced
+as each is revalidated after a restart. The stamp covers both, with no
+restart.</p>
 </section>
 <section id="logs">
 <h2>Logs<a class="headerlink" href="#logs" title="Link to this heading"></a></h2>

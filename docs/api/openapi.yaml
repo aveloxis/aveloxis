@@ -748,9 +748,11 @@ paths:
         A contribution is a commit authored, an issue opened or closed, an
         issue or pull-request event, a pull request opened, a review
         submitted, or any comment. Commits whose author was never resolved
-        to a contributor are not counted. The window defaults to the two
-        years before the Monday (UTC) that starts the current week; ordered
-        by login then full name.
+        to a contributor are not counted. The window starts two years before
+        the Monday (UTC) that starts the current week by default; an omitted
+        `until` ends it at the latest plausible commit time (UTC midnight two
+        days ahead), and a given `until` is never later than that bound.
+        Ordered by login then full name.
 
         Handler: `handleRepoContributors`.
       tags: [Contributors]
@@ -914,8 +916,10 @@ paths:
       summary: Returns a repository's contributors ranked by commits, issues, pull requests, reviews and comments.
       description: |
         Events (labels, assignments, closes) do not count here. The window
-        defaults to the two years before the Monday (UTC) that starts the
-        current week. The envelope echoes the window in
+        starts two years before the Monday (UTC) that starts the current week
+        by default; an omitted `until` ends it at the latest plausible commit
+        time (UTC midnight two days ahead), and a given `until` is never later
+        than that bound. The envelope echoes the window in
         effect: `until` is the exclusive upper bound (the day after the
         requested `until`), or `0001-01-01T00:00:00Z` when none was given.
 
@@ -4535,7 +4539,8 @@ paths:
         comparison series cache's size, hits, misses and whole-map resets,
         and the comparison answer cache's size. The caches live in this
         process's memory: with several api processes each answers for
-        itself. Read-only. Since 0.29.123.
+        itself, and only the one that owns the saved re-warm list (the first
+        to start; 0.29.124) reports a saved list. Read-only. Since 0.29.123.
 
         Handler: `handleAdminCache`.
       tags: [Admin monitor]
@@ -4592,7 +4597,7 @@ paths:
                         description: '`api.cache_rewarm_seconds` in effect; 0 is off.'
                       saved_requests:
                         type: integer
-                        description: Rows of the saved re-warm list as last saved or loaded.
+                        description: Rows of the saved re-warm list as this process last saved or loaded them; 0 on a process that does not own the list (another api process claimed it first, 0.29.124).
                       last_pass_at:
                         type: string
                         format: date-time

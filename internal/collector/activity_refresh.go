@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"log/slog"
+	"sync"
 )
 
 // activityRefresher is the narrow capability both drain-side callers
@@ -35,10 +36,12 @@ type activityRefresher interface {
 // the repository (wrote: a row processed or dropped, an envelope that fully
 // processed) it runs first, on a context the drain's cancel cannot stop
 // (the store's), and only its error is logged. A row merely reached — one
-// deferred for retry, an envelope that failed — does not stamp: it comes
-// back next drain, and a lasting failure would move the state every drain
-// (round 1 finding 3 of 0.29.123); its partial writes show when it
-// succeeds, or at the next collection.
+// deferred for retry, an envelope that failed before writing — does not
+// stamp: it comes back next drain, and a lasting failure would move the
+// state every drain (round 1 finding 3 of 0.29.123). A row that committed
+// part of its writes before failing stamps once (partialWriteStamps): a
+// repository without a queue row has no next collection to show them
+// (whole-branch review of 0.29.119–0.29.123, A5).
 func refreshRepoActivity(ctx context.Context, s activityRefresher, logger *slog.Logger, repoID int64, source string, wrote bool) {
 	// Detached: a stop is no reason to skip the stamp (the rows landed), so
 	// a cancellation cannot end it and is not classified here.
@@ -59,4 +62,43 @@ func refreshRepoActivity(ctx context.Context, s activityRefresher, logger *slog.
 		logger.Warn("activity-cache refresh failed after drain (home ranking stays stale until the next cycle)",
 			"source", source, "repo_id", repoID, "error", err)
 	}
+}
+
+// partialWriteStamps decides when a staged row's PARTIAL writes stamp its
+// repository (whole-branch review of 0.29.119–0.29.123, A5): a row that
+// committed some writes and then failed stays staged and is retried every
+// drain. Its first partial write in this process stamps — the data it
+// committed is what the API's answers read, and a repository without a
+// queue row (a gone one, its data kept) has no next collection to show it —
+// and its retries do not, so a lasting failure cannot move the repository's
+// state every drain (round 1 finding 3 of 0.29.123). A restart forgets the
+// rows, so each process stamps a failing row at most once; a row that
+// completes is forgotten (its final write stamps). The set holds only rows
+// still staged and failing. Safe for the drain goroutines that share a
+// processor; the zero value is ready.
+type partialWriteStamps struct {
+	mu   sync.Mutex
+	rows map[int64]struct{}
+}
+
+// first reports whether rowID's partial write is the first this process
+// has seen, and records it.
+func (p *partialWriteStamps) first(rowID int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, seen := p.rows[rowID]; seen {
+		return false
+	}
+	if p.rows == nil {
+		p.rows = map[int64]struct{}{}
+	}
+	p.rows[rowID] = struct{}{}
+	return true
+}
+
+// done forgets rowID: it left the staging table.
+func (p *partialWriteStamps) done(rowID int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.rows, rowID)
 }

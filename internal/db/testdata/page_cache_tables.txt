@@ -1,0 +1,47 @@
+# The tables the repository page's cached answers read (D6/D7, summary/63).
+# One per line; "#" starts a comment. Read by two tests:
+#   internal/db  TestPageCacheTableWritersAreCovered — every writer of these
+#                tables stamps the repository or is classified;
+#   internal/api TestPageCacheTablesAreWhatTheCachedHandlersRead — every
+#                table a cached handler reads (followed through the store's
+#                SQL) is listed here or reviewed as cache state, and every
+#                table listed here is read.
+#
+# The scan and vulnerability answers.
+repo_deps_vulnerabilities
+repo_deps_scorecard
+scancode_file_results
+scancode_scans
+repo_dependencies
+repo_deps_libyear
+repo_lockfiles
+repo_lockfile_packages
+repo_lockfile_edges
+# The SBOM's license (GetRepoForSBOM reads the latest repo_info row).
+repo_info
+# The traffic answer (v0.29.118): the daily clones and the five GitHub
+# traffic tables, all stored history, no time bound.
+repo_clones
+repo_views
+repo_traffic_paths
+repo_traffic_referrers
+repo_traffic_windows
+repo_traffic_weeks
+# The windowed and contributor answers (0.29.120, D6): the time series, the
+# metric series, top contributors and /contributions/*.
+commits
+issues
+pull_requests
+messages
+issue_events
+pull_request_events
+pull_request_reviews
+issue_message_ref
+pull_request_message_ref
+contributors
+contributor_affiliations
+repo_commit_daily
+# Top contributors' daily commit arm attributes authors through the aliases
+# (dailyCommitsArmSQL; whole-branch review of 0.29.119–0.29.123, A11 — the
+# hand-written list had missed it).
+contributors_aliases

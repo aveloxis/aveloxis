@@ -71,6 +71,9 @@ type Options struct {
 	// under, applied to each re-warm request too (they run inside the
 	// process, past the HTTP server's bound).
 	RequestTimeout time.Duration
+	// StopTimeout bounds a stop's last save of the re-warm list (runAPI
+	// passes its serverShutdownTimeout); 0 falls back to RequestTimeout.
+	StopTimeout time.Duration
 
 	// FrontEndSecret is api.front_end_secret: the value a front end sends in
 	// X-Aveloxis-Authorized on a request it forwards after the

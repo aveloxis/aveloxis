@@ -52,9 +52,17 @@ func metricSeriesFixture(t *testing.T) (*Server, *db.PostgresStore, int64, int) 
 		VALUES ($1, 'github', TRUE) RETURNING user_id`, "_avmseries"+suffix).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
-	var cntrb string
+	var cntrb, pair string
 	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.contributors (cntrb_login, gh_login, gh_type)
 		VALUES ($1, $1, 'User') RETURNING cntrb_id::text`, "_avmseries"+suffix).Scan(&cntrb); err != nil {
+		t.Fatal(err)
+	}
+	// A contributor with exactly two contributions: a repeat contributor at
+	// retention_threshold=2 and a drive-by at the default 4, so the
+	// threshold changes the retention answer (A10: without one, a route
+	// that ignored the threshold passed).
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.contributors (cntrb_login, gh_login, gh_type)
+		VALUES ($1, $1, 'User') RETURNING cntrb_id::text`, "_avmseries2"+suffix).Scan(&pair); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -71,7 +79,7 @@ func metricSeriesFixture(t *testing.T) (*Server, *db.PostgresStore, int64, int) 
 		}
 		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.user_groups WHERE user_id = $1`, userID)
 		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
-		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrb)
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id IN ($1::uuid, $2::uuid)`, cntrb, pair)
 	})
 	if _, err := store.Pool().Exec(ctx, `INSERT INTO aveloxis_ops.collection_queue (repo_id, last_collected) VALUES ($1, NOW() - interval '1 day')`, repoID); err != nil {
 		t.Fatal(err)
@@ -93,11 +101,31 @@ func metricSeriesFixture(t *testing.T) (*Server, *db.PostgresStore, int64, int) 
 			t.Fatal(err)
 		}
 	}
+	for i, days := range []int{60, 61} {
+		n := int64(100 + i)
+		if _, err := store.Pool().Exec(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, reporter_id, created_at)
+			VALUES ($1, $2, $3, $4::uuid, $5::timestamptz)`, repoID, n, n, pair, now.AddDate(0, 0, -days)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s, err := NewWithOptions(store, logger, Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, store, repoID, userID
+}
+
+// compareComputedDirectly is /compare computing every entity itself: with no
+// page cache, repoSeriesFromPage declines and the series cache's path runs.
+// Its answers are not stored (the comparison cache is cleared after).
+func compareComputedDirectly(t *testing.T, s *Server, path string, userID int) *httptest.ResponseRecorder {
+	t.Helper()
+	page := s.pageCache
+	s.pageCache = nil
+	defer func() { s.pageCache = page }()
+	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
+	defer func() { s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}} }()
+	return metricSeriesCall(t, s, path, userID)
 }
 
 func metricSeriesCall(t *testing.T, s *Server, path string, userID int) *httptest.ResponseRecorder {
@@ -111,7 +139,11 @@ func metricSeriesCall(t *testing.T, s *Server, path string, userID int) *httptes
 
 // The route answers /compare's single-entity body for every temporal
 // metric and every parameter the repository page sends, so the GUI's
-// chart renderer and its exact-payload export are unchanged.
+// chart renderer and its exact-payload export are unchanged. Since 0.29.121
+// /compare serves a repository entity FROM this route, so the reference is
+// /compare computing the entity itself — the server without its page cache
+// (whole-branch review of 0.29.119–0.29.123, A10: compared with the routed
+// /compare, the test held the route to a copy of itself).
 func TestRepoMetricSeriesAnswersWhatCompareAnswers(t *testing.T) {
 	s, _, repoID, userID := metricSeriesFixture(t)
 	id := strconv.FormatInt(repoID, 10)
@@ -129,7 +161,7 @@ func TestRepoMetricSeriesAnswersWhatCompareAnswers(t *testing.T) {
 			variants = append(variants, "&bucket=month&retention_threshold=2")
 		}
 		for _, v := range variants {
-			cmp := metricSeriesCall(t, s, "/api/v1/compare?entities=repo:"+id+"&metric="+m.ID+v, userID)
+			cmp := compareComputedDirectly(t, s, "/api/v1/compare?entities=repo:"+id+"&metric="+m.ID+v, userID)
 			got := metricSeriesCall(t, s, "/api/v1/repos/"+id+"/metric-series?metric="+m.ID+v, userID)
 			if cmp.Code != http.StatusOK || got.Code != http.StatusOK {
 				t.Fatalf("%s%s: compare %d %s; metric-series %d %s", m.ID, v, cmp.Code, cmp.Body.String(), got.Code, got.Body.String())
@@ -146,6 +178,16 @@ func TestRepoMetricSeriesAnswersWhatCompareAnswers(t *testing.T) {
 			}
 			if strings.Contains(got.Body.String(), `"value":1`) || strings.Contains(got.Body.String(), `"value":2`) {
 				nonZero[m.ID] = true
+			}
+		}
+		if m.ID == retentionMetricID {
+			// The threshold variant discriminates: the fixture's
+			// two-contribution contributor is a repeat contributor at 2 and
+			// a drive-by at the default, so a route that dropped the
+			// threshold would answer differently from the reference.
+			base := "/api/v1/compare?entities=repo:" + id + "&metric=" + m.ID + "&bucket=month"
+			if compareComputedDirectly(t, s, base, userID).Body.String() == compareComputedDirectly(t, s, base+"&retention_threshold=2", userID).Body.String() {
+				t.Error("retention answers the same at threshold 2 and at the default: the fixture cannot show a route that ignores the threshold")
 			}
 		}
 	}
@@ -257,18 +299,30 @@ func TestRestartedAPIReplaysTheSavedList(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.page_cache_replay WHERE repo_id = $1`, repoID)
 	})
 	path := "/api/v1/repos/" + strconv.FormatInt(repoID, 10) + "/metric-series?metric=code_change_commits"
+	ctx := context.Background()
+	// The list has one owner per database (0.29.124, A1): the first process
+	// claims it as RunRewarm does, and releases it when it stops.
+	release := s.claimReplayList(ctx)
+	if release == nil {
+		t.Fatal("the first api process must own the saved re-warm list")
+	}
 	metricSeriesCall(t, s, path, userID)
 	metricSeriesCall(t, s, path, userID) // asked for again
-	ctx := context.Background()
 	s.rewarmOnce(ctx)
 	var saved int
 	if err := store.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.page_cache_replay WHERE repo_id = $1`, repoID).Scan(&saved); err != nil || saved != 1 {
 		t.Fatalf("the pass must save the asked-for chart: %d rows (%v)", saved, err)
 	}
+	release() // the first process stops
 	restarted, err := NewWithOptions(store, s.logger, Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseRestarted := restarted.claimReplayList(ctx)
+	if releaseRestarted == nil {
+		t.Fatal("the restarted process must claim the list its predecessor released")
+	}
+	t.Cleanup(releaseRestarted)
 	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.collection_queue SET last_collected = NOW(), updated_at = NOW() WHERE repo_id = $1`, repoID); err != nil {
 		t.Fatal(err)
 	}

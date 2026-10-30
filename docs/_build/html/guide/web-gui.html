@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Web GUI &mdash; Aveloxis 0.29.123 documentation</title>
+  <title>Web GUI &mdash; Aveloxis 0.29.124 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=70fe169d"></script>
+      <script src="../_static/documentation_options.js?v=bb778650"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
@@ -2146,7 +2147,8 @@ each cached answer with what it cost and whether it is current — or
 outdated because the repository changed, its window moved, or the request
 is no longer a cached one. It changes nothing. The caches live in the api process, so the page reads the API’s
 <code class="docutils literal notranslate"><span class="pre">/api/v1/admin/cache</span></code> routes; with several api processes it shows the one
-that answers.</p>
+that answers, and only the process that owns the saved re-warm list (the
+first to start) reports its size.</p>
 <p>An administrator can open any account’s group read-only (<code class="docutils literal notranslate"><span class="pre">/groups/{id}</span></code>):
 the page says so, offers nothing to add or remove, and the read is logged
 with the administrator’s account. The decisions behind every form are the

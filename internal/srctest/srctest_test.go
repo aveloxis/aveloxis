@@ -657,3 +657,27 @@ func TestFuncPartsSplitsByDeclaration(t *testing.T) {
 		t.Error("an unparseable source must be fatal")
 	}
 }
+
+// PackageValues reads every package-level const and var value, each spec on
+// its own, and leaves out the specs with no value of their own.
+func TestPackageValues(t *testing.T) {
+	src := "package p\n\nconst one = `INSERT INTO a.t`\n\nconst (\n\ttwo   = \"x\" + one\n\tthree\n)\n\nvar four, five = \"4\", \"5\"\n\nvar six int\n\nvar _ = one\n\nfunc f() { const inner = \"no\"; _ = inner }\n"
+	got := PackageValues(t, src)
+	want := map[string]string{"one": "`INSERT INTO a.t`", "two": "\"x\" + one", "four": "\"4\"", "five": "\"5\""}
+	if len(got) != len(want) {
+		t.Errorf("PackageValues = %v, want %v (three and six have no value of their own; _ cannot be named; inner is not package level)", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("PackageValues[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestMethodNames(t *testing.T) {
+	src := "package p\n\ntype T struct{}\n\nfunc (T) M() {}\n\nfunc (t *T) N() {}\n\nfunc F() {}\n"
+	got := MethodNames(t, src)
+	if !got["M"] || !got["N"] || got["F"] || len(got) != 2 {
+		t.Errorf("MethodNames = %v, want M and N only", got)
+	}
+}

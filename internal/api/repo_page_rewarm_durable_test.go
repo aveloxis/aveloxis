@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -30,6 +31,18 @@ type fakeReplayStore struct {
 	saves   int
 	loadErr error
 	saveErr error
+	lost    bool          // the lock's session ended: Held answers false
+	block   chan struct{} // when set, a save waits for it or for its context
+	started chan struct{} // when set, closed as the first save begins
+	once    sync.Once
+}
+
+// Held reports whether the list's lock is still held (a fake holds it until
+// lost is set).
+func (f *fakeReplayStore) Held() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.lost
 }
 
 func newFakeReplayStore(rows ...db.PageCacheReplayRow) *fakeReplayStore {
@@ -53,7 +66,17 @@ func (f *fakeReplayStore) LoadPageCacheReplay(context.Context) ([]db.PageCacheRe
 	return out, nil
 }
 
-func (f *fakeReplayStore) SavePageCacheReplay(_ context.Context, upserts []db.PageCacheReplayRow, deletes []db.PageCacheReplayKey) error {
+func (f *fakeReplayStore) SavePageCacheReplay(ctx context.Context, upserts []db.PageCacheReplayRow, deletes []db.PageCacheReplayKey) error {
+	if f.started != nil {
+		f.once.Do(func() { close(f.started) })
+	}
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.saveErr != nil {
@@ -239,6 +262,13 @@ func TestLoadedReplaySeedsAreOnlyCachedRoutesOfTheirRepository(t *testing.T) {
 		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "http://elsewhere/api/v1/repos/7/thing"}},
 		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "%zz"}},
 		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/mine"}},
+		// A path the mux would clean into another one (ASVS pass of
+		// 0.29.124, V1.1.1): checked raw, 7/../8 read as repository 7.
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/../8/thing"}},
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/./thing"}},
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7//thing"}},
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/%2e%2e/8/thing"}},
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/thing?a=1#x"}},
 	)
 	hn.s.replayStore = f
 	hn.s.loadReplaySeeds(context.Background())
@@ -246,7 +276,7 @@ func TestLoadedReplaySeedsAreOnlyCachedRoutesOfTheirRepository(t *testing.T) {
 	if got := runs(); len(got) != 1 || got[0] != "/api/v1/repos/7/thing?a=1" {
 		t.Errorf("replayed %v, want only the valid seed", got)
 	}
-	if !strings.Contains(logs.String(), "dropped=6") {
+	if !strings.Contains(logs.String(), "dropped=11") {
 		t.Errorf("the dropped rows must be counted in the log, got %q", logs.String())
 	}
 }
@@ -324,14 +354,391 @@ func TestReplayStoreFailuresAreLoggedNotFatal(t *testing.T) {
 }
 
 // RunRewarm reads the saved list before its first pass (a restart forgets
-// nothing): the wiring of the runtime tests above.
+// nothing): it claims the list before its ticker, and a claim reads the
+// list into the seeds. Every pass saves however it ends: after the pass's
+// re-claim of a list it lacks (L10 round F1), the save is deferred before
+// any of the pass's work. The wiring of the runtime tests above.
 func TestRunRewarmLoadsTheSavedListFirst(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) RunRewarm("))
-	load, ticker := strings.Index(body, "s.loadReplaySeeds(ctx)"), strings.Index(body, "time.NewTicker(")
-	if load < 0 || ticker < 0 || load > ticker {
-		t.Error("RunRewarm must call s.loadReplaySeeds(ctx) before it starts its ticker")
+	claim, ticker := strings.Index(body, "s.claimReplayList(ctx)"), strings.Index(body, "time.NewTicker(")
+	if claim < 0 || ticker < 0 || claim > ticker {
+		t.Error("RunRewarm must call s.claimReplayList(ctx) before it starts its ticker")
 	}
-	if s := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) rewarmOnce(")); !strings.HasPrefix(strings.TrimSpace(s[strings.Index(s, "{")+1:]), "defer s.saveReplaySet(ctx)") {
-		t.Error("rewarmOnce must save the replay set however the pass ends (its first statement: defer s.saveReplaySet(ctx))")
+	claimBody := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) claimReplayList("))
+	owned, load := strings.Index(claimBody, "s.replayClaim = replayOwned"), strings.LastIndex(claimBody, "s.loadReplaySeeds(ctx)")
+	if owned < 0 || load < owned {
+		t.Error("a successful claim must read the list into the seeds (s.loadReplaySeeds(ctx) after s.replayClaim = replayOwned)")
+	}
+	once := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) rewarmOnce("))
+	rest := srctest.NormalizeWS(once[strings.Index(once, "{")+1:])
+	reclaim := srctest.NormalizeWS("if s.replayStore == nil && s.claimReplay != nil { s.claimReplayList(ctx) }")
+	if !strings.HasPrefix(rest, reclaim) {
+		t.Fatalf("rewarmOnce must open with the re-claim of a list it lacks:\n%s", rest[:min(len(rest), 200)])
+	}
+	if !strings.HasPrefix(strings.TrimSpace(rest[len(reclaim):]), "defer s.saveReplaySet(ctx, s.requestTimeout)") {
+		t.Error("rewarmOnce must save the replay set however the pass ends: defer s.saveReplaySet(ctx, s.requestTimeout) right after the re-claim")
+	}
+}
+
+// Whole-branch review of 0.29.119–0.29.123, A6: a visit is demand, so a
+// visitor who computes a saved request's answer before the first pass
+// reaches it must not take it off the list — with no visit, the replay
+// would have kept it.
+func TestRewarmKeepsASeedAVisitorAnswered(t *testing.T) {
+	const u = "/api/v1/repos/7/thing?a=1"
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore(db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: u}, CostMS: 10})
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.s.loadReplaySeeds(ctx)
+	hn.get(u) // one visitor, before the first pass
+	hn.s.rewarmOnce(ctx)
+	if got := f.uris(); len(got) != 1 || got[0] != u {
+		t.Errorf("after one visit the saved list holds %v, want %s: the visit carried the seed's demand", got, u)
+	}
+}
+
+// A6's sibling: an answer visitors came back to is outdated by a
+// collection, and a visitor recomputes it before the pass replays it. The
+// outdated copy carried the demand; its successor must keep it.
+func TestRewarmKeepsTheDemandOfAnAnswerAVisitorRecomputed(t *testing.T) {
+	const u = "/api/v1/repos/7/thing?a=1"
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.get(u)
+	hn.get(u) // asked for again: on the list
+	hn.s.rewarmOnce(ctx)
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
+	hn.get(u) // the visitor computes the successor first
+	hn.s.rewarmOnce(ctx)
+	if got := f.uris(); len(got) != 1 || got[0] != u {
+		t.Errorf("the saved list holds %v, want %s: the outdated copy's demand passes to its successor", got, u)
+	}
+}
+
+// A7: a clean stop saves what changed since the last pass — a restart for a
+// deploy must not forget the last interval's visits.
+func TestRewarmSavesAtAStop(t *testing.T) {
+	const u = "/api/v1/repos/7/thing?a=1"
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	hn.s.replayStore = f
+	hn.s.rewarmInterval = time.Hour // no pass runs before the stop
+	hn.get(u)
+	hn.get(u)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	hn.s.RunRewarm(ctx)
+	if got := f.uris(); len(got) != 1 || got[0] != u {
+		t.Errorf("after a clean stop the saved list holds %v, want %s", got, u)
+	}
+}
+
+// A8: a saved request's cost orders the replays after a restart (costliest
+// first), so a changed cost is written, not only a new key.
+func TestRewarmRewritesASavedRequestWhoseCostChanged(t *testing.T) {
+	const u = "/api/v1/repos/7/thing?a=1"
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.get(u)
+	hn.get(u)
+	hn.s.rewarmOnce(ctx)
+	const recomputed = 5 * time.Second
+	hn.s.pageCache.mu.Lock()
+	for el := range hn.s.pageCache.byRepo[7] {
+		el.Value.(*pageEntry).cost = recomputed
+	}
+	hn.s.pageCache.mu.Unlock()
+	hn.s.rewarmOnce(ctx)
+	f.mu.Lock()
+	got := f.rows[db.PageCacheReplayKey{RepoID: 7, URI: u}]
+	f.mu.Unlock()
+	if got != recomputed.Milliseconds() {
+		t.Errorf("the saved cost is %d ms, want the new %d ms", got, recomputed.Milliseconds())
+	}
+}
+
+// A1 (operator decision 2026-10-29): the saved list has one owner per
+// database. A process that cannot claim it says so and runs from memory —
+// it neither reads nor writes the list; the owner releases it only after
+// its last save.
+func TestRewarmClaimsTheSavedListOrRunsWithoutIt(t *testing.T) {
+	const u = "/api/v1/repos/7/thing?a=1"
+	t.Run("held by another process", func(t *testing.T) {
+		hn, logs, _ := rewarmHarness(t, okBody)
+		f := newFakeReplayStore(db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: u}, CostMS: 10})
+		hn.s.claimReplay = func(context.Context) (pageReplayStore, func(), error) { return nil, nil, db.ErrPageCacheReplayHeld }
+		hn.s.rewarmInterval = time.Hour
+		hn.get(u)
+		hn.get(u)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		hn.s.RunRewarm(ctx)
+		if f.saves != 0 || len(hn.s.pageCache.replaySet()) == 0 {
+			t.Fatalf("premise: memory holds the request, saves %d", f.saves)
+		}
+		if !strings.Contains(logs.String(), "the saved re-warm list is held by another session") {
+			t.Errorf("a process running without the list must say so: %s", logs.String())
+		}
+	})
+	t.Run("claimed", func(t *testing.T) {
+		hn, _, _ := rewarmHarness(t, okBody)
+		f := newFakeReplayStore()
+		var order []string
+		hn.s.claimReplay = func(context.Context) (pageReplayStore, func(), error) {
+			return recordingReplay{f, &order}, func() { order = append(order, "release") }, nil
+		}
+		hn.s.rewarmInterval = time.Hour
+		hn.get(u)
+		hn.get(u)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		hn.s.RunRewarm(ctx)
+		if strings.Join(order, ",") != "load,save,release" {
+			t.Errorf("the owner loads, saves at the stop, then releases: %v", order)
+		}
+	})
+	t.Run("claim fails", func(t *testing.T) {
+		hn, logs, _ := rewarmHarness(t, okBody)
+		hn.s.claimReplay = func(context.Context) (pageReplayStore, func(), error) {
+			return nil, nil, errors.New("connection refused")
+		}
+		hn.s.replayStore = newFakeReplayStore() // must not be used once the claim failed
+		if release := hn.s.claimReplayList(context.Background()); release != nil || hn.s.replayStore != nil {
+			t.Error("a failed claim leaves the process without the saved list")
+		}
+		if !strings.Contains(logs.String(), "the saved re-warm list could not be claimed") || !strings.Contains(logs.String(), "connection refused") {
+			t.Errorf("a failed claim is logged with its error: %s", logs.String())
+		}
+	})
+}
+
+// recordingReplay records the order of a replay store's calls.
+type recordingReplay struct {
+	f     *fakeReplayStore
+	order *[]string
+}
+
+func (r recordingReplay) LoadPageCacheReplay(ctx context.Context) ([]db.PageCacheReplayRow, error) {
+	*r.order = append(*r.order, "load")
+	return r.f.LoadPageCacheReplay(ctx)
+}
+
+func (r recordingReplay) Held() bool { return r.f.Held() }
+
+func (r recordingReplay) SavePageCacheReplay(ctx context.Context, u []db.PageCacheReplayRow, d []db.PageCacheReplayKey) error {
+	*r.order = append(*r.order, "save")
+	return r.f.SavePageCacheReplay(ctx, u, d)
+}
+
+// L10 round on 0.29.124, F1: the owner's lock lives as long as its database
+// session. When that session ends (a database restart) the owner's saves
+// fail; it gives the list up — once, logged once — and claims it again at
+// the next pass, reading the table back, so the list is owned again without
+// an api restart. A process that does not own the list tries the claim each
+// pass, and says so once.
+func TestRewarmReclaimsTheSavedListAfterLosingIt(t *testing.T) {
+	const u = "/api/v1/repos/7/thing?a=1"
+	hn, logs, _ := rewarmHarness(t, okBody)
+	first, second := newFakeReplayStore(), newFakeReplayStore()
+	var claims, releases int
+	hn.s.claimReplay = func(context.Context) (pageReplayStore, func(), error) {
+		claims++
+		switch claims {
+		case 1:
+			return first, func() { releases++ }, nil
+		case 2, 3:
+			return nil, nil, db.ErrPageCacheReplayHeld
+		default:
+			return second, func() { releases++ }, nil
+		}
+	}
+	ctx := context.Background()
+	hn.s.claimReplayList(ctx)
+	hn.get(u)
+	hn.get(u)
+	hn.s.rewarmPass(ctx)
+	if len(first.uris()) != 1 {
+		t.Fatalf("premise: the owner saved its list, %v", first.uris())
+	}
+	first.mu.Lock()
+	first.lost, first.saveErr = true, errors.New("FATAL: terminating connection due to administrator command (SQLSTATE 57P01)")
+	first.mu.Unlock()
+	hn.get("/api/v1/repos/7/thing?a=2")
+	hn.get("/api/v1/repos/7/thing?a=2") // a change to save
+	hn.s.rewarmPass(ctx)                // the save fails on the dead session: the list is given up
+	if releases != 1 || hn.s.replayStore != nil {
+		t.Fatalf("a lost lock must be released and the list given up: releases %d, store %v", releases, hn.s.replayStore)
+	}
+	hn.s.rewarmPass(ctx) // claim 2: another process holds it now
+	hn.s.rewarmPass(ctx) // claim 3: still held
+	if hn.s.replayStore != nil {
+		t.Fatal("while another process holds the list this one runs without it")
+	}
+	hn.s.rewarmPass(ctx) // claim 4: free again
+	if hn.s.replayStore == nil {
+		t.Fatalf("the list must be claimed again at a pass once it is free (claims %d)", claims)
+	}
+	if got := second.uris(); len(got) != 2 {
+		t.Errorf("the re-claimed list must hold what this process holds: %v", got)
+	}
+	out := logs.String()
+	if n := strings.Count(out, "the saved re-warm list's lock was lost"); n != 1 {
+		t.Errorf("the loss is logged once, got %d:\n%s", n, out)
+	}
+	if n := strings.Count(out, "the saved re-warm list is held by another session"); n != 1 {
+		t.Errorf("another owner is stated once while it lasts, got %d:\n%s", n, out)
+	}
+}
+
+// L10 round on 0.29.124, F2: a stop's save has a bound of its own, so a save
+// that hangs (a partitioned database) cannot hold the shutdown open — pgx's
+// pool Close waits for the lock's connection, which the re-warm returns only
+// after that save.
+func TestRewarmStopSaveIsBounded(t *testing.T) {
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	f.block = make(chan struct{}) // never released: the save hangs
+	hn.s.replayStore = f
+	hn.s.rewarmInterval = time.Hour
+	hn.s.stopTimeout = 50 * time.Millisecond
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() { hn.s.RunRewarm(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stop whose save hangs must return within its bound")
+	}
+}
+
+// ASVS pass of 0.29.124 (V1.4.2): a saved cost is read back into a
+// time.Duration; a row's cost_ms is data, and one past what a Duration holds
+// in milliseconds wrapped negative and sent the costliest request last.
+func TestLoadedReplaySeedCostsDoNotOverflow(t *testing.T) {
+	hn, _, runs := rewarmHarness(t, okBody)
+	f := newFakeReplayStore(
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/thing?a=1"}, CostMS: 50},
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/thing?a=2"}, CostMS: math.MaxInt64},
+	)
+	hn.s.replayStore = f
+	hn.s.loadReplaySeeds(context.Background())
+	hn.s.rewarmOnce(context.Background())
+	if got := runs(); len(got) != 2 || got[0] != "/api/v1/repos/7/thing?a=2" {
+		t.Errorf("replayed %v, want the costliest saved request first", got)
+	}
+}
+
+// ASVS pass of 0.29.124 (V16, residual of the lost-lock fix): a save can
+// keep failing on a session that is still open (a database turned
+// read-only), and a failed save retries every pass; it is logged once per
+// run of failures, and its recovery once.
+func TestReplaySaveFailuresAreLoggedOncePerRun(t *testing.T) {
+	hn, logs, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	f.saveErr = errors.New("cannot execute INSERT in a read-only transaction")
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	for range 3 {
+		hn.s.rewarmOnce(ctx) // the difference stays unsaved: each pass tries again
+	}
+	if n := strings.Count(logs.String(), "the replay list could not be saved"); n != 1 {
+		t.Errorf("a run of failed saves is logged once, got %d:\n%s", n, logs.String())
+	}
+	f.mu.Lock()
+	f.saveErr = nil
+	f.mu.Unlock()
+	hn.s.rewarmOnce(ctx)
+	if !strings.Contains(logs.String(), "the replay list is saved again") {
+		t.Errorf("the recovery is logged:\n%s", logs.String())
+	}
+	if len(f.uris()) != 1 {
+		t.Errorf("the retried save wrote the list: %v", f.uris())
+	}
+}
+
+// L10 round 2 of 0.29.124, F1: the mux routes an escaped path
+// (/api/v1/repos/%37/…) to the same cached answer as the plain one, and the
+// entry recorded the spelling of whoever computed it first — a spelling the
+// saved list then refused at every restart, so one escaped request took a
+// shared answer off the restart re-warm. The entry records the canonical
+// request (pageRequestURI).
+func TestAnEscapedFirstRequestKeepsTheAnswerOnTheSavedList(t *testing.T) {
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.get("/api/v1/repos/%37/thing?a=1") // computes the answer
+	hn.get("/api/v1/repos/7/thing?a=1")   // a visitor comes back
+	hn.s.rewarmOnce(ctx)
+	if got := f.uris(); len(got) != 1 || got[0] != "/api/v1/repos/7/thing?a=1" {
+		t.Fatalf("saved %v, want the canonical request", got)
+	}
+	again, logs, _ := rewarmHarness(t, okBody)
+	again.s.replayStore = f
+	again.s.loadReplaySeeds(ctx)
+	if !strings.Contains(logs.String(), "requests=1 dropped=0") {
+		t.Errorf("the saved request must load back at a restart: %s", logs.String())
+	}
+}
+
+// F5: a saved row not in the canonical form (an earlier version's, or an
+// older fold) is read back as the request it names — the canonical URI the
+// cache records — so its replay is found stored, not reported "not cached",
+// and the list rewrites itself in that form.
+func TestALoadedSeedIsTheCanonicalRequest(t *testing.T) {
+	hn, logs, runs := rewarmHarness(t, okBody)
+	f := newFakeReplayStore(db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/thing?b=2&a=1&zz=9"}, CostMS: 10})
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.s.loadReplaySeeds(ctx)
+	hn.s.rewarmOnce(ctx)
+	if got := runs(); len(got) != 1 || got[0] != "/api/v1/repos/7/thing?a=1&b=2" {
+		t.Errorf("replayed %v, want the canonical request", got)
+	}
+	if strings.Contains(logs.String(), "request not cached") {
+		t.Errorf("a stored replay must not be reported as not cached:\n%s", logs.String())
+	}
+	if got := f.uris(); len(got) != 1 || got[0] != "/api/v1/repos/7/thing?a=1&b=2" {
+		t.Errorf("the list must rewrite itself in the canonical form, holds %v", got)
+	}
+}
+
+// L10 round 2 of 0.29.124, F2: a stop that arrives while a pass's save runs
+// shortens that save to the stop's bound — it had kept the pass's
+// (http_timeout_seconds), and the loop could start one more pass after it.
+func TestAStopShortensASaveAlreadyRunning(t *testing.T) {
+	hn, _, _ := rewarmHarness(t, okBody)
+	f := newFakeReplayStore()
+	f.block = make(chan struct{}) // never released: the save hangs
+	f.started = make(chan struct{})
+	hn.s.replayStore = f
+	hn.s.rewarmInterval = time.Millisecond
+	hn.s.requestTimeout = 5 * time.Second
+	hn.s.stopTimeout = 50 * time.Millisecond
+	hn.get("/api/v1/repos/7/thing?a=1")
+	hn.get("/api/v1/repos/7/thing?a=1")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { hn.s.RunRewarm(ctx); close(done) }()
+	<-f.started // a pass's save is running
+	stopped := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a stop during a pass's save must end that save within the stop's bound")
+	}
+	if took := time.Since(stopped); took >= hn.s.requestTimeout {
+		t.Errorf("the stop took %v, the pass's bound", took)
 	}
 }

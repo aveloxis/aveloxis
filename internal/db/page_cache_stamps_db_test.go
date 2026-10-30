@@ -169,3 +169,56 @@ func TestUpdateRepoMetadataStampsWhenItFillsCreatedAt(t *testing.T) {
 		t.Errorf("created_at is fill-empty-only: a later call must not stamp again (%v → %v)", first, again)
 	}
 }
+
+// The drains refresh the queue's cached counts after every pass that reached
+// a repository, written or not (refreshRepoActivity), and the queue row's
+// updated_at is part of the repository's cache state. So the refresh moves
+// updated_at only when a count changes: a row that keeps failing comes back
+// every drain and must not move the state each time (whole-branch review of
+// 0.29.119–0.29.123, finding A2: the drain's `wrote` gate covered the stamp
+// but not this refresh).
+func TestRefreshQueueGatheredCountsMovesTheStateOnlyOnAChange(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	var repoID int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avrqgc/r', 'r', '_avrqgc', 1) RETURNING repo_id`).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+		_, _ = store.pool.Exec(bg, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_ops.collection_queue (repo_id) VALUES ($1)`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	state := func() string {
+		t.Helper()
+		m, err := store.RepoCacheStates(ctx, []int64{repoID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m[repoID].Fingerprint()
+	}
+	refresh := func() {
+		t.Helper()
+		if err := store.RefreshQueueGatheredCounts(ctx, repoID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refresh() // fills last_activity_90d, NULL on a new row: a change
+	settled := state()
+	refresh()
+	if again := state(); again != settled {
+		t.Errorf("a refresh that changed no count moved the cache state (%s → %s): a failing drain row would invalidate every cached answer each pass", settled, again)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, created_at)
+		VALUES ($1, 990001, 1, NOW())`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	refresh()
+	if moved := state(); moved == settled {
+		t.Error("a refresh that changed the counts must move the cache state (the home ranking and the generation read them)")
+	}
+}

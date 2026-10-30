@@ -617,7 +617,7 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		// A repository entity: the repository-page cache's answer, shared
 		// with the repository page (D5, 0.29.121); otherwise, or when that
 		// fails, computed here under the series cache.
-		if cs, ok := s.repoSeriesFromPage(r, e, metric); ok {
+		if cs, ok := s.repoSeriesFromPage(r, e, metric, compareWindowOf(bucket, since, until)); ok {
 			series = append(series, cs)
 			continue
 		}
@@ -704,11 +704,28 @@ func (s *Server) entitySeriesFor(r *http.Request, e entity, ids []int64, metric,
 // compareBody is a series answer's body: /compare's, and the repository
 // metric series' (one entity), so one renderer reads both.
 func compareBody(def *MetricDef, bucket string, since, until time.Time, series []compareSeries) map[string]any {
+	win := compareWindowOf(bucket, since, until)
 	return map[string]any{
-		"metric": def, "bucket": bucket,
-		"since": since.Format("2006-01-02"), "until": until.Format("2006-01-02"),
+		"metric": def, "bucket": win.Bucket,
+		"since": win.Since, "until": win.Until,
 		"series": series,
 	}
+}
+
+// seriesWindow is a series answer's window as its body states it: the
+// bucket and the two days (compareBody, for /compare and the repository
+// metric-series route alike).
+type seriesWindow struct {
+	Bucket string `json:"bucket"`
+	Since  string `json:"since"`
+	Until  string `json:"until"`
+}
+
+// compareWindowOf is the one spelling of a window as a series body states
+// it (compareBody writes it; repoSeriesFromPage compares a page answer's
+// against its comparison's).
+func compareWindowOf(bucket string, since, until time.Time) seriesWindow {
+	return seriesWindow{Bucket: bucket, Since: since.Format("2006-01-02"), Until: until.Format("2006-01-02")}
 }
 
 // entitySeries is one compare entity's computed series, as cached.

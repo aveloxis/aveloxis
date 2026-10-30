@@ -619,8 +619,9 @@ needs (`cors_origins`, `require_auth`, `front_end_secret`) itself.
 ### Response caching (advanced, off by default)
 
 With `response_cache_mb` set, the `api` process keeps each repository's
-own answers (time series, licenses, dependencies, scancode, vulnerabilities,
-scorecard, SBOM, contributors) in memory, up to that many megabytes, until
+own answers (time series, metric charts, licenses, dependencies and libyear,
+scancode, vulnerabilities, scorecard, SBOM, traffic, contributors) in memory,
+up to that many megabytes, until
 that repository is collected or scanned again (no answer expires on a timer
 since 0.29.120: a contributor name filled in between collections shows
 after the next collection) and recomputes a viewed
@@ -631,7 +632,7 @@ back when the api starts, so a restart rebuilds them without a warm-up run.
 The start-up line `API repository page cache`
 shows the values in effect. Cached GETs carry an `ETag` and answer
 `If-None-Match` with 304 whether or not the cache is on; the cache only
-decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, and the metric series, at most another 1,000, as they were before the setting existed (the start-up line reports `kept_without_budget=1000 kept_pools=2`). Size it from the largest repositories you
+decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed, and the metric series (0.29.119), at most another 1,000 (the start-up line reports `kept_without_budget=1000 kept_pools=2`). Size it from the largest repositories you
 want held (a 56,000-file scancode listing is about 7 MB of JSON, a
 600-finding vulnerability list about 1 MB, a typical page about 100 KB);
 the Aveloxis project's own site uses 2048. Past the budget the oldest

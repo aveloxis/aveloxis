@@ -26,9 +26,14 @@ var errPageSeries = errors.New("repository series through the page cache failed"
 // repository is collected again — taken through the routes as the internal
 // caller (resolveEntityRepos already admitted the entity for this caller).
 // ok is false for an organization entity, a server without the page cache,
-// and any failure: the comparison then computes the entity directly, and a
-// failure is logged (an optional path is never terminal).
-func (s *Server) repoSeriesFromPage(r *http.Request, e entity, metric string) (compareSeries, bool) {
+// an answer on another window than want, the comparison's own, and any
+// failure: the comparison then computes the entity directly, and a failure
+// is logged (an optional path is never terminal). The window check is the
+// whole-branch review's A9: the comparison and the page route each read the
+// clock, so a comparison straddling a week's (or a month's) start got its
+// repository series one bucket from its organisation series — that is a
+// clock boundary, not a failure, so it is not logged.
+func (s *Server) repoSeriesFromPage(r *http.Request, e entity, metric string, want seriesWindow) (compareSeries, bool) {
 	if e.Kind != "repo" || s.pageCache == nil || s.repoStates == nil {
 		return compareSeries{}, false
 	}
@@ -43,7 +48,10 @@ func (s *Server) repoSeriesFromPage(r *http.Request, e entity, metric string) (c
 	var cs compareSeries
 	ok := false
 	if w != nil {
-		cs, ok = seriesFromPageAnswer(status, w.buf.Bytes())
+		cs, ok = seriesFromPageAnswer(status, w.buf.Bytes(), want)
+		if !ok && status == http.StatusOK && pageAnswerOnAnotherWindow(w.buf.Bytes(), want) {
+			return compareSeries{}, false
+		}
 	}
 	if !ok {
 		if r.Context().Err() == nil {
@@ -73,17 +81,28 @@ func repoSeriesURI(r *http.Request, repoID int64, metric string) string {
 	return "/api/v1/repos/" + strconv.FormatInt(repoID, 10) + "/metric-series?" + keep.Encode()
 }
 
+// pageSeriesAnswer is the part of a metric-series answer a comparison reads.
+type pageSeriesAnswer struct {
+	seriesWindow
+	Series []compareSeries `json:"series"`
+}
+
 // seriesFromPageAnswer is the one series of a metric-series answer, when the
-// answer is a complete 200 with exactly one.
-func seriesFromPageAnswer(status int, body []byte) (compareSeries, bool) {
+// answer is a complete 200 with exactly one, on the window want.
+func seriesFromPageAnswer(status int, body []byte, want seriesWindow) (compareSeries, bool) {
 	if status != http.StatusOK {
 		return compareSeries{}, false
 	}
-	var ans struct {
-		Series []compareSeries `json:"series"`
-	}
-	if err := json.Unmarshal(body, &ans); err != nil || len(ans.Series) != 1 {
+	var ans pageSeriesAnswer
+	if err := json.Unmarshal(body, &ans); err != nil || len(ans.Series) != 1 || ans.seriesWindow != want {
 		return compareSeries{}, false
 	}
 	return ans.Series[0], true
+}
+
+// pageAnswerOnAnotherWindow reports whether body is a readable answer whose
+// window is not want (seriesFromPageAnswer refused it for its window alone).
+func pageAnswerOnAnotherWindow(body []byte, want seriesWindow) bool {
+	var ans pageSeriesAnswer
+	return json.Unmarshal(body, &ans) == nil && len(ans.Series) == 1 && ans.seriesWindow != want
 }

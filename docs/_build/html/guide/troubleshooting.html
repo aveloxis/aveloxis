@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.123 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.124 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=70fe169d"></script>
+      <script src="../_static/documentation_options.js?v=bb778650"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
@@ -3088,7 +3089,7 @@ usually means a missing index.</p>
 <ol class="arabic simple">
 <li><p><strong>Check your worker count.</strong> On Mac-based deployments, <code class="docutils literal notranslate"><span class="pre">&quot;workers&quot;:</span> <span class="pre">80</span></code> can stress the kernel network stack hard enough to induce TCP instability. Try <code class="docutils literal notranslate"><span class="pre">&quot;workers&quot;:</span> <span class="pre">40</span></code> in <code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> – each worker does more DB throughput now that <code class="docutils literal notranslate"><span class="pre">CacheStatement</span></code> reuses plans, so 40 workers with <code class="docutils literal notranslate"><span class="pre">CacheStatement</span></code> is roughly equivalent to 80 workers with the older <code class="docutils literal notranslate"><span class="pre">CacheDescribe</span></code> from the DB’s perspective, with dramatically less packet pressure on the client.</p></li>
 <li><p><strong>Ping the DB host under load.</strong> Run <code class="docutils literal notranslate"><span class="pre">ping</span> <span class="pre">-i</span> <span class="pre">1</span> <span class="pre">&lt;db-host&gt;</span></code> while <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> is active and look for packet loss. Any drops indicate the client is saturating something (NIC, switch port queue, ephemeral-port pool) and reducing <code class="docutils literal notranslate"><span class="pre">workers</span></code> is the right move.</p></li>
-<li><p><strong>Check for pgbouncer.</strong> If a pgbouncer in transaction or statement pooling mode has appeared in the path, <code class="docutils literal notranslate"><span class="pre">CacheStatement</span></code> cannot work – pgbouncer shares backends across clients and prepared-statement names are connection-scoped. In <code class="docutils literal notranslate"><span class="pre">internal/db/postgres.go</span></code>, change <code class="docutils literal notranslate"><span class="pre">pgx.QueryExecModeCacheStatement</span></code> to <code class="docutils literal notranslate"><span class="pre">pgx.QueryExecModeCacheDescribe</span></code> (safe with all pgbouncer modes; gives up the plan-cache speedup but keeps client-side describe caching).</p></li>
+<li><p><strong>Check for pgbouncer.</strong> If a pgbouncer in transaction or statement pooling mode has appeared in the path, <code class="docutils literal notranslate"><span class="pre">CacheStatement</span></code> cannot work – pgbouncer shares backends across clients and prepared-statement names are connection-scoped. In <code class="docutils literal notranslate"><span class="pre">internal/db/postgres.go</span></code>, change <code class="docutils literal notranslate"><span class="pre">pgx.QueryExecModeCacheStatement</span></code> to <code class="docutils literal notranslate"><span class="pre">pgx.QueryExecModeCacheDescribe</span></code> (safe with all pgbouncer modes; gives up the plan-cache speedup but keeps client-side describe caching). The session-level advisory locks break the same way and have no such switch — the migrate lock, the dm_ aggregate rebuild’s lock and the API’s saved re-warm list’s owner (0.29.124) each hold a lock on one server session, and a pooler hands that session to other clients, whose try of the same lock then succeeds (an advisory lock is reentrant within a session): keep Aveloxis on a direct or session-mode connection.</p></li>
 <li><p><strong>Tighten keepalives further.</strong> The <code class="docutils literal notranslate"><span class="pre">appendKeepaliveParams</span></code> defaults (idle 60s, interval 10s, count 6 = ~2 min detection) are conservative. On a very flaky link, drop them to <code class="docutils literal notranslate"><span class="pre">keepalives_idle=30</span> <span class="pre">keepalives_interval=5</span> <span class="pre">keepalives_count=4</span></code> (~50 sec detection) in <code class="docutils literal notranslate"><span class="pre">internal/db/prepared_stmt_retry.go</span></code>.</p></li>
 </ol>
 </section>

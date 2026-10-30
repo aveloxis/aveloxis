@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.123 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.124 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=70fe169d"></script>
+      <script src="../_static/documentation_options.js?v=bb778650"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
@@ -1802,6 +1803,17 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-124">
+<h2>Changes for API clients in 0.29.124<a class="headerlink" href="#changes-for-api-clients-in-0-29-124" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/cache</span></code>’s <code class="docutils literal notranslate"><span class="pre">rewarm.saved_requests</span></code> is the saved re-warm
+list as this process last saved or loaded it: the list has one owner per
+database (the first api process to start), and another api process reports
+0. <code class="docutils literal notranslate"><span class="pre">/compare</span></code> uses a repository entity’s cached <code class="docutils literal notranslate"><span class="pre">/metric-series</span></code> answer only
+when that answer’s window is the comparison’s own; a comparison that
+straddles the start of a week (or a month, with <code class="docutils literal notranslate"><span class="pre">bucket=month</span></code>) computes the
+entity on its own window, so every series in one answer covers the same
+buckets. The answer’s shape is unchanged.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-123">
 <h2>Changes for API clients in 0.29.123<a class="headerlink" href="#changes-for-api-clients-in-0-29-123" title="Link to this heading"></a></h2>
 <p>Three administrator routes show the api process’s caches, read-only:
@@ -2962,13 +2974,24 @@ top-contributor answers and 1,000 metric-series answers), a short authorization 
 counts: the per-IP buckets, the hour windows of session and API-token quotas
 (<code class="docutils literal notranslate"><span class="pre">requests_per_hour</span></code>, <code class="docutils literal notranslate"><span class="pre">token_requests_per_hour</span></code>) and the per-user cap on
 repositories added to Shared with Me by viewing them. All of those start over
-when the process restarts. The day counts of sessions and API tokens
+when the process restarts, except the list of answers the re-warm would
+recompute (<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.page_cache_replay</span></code>): it is saved at each re-warm pass
+and at a stop, and read back at start, so a restart recomputes them. The
+list has one owner per database — the first <code class="docutils literal notranslate"><span class="pre">api</span></code> process to start claims
+it (a Postgres advisory lock on that process’s own database session, so the
+api needs a direct or session-mode connection, never a transaction pooler;
+after a database restart ends the session, the list is claimed again at the
+next re-warm pass by whichever api process asks first); another process
+logs that it re-warms from memory alone (and asks again at each pass), and a
+restart of it starts empty.
+The day counts of sessions and API tokens
 (<code class="docutils literal notranslate"><span class="pre">requests_per_day</span></code>, <code class="docutils literal notranslate"><span class="pre">token_requests_per_day</span></code>) are shared through the
 <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.request_counts</span></code> table: every <code class="docutils literal notranslate"><span class="pre">api</span></code> process adds its counts there
 about once a minute and when it stops, so they survive a restart and are
 shared by all instances. Several instances behind a load balancer each compute
-and hold their own answers, and the per-IP limits and hour windows are per
-instance; run one per host unless that is what you want.</p>
+and hold their own answers (only the first keeps a saved re-warm list), and
+the per-IP limits and hour windows are per instance; run one per host unless
+that is what you want.</p>
 <p>The web GUI’s charts fetch the API through the web process, which proxies
 <code class="docutils literal notranslate"><span class="pre">/api/*</span></code> to <code class="docutils literal notranslate"><span class="pre">web.api_internal_url</span></code> (<code class="docutils literal notranslate"><span class="pre">http://127.0.0.1:8383</span></code> by default);
 when the API moves, that URL must follow. Behind a reverse proxy, keep the

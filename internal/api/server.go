@@ -110,10 +110,18 @@ type Server struct {
 	frontEndSecret string        // api.front_end_secret; empty = every request counted
 
 	// 0.29.122 (D2): the saved re-warm list (aveloxis_ops.page_cache_replay)
-	// and what the last save wrote, so each pass writes only the difference.
+	// and what the last save wrote — each request and its cost in
+	// milliseconds — so each pass writes only the difference. claimReplay
+	// takes the list for this process (one owner per database, A1);
+	// replayStore is the claimed list, nil when another process owns it.
 	// Read and written by the re-warm goroutine alone.
-	replayStore pageReplayStore
-	savedReplay map[db.PageCacheReplayKey]bool
+	claimReplay       func(ctx context.Context) (pageReplayStore, func(), error)
+	replayStore       pageReplayStore
+	replayRelease     func()      // the claimed list's release (runs once)
+	replayClaim       replayClaim // the last claim's outcome, so each change is logged once
+	replaySaveFailing bool        // the last save failed (its WARN is logged once per run)
+	savedReplay       map[db.PageCacheReplayKey]int64
+	stopTimeout       time.Duration // Options.StopTimeout: a stop's bound on the list's last save
 
 	// The re-warm's last pass (D4, 0.29.123): written by the re-warm, read
 	// by the administrator's cache view.
@@ -123,11 +131,24 @@ type Server struct {
 }
 
 // pageReplayStore is the saved re-warm list's store (a seam: tests use an
-// in-memory one).
+// in-memory one). Held reports whether its lock is still held — false once
+// the lock's database session ended.
 type pageReplayStore interface {
 	LoadPageCacheReplay(ctx context.Context) ([]db.PageCacheReplayRow, error)
 	SavePageCacheReplay(ctx context.Context, upserts []db.PageCacheReplayRow, deletes []db.PageCacheReplayKey) error
+	Held() bool
 }
+
+// replayClaim is the last outcome of claiming the saved re-warm list.
+type replayClaim int
+
+const (
+	replayUnclaimed     replayClaim = iota // never tried
+	replayOwned                            // this process holds it
+	replayHeldElsewhere                    // another api process holds it
+	replayClaimFailed                      // the claim itself failed
+	replayLost                             // held, then its session ended
+)
 
 // New creates an API server with default middleware options
 // (rate limiting active with defaults, LAN exempt, no CORS origins).
@@ -158,7 +179,13 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	if store != nil {
 		s.repoStates = store.RepoCacheStates
 		s.accounts = store
-		s.replayStore = store
+		s.claimReplay = func(ctx context.Context) (pageReplayStore, func(), error) {
+			list, err := store.ClaimPageCacheReplay(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			return list, list.Release, nil
+		}
 	}
 	if store != nil {
 		adminOpts := admin.Options{GitHubAPIBase: opts.GitHubAPIBase, GitLabAPIBase: opts.GitLabAPIBase, AutoApproveAddLimit: opts.AutoApproveAddLimit, SPAURL: opts.SPAURL}
@@ -173,6 +200,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	}
 	s.rewarmInterval = opts.RewarmInterval
 	s.requestTimeout = opts.RequestTimeout
+	s.stopTimeout = opts.StopTimeout
 	s.frontEndSecret = opts.FrontEndSecret
 	if logger != nil { // SR-10: the effective values, after the zero defaults
 		// Neither cache ages its answers (D6, 0.29.120): each is valid until

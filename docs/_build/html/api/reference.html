@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.123 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.124 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=70fe169d"></script>
+      <script src="../_static/documentation_options.js?v=bb778650"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
@@ -3107,9 +3108,11 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 <p>A contribution is a commit authored, an issue opened or closed, an
 issue or pull-request event, a pull request opened, a review
 submitted, or any comment. Commits whose author was never resolved
-to a contributor are not counted. The window defaults to the two
-years before the Monday (UTC) that starts the current week; ordered
-by login then full name.</p>
+to a contributor are not counted. The window starts two years before
+the Monday (UTC) that starts the current week by default; an omitted
+<code class="docutils literal notranslate"><span class="pre">until</span></code> ends it at the latest plausible commit time (UTC midnight two
+days ahead), and a given <code class="docutils literal notranslate"><span class="pre">until</span></code> is never later than that bound.
+Ordered by login then full name.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleRepoContributors</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Request Headers<span class="colon">:</span></dt>
@@ -3353,8 +3356,10 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dl>
 <p><strong>Returns a repository’s contributors ranked by commits, issues, pull requests, reviews and comments.</strong></p>
 <p>Events (labels, assignments, closes) do not count here. The window
-defaults to the two years before the Monday (UTC) that starts the
-current week. The envelope echoes the window in
+starts two years before the Monday (UTC) that starts the current week
+by default; an omitted <code class="docutils literal notranslate"><span class="pre">until</span></code> ends it at the latest plausible commit
+time (UTC midnight two days ahead), and a given <code class="docutils literal notranslate"><span class="pre">until</span></code> is never later
+than that bound. The envelope echoes the window in
 effect: <code class="docutils literal notranslate"><span class="pre">until</span></code> is the exclusive upper bound (the day after the
 requested <code class="docutils literal notranslate"><span class="pre">until</span></code>), or <code class="docutils literal notranslate"><span class="pre">0001-01-01T00:00:00Z</span></code> when none was given.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleTopContributors</span></code>.</p>
@@ -5444,7 +5449,8 @@ interval, its last pass and the size of its saved list, the
 comparison series cache’s size, hits, misses and whole-map resets,
 and the comparison answer cache’s size. The caches live in this
 process’s memory: with several api processes each answers for
-itself. Read-only. Since 0.29.123.</p>
+itself, and only the one that owns the saved re-warm list (the first
+to start; 0.29.124) reports a saved list. Read-only. Since 0.29.123.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleAdminCache</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Response JSON Object<span class="colon">:</span></dt>
@@ -5462,7 +5468,7 @@ itself. Read-only. Since 0.29.123.</p>
 <li><p><strong>page_cache.evictions</strong> (<em>integer:int64, required</em>)</p></li>
 <li><p><strong>rewarm</strong> (<em>object, required</em>)</p></li>
 <li><p><strong>rewarm.interval_seconds</strong> (<em>integer:int64, required</em>) – <code class="docutils literal notranslate"><span class="pre">api.cache_rewarm_seconds</span></code> in effect; 0 is off.</p></li>
-<li><p><strong>rewarm.saved_requests</strong> (<em>integer, required</em>) – Rows of the saved re-warm list as last saved or loaded.</p></li>
+<li><p><strong>rewarm.saved_requests</strong> (<em>integer, required</em>) – Rows of the saved re-warm list as this process last saved or loaded them; 0 on a process that does not own the list (another api process claimed it first, 0.29.124).</p></li>
 <li><p><strong>rewarm.last_pass_at</strong> (<em>string:date-time</em>)</p></li>
 <li><p><strong>rewarm.last_pass_repositories</strong> (<em>integer</em>)</p></li>
 <li><p><strong>rewarm.last_pass_requests</strong> (<em>integer</em>)</p></li>

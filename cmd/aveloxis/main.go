@@ -455,7 +455,17 @@ func runAPI(cfgPath, addr string) error {
 	signalReady(logger)
 
 	// v0.29.73: recompute cached repository pages after their collections.
-	safego.Go(logger, "repository page cache re-warm", func() { apiServer.RunRewarm(ctx) })
+	// The re-warm saves the replay list when it stops and then releases the
+	// list's lock (whole-branch review of 0.29.119–0.29.123, A7), so it runs
+	// on its own cancel — a server that stopped on an error stops it too —
+	// and the shutdown below waits for it before the deferred store.Close.
+	rewarmCtx, cancelRewarm := context.WithCancel(ctx)
+	defer cancelRewarm()
+	rewarmDone := make(chan struct{})
+	safego.Go(logger, "repository page cache re-warm", func() {
+		defer close(rewarmDone)
+		apiServer.RunRewarm(rewarmCtx)
+	})
 
 	// v0.29.89: share the daily request counts with the other api
 	// processes, and save what is left once the server has stopped (the
@@ -464,9 +474,15 @@ func runAPI(cfgPath, addr string) error {
 
 	srv := newAPIServer(cfg, addr, apiServer.Handler(), logger)
 	err = serveUntilDone(ctx, srv, ln, logger, "API server")
+	cancelRewarm()
 	flushCtx, cancelFlush := context.WithTimeout(context.Background(), serverShutdownTimeout)
 	defer cancelFlush()
 	apiServer.FlushCapacity(flushCtx)
+	// The re-warm's last save is bounded by StopTimeout (the same
+	// serverShutdownTimeout); waiting here is what the deferred store.Close
+	// would do anyway — pgx's pool Close blocks until the list's connection
+	// is returned (L10 round F2: a select with its own bound only claimed one).
+	<-rewarmDone
 	return err
 }
 
@@ -2286,6 +2302,7 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		ResponseCacheBytes: cfg.API.ResponseCacheBytes(),
 		RewarmInterval:     cfg.API.CacheRewarmInterval(),
 		RequestTimeout:     cfg.HTTPTimeout(),
+		StopTimeout:        serverShutdownTimeout, // the re-warm's last save at a stop (pgx's pool Close waits for it)
 		FrontEndSecret:     cfg.API.FrontEndSecret,
 		SPAURL:             cfg.Web.SPAURL,
 	}

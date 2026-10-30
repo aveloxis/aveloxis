@@ -1751,7 +1751,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
 	if mb := c.API.ResponseCacheMB; mb != nil && (*mb < 0 || int64(*mb) > MaxResponseCacheMB) {
-		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep only the weekly time series and top contributors, as before 0.29.73", *mb, MaxResponseCacheMB)
+		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep only the weekly time series and top contributors (at most 1,000 answers) and the metric series (at most another 1,000)", *mb, MaxResponseCacheMB)
 	}
 	if spa := c.Web.SPAURL; spa != "" {
 		// With it set, spa_url starts the mailed page links (group, pending
@@ -2234,7 +2234,8 @@ type APIConfig struct {
 	// megabytes (v0.29.73; off by default — an advanced option a deployment
 	// turns on by setting it). Absent → DefaultResponseCacheMB (0); an explicit 0
 	// keeps only the /timeseries and /contributors/top answers main always
-	// kept, bounded by count (0.29.78; every answer is still tagged and
+	// kept (0.29.78) and the /metric-series answers (0.29.119), each pool
+	// bounded at 1,000 answers (every answer is still tagged and
 	// revalidated);
 	// negative or past MaxResponseCacheMB → refused at load.
 	ResponseCacheMB *int `json:"response_cache_mb,omitempty"`
@@ -2278,9 +2279,10 @@ const MaxResponseCacheMB int64 = math.MaxInt64 >> 20
 // cache is on: a visitor who arrives within a minute of a collection's end
 // may still pay for the recomputation; each pass costs one primary-key
 // read per cached repository. With the cache off (ResponseCacheBytes 0)
-// the effective cadence is 0: the two routes still kept then are not
-// re-warmed (main never re-warmed them; their key carries the repository's
-// state, so a collection makes a new answer, not a stale one).
+// the effective cadence is 0: the answers still kept then (the time series,
+// top contributors and the metric series) are not re-warmed, and no
+// re-warm list is saved (their key carries the repository's state, so a
+// collection makes a new answer, not a stale one).
 const DefaultCacheRewarmSeconds = 60
 
 // MaxCacheRewarmSeconds is the largest cadence a time.Duration can hold

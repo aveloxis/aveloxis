@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API design conventions &mdash; Aveloxis 0.29.123 documentation</title>
+  <title>API design conventions &mdash; Aveloxis 0.29.124 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=70fe169d"></script>
+      <script src="../_static/documentation_options.js?v=bb778650"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
@@ -2092,8 +2093,10 @@ time.</p>
 <section id="caching-and-validators">
 <h2>Caching and validators<a class="headerlink" href="#caching-and-validators" title="Link to this heading"></a></h2>
 <p>A repository’s own read operations whose reference entry lists <code class="docutils literal notranslate"><span class="pre">304</span></code> are
-served from a response cache that is kept until the repository is
-collected or scanned again:</p>
+served from a response cache that is kept until the repository’s state
+changes — it is collected or scanned again, or a repair outside a
+collection rewrites its data — or, for an answer over a window, until that
+window moves (no answer expires on a timer):</p>
 <ul class="simple">
 <li><p>the answer carries an <code class="docutils literal notranslate"><span class="pre">ETag</span></code>; send it back as <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> and an
 unchanged answer is <code class="docutils literal notranslate"><span class="pre">304</span> <span class="pre">Not</span> <span class="pre">Modified</span></code> with no body;</p></li>
@@ -2103,8 +2106,7 @@ this caller, which nothing may store;</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code> says the answer came from the cache.</p></li>
 </ul>
 <p>The <a class="reference internal" href="../guide/api.html#top-contributors-ranked-v0-27-61"><span class="std std-ref">guide</span></a> describes
-when the cache is on and how long answers that name contributors are
-kept.</p>
+when the cache is on and what it keeps.</p>
 </section>
 <section id="times-and-windows">
 <h2>Times and windows<a class="headerlink" href="#times-and-windows" title="Link to this heading"></a></h2>

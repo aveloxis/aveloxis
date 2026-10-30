@@ -192,8 +192,10 @@ time.
 ## Caching and validators
 
 A repository's own read operations whose reference entry lists `304` are
-served from a response cache that is kept until the repository is
-collected or scanned again:
+served from a response cache that is kept until the repository's state
+changes — it is collected or scanned again, or a repair outside a
+collection rewrites its data — or, for an answer over a window, until that
+window moves (no answer expires on a timer):
 
 - the answer carries an `ETag`; send it back as `If-None-Match` and an
   unchanged answer is `304 Not Modified` with no body;
@@ -203,8 +205,7 @@ collected or scanned again:
 - `X-Cache: hit` says the answer came from the cache.
 
 The [guide](../guide/api.md#top-contributors-ranked-v02761) describes
-when the cache is on and how long answers that name contributors are
-kept.
+when the cache is on and what it keeps.
 
 ## Times and windows
 

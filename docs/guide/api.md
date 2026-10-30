@@ -8,6 +8,17 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.124
+
+`GET /api/v1/admin/cache`'s `rewarm.saved_requests` is the saved re-warm
+list as this process last saved or loaded it: the list has one owner per
+database (the first api process to start), and another api process reports
+0. `/compare` uses a repository entity's cached `/metric-series` answer only
+when that answer's window is the comparison's own; a comparison that
+straddles the start of a week (or a month, with `bucket=month`) computes the
+entity on its own window, so every series in one answer covers the same
+buckets. The answer's shape is unchanged.
+
 ## Changes for API clients in 0.29.123
 
 Three administrator routes show the api process's caches, read-only:
@@ -1029,13 +1040,24 @@ top-contributor answers and 1,000 metric-series answers), a short authorization 
 counts: the per-IP buckets, the hour windows of session and API-token quotas
 (`requests_per_hour`, `token_requests_per_hour`) and the per-user cap on
 repositories added to Shared with Me by viewing them. All of those start over
-when the process restarts. The day counts of sessions and API tokens
+when the process restarts, except the list of answers the re-warm would
+recompute (`aveloxis_ops.page_cache_replay`): it is saved at each re-warm pass
+and at a stop, and read back at start, so a restart recomputes them. The
+list has one owner per database — the first `api` process to start claims
+it (a Postgres advisory lock on that process's own database session, so the
+api needs a direct or session-mode connection, never a transaction pooler;
+after a database restart ends the session, the list is claimed again at the
+next re-warm pass by whichever api process asks first); another process
+logs that it re-warms from memory alone (and asks again at each pass), and a
+restart of it starts empty.
+The day counts of sessions and API tokens
 (`requests_per_day`, `token_requests_per_day`) are shared through the
 `aveloxis_ops.request_counts` table: every `api` process adds its counts there
 about once a minute and when it stops, so they survive a restart and are
 shared by all instances. Several instances behind a load balancer each compute
-and hold their own answers, and the per-IP limits and hour windows are per
-instance; run one per host unless that is what you want.
+and hold their own answers (only the first keeps a saved re-warm list), and
+the per-IP limits and hour windows are per instance; run one per host unless
+that is what you want.
 
 The web GUI's charts fetch the API through the web process, which proxies
 `/api/*` to `web.api_internal_url` (`http://127.0.0.1:8383` by default);

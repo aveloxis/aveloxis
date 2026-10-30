@@ -57,8 +57,10 @@ import (
 //  3. A failure the handler serves past goes through s.partialAnswer, never
 //     a bare log (TestCachedHandlersDegradeOnlyThroughPartialAnswer).
 //  4. If a pageExact answer reads a new table, add the table to
-//     pageCacheTables in internal/db and classify its writers
-//     (TestPageCacheTableWritersAreCovered): a writer that can run outside
+//     internal/db/testdata/page_cache_tables.txt and classify its writers
+//     (TestPageCacheTablesAreWhatTheCachedHandlersRead finds the table from
+//     the handler's store calls; TestPageCacheTableWritersAreCovered checks
+//     its writers): a writer that can run outside
 //     a queued collection job stamps data_changed_at in the same
 //     transaction as its data (stampRepoCacheStateSQL).
 
@@ -205,7 +207,30 @@ func canonicalQuery(r *http.Request, params []string) (query string, keyable boo
 			keep.Set(p, v)
 		}
 	}
+	// Only the retention metric reads its threshold (metricSeriesAndParts):
+	// for any other metric a valid threshold is the same answer, so it is
+	// not part of the key (ASVS pass of 0.29.124, L-1: each value was another
+	// computation and stored copy). An invalid one stays — the handler
+	// answers it 400, and it must not share a valid request's key or 304.
+	if t := keep.Get("retention_threshold"); t != "" && q.Get("metric") != retentionMetricID {
+		if _, err := retentionThresholdValue(t); err == nil {
+			keep.Del("retention_threshold")
+		}
+	}
 	return keep.Encode(), true
+}
+
+// pageRequestURI is the one spelling of a cached request (L10 round 2 of
+// 0.29.124, F1/F5): the decoded path — literal segments and a numeric id for
+// every cached pattern, so clean and unescaped whatever spelling the client
+// sent (the mux routes /repos/%37/… to the same answer) — and the canonical
+// query (canonicalQuery). The entry records it, the saved re-warm list
+// stores it, and a loaded row is read back as it (canonicalSeedURI).
+func pageRequestURI(r *http.Request, query string) string {
+	if query == "" {
+		return r.URL.Path
+	}
+	return r.URL.Path + "?" + query
 }
 
 // pageCacheCtlKey carries the per-request "this answer is partial" flag.
@@ -232,22 +257,22 @@ func (s *Server) partialAnswer(r *http.Request, err error, msg string, args ...a
 
 // pageEntry is one cached answer.
 type pageEntry struct {
-	key         string // the lookup key (route, repository, query, state)
-	etag        string // quoted ETag sent with the body
-	repoID      int64
-	uri         string // request URI, replayed by the re-warm
-	fingerprint string // db.RepoCacheState.Fingerprint() when computed
-	window      string // the effective window it was computed for (pageWindows; "" when not windowed)
-	body        []byte
-	contentType string
-	disposition string
-	computed    time.Time
-	cost        time.Duration // handler run time, orders the re-warm
-	keptWhenOff bool          // stored under a zero budget too (pagePolicy.keptWhenOff)
-	keptPool    string        // its zero-budget pool (pagePolicy.keptPool)
-	replayed    bool          // stored by a re-warm replay: it carries the demand that earned the replay, so the saved list keeps it (round 1 finding 1)
-	hits        int           // served from the cache since computed; the re-warm replays only answers asked for again
-	triedFor    string        // the state (entryState) a failed re-warm of this answer was attempted for: retried only under a newer one
+	key          string // the lookup key (route, repository, query, state)
+	etag         string // quoted ETag sent with the body
+	repoID       int64
+	uri          string // request URI, replayed by the re-warm
+	fingerprint  string // db.RepoCacheState.Fingerprint() when computed
+	window       string // the effective window it was computed for (pageWindows; "" when not windowed)
+	body         []byte
+	contentType  string
+	disposition  string
+	computed     time.Time
+	cost         time.Duration // handler run time, orders the re-warm
+	keptWhenOff  bool          // stored under a zero budget too (pagePolicy.keptWhenOff)
+	keptPool     string        // its zero-budget pool (pagePolicy.keptPool)
+	onReplayList bool          // carries demand the saved list keeps: stored by a re-warm replay (round 1 finding 1), or the current answer of a request that was on the list — a seed or an outdated copy visitors came back to — that a visitor computed first (A6)
+	hits         int           // served from the cache since computed; the re-warm replays only answers asked for again
+	triedFor     string        // the state (entryState) a failed re-warm of this answer was attempted for: retried only under a newer one
 }
 
 // pageCacheStats counts what the cache did since the process started (D4,
@@ -487,7 +512,7 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string, windo
 		return st
 	}
 	best := map[string]time.Duration{}
-	current := map[string]bool{}
+	current := map[string]*pageEntry{} // uri → its answer under the current state
 	tried := map[string]bool{}
 	var drop []*list.Element
 	for el := range c.byRepo[repoID] {
@@ -497,7 +522,7 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string, windo
 		case cur == "":
 			drop = append(drop, el)
 		case entryState(e.fingerprint, e.window) == cur:
-			current[e.uri] = true
+			current[e.uri] = e
 		case e.hits == 0:
 			drop = append(drop, el)
 		default:
@@ -511,9 +536,13 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string, windo
 	}
 	// An outdated copy whose current successor is already stored (a visitor
 	// computed it first) has nothing left to replay: remove it now, or it
-	// would stay until the LRU evicted it (fix-review round, PR #226).
+	// would stay until the LRU evicted it (fix-review round, PR #226). It was
+	// on the saved list (hits > 0), and so is its successor: a visit is the
+	// demand, and a restart before the next one must not forget it (A6 —
+	// with no visit, the replay would have kept it).
 	for el := range c.byRepo[repoID] {
-		if e := el.Value.(*pageEntry); current[e.uri] && e.hits > 0 && entryState(e.fingerprint, e.window) != stateOf(e.uri) {
+		if e := el.Value.(*pageEntry); current[e.uri] != nil && e.hits > 0 && entryState(e.fingerprint, e.window) != stateOf(e.uri) {
+			current[e.uri].onReplayList = true
 			drop = append(drop, el)
 		}
 	}
@@ -523,7 +552,12 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string, windo
 	for uri, sd := range c.seeds[repoID] {
 		cur := stateOf(uri)
 		switch {
-		case cur == "" || current[uri]:
+		case cur == "":
+			c.dropSeedLocked(repoID, uri)
+		case current[uri] != nil:
+			// A visitor computed the seed's answer first: the seed's demand
+			// passes to it (A6), as a replay's would.
+			current[uri].onReplayList = true
 			c.dropSeedLocked(repoID, uri)
 		case sd.triedFor == cur:
 			tried[uri] = true
@@ -535,7 +569,7 @@ func (c *repoPageCache) outdatedToReplay(repoID int64, fingerprint string, windo
 	}
 	items := make([]item, 0, len(best))
 	for uri, cost := range best {
-		if !current[uri] && !tried[uri] {
+		if current[uri] == nil && !tried[uri] {
 			items = append(items, item{uri, cost})
 		}
 	}
@@ -617,10 +651,17 @@ func (c *repoPageCache) dropSeedLocked(repoID int64, uri string) {
 
 // replaySet is the re-warm list as it would be saved: every answer visitors
 // asked for again (hits > 0), current or not — a restart empties memory, and
-// these are what come back — every answer a replay stored (it carries the
-// demand that earned the replay, so a second restart before the next visit
-// does not forget it), and every seed not yet replayed, each request with
-// its largest cost.
+// these are what come back — every answer carrying a demand the list held
+// (onReplayList: a replay stored it, or a visitor computed it in place of a
+// request on the list, so a second restart before the next visit does not
+// forget it), and every seed not yet replayed, each request with its
+// largest cost.
+//
+// It walks every entry under the cache lock, once per re-warm pass and at a
+// stop (repoSummaries walks the same way for the administrator's view), so
+// requests wait on the lock for one walk — linear in the entries the budget
+// holds — per pass (whole-branch review of 0.29.119–0.29.123, A12). A pass
+// that changed nothing writes nothing, but still walks.
 //
 // A restart restores what the stopped process held (D2: "a restart forgets
 // nothing"), so an answer a replay stored is restored at every restart until
@@ -642,7 +683,7 @@ func (c *repoPageCache) replaySet() map[db.PageCacheReplayKey]time.Duration {
 	}
 	for repoID, set := range c.byRepo {
 		for el := range set {
-			if e := el.Value.(*pageEntry); e.hits > 0 || e.replayed {
+			if e := el.Value.(*pageEntry); e.hits > 0 || e.onReplayList {
 				add(db.PageCacheReplayKey{RepoID: repoID, URI: e.uri}, e.cost)
 			}
 		}
@@ -877,15 +918,12 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 	}
 	c.count(func(st *pageCacheStats) { st.Misses++ })
 
-	uri := r.URL.EscapedPath()
-	if query != "" {
-		uri += "?" + query
-	}
+	uri := pageRequestURI(r, query)
 	_, replaying := r.Context().Value(rewarmExpectKey{}).(string)
 	res, e := s.runOnce(c, key, authed, h, func(res pageResult, cost time.Duration) *pageEntry {
 		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(), window: window,
 			body: res.body, contentType: res.contentType, disposition: res.disposition,
-			computed: c.now(), cost: cost, keptWhenOff: pol.keptWhenOff, keptPool: pol.keptPool, replayed: replaying}
+			computed: c.now(), cost: cost, keptWhenOff: pol.keptWhenOff, keptPool: pol.keptPool, onReplayList: replaying}
 		if pol.enriched {
 			sum := sha256.Sum256(res.body)
 			e.etag = `"` + key + "." + hex.EncodeToString(sum[:6]) + `"`

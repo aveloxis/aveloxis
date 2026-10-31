@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.124 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=bb778650"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
@@ -1803,6 +1804,15 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-125">
+<h2>Changes for API clients in 0.29.125<a class="headerlink" href="#changes-for-api-clients-in-0-29-125" title="Link to this heading"></a></h2>
+<p>A repository request whose URI — with its parameters in the canonical form
+the cache keys on — is longer than 2,684 bytes is answered live, with
+<code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">no-store</span></code> and no <code class="docutils literal notranslate"><span class="pre">ETag</span></code>, instead of being cached; every
+shorter request is cached as before. The bound is what the saved re-warm
+list’s primary key can hold (PostgreSQL’s btree entry limit for an 8 kB
+page); no request a browser or the warm script makes comes near it.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-124">
 <h2>Changes for API clients in 0.29.124<a class="headerlink" href="#changes-for-api-clients-in-0-29-124" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/cache</span></code>’s <code class="docutils literal notranslate"><span class="pre">rewarm.saved_requests</span></code> is the saved re-warm

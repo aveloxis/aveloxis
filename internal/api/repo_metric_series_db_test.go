@@ -108,7 +108,7 @@ func metricSeriesFixture(t *testing.T) (*Server, *db.PostgresStore, int64, int) 
 			t.Fatal(err)
 		}
 	}
-	s, err := NewWithOptions(store, logger, Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20})
+	s, err := NewWithOptions(store, logger, Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20, RequestTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestRestartedAPIReplaysTheSavedList(t *testing.T) {
 		t.Fatalf("the pass must save the asked-for chart: %d rows (%v)", saved, err)
 	}
 	release() // the first process stops
-	restarted, err := NewWithOptions(store, s.logger, Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20})
+	restarted, err := NewWithOptions(store, s.logger, Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20, RequestTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

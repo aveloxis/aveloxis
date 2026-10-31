@@ -428,6 +428,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	if w.Header().Get("Cache-Control") == "" {
 		w.Header().Set("Cache-Control", "no-store")
 	}
+	// Stated, not left to the sniffer (ASVS V4.1.1; every page is HTML in
+	// UTF-8): a handler that set a type first keeps it.
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	}
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		// No request here: a render refused after the bound is http.ErrHandlerTimeout, which RequestEnded recognises on any context.
 		httpserver.LogFailure(context.Background(), s.logger, slog.LevelError, err, "template render failed", "template", name, "error", err)

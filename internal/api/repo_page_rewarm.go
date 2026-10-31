@@ -324,7 +324,11 @@ func (s *Server) canonicalSeedURI(uri string) (string, bool) {
 	if !keyable {
 		return "", false
 	}
-	return pageRequestURI(req, query), true
+	canonical := pageRequestURI(req, query)
+	if len(canonical) > db.MaxPageCacheReplayURIBytes {
+		return "", false // the cache admits no such request (servePageCached)
+	}
+	return canonical, true
 }
 
 // maxSeedCostMS is the largest saved cost, in milliseconds, a time.Duration
@@ -366,7 +370,15 @@ func (s *Server) loadReplaySeeds(ctx context.Context) {
 	if s.replayStore == nil {
 		return
 	}
-	rows, err := s.replayStore.LoadPageCacheReplay(ctx)
+	// Bounded like a save (the store refuses a load with no deadline, M1):
+	// a re-warm request's bound.
+	lctx := ctx
+	if s.requestTimeout > 0 {
+		var cancel context.CancelFunc
+		lctx, cancel = context.WithTimeout(ctx, s.requestTimeout)
+		defer cancel()
+	}
+	rows, err := s.replayStore.LoadPageCacheReplay(lctx)
 	if err != nil {
 		if !s.replayStore.Held() {
 			s.loseReplayList(ctx, err)

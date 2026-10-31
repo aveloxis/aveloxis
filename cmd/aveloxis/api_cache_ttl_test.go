@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,5 +106,34 @@ func TestRunAPIWaitsForTheRewarmsLastSave(t *testing.T) {
 			t.Fatalf("runAPI must %q after the step before it (stop the re-warm, then wait for its save within the bound)", s)
 		}
 		at += 1 + i
+	}
+}
+
+// ASVS 5.0 review of 0.29.125 (V16.4.2, D-N3): the component log files hold
+// sign-ins and administrator actions; they are created for the owner alone.
+func TestComponentLogsAreCreatedForTheOwnerAlone(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func startComponent("))
+	if !strings.Contains(body, "os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)") {
+		t.Error("startComponent must open the component's log file with mode 0600")
+	}
+}
+
+// ASVS 5.0 review of 0.29.125 (V13.3.2, D-N12): aveloxis.json holds the
+// database password, the OAuth client secrets and the forge keys; a file
+// other users can read is reported at every start.
+func TestLoadConfigWarnsWhenOthersCanReadTheFile(t *testing.T) {
+	for _, c := range []struct {
+		mode os.FileMode
+		warn bool
+	}{{0o600, false}, {0o640, true}, {0o644, true}} {
+		path := filepath.Join(t.TempDir(), "aveloxis.json")
+		if err := os.WriteFile(path, []byte(`{}`), c.mode); err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		loadConfig(path, slog.New(slog.NewTextHandler(&logs, nil)))
+		if got := strings.Contains(logs.String(), "readable by other users"); got != c.warn {
+			t.Errorf("mode %o: warned=%t, want %t\n%s", c.mode, got, c.warn, logs.String())
+		}
 	}
 }

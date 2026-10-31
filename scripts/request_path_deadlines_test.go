@@ -41,6 +41,10 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 		// nothing, so internalGET itself reports the expiry ("request
 		// deadline exceeded") in its caller's WARN.
 		srctest.SiteKey("internal/api", "internalGET"): 1, // the re-warm's replays and /compare's repository entities (0.29.121)
+		// The load of the saved list (Copilot's review of PR #246, M1): the
+		// re-warm's own context bounded by a request's bound, never a
+		// request's; its expiry is the store's error, logged by the loader.
+		srctest.SiteKey("internal/api", "loadReplaySeeds"): 1,
 		// The re-warm's save of its list (L10 round of 0.29.124, F2): the
 		// re-warm loop's own context, never a request's, bounded so a stop's
 		// save cannot hold pgx's pool Close open.

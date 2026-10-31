@@ -220,7 +220,7 @@ Every field is optional except `database` credentials and at least one API key s
 | `database.user` | string | (required) | Database username. |
 | `database.password` | string | (required) | Database password. |
 | `database.dbname` | string | (required) | Database name. |
-| `database.sslmode` | string | `"prefer"` | PostgreSQL SSL mode. Options: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`. |
+| `database.sslmode` | string | `"prefer"` | PostgreSQL SSL mode. Options: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`. Fine for a Unix socket or a loopback host; for a remote host anything weaker than `require` is warned about at start (the connection may be unencrypted and the server unverified) — use `verify-full`, with the server's CA in the process's `PGSSLROOTCERT`. |
 | `database.pool_max_conns` | int | `0` | Caps `aveloxis serve`'s connection pool (v0.29.58). `0` derives the size from the scheduler's connection demand capped by the server's budget and logs the derivation at startup; a positive value is honored as written. See [Database connection pool](../guide/scaling.md#database-connection-pool). Other commands always use a pool of 20. |
 
 ### GitHub

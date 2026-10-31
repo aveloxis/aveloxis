@@ -707,18 +707,6 @@ func (c *repoPageCache) dropRepo(repoID int64) {
 	delete(c.seeds, repoID)
 }
 
-// fingerprints returns the distinct states repoID's entries were computed
-// under.
-func (c *repoPageCache) fingerprints(repoID int64) map[string]bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := map[string]bool{}
-	for el := range c.byRepo[repoID] {
-		out[el.Value.(*pageEntry).fingerprint] = true
-	}
-	return out
-}
-
 // pageKey is the lookup key of one answer: route pattern, repository,
 // canonical query (canonicalQuery: the route's own parameters, sorted), the
 // state, the binary's version (a deploy can change any body's shape) and,
@@ -883,6 +871,9 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 	window := ""
 	if win, windowed := pageWindows[r.Pattern]; keyable && windowed {
 		window, keyable = win(r)
+	}
+	if keyable && len(pageRequestURI(r, query)) > db.MaxPageCacheReplayURIBytes {
+		keyable = false // a request the saved list could not hold (its key is a btree entry): live, like an unkeyable value
 	}
 	if !keyable {
 		h(w, authed) // a value the key cannot express (an invalid date, a refused window): live, no-store, the handler's 400

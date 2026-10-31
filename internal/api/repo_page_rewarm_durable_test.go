@@ -742,3 +742,28 @@ func TestAStopShortensASaveAlreadyRunning(t *testing.T) {
 		t.Errorf("the stop took %v, the pass's bound", took)
 	}
 }
+
+// L10 round on 0.29.125, F2: a saved row the cache would not admit (its
+// canonical URI past db.MaxPageCacheReplayURIBytes — a row an earlier
+// version saved) is dropped at load, not re-seeded and replayed.
+func TestAnOverLongSavedRowIsDroppedAtLoad(t *testing.T) {
+	hn, logs, runs := rewarmHarness(t, okBody)
+	long := "/api/v1/repos/7/thing?a=" + strings.Repeat("x", db.MaxPageCacheReplayURIBytes)
+	f := newFakeReplayStore(
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: long}, CostMS: 10},
+		db.PageCacheReplayRow{Key: db.PageCacheReplayKey{RepoID: 7, URI: "/api/v1/repos/7/thing?a=1"}, CostMS: 10},
+	)
+	hn.s.replayStore = f
+	ctx := context.Background()
+	hn.s.loadReplaySeeds(ctx)
+	if !strings.Contains(logs.String(), "requests=1 dropped=1") {
+		t.Errorf("the over-long row must be dropped at load: %s", logs.String())
+	}
+	hn.s.rewarmOnce(ctx)
+	if got := runs(); len(got) != 1 || got[0] != "/api/v1/repos/7/thing?a=1" {
+		t.Errorf("replayed %v, want only the admissible request", got)
+	}
+	if got := f.uris(); len(got) != 1 {
+		t.Errorf("the first save must delete the over-long row: %v", got)
+	}
+}

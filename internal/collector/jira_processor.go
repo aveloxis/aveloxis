@@ -139,10 +139,10 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 					skipped++ // no repo mapping — stays staged (operator heals the registration)
 					continue
 				}
-				committed, err := p.processEnvelope(ctx, *row.RepoID, row.Envelope)
+				progress, err := p.processEnvelope(ctx, *row.RepoID, row.Envelope)
 				if err != nil {
-					if committed && p.partial.first(row.JsID) {
-						// Its issue landed: stamp once, not every retry (A5).
+					if progress > 0 && p.partial.advanced(row.JsID, progress) {
+						// It wrote, and further than before: stamp (A5).
 						wroteRepos[*row.RepoID] = true
 					}
 					if !errors.Is(err, context.Canceled) {
@@ -197,13 +197,14 @@ func (p *JiraProcessor) resolveIdentity(ctx context.Context, u *jira.User) (stri
 }
 
 // processEnvelope writes one staged Jira envelope: its issue, then its
-// comments. The bool reports whether anything was committed — true once the
-// issue landed, so a later failure (a comment, the recount) left a partial
-// write the drain stamps (partialWriteStamps, A5).
-func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envelope []byte) (bool, error) {
+// comments, then the recount. progress is how many of those writes
+// completed — every one is a write, so a failure after the first left a
+// partial write the drain stamps when a retry gets further
+// (partialWriteStamps, A5).
+func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envelope []byte) (progress int, err error) {
 	var is jira.Issue
 	if err := json.Unmarshal(envelope, &is); err != nil {
-		return false, err
+		return 0, err
 	}
 	var jiraID int64
 	if is.ID != "" {
@@ -218,7 +219,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	}
 	reporter, err := p.resolveIdentity(ctx, is.Fields.Reporter)
 	if err != nil {
-		return false, err // stays staged — a transient identity failure must retry (C1)
+		return 0, err // stays staged — a transient identity failure must retry (C1)
 	}
 	// Copilot round 2 on PR #193 (suppressed #1): the assignee is
 	// requested and serialized precisely so its identity gets BANKED —
@@ -230,7 +231,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	// issue_assignees (bridge semantics vs forge-owned assignees on
 	// LINKed native rows) is undesigned — the banking is the guarantee.
 	if _, aerr := p.resolveIdentity(ctx, is.Fields.Assignee); aerr != nil {
-		return false, aerr // stays staged — retry (C1)
+		return 0, aerr // stays staged — retry (C1)
 	}
 	in := db.JiraAPIIssue{
 		RepoID:        repoID,
@@ -254,10 +255,11 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 
 	issueID, err := p.store.UpsertJiraIssueFromAPI(ctx, in)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
+	progress = 1 // the issue landed
 	if is.Fields.Comment == nil {
-		return true, nil
+		return progress, nil
 	}
 	// Backstop only: the WORKER completes truncated comment blocks
 	// before staging (Copilot round 2 on PR #193, #2 — it pages the
@@ -276,7 +278,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	for _, cm := range is.Fields.Comment.Comments {
 		author, aerr := p.resolveIdentity(ctx, cm.Author)
 		if aerr != nil {
-			return true, aerr // stays staged — retry the whole envelope (C1)
+			return progress, aerr // stays staged — retry the whole envelope (C1)
 		}
 		var commentID int64
 		for _, ch := range cm.ID {
@@ -301,18 +303,20 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			Updated:       jiraTime(cm.Updated),
 		})
 		if err != nil {
-			return true, err
+			return progress, err
 		}
 		wrote++
+		progress++
 	}
 	if wrote > 0 {
 		// One recount per issue per envelope (round 17, suppressed #2)
 		// — UpsertJiraComment's bridge is recount-free.
 		if err := p.store.RecountIssueComments(ctx, issueID); err != nil {
-			return true, err
+			return progress, err
 		}
+		progress++
 	}
-	return true, nil
+	return progress, nil
 }
 
 // jiraTime parses a Jira Server timestamp; zero on absence or parse

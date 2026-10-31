@@ -139,6 +139,9 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		if strings.Contains(scriptSrc, "unsafe") || strings.Contains(scriptSrc, "http") {
 			t.Errorf("GET %s: script-src allows unsafe or remote sources: %q", path, scriptSrc)
 		}
+		if (path == "/login" || path == "/") && !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html; charset=utf-8") {
+			t.Errorf("GET %s: a rendered page states its type, got %q", path, rec.Header().Get("Content-Type"))
+		}
 		if rec.Header().Get("X-Content-Type-Options") != "nosniff" || rec.Header().Get("X-Frame-Options") != "DENY" || rec.Header().Get("Referrer-Policy") == "" {
 			t.Errorf("GET %s: nosniff=%q frame=%q referrer=%q", path, rec.Header().Get("X-Content-Type-Options"), rec.Header().Get("X-Frame-Options"), rec.Header().Get("Referrer-Policy"))
 		}

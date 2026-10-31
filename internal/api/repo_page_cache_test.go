@@ -1331,3 +1331,41 @@ func TestRetentionThresholdKeysOnlyTheRetentionMetric(t *testing.T) {
 		t.Error("an invalid threshold (a 400) must not share the valid request's key")
 	}
 }
+
+// fingerprints returns the distinct states repoID's entries were computed
+// under (a test reader: production never asks; the unused-symbol ratchet
+// keeps it here).
+func (c *repoPageCache) fingerprints(repoID int64) map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]bool{}
+	for el := range c.byRepo[repoID] {
+		out[el.Value.(*pageEntry).fingerprint] = true
+	}
+	return out
+}
+
+// Copilot's review of PR #246 (0.29.124), M2: a request whose canonical URI
+// the saved re-warm list could not hold (its primary key is a btree entry,
+// db.MaxPageCacheReplayURIBytes) is never cached — answered live, no-store,
+// and never on the list — rather than cached in memory and failing every
+// save of the list.
+func TestARequestTheSavedListCannotHoldIsNeverCached(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	long := "/api/v1/repos/7/thing?a=" + strings.Repeat("x", db.MaxPageCacheReplayURIBytes)
+	first := hn.get(long)
+	if cc := first.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("an over-long request is answered live, no-store: Cache-Control %q", cc)
+	}
+	if hn.get(long).Header().Get("X-Cache") == "hit" {
+		t.Error("an over-long request must not be stored")
+	}
+	if set := hn.s.pageCache.replaySet(); len(set) != 0 {
+		t.Errorf("an over-long request must never reach the saved list: %v", set)
+	}
+	short := "/api/v1/repos/7/thing?a=1"
+	hn.get(short)
+	if hn.get(short).Header().Get("X-Cache") != "hit" {
+		t.Error("premise: an ordinary request is cached")
+	}
+}

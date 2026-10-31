@@ -191,3 +191,80 @@ func TestMailingListDrainStampsAPartialWriteOnce(t *testing.T) {
 		t.Errorf("the row's final write must stamp: %v (processed %v, tracker-action calls %d, applied %v)", store.stampedRepos, store.processed, store.applyActionCalls, store.appliedActions)
 	}
 }
+
+// Copilot review of PR #246 (0.29.124), the two Highs on A5: a retry can
+// commit MORE than the attempt before it and still fail — a Jira envelope
+// fails on its first comment, then writes that comment and fails on the
+// second — and a stop can land between a row's first write and the one that
+// flagged "committed". The partial-write signal is the row's progress (how
+// many writes landed), not a first-time flag: a retry that got further
+// stamps, a retry that got no further does not.
+func TestJiraDrainStampsEachTimeARetryGetsFurther(t *testing.T) {
+	repoID := int64(42)
+	store := &fakeJiraProcStore{
+		perProject:   map[int64][]db.JiraStagingRow{7: {{JsID: 1, IssueKey: "AVJP-1", RepoID: &repoID, Envelope: []byte(jiraEnvelope)}}},
+		identities:   map[string][3]any{"alice-gh": {"cntrb-alice", "login", false}},
+		failComments: map[int64]bool{111: true, 112: true}, // the issue lands, no comment does
+	}
+	p := NewJiraProcessor(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	drain := func(want int, why string) {
+		t.Helper()
+		if _, err := p.DrainOnce(context.Background()); err != nil {
+			t.Fatalf("DrainOnce: %v", err)
+		}
+		if len(store.stampedRepos) != want {
+			t.Fatalf("%s: stamped %v, want %d stamps", why, store.stampedRepos, want)
+		}
+	}
+	drain(1, "the issue committed")
+	drain(1, "the same failure again: no progress")
+	store.failComments = map[int64]bool{112: true} // the first comment lands now
+	drain(2, "the retry got further (one comment more)")
+	drain(2, "the same failure again")
+	store.failComments = nil
+	drain(3, "the final write")
+}
+
+func TestMailingListDrainStampsAnIssueCreatedBeforeAStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows:           []db.StagedMailingListRow{mlRetryRow(1)}, // [Resolved]: creates its issue first
+		onIssueCreated: cancel,                                   // the stop lands right after
+	}
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainList(ctx, 7); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DrainList: %v, want the cancellation", err)
+	}
+	if len(store.createdIssues) != 1 || len(store.emails) != 0 {
+		t.Fatalf("premise: the issue was created and nothing after it: issues %v emails %d", store.createdIssues, len(store.emails))
+	}
+	if len(store.stampedRepos) != 1 || store.stampedRepos[0] != 42 {
+		t.Errorf("an issue committed before the stop must stamp its repository: %v", store.stampedRepos)
+	}
+}
+
+// L10 round on 0.29.125, F1: a LINK is progress, not a write — a keyed row
+// whose issue already exists, stopped before its message is written, wrote
+// nothing and stamps nothing.
+func TestMailingListDrainDoesNotStampALinkStoppedBeforeAnyWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &fakeProcStore{
+		primaryRepoID: 42, primaryRepoOK: true,
+		rows:          []db.StagedMailingListRow{mlRetryRow(1)},
+		issueByKey:    map[string]int64{"ARROW-77": 5}, // the issue exists: a LINK
+		onIssueLinked: cancel,                          // the stop lands right after
+	}
+	p := NewMailingListProcessor(store, "apache_ponymail", "metadata_only", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := p.DrainList(ctx, 7); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DrainList: %v, want the cancellation", err)
+	}
+	if len(store.emails) != 0 {
+		t.Fatalf("premise: nothing was written after the link: emails %d", len(store.emails))
+	}
+	if len(store.stampedRepos) != 0 {
+		t.Errorf("a LINK followed by a stop wrote nothing and must not stamp: %v", store.stampedRepos)
+	}
+}

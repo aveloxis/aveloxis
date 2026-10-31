@@ -12,6 +12,7 @@ package collector
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -35,8 +36,9 @@ type fakeJiraProcStore struct {
 	issues         []db.JiraAPIIssue
 	comments       []db.JiraAPIComment
 	processed      []int64
-	recounted      []int64 // issues RecountIssueComments was called for
-	commentErr     error   // when set, UpsertJiraComment fails
+	recounted      []int64        // issues RecountIssueComments was called for
+	commentErr     error          // when set, UpsertJiraComment fails
+	failComments   map[int64]bool // comment ids whose upsert fails (a retry that gets further each time)
 }
 
 func (f *fakeJiraProcStore) JiraProjectsWithStaging(_ context.Context, afterID int64, limit int) ([]int64, error) {
@@ -101,6 +103,9 @@ func (f *fakeJiraProcStore) UpsertJiraIssueFromAPI(_ context.Context, in db.Jira
 func (f *fakeJiraProcStore) UpsertJiraComment(_ context.Context, in db.JiraAPIComment) (int64, error) {
 	if f.commentErr != nil {
 		return 0, f.commentErr
+	}
+	if f.failComments[in.CommentID] {
+		return 0, errors.New("deadlock detected")
 	}
 	f.comments = append(f.comments, in)
 	return 5000 + int64(len(f.comments)), nil

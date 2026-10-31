@@ -35,14 +35,31 @@ listen_addresses = '*'          # or a specific interface address
 # pg_hba.conf — one line for the scancode host (use its actual address;
 # do NOT open 0.0.0.0/0 — chaoss.tv's postgres logs show constant
 # credential brute-forcing against exposed 5432 ports):
-host  aveloxis  aveloxis  192.0.2.42/32  scram-sha-256
+hostssl  aveloxis  aveloxis  192.0.2.42/32  scram-sha-256
+
+# postgresql.conf — the certificate the clients verify (see below):
+ssl = on
+ssl_cert_file = '/etc/postgresql/db-host.crt'
+ssl_key_file  = '/etc/postgresql/db-host.key'   # chown postgres:postgres, chmod 0600 — postgres refuses a key any group or other user can read
 ```
 
+The clients verify the server (`verify-full` in the check below and in the
+`aveloxis.json` of §2), so the server must present a certificate for
+`db-host` they can verify: one from a public CA (then the system bundle named
+below works as written), or one the operator issues — a certificate carrying
+`db-host` in its Subject Alternative Name (Go matches the SAN, never the CN),
+signed by a CA whose certificate file becomes the `PGSSLROOTCERT` of `psql`
+AND of the aveloxis process. The stock Debian/Ubuntu cluster's self-signed
+"snakeoil" certificate verifies under neither: it is not in the bundle and
+names no host. `hostssl` in pg_hba.conf refuses a clear connection at the
+server too.
+
 Reload postgres (`SELECT pg_reload_conf();` — `listen_addresses` needs a
-full restart). Verify from the scancode host:
+full restart; `ssl` and the certificate files apply on reload, and a refused
+key file leaves the previous certificate in place, so read the server log). Verify from the scancode host:
 
 ```bash
-psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer" -c "SELECT 1"
+PGSSLROOTCERT=/etc/ssl/certs/ca-certificates.crt psql "postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=verify-full" -c "SELECT 1"
 ```
 
 ## 2. Install aveloxis + the scancode toolchain
@@ -84,7 +101,7 @@ The scancode host's `aveloxis.json` needs ONLY the database block and the
     "user": "aveloxis",
     "password": "…",
     "dbname": "aveloxis",
-    "sslmode": "prefer"
+    "sslmode": "verify-full"
   },
   "collection": {
     "scancode_workers": 6,
@@ -99,6 +116,16 @@ The scancode host's `aveloxis.json` needs ONLY the database block and the
   }
 }
 ```
+
+A remote database is reached over TLS with the server verified: `verify-full`
+needs the server's CA certificate. Aveloxis (pgx) reads it from the
+`PGSSLROOTCERT` environment variable of the process and, without it, verifies
+against the system's root certificates; `psql` (libpq) verifies against
+nothing by default and refuses — give it `PGSSLROOTCERT` (the system bundle
+above, or the operator's CA file) or `sslrootcert=system` in the URL (libpq
+16 and later; an older psql reads that as a file named `system`). Aveloxis warns at every start when a remote host is configured
+with `prefer`, `allow` or `disable` — those may send the password and every
+row in clear, and verify nothing.
 
 Size `scancode_clone_dir` for `scancode_workers × largest expected clone`
 and raise `scancode_max_in_memory` if the host is RAM-rich (see the
@@ -258,6 +285,9 @@ Wants=network-online.target
 Type=simple
 User=aveloxis
 ExecStart=/home/aveloxis/go/bin/aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json
+# Only with an operator-issued CA (§1): systemd passes no shell environment,
+# so the CA the process verifies the database against is named here.
+# Environment=PGSSLROOTCERT=/etc/aveloxis/db-ca.crt
 Restart=on-failure
 RestartSec=30
 # scancode subprocesses are the actual memory consumers; adjust for

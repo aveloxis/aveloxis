@@ -67,32 +67,38 @@ func refreshRepoActivity(ctx context.Context, s activityRefresher, logger *slog.
 // partialWriteStamps decides when a staged row's PARTIAL writes stamp its
 // repository (whole-branch review of 0.29.119–0.29.123, A5): a row that
 // committed some writes and then failed stays staged and is retried every
-// drain. Its first partial write in this process stamps — the data it
-// committed is what the API's answers read, and a repository without a
-// queue row (a gone one, its data kept) has no next collection to show it —
-// and its retries do not, so a lasting failure cannot move the repository's
-// state every drain (round 1 finding 3 of 0.29.123). A restart forgets the
-// rows, so each process stamps a failing row at most once; a row that
-// completes is forgotten (its final write stamps). The set holds only rows
-// still staged and failing. Safe for the drain goroutines that share a
-// processor; the zero value is ready.
+// drain. The data it committed is what the API's answers read, and a
+// repository without a queue row (a gone one, its data kept) has no next
+// collection to show it, so the row stamps whenever a retry got FURTHER
+// than this process had seen — its progress is the number of store calls
+// that completed in the row's fixed write sequence, which a retry walks
+// again from the start (Copilot's review of PR #246 on 0.29.124: recorded
+// as a first-time flag, a retry that committed one comment more before
+// failing again never stamped). A retry that reaches the same point stamps
+// nothing, so a lasting failure cannot move the repository's state every
+// drain (round 1 finding 3 of 0.29.123). A restart forgets the rows, so each
+// process stamps each new high-water mark once; a row that completes is
+// forgotten (its final write stamps). The map holds only rows still staged
+// and failing. Safe for the drain goroutines that share a processor; the
+// zero value is ready.
 type partialWriteStamps struct {
 	mu   sync.Mutex
-	rows map[int64]struct{}
+	rows map[int64]int // staged row → the furthest progress stamped
 }
 
-// first reports whether rowID's partial write is the first this process
-// has seen, and records it.
-func (p *partialWriteStamps) first(rowID int64) bool {
+// advanced reports whether progress — the store calls the row's attempt
+// completed — is further than any this process stamped for rowID, and
+// records it.
+func (p *partialWriteStamps) advanced(rowID int64, progress int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, seen := p.rows[rowID]; seen {
+	if progress <= p.rows[rowID] {
 		return false
 	}
 	if p.rows == nil {
-		p.rows = map[int64]struct{}{}
+		p.rows = map[int64]int{}
 	}
-	p.rows[rowID] = struct{}{}
+	p.rows[rowID] = progress
 	return true
 }
 

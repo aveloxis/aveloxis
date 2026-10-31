@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Production Deployment &mdash; Aveloxis 0.29.124 documentation</title>
+  <title>Production Deployment &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=bb778650"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
@@ -2067,8 +2068,16 @@ block below. <code class="docutils literal notranslate"><span class="pre">sudo</
 <span class="p">}</span>
 
 <span class="k">server</span><span class="w"> </span><span class="p">{</span><span class="w">                              </span><span class="c1"># optional: the API for Bearer clients (aveloxis-gui, scripts)</span>
+<span class="w">    </span><span class="kn">listen</span><span class="w"> </span><span class="mi">443</span><span class="w"> </span><span class="s">ssl</span><span class="p">;</span>
 <span class="w">    </span><span class="kn">server_name</span><span class="w"> </span><span class="s">api.aveloxis.example.org</span><span class="p">;</span>
-<span class="w">    </span><span class="c1"># TLS: certbot --nginx -d api.aveloxis.example.org</span>
+<span class="w">    </span><span class="c1"># TLS: certbot certonly --nginx -d api.aveloxis.example.org   (the challenge only; it edits no block)</span>
+<span class="w">    </span><span class="kn">ssl_certificate</span><span class="w">     </span><span class="s">/etc/letsencrypt/live/api.aveloxis.example.org/fullchain.pem</span><span class="p">;</span>
+<span class="w">    </span><span class="kn">ssl_certificate_key</span><span class="w"> </span><span class="s">/etc/letsencrypt/live/api.aveloxis.example.org/privkey.pem</span><span class="p">;</span>
+<span class="w">    </span><span class="c1"># Written out in full rather than left to `certbot --nginx`: that installer</span>
+<span class="w">    </span><span class="c1"># adds `listen 80;` to a block with no listen and splits the port-80 half</span>
+<span class="w">    </span><span class="c1"># off only when it installs its redirect, so with --no-redirect the API</span>
+<span class="w">    </span><span class="c1"># would have kept answering in clear and the refusal below would have been</span>
+<span class="w">    </span><span class="c1"># the ignored duplicate (nginx: &quot;conflicting server name … on 0.0.0.0:80&quot;).</span>
 
 <span class="w">    </span><span class="kn">location</span><span class="w"> </span><span class="s">/</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="kn">proxy_pass</span><span class="w"> </span><span class="s">http://127.0.0.1:8383</span><span class="p">;</span>
@@ -2078,6 +2087,12 @@ block below. <code class="docutils literal notranslate"><span class="pre">sudo</
 <span class="w">        </span><span class="kn">proxy_read_timeout</span><span class="w"> </span><span class="s">120s</span><span class="p">;</span>
 <span class="w">        </span><span class="kn">proxy_send_timeout</span><span class="w"> </span><span class="s">120s</span><span class="p">;</span>
 <span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">server</span><span class="w"> </span><span class="p">{</span><span class="w">                              </span><span class="c1"># the API host over plain HTTP: refused, never redirected or served</span>
+<span class="w">    </span><span class="kn">listen</span><span class="w"> </span><span class="mi">80</span><span class="p">;</span>
+<span class="w">    </span><span class="kn">server_name</span><span class="w"> </span><span class="s">api.aveloxis.example.org</span><span class="p">;</span>
+<span class="w">    </span><span class="kn">return</span><span class="w"> </span><span class="mi">403</span><span class="p">;</span><span class="w">                       </span><span class="c1"># a token sent in clear is already exposed when any answer arrives; a refusal makes the client fix its URL, a redirect would hide the mistake and a served answer repeat it</span>
 <span class="p">}</span>
 </pre></div>
 </div>

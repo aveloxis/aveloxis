@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestGoModGraphOneLogsToolchainStderr — v0.29.58 (2026-09-22 log
@@ -81,5 +83,18 @@ func TestGoModGraphOneWorksInsideAGoWorkspace(t *testing.T) {
 	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil)
 	if !ok || strings.Contains(logBuf.String(), "go toolchain invocation failed") {
 		t.Fatalf("a module inside a go.work must expand (GOWORK=off); ok=%v log:\n%s", ok, logBuf.String())
+	}
+}
+
+// ASVS 5.0 review of 0.29.125 (V5.3.2, N2): `go list -m all` runs on a
+// cloned module's go.mod, and under GOTOOLCHAIN=auto a `toolchain go1.X`
+// line there makes the collector download and run that toolchain — the
+// repository chooses which. The env pins the host's toolchain, as the
+// install-tools probe already does (tools.go); a too-new go line fails into
+// the existing WARN arm.
+func TestGoModGraphRunsTheHostToolchainOnly(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne("))
+	if !strings.Contains(body, `"GOTOOLCHAIN=local"`) {
+		t.Error("goModGraphOne's env must carry GOTOOLCHAIN=local (a cloned go.mod's toolchain line must not pick the toolchain the collector runs)")
 	}
 }

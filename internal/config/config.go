@@ -193,11 +193,7 @@ func (d DatabaseConfig) ConnectionString() string {
 // is a Unix-socket directory: it goes in the host parameter, where pgx
 // reads it. extra carries further query parameters (application_name).
 func (d DatabaseConfig) connectionURL(extra url.Values) string {
-	sslmode := d.SSLMode
-	if sslmode == "" {
-		sslmode = "prefer"
-	}
-	q := url.Values{"sslmode": {sslmode}}
+	q := url.Values{"sslmode": {d.EffectiveSSLMode()}}
 	for k, v := range extra {
 		q[k] = v
 	}
@@ -213,6 +209,39 @@ func (d DatabaseConfig) connectionURL(extra url.Values) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// EffectiveSSLMode is the sslmode the DSN carries: the configured one, or
+// libpq's `prefer` when none is set (the one default layer, SR-10).
+func (d DatabaseConfig) EffectiveSSLMode() string {
+	if d.SSLMode == "" {
+		return "prefer"
+	}
+	return d.SSLMode
+}
+
+// tlsWarning is the load-time warning for a remote database reached with
+// an sslmode weaker than `require` (ASVS V12.3.1/V12.3.2, the 0.29.125
+// review): `disable`, `allow` and `prefer` may send the password and every
+// row in clear, and none verifies the server's certificate. A Unix socket
+// or a loopback host is the usual deployment and gets no warning; the
+// message names the effective mode. Empty when there is nothing to say.
+func (d DatabaseConfig) tlsWarning() string {
+	if strings.HasPrefix(d.Host, "/") {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(d.Host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	switch mode := d.EffectiveSSLMode(); mode {
+	case "disable", "allow", "prefer":
+		return fmt.Sprintf("database.sslmode is %q for the remote host %q: the connection may be unencrypted and the server is not verified — use require, or verify-full with the server's CA in PGSSLROOTCERT", mode, d.Host)
+	}
+	return ""
 }
 
 // ConnectionStringWithAppName returns a PostgreSQL DSN with an
@@ -1642,6 +1671,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	cfg.loadWarnings = removedKeyWarnings(data)
+	if w := cfg.Database.tlsWarning(); w != "" {
+		cfg.loadWarnings = append(cfg.loadWarnings, w)
+	}
 	return cfg, nil
 }
 

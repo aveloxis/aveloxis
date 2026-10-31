@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.124 documentation</title>
+  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=bb778650"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
@@ -1830,12 +1831,28 @@ cross-host locks fall back to the derived stale-lock age window).</p>
 <span class="c1"># pg_hba.conf — one line for the scancode host (use its actual address;</span>
 <span class="c1"># do NOT open 0.0.0.0/0 — chaoss.tv&#39;s postgres logs show constant</span>
 <span class="c1"># credential brute-forcing against exposed 5432 ports):</span>
-<span class="n">host</span>  <span class="n">aveloxis</span>  <span class="n">aveloxis</span>  <span class="mf">192.0.2.42</span><span class="o">/</span><span class="mi">32</span>  <span class="n">scram</span><span class="o">-</span><span class="n">sha</span><span class="o">-</span><span class="mi">256</span>
+<span class="n">hostssl</span>  <span class="n">aveloxis</span>  <span class="n">aveloxis</span>  <span class="mf">192.0.2.42</span><span class="o">/</span><span class="mi">32</span>  <span class="n">scram</span><span class="o">-</span><span class="n">sha</span><span class="o">-</span><span class="mi">256</span>
+
+<span class="c1"># postgresql.conf — the certificate the clients verify (see below):</span>
+<span class="n">ssl</span> <span class="o">=</span> <span class="n">on</span>
+<span class="n">ssl_cert_file</span> <span class="o">=</span> <span class="s1">&#39;/etc/postgresql/db-host.crt&#39;</span>
+<span class="n">ssl_key_file</span>  <span class="o">=</span> <span class="s1">&#39;/etc/postgresql/db-host.key&#39;</span>   <span class="c1"># chown postgres:postgres, chmod 0600 — postgres refuses a key any group or other user can read</span>
 </pre></div>
 </div>
+<p>The clients verify the server (<code class="docutils literal notranslate"><span class="pre">verify-full</span></code> in the check below and in the
+<code class="docutils literal notranslate"><span class="pre">aveloxis.json</span></code> of §2), so the server must present a certificate for
+<code class="docutils literal notranslate"><span class="pre">db-host</span></code> they can verify: one from a public CA (then the system bundle named
+below works as written), or one the operator issues — a certificate carrying
+<code class="docutils literal notranslate"><span class="pre">db-host</span></code> in its Subject Alternative Name (Go matches the SAN, never the CN),
+signed by a CA whose certificate file becomes the <code class="docutils literal notranslate"><span class="pre">PGSSLROOTCERT</span></code> of <code class="docutils literal notranslate"><span class="pre">psql</span></code>
+AND of the aveloxis process. The stock Debian/Ubuntu cluster’s self-signed
+“snakeoil” certificate verifies under neither: it is not in the bundle and
+names no host. <code class="docutils literal notranslate"><span class="pre">hostssl</span></code> in pg_hba.conf refuses a clear connection at the
+server too.</p>
 <p>Reload postgres (<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">pg_reload_conf();</span></code> — <code class="docutils literal notranslate"><span class="pre">listen_addresses</span></code> needs a
-full restart). Verify from the scancode host:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>psql<span class="w"> </span><span class="s2">&quot;postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=prefer&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;SELECT 1&quot;</span>
+full restart; <code class="docutils literal notranslate"><span class="pre">ssl</span></code> and the certificate files apply on reload, and a refused
+key file leaves the previous certificate in place, so read the server log). Verify from the scancode host:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">PGSSLROOTCERT</span><span class="o">=</span>/etc/ssl/certs/ca-certificates.crt<span class="w"> </span>psql<span class="w"> </span><span class="s2">&quot;postgres://aveloxis:PASSWORD@db-host:5432/aveloxis?sslmode=verify-full&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;SELECT 1&quot;</span>
 </pre></div>
 </div>
 </section>
@@ -1874,7 +1891,7 @@ version-mismatch warning storms that wedged the June 2026 fleet.</p>
 <span class="w">    </span><span class="nt">&quot;user&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;password&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;dbname&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aveloxis&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prefer&quot;</span>
+<span class="w">    </span><span class="nt">&quot;sslmode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verify-full&quot;</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="nt">&quot;collection&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;scancode_workers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
@@ -1890,6 +1907,15 @@ version-mismatch warning storms that wedged the June 2026 fleet.</p>
 <span class="p">}</span>
 </pre></div>
 </div>
+<p>A remote database is reached over TLS with the server verified: <code class="docutils literal notranslate"><span class="pre">verify-full</span></code>
+needs the server’s CA certificate. Aveloxis (pgx) reads it from the
+<code class="docutils literal notranslate"><span class="pre">PGSSLROOTCERT</span></code> environment variable of the process and, without it, verifies
+against the system’s root certificates; <code class="docutils literal notranslate"><span class="pre">psql</span></code> (libpq) verifies against
+nothing by default and refuses — give it <code class="docutils literal notranslate"><span class="pre">PGSSLROOTCERT</span></code> (the system bundle
+above, or the operator’s CA file) or <code class="docutils literal notranslate"><span class="pre">sslrootcert=system</span></code> in the URL (libpq
+16 and later; an older psql reads that as a file named <code class="docutils literal notranslate"><span class="pre">system</span></code>). Aveloxis warns at every start when a remote host is configured
+with <code class="docutils literal notranslate"><span class="pre">prefer</span></code>, <code class="docutils literal notranslate"><span class="pre">allow</span></code> or <code class="docutils literal notranslate"><span class="pre">disable</span></code> — those may send the password and every
+row in clear, and verify nothing.</p>
 <p>Size <code class="docutils literal notranslate"><span class="pre">scancode_clone_dir</span></code> for <code class="docutils literal notranslate"><span class="pre">scancode_workers</span> <span class="pre">×</span> <span class="pre">largest</span> <span class="pre">expected</span> <span class="pre">clone</span></code>
 and raise <code class="docutils literal notranslate"><span class="pre">scancode_max_in_memory</span></code> if the host is RAM-rich (see the
 <a class="reference internal" href="../getting-started/configuration.html"><span class="std std-doc">configuration reference</span></a>).</p>
@@ -2029,6 +2055,9 @@ directly.</p>
 <span class="na">Type</span><span class="o">=</span><span class="s">simple</span>
 <span class="na">User</span><span class="o">=</span><span class="s">aveloxis</span>
 <span class="na">ExecStart</span><span class="o">=</span><span class="s">/home/aveloxis/go/bin/aveloxis scancode-worker -c /etc/aveloxis/aveloxis.json</span>
+<span class="c1"># Only with an operator-issued CA (§1): systemd passes no shell environment,</span>
+<span class="c1"># so the CA the process verifies the database against is named here.</span>
+<span class="c1"># Environment=PGSSLROOTCERT=/etc/aveloxis/db-ca.crt</span>
 <span class="na">Restart</span><span class="o">=</span><span class="s">on-failure</span>
 <span class="na">RestartSec</span><span class="o">=</span><span class="s">30</span>
 <span class="c1"># scancode subprocesses are the actual memory consumers; adjust for</span>

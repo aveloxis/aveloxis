@@ -271,8 +271,16 @@ server {
 }
 
 server {                              # optional: the API for Bearer clients (aveloxis-gui, scripts)
+    listen 443 ssl;
     server_name api.aveloxis.example.org;
-    # TLS: certbot --nginx -d api.aveloxis.example.org
+    # TLS: certbot certonly --nginx -d api.aveloxis.example.org   (the challenge only; it edits no block)
+    ssl_certificate     /etc/letsencrypt/live/api.aveloxis.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.aveloxis.example.org/privkey.pem;
+    # Written out in full rather than left to `certbot --nginx`: that installer
+    # adds `listen 80;` to a block with no listen and splits the port-80 half
+    # off only when it installs its redirect, so with --no-redirect the API
+    # would have kept answering in clear and the refusal below would have been
+    # the ignored duplicate (nginx: "conflicting server name … on 0.0.0.0:80").
 
     location / {
         proxy_pass http://127.0.0.1:8383;
@@ -282,6 +290,12 @@ server {                              # optional: the API for Bearer clients (av
         proxy_read_timeout 120s;
         proxy_send_timeout 120s;
     }
+}
+
+server {                              # the API host over plain HTTP: refused, never redirected or served
+    listen 80;
+    server_name api.aveloxis.example.org;
+    return 403;                       # a token sent in clear is already exposed when any answer arrives; a refusal makes the client fix its URL, a redirect would hide the mistake and a served answer repeat it
 }
 ```
 

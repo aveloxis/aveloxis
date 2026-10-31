@@ -31,6 +31,28 @@ const PageCacheReplayAdvisoryLockID int64 = 0x41564C5852504C59
 // session owns the list.
 var ErrPageCacheReplayHeld = errors.New("the saved re-warm list is held by another session (advisory lock held)")
 
+// ErrPageCacheReplayUnbounded is a load's or save's answer to a context with
+// no deadline: they run on the lock's own connection, detached from the
+// caller's cancel, so an unbounded statement would hold every later pass
+// and the stop (Copilot's review of PR #246 on 0.29.124, M1; SR-18 — the
+// layer that writes enforces the bound, and the API gives each call one).
+var ErrPageCacheReplayUnbounded = errors.New("the saved re-warm list needs a context with a deadline")
+
+// btreeMaxIndexTupleBytes is PostgreSQL's limit on one btree index entry
+// with the default 8 kB page ("index row size … exceeds btree version 4
+// maximum 2704"): a page holds three entries, and the entry is MAXALIGNed.
+const btreeMaxIndexTupleBytes = 2704
+
+// MaxPageCacheReplayURIBytes is the longest request URI a saved row can
+// hold (Copilot's review of PR #246, M2: one over-long row — a crafted
+// license filter — failed the whole pass's save). The primary key's entry
+// is the 8-byte index tuple header, the 8-byte repo_id and the URI with its
+// 4-byte varlena header; a URI of this many bytes fits whatever its bytes
+// (an incompressible one too), pinned by TestPageCacheReplayURIBoundFitsTheIndex.
+// The API caches no request whose canonical URI is longer, so nothing the
+// list cannot hold is ever on it.
+const MaxPageCacheReplayURIBytes = btreeMaxIndexTupleBytes - 8 - 8 - 4
+
 // PageCacheReplayList is the saved re-warm list (0.29.122, summary/63 §8)
 // while this process owns it.
 type PageCacheReplayList struct {
@@ -77,6 +99,9 @@ func (l *PageCacheReplayList) Held() bool { return !l.lock.conn.Conn().IsClosed(
 // LoadPageCacheReplay reads the saved re-warm list. The rows are a hint
 // written by the API; it validates each before it replays one.
 func (l *PageCacheReplayList) LoadPageCacheReplay(ctx context.Context) ([]PageCacheReplayRow, error) {
+	if _, bounded := ctx.Deadline(); !bounded {
+		return nil, ErrPageCacheReplayUnbounded
+	}
 	rows, err := l.lock.conn.Query(ctx, `SELECT repo_id, uri, cost_ms FROM aveloxis_ops.page_cache_replay`)
 	if err != nil {
 		return nil, fmt.Errorf("load page cache replay list: %w", err)
@@ -102,6 +127,9 @@ func (l *PageCacheReplayList) LoadPageCacheReplay(ctx context.Context) ([]PageCa
 func (l *PageCacheReplayList) SavePageCacheReplay(ctx context.Context, upserts []PageCacheReplayRow, deletes []PageCacheReplayKey) error {
 	if len(upserts) == 0 && len(deletes) == 0 {
 		return nil
+	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		return ErrPageCacheReplayUnbounded
 	}
 	tx, err := l.lock.conn.Begin(ctx)
 	if err != nil {

@@ -8,6 +8,15 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.125
+
+A repository request whose URI — with its parameters in the canonical form
+the cache keys on — is longer than 2,684 bytes is answered live, with
+`Cache-Control: no-store` and no `ETag`, instead of being cached; every
+shorter request is cached as before. The bound is what the saved re-warm
+list's primary key can hold (PostgreSQL's btree entry limit for an 8 kB
+page); no request a browser or the warm script makes comes near it.
+
 ## Changes for API clients in 0.29.124
 
 `GET /api/v1/admin/cache`'s `rewarm.saved_requests` is the saved re-warm

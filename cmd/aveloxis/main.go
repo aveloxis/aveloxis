@@ -1599,7 +1599,7 @@ func startComponent(component, cfgPath string) error {
 	}
 
 	logPath := pidfile.LogPath(component)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // the owner's alone: sign-ins and administrator actions (ASVS V16.4.2)
 	if err != nil {
 		return fmt.Errorf("opening log file %s: %w", logPath, err)
 	}
@@ -2154,8 +2154,13 @@ func versionCmd() *cobra.Command {
 func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	cfg, err := config.Load(cfgPath)
 	if err == nil {
-		for _, w := range cfg.LoadWarnings() { // a removed key the file still carries (N15)
+		for _, w := range cfg.LoadWarnings() { // a removed key the file still carries (N15); a remote database without TLS
 			logger.Warn(w, "path", cfgPath)
+		}
+		// The file holds the database password, the OAuth client secrets
+		// and the forge keys (ASVS V13.3.2, the 0.29.125 review).
+		if st, serr := os.Stat(cfgPath); serr == nil && st.Mode().Perm()&0o077 != 0 {
+			logger.Warn("config file is readable by other users — it holds the database password, OAuth secrets and forge keys; chmod 600 it", "path", cfgPath, "mode", fmt.Sprintf("%04o", st.Mode().Perm()))
 		}
 		db.SetProcessCapacitySources(cfg.CapacitySources()) // v0.29.89: every store this process opens
 		return cfg

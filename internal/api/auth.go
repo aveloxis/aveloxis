@@ -210,6 +210,21 @@ func (a *authenticator) resolveToken(ctx context.Context, token string) (authInf
 				}
 				return authInfo{}, fmt.Errorf("recheck session token: %w", err)
 			}
+			// An administrator's role is re-read too (one PK read, for the
+			// few admin sessions): a demotion made in the web console
+			// reaches no api cache (the web process has no hooks), and the
+			// demoted account kept the privilege for authCacheTTL (ASVS
+			// review of 0.29.125, C-2). A promotion may wait the TTL.
+			if c.info.IsAdmin {
+				admin, err := a.store.IsUserAdmin(ctx, c.info.UserID)
+				if err != nil {
+					return authInfo{}, fmt.Errorf("recheck administrator: %w", err)
+				}
+				if !admin {
+					a.forget(token)
+					return a.resolveToken(ctx, token) // one fresh read, cached again
+				}
+			}
 			return c.info, nil
 		}
 		// An API token is rechecked on every call (one indexed lookup;

@@ -62,7 +62,7 @@ Please include:
 ### API Keys
 
 - API tokens are stored in the PostgreSQL database (`aveloxis_ops.worker_oauth`), not in plaintext config files (though config-file keys are supported as a fallback).
-- Tokens are never logged. Only the first 8 characters are shown in warning messages (e.g., key invalidation).
+- Tokens are never logged. A warning names a key by its public type prefix (`ghp_`, `glpat-`) and a short SHA-256 marker, never by a character of the secret.
 - The key pool rotates through all keys via round-robin and handles rate limiting automatically.
 
 ### Input Validation
@@ -78,9 +78,9 @@ Please include:
 ### Network Security
 
 - **Loopback defaults:** The monitor dashboard (`:5555`) and REST API (`:8383`) default to binding on `127.0.0.1` (loopback only). To expose them to the network, explicitly pass `--monitor 0.0.0.0:5555` or `--addr 0.0.0.0:8383`.
-- **CORS:** The REST API restricts `Access-Control-Allow-Origin` to localhost origins. Deploy behind a reverse proxy if cross-origin access from non-localhost origins is needed.
+- **CORS:** The REST API's `Access-Control-Allow-Origin` is `api.cors_origins` when set, and `*` when it is empty (every answer is per-caller through its Bearer or session; the loopback and private exempt networks that skip authentication should set it). Deploy behind a reverse proxy if origins must be restricted there.
 - **SSRF (Server-Side Request Forgery):** Aveloxis accepts arbitrary repository URLs by design (including generic git hosts). The collector issues `HEAD` requests and `git clone` to user-supplied URLs. To mitigate SSRF risk, deploy the collector in a network segment without access to cloud metadata endpoints (e.g., `169.254.169.254`) or other sensitive internal services. If your deployment requires host restrictions, configure network-level firewall rules on the collector host.
-- **Session safety:** The web GUI's in-memory session map is protected by a `sync.RWMutex` to prevent concurrent-access crashes.
+- **Session safety:** Web sessions are hashed rows of `aveloxis_ops.user_session_tokens` (0.29.102), idle out after `web.session_idle_minutes`, and end on sign-out with every token they minted; `docs/guide/security.md` has the full account.
 
 ### Database
 

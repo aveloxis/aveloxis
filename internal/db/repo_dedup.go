@@ -664,5 +664,12 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		return err
 	}
 
+	// The winner gained the loser's rows without a collection (dedup-repos
+	// and reconcile-repos run outside any job, and leave the winner's queue
+	// row alone): its cached answers move with the merge (D7, summary/63).
+	if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, pair.WinnerID); err != nil {
+		return fmt.Errorf("stamp winner data changed: %w", err)
+	}
+
 	return tx.Commit(ctx)
 }

@@ -182,6 +182,16 @@ func TestGitLabCallbackRecordsItsInstance(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("the GitLab callback answered %d: %s", rec.Code, rec.Body.String())
 	}
+	// The state cookie has done its one job (ASVS review of 0.29.125, N7).
+	stateExpired := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == s.cookieName("oauth_state") && c.MaxAge < 0 {
+			stateExpired = true
+		}
+	}
+	if !stateExpired {
+		t.Error("a completed callback must expire the oauth_state cookie")
+	}
 	var host string
 	var id int64
 	if err := store.Pool().QueryRow(ctx, `SELECT COALESCE(gl_oauth_host, ''), COALESCE(gl_user_id, 0) FROM aveloxis_ops.users WHERE login_name = $1`, login).Scan(&host, &id); err != nil {

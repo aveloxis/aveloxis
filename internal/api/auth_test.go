@@ -258,3 +258,38 @@ func TestACachedSessionTokenIsRecheckedThroughTheChain(t *testing.T) {
 		t.Errorf("the request after the row was deleted = %d; want 401 at once, not after authCacheTTL", code)
 	}
 }
+
+// ASVS 5.0 review of 0.29.125 (V7.4.1/V8.2.1, C-2): a demotion made in the
+// built-in web console reaches no api process's cache (the web has no
+// hooks), so the demoted account's live SPA token kept administrator
+// privilege for authCacheTTL. A cached ADMIN session is now re-read for its
+// role on every call, as the row itself already is; a plain session pays
+// nothing more.
+func TestADemotedAdministratorsCachedSessionLosesPrivilegeAtOnce(t *testing.T) {
+	store := &fakeSessionStore{userID: 7, admin: true, valid: map[string]bool{"good": true}}
+	a := newAuthenticator(store, true, nil)
+	ctx := context.Background()
+	info, err := a.resolveToken(ctx, "good")
+	if err != nil || !info.IsAdmin {
+		t.Fatalf("premise: an administrator's token resolves as one: %+v %v", info, err)
+	}
+	store.admin = false // the web console demoted the account
+	info, err = a.resolveToken(ctx, "good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsAdmin {
+		t.Error("a demoted administrator's cached session still carried the privilege (the demotion came from the web process, which cannot reach this cache)")
+	}
+	// The recheck's error arm (SR-5/SR-16; L10 round 2): a store failure is
+	// an error to the caller, never the cached privilege.
+	store.admin = true
+	a.forget("good")
+	if info, err := a.resolveToken(ctx, "good"); err != nil || !info.IsAdmin {
+		t.Fatalf("premise: cached again as an administrator: %+v %v", info, err)
+	}
+	store.adminErr = contextErr("connection reset")
+	if info, err := a.resolveToken(ctx, "good"); err == nil {
+		t.Errorf("a failed administrator recheck answered the cached privilege (IsAdmin=%v) instead of an error", info.IsAdmin)
+	}
+}

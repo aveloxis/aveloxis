@@ -40,6 +40,12 @@ func describeSession(u db.UserSession, current bool) string {
 // handleAccount — GET /account: the account's live sessions, newest first,
 // the caller's own marked.
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request, sess *Session) {
+	s.renderAccount(w, r, sess, "")
+}
+
+// renderAccount draws the account page; errMsg, when set, is shown above
+// the sessions with a "sign in again" link (the re-authentication notice).
+func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, sess *Session, errMsg string) {
 	list, err := s.admin.ListSessions(r.Context(), sessionActor(sess), sess.UserID)
 	if err != nil {
 		s.serviceErr(w, r, "handleAccount", err)
@@ -56,6 +62,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request, sess *Ses
 		"Sessions":    views,
 		"IdleMinutes": int(s.cfg.SessionIdle().Minutes()),
 		"Notice":      adminNotice(r),
+		"Error":       errMsg,
 	})
 }
 
@@ -63,6 +70,13 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request, sess *Ses
 // session and token of the caller's account, this browser's included, and
 // sends the browser to the login page.
 func (s *Server) handleAccountSessionsRevoke(w http.ResponseWriter, r *http.Request, sess *Session) {
+	// Ending every session is a sensitive change like the address (ASVS
+	// V7.5.2, the 0.29.125 review): a hijacked old session could end the
+	// owner's others. An older sign-in is sent to sign in again first.
+	if !s.recentSignIn(sess) {
+		s.renderAccount(w, r, sess, fmt.Sprintf("To sign out everywhere, sign in again first: this session signed in more than %d minutes ago.", int(s.cfg.SessionIdle().Minutes())))
+		return
+	}
 	if _, err := s.admin.RevokeSessions(r.Context(), sessionActor(sess), sess.UserID); err != nil {
 		s.serviceErr(w, r, "handleAccountSessionsRevoke", err)
 		return

@@ -78,19 +78,8 @@ func (s *Server) handleMeEmail(w http.ResponseWriter, r *http.Request) {
 	// V7.5.1, 0.29.113): the sign-in of the web session the token was
 	// minted from, within web.session_idle_minutes (db.SignInIsRecent; a
 	// token whose session is gone has none that counts).
-	if s.sessionIdle > 0 && s.store != nil {
-		created, err := s.store.SessionTokenCreatedAt(r.Context(), bearerToken(r))
-		if err != nil && !errors.Is(err, db.ErrInvalidSessionToken) {
-			s.serverError(w, r, "handleMeEmail", err)
-			return
-		}
-		if err != nil || !db.SignInIsRecent(created, s.sessionIdle) {
-			setNoStoreHeaders(w.Header())
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "reauthentication_required", "message": fmt.Sprintf("changing the address needs a sign-in within the last %d minutes; sign in again and retry", int(s.sessionIdle.Minutes()))})
-			return
-		}
+	if !s.requireRecentSignIn(w, r, "handleMeEmail", "changing the address") {
+		return
 	}
 	login, _, _, err := s.accounts.GetUserIdentity(r.Context(), info.UserID)
 	if err != nil {
@@ -138,4 +127,31 @@ func (s *Server) handleMeEmailConfirm(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeJSON(w, r, map[string]any{"status": "invalid"})
 	}
+}
+
+// requireRecentSignIn is the re-authentication rule for a sensitive change
+// made with a session token (ASVS V7.5.1/V7.5.2, 0.29.113; one spelling
+// since the 0.29.125 review, when sign-out-everywhere joined the address
+// change): the sign-in of the web session the token was minted from, within
+// web.session_idle_minutes (db.SignInIsRecent; a token whose session is
+// gone has none that counts). It answers the refusal itself — 403
+// reauthentication_required naming what — and reports whether the caller
+// may go on. With no idle bound configured, or no store, everything passes.
+func (s *Server) requireRecentSignIn(w http.ResponseWriter, r *http.Request, op, what string) bool {
+	if s.sessionIdle <= 0 || s.store == nil {
+		return true
+	}
+	created, err := s.store.SessionTokenCreatedAt(r.Context(), bearerToken(r))
+	if err != nil && !errors.Is(err, db.ErrInvalidSessionToken) {
+		s.serverError(w, r, op, err)
+		return false
+	}
+	if err != nil || !db.SignInIsRecent(created, s.sessionIdle) {
+		setNoStoreHeaders(w.Header())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "reauthentication_required", "message": fmt.Sprintf("%s needs a sign-in within the last %d minutes; sign in again and retry", what, int(s.sessionIdle.Minutes()))})
+		return false
+	}
+	return true
 }

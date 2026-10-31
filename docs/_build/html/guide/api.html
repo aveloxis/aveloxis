@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,12 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +365,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#sbom-download">SBOM Download</a></li>
@@ -778,7 +785,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1797,6 +1804,72 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-125">
+<h2>Changes for API clients in 0.29.125<a class="headerlink" href="#changes-for-api-clients-in-0-29-125" title="Link to this heading"></a></h2>
+<p>A repository request whose URI — with its parameters in the canonical form
+the cache keys on — is longer than 2,684 bytes is answered live, with
+<code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">no-store</span></code> and no <code class="docutils literal notranslate"><span class="pre">ETag</span></code>, instead of being cached; every
+shorter request is cached as before. The bound is what the saved re-warm
+list’s primary key can hold (PostgreSQL’s btree entry limit for an 8 kB
+page); no request a browser or the warm script makes comes near it.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-124">
+<h2>Changes for API clients in 0.29.124<a class="headerlink" href="#changes-for-api-clients-in-0-29-124" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/cache</span></code>’s <code class="docutils literal notranslate"><span class="pre">rewarm.saved_requests</span></code> is the saved re-warm
+list as this process last saved or loaded it: the list has one owner per
+database (the first api process to start), and another api process reports
+0. <code class="docutils literal notranslate"><span class="pre">/compare</span></code> uses a repository entity’s cached <code class="docutils literal notranslate"><span class="pre">/metric-series</span></code> answer only
+when that answer’s window is the comparison’s own; a comparison that
+straddles the start of a week (or a month, with <code class="docutils literal notranslate"><span class="pre">bucket=month</span></code>) computes the
+entity on its own window, so every series in one answer covers the same
+buckets. The answer’s shape is unchanged.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-123">
+<h2>Changes for API clients in 0.29.123<a class="headerlink" href="#changes-for-api-clients-in-0-29-123" title="Link to this heading"></a></h2>
+<p>Three administrator routes show the api process’s caches, read-only:
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/cache</span></code> (sizes, budgets and counters since the process
+started, the re-warm’s last pass), <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/cache/repos?sort=</span></code>
+(the repositories with cached answers, at most 100) and
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/admin/cache/repos/{repoID}</span></code> (each cached answer, current or
+why not). A signed-in administrator session only, like every admin route;
+the fields are in the reference.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-121">
+<h2>Changes for API clients in 0.29.121<a class="headerlink" href="#changes-for-api-clients-in-0-29-121" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">/compare</span></code> takes each repository entity’s series from the repository-page
+cache: the series in its answer equals <code class="docutils literal notranslate"><span class="pre">/api/v1/repos/{repoID}/metric-series</span></code>
+for the same <code class="docutils literal notranslate"><span class="pre">metric</span></code>, <code class="docutils literal notranslate"><span class="pre">since</span></code>, <code class="docutils literal notranslate"><span class="pre">until</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code> and <code class="docutils literal notranslate"><span class="pre">retention_threshold</span></code>,
+and both are computed once until the repository is collected again.
+Organization entities are unchanged. The answer’s shape is unchanged.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-120">
+<h2>Changes for API clients in 0.29.120<a class="headerlink" href="#changes-for-api-clients-in-0-29-120" title="Link to this heading"></a></h2>
+<p>Cached answers no longer expire on a timer: an answer is valid until its
+repository is collected again, scanned, or changed by a per-repository
+repair command that writes it (the leftover-staging drain, <code class="docutils literal notranslate"><span class="pre">heal-messages</span></code>,
+<code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code>, <code class="docutils literal notranslate"><span class="pre">dedup-repos</span></code>, the mailing-list and Jira drains and
+their backfills), or until its window moves. Answers that name contributors
+were recomputed every <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> before; a name
+the enrichment sweep fills in between collections now shows after the
+repository’s next collection. Fleet-wide contributor operations — contributor merges (<code class="docutils literal notranslate"><span class="pre">merge-cntrb-collisions</span></code>, <code class="docutils literal notranslate"><span class="pre">migrate-cntrb-ids</span></code>), identity backfills (<code class="docutils literal notranslate"><span class="pre">backfill-identities</span></code>) and the enrichment, search, affiliation and breadth sweeps — show in a repository’s cached answers at its next collection. The default window of <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code> and
+<code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code> starts two years before the Monday (UTC) that starts
+the current week, instead of two years before today, so the window, and the
+cached answer, moves once a week rather than daily; a given <code class="docutils literal notranslate"><span class="pre">since</span></code> is used
+as given. <code class="docutils literal notranslate"><span class="pre">/compare</span></code>’s per-entity series follow its repositories’ collection
+state with no age limit.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-119">
+<h2>Changes for API clients in 0.29.119<a class="headerlink" href="#changes-for-api-clients-in-0-29-119" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{repoID}/metric-series?metric=…</span></code> answers one temporal
+metric’s series for one repository: the body <code class="docutils literal notranslate"><span class="pre">/compare</span></code> answers for
+<code class="docutils literal notranslate"><span class="pre">entities=repo:{repoID}</span></code> with the same parameters, served by the
+repository-page cache (<code class="docutils literal notranslate"><span class="pre">ETag</span></code>, <code class="docutils literal notranslate"><span class="pre">304</span></code>, valid until the repository is
+collected again). aveloxis-gui’s repository page draws its metric charts
+from it instead of <code class="docutils literal notranslate"><span class="pre">/compare</span></code>, so opening a repository page there no longer
+records the repository in the viewer’s “Comparisons” group; comparing it on
+a comparison page still does. (The built-in GUI’s repository page draws no
+metric charts.)</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-114">
 <h2>Changes for API clients in 0.29.114<a class="headerlink" href="#changes-for-api-clients-in-0-29-114" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/sessions/revoke</span></code> is never refused by a spent request quota
@@ -2218,10 +2291,28 @@ GET /api/v1/repos/{repoID}/timeseries?since=2024-01-01
 </div>
 <p>Returns weekly aggregated counts for commits, PRs opened, PRs merged, and issues.</p>
 <p>Every commit window on this API — this series, <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code>, <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>, <code class="docutils literal notranslate"><span class="pre">/compare</span></code> — ends no later than the latest plausible commit time, two UTC days after now, and starts no earlier than the earliest, 1970-01-02, whatever <code class="docutils literal notranslate"><span class="pre">since</span></code> and <code class="docutils literal notranslate"><span class="pre">until</span></code> say. An author timestamp is an absolute instant, so only a wrong committer clock can place one in the future (the margin is a day of skew rounded to a day-aligned edge), and a Unix clock cannot place one before the epoch, which is what an unset clock stamps. Repositories carry the occasional author date in 2080 or 1970, and such a date must not stretch a window. The rows stay stored; only the windows are bounded.</p>
-<p><code class="docutils literal notranslate"><span class="pre">since</span></code> (default: two years ago) and <code class="docutils literal notranslate"><span class="pre">until</span></code> (default: the latest plausible
+<p><code class="docutils literal notranslate"><span class="pre">since</span></code> (default: two years before the Monday, UTC, that starts the current
+week; two years before today until 0.29.120) and <code class="docutils literal notranslate"><span class="pre">until</span></code> (default: the latest plausible
 commit time; the last day of the window, inclusive) are <code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code>; a value
 that does not parse is a <code class="docutils literal notranslate"><span class="pre">400</span></code> (since 0.29.99). The fields are in the <a class="reference internal" href="../api/reference.html"><span class="std std-doc">reference</span></a> (<code class="docutils literal notranslate"><span class="pre">repositoryTimeSeries</span></code>).</p>
 <p>Weeks are Monday-aligned via PostgreSQL <code class="docutils literal notranslate"><span class="pre">date_trunc('week',</span> <span class="pre">timestamp)</span></code>. Queries use indexed timestamp columns for fast responses even on large databases.</p>
+</section>
+<section id="metric-series-v0-29-119">
+<h3>Metric series (v0.29.119)<a class="headerlink" href="#metric-series-v0-29-119" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>GET /api/v1/repos/{repoID}/metric-series?metric=burstiness
+GET /api/v1/repos/{repoID}/metric-series?metric=contributor_retention&amp;bucket=month&amp;retention_threshold=4
+</pre></div>
+</div>
+<p>One temporal metric (see <a class="reference internal" href="#comparison-analytics-v0-27-2">Comparison analytics</a>
+and <code class="docutils literal notranslate"><span class="pre">docs/guide/metrics.md</span></code>) for one repository. The parameters, the window
+rules and the body are <code class="docutils literal notranslate"><span class="pre">/compare</span></code>’s for <code class="docutils literal notranslate"><span class="pre">entities=repo:{repoID}</span></code>; the
+difference is the cache: the answer carries an <code class="docutils literal notranslate"><span class="pre">ETag</span></code>, a repeat is
+<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>, and it stays valid until the repository’s collection state
+changes or its window moves (the default window moves each Monday, UTC, for
+<code class="docutils literal notranslate"><span class="pre">bucket=week</span></code>, and on the 1st for <code class="docutils literal notranslate"><span class="pre">bucket=month</span></code>), where <code class="docutils literal notranslate"><span class="pre">/compare</span></code> caches
+whole answers for 60 seconds per caller.
+Nothing is recorded in the caller’s “Comparisons” group. The fields are in
+the <a class="reference internal" href="../api/reference.html"><span class="std std-doc">reference</span></a> (<code class="docutils literal notranslate"><span class="pre">repositoryMetricSeries</span></code>).</p>
 </section>
 <section id="dependency-licenses">
 <h3>Dependency Licenses<a class="headerlink" href="#dependency-licenses" title="Link to this heading"></a></h3>
@@ -2389,7 +2480,7 @@ GET /api/v1/repos/{repoID}/contributions/identities?since=2024-01-01&amp;until=2
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">since</span></code></p></td>
 <td><p>date (YYYY-MM-DD)</p></td>
-<td><p>2 years ago</p></td>
+<td><p>two years before the Monday (UTC) that starts the current week</p></td>
 <td><p>Window lower bound (inclusive)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">until</span></code></p></td>
@@ -2521,15 +2612,20 @@ GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&amp;until=2024-12-3
 </div>
 <p>The ranked “who does the work here” table behind the repo page’s Top
 contributors card. Same <code class="docutils literal notranslate"><span class="pre">since</span></code>/<code class="docutils literal notranslate"><span class="pre">until</span></code> window semantics as the
-<code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code> endpoints (default: trailing 2 years; <code class="docutils literal notranslate"><span class="pre">until</span></code> is
-inclusive); <code class="docutils literal notranslate"><span class="pre">limit</span></code> defaults to 20 and is capped at 100.</p>
+<code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code> endpoints (default: from two years before the Monday,
+UTC, that starts the current week; <code class="docutils literal notranslate"><span class="pre">until</span></code> is inclusive); <code class="docutils literal notranslate"><span class="pre">limit</span></code> defaults to 20 and is capped at 100.</p>
 <p><strong>Caching (since 0.29.71; 0.29.73).</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, a
 repository’s own GET answers (this endpoint, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/licenses</span></code>,
 <code class="docutils literal notranslate"><span class="pre">/deps</span></code>, <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">/scancode-*</span></code>, <code class="docutils literal notranslate"><span class="pre">/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">/scorecard</span></code>,
-<code class="docutils literal notranslate"><span class="pre">/traffic</span></code>, <code class="docutils literal notranslate"><span class="pre">/sbom</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected
+<code class="docutils literal notranslate"><span class="pre">/traffic</span></code>, <code class="docutils literal notranslate"><span class="pre">/sbom</span></code>, <code class="docutils literal notranslate"><span class="pre">/metric-series</span></code> and <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code>) are reused until the repository is collected
 again or scanned; with it unset (the default) only this endpoint and
-<code class="docutils literal notranslate"><span class="pre">/timeseries</span></code> are, up to 1,000 answers. Answers that name contributors are also recomputed after
-<code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> (default 30). These answers carry an
+<code class="docutils literal notranslate"><span class="pre">/timeseries</span></code> are, up to 1,000 answers, and <code class="docutils literal notranslate"><span class="pre">/metric-series</span></code>, up to another
+1,000. No answer
+expires on a timer (since 0.29.120; answers that name contributors were
+recomputed every <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> before): a name
+filled in between collections shows after the repository’s next
+collection, and an answer whose window starts from the current date is
+recomputed when its window moves, once a week for the defaults. These answers carry an
 <code class="docutils literal notranslate"><span class="pre">ETag</span></code> (weak for answers that depend only on the repository’s state); a
 request whose <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> names the current one gets
 <code class="docutils literal notranslate"><span class="pre">304</span> <span class="pre">Not</span> <span class="pre">Modified</span></code>. A response served from the cache carries <code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>.
@@ -2698,7 +2794,7 @@ GET /api/v1/repos/{repoID}/contributions/coverage?since=2024-01-01&amp;until=202
 </tr>
 </tbody>
 </table>
-<p><strong>Spotting a stuck enrichment ticker.</strong> If <code class="docutils literal notranslate"><span class="pre">enrichment_oldest_pending</span></code> is more than ~2× your configured <code class="docutils literal notranslate"><span class="pre">enrich_interval_minutes</span></code> behind <code class="docutils literal notranslate"><span class="pre">NOW()</span></code>, the ticker may be stuck. Investigation:</p>
+<p><strong>Spotting a stuck enrichment ticker.</strong> If <code class="docutils literal notranslate"><span class="pre">enrichment_oldest_pending</span></code> is more than ~2× your configured <code class="docutils literal notranslate"><span class="pre">enrich_interval_minutes</span></code> behind <code class="docutils literal notranslate"><span class="pre">NOW()</span></code>, the ticker may be stuck. With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, this answer is the one computed at the repository’s last collection (since 0.29.120 the enrichment sweep does not move it, and a repeat says <code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>), so a healthy ticker can look stuck here: confirm with the log lines and the SQL below, which read the live state. Investigation:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># What does the enrich interval look like?</span>
 grep<span class="w"> </span>enrich_interval_minutes<span class="w"> </span>~/.aveloxis/aveloxis.json
 
@@ -2883,18 +2979,29 @@ and logs under <code class="docutils literal notranslate"><span class="pre">~/.a
 OAuth, the first admin, upgrades — is
 <a class="reference internal" href="../getting-started/deployment.html"><span class="std std-doc">Production Deployment</span></a>.</p>
 <p>Each <code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps its own state: the per-repository response cache
-(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or 1,000 weekly-series and top-contributor
-answers when it is unset), a short authorization cache, and these rate-limit
+(up to <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, or, when it is unset, 1,000 weekly-series and
+top-contributor answers and 1,000 metric-series answers), a short authorization cache, and these rate-limit
 counts: the per-IP buckets, the hour windows of session and API-token quotas
 (<code class="docutils literal notranslate"><span class="pre">requests_per_hour</span></code>, <code class="docutils literal notranslate"><span class="pre">token_requests_per_hour</span></code>) and the per-user cap on
 repositories added to Shared with Me by viewing them. All of those start over
-when the process restarts. The day counts of sessions and API tokens
+when the process restarts, except the list of answers the re-warm would
+recompute (<code class="docutils literal notranslate"><span class="pre">aveloxis_ops.page_cache_replay</span></code>): it is saved at each re-warm pass
+and at a stop, and read back at start, so a restart recomputes them. The
+list has one owner per database — the first <code class="docutils literal notranslate"><span class="pre">api</span></code> process to start claims
+it (a Postgres advisory lock on that process’s own database session, so the
+api needs a direct or session-mode connection, never a transaction pooler;
+after a database restart ends the session, the list is claimed again at the
+next re-warm pass by whichever api process asks first); another process
+logs that it re-warms from memory alone (and asks again at each pass), and a
+restart of it starts empty.
+The day counts of sessions and API tokens
 (<code class="docutils literal notranslate"><span class="pre">requests_per_day</span></code>, <code class="docutils literal notranslate"><span class="pre">token_requests_per_day</span></code>) are shared through the
 <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.request_counts</span></code> table: every <code class="docutils literal notranslate"><span class="pre">api</span></code> process adds its counts there
 about once a minute and when it stops, so they survive a restart and are
 shared by all instances. Several instances behind a load balancer each compute
-and hold their own answers, and the per-IP limits and hour windows are per
-instance; run one per host unless that is what you want.</p>
+and hold their own answers (only the first keeps a saved re-warm list), and
+the per-IP limits and hour windows are per instance; run one per host unless
+that is what you want.</p>
 <p>The web GUI’s charts fetch the API through the web process, which proxies
 <code class="docutils literal notranslate"><span class="pre">/api/*</span></code> to <code class="docutils literal notranslate"><span class="pre">web.api_internal_url</span></code> (<code class="docutils literal notranslate"><span class="pre">http://127.0.0.1:8383</span></code> by default);
 when the API moves, that URL must follow. Behind a reverse proxy, keep the
@@ -2941,10 +3048,13 @@ the GUI’s popovers and reference page).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/compare?entities=repo:1,org:github.com/chaoss&amp;metric=contributors&amp;since=2023-07-01&amp;until=2026-07-01&amp;bucket=week</span></code>
 — temporal metrics; window defaults to the trailing 3 years; bucket
 week (default) or month; buckets are densified (aligned x-axes).
-Whole responses are cached 60s per (user, query) (<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>); each
-entity’s series is also reused under its repositories’ collection state,
-for at most <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> (see the caching note
-under the top-contributors endpoint). The default window starts on the
+Whole responses are cached 60s per (user, query) (<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>). A
+repository entity’s series is the repository-page cache’s answer of
+<code class="docutils literal notranslate"><span class="pre">/api/v1/repos/{repoID}/metric-series</span></code> with the same parameters (since
+0.29.121), shared with the repository page; an organization entity’s is
+reused until one of its repositories is collected again (no age limit
+since 0.29.120; see the caching note under the top-contributors
+endpoint). The default window starts on the
 bucket boundary three years before the last complete bucket.</p>
 <ul>
 <li><p><strong>Per-entity window clamp (v0.27.24):</strong> each entity’s series is

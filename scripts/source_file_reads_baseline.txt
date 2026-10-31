@@ -158,14 +158,11 @@ internal/api/prioritize_test.go internal/api/server.go
 internal/api/ratelimit_test.go cmd/aveloxis/main.go
 internal/api/ratelimit_test.go internal/api/server.go
 internal/api/repo_page_cache_routes_test.go internal/api/metrics.go
-internal/api/repo_page_cache_routes_test.go internal/api/page_query.go
 internal/api/repo_page_cache_routes_test.go internal/api/repo_page_cache.go
 internal/api/repo_page_cache_routes_test.go internal/api/server.go
 internal/api/repo_page_cache_test.go cmd/aveloxis/deploy_checklist.go
-internal/api/repo_page_cache_test.go internal/api/contributions.go
 internal/api/repo_page_cache_test.go internal/api/metrics.go
 internal/api/repo_page_cache_test.go internal/api/server.go
-internal/api/repo_page_cache_test.go internal/api/top_contributors.go
 internal/api/repo_star_state_test.go internal/api/portal.go
 internal/api/repo_star_state_test.go internal/api/server.go
 internal/api/retention_test.go internal/api/analytics.go

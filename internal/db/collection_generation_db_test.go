@@ -115,7 +115,32 @@ func TestCollectionGeneration(t *testing.T) {
 	if err := store.CompleteJob(ctx, a, false, time.Time{}, time.Hour, 0, 0, 0, 0, 0, 0, 0, 0, "probe failure", 1); err != nil {
 		t.Fatal(err)
 	}
-	if failed, _ := store.CollectionGeneration(ctx, []int64{a, b}); failed == running {
+	failed, _ := store.CollectionGeneration(ctx, []int64{a, b})
+	if failed == running {
 		t.Error("CompleteJob of a FAILED job must change the generation (it stamps updated_at; last_collected stays)")
+	}
+	// D6/D7 (0.29.120, summary/63): the series cache has no age limit, so a
+	// writer outside a job that stamps its repository (data_changed_at, the
+	// repository-page cache's stamp) must move the generation too — through
+	// the writer, not a hand-written UPDATE. A repository without a queue row
+	// still contributes nothing.
+	if err := store.StampReposChangedOutsideJob(ctx, []int64{b}); err != nil {
+		t.Fatal(err)
+	}
+	if stamped, _ := store.CollectionGeneration(ctx, []int64{a, b}); stamped == failed {
+		t.Error("a data_changed_at stamp on a member must change the generation (the series cache is durable until it moves)")
+	}
+	// Round 1 finding 4 (0.29.123): a member without a queue row (a gone
+	// repository: dequeued, its data kept) still counts — its stamp moves
+	// an organisation's series too.
+	if _, err := store.pool.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, b); err != nil {
+		t.Fatal(err)
+	}
+	gone, _ := store.CollectionGeneration(ctx, []int64{a, b})
+	if err := store.StampReposChangedOutsideJob(ctx, []int64{b}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := store.CollectionGeneration(ctx, []int64{a, b}); again == gone {
+		t.Error("a stamp on a member with no queue row must change the generation")
 	}
 }

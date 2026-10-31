@@ -35,11 +35,20 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 		// The home-repos background refresh runs on context.Background(),
 		// outside any request; it logs its own WARN.
 		srctest.SiteKey("internal/api", "refreshHomeRepos"): 1,
-		// The re-warm's replay bound (http_timeout_seconds, v0.29.73): the
-		// replayed handler's error helper drops its expiry to Debug and
-		// writes nothing, so replay itself reports the expiry ("request
-		// deadline exceeded") in the re-warm's WARN.
-		srctest.SiteKey("internal/api", "replay"): 1,
+		// The internal request's bound (http_timeout_seconds; the re-warm's
+		// replay, v0.29.73, and /compare's repository entities, 0.29.121):
+		// the handler's error helper drops its expiry to Debug and writes
+		// nothing, so internalGET itself reports the expiry ("request
+		// deadline exceeded") in its caller's WARN.
+		srctest.SiteKey("internal/api", "internalGET"): 1, // the re-warm's replays and /compare's repository entities (0.29.121)
+		// The load of the saved list (Copilot's review of PR #246, M1): the
+		// re-warm's own context bounded by a request's bound, never a
+		// request's; its expiry is the store's error, logged by the loader.
+		srctest.SiteKey("internal/api", "loadReplaySeeds"): 1,
+		// The re-warm's save of its list (L10 round of 0.29.124, F2): the
+		// re-warm loop's own context, never a request's, bounded so a stop's
+		// save cannot hold pgx's pool Close open.
+		srctest.SiteKey("internal/api", "saveReplaySet"): 1,
 		// The capacity policy's read (v0.29.89; the 0.29.85 session
 		// threshold read before it) runs on context.Background() off the
 		// request path, bounded by its refresh period; it logs its own WARN.
@@ -110,6 +119,10 @@ func TestRequestEndIsClassifiedInOnePlace(t *testing.T) {
 		// timed_out.
 		srctest.SiteKey("internal/api", "capacityTick"):  2,
 		srctest.SiteKey("internal/api", "FlushCapacity"): 2,
+		// The re-warm's save (0.29.122) runs on the re-warm loop's context,
+		// never a request's, detached on purpose: a stop still writes that
+		// pass's difference of the saved list.
+		srctest.SiteKey("internal/api", "saveReplaySet"): 1,
 	}
 	bare := regexp.MustCompile(`context\.(Canceled|DeadlineExceeded|WithoutCancel)\b`)
 	root := srctest.Root(t)

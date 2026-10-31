@@ -173,7 +173,16 @@ func TestAPISessionsAreListedEndedAndTheEmailChangeNeedsARecentSignIn(t *testing
 		t.Errorf("bad user id = %d, want 400", w.Code)
 	}
 
-	// The account ends its own: every token dies, this one included.
+	// The account ends its own — after a recent sign-in (ASVS V7.5.2, the
+	// 0.29.125 review): the web session was aged above, so the first try is
+	// the re-authentication refusal and ends nothing.
+	if w := call(http.MethodPost, "/api/v1/me/sessions/revoke", spa, ""); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"reauthentication_required"`) {
+		t.Fatalf("an old sign-in's sign-out-everywhere = %d %s; want 403 reauthentication_required", w.Code, w.Body.String())
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.user_session_tokens SET created_at = $2 WHERE token = $1`, db.HashToken(webRaw), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	// Every token dies, this one included.
 	w = call(http.MethodPost, "/api/v1/me/sessions/revoke", spa, "")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ended":4`) {
 		t.Fatalf("POST /me/sessions/revoke = %d %s; want 200 ended 4 (web, its two children, the loose token)", w.Code, w.Body.String())

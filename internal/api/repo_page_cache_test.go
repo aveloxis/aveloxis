@@ -46,13 +46,33 @@ const testPagePattern = "GET /api/v1/repos/{repoID}/thing"
 // absence).
 func init() {
 	pageParams[testPagePattern] = []string{"a", "b", "fast", "slow", "broken", "ok", "bad"}
+	pageWindows[testPagePattern] = func(*http.Request) (string, bool) {
+		w := testPageWindow.Load().(testWindow)
+		return w.key, w.ok
+	}
+	testPageWindow.Store(testWindow{ok: true})
+}
+
+// testPageWindow is the test route's effective window (its window function
+// reads it); "" and keyable for every test that does not set one.
+var testPageWindow atomic.Value
+
+type testWindow struct {
+	key string
+	ok  bool
+}
+
+func setTestPageWindow(t *testing.T, key string, ok bool) {
+	t.Helper()
+	testPageWindow.Store(testWindow{key: key, ok: ok})
+	t.Cleanup(func() { testPageWindow.Store(testWindow{ok: true}) })
 }
 
 func newPageCacheHarness(t *testing.T, pol pagePolicy, maxBytes int64, h func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request)) *pageCacheHarness {
 	t.Helper()
 	hn := &pageCacheHarness{t: t, known: true, now: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
 		state: db.RepoCacheState{HasQueueRow: true, LastCollected: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}}
-	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(maxBytes, 30*time.Minute)}
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(maxBytes)}
 	s.pageCache.now = func() time.Time { hn.mu.Lock(); defer hn.mu.Unlock(); return hn.now }
 	s.repoStates = func(_ context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
 		hn.mu.Lock()
@@ -161,7 +181,7 @@ func TestPageCacheAnswers304WithoutRunningTheHandler(t *testing.T) {
 	}
 	// The process lost its memory (restart, eviction): an exact answer's
 	// ETag is still verifiable from the state alone.
-	hn.s.pageCache = newRepoPageCache(1<<20, 30*time.Minute)
+	hn.s.pageCache = newRepoPageCache(1 << 20)
 	hn.s.pageCache.now = func() time.Time { return hn.now }
 	w = hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
 	if w.Code != http.StatusNotModified || hn.runs.Load() != 1 {
@@ -178,47 +198,57 @@ func TestPageCacheAnswers304WithoutRunningTheHandler(t *testing.T) {
 	}
 }
 
-func TestPageCacheEnrichedAnswersAgeOut(t *testing.T) {
+// D6 (0.29.120, summary/63): an enriched answer is durable until the
+// repository's state moves — no age limit; a name the enrichment sweep fills
+// in shows at the repository's next collection (the operator's choice over
+// per-contributor stamping, which fans out across the fleet). Its ETag still
+// names the body, so a cold process never assumes one.
+func TestPageCacheEnrichedAnswersAreDurable(t *testing.T) {
 	hn := newPageCacheHarness(t, pageEnriched, 1<<20, okBody)
 	etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
 	hn.mu.Lock()
-	hn.now = hn.now.Add(29 * time.Minute)
+	hn.now = hn.now.Add(90 * 24 * time.Hour)
 	hn.mu.Unlock()
-	if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("X-Cache") != "hit" {
-		t.Error("an enriched answer within the enrichment interval must hit")
+	if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("X-Cache") != "hit" || hn.runs.Load() != 1 {
+		t.Errorf("an enriched answer of an unchanged repository must hit however old it is (X-Cache %q, runs %d)", w.Header().Get("X-Cache"), hn.runs.Load())
 	}
 	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag)); w.Code != http.StatusNotModified {
 		t.Errorf("an enriched answer in memory revalidates, got %d", w.Code)
 	}
-	hn.mu.Lock()
-	hn.now = hn.now.Add(1 * time.Minute)
-	hn.mu.Unlock()
+	hn.setState(func(st *db.RepoCacheState) { st.LastCollected = st.LastCollected.Add(time.Hour) })
 	w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
 	if w.Code != 200 || hn.runs.Load() != 2 {
-		t.Errorf("past the interval an enriched answer is recomputed, even for a client holding its tag: %d runs %d", w.Code, hn.runs.Load())
+		t.Errorf("the next collection recomputes an enriched answer, even for a client holding its tag: %d runs %d", w.Code, hn.runs.Load())
 	}
 	// Cold process: an enriched tag cannot be verified without the body.
-	hn.s.pageCache = newRepoPageCache(1<<20, 30*time.Minute)
+	hn.s.pageCache = newRepoPageCache(1 << 20)
 	hn.s.pageCache.now = func() time.Time { return hn.now }
 	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(w.Header().Get("ETag"))); w.Code != 200 || hn.runs.Load() != 3 {
 		t.Errorf("a cold enriched answer is computed, never assumed: %d runs %d", w.Code, hn.runs.Load())
 	}
 }
 
-func TestPageCacheNowRelativeAnswersChangeWithTheDay(t *testing.T) {
-	hn := newPageCacheHarness(t, pagePolicy{nowRelative: true}, 1<<20, okBody)
+// D6: a windowed answer is keyed by the window its route's parser computes,
+// not by the day: an unchanged window hits on any later day, a moved window
+// misses, and a window the parser refuses is answered live.
+func TestPageCacheWindowedAnswersFollowTheEffectiveWindow(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	setTestPageWindow(t, "2024-06-03|2026-06-01", true)
 	hn.get("/api/v1/repos/7/thing")
 	hn.mu.Lock()
-	hn.now = time.Date(2026, 10, 2, 23, 59, 0, 0, time.UTC)
+	hn.now = hn.now.AddDate(0, 0, 6)
 	hn.mu.Unlock()
 	if hn.get("/api/v1/repos/7/thing").Header().Get("X-Cache") != "hit" {
-		t.Error("the same UTC day must hit")
+		t.Error("the same effective window must hit on a later day")
 	}
-	hn.mu.Lock()
-	hn.now = time.Date(2026, 10, 3, 0, 1, 0, 0, time.UTC)
-	hn.mu.Unlock()
+	setTestPageWindow(t, "2024-06-10|2026-06-08", true)
 	if hn.get("/api/v1/repos/7/thing").Header().Get("X-Cache") == "hit" || hn.runs.Load() != 2 {
-		t.Error("a default window anchored at now must be recomputed the next UTC day")
+		t.Error("a moved window must be recomputed")
+	}
+	setTestPageWindow(t, "", false)
+	w := hn.get("/api/v1/repos/7/thing")
+	if w.Header().Get("X-Cache") == "hit" || w.Header().Get("ETag") != "" || hn.runs.Load() != 3 {
+		t.Errorf("a window the parser refuses is answered live and untagged (X-Cache %q, ETag %q, runs %d)", w.Header().Get("X-Cache"), w.Header().Get("ETag"), hn.runs.Load())
 	}
 }
 
@@ -441,7 +471,7 @@ func TestRepoPageCacheIsBoundedByBytes(t *testing.T) {
 		return &pageEntry{key: key, repoID: repo, uri: "/u/" + key, body: []byte(strings.Repeat("x", n))}
 	}
 	one := entry("a", 1, 100).size()
-	c := newRepoPageCache(3*one, time.Minute)
+	c := newRepoPageCache(3 * one)
 	c.put(entry("a", 1, 100))
 	c.put(entry("b", 1, 100))
 	c.put(entry("c", 2, 100))
@@ -476,7 +506,7 @@ func TestRepoPageCacheIsBoundedByBytes(t *testing.T) {
 	if ids := c.repoIDs(); len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
 		t.Errorf("repoIDs = %v, want [1 2]", ids)
 	}
-	zero := newRepoPageCache(0, time.Minute)
+	zero := newRepoPageCache(0)
 	zero.put(entry("a", 1, 1))
 	if _, ok := zero.get("a"); ok || zero.bytes != 0 {
 		t.Error("a zero budget stores nothing for a route not kept without a budget")
@@ -687,30 +717,40 @@ func TestPageCacheFollowersDoNotReplaceTheEntry(t *testing.T) {
 	}
 }
 
-// PR #226 review 5403078495: parseWindow's default start is the UTC day
-// boundary two years back — the same granularity as the cache key's UTC day
-// (pageEnriched) — so every request of a day computes, and is served, the
-// same window. An instant-precise default made the first request of the
-// day fix the window for the rest of it.
-func TestParseWindowDefaultStartsOnAUTCDay(t *testing.T) {
+// PR #226 review 5403078495 made parseWindow's default start a fixed
+// boundary rather than an instant (an instant-precise default let the first
+// request fix the window for the rest of the key's life). D6: the default window starts two years before the week anchor (the UTC
+// Monday that starts the current week), so it moves when a week completes,
+// not daily, and an unchanged repository's answer survives the days between.
+func TestParseWindowDefaultStartsOnTheWeekAnchor(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/repos/7/contributors/top", nil)
+	before := windowAnchor(time.Now())
 	since, _, err := parseWindow(r)
+	after := windowAnchor(time.Now())
 	if err != nil {
 		t.Fatalf("the default window must be valid: %v", err)
 	}
-	if since.Location() != time.UTC || since.Hour() != 0 || since.Minute() != 0 || since.Second() != 0 || since.Nanosecond() != 0 {
-		t.Errorf("default since %v must be a UTC midnight", since)
+	if !since.Equal(before.AddDate(-2, 0, 0)) && !since.Equal(after.AddDate(-2, 0, 0)) { // a run across Monday 00:00 UTC
+		t.Errorf("default since %v, want two years before the anchor %v", since, after)
 	}
-	want := time.Now().UTC().Truncate(24*time.Hour).AddDate(-2, 0, 0)
-	if !since.Equal(want) && !since.Equal(want.AddDate(0, 0, -1)) { // a test running across midnight
-		t.Errorf("default since %v, want %v", since, want)
+	for _, c := range []struct{ at, want string }{
+		{"2026-10-28T15:04:05Z", "2026-10-26"},      // Wednesday
+		{"2026-10-26T00:00:00Z", "2026-10-26"},      // Monday midnight is its own anchor
+		{"2026-10-25T23:59:59Z", "2026-10-19"},      // Sunday's last second
+		{"2026-10-26T03:00:00+05:00", "2026-10-19"}, // Sunday 22:00 UTC
+	} {
+		at, _ := time.Parse(time.RFC3339, c.at)
+		got := windowAnchor(at)
+		if got.Format(time.RFC3339) != c.want+"T00:00:00Z" {
+			t.Errorf("windowAnchor(%s) = %s, want %s (the UTC Monday midnight)", c.at, got.Format(time.RFC3339), c.want)
+		}
 	}
 }
 
-// Whole-branch review: an enriched answer recomputed after its TTL (or an
-// eviction, a restart, a zero budget) whose ETag equals the client's is a
-// 304, not the same body again — top contributors, the heaviest route,
-// re-shipped its body to every revalidating client after each TTL.
+// Whole-branch review: an enriched answer recomputed after an eviction, a
+// restart or under a zero budget whose ETag equals the client's is a 304,
+// not the same body again — top contributors, the heaviest route, re-shipped
+// its body to every revalidating client after each recomputation.
 func TestPageCacheRecomputedAnswerMatchingTheClientsTagIs304(t *testing.T) {
 	for name, budget := range map[string]int64{"cached": 1 << 20, "zero budget": 0} {
 		hn := newPageCacheHarness(t, pageEnriched, budget, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
@@ -718,9 +758,8 @@ func TestPageCacheRecomputedAnswerMatchingTheClientsTagIs304(t *testing.T) {
 			_, _ = w.Write([]byte(`{"same":"body"}`)) // identical on every computation
 		})
 		etag := hn.get("/api/v1/repos/7/thing").Header().Get("ETag")
-		hn.mu.Lock()
-		hn.now = hn.now.Add(31 * time.Minute) // past the enrichment TTL
-		hn.mu.Unlock()
+		hn.s.pageCache = newRepoPageCache(budget) // a restart: the body is gone
+		hn.s.pageCache.now = func() time.Time { return hn.now }
 		w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag))
 		if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
 			t.Errorf("%s: a recomputed identical answer for a client holding its tag: %d (%d bytes), want a bodyless 304", name, w.Code, w.Body.Len())
@@ -745,6 +784,7 @@ func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
 	const ts = "GET /api/v1/repos/{repoID}/timeseries"
 	const sbom = "GET /api/v1/repos/{repoID}/sbom"
 	const deps = "GET /api/v1/repos/{repoID}/deps"
+	const ms = "GET /api/v1/repos/{repoID}/metric-series"
 	key := func(pattern, q string) string {
 		r := httptest.NewRequest(http.MethodGet, "/x?"+q, nil)
 		k, keyable := canonicalQuery(r, pageParams[pattern])
@@ -756,6 +796,7 @@ func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
 	for _, c := range []struct{ pattern, q string }{
 		{top, "since=yesterday"}, {top, "since=2024-1-1"}, {top, "until=2024-02-30"}, {ts, "since=2024-13-01"},
 		{ts, "since=2024-01-01&until=bad"},
+		{ms, "metric=issues&since=2024-02-30"}, {ms, "metric=issues&until=soon"},
 	} {
 		r := httptest.NewRequest(http.MethodGet, "/x?"+c.q, nil)
 		if k, keyable := canonicalQuery(r, pageParams[c.pattern]); keyable {
@@ -779,6 +820,12 @@ func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
 		{sbom, "", "format=cyclonedx"},
 		{sbom, "vulns=1", "format=cyclonedx&vulns=1"},
 		{deps, "", "license="},
+		// The series route: week is the default bucket, 4 the default
+		// threshold, and a threshold is a number however it is spelled.
+		{ms, "metric=issues", "metric=issues&bucket=week"},
+		{ms, "metric=issues", "metric=issues&bucket="},
+		{ms, "metric=contributor_retention", "metric=contributor_retention&retention_threshold=4"},
+		{ms, "metric=contributor_retention&retention_threshold=7", "metric=contributor_retention&retention_threshold=07"},
 	}
 	for _, c := range same {
 		if ka, kb := key(c.pattern, c.a), key(c.pattern, c.b); ka != kb {
@@ -798,6 +845,11 @@ func TestPageCacheKeyIsTheEffectiveValue(t *testing.T) {
 		// (?scope=all) are different answers on /deps.
 		{deps, "", "scope=all"},
 		{deps, "license=MIT", "license=GPL-3.0"},
+		{ms, "metric=issues", "metric=committers"},
+		{ms, "metric=issues", "metric=issues&bucket=month"},
+		{ms, "metric=contributor_retention", "metric=contributor_retention&retention_threshold=5"},
+		{ms, "metric=issues", "metric=issues&since=2024-01-01"},
+		{ms, "metric=issues&until=2025-01-01", "metric=issues&until=2025-01-02"},
 	}
 	for _, c := range differ {
 		if ka, kb := key(c.pattern, c.a), key(c.pattern, c.b); ka == kb {
@@ -845,6 +897,15 @@ func TestSameKeyMeansSameHandlerArguments(t *testing.T) {
 		}
 	}
 	window := func(r *http.Request) any { s, u, err := parseWindow(r); return [3]any{s, u, err == nil} }
+	var series []string
+	for _, d := range days {
+		for _, extra := range []string{"metric=issues", "metric=committers", "metric=issues&bucket=week", "metric=issues&bucket=month",
+			"metric=issues&bucket=", "metric=issues&bucket=day", "metric=contributor_retention", "metric=contributor_retention&retention_threshold=4",
+			"metric=contributor_retention&retention_threshold=04", "metric=contributor_retention&retention_threshold=2",
+			"metric=contributor_retention&retention_threshold=0", "metric=contributor_retention&retention_threshold=x", "metric=nope", ""} {
+			series = append(series, strings.Trim(d+"&"+extra, "&"))
+		}
+	}
 	routes := []route{
 		{"GET /api/v1/repos/{repoID}/contributors/top", top, func(r *http.Request) any {
 			a, err := parseTopContributorsArgs(r)
@@ -857,6 +918,10 @@ func TestSameKeyMeansSameHandlerArguments(t *testing.T) {
 		{"GET /api/v1/repos/{repoID}/sbom", []string{"", "vulns=1", "vulns=true", "vulns=0", "format=spdx", "format=spdx&vulns=1",
 			"format=spdx&vulns=yes", "scope=runtime", "scope=runtime&vulns=1", "scope=runtime&vulns=2"}, func(r *http.Request) any {
 			return parseSBOMArgs(r)
+		}},
+		{"GET /api/v1/repos/{repoID}/metric-series", series, func(r *http.Request) any {
+			a, err := parseMetricSeriesArgs(r)
+			return [2]any{a, err == nil}
 		}},
 	}
 	for _, rt := range routes {
@@ -884,15 +949,16 @@ func TestSameKeyMeansSameHandlerArguments(t *testing.T) {
 // function (ban the operation: no other Query() in the body), so the test
 // above covers everything they act on.
 func TestFoldingHandlersReadTheQueryOnlyThroughTheirParser(t *testing.T) {
-	for _, c := range []struct{ file, handler, parser string }{
-		{"top_contributors.go", "handleTopContributors", "parseTopContributorsArgs(r)"},
-		{"server.go", "handleTimeSeries", "parseWindow(r)"},
-		{"server.go", "handleSBOMDownload", "parseSBOMArgs(r)"},
-		{"contributions.go", "handleRepoContributors", "parseWindow(r)"},
-		{"contributions.go", "handleRepoAffiliations", "parseWindow(r)"},
-		{"contributions.go", "handleRepoContributionsCoverage", "parseWindow(r)"},
+	for _, c := range []struct{ handler, parser string }{
+		{"handleTopContributors", "parseTopContributorsArgs(r)"},
+		{"handleTimeSeries", "parseWindow(r)"},
+		{"handleSBOMDownload", "parseSBOMArgs(r)"},
+		{"handleRepoContributors", "parseWindow(r)"},
+		{"handleRepoAffiliations", "parseWindow(r)"},
+		{"handleRepoContributionsCoverage", "parseWindow(r)"},
+		{"handleRepoMetricSeries", "parseMetricSeriesArgs(r)"},
 	} {
-		body := srctest.FuncBody(t, srctest.StripGoComments(srctest.Read(t, "internal/api/"+c.file)), "func (s *Server) "+c.handler+"(")
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) "+c.handler+"("))
 		if !strings.Contains(body, c.parser) {
 			t.Errorf("%s must parse its query with %s", c.handler, c.parser)
 		}
@@ -999,7 +1065,7 @@ func TestZeroBudgetKeepsTheRoutesMainAlwaysCached(t *testing.T) {
 	entry := func(key string, repo int64, n int) *pageEntry {
 		return &pageEntry{key: key, repoID: repo, uri: "/u/" + key, body: []byte(strings.Repeat("x", n))}
 	}
-	c := newRepoPageCache(0, time.Minute)
+	c := newRepoPageCache(0)
 	kept := entry("kept", 1, 1)
 	kept.keptWhenOff = true
 	c.put(kept)
@@ -1036,7 +1102,7 @@ func TestZeroBudgetKeepsTheRoutesMainAlwaysCached(t *testing.T) {
 // The same through the handler path: with the default budget a second
 // visit to a kept route runs no handler.
 func TestZeroBudgetServesAKeptRouteFromMemory(t *testing.T) {
-	for _, pol := range []pagePolicy{pageDatedKept, pageEnrichedKept} {
+	for _, pol := range []pagePolicy{pageExactKept, pageEnrichedKept} {
 		hn := newPageCacheHarness(t, pol, 0, okBody)
 		hn.get("/api/v1/repos/7/thing")
 		if w := hn.get("/api/v1/repos/7/thing"); w.Header().Get("X-Cache") != "hit" || hn.runs.Load() != 1 {
@@ -1050,8 +1116,11 @@ func TestZeroBudgetServesAKeptRouteFromMemory(t *testing.T) {
 func TestKeptPoliciesAreTheRoutesMainAlwaysCached(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/api/server.go")) + srctest.StripGoComments(srctest.Read(t, "internal/api/metrics.go"))
 	want := map[string]string{
-		"/api/v1/repos/{repoID}/timeseries":       "pageDatedKept",
+		"/api/v1/repos/{repoID}/timeseries":       "pageExactKept",
 		"/api/v1/repos/{repoID}/contributors/top": "pageEnrichedKept",
+		// The repository page's metric charts (0.29.119): main kept them in
+		// the series cache with no budget switch (summary/63 §4).
+		"/api/v1/repos/{repoID}/metric-series": "pageSeriesKept",
 	}
 	re := regexp.MustCompile(`"GET (/api/v1/[^"]+)", s\.cachedRepoGET\((\w+),`)
 	seen := 0
@@ -1074,22 +1143,23 @@ func TestKeptPoliciesAreTheRoutesMainAlwaysCached(t *testing.T) {
 // The configuration page states the zero-budget bound; it must be the
 // constant's value.
 func TestConfigurationDocStatesTheZeroBudgetBound(t *testing.T) {
-	doc := srctest.Read(t, "docs/getting-started/configuration.md")
 	n := strconv.Itoa(collectionCacheMaxEntries)
 	if len(n) > 3 {
 		n = n[:len(n)-3] + "," + n[len(n)-3:]
 	}
-	if c := strings.Count(doc, "at most "+n+" answers") + strings.Count(doc, "up to "+n+" answers"); c != 2 {
-		t.Errorf("configuration.md must state the zero-budget bound (%s answers) in both places, found %d", n, c)
-	}
-	// The 0.29.78 upgrade note and ladder state it too.
-	// Every statement of the bound is required on its own (round 3: an OR
-	// of two spellings let api.md pass on one of its two statements).
+	// The bound is per pool since 0.29.123 (round 2 finding 4): each current
+	// statement names both pools' bounds; the 0.29.78 upgrade note and
+	// ladder state the one bound of their time and stay as written.
+	// Every statement of the bound is required on its own (round 3 of 0.29.78:
+	// an OR of two spellings let api.md pass on one of its two statements).
 	for f, needles := range map[string][]string{
-		"docs/getting-started/upgrading.md": {"up to " + n + " answers"},
-		"cmd/aveloxis/deploy_checklist.go":  {"up to " + n + " answers"},
-		"docs/guide/scaling.md":             {"keeps only up to " + n + " weekly-series"},
-		"docs/guide/api.md":                 {"are, up to " + n + " answers", "or " + n + " weekly-series"},
+		"docs/getting-started/configuration.md": {"up to " + n + " weekly time series and top-contributor answers and up to " + n + " metric series", "at most " + n + " answers, as they were before the setting existed, and the metric series (0.29.119), at most another " + n},
+		"docs/getting-started/upgrading.md":     {"up to " + n + " answers"},
+		"cmd/aveloxis/deploy_checklist.go":      {"up to " + n + " answers"},
+		"docs/guide/scaling.md":                 {"keeps only up to " + n + " weekly-series and top-contributor answers and up to " + n + " metric-series answers"},
+		"docs/guide/api.md":                     {"are, up to " + n + " answers, and `/metric-series`, up to another\n" + n, n + " weekly-series and\ntop-contributor answers and " + n + " metric-series answers"},
+		"docs/guide/web-gui.md":                 {n + "-answer bound of each of its two pools"},
+		"docs/api/openapi.yaml":                 {"(at most " + n + " answers) and the metric series (at most another " + n + ")"},
 	} {
 		doc := srctest.Read(t, f)
 		for _, needle := range needles {
@@ -1104,7 +1174,7 @@ func TestConfigurationDocStatesTheZeroBudgetBound(t *testing.T) {
 // round 2 on 0.29.78): before the clamp, put evicted the new entry and then
 // dereferenced an empty list.
 func TestNegativeBudgetIsTheZeroBudget(t *testing.T) {
-	c := newRepoPageCache(-1, time.Minute)
+	c := newRepoPageCache(-1)
 	kept := &pageEntry{key: "kept", repoID: 1, uri: "/u/kept", body: []byte("x"), keptWhenOff: true}
 	c.put(kept)
 	c.put(&pageEntry{key: "other", repoID: 1, uri: "/u/other", body: []byte("x")})
@@ -1124,7 +1194,7 @@ func TestNegativeBudgetIsTheZeroBudget(t *testing.T) {
 // If-None-Match — because its handler refuses it with 400 and the default
 // entry's stored 200 must not answer it.
 func TestPageCacheNeverServesAnInvalidDateFromTheCache(t *testing.T) {
-	hn := newPageCacheHarness(t, pageDatedKept, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+	hn := newPageCacheHarness(t, pageExactKept, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
 		if _, _, err := parseWindow(r); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1161,7 +1231,7 @@ func TestPageCacheNeverServesAnInvalidDateFromTheCache(t *testing.T) {
 // lock: an entry stored since the caller's miss is answered, the handler
 // is not run.
 func TestRunOnceRechecksTheCacheBeforeLeading(t *testing.T) {
-	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(1<<20, 30*time.Minute)}
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(1 << 20)}
 	c := s.pageCache
 	const key = "k-recheck"
 	stored := &pageEntry{key: key, repoID: 1, body: []byte("stored"), contentType: "application/json", computed: c.now(), cost: time.Second, keptWhenOff: true}
@@ -1181,5 +1251,121 @@ func TestRunOnceRechecksTheCacheBeforeLeading(t *testing.T) {
 	}
 	if got, ok := c.get(key); !ok || got != stored || got.cost != time.Second {
 		t.Errorf("the stored entry was replaced or reset: %+v", got)
+	}
+}
+
+// Round 1 finding 3 (0.29.123): under a zero budget each kept pool has its
+// own bound — the time series and top contributors main kept in the page
+// cache, and the metric series main kept in its series cache — so ten series
+// per repository page cannot push the other two out.
+func TestZeroBudgetKeepsEachPoolToItsOwnBound(t *testing.T) {
+	c := newRepoPageCache(0)
+	page := &pageEntry{key: "ts", repoID: 1, uri: "/ts", body: []byte("x"), keptWhenOff: true}
+	c.put(page)
+	for i := 0; i < collectionCacheMaxEntries; i++ {
+		c.put(&pageEntry{key: fmt.Sprintf("s%d", i), repoID: 2, uri: fmt.Sprintf("/s%d", i), body: []byte("x"), keptWhenOff: true, keptPool: keptPoolSeries})
+	}
+	if _, ok := c.get("ts"); !ok {
+		t.Fatal("a full series pool must not evict the page pool's answer")
+	}
+	c.put(&pageEntry{key: "s-more", repoID: 2, uri: "/s-more", body: []byte("x"), keptWhenOff: true, keptPool: keptPoolSeries})
+	if _, ok := c.get("s0"); ok {
+		t.Error("past its bound the series pool evicts its own least recently used answer")
+	}
+	if _, ok := c.get("ts"); !ok {
+		t.Error("the page pool's answer must survive the series pool's eviction")
+	}
+	if n := c.ll.Len(); n != collectionCacheMaxEntries+1 {
+		t.Errorf("entries = %d, want one pool full plus the page answer", n)
+	}
+}
+
+// Round 1 finding 4: the window is part of an entry's footprint.
+func TestPageEntrySizeCountsTheWindow(t *testing.T) {
+	a := &pageEntry{key: "k", body: []byte("x")}
+	b := &pageEntry{key: "k", body: []byte("x"), window: "2024-06-03T00:00:00Z|2026-06-01T00:00:00Z|week"}
+	if b.size()-a.size() != int64(len(b.window)) {
+		t.Errorf("size() must count the window: %d vs %d", b.size(), a.size())
+	}
+}
+
+// Every policy kept with a zero budget names a registered pool, so
+// kept_pools (the start-up line) counts every pool put bounds apart.
+func TestKeptPoliciesNameARegisteredPool(t *testing.T) {
+	registered := map[string]bool{}
+	for _, p := range zeroBudgetPools {
+		registered[p] = true
+	}
+	for name, pol := range map[string]pagePolicy{"pageExactKept": pageExactKept, "pageEnrichedKept": pageEnrichedKept, "pageSeriesKept": pageSeriesKept} {
+		if !pol.keptWhenOff || !registered[pol.keptPool] {
+			t.Errorf("%s: keptWhenOff=%t pool %q, want kept in a pool of zeroBudgetPools %q", name, pol.keptWhenOff, pol.keptPool, zeroBudgetPools)
+		}
+	}
+	if len(registered) != len(zeroBudgetPools) {
+		t.Errorf("zeroBudgetPools lists a pool twice: %q", zeroBudgetPools)
+	}
+}
+
+// ASVS pass of 0.29.124 (V2.2.1/V2.4.1, L-1): only contributor_retention
+// reads retention_threshold (metricSeriesAndParts), so for every other
+// metric each threshold was another key for the same answer — a computation
+// and a stored copy per value. A valid threshold is not part of another
+// metric's key; an invalid one stays (the handler answers it 400, and it
+// must never share a valid request's key or its 304).
+func TestRetentionThresholdKeysOnlyTheRetentionMetric(t *testing.T) {
+	const ms = "GET /api/v1/repos/{repoID}/metric-series"
+	key := func(q string) string {
+		k, keyable := canonicalQuery(httptest.NewRequest(http.MethodGet, "/x?"+q, nil), pageParams[ms])
+		if !keyable {
+			t.Fatalf("?%s is not keyable", q)
+		}
+		return k
+	}
+	if key("metric=committers&retention_threshold=7") != key("metric=committers") {
+		t.Error("a threshold on a metric that ignores it must not split the key")
+	}
+	if key("metric="+retentionMetricID+"&retention_threshold=7") == key("metric="+retentionMetricID) {
+		t.Error("the retention metric's threshold is its own answer")
+	}
+	if key("metric=committers&retention_threshold=0") == key("metric=committers") {
+		t.Error("an invalid threshold (a 400) must not share the valid request's key")
+	}
+}
+
+// fingerprints returns the distinct states repoID's entries were computed
+// under (a test reader: production never asks; the unused-symbol ratchet
+// keeps it here).
+func (c *repoPageCache) fingerprints(repoID int64) map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]bool{}
+	for el := range c.byRepo[repoID] {
+		out[el.Value.(*pageEntry).fingerprint] = true
+	}
+	return out
+}
+
+// Copilot's review of PR #246 (0.29.124), M2: a request whose canonical URI
+// the saved re-warm list could not hold (its primary key is a btree entry,
+// db.MaxPageCacheReplayURIBytes) is never cached — answered live, no-store,
+// and never on the list — rather than cached in memory and failing every
+// save of the list.
+func TestARequestTheSavedListCannotHoldIsNeverCached(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, okBody)
+	long := "/api/v1/repos/7/thing?a=" + strings.Repeat("x", db.MaxPageCacheReplayURIBytes)
+	first := hn.get(long)
+	if cc := first.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("an over-long request is answered live, no-store: Cache-Control %q", cc)
+	}
+	if hn.get(long).Header().Get("X-Cache") == "hit" {
+		t.Error("an over-long request must not be stored")
+	}
+	if set := hn.s.pageCache.replaySet(); len(set) != 0 {
+		t.Errorf("an over-long request must never reach the saved list: %v", set)
+	}
+	short := "/api/v1/repos/7/thing?a=1"
+	hn.get(short)
+	if hn.get(short).Header().Get("X-Cache") != "hit" {
+		t.Error("premise: an ordinary request is cached")
 	}
 }

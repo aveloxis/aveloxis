@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CI/CD Pipelines &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>CI/CD Pipelines &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,12 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +365,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +785,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -2041,7 +2048,7 @@ convenience, not a requirement.</p>
 <section id="network-canary-network-canary-yml">
 <h2>Network canary (<code class="docutils literal notranslate"><span class="pre">network-canary.yml</span></code>)<a class="headerlink" href="#network-canary-network-canary-yml" title="Link to this heading"></a></h2>
 <p>A weekly scheduled job runs the <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_NETWORK=1</span></code>-gated tests against the real deps.dev, OSV.dev, crates.io, GitHub search, and Pony Mail APIs — the contract-drift class that mocks structurally cannot catch (the deps.dev URL-encoding bug and the OSV querybatch-stubs bug both lived in that blind spot).</p>
-<p>The GitHub traffic canary (<code class="docutils literal notranslate"><span class="pre">TestLiveGitHubTrafficContract</span></code>, since v0.29.118) checks the shape of the traffic answers (views, clones, popular paths and referrers) that the collection reads. GitHub serves traffic only to a token with push access to the repository, so <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_GITHUB_TOKEN</span></code> needs it on <code class="docutils literal notranslate"><span class="pre">aveloxis/aveloxis</span></code>, or on the <code class="docutils literal notranslate"><span class="pre">owner/repo</span></code> that <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_TRAFFIC_REPO</span></code> names; with a token that gets 403 the test skips and says so.</p>
+<p>The GitHub traffic canary (<code class="docutils literal notranslate"><span class="pre">TestLiveGitHubTrafficContract</span></code>, since v0.29.118) checks the shape of the traffic answers (views, clones, popular paths and referrers) that the collection reads. GitHub serves traffic only to a token with push access to the repository, so <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_GITHUB_TOKEN</span></code> needs it on <code class="docutils literal notranslate"><span class="pre">aveloxis/aveloxis</span></code>, or on the <code class="docutils literal notranslate"><span class="pre">owner/repo</span></code> that the repository variable <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_TRAFFIC_REPO</span></code> names (the scheduled job passes the variable through the step’s <code class="docutils literal notranslate"><span class="pre">env</span></code>, since a repository variable is not exported on its own); with a token that gets 403 the test skips and says so.</p>
 <p>The GitLab statistics canary (<code class="docutils literal notranslate"><span class="pre">TestLiveGitLabProjectStatisticsContract</span></code>, since v0.29.118) checks the shape of <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code>, the answer behind GitLab’s daily clone counts: <code class="docutils literal notranslate"><span class="pre">fetches.total</span></code>, and <code class="docutils literal notranslate"><span class="pre">fetches.days[]</span></code> with an integer <code class="docutils literal notranslate"><span class="pre">count</span></code> and a <code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code> <code class="docutils literal notranslate"><span class="pre">date</span></code>, newest first, within the last 30 UTC days, and no unique count. GitLab serves it only to a key with at least the Reporter role (and the <code class="docutils literal notranslate"><span class="pre">read_api</span></code> scope), so the canary needs <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_GITLAB_TOKEN</span></code> to hold such a token and the repository variable <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_GITLAB_STATS_PROJECT</span></code> to hold the <code class="docutils literal notranslate"><span class="pre">group/project</span></code> path of a gitlab.com project the token has that role on. Without the token or the variable, or when GitLab answers 403 or 404, the test skips and says why.</p>
 <p>The same workflow has two more jobs:</p>
 <ul class="simple">

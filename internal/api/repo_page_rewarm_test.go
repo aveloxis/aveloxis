@@ -168,7 +168,7 @@ func TestRewarmDropsRepositoriesThatNoLongerExistAndSkipsOnStateErrors(t *testin
 
 func TestRunRewarmOffReturnsAtOnce(t *testing.T) {
 	var logs bytes.Buffer
-	s := &Server{logger: slog.New(slog.NewTextHandler(&logs, nil)), pageCache: newRepoPageCache(1, time.Minute)}
+	s := &Server{logger: slog.New(slog.NewTextHandler(&logs, nil)), pageCache: newRepoPageCache(1)}
 	done := make(chan struct{})
 	go func() { s.RunRewarm(context.Background()); close(done) }()
 	select {

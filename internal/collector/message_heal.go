@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -189,6 +190,13 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 	if dryRun {
 		return res, nil
 	}
+	// Outside any job: the API's cached answers of the repositories this
+	// batch writes (refetched conversations, deleted stale links) move,
+	// however the pass ends — a stop or a failure after a first write
+	// included, so it is deferred before the first write (D7, summary/63;
+	// round 1 finding 2 of 0.29.123: placed after the loop, a stop between
+	// two repositories returned before it).
+	defer stampHealBatch(ctx, store, logger, items)
 
 	repos := map[int64]struct{ owner, name string }{}
 	repoOf := func(id int64) (struct{ owner, name string }, error) {
@@ -370,4 +378,32 @@ func healFetchParent(ctx context.Context, client platform.Client, sw *db.Staging
 		}
 	}
 	return nil
+}
+
+// stampHealBatch stamps every repository a heal batch names (deferred by
+// runMessageHealPass). Detached: a stop after a write still stamps it, so a
+// cancellation cannot end the stamp and is not classified here.
+func stampHealBatch(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, items []db.MessageHealItem) {
+	detached := context.WithoutCancel(ctx)
+	if err := store.StampReposChangedOutsideJob(detached, healBatchRepos(items)); err != nil {
+		logger.Warn("message heal: cache-state stamp failed — the repositories' cached API answers stay until their next collection", "error", err)
+	}
+}
+
+// healBatchRepos is every repository a heal batch names — the parents it
+// refetches and the conversations whose stale links it deletes — each once,
+// in ascending order: the repositories the pass writes.
+func healBatchRepos(items []db.MessageHealItem) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, it := range items {
+		for _, id := range []int64{it.IssueRepoID, it.PRConvRepoID, it.ReviewRepoID} {
+			if id != 0 && !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }

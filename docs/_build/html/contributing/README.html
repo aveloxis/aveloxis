@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contributing to Aveloxis &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>Contributing to Aveloxis &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,12 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +365,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +785,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1799,7 +1806,7 @@ SPDX-License-Identifier: MIT
 <p>This is the contributor handbook. The root <a class="reference external" href="https://github.com/aveloxis/aveloxis/blob/main/CONTRIBUTING.md"><code class="docutils literal notranslate"><span class="pre">CONTRIBUTING.md</span></code></a> is a short orientation pointer; the chapters here are where the real material lives.</p>
 <section id="what-aveloxis-is">
 <h2>What Aveloxis is<a class="headerlink" href="#what-aveloxis-is" title="Link to this heading"></a></h2>
-<p>A production, fleet level implementation of experiments conducted via the CHAOSS project in <a class="reference external" href="https://github.com/augurlabs/augur">Augur</a>. The community-health data collection pipeline used by Aveloxis CHAOSS co-founders. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (163 tables across <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code>, plus the views-only <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> compatibility schema). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.</p>
+<p>A production, fleet level implementation of experiments conducted via the CHAOSS project in <a class="reference external" href="https://github.com/augurlabs/augur">Augur</a>. The community-health data collection pipeline used by Aveloxis CHAOSS co-founders. Aveloxis collects from GitHub and GitLab APIs, parses git logs, and stores everything in PostgreSQL with full Augur schema parity (164 tables across <code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> and <code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code>, plus the views-only <code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> compatibility schema). It adds features Augur lacks: staged collection for 400K+ repo fleets, deterministic contributor IDs, dead-repo sidelining, SBOM generation, OpenSSF Scorecard integration, vulnerability scanning, interactive visualizations, and a web GUI with OAuth.</p>
 <p>If you’re new to the codebase, read these in order before touching code:</p>
 <ol class="arabic simple">
 <li><p><a class="reference internal" href="../architecture/overview.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/architecture/overview.md</span></code></span></a> — the architecture in one page</p></li>

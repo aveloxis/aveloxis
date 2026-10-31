@@ -45,6 +45,7 @@ var templateOrder = []string{
 	"admin_tokens.html",
 	"admin_token_granted.html",
 	"admin_capacity.html",
+	"admin_cache.html",
 	"admin_collections.html",
 	"admin_collection.html",
 }

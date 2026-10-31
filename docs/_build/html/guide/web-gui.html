@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Web GUI &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>Web GUI &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,12 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +365,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +785,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -2129,6 +2136,20 @@ administrator-owned groups the public catalogue shows, in position order:
 create one (a name of at most 200 characters, a description of at most
 1,000), rename or reorder it, add or remove member groups, delete it (the
 groups stay).</p>
+<p><strong>Cache</strong> (<code class="docutils literal notranslate"><span class="pre">/admin/cache</span></code>, since 0.29.123) shows the REST API’s response
+caches as the api process holds them: the repository-page cache’s size
+against <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code>, and what it did since the api started
+(answers served from memory, revalidations answered <code class="docutils literal notranslate"><span class="pre">304</span></code>, answers
+computed, stored and evicted for the budget or, with no budget, the
+1,000-answer bound of each of its two pools); the re-warm’s interval, last
+pass and saved list; and the comparison caches. Below them, the
+repositories with cached answers, largest first, and, for one repository,
+each cached answer with what it cost and whether it is current — or
+outdated because the repository changed, its window moved, or the request
+is no longer a cached one. It changes nothing. The caches live in the api process, so the page reads the API’s
+<code class="docutils literal notranslate"><span class="pre">/api/v1/admin/cache</span></code> routes; with several api processes it shows the one
+that answers, and only the process that owns the saved re-warm list (the
+first to start) reports its size.</p>
 <p>An administrator can open any account’s group read-only (<code class="docutils literal notranslate"><span class="pre">/groups/{id}</span></code>):
 the page says so, offers nothing to add or remove, and the read is logged
 with the administrator’s account. The decisions behind every form are the

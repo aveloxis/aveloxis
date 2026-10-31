@@ -12,6 +12,7 @@ package collector
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -25,6 +26,7 @@ type fakeJiraProcStore struct {
 	stagedProjects []int64                       // keyset source for JiraProjectsWithStaging (default [7])
 	perProject     map[int64][]db.JiraStagingRow // when set, GetJiraStagingBatch serves per-project (once each)
 	refreshedRepos []int64
+	stampedRepos   []int64 // StampReposChangedOutsideJob (D7, 0.29.120)
 	refreshErr     error
 	batches        [][]db.JiraStagingRow
 	batchCall      int
@@ -34,8 +36,9 @@ type fakeJiraProcStore struct {
 	issues         []db.JiraAPIIssue
 	comments       []db.JiraAPIComment
 	processed      []int64
-	recounted      []int64 // issues RecountIssueComments was called for
-	commentErr     error   // when set, UpsertJiraComment fails
+	recounted      []int64        // issues RecountIssueComments was called for
+	commentErr     error          // when set, UpsertJiraComment fails
+	failComments   map[int64]bool // comment ids whose upsert fails (a retry that gets further each time)
 }
 
 func (f *fakeJiraProcStore) JiraProjectsWithStaging(_ context.Context, afterID int64, limit int) ([]int64, error) {
@@ -101,12 +104,20 @@ func (f *fakeJiraProcStore) UpsertJiraComment(_ context.Context, in db.JiraAPICo
 	if f.commentErr != nil {
 		return 0, f.commentErr
 	}
+	if f.failComments[in.CommentID] {
+		return 0, errors.New("deadlock detected")
+	}
 	f.comments = append(f.comments, in)
 	return 5000 + int64(len(f.comments)), nil
 }
 func (f *fakeJiraProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int64) error {
 	f.refreshedRepos = append(f.refreshedRepos, repoID)
 	return f.refreshErr
+}
+
+func (f *fakeJiraProcStore) StampReposChangedOutsideJob(_ context.Context, repoIDs []int64) error {
+	f.stampedRepos = append(f.stampedRepos, repoIDs...)
+	return nil
 }
 
 func (f *fakeJiraProcStore) RecountIssueComments(_ context.Context, issueID int64) error {

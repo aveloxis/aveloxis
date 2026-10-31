@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API design conventions &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>API design conventions &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,12 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +365,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +785,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -2087,8 +2094,10 @@ time.</p>
 <section id="caching-and-validators">
 <h2>Caching and validators<a class="headerlink" href="#caching-and-validators" title="Link to this heading"></a></h2>
 <p>A repository’s own read operations whose reference entry lists <code class="docutils literal notranslate"><span class="pre">304</span></code> are
-served from a response cache that is kept until the repository is
-collected or scanned again:</p>
+served from a response cache that is kept until the repository’s state
+changes — it is collected or scanned again, or a repair outside a
+collection rewrites its data — or, for an answer over a window, until that
+window moves (no answer expires on a timer):</p>
 <ul class="simple">
 <li><p>the answer carries an <code class="docutils literal notranslate"><span class="pre">ETag</span></code>; send it back as <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> and an
 unchanged answer is <code class="docutils literal notranslate"><span class="pre">304</span> <span class="pre">Not</span> <span class="pre">Modified</span></code> with no body;</p></li>
@@ -2098,18 +2107,16 @@ this caller, which nothing may store;</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code> says the answer came from the cache.</p></li>
 </ul>
 <p>The <a class="reference internal" href="../guide/api.html#top-contributors-ranked-v0-27-61"><span class="std std-ref">guide</span></a> describes
-when the cache is on and how long answers that name contributors are
-kept.</p>
+when the cache is on and what it keeps.</p>
 </section>
 <section id="times-and-windows">
 <h2>Times and windows<a class="headerlink" href="#times-and-windows" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p>Instants are RFC 3339 strings in UTC (<code class="docutils literal notranslate"><span class="pre">2026-10-10T14:02:11Z</span></code>).</p></li>
-<li><p>Days are <code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code> and mean UTC days. On the repository and
-contribution operations, a day parameter that does not parse falls back
-to its default instead of failing, so a chart keeps rendering; the
-comparison refuses it with a <code class="docutils literal notranslate"><span class="pre">400</span></code>. A window whose start is not before
-its end is a <code class="docutils literal notranslate"><span class="pre">400</span></code> everywhere.</p></li>
+<li><p>Days are <code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code> and mean UTC days. A day parameter that does not
+parse is a <code class="docutils literal notranslate"><span class="pre">400</span></code> on every operation (since 0.29.99; the repository and
+contribution operations fell back to their default before). A window
+whose start is not before its end is a <code class="docutils literal notranslate"><span class="pre">400</span></code> everywhere.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">until</span></code> is inclusive on the repository series and contribution
 operations, and exclusive on the comparison, which also ends at the last
 complete bucket. The <a class="reference internal" href="../guide/api.html#window-boundary-semantics-v0-27-39"><span class="std std-ref">guide</span></a>

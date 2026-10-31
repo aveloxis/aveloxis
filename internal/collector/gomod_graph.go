@@ -147,7 +147,12 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// the toolchain refuses -mod=mod ("may only be set to readonly or
 	// vendor when in workspace mode") — 52 of 64 failures on kate
 	// (2026-09-23 log review), each an empty Go closure.
-	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	// GOTOOLCHAIN=local: a cloned go.mod's `toolchain go1.X` line must not
+	// make this host download and run that toolchain (under `auto` it
+	// would, per module per collection — the repository's choice; ASVS
+	// review of 0.29.125, V5.3.2); a too-new go line fails into the WARN
+	// arm below, as install-tools' own probe already pins it (tools.go).
+	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOTOOLCHAIN=local")
 
 	run := func(args ...string) (string, bool) {
 		cmd := exec.CommandContext(ctx, goBin, args...)

@@ -156,3 +156,64 @@ func TestCheckUnwrittenAndViolationDetail(t *testing.T) {
 		t.Fatalf("a registered column with no writers must be reported (registry rot), got %#v", rep.Unwritten)
 	}
 }
+
+// A registered column written by a multiple-column assignment,
+// SET (a, col) = (...), cannot be judged per column (SetExprs reads only
+// `col = expr`): Check fails closed on it, and a reviewed Exception can take
+// it (round 3 finding 5 of 0.29.123 — the form escaped every policy).
+func TestCheckFailsClosedOnAMultipleColumnAssignment(t *testing.T) {
+	stmts := []Stmt{
+		{File: "a.go", SQL: `INSERT INTO aveloxis_data.repos (repo_git, added_at) VALUES ($1, NOW())`},
+		{File: "b.go", SQL: `UPDATE aveloxis_data.repos SET (added_at, repo_name) = (NOW(), $1) WHERE repo_id = $2`},
+		{File: "c.go", SQL: `UPDATE aveloxis_data.repos SET (repo_owner, repo_name) = (SELECT added_at, $1) WHERE repo_id = $2`},
+	}
+	for _, pol := range []Policy{InsertOnly, AlwaysRefresh, FillEmptyOnly} {
+		reg := []Registered{{Table: "aveloxis_data.repos", Column: "added_at", Policy: pol, Reason: "r"}}
+		rep := Check(stmts, reg, nil)
+		if len(rep.Violations) != 1 || rep.Violations[0].File != "b.go" || !strings.Contains(rep.Violations[0].Detail, "multiple-column") {
+			t.Errorf("%v: want one multiple-column violation in b.go (c.go only reads the column), got %#v", pol, rep.Violations)
+		}
+		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", File: "b.go", Match: "SET (added_at", Reason: "reviewed"}}
+		if rep := Check(stmts, reg, ex); len(rep.Violations) != 0 || len(rep.StaleExceptions) != 0 {
+			t.Errorf("%v: a reviewed exception must take it: %#v / stale %#v", pol, rep.Violations, rep.StaleExceptions)
+		}
+	}
+}
+
+// Check fails closed on the column wherever it is a member of a SET list —
+// read by the same SET-target reader WritesColumn uses (round 7 of 0.29.123:
+// two regexes, one strict and one loose, each missed spellings the other
+// caught; a parenthesis or a quoted comma in the list hid the column). A
+// quoted name in another case is another column, and is not reported.
+func TestCheckFailsClosedOnEveryListSpelling(t *testing.T) {
+	reg := []Registered{{Table: "aveloxis_data.repos", Column: "added_at", Policy: AlwaysRefresh, Reason: "r"}}
+	for sql, want := range map[string]int{
+		`UPDATE aveloxis_data.repos SET (repo_name, added_at[b[1]]) = ($1, NOW())`:                                                                        1,
+		`UPDATE aveloxis_data.repos SET (repo_name, added_at . f) = ($1, NOW())`:                                                                          1,
+		`UPDATE aveloxis_data.repos SET (repo_name, added_at[(1)]) = ($1, NOW())`:                                                                         1,
+		`UPDATE aveloxis_data.repos SET (tags[array_length(tags, 1)], added_at) = ($1, NOW())`:                                                            1,
+		`UPDATE aveloxis_data.repos SET ("a(b", added_at) = ($1, NOW())`:                                                                                  1,
+		`UPDATE aveloxis_data.repos SET (repo_name, "added_at") = ($1, NOW())`:                                                                            1,
+		`INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1) ON CONFLICT (repo_git) DO UPDATE SET (repo_name, added_at) = (EXCLUDED.repo_name, NOW())`: 1,
+		`UPDATE aveloxis_data.repos SET (repo_name, "ADDED_AT") = ($1, NOW())`:                                                                            0,
+		`UPDATE aveloxis_data.repos SET (a, b) = (added_at, $1)`:                                                                                          0,
+	} {
+		if rep := Check([]Stmt{{File: "x.go", SQL: sql}}, reg, nil); len(rep.Violations) != want {
+			t.Errorf("%s: want %d fail-closed violations, got %#v", sql, want, rep.Violations)
+		}
+	}
+}
+
+// A DO block's list is a write Check judges: with another, conforming
+// writer of the column in the corpus, a list hidden in the body would be a
+// silent pass (round 9 of 0.29.123).
+func TestCheckFailsClosedOnAListInADoBlock(t *testing.T) {
+	reg := []Registered{{Table: "aveloxis_data.repos", Column: "repo_git", Policy: AlwaysRefresh, Reason: "r"}}
+	stmts := []Stmt{
+		{File: "a.go", SQL: `UPDATE aveloxis_data.repos SET repo_git = $1 WHERE repo_id = $2`},
+		{File: "migrate.go", SQL: `DO $$ BEGIN UPDATE aveloxis_data.repos SET (a, repo_git) = (1, repos.repo_git) WHERE x = 1; END $$`},
+	}
+	if rep := Check(stmts, reg, nil); len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
+		t.Errorf("want one fail-closed violation in migrate.go's DO block, got %#v", rep.Violations)
+	}
+}

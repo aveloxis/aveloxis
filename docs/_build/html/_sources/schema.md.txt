@@ -979,7 +979,7 @@ Point-in-time snapshots of repository metadata and statistics. A new row is inse
 
 #### repo_clones
 
-Daily clone counts. GitHub serves them to a key with push access. GitLab serves HTTP clones and pulls together, never SSH, for the last 30 days to a key with at least the Reporter role and `read_api`; days it omits are stored as 0. A key without access gets `403` and nothing is stored.
+Daily clone counts. GitHub serves them to a key with push access. GitLab serves HTTP clones and pulls together, never SSH, for the 30 UTC days ending on the day its `Date` response header names (the host clock only when a proxy strips it) to a key with at least the Reporter role and `read_api` (GitLab's [permissions table](https://docs.gitlab.com/user/permissions/) lists "View project traffic statistics" from Reporter up, and the [Project statistics API](https://docs.gitlab.com/api/project_statistics/) asks for the `read_api` scope); days it omits are stored as 0. A key without access gets `403` and nothing is stored.
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|

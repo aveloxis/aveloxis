@@ -25,6 +25,7 @@ type fakeProcStore struct {
 	stagedLists    []int64 // keyset source for ListsWithStaging (default [7])
 	drainedLists   []int64 // every rgls_id GetMailingListStagingBatch was asked for
 	refreshedRepos []int64
+	stampedRepos   []int64 // StampReposChangedOutsideJob (D7, 0.29.120)
 	refreshErr     error
 	rows           []db.StagedMailingListRow // staged input, returned in one batch then empty
 
@@ -64,7 +65,9 @@ type fakeProcStore struct {
 	// Round-3 deferral knobs: fail the first N calls of the
 	// projection-side writers (0 = never fail).
 	applyActionFails int
-	findThreadErr    error // when set, FindIssueForThread fails once with it
+	onIssueCreated   func() // runs after LinkOrCreateIssueFromEmail CREATES (a stop between two writes)
+	onIssueLinked    func() // runs after LinkOrCreateIssueFromEmail LINKS an existing issue
+	findThreadErr    error  // when set, FindIssueForThread fails once with it
 	applyActionCalls int
 	linkIssueFails   int
 	linkIssueCalls   int
@@ -125,6 +128,11 @@ func (f *fakeProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID int
 	return f.refreshErr
 }
 
+func (f *fakeProcStore) StampReposChangedOutsideJob(_ context.Context, repoIDs []int64) error {
+	f.stampedRepos = append(f.stampedRepos, repoIDs...)
+	return nil
+}
+
 func (f *fakeProcStore) MarkMailingListStagingProcessed(_ context.Context, ids []int64) error {
 	f.processed = append(f.processed, ids...)
 	return nil
@@ -167,7 +175,10 @@ func (f *fakeProcStore) ResolveMirrorLinkByNodeID(_ context.Context, nodeID stri
 }
 
 func (f *fakeProcStore) FindRepoByURL(context.Context, string) (int64, error) { return 0, nil }
-func (f *fakeProcStore) UpsertEmailMessage(_ context.Context, em *model.EmailMessage) (int64, error) {
+func (f *fakeProcStore) UpsertEmailMessage(ctx context.Context, em *model.EmailMessage) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err // as the store: a cancelled context writes nothing
+	}
 	f.emails = append(f.emails, em)
 	return int64(len(f.emails)), nil
 }
@@ -200,11 +211,17 @@ func (f *fakeProcStore) LinkOrCreateIssueFromEmail(_ context.Context, _ int64, e
 	}
 	if id, ok := f.issueByKey[externalKey]; ok {
 		f.createdIssues = append(f.createdIssues, externalKey)
+		if f.onIssueLinked != nil {
+			f.onIssueLinked()
+		}
 		return id, false, nil // LINK
 	}
 	f.nextIssueID++
 	f.issueByKey[externalKey] = f.nextIssueID
 	f.createdIssues = append(f.createdIssues, externalKey)
+	if f.onIssueCreated != nil {
+		f.onIssueCreated()
+	}
 	return f.nextIssueID, true, nil // CREATE
 }
 func (f *fakeProcStore) LinkCommentNotificationToNative(_ context.Context, emailMessageID, issueID int64, _ time.Time) error {

@@ -367,6 +367,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/api-tokens/{tokenID}/revoke", s.requireAdmin(s.handleAdminAPITokenRevoke))
 	mux.HandleFunc("POST /admin/api-token-settings", s.requireAdmin(s.handleAdminAPITokenDefaults))
 	mux.HandleFunc("GET /admin/capacity", s.requireAdmin(s.handleAdminCapacity))
+	// The API cache's view (0.29.123): a shell; its script reads the api's
+	// /api/v1/admin/cache routes through the /api/ proxy (the caches live in
+	// the api process).
+	mux.HandleFunc("GET /admin/cache", s.requireAdmin(s.handleAdminCachePage))
 	mux.HandleFunc("POST /admin/capacity/quotas/{name}", s.requireAdmin(s.handleAdminCapacityQuota))
 	mux.HandleFunc("POST /admin/capacity/contact", s.requireAdmin(s.handleAdminCapacityContact))
 	mux.HandleFunc("POST /admin/capacity/accounts/{userID}", s.requireAdmin(s.handleAdminCapacityOverride))
@@ -423,6 +427,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	// that set the header first keeps its value.
 	if w.Header().Get("Cache-Control") == "" {
 		w.Header().Set("Cache-Control", "no-store")
+	}
+	// Stated, not left to the sniffer (ASVS V4.1.1; every page is HTML in
+	// UTF-8): a handler that set a type first keeps it.
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	}
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		// No request here: a render refused after the bound is http.ErrHandlerTimeout, which RequestEnded recognises on any context.

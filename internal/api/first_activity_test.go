@@ -25,18 +25,30 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// TestHandleCompareUsesEntityFloor is the source-contract pin: the
-// per-entity loop must consult entityFirstActivity and feed the
-// CLAMPED start into metricSeriesAndParts. A refactor that quietly
-// reverts to the raw `since` brings the phantom zero-head back.
+// TestHandleCompareUsesEntityFloor is the source-contract pin (the
+// runtime twin is TestFirstActivityFloorEndToEnd): the per-entity series
+// function must consult the floor it is given and feed the CLAMPED start into
+// the series computation, and both series routes must build each entity's
+// series through it (0.29.119). A refactor that quietly reverts to the raw
+// `since` brings the phantom zero-head back.
 func TestHandleCompareUsesEntityFloor(t *testing.T) {
 	src := mustReadFile(t, "analytics.go")
-	body := extractFuncBody(t, src, "handleCompare")
-	for _, needle := range []string{"entityFirstActivity(", "entitySince", "cachedMetricSeries(r, ids, metric, bucket, entitySince"} {
+	body := extractFuncBody(t, src, "entitySeriesFor")
+	for _, needle := range []string{"floor(r, ids)", "entitySince", "series(r, ids, metric, bucket, entitySince"} {
 		if !strings.Contains(body, needle) {
-			t.Errorf("handleCompare must clamp each entity's window via %q — young repos otherwise chart fabricated zeros back to the window start", needle)
+			t.Errorf("entitySeriesFor must clamp each entity's window via %q — young repos otherwise chart fabricated zeros back to the window start", needle)
+		}
+	}
+	for handler, call := range map[string]string{
+		"handleCompare":          "s.entitySeriesFor(r, e, ids, metric, bucket, since, until, retentionThreshold, s.cachedFirstActivity, s.cachedMetricSeries)",
+		"handleRepoMetricSeries": "s.entitySeriesFor(r, entities[0], []int64{repoID}, a.def.ID, a.bucket, a.since, a.until, a.retentionThreshold, s.entityFirstActivity, s.metricSeriesAndParts)",
+	} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) "+handler+"("))
+		if !strings.Contains(body, call) {
+			t.Errorf("%s must build each entity's series through entitySeriesFor (%s)", handler, call)
 		}
 	}
 	// v0.29.71: the series is read through its collection-generation cache,

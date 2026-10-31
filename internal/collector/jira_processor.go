@@ -43,7 +43,8 @@ type jiraProcStore interface {
 	UpsertJiraComment(ctx context.Context, in db.JiraAPIComment) (int64, error)
 	RecountIssueComments(ctx context.Context, issueID int64) error
 	MarkJiraStagingProcessed(ctx context.Context, jsIDs []int64) error
-	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
+	// The drain-side refresh: the activity counts and the cache-state stamp.
+	activityRefresher
 }
 
 const (
@@ -53,9 +54,10 @@ const (
 
 // JiraProcessor drains staged Jira envelopes.
 type JiraProcessor struct {
-	cursor int64 // round-13 rotation cursor over jps_id (see DrainOnce)
-	store  jiraProcStore
-	logger *slog.Logger
+	cursor  int64 // round-13 rotation cursor over jps_id (see DrainOnce)
+	store   jiraProcStore
+	logger  *slog.Logger
+	partial partialWriteStamps // staged rows whose partial writes were stamped (A5)
 }
 
 // NewJiraProcessor builds a processor.
@@ -92,9 +94,10 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 	// the set have already committed their writes even when a later
 	// batch's mark fails.
 	drainedRepos := map[int64]struct{}{}
+	wroteRepos := map[int64]bool{} // an envelope fully processed: a final write (the cache-state stamp)
 	defer func() {
 		for repoID := range drainedRepos {
-			refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain")
+			refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain", wroteRepos[repoID])
 		}
 	}()
 	for _, jpsID := range projects {
@@ -136,13 +139,20 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 					skipped++ // no repo mapping — stays staged (operator heals the registration)
 					continue
 				}
-				if err := p.processEnvelope(ctx, *row.RepoID, row.Envelope); err != nil {
+				progress, err := p.processEnvelope(ctx, *row.RepoID, row.Envelope)
+				if err != nil {
+					if progress > 0 && p.partial.advanced(row.JsID, progress) {
+						// It wrote, and further than before: stamp (A5).
+						wroteRepos[*row.RepoID] = true
+					}
 					if !errors.Is(err, context.Canceled) {
 						p.logger.Warn("jira: envelope drain failed", "issue_key", row.IssueKey, "error", err)
 						continue // stays staged for the next drain
 					}
 					break // shutdown: rows drained so far still mark below
 				}
+				p.partial.done(row.JsID)
+				wroteRepos[*row.RepoID] = true
 				done = append(done, row.JsID)
 			}
 			if len(done) > 0 {
@@ -186,10 +196,15 @@ func (p *JiraProcessor) resolveIdentity(ctx context.Context, u *jira.User) (stri
 	return minted, nil
 }
 
-func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envelope []byte) error {
+// processEnvelope writes one staged Jira envelope: its issue, then its
+// comments, then the recount. progress is how many of those writes
+// completed — every one is a write, so a failure after the first left a
+// partial write the drain stamps when a retry gets further
+// (partialWriteStamps, A5).
+func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envelope []byte) (progress int, err error) {
 	var is jira.Issue
 	if err := json.Unmarshal(envelope, &is); err != nil {
-		return err
+		return 0, err
 	}
 	var jiraID int64
 	if is.ID != "" {
@@ -204,7 +219,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	}
 	reporter, err := p.resolveIdentity(ctx, is.Fields.Reporter)
 	if err != nil {
-		return err // stays staged — a transient identity failure must retry (C1)
+		return 0, err // stays staged — a transient identity failure must retry (C1)
 	}
 	// Copilot round 2 on PR #193 (suppressed #1): the assignee is
 	// requested and serialized precisely so its identity gets BANKED —
@@ -216,7 +231,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	// issue_assignees (bridge semantics vs forge-owned assignees on
 	// LINKed native rows) is undesigned — the banking is the guarantee.
 	if _, aerr := p.resolveIdentity(ctx, is.Fields.Assignee); aerr != nil {
-		return aerr // stays staged — retry (C1)
+		return 0, aerr // stays staged — retry (C1)
 	}
 	in := db.JiraAPIIssue{
 		RepoID:        repoID,
@@ -240,10 +255,11 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 
 	issueID, err := p.store.UpsertJiraIssueFromAPI(ctx, in)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	progress = 1 // the issue landed
 	if is.Fields.Comment == nil {
-		return nil
+		return progress, nil
 	}
 	// Backstop only: the WORKER completes truncated comment blocks
 	// before staging (Copilot round 2 on PR #193, #2 — it pages the
@@ -262,7 +278,7 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 	for _, cm := range is.Fields.Comment.Comments {
 		author, aerr := p.resolveIdentity(ctx, cm.Author)
 		if aerr != nil {
-			return aerr // stays staged — retry the whole envelope (C1)
+			return progress, aerr // stays staged — retry the whole envelope (C1)
 		}
 		var commentID int64
 		for _, ch := range cm.ID {
@@ -287,18 +303,20 @@ func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envel
 			Updated:       jiraTime(cm.Updated),
 		})
 		if err != nil {
-			return err
+			return progress, err
 		}
 		wrote++
+		progress++
 	}
 	if wrote > 0 {
 		// One recount per issue per envelope (round 17, suppressed #2)
 		// — UpsertJiraComment's bridge is recount-free.
 		if err := p.store.RecountIssueComments(ctx, issueID); err != nil {
-			return err
+			return progress, err
 		}
+		progress++
 	}
-	return nil
+	return progress, nil
 }
 
 // jiraTime parses a Jira Server timestamp; zero on absence or parse

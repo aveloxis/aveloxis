@@ -24,6 +24,14 @@ import (
 // later var block to the function above it.)
 var errWindowOrder = errors.New("since must be before until")
 
+// errNotTemporalMetric is the 400 of a series request whose ?metric is not a
+// temporal catalog id (/compare and the repository's metric series).
+var errNotTemporalMetric = errors.New("metric must be one of the temporal catalog ids (see /api/v1/metrics)")
+
+// defaultCompareBucket is the bucket a series request without ?bucket gets
+// (compareWindow); the cache key folds the spelled-out default to it.
+const defaultCompareBucket = "week"
+
 // queryDay reads one day-valued query parameter (stage 1b, the one date
 // reader; eval-4 item 2): v is the parameter's value and name is its name
 // for the refusal. given is false when the parameter is absent; a value
@@ -42,6 +50,13 @@ func queryDay(name, v string) (t time.Time, given bool, err error) {
 	return t, true, nil
 }
 
+// windowAnchor is the instant a default window that moves with the clock is
+// measured from: the UTC Monday midnight that starts now's ISO week (the
+// bucket grid of /compare and the weekly series, truncBucket). A default
+// window moves when a week completes, so a cached answer of an unchanged
+// repository lasts the week (D6, summary/63).
+func windowAnchor(now time.Time) time.Time { return truncBucket(now, "week") }
+
 // inclusiveEnd is the half-open upper bound of a window whose last day is
 // day: the midnight after it (D4: a person typing an end date means that
 // day included; the store compares `< hi`).
@@ -50,10 +65,10 @@ func inclusiveEnd(day time.Time) time.Time { return day.AddDate(0, 0, 1) }
 // parseWindow reads ?since= and ?until= (the native routes: /timeseries,
 // contributions/*, contributors/top) as a (since, until) pair:
 //
-//   - default since: the UTC midnight two years back (the repository-page
-//     cache keys these answers by the UTC day, so an instant-precise
-//     default let the first request of a day fix the window for the rest
-//     of it — PR #226 review).
+//   - default since: two years before the week anchor (windowAnchor, the
+//     UTC Monday that starts the current week; D6, 0.29.120 — it was the
+//     UTC midnight two years back, which moved the window, and so the
+//     cached answer, every day).
 //   - default until: zero, which the store reads as "no upper bound"
 //     (resolveWindow).
 //   - until is INCLUSIVE: it is handed on as the next midnight, so the
@@ -63,7 +78,7 @@ func inclusiveEnd(day time.Time) time.Time { return day.AddDate(0, 0, 1) }
 // handler answers with 400.
 func parseWindow(r *http.Request) (since, until time.Time, err error) {
 	q := r.URL.Query()
-	since = db.UTCDay(time.Now()).AddDate(-2, 0, 0)
+	since = windowAnchor(time.Now()).AddDate(-2, 0, 0)
 	if t, given, err := queryDay("since", q.Get("since")); err != nil {
 		return since, until, err
 	} else if given {
@@ -181,6 +196,33 @@ func parseSBOMArgs(r *http.Request) sbomArgs {
 	return a
 }
 
+// metricSeriesArgs is everything handleRepoMetricSeries acts on from its
+// query; parseMetricSeriesArgs is its only reader of the query.
+type metricSeriesArgs struct {
+	def                *MetricDef
+	since, until       time.Time
+	bucket             string
+	retentionThreshold int
+}
+
+// parseMetricSeriesArgs reads the repository metric series' query through
+// /compare's own readers (the window, the bucket and the threshold mean
+// what they mean there); the error is a 400.
+func parseMetricSeriesArgs(r *http.Request) (metricSeriesArgs, error) {
+	var a metricSeriesArgs
+	if a.def = catalogEntry(r.URL.Query().Get("metric")); a.def == nil || a.def.Kind != "temporal" {
+		return metricSeriesArgs{}, errNotTemporalMetric
+	}
+	var err error
+	if a.since, a.until, a.bucket, err = compareWindow(r); err != nil {
+		return metricSeriesArgs{}, err
+	}
+	if a.retentionThreshold, err = parseRetentionThreshold(r); err != nil {
+		return metricSeriesArgs{}, err
+	}
+	return a, nil
+}
+
 // pageParamValue maps each parameter a cached route reads to the key form
 // of its effective value; "" means the handler's default and leaves the
 // parameter out of the key. Every name in pageParams has a rule here
@@ -224,6 +266,24 @@ var pageParamValue = map[string]func(string) (string, bool){
 	},
 	// License names are data: each is its own filter.
 	"license": identityParam,
+	// A metric id is its own answer, or a 400 never stored.
+	"metric": identityParam,
+	"bucket": func(v string) (string, bool) {
+		if v == defaultCompareBucket {
+			return "", true
+		}
+		return v, true
+	},
+	"retention_threshold": func(v string) (string, bool) {
+		n, err := retentionThresholdValue(v)
+		switch {
+		case err != nil:
+			return v, true // refused with 400, never stored
+		case n == DefaultRetentionThreshold:
+			return "", true
+		}
+		return strconv.Itoa(n), true
+	},
 }
 
 // dayKey is the key form of a day parameter: absent is the default ("");

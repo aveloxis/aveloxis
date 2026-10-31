@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.125 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=1f0f0249"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,12 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +365,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +785,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -2033,7 +2040,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">database.sslmode</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;prefer&quot;</span></code></p></td>
-<td><p>PostgreSQL SSL mode. Options: <code class="docutils literal notranslate"><span class="pre">disable</span></code>, <code class="docutils literal notranslate"><span class="pre">allow</span></code>, <code class="docutils literal notranslate"><span class="pre">prefer</span></code>, <code class="docutils literal notranslate"><span class="pre">require</span></code>, <code class="docutils literal notranslate"><span class="pre">verify-ca</span></code>, <code class="docutils literal notranslate"><span class="pre">verify-full</span></code>.</p></td>
+<td><p>PostgreSQL SSL mode. Options: <code class="docutils literal notranslate"><span class="pre">disable</span></code>, <code class="docutils literal notranslate"><span class="pre">allow</span></code>, <code class="docutils literal notranslate"><span class="pre">prefer</span></code>, <code class="docutils literal notranslate"><span class="pre">require</span></code>, <code class="docutils literal notranslate"><span class="pre">verify-ca</span></code>, <code class="docutils literal notranslate"><span class="pre">verify-full</span></code>. Fine for a Unix socket or a loopback host; for a remote host anything weaker than <code class="docutils literal notranslate"><span class="pre">require</span></code> is warned about at start (the connection may be unencrypted and the server unverified) — use <code class="docutils literal notranslate"><span class="pre">verify-full</span></code>, with the server’s CA in the process’s <code class="docutils literal notranslate"><span class="pre">PGSSLROOTCERT</span></code>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">database.pool_max_conns</span></code></p></td>
 <td><p>int</p></td>
@@ -2245,7 +2252,7 @@ a half against its own reference table below:</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code></p></td>
-<td><p>Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code>. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. Since 0.29.71 it also bounds <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code>’s per-repository cache: an answer (top contributors, the weekly time series, each compare series) is reused within one collection of the repository for at most this long, because contributor names and logins can change between collections at this cadence.</p></td>
+<td><p>Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code>. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. From 0.29.71 to 0.29.119 it also aged <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code>’s cached answers; since 0.29.120 it does not (they are valid until the repository is collected again, and a name filled in between collections shows after the next collection).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.search_resolve_interval_minutes</span></code></p></td>
 <td><p>integer</p></td>
@@ -2972,7 +2979,7 @@ you enforce them.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">response_cache_mb</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p><strong>Advanced, off by default.</strong> Memory for the API’s per-repository response cache, in megabytes, on top of the process’s baseline; set it to turn the cache on (see “Response caching” below). <code class="docutils literal notranslate"><span class="pre">0</span></code> keeps no response bodies in memory except the weekly time series and top contributors, which are kept for up to 1,000 answers as before 0.29.73. Negative values, and values above the maximum, are refused at load.</p></td>
+<td><p><strong>Advanced, off by default.</strong> Memory for the API’s per-repository response cache, in megabytes, on top of the process’s baseline; set it to turn the cache on (see “Response caching” below). <code class="docutils literal notranslate"><span class="pre">0</span></code> keeps no response bodies in memory except, as before 0.29.73, up to 1,000 weekly time series and top-contributor answers and up to 1,000 metric series (two pools, 2,000 answers in all). Negative values, and values above the maximum, are refused at load.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">front_end_secret</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code></p></td>
@@ -3047,25 +3054,34 @@ needs (<code class="docutils literal notranslate"><span class="pre">cors_origins
 <section id="response-caching-advanced-off-by-default">
 <h3>Response caching (advanced, off by default)<a class="headerlink" href="#response-caching-advanced-off-by-default" title="Link to this heading"></a></h3>
 <p>With <code class="docutils literal notranslate"><span class="pre">response_cache_mb</span></code> set, the <code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps each repository’s
-own answers (time series, licenses, dependencies, scancode, vulnerabilities,
-scorecard, SBOM, contributors) in memory, up to that many megabytes, until
-that repository is collected or scanned again — answers naming contributors
-for at most <code class="docutils literal notranslate"><span class="pre">collection.enrich_interval_minutes</span></code> — and recomputes a viewed
-repository’s answers after its collection ends, every
-<code class="docutils literal notranslate"><span class="pre">cache_rewarm_seconds</span></code>. The start-up line <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">repository</span> <span class="pre">page</span> <span class="pre">cache</span></code>
+own answers (time series, metric charts, licenses, dependencies and libyear,
+scancode, vulnerabilities, scorecard, SBOM, traffic, contributors) in memory,
+up to that many megabytes, until
+that repository is collected or scanned again (no answer expires on a timer
+since 0.29.120: a contributor name filled in between collections shows
+after the next collection) and recomputes a viewed
+repository’s answers after its collection ends, or when their window moves
+(once a week), every <code class="docutils literal notranslate"><span class="pre">cache_rewarm_seconds</span></code>. Since 0.29.122 the list of
+answers it keeps warm is saved in <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.page_cache_replay</span></code> and read
+back when the api starts, so a restart rebuilds them without a warm-up run.
+The start-up line <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">repository</span> <span class="pre">page</span> <span class="pre">cache</span></code>
 shows the values in effect. Cached GETs carry an <code class="docutils literal notranslate"><span class="pre">ETag</span></code> and answer
 <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> with 304 whether or not the cache is on; the cache only
-decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed. Size it from the largest repositories you
+decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed, and the metric series (0.29.119), at most another 1,000 (the start-up line reports <code class="docutils literal notranslate"><span class="pre">kept_without_budget=1000</span> <span class="pre">kept_pools=2</span></code>). Size it from the largest repositories you
 want held (a 56,000-file scancode listing is about 7 MB of JSON, a
 600-finding vulnerability list about 1 MB, a typical page about 100 KB);
 the Aveloxis project’s own site uses 2048. Past the budget the oldest
 bodies are evicted; an evicted answer still gets a 304, because its ETag
 is computed from the repository’s state, not from the cache.</p>
-<p>The re-warm replays only the answers that were requested since the
-repository’s last collection, in-process, so a repository nobody viewed
-costs nothing. It follows the scheduler’s collections; a one-shot
-<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code> does not trigger it (the next scheduled collection
-does).</p>
+<p>The re-warm replays only the answers that were requested again since they
+were computed, so a repository nobody came back to costs nothing; a restart
+recomputes what the stopped process held of them, and of the answers its
+own replays had stored, until the repository’s state or the answer’s window
+moves or the budget evicts them (the list is bounded by <code class="docutils literal notranslate"><span class="pre">response_cache_mb</span></code>). It
+follows every change of a repository’s state — a scheduled collection, a
+one-shot <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code>, a repair command that stamps the repository —
+and the weekly move of a default window. It is off when the cache is
+(<code class="docutils literal notranslate"><span class="pre">response_cache_mb</span></code> unset); so is its saved list.</p>
 </section>
 </section>
 <section id="email-gmail-smtp-optional">

@@ -106,6 +106,15 @@ func TestAccountSessionsAreListedEndedAndBounded(t *testing.T) {
 	if w := post("/account/email", raw1, url.Values{"email": {"x@example.org"}}); strings.Contains(w.Body.String(), "sign in again") {
 		t.Errorf("a fresh session's address change was asked to sign in again")
 	}
+	// Sign out everywhere needs a recent sign-in too (ASVS V7.5.2, the
+	// 0.29.125 review): the hour-old session is asked to sign in again and
+	// ends nothing.
+	if w := post("/account/sessions/revoke", raw2, url.Values{}); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "sign in again") || !strings.Contains(w.Body.String(), `href="/login?next=%2Faccount"`) {
+		t.Errorf("an old session's sign-out-everywhere = %d; want the account page asking to sign in again\n%s", w.Code, w.Body.String())
+	}
+	if _, err := store.LookupWebSession(ctx, raw1); err != nil {
+		t.Fatalf("an old session's refused sign-out-everywhere must end nothing: %v", err)
+	}
 	// Sign out everywhere: every session of the account ends, this one too.
 	if w := post("/account/sessions/revoke", raw1, url.Values{}); w.Code != http.StatusFound || w.Header().Get("Location") != "/login" {
 		t.Fatalf("POST /account/sessions/revoke = %d → %q; want 302 to /login", w.Code, w.Header().Get("Location"))

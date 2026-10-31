@@ -170,31 +170,11 @@ func (s *Server) parseForm(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // requestOrigin reports whether the request's origin is this deployment's
-// (the Host, or web.spa_url's origin). The origin string comes back for the
-// log.
+// (the Host, or web.spa_url's origin): httpserver.RequestOrigin, the one
+// same-site rule, with the SPA origin admitted. The origin string comes
+// back for the log.
 func (s *Server) requestOrigin(r *http.Request) (string, bool) {
-	if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") && !s.isSPAOrigin(r.Header.Get("Origin")) {
-		return r.Header.Get("Origin"), false
-	}
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		origin = r.Header.Get("Referer")
-	}
-	if origin == "" {
-		return "", true
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
-		return origin, false
-	}
-	// The Host arm compares the host only, the SPA arm scheme and host
-	// (0.29.106 review, W3 — left apart with the reason): behind the
-	// reverse proxy the request's own scheme is not knowable here (r.TLS
-	// is nil; a forwarded-proto header is only as trustworthy as the
-	// proxy), while web.spa_url is configured, so its scheme is known. A
-	// plain-http page on the same host name posting into an https
-	// deployment is the one case this admits; HSTS closes it.
-	return origin, strings.EqualFold(u.Host, r.Host) || s.isSPAOrigin(origin)
+	return httpserver.RequestOrigin(r, s.isSPAOrigin)
 }
 
 // isSPAOrigin: the origin is web.spa_url's (scheme and host).

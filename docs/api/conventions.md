@@ -192,8 +192,10 @@ time.
 ## Caching and validators
 
 A repository's own read operations whose reference entry lists `304` are
-served from a response cache that is kept until the repository is
-collected or scanned again:
+served from a response cache that is kept until the repository's state
+changes — it is collected or scanned again, or a repair outside a
+collection rewrites its data — or, for an answer over a window, until that
+window moves (no answer expires on a timer):
 
 - the answer carries an `ETag`; send it back as `If-None-Match` and an
   unchanged answer is `304 Not Modified` with no body;
@@ -203,17 +205,15 @@ collected or scanned again:
 - `X-Cache: hit` says the answer came from the cache.
 
 The [guide](../guide/api.md#top-contributors-ranked-v02761) describes
-when the cache is on and how long answers that name contributors are
-kept.
+when the cache is on and what it keeps.
 
 ## Times and windows
 
 - Instants are RFC 3339 strings in UTC (`2026-10-10T14:02:11Z`).
-- Days are `YYYY-MM-DD` and mean UTC days. On the repository and
-  contribution operations, a day parameter that does not parse falls back
-  to its default instead of failing, so a chart keeps rendering; the
-  comparison refuses it with a `400`. A window whose start is not before
-  its end is a `400` everywhere.
+- Days are `YYYY-MM-DD` and mean UTC days. A day parameter that does not
+  parse is a `400` on every operation (since 0.29.99; the repository and
+  contribution operations fell back to their default before). A window
+  whose start is not before its end is a `400` everywhere.
 - `until` is inclusive on the repository series and contribution
   operations, and exclusive on the comparison, which also ends at the last
   complete bucket. The [guide](../guide/api.md#window-boundary-semantics-v02739)

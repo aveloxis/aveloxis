@@ -32,7 +32,8 @@ type mlProcessorStore interface {
 	ListsWithStaging(ctx context.Context, system string, afterID int64, limit int) ([]int64, error)
 	GetMailingListStagingBatch(ctx context.Context, rglsID, afterID int64, limit int) ([]db.StagedMailingListRow, error)
 	MarkMailingListStagingProcessed(ctx context.Context, mlsIDs []int64) error
-	RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error
+	// The drain-side refresh: the activity counts and the cache-state stamp.
+	activityRefresher
 
 	GetPrimaryRepoForGroup(ctx context.Context, repoGroupID int64) (int64, bool, error)
 	ResolveContributorIDByEmail(ctx context.Context, email string) (string, bool, error)
@@ -70,6 +71,7 @@ type MailingListProcessor struct {
 	// drain goroutine shares this Processor: a list being drained by one
 	// goroutine is skipped by the others until it's released. Default config
 	// runs a single goroutine, so this is a no-op there.
+	partial  partialWriteStamps // staged rows whose partial writes were stamped (A5)
 	mu       sync.Mutex
 	inflight map[int64]bool
 	cursor   int64 // round-13 rotation cursor over rgls_id (guarded by mu — DrainOnce runs on N goroutines)
@@ -198,6 +200,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 	threadIssue := map[string]int64{} // thread root → projected issue_id (#1 inheritance)
 	var repoID int64
 	repoResolved := false
+	repoWrote := false // a row processed or dropped (marked done): a final write, so the cache-state stamp
 	// Copilot round 10 on PR #193: the home ranking reads the queue's
 	// cached last_activity_90d, which only CompleteJob and the gap
 	// healer refresh — issues this drain projects were invisible to it
@@ -213,7 +216,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 		// an all-deferred batch (processed==0) can still have committed
 		// issues whose activity the home ranking must see.
 		if repoResolved {
-			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain")
+			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain", repoWrote)
 		}
 	}()
 
@@ -255,7 +258,11 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 			if ctx.Err() != nil {
 				return processed, ctx.Err() // shutdown mid-batch: nothing marked, the rows drain next start (pass 37)
 			}
+			counters.rowProgress, counters.rowWrote = 0, false
 			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue, counters); err != nil {
+				if counters.rowWrote && (errors.Is(err, context.Canceled) || errors.Is(err, errMailingListRowRetry)) && p.partial.advanced(row.MlsID, counters.rowProgress) {
+					repoWrote = true // it wrote, further than before, and stays staged: stamp (A5)
+				}
 				if errors.Is(err, context.Canceled) {
 					return processed, err // not a drop: the row stays staged
 				}
@@ -283,7 +290,9 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 				p.logger.Error("mailing-list processor: write failed, DROPPING message",
 					"rgls_id", rglsID, "message_id", row.Message.MessageID, "error", err)
 			}
+			p.partial.done(row.MlsID)
 			done = append(done, row.MlsID)
+			repoWrote = true
 		}
 		if dropped > 0 {
 			p.logger.Error("mailing-list processor: batch completed with dropped messages",
@@ -340,6 +349,21 @@ var errMailingListRowRetry = errors.New("mailing-list row deferred for retry (a 
 type drainCounters struct {
 	nodeResolveFailures int
 	firstNodeErr        error
+	// rowProgress counts the store calls of the row's write sequence that
+	// completed, and rowWrote whether one of them wrote (an issue LINKED
+	// wrote nothing; one created, and every call after, did): a deferral
+	// or a stop after a write left a partial write, which stamps when the
+	// attempt got further than before (A5; Copilot's review of PR #246: a
+	// stop between the issue's creation and the message's upsert left the
+	// issue unstamped). DrainList clears both before each row.
+	rowProgress int
+	rowWrote    bool
+}
+
+// wrote records one completed write of the row's sequence.
+func (c *drainCounters) wrote() {
+	c.rowProgress++
+	c.rowWrote = true
 }
 
 func (c *drainCounters) noteNodeResolveFailure(err error) {
@@ -469,16 +493,20 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 		title := mailingListIssueTitle(m.Subject, m.ExternalKey)
 		// data_source = 'JIRA' for the Apache issue_event case (the only
 		// projected tracker today; Bugzilla support is a follow-up).
-		if id, _, perr := p.store.LinkOrCreateIssueFromEmail(ctx, repoID, m.ExternalKey, title, m.Body, "JIRA", reporterID, m.SentAt); perr != nil {
+		if id, created, perr := p.store.LinkOrCreateIssueFromEmail(ctx, repoID, m.ExternalKey, title, m.Body, "JIRA", reporterID, m.SentAt); perr != nil {
 			if errors.Is(perr, context.Canceled) {
 				return perr // shutdown: DrainList reports it once (pass 38)
 			}
 			p.logger.Warn("mailing-list processor: issue projection failed — row deferred for retry",
 				"rgls_id", rglsID, "external_key", m.ExternalKey, "error", perr)
 			deferRetry = perr
-		} else if id > 0 {
-			projectedIssueID = id
-			linkedIssueID = &id
+		} else {
+			c.rowProgress++
+			c.rowWrote = c.rowWrote || created
+			if id > 0 {
+				projectedIssueID = id
+				linkedIssueID = &id
+			}
 		}
 	}
 
@@ -563,6 +591,7 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	if err != nil {
 		return err
 	}
+	c.wrote()
 
 	// C1: apply the notification's ACTION to the issue's state. Must be
 	// an explicit call on the LINK path — for an already-existing issue
@@ -582,6 +611,8 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 				p.logger.Warn("mailing-list processor: tracker action apply failed — row deferred for retry",
 					"issue_id", projectedIssueID, "action", action, "error", aerr)
 				deferRetry = aerr
+			} else {
+				c.wrote()
 			}
 		}
 	}
@@ -603,15 +634,18 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 	if err != nil {
 		return err
 	}
+	c.wrote()
 	if err := p.store.InsertEmailMessageRef(ctx, emID, msgID, row.RepoGroupID); err != nil {
 		return err
 	}
+	c.wrote()
 	// Bridge the email body as a comment on the projected issue so the thread
 	// shows up in per-repo issue analytics.
 	if projectedIssueID > 0 {
 		if err := p.store.BridgeEmailToIssue(ctx, projectedIssueID, repoID, msgID); err != nil {
 			return err
 		}
+		c.wrote()
 		// Copilot round 6 on PR #193 (suppressed #2): the reverse
 		// arrival order — when Jira collection stored the native
 		// comment FIRST, this notification must claim it now, or
@@ -626,6 +660,8 @@ func (p *MailingListProcessor) processRow(ctx context.Context, repoID, rglsID in
 				p.logger.Warn("mailing-list processor: reverse comment link failed — row deferred for retry",
 					"issue_id", projectedIssueID, "error", lerr)
 				deferRetry = lerr
+			} else {
+				c.wrote()
 			}
 		}
 	}

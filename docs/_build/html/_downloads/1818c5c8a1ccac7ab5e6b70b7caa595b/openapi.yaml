@@ -329,7 +329,9 @@ paths:
       operationId: repositoryTimeSeries
       summary: Returns a repository's weekly commits, pull requests opened and merged, and issues opened.
       description: |
-        The window starts two years before today's UTC midnight by default.
+        The window starts two years before the Monday (UTC midnight) that
+        starts the current week by default (two years before today's UTC
+        midnight until 0.29.120).
         An omitted `until` ends it at the latest plausible commit time, UTC
         midnight two days ahead; a given `until` is inclusive (the window
         ends at the next midnight) and is never later than that bound. The
@@ -378,6 +380,105 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         "500":
           description: A server-side failure; also an unscoped caller's id with no repository.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/repos/{repoID}/metric-series:
+    get:
+      operationId: repositoryMetricSeries
+      summary: Returns one temporal metric's series for one repository (the repository page's charts).
+      description: |
+        The answer `/compare` gives for `entities=repo:{repoID}` with the
+        same `metric`, `since`, `until`, `bucket` and
+        `retention_threshold` (the same window rules and the same body),
+        served by the repository-page cache: valid until the repository's
+        collection state changes or its window moves (the default window
+        moves each Monday, UTC, for `bucket=week`, and on the 1st for
+        `bucket=month`), with an `ETag` and `304`s. Unlike
+        `/compare`, nothing is recorded in the caller's "Comparisons"
+        group, and access is the repository routes' (an out-of-scope
+        repository a signed-in session reads is linked into "Shared with
+        Me", as on every repository route). Since 0.29.119.
+
+        Handler: `handleRepoMetricSeries`.
+      tags: [Repositories]
+      security: [{sessionToken: []}, {apiToken: []}, {}]
+      parameters:
+        - $ref: '#/components/parameters/RepoID'
+        - name: metric
+          in: query
+          required: true
+          description: A `temporal` id from the metric catalog.
+          schema:
+            type: string
+            enum: [contributors, change_requests, change_requests_merged, issues, issues_closed, code_change_commits, committers, burstiness, project_velocity, contributor_retention]
+        - name: since
+          in: query
+          required: false
+          description: First day (`YYYY-MM-DD`). Default as on `/compare`. A value that does not parse is a `400`.
+          schema:
+            type: string
+            format: date
+        - name: until
+          in: query
+          required: false
+          description: A day (`YYYY-MM-DD`), as on `/compare`. A value that does not parse is a `400`.
+          schema:
+            type: string
+            format: date
+        - name: bucket
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [week, month]
+            default: week
+        - name: retention_threshold
+          in: query
+          required: false
+          description: '`contributor_retention` only, as on `/compare`.'
+          schema:
+            type: integer
+            minimum: 1
+            default: 4
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        "200":
+          description: The series, one entity.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            X-Cache:
+              $ref: '#/components/headers/XCache'
+            X-Aveloxis-Added-To-Group:
+              $ref: '#/components/headers/AddedToGroup'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeriesResult'
+        "304":
+          $ref: '#/components/responses/NotModified'
+        "400":
+          description: An id that is not a positive integer, a `metric` that is not a temporal catalog id, a date that does not parse, `since` not before `until`, a `bucket` other than week or month, or a `retention_threshold` that is not a positive integer.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/RepoOutOfScope'
+        "404":
+          $ref: '#/components/responses/RepoNotFound'
+        "429":
+          $ref: '#/components/responses/TooManyRequests'
+        "500":
+          description: A server-side failure.
           content:
             text/plain:
               schema:
@@ -647,8 +748,11 @@ paths:
         A contribution is a commit authored, an issue opened or closed, an
         issue or pull-request event, a pull request opened, a review
         submitted, or any comment. Commits whose author was never resolved
-        to a contributor are not counted. The window defaults to the last
-        two years; ordered by login then full name.
+        to a contributor are not counted. The window starts two years before
+        the Monday (UTC) that starts the current week by default; an omitted
+        `until` ends it at the latest plausible commit time (UTC midnight two
+        days ahead), and a given `until` is never later than that bound.
+        Ordered by login then full name.
 
         Handler: `handleRepoContributors`.
       tags: [Contributors]
@@ -812,7 +916,10 @@ paths:
       summary: Returns a repository's contributors ranked by commits, issues, pull requests, reviews and comments.
       description: |
         Events (labels, assignments, closes) do not count here. The window
-        defaults to the last two years. The envelope echoes the window in
+        starts two years before the Monday (UTC) that starts the current week
+        by default; an omitted `until` ends it at the latest plausible commit
+        time (UTC midnight two days ahead), and a given `until` is never later
+        than that bound. The envelope echoes the window in
         effect: `until` is the exclusive upper bound (the day after the
         requested `until`), or `0001-01-01T00:00:00Z` when none was given.
 
@@ -1337,7 +1444,9 @@ paths:
 
         Cost: one aggregate per entity and metric over the window, each
         entity's series reused while its repositories' collection state is
-        unchanged.
+        unchanged. A repository entity's series is the repository-page
+        cache's answer of `repositoryMetricSeries` for the same parameters
+        (since 0.29.121), shared with the repository page.
 
         Handler: `handleCompare`.
       tags: [Comparison]
@@ -1398,31 +1507,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [metric, bucket, since, until, series]
-                properties:
-                  metric:
-                    $ref: '#/components/schemas/MetricDef'
-                  bucket:
-                    type: string
-                    enum: [week, month]
-                  since:
-                    type: string
-                    format: date
-                    description: The effective window start.
-                  until:
-                    type: string
-                    format: date
-                    description: The effective window end (exclusive bucket boundary).
-                  series:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/CompareSeries'
-                  added_to_group:
-                    type: array
-                    description: Present only when this request added entities to the caller's "Comparisons" group.
-                    items:
-                      $ref: '#/components/schemas/AddedToGroupNotice'
+                allOf:
+                  - $ref: '#/components/schemas/SeriesResult'
+                  - type: object
+                    properties:
+                      added_to_group:
+                        type: array
+                        description: Present only when this request added entities to the caller's "Comparisons" group.
+                        items:
+                          $ref: '#/components/schemas/AddedToGroupNotice'
         "400":
           description: '`metric` is not a temporal catalog id; `entities` is missing, malformed or longer than 7; a date does not parse; `since` is not before `until`; `bucket` is not `week` or `month`; or `retention_threshold` is not a positive integer.'
           content:
@@ -4426,6 +4519,261 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/TooManyRequests'
+        "500":
+          $ref: '#/components/responses/ServerError'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/admin/cache:
+    get:
+      operationId: adminCacheSummary
+      summary: Returns what the api process's caches hold and did since it started.
+      description: |
+        The repository-page cache's budget, size and counters (hits served
+        stored bodies, revalidations answered `304`, misses computed the
+        answer, stores kept one, evictions dropped one for the budget — or,
+        with no budget, for the 1,000-answer bound of its pool; the
+        re-warm's own replays are counted with visitors'), the re-warm's
+        interval, its last pass and the size of its saved list, the
+        comparison series cache's size, hits, misses and whole-map resets,
+        and the comparison answer cache's size. The caches live in this
+        process's memory: with several api processes each answers for
+        itself, and only the one that owns the saved re-warm list (the first
+        to start; 0.29.124) reports a saved list. Read-only. Since 0.29.123.
+
+        Handler: `handleAdminCache`.
+      tags: [Admin monitor]
+      security: [{sessionToken: [admin]}]
+      responses:
+        "200":
+          description: The totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rewarm]
+                properties:
+                  page_cache:
+                    type: object
+                    required: [max_bytes, bytes, entries, repositories, saved_requests, hits, revalidated, misses, stores, evictions]
+                    properties:
+                      max_bytes:
+                        type: integer
+                        format: int64
+                        description: '`api.response_cache_mb` in bytes; 0 keeps only the time series and top contributors (at most 1,000 answers) and the metric series (at most another 1,000).'
+                      bytes:
+                        type: integer
+                        format: int64
+                      entries:
+                        type: integer
+                      repositories:
+                        type: integer
+                      saved_requests:
+                        type: integer
+                        description: Requests loaded from the saved re-warm list at start and not yet replayed.
+                      hits:
+                        type: integer
+                        format: int64
+                      revalidated:
+                        type: integer
+                        format: int64
+                      misses:
+                        type: integer
+                        format: int64
+                      stores:
+                        type: integer
+                        format: int64
+                      evictions:
+                        type: integer
+                        format: int64
+                  rewarm:
+                    type: object
+                    required: [interval_seconds, saved_requests]
+                    properties:
+                      interval_seconds:
+                        type: integer
+                        format: int64
+                        description: '`api.cache_rewarm_seconds` in effect; 0 is off.'
+                      saved_requests:
+                        type: integer
+                        description: Rows of the saved re-warm list as this process last saved or loaded them; 0 on a process that does not own the list (another api process claimed it first, 0.29.124).
+                      last_pass_at:
+                        type: string
+                        format: date-time
+                      last_pass_repositories:
+                        type: integer
+                      last_pass_requests:
+                        type: integer
+                      last_pass_duration_ms:
+                        type: integer
+                        format: int64
+                  series_cache:
+                    type: object
+                    required: [entries, max_entries, hits, misses, resets]
+                    properties:
+                      entries:
+                        type: integer
+                      max_entries:
+                        type: integer
+                      hits:
+                        type: integer
+                        format: int64
+                      misses:
+                        type: integer
+                        format: int64
+                      resets:
+                        type: integer
+                        format: int64
+                        description: Times the map was cleared on reaching max_entries.
+                  compare_body_cache:
+                    type: object
+                    required: [entries]
+                    properties:
+                      entries:
+                        type: integer
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/TooManyRequests'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/admin/cache/repos:
+    get:
+      operationId: adminCacheRepositories
+      summary: Returns the repositories with answers in the repository-page cache, at most 100.
+      description: |
+        One row per repository with held answers or saved requests, sorted
+        by `sort` (an unknown key sorts by bytes, and `sort` in the answer
+        is the key applied), ties by id. `total` counts every such
+        repository. Read-only. Since 0.29.123.
+
+        Handler: `handleAdminCacheRepos`.
+      tags: [Admin monitor]
+      security: [{sessionToken: [admin]}]
+      parameters:
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [bytes, entries, hits]
+            default: bytes
+      responses:
+        "200":
+          description: The repositories.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sort, total, repositories]
+                properties:
+                  sort:
+                    type: string
+                    enum: [bytes, entries, hits]
+                  total:
+                    type: integer
+                  repositories:
+                    type: array
+                    items:
+                      type: object
+                      required: [repo_id, entries, bytes, hits, saved_requests]
+                      properties:
+                        repo_id:
+                          type: integer
+                          format: int64
+                        entries:
+                          type: integer
+                        bytes:
+                          type: integer
+                          format: int64
+                        hits:
+                          type: integer
+                          description: Times its held answers were served from the cache.
+                        saved_requests:
+                          type: integer
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/TooManyRequests'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/admin/cache/repos/{repoID}:
+    get:
+      operationId: adminCacheRepository
+      summary: Returns one repository's answers in the repository-page cache, each current or why not.
+      description: |
+        Each held answer with its request, when it was computed, what it
+        cost, how often it was served and its size, and `status`:
+        `current`, or `outdated:` and the reason (the repository changed,
+        its window moved, or the request is no longer a cached one) — the re-warm's own rule. Also the saved
+        requests not yet replayed. Read-only. Since 0.29.123.
+
+        Handler: `handleAdminCacheRepo`.
+      tags: [Admin monitor]
+      security: [{sessionToken: [admin]}]
+      parameters:
+        - $ref: '#/components/parameters/RepoID'
+      responses:
+        "200":
+          description: The repository's held answers.
+          # Declared because the handler reaches the repository prelude's
+          # scope check (TestOpenAPIOperationConventions derives it from the
+          # code path); an administrator is unscoped, so it is never sent.
+          headers:
+            X-Aveloxis-Added-To-Group:
+              $ref: '#/components/headers/AddedToGroup'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repo_id, collecting, answers, saved_requests]
+                properties:
+                  repo_id:
+                    type: integer
+                    format: int64
+                  collecting:
+                    type: boolean
+                  answers:
+                    type: array
+                    items:
+                      type: object
+                      required: [uri, computed_at, cost_ms, hits, bytes, status]
+                      properties:
+                        uri:
+                          type: string
+                        computed_at:
+                          type: string
+                          format: date-time
+                        cost_ms:
+                          type: integer
+                          format: int64
+                        hits:
+                          type: integer
+                        bytes:
+                          type: integer
+                          format: int64
+                        status:
+                          type: string
+                  saved_requests:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          description: An id that is not a positive integer.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/RepoNotFound'
         "429":
           $ref: '#/components/responses/TooManyRequests'
         "500":
@@ -7545,6 +7893,28 @@ components:
         label:
           type: string
           description: '`owner/name` for a repository, `login (org)` for an organization; the raw entity token when the lookup of labels failed.'
+    SeriesResult:
+      type: object
+      description: A temporal metric's series answer (`compareBody`), from `/compare` and from a repository's `metric-series`.
+      required: [metric, bucket, since, until, series]
+      properties:
+        metric:
+          $ref: '#/components/schemas/MetricDef'
+        bucket:
+          type: string
+          enum: [week, month]
+        since:
+          type: string
+          format: date
+          description: The effective window start.
+        until:
+          type: string
+          format: date
+          description: The effective window end (exclusive bucket boundary).
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompareSeries'
     CompareSeries:
       type: object
       description: One entity's series (`compareSeries`).

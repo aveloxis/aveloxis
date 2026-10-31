@@ -58,6 +58,10 @@ func (s *Server) handleMeSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	// A sensitive change like the address (ASVS V7.5.2, the 0.29.125 review).
+	if !s.requireRecentSignIn(w, r, "handleMeSessionsRevoke", "signing out everywhere") {
+		return
+	}
 	n, err := s.admin.RevokeSessions(r.Context(), s.actor(info), info.UserID)
 	if err != nil {
 		if !s.refuse(w, info, err) {

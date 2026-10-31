@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/admin"
@@ -41,11 +42,10 @@ type Server struct {
 	sessionIdle time.Duration
 	logger      *slog.Logger
 	mux         *http.ServeMux
-	limiter     *rateLimiter        // v0.27.0: nil only when construction failed
-	auth        *authenticator      // v0.27.1: Bearer sessions + repo scope
-	cmpCache    *compareCache       // v0.27.2: 60s TTL for hot compare responses
-	faCache     *firstActivityCache // v0.27.24: per-entity first-activity floors (process lifetime)
-	homeCache   homeReposCache      // v0.27.4 + v0.29.0: per-user cache, stale-while-revalidate
+	limiter     *rateLimiter   // v0.27.0: nil only when construction failed
+	auth        *authenticator // v0.27.1: Bearer sessions + repo scope
+	cmpCache    *compareCache  // v0.27.2: 60s TTL for hot compare responses
+	homeCache   homeReposCache // v0.27.4 + v0.29.0: per-user cache, stale-while-revalidate
 
 	// v0.29.0: the home-repos loader seam (defaults to
 	// store.GetHomeRepos at construction; a bare test Server injects a
@@ -108,7 +108,47 @@ type Server struct {
 	rewarmInterval time.Duration
 	requestTimeout time.Duration // http_timeout_seconds, bounds each re-warm request
 	frontEndSecret string        // api.front_end_secret; empty = every request counted
+
+	// 0.29.122 (D2): the saved re-warm list (aveloxis_ops.page_cache_replay)
+	// and what the last save wrote — each request and its cost in
+	// milliseconds — so each pass writes only the difference. claimReplay
+	// takes the list for this process (one owner per database, A1);
+	// replayStore is the claimed list, nil when another process owns it.
+	// Read and written by the re-warm goroutine alone.
+	claimReplay       func(ctx context.Context) (pageReplayStore, func(), error)
+	replayStore       pageReplayStore
+	replayRelease     func()      // the claimed list's release (runs once)
+	replayClaim       replayClaim // the last claim's outcome, so each change is logged once
+	replaySaveFailing bool        // the last save failed (its WARN is logged once per run)
+	savedReplay       map[db.PageCacheReplayKey]int64
+	stopTimeout       time.Duration // Options.StopTimeout: a stop's bound on the list's last save
+
+	// The re-warm's last pass (D4, 0.29.123): written by the re-warm, read
+	// by the administrator's cache view.
+	rewarmMu         sync.Mutex
+	rewarmLast       rewarmPassStats
+	savedReplayCount int // len(savedReplay) as last saved or loaded (savedReplay itself is the re-warm goroutine's)
 }
+
+// pageReplayStore is the saved re-warm list's store (a seam: tests use an
+// in-memory one). Held reports whether its lock is still held — false once
+// the lock's database session ended.
+type pageReplayStore interface {
+	LoadPageCacheReplay(ctx context.Context) ([]db.PageCacheReplayRow, error)
+	SavePageCacheReplay(ctx context.Context, upserts []db.PageCacheReplayRow, deletes []db.PageCacheReplayKey) error
+	Held() bool
+}
+
+// replayClaim is the last outcome of claiming the saved re-warm list.
+type replayClaim int
+
+const (
+	replayUnclaimed     replayClaim = iota // never tried
+	replayOwned                            // this process holds it
+	replayHeldElsewhere                    // another api process holds it
+	replayClaimFailed                      // the claim itself failed
+	replayLost                             // held, then its session ended
+)
 
 // New creates an API server with default middleware options
 // (rate limiting active with defaults, LAN exempt, no CORS origins).
@@ -131,14 +171,21 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	if store != nil { // a nil store in an interface is non-nil and panics when called
 		s.scopeHelp = store
 	}
-	s.seriesCache = newCollectionCache(opts.ResponseCacheMaxAge)
-	s.pageCache = newRepoPageCache(opts.ResponseCacheBytes, opts.ResponseCacheMaxAge)
+	s.seriesCache = newCollectionCache()
+	s.pageCache = newRepoPageCache(opts.ResponseCacheBytes)
 	// A method value of a nil store is a non-nil func that panics when
 	// called: a Server without a database has no state reader, so the
 	// cache answers live (cachedRepoGET's guard).
 	if store != nil {
 		s.repoStates = store.RepoCacheStates
 		s.accounts = store
+		s.claimReplay = func(ctx context.Context) (pageReplayStore, func(), error) {
+			list, err := store.ClaimPageCacheReplay(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			return list, list.Release, nil
+		}
 	}
 	if store != nil {
 		adminOpts := admin.Options{GitHubAPIBase: opts.GitHubAPIBase, GitLabAPIBase: opts.GitLabAPIBase, AutoApproveAddLimit: opts.AutoApproveAddLimit, SPAURL: opts.SPAURL}
@@ -153,13 +200,17 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	}
 	s.rewarmInterval = opts.RewarmInterval
 	s.requestTimeout = opts.RequestTimeout
+	s.stopTimeout = opts.StopTimeout
 	s.frontEndSecret = opts.FrontEndSecret
-	if logger != nil { // SR-10: the TTL in effect, after the zero default
-		logger.Info("API collection cache", "ttl", s.seriesCache.ttl, "configured", opts.ResponseCacheMaxAge,
-			"source", "collection.enrich_interval_minutes")
+	if logger != nil { // SR-10: the effective values, after the zero defaults
+		// Neither cache ages its answers (D6, 0.29.120): each is valid until
+		// its repositories change, so no TTL is reported.
+		logger.Info("API collection cache", "max_entries", collectionCacheMaxEntries,
+			"valid_until", "a member's next collection or data_changed_at stamp")
 		logger.Info("API repository page cache", "max_bytes", s.pageCache.maxBytes,
-			"kept_without_budget", s.pageCache.keptWithoutBudget(), // /timeseries and /contributors/top answers held at max_bytes=0
-			"enriched_ttl", s.pageCache.ttl, "rewarm_interval", s.rewarmInterval,
+			"kept_without_budget", s.pageCache.keptWithoutBudget(), // per pool at max_bytes=0: /timeseries + /contributors/top, and /metric-series
+			"kept_pools", s.pageCache.keptPools(),
+			"rewarm_interval", s.rewarmInterval,
 			"front_end_secret_set", s.frontEndSecret != "", // never the value
 			"source", "api.response_cache_mb, api.cache_rewarm_seconds")
 	}
@@ -174,7 +225,8 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/stats", s.handleRepoStats)
 	s.mux.HandleFunc("GET /api/v1/repos/stats", s.handleRepoStatsBatch)
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/sbom", s.cachedRepoGET(pageExact, s.handleSBOMDownload))
-	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.cachedRepoGET(pageDatedKept, s.handleTimeSeries))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/timeseries", s.cachedRepoGET(pageExactKept, s.handleTimeSeries))
+	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/metric-series", s.cachedRepoGET(pageSeriesKept, s.handleRepoMetricSeries))
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/licenses", s.cachedRepoGET(pageExact, s.handleLicenses))
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-licenses", s.cachedRepoGET(pageExact, s.handleScancodeLicenses))
 	s.mux.HandleFunc("GET /api/v1/repos/{repoID}/scancode-files", s.cachedRepoGET(pageExact, s.handleScancodeFiles))
@@ -249,6 +301,10 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.mux.HandleFunc("POST /api/v1/admin/add-requests/{requestID}/{decision}", s.handleAdminAddRequestDecision)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/stats", s.handleAdminMonitorStats)
 	s.mux.HandleFunc("GET /api/v1/admin/monitor/queue", s.handleAdminMonitorQueue)
+	// D4 (0.29.123): what the api's caches hold and whether it is current.
+	s.mux.HandleFunc("GET /api/v1/admin/cache", s.handleAdminCache)
+	s.mux.HandleFunc("GET /api/v1/admin/cache/repos", s.handleAdminCacheRepos)
+	s.mux.HandleFunc("GET /api/v1/admin/cache/repos/{repoID}", s.handleAdminCacheRepo)
 	// v0.27.14 — SPA monitor "Boost": pure reuse of store.PrioritizeRepo.
 	s.mux.HandleFunc("POST /api/v1/admin/monitor/queue/{repoID}/prioritize", s.handleAdminPrioritizeRepo)
 	// v0.27.4 — per-repo vulnerabilities + home-tab stars/activity.
@@ -316,7 +372,6 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 	s.sessionIdle = opts.SessionIdle
 	s.cmpCache = &compareCache{m: map[string]compareCacheEntry{}}
 	s.respCache = &compareCache{m: map[string]compareCacheEntry{}}
-	s.faCache = &firstActivityCache{m: map[string]time.Time{}}
 	return s, nil
 }
 
@@ -520,8 +575,9 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Default window: last 2 years to now, day-aligned (v0.29.71) so the
-	// answer can be cached for the day. Both ends overridable via
+	// Default window: from two years before the week anchor (the UTC
+	// Monday, 0.29.120) with no upper bound, so the cached answer lasts the
+	// week (pageWindows keys it by that window). Both ends overridable via
 	// ?since=YYYY-MM-DD and ?until=YYYY-MM-DD (inclusive); an invalid value
 	// is a 400 (D7, stage 1b; it fell back to the default before).
 	// parseWindow is the contributions routes' reader too, and its queryDay
@@ -531,7 +587,7 @@ func (s *Server) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Cached by the route's cachedRepoGET (pageDatedKept; v0.29.73), which
+	// Cached by the route's cachedRepoGET (pageExactKept; v0.29.73), which
 	// replaced the v0.29.71 collection-generation cache here.
 	ts, err := s.store.GetRepoTimeSeries(r.Context(), repoID, since, until)
 	if err != nil {

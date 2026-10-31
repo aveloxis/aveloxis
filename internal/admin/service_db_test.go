@@ -217,9 +217,16 @@ func TestSetUserAdminIsAtomic(t *testing.T) {
 		if err := f.pool.QueryRow(f.ctx, `SELECT COUNT(*) FROM aveloxis_ops.users WHERE admin AND user_id IN ($1, $2)`, a, b).Scan(&admins); err != nil {
 			t.Fatal(err)
 		}
+		// The actor's privilege is read before the store's transaction takes
+		// the role lock, so the demotion that runs second is refused either
+		// inside the lock, as the last administrator's (ErrLastAdmin), or
+		// before it, as no longer an administrator (ErrNotAdmin) when the
+		// first demotion committed first — CI's -race timing produces both
+		// (integration run 41140962779 on 0.29.124). Either is the one
+		// refusal the invariant below requires.
 		refused := 0
 		for _, e := range errs {
-			if errors.Is(e, db.ErrLastAdmin) {
+			if errors.Is(e, db.ErrLastAdmin) || errors.Is(e, ErrNotAdmin) {
 				refused++
 			} else if e != nil {
 				t.Fatalf("round %d: unexpected error %v", round, e)

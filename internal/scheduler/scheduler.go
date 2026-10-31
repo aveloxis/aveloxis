@@ -2303,6 +2303,16 @@ func (s *Scheduler) drainOneRepo(ctx context.Context, repoID int64) {
 	}
 	proc := collector.NewProcessor(s.store, s.logger)
 	err = proc.ProcessRepo(ctx, repoID, int16(repo.Platform))
+	// Outside any job, and the synchronous fallback neither parks nor
+	// releases the queue row: stamp the repository whatever the outcome (a
+	// canceled or failed drain may have written part of its rows; the store's
+	// stamp outlasts the cancel), so the API's cached answers follow (D7,
+	// summary/63).
+	detached := context.WithoutCancel(ctx) // a cancellation cannot end the stamp: not classified
+	if serr := s.store.StampReposChangedOutsideJob(detached, []int64{repoID}); serr != nil {
+		s.logger.Warn("leftover staging: cache-state stamp failed — the repository's cached API answers stay until its next collection",
+			"repo_id", repoID, "error", serr)
+	}
 	if errors.Is(err, context.Canceled) {
 		return // shutdown mid-drain: the staging rows stay unprocessed and drain on the next start
 	}

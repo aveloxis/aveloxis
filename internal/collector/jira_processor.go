@@ -54,10 +54,10 @@ const (
 
 // JiraProcessor drains staged Jira envelopes.
 type JiraProcessor struct {
-	cursor  int64 // round-13 rotation cursor over jps_id (see DrainOnce)
-	store   jiraProcStore
-	logger  *slog.Logger
-	partial partialWriteStamps // staged rows whose partial writes were stamped (A5)
+	cursor int64 // round-13 rotation cursor over jps_id (see DrainOnce)
+	store  jiraProcStore
+	logger *slog.Logger
+	stamps drainStamps // the partial-write marks (A5) and the owed stamps of this process
 }
 
 // NewJiraProcessor builds a processor.
@@ -68,6 +68,7 @@ func NewJiraProcessor(store jiraProcStore, logger *slog.Logger) *JiraProcessor {
 // DrainOnce drains every project with staged rows once. Returns rows
 // processed.
 func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
+	p.stamps.settleOwed(ctx, p.store, p.logger, "jira drain") // stamps owed from an earlier pass, before anything else
 	// Round-13 rotation: continue from the previous drain's cursor so
 	// head-blocking projects (nil-repo, persistent failures) cost at
 	// most their own window slots per pass instead of starving the
@@ -97,7 +98,7 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 	wroteRepos := map[int64]bool{} // an envelope fully processed: a final write (the cache-state stamp)
 	defer func() {
 		for repoID := range drainedRepos {
-			refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain", wroteRepos[repoID])
+			p.stamps.refreshRepoActivity(ctx, p.store, p.logger, repoID, "jira drain", wroteRepos[repoID])
 		}
 	}()
 	for _, jpsID := range projects {
@@ -141,7 +142,7 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 				}
 				progress, err := p.processEnvelope(ctx, *row.RepoID, row.Envelope)
 				if err != nil {
-					if progress > 0 && p.partial.advanced(row.JsID, progress) {
+					if progress > 0 && p.stamps.advanced(row.JsID, progress) {
 						// It wrote, and further than before: stamp (A5).
 						wroteRepos[*row.RepoID] = true
 					}
@@ -151,7 +152,7 @@ func (p *JiraProcessor) DrainOnce(ctx context.Context) (total int, err error) {
 					}
 					break // shutdown: rows drained so far still mark below
 				}
-				p.partial.done(row.JsID)
+				p.stamps.done(row.JsID)
 				wroteRepos[*row.RepoID] = true
 				done = append(done, row.JsID)
 			}
@@ -200,7 +201,7 @@ func (p *JiraProcessor) resolveIdentity(ctx context.Context, u *jira.User) (stri
 // comments, then the recount. progress is how many of those writes
 // completed — every one is a write, so a failure after the first left a
 // partial write the drain stamps when a retry gets further
-// (partialWriteStamps, A5).
+// (drainStamps.advanced, A5).
 func (p *JiraProcessor) processEnvelope(ctx context.Context, repoID int64, envelope []byte) (progress int, err error) {
 	var is jira.Issue
 	if err := json.Unmarshal(envelope, &is); err != nil {

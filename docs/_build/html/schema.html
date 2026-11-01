@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.125 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.126 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=1f0f0249"></script>
+      <script src="_static/documentation_options.js?v=28f78823"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -1759,6 +1759,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#fetch-log-and-working-commits-ops">Fetch Log and Working Commits (ops)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#repos-fetch-log-aveloxis-ops">repos_fetch_log (aveloxis_ops)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#working-commits-aveloxis-ops">working_commits (aveloxis_ops)</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#api-response-cache-ops">API Response Cache (ops)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#page-cache-replay-aveloxis-ops">page_cache_replay (aveloxis_ops)</a></li>
 </ul>
 </li>
 </ul>
@@ -9172,6 +9176,52 @@ is nullable and un-FK’d; <code class="docutils literal notranslate"><span clas
 </tbody>
 </table>
 <p><em>No primary key defined.</em></p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="api-response-cache-ops">
+<h3>API Response Cache (ops)<a class="headerlink" href="#api-response-cache-ops" title="Link to this heading"></a></h3>
+<section id="page-cache-replay-aveloxis-ops">
+<h4>page_cache_replay (aveloxis_ops)<a class="headerlink" href="#page-cache-replay-aveloxis-ops" title="Link to this heading"></a></h4>
+<p>The REST API’s saved re-warm list (0.29.122, summary/63 §8): one row per cached
+answer visitors asked for again, or a row loaded at start and not yet replayed,
+so an <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> restart rebuilds the answers visitors use. A hint, not
+data: the re-warm drops a row whose repository or route is gone, and the
+table is born empty on every fleet. Written only by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code>
+(<code class="docutils literal notranslate"><span class="pre">SavePageCacheReplay</span></code>, the difference per re-warm pass and at stop, under one
+advisory lock per database since 0.29.124); nothing else reads or writes it.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL</p></td>
+<td><p>API: <code class="docutils literal notranslate"><span class="pre">repoPageCache</span></code> replay-list writer (<code class="docutils literal notranslate"><span class="pre">SavePageCacheReplay</span></code>), from the cached answer’s repository</p></td>
+<td><p>Repository the cached answer belongs to.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">uri</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>API: the request’s canonical URI (<code class="docutils literal notranslate"><span class="pre">pageRequestURI</span></code>), at most <code class="docutils literal notranslate"><span class="pre">MaxPageCacheReplayURIBytes</span></code> (2,684) bytes so the key fits a B-tree entry; a longer request is answered live and never saved</p></td>
+<td><p>The cached route and its parameter values, as the API keys the answer.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cost_ms</span></code></p></td>
+<td><p>BIGINT NOT NULL DEFAULT 0, CHECK <code class="docutils literal notranslate"><span class="pre">&gt;=</span> <span class="pre">0</span></code></p></td>
+<td><p>API: the answer’s last computation time; <code class="docutils literal notranslate"><span class="pre">GREATEST(cost_ms,</span> <span class="pre">0)</span></code> on write, refreshed on conflict</p></td>
+<td><p>Orders the replays (the costliest answers first).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">recorded_at</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL DEFAULT NOW()</p></td>
+<td><p>Auto-generated: <code class="docutils literal notranslate"><span class="pre">NOW()</span></code> on insert, and set to <code class="docutils literal notranslate"><span class="pre">NOW()</span></code> again by the upsert’s <code class="docutils literal notranslate"><span class="pre">DO</span> <span class="pre">UPDATE</span></code> on every save that carries the row</p></td>
+<td><p>When the row was last saved.</p></td>
+</tr>
+</tbody>
+</table>
+<p>Primary key: <code class="docutils literal notranslate"><span class="pre">(repo_id,</span> <span class="pre">uri)</span></code>.</p>
 </section>
 </section>
 </section>

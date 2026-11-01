@@ -160,3 +160,30 @@ func TestDeploymentRecipeRefusesPlainHTTPOnTheAPIHostUnambiguously(t *testing.T)
 		t.Error("the API host's certificate comes from `certbot certonly --nginx` (the challenge only); `certbot --nginx` rewrites the block")
 	}
 }
+
+// Copilot's review of PR #246 on 0.29.125 (Low): on a fresh host the TLS
+// block's certificate files do not exist, `nginx -t` fails on them, and
+// certbot's nginx plugin runs `nginx -t` before anything else (its prepare),
+// so the documented certificate command could not bootstrap the block it
+// was written under. The recipe obtains the certificate first: the command
+// comes after the plain-HTTP refusal block (the port-80 block the challenge
+// goes through — certbot inserts its challenge location with a `rewrite …
+// break` ahead of the block's `return`) and before the first `listen 443
+// ssl` block, and the prose states why.
+func TestDeploymentRecipeObtainsTheAPICertificateBeforeItsTLSBlock(t *testing.T) {
+	doc := srctest.Read(t, "docs/getting-started/deployment.md")
+	certonly := strings.Index(doc, "certbot certonly --nginx -d api.")
+	refusal := strings.Index(doc, "return 403;")
+	tls := strings.Index(doc, "listen 443 ssl;")
+	if certonly < 0 || refusal < 0 || tls < 0 {
+		t.Fatalf("recipe pieces missing: certonly %d, refusal %d, tls %d", certonly, refusal, tls)
+	}
+	if !(refusal < certonly && certonly < tls) {
+		t.Errorf("the certificate command must follow the port-80 refusal block and precede the TLS block (refusal %d, certonly %d, tls %d): certbot's nginx plugin tests the configuration first", refusal, certonly, tls)
+	}
+	for _, claim := range []string{"runs `nginx -t`", "rewrite ^(/.well-known/acme-challenge/.*) $1 break;"} {
+		if !strings.Contains(doc, claim) {
+			t.Errorf("the recipe states certbot's behaviour it depends on (%q)", claim)
+		}
+	}
+}

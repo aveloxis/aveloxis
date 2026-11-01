@@ -71,7 +71,7 @@ type MailingListProcessor struct {
 	// drain goroutine shares this Processor: a list being drained by one
 	// goroutine is skipped by the others until it's released. Default config
 	// runs a single goroutine, so this is a no-op there.
-	partial  partialWriteStamps // staged rows whose partial writes were stamped (A5)
+	stamps   drainStamps // the partial-write marks (A5) and the owed stamps of this process
 	mu       sync.Mutex
 	inflight map[int64]bool
 	cursor   int64 // round-13 rotation cursor over rgls_id (guarded by mu — DrainOnce runs on N goroutines)
@@ -141,6 +141,7 @@ func (p *MailingListProcessor) release(rglsID int64) {
 // time (single-threaded per list). Returns the total number of staged rows
 // processed across all lists.
 func (p *MailingListProcessor) DrainOnce(ctx context.Context, listLimit int) (int, error) {
+	p.stamps.settleOwed(ctx, p.store, p.logger, "mailing-list drain") // stamps owed from an earlier pass, once per pass, before any list (L10 round 1 of 0.29.126, F1: per list it ran up to 200 times a pass)
 	// Scoped to THIS processor's system: the drain pool must never touch a
 	// list registered under another system (its projection policy and
 	// ml_system stamp would be wrong — the Part G cross-system drain find).
@@ -216,7 +217,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 		// an all-deferred batch (processed==0) can still have committed
 		// issues whose activity the home ranking must see.
 		if repoResolved {
-			refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain", repoWrote)
+			p.stamps.refreshRepoActivity(ctx, p.store, p.logger, repoID, "mailing-list drain", repoWrote)
 		}
 	}()
 
@@ -260,7 +261,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 			}
 			counters.rowProgress, counters.rowWrote = 0, false
 			if err := p.processRow(ctx, repoID, rglsID, row, cntrbCache, threadIssue, counters); err != nil {
-				if counters.rowWrote && (errors.Is(err, context.Canceled) || errors.Is(err, errMailingListRowRetry)) && p.partial.advanced(row.MlsID, counters.rowProgress) {
+				if counters.rowWrote && (errors.Is(err, context.Canceled) || errors.Is(err, errMailingListRowRetry)) && p.stamps.advanced(row.MlsID, counters.rowProgress) {
 					repoWrote = true // it wrote, further than before, and stays staged: stamp (A5)
 				}
 				if errors.Is(err, context.Canceled) {
@@ -290,7 +291,7 @@ func (p *MailingListProcessor) DrainList(ctx context.Context, rglsID int64) (pro
 				p.logger.Error("mailing-list processor: write failed, DROPPING message",
 					"rgls_id", rglsID, "message_id", row.Message.MessageID, "error", err)
 			}
-			p.partial.done(row.MlsID)
+			p.stamps.done(row.MlsID)
 			done = append(done, row.MlsID)
 			repoWrote = true
 		}

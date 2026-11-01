@@ -2380,6 +2380,29 @@ Operational working commit tracker (mirrors `aveloxis_data.working_commits` for 
 
 ---
 
+### API Response Cache (ops)
+
+#### page_cache_replay (aveloxis_ops)
+
+The REST API's saved re-warm list (0.29.122, summary/63 §8): one row per cached
+answer visitors asked for again, or a row loaded at start and not yet replayed,
+so an `aveloxis api` restart rebuilds the answers visitors use. A hint, not
+data: the re-warm drops a row whose repository or route is gone, and the
+table is born empty on every fleet. Written only by `aveloxis api`
+(`SavePageCacheReplay`, the difference per re-warm pass and at stop, under one
+advisory lock per database since 0.29.124); nothing else reads or writes it.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `repo_id` | BIGINT NOT NULL | API: `repoPageCache` replay-list writer (`SavePageCacheReplay`), from the cached answer's repository | Repository the cached answer belongs to. |
+| `uri` | TEXT NOT NULL | API: the request's canonical URI (`pageRequestURI`), at most `MaxPageCacheReplayURIBytes` (2,684) bytes so the key fits a B-tree entry; a longer request is answered live and never saved | The cached route and its parameter values, as the API keys the answer. |
+| `cost_ms` | BIGINT NOT NULL DEFAULT 0, CHECK `>= 0` | API: the answer's last computation time; `GREATEST(cost_ms, 0)` on write, refreshed on conflict | Orders the replays (the costliest answers first). |
+| `recorded_at` | TIMESTAMPTZ NOT NULL DEFAULT NOW() | Auto-generated: `NOW()` on insert, and set to `NOW()` again by the upsert's `DO UPDATE` on every save that carries the row | When the row was last saved. |
+
+Primary key: `(repo_id, uri)`.
+
+---
+
 ## Indexes
 
 The schema defines the following additional indexes for query performance:

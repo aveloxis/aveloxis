@@ -26,7 +26,8 @@ type fakeJiraProcStore struct {
 	stagedProjects []int64                       // keyset source for JiraProjectsWithStaging (default [7])
 	perProject     map[int64][]db.JiraStagingRow // when set, GetJiraStagingBatch serves per-project (once each)
 	refreshedRepos []int64
-	stampedRepos   []int64 // StampReposChangedOutsideJob (D7, 0.29.120)
+	stampedRepos   []int64 // StampReposChangedOutsideJob (D7, 0.29.120): the successful calls
+	stampErr       error   // every stamp fails with it while set
 	refreshErr     error
 	batches        [][]db.JiraStagingRow
 	batchCall      int
@@ -116,6 +117,9 @@ func (f *fakeJiraProcStore) RefreshQueueGatheredCounts(_ context.Context, repoID
 }
 
 func (f *fakeJiraProcStore) StampReposChangedOutsideJob(_ context.Context, repoIDs []int64) error {
+	if f.stampErr != nil {
+		return f.stampErr
+	}
 	f.stampedRepos = append(f.stampedRepos, repoIDs...)
 	return nil
 }

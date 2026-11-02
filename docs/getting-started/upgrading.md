@@ -164,6 +164,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.128 changes nothing to run.** A CI check is widened (a workflow's job-level `env:` may not name the `runner`, `env`, `steps` or `job` contexts anywhere in an expression, not only as its first token); the binaries behave as 0.29.127's. Nothing beyond the ladder.
+
 **0.29.127 widens the message heal's cache stamp, not a schema change.** `aveloxis heal-messages` stamps every repository a healed message's rows name — the message's own and each conversation link's — not only the one parent per bridge table it refetches, so a link to a repository no refetched parent named (duplicate repositories sharing a message after a rename) no longer leaves that repository's cached API answers stale until its next collection. A fleet already running 0.29.126 needs only the stop, the migrate and the start.
 
 **0.29.126 makes a failed drain stamp owed, not a schema change.** A Jira or mailing-list drain whose cache-state stamp fails (a database error after the rows landed) stamps the repository again at the start of the next drain pass, so its committed rows reach the API's cached answers once the database is back; before, a retry that got no further never stamped, and a repository without a queue row kept them invisible for good. The deployment guide's API host recipe now obtains the certificate before the TLS block exists (certbot's nginx plugin tests the configuration first), and `docs/schema.md` documents `aveloxis_ops.page_cache_replay`. A fleet already running 0.29.125 needs only the stop, the migrate and the start.

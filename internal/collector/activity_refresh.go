@@ -131,13 +131,6 @@ func (d *drainStamps) owe(repoID int64) {
 	d.owed[repoID] = struct{}{}
 }
 
-func (d *drainStamps) owes(repoID int64) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	_, ok := d.owed[repoID]
-	return ok
-}
-
 // takeOwed forgets and returns the owed set, in a stable order (one
 // deterministic store call).
 func (d *drainStamps) takeOwed() []int64 {

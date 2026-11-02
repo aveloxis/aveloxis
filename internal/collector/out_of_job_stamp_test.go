@@ -88,16 +88,27 @@ func TestDrainRefreshStampsTheRepository(t *testing.T) {
 
 // heal-messages writes the conversations of every repository its batch names
 // (the refetched parents and the stale links it deletes): that set, each
-// once, in a stable order.
+// once, in a stable order. Copilot's fourth review of PR #246 (0.29.127): the
+// batch resolves ONE parent per bridge for the refetch, but the cleanup
+// deletes EVERY conversation link of the message, and the retention series
+// count those links by the message's own repository — so the item carries
+// every repository its rows name (RepoIDs: the message's, and each link's),
+// and the stamp covers a link whose repository is not a refetched parent
+// (12) and the message's owner (11), neither of which any parent names.
+// Only for an item whose links the cleanup deletes (kind 2 or 3, the one
+// gate healDeletesLinks): a kind-1 item's links stay, so its RepoIDs (13)
+// are not stamped — a stamp without a write churns the cache (L10 round 1
+// of 0.29.127, F2).
 func TestHealBatchReposIsEveryRepositoryTheBatchNames(t *testing.T) {
 	items := []db.MessageHealItem{
-		{MsgID: 1, IssueRepoID: 5},
-		{MsgID: 2, PRConvRepoID: 9, ReviewRepoID: 5},
-		{MsgID: 3, ReviewRepoID: 3},
-		{MsgID: 4}, // no parent anywhere: its cleanup touches no conversation
+		{MsgID: 1, MsgKind: db.MsgKindReviewComment, IssueRepoID: 5, RepoIDs: []int64{5, 12}},
+		{MsgID: 2, MsgKind: db.MsgKindReviewBody, PRConvRepoID: 9, ReviewRepoID: 5, RepoIDs: []int64{9}},
+		{MsgID: 3, MsgKind: db.MsgKindReviewComment, ReviewRepoID: 3, RepoIDs: []int64{3}},
+		{MsgID: 4, MsgKind: db.MsgKindReviewBody, RepoIDs: []int64{11}},                 // no parent anywhere: the cleanup deletes its links, the message's own repository is named
+		{MsgID: 5, MsgKind: db.MsgKindComment, IssueRepoID: 9, RepoIDs: []int64{9, 13}}, // the cleanup skips it: parents only
 	}
-	if got := healBatchRepos(items); !reflect.DeepEqual(got, []int64{3, 5, 9}) {
-		t.Errorf("healBatchRepos = %v, want [3 5 9]", got)
+	if got := healBatchRepos(items); !reflect.DeepEqual(got, []int64{3, 5, 9, 11, 12}) {
+		t.Errorf("healBatchRepos = %v, want [3 5 9 11 12]", got)
 	}
 	if got := healBatchRepos(nil); len(got) != 0 {
 		t.Errorf("an empty batch names no repository, got %v", got)
@@ -449,4 +460,13 @@ func TestMailingListDrainStampsAnOwedStampOnTheNextPass(t *testing.T) {
 	if store.stampAttempts != 1 {
 		t.Errorf("a pass over three lists made %d settle attempts, want 1", store.stampAttempts)
 	}
+}
+
+// owes reports whether repoID is in the owed set (a test-side read; production
+// has one consumer of the set, settleOwed, which takes it whole).
+func (d *drainStamps) owes(repoID int64) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.owed[repoID]
+	return ok
 }

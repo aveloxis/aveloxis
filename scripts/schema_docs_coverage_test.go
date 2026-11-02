@@ -44,11 +44,7 @@ func TestEveryTableIsDocumentedInSchemaMD(t *testing.T) {
 		schemasOf[table[strings.Index(table, ".")+1:]]++
 	}
 	documented := func(table string) bool {
-		schema, name := table[:strings.Index(table, ".")], table[strings.Index(table, ".")+1:]
-		if schemasOf[name] > 1 && schema != "aveloxis_data" {
-			return strings.Contains(doc, "\n#### "+name+" ("+schema+")\n")
-		}
-		return strings.Contains(doc, "\n#### "+name+"\n") || strings.Contains(doc, "\n#### "+name+" (") || strings.Contains(doc, "\n#### "+table+"\n")
+		return schemaTableDocumented(doc, table, schemasOf[table[strings.Index(table, ".")+1:]] > 1)
 	}
 	var missing, stale []string
 	for table := range tables {
@@ -74,5 +70,57 @@ func TestEveryTableIsDocumentedInSchemaMD(t *testing.T) {
 	}
 	if !strings.Contains(doc, "\n#### page_cache_replay (aveloxis_ops)\n") {
 		t.Error("docs/schema.md lost the page_cache_replay section (the finding that introduced this test)")
+	}
+}
+
+// schemaTableDocumented reports whether docs/schema.md has a section for
+// table (`schema.name`). The document's convention for a name two schemas
+// share: aveloxis_data's heading is bare, every other schema's carries its
+// `(schema)` suffix — each heading documents its own table only. An
+// unshared name may use the bare heading, a suffixed one or the qualified
+// one.
+func schemaTableDocumented(doc, table string, shared bool) bool {
+	schema, name := table[:strings.Index(table, ".")], table[strings.Index(table, ".")+1:]
+	switch {
+	case shared && schema == "aveloxis_data":
+		return strings.Contains(doc, "\n#### "+name+"\n")
+	case shared:
+		return strings.Contains(doc, "\n#### "+name+" ("+schema+")\n")
+	}
+	return strings.Contains(doc, "\n#### "+name+"\n") || strings.Contains(doc, "\n#### "+name+" (") || strings.Contains(doc, "\n#### "+table+"\n")
+}
+
+// Copilot's fourth review of PR #246 (0.29.127): for a shared name the
+// data-schema arm accepted ANY parenthesised heading, so the ops section
+// alone (`#### working_commits (aveloxis_ops)`) documented
+// aveloxis_data.working_commits too — removing only the data section
+// passed. Each schema of a shared name is told by its own heading: bare for
+// aveloxis_data, `(schema)` for the others; an unshared name keeps the
+// document's three spellings.
+func TestSchemaDocsPredicateTellsSharedNamesApart(t *testing.T) {
+	const opsOnly = "\n#### working_commits (aveloxis_ops)\n"
+	const dataOnly = "\n#### working_commits\n"
+	cases := []struct {
+		name   string
+		doc    string
+		table  string
+		shared bool
+		want   bool
+	}{
+		{"ops heading does not document the data table", opsOnly, "aveloxis_data.working_commits", true, false},
+		{"ops heading documents the ops table", opsOnly, "aveloxis_ops.working_commits", true, true},
+		{"bare heading documents the data table", dataOnly, "aveloxis_data.working_commits", true, true},
+		{"bare heading does not document the ops table", dataOnly, "aveloxis_ops.working_commits", true, false},
+		{"both headings, both documented", opsOnly + dataOnly, "aveloxis_data.working_commits", true, true},
+		{"unshared bare heading", "\n#### foo\n", "aveloxis_ops.foo", false, true},
+		{"unshared heading with a suffix", "\n#### foo (aveloxis_ops)\n", "aveloxis_ops.foo", false, true},
+		{"unshared qualified heading", "\n#### aveloxis_scan.foo\n", "aveloxis_scan.foo", false, true},
+		{"unshared, absent", "\n#### bar\n", "aveloxis_ops.foo", false, false},
+		{"a prefix is not the name", "\n#### working_commits_history\n", "aveloxis_data.working_commits", true, false},
+	}
+	for _, c := range cases {
+		if got := schemaTableDocumented(c.doc, c.table, c.shared); got != c.want {
+			t.Errorf("%s: schemaTableDocumented(%q, shared=%v) = %v, want %v", c.name, c.table, c.shared, got, c.want)
+		}
 	}
 }

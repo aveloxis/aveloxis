@@ -306,7 +306,7 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 		// kind 2 or 3 by the backfill, so the conversation-side links
 		// on them are the stale half (the refetch just recreated the
 		// correct links against new kind-1 rows).
-		if it.MsgKind == db.MsgKindReviewComment || it.MsgKind == db.MsgKindReviewBody {
+		if healDeletesLinks(it) {
 			if err := store.DeleteStaleConversationRefs(ctx, it.MsgID); err != nil {
 				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 				// defect. Only the log is suppressed — surrounding behaviour is
@@ -390,14 +390,33 @@ func stampHealBatch(ctx context.Context, store *db.PostgresStore, logger *slog.L
 	}
 }
 
+// healDeletesLinks reports whether the pass's cleanup deletes the item's
+// conversation links: collision rows were interim-assigned kind 2 or 3 by the
+// backfill, so the conversation-side links on them are the stale half (the
+// refetch recreates the correct links against new kind-1 rows). The ONE
+// spelling of that gate (SR-17): the cleanup and the stamp's repository set
+// read it.
+func healDeletesLinks(it db.MessageHealItem) bool {
+	return it.MsgKind == db.MsgKindReviewComment || it.MsgKind == db.MsgKindReviewBody
+}
+
 // healBatchRepos is every repository a heal batch names — the parents it
-// refetches and the conversations whose stale links it deletes — each once,
-// in ascending order: the repositories the pass writes.
+// refetches and, for an item whose links the cleanup deletes, every
+// repository the message's rows name (RepoIDs: the message's own and each
+// conversation link's, since the cleanup deletes every link, not only the
+// resolved parent's; Copilot's fourth review of PR #246, 0.29.127) — each
+// once, in ascending order: the repositories the pass writes. An item the
+// cleanup skips (kind 1) stamps its refetched parents only (L10 round 1 of
+// 0.29.127, F2: a stamp without a write churns the repository's cache).
 func healBatchRepos(items []db.MessageHealItem) []int64 {
 	seen := map[int64]bool{}
 	var out []int64
 	for _, it := range items {
-		for _, id := range []int64{it.IssueRepoID, it.PRConvRepoID, it.ReviewRepoID} {
+		ids := []int64{it.IssueRepoID, it.PRConvRepoID, it.ReviewRepoID}
+		if healDeletesLinks(it) {
+			ids = append(ids, it.RepoIDs...)
+		}
+		for _, id := range ids {
 			if id != 0 && !seen[id] {
 				seen[id] = true
 				out = append(out, id)

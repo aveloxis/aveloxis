@@ -164,7 +164,7 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
-**0.29.128 changes nothing to run.** A CI check is widened (a workflow's job-level `env:` may not name the `runner`, `env`, `steps` or `job` contexts anywhere in an expression, not only as its first token); the binaries behave as 0.29.127's. Nothing beyond the ladder.
+**0.29.128 changes nothing to run.** A CI check is widened (a workflow's job-level `env:` may not name the `runner`, `env`, `steps`, `job` or `jobs` contexts anywhere in an expression, not only as its first token, and a container's or a service's `env:` not `steps` or `jobs`, the sets GitHub's context table gives those places; the file is decoded, so no indentation style, comment or alias hides a value); the binaries behave as 0.29.127's. Nothing beyond the ladder.
 
 **0.29.127 widens the message heal's cache stamp, not a schema change.** `aveloxis heal-messages` stamps every repository a healed message's rows name — the message's own and each conversation link's — not only the one parent per bridge table it refetches, so a link to a repository no refetched parent named (duplicate repositories sharing a message after a rename) no longer leaves that repository's cached API answers stale until its next collection. A fleet already running 0.29.126 needs only the stop, the migrate and the start.
 

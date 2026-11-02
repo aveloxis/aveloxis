@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
@@ -56,5 +57,57 @@ func TestSessionsAreTheAccountsOrAnAdministrators(t *testing.T) {
 	}
 	if len(ended) != 2 || ended[0] != 2 || ended[1] != 3 {
 		t.Errorf("the store ended %v; want [2 3]", ended)
+	}
+}
+
+// Copilot's seventh review of PR #246 (0.29.129): ending the account's OWN
+// sessions is the sensitive change the re-authentication rule guards (ASVS
+// V7.5.2), and the rule is the Service's — so an older administrator
+// session cannot reach around it through the administrative route by naming
+// its own id. An actor whose sign-in the adapter did not record is never
+// recent (SR-18: a caller that forgets the field cannot pass). Another
+// account's sessions are the administrator's call at any sign-in age (a
+// lost device is ended by whoever is signed in). With no idle bound
+// configured, the rule passes.
+func TestEndingOwnSessionsNeedsARecentSignIn(t *testing.T) {
+	ctx := context.Background()
+	var ended []int
+	st := &fakeStore{
+		isUserAdmin:        func(_ context.Context, id int) (bool, error) { return id == 1, nil },
+		deleteUserSessions: func(_ context.Context, id int) (int64, error) { ended = append(ended, id); return 1, nil },
+	}
+	svc, _, logs := testService(t, st, Options{SessionIdle: 10 * time.Minute})
+	old := Actor{UserID: 1, Kind: Session, SignedInAt: time.Now().Add(-time.Hour)}
+	_, err := svc.RevokeSessions(ctx, old, 1)
+	if !errors.Is(err, ErrRecentSignInRequired) {
+		t.Fatalf("an hour-old sign-in ending its own sessions = %v; want ErrRecentSignInRequired", err)
+	}
+	if out := logs.String(); !strings.Contains(out, "admin: end sessions refused") || !strings.Contains(out, "target_user_id=1") {
+		t.Errorf("the refusal is the record of a hijacked older session trying; not logged:\n%s", out)
+	}
+	if ref, ok := Classify(err); !ok || ref.Kind != ReauthenticationRequired || !strings.Contains(ref.Detail, "10 minutes") {
+		t.Errorf("Classify = %+v, %v; want ReauthenticationRequired naming the bound", ref, ok)
+	}
+	if _, err := svc.RevokeSessions(ctx, Actor{UserID: 1, Kind: Session}, 1); !errors.Is(err, ErrRecentSignInRequired) {
+		t.Errorf("a sign-in the adapter did not record = %v; want ErrRecentSignInRequired (never recent)", err)
+	}
+	if _, err := svc.RevokeSessions(ctx, Actor{UserID: 2, Kind: Session, SignedInAt: time.Now().Add(-time.Hour)}, 2); !errors.Is(err, ErrRecentSignInRequired) {
+		t.Errorf("a non-administrator's old sign-in ending its own = %v; want ErrRecentSignInRequired", err)
+	}
+	if n, err := svc.RevokeSessions(ctx, Actor{UserID: 1, Kind: Session, SignedInAt: time.Now()}, 1); err != nil || n != 1 {
+		t.Errorf("a fresh sign-in ending its own = %d, %v; want 1, nil", n, err)
+	}
+	if n, err := svc.RevokeSessions(ctx, old, 2); err != nil || n != 1 {
+		t.Errorf("an old administrator sign-in ending ANOTHER account's = %d, %v; want 1, nil (the lost device is ended by whoever is signed in)", n, err)
+	}
+	if n, err := svc.RevokeSessions(ctx, Actor{UserID: 1, Kind: Operator}, 1); err != nil || n != 1 {
+		t.Errorf("the operator's shell = %d, %v; want 1, nil", n, err)
+	}
+	unbounded, _, _ := testService(t, st, Options{})
+	if n, err := unbounded.RevokeSessions(ctx, old, 1); err != nil || n != 1 {
+		t.Errorf("with no idle bound the old sign-in ends its own = %d, %v; want 1, nil", n, err)
+	}
+	if len(ended) != 4 {
+		t.Errorf("the store ended %v; want four revocations", ended)
 	}
 }

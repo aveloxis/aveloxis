@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/admin"
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
@@ -72,12 +73,14 @@ func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, sess *Ses
 func (s *Server) handleAccountSessionsRevoke(w http.ResponseWriter, r *http.Request, sess *Session) {
 	// Ending every session is a sensitive change like the address (ASVS
 	// V7.5.2, the 0.29.125 review): a hijacked old session could end the
-	// owner's others. An older sign-in is sent to sign in again first.
-	if !s.recentSignIn(sess) {
-		s.renderAccount(w, r, sess, fmt.Sprintf("To sign out everywhere, sign in again first: this session signed in more than %d minutes ago.", int(s.cfg.SessionIdle().Minutes())))
-		return
-	}
+	// owner's others. The service refuses an older sign-in
+	// (ReauthenticationRequired, reading the session's sign-in from the
+	// actor), and this page asks for a new one in its own words.
 	if _, err := s.admin.RevokeSessions(r.Context(), sessionActor(sess), sess.UserID); err != nil {
+		if ref, ok := admin.Classify(err); ok && ref.Kind == admin.ReauthenticationRequired {
+			s.renderAccount(w, r, sess, "To sign out everywhere, sign in again first: "+ref.Detail+".")
+			return
+		}
 		s.serviceErr(w, r, "handleAccountSessionsRevoke", err)
 		return
 	}

@@ -8,6 +8,15 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.129
+
+`POST /api/v1/admin/users/{userID}/sessions/revoke` with the caller's own
+`userID` now answers `403 {"error": "reauthentication_required"}` when the
+token's sign-in is older than `web.session_idle_minutes`, exactly as `POST
+/api/v1/me/sessions/revoke` has since 0.29.125: ending every session of
+one's own account is one sensitive change through every route. Another
+account's sessions are ended at any sign-in age, as before.
+
 ## Changes for API clients in 0.29.125
 
 A repository request whose URI — with its parameters in the canonical form
@@ -1742,8 +1751,12 @@ Per-user:
   mint time. Operator-issued API tokens are not sessions.
 - `POST /api/v1/me/sessions/revoke` (0.29.113) — ends every session of the
   account, this one included: `200 {"ok": true, "ended": N}`, then `401`
-  for each of them. Like sign-out, it is never refused by a spent request
-  quota and is not counted (0.29.114).
+  for each of them. Since 0.29.125 it needs a sign-in within
+  `web.session_idle_minutes`, like the address change: `403 {"error":
+  "reauthentication_required"}` otherwise (judged by the sign-in of the
+  browser session the token was minted from; a token whose browser session
+  is gone has none that counts). Like sign-out, it is never refused by a
+  spent request quota and is not counted (0.29.114).
 - `POST /api/v1/me/email/confirm` — body `{"token": "…"}` from that link,
   for the signed-in account: `200 {"status": "confirmed"}`; `200 {"status":
   "invalid"}` for a token that is not live for this account (unknown,
@@ -1862,7 +1875,10 @@ Admin-only:
   web sessions, `/auth/token` tokens and the web proxy's tokens are
   deleted, each `401` at its next request; operator-issued API tokens are
   not touched. `200 {"ok": true, "ended": N}` (`0` for an account with
-  none); a non-integer id is `400`. Logged.
+  none); a non-integer id is `400`. Naming the caller's own account is the
+  same sensitive change as `POST /api/v1/me/sessions/revoke` and takes its
+  rule: `403 {"error": "reauthentication_required"}` when the token's
+  sign-in is older than `web.session_idle_minutes` (0.29.129). Logged.
 - `POST /api/v1/admin/groups/{groupID}/reject` — reject a group: the
   group-level abuse lever (v0.27.20); it takes no further additions and
   its organizations stop being listed; its repositories stay. `404` for a

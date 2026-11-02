@@ -285,6 +285,15 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot certonly --nginx -d api.aveloxis.example.org    # the challenge only; it edits no block
 ```
 
+Renewals reload nginx on their own: `--nginx` makes the nginx plugin the
+lineage's installer even under `certonly` (`choose_configurator_plugins` in
+`certbot/_internal/plugins/selection.py` sets it when `--nginx` was given),
+the choice is written to the lineage's renewal configuration
+(`installer = nginx` under `[renewalparams]` in the host's file under
+`/etc/letsencrypt/renewal/`), and `certbot
+renew` calls `installer.restart()` after each renewal (`renew_cert` in
+`certbot/_internal/main.py`) — so no `--deploy-hook` is needed for the reload.
+
 The order is certbot's, not a preference: its nginx plugin runs `nginx -t`
 before anything else (`prepare` in `certbot/_internal/plugins/nginx/configurator.py`),
 so a server block naming certificate files that do not exist yet makes the

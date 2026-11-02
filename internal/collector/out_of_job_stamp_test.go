@@ -86,32 +86,38 @@ func TestDrainRefreshStampsTheRepository(t *testing.T) {
 	}
 }
 
-// heal-messages writes the conversations of every repository its batch names
-// (the refetched parents and the stale links it deletes): that set, each
-// once, in a stable order. Copilot's fourth review of PR #246 (0.29.127): the
-// batch resolves ONE parent per bridge for the refetch, but the cleanup
-// deletes EVERY conversation link of the message, and the retention series
-// count those links by the message's own repository — so the item carries
-// every repository its rows name (RepoIDs: the message's, and each link's),
-// and the stamp covers a link whose repository is not a refetched parent
-// (12) and the message's owner (11), neither of which any parent names.
-// Only for an item whose links the cleanup deletes (kind 2 or 3, the one
-// gate healDeletesLinks): a kind-1 item's links stay, so its RepoIDs (13)
-// are not stamped — a stamp without a write churns the cache (L10 round 1
-// of 0.29.127, F2).
-func TestHealBatchReposIsEveryRepositoryTheBatchNames(t *testing.T) {
-	items := []db.MessageHealItem{
-		{MsgID: 1, MsgKind: db.MsgKindReviewComment, IssueRepoID: 5, RepoIDs: []int64{5, 12}},
-		{MsgID: 2, MsgKind: db.MsgKindReviewBody, PRConvRepoID: 9, ReviewRepoID: 5, RepoIDs: []int64{9}},
-		{MsgID: 3, MsgKind: db.MsgKindReviewComment, ReviewRepoID: 3, RepoIDs: []int64{3}},
-		{MsgID: 4, MsgKind: db.MsgKindReviewBody, RepoIDs: []int64{11}},                 // no parent anywhere: the cleanup deletes its links, the message's own repository is named
-		{MsgID: 5, MsgKind: db.MsgKindComment, IssueRepoID: 9, RepoIDs: []int64{9, 13}}, // the cleanup skips it: parents only
+// heal-messages stamps every repository a write BEGAN for — the repository
+// whose refetched conversations it processes, and (for an item whose links
+// the cleanup deletes) every repository the message's rows name — each once,
+// in a stable order (Copilot's seventh review of PR #246, 0.29.129: the stamp
+// covered the whole planned batch, so a repository never reached after a
+// stop, or skipped after a lookup or refetch failure, had its cached answers
+// dropped without a write). The RepoIDs arm is still the cleanup's gate
+// (0.29.127 F2): the caller adds them only where the cleanup runs.
+func TestHealTouchedIsEveryRepositoryAWriteBeganFor(t *testing.T) {
+	var touched healTouched
+	if touched.repos() != nil {
+		t.Errorf("nothing touched yet, got %v", touched.repos())
 	}
-	if got := healBatchRepos(items); !reflect.DeepEqual(got, []int64{3, 5, 9, 11, 12}) {
-		t.Errorf("healBatchRepos = %v, want [3 5 9 11 12]", got)
+	touched.add(9)
+	touched.add(5, 12) // the links' repositories and the message's owner, at the cleanup
+	touched.add(9)     // the same repository again: once
+	touched.add(3)
+	touched.add(0) // "no repository" (an item without that parent) is not one
+	if got := touched.repos(); !reflect.DeepEqual(got, []int64{3, 5, 9, 12}) {
+		t.Errorf("touched.repos() = %v, want [3 5 9 12]", got)
 	}
-	if got := healBatchRepos(nil); len(got) != 0 {
-		t.Errorf("an empty batch names no repository, got %v", got)
+	// The stamp: one store call with that set; none when nothing was touched
+	// (a dry run, a batch that failed before its first write).
+	f := &fakeDrainRefresher{}
+	stampHealBatch(context.Background(), f, slog.New(slog.NewTextHandler(io.Discard, nil)), &touched)
+	if !reflect.DeepEqual(f.stamped, [][]int64{{3, 5, 9, 12}}) {
+		t.Errorf("stamped %v, want one call with [3 5 9 12]", f.stamped)
+	}
+	f = &fakeDrainRefresher{}
+	stampHealBatch(context.Background(), f, slog.New(slog.NewTextHandler(io.Discard, nil)), &healTouched{})
+	if len(f.stamped) != 0 {
+		t.Errorf("an untouched batch stamped %v, want nothing", f.stamped)
 	}
 }
 
@@ -124,9 +130,9 @@ func TestMessageHealPassStampsAfterItsWrites(t *testing.T) {
 	// Deferred, so every return after the first write reaches it — a stop
 	// mid-pass included (round 1 finding 2: the per-repository loop returned
 	// on ctx.Err() before a stamp placed after it).
-	stamp := strings.Index(body, "defer stampHealBatch(ctx, store, logger, items)")
+	stamp := strings.Index(body, "defer stampHealBatch(ctx, store, logger, &touched)")
 	if stamp < 0 {
-		t.Fatal("runMessageHealPass must defer stampHealBatch(ctx, store, logger, items)")
+		t.Fatal("runMessageHealPass must defer stampHealBatch(ctx, store, logger, &touched)")
 	}
 	dry := strings.Index(body, "if dryRun {")
 	if dry < 0 || dry > stamp {
@@ -137,9 +143,27 @@ func TestMessageHealPassStampsAfterItsWrites(t *testing.T) {
 			t.Errorf("the stamp must be deferred before the pass's first write (%s)", write)
 		}
 	}
+	// A repository joins the set right before a write can begin for it, not
+	// at planning (Copilot's seventh review of PR #246, 0.29.129): the
+	// processing of its refetched conversations, and the cleanup of an
+	// item's links (that item's RepoIDs).
+	process, loop := strings.Index(body, "proc.ProcessRepo("), strings.Index(body, "for repoID, keys := range byRepo")
+	cleanup, gate := strings.Index(body, "store.DeleteStaleConversationRefs("), strings.Index(body, "if healDeletesLinks(it) {")
+	if process < 0 || loop < 0 || cleanup < 0 || gate < 0 {
+		t.Fatalf("the pass's anchors moved (process %d, loop %d, cleanup %d, gate %d)", process, loop, cleanup, gate)
+	}
+	if mark := strings.Index(body, "touched.add(repoID)"); mark < loop || mark > process {
+		t.Error("touched.add(repoID) must precede proc.ProcessRepo inside the per-repository loop")
+	}
+	if mark := strings.Index(body, "touched.add(it.RepoIDs...)"); mark < gate || mark > cleanup {
+		t.Error("touched.add(it.RepoIDs...) must precede store.DeleteStaleConversationRefs inside the cleanup's gate")
+	}
+	if strings.Contains(body, "healBatchRepos(") {
+		t.Error("the planned batch is no longer what the pass stamps")
+	}
 	fn := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func stampHealBatch("))
-	if !strings.Contains(fn, "StampReposChangedOutsideJob(") || !strings.Contains(fn, "healBatchRepos(items)") {
-		t.Error("stampHealBatch must stamp healBatchRepos(items)")
+	if !strings.Contains(fn, "StampReposChangedOutsideJob(") || !strings.Contains(fn, "touched.repos()") {
+		t.Error("stampHealBatch must stamp touched.repos()")
 	}
 }
 

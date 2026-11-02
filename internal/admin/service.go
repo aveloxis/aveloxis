@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -58,6 +59,13 @@ const (
 type Actor struct {
 	UserID int
 	Kind   ActorKind
+	// SignedInAt is the sign-in behind a Session credential: the browser
+	// session's creation, or that of the web session a bearer token was
+	// minted from. Zero when the adapter does not know it (a parentless
+	// token, a planted test session), which is never recent: a sensitive
+	// change to the actor's own account needs it within Options.SessionIdle
+	// (ASVS V7.5.2; db.SignInIsRecent).
+	SignedInAt time.Time
 }
 
 func (a Actor) String() string {
@@ -89,6 +97,11 @@ type Options struct {
 	// of at most this many new repositories is approved without review; 0
 	// (the default) means every one waits for an administrator. Never orgs.
 	AutoApproveAddLimit int
+	// SessionIdle is web.session_idle_minutes as a duration: the
+	// inactivity bound, and so the "recent sign-in" a sensitive change to
+	// the actor's own account needs (ending every session of it). Zero
+	// (unset; the CLI) means no bound: the rule passes.
+	SessionIdle time.Duration
 	// Mailer sends the add-request notifications and the account
 	// confirmation link (*mailer.Mailer); nil when mail is not configured.
 	// A nil *mailer.Mailer must be passed as a nil interface.

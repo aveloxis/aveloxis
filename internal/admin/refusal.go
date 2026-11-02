@@ -6,6 +6,7 @@ package admin
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -66,6 +67,14 @@ const (
 	// it — a name already taken, a quota aveloxis.json decides (Detail
 	// names what to change instead). Adapters answer 409 (stage 3b).
 	Conflict
+	// ReauthenticationRequired: a sensitive change to the actor's own
+	// account (ending every session of it) asked by a sign-in older than the
+	// inactivity bound, or by a credential with no sign-in that counts
+	// (ASVS V7.5.2; Copilot's seventh review of PR #246, 0.29.129: the rule
+	// is the Service's, so every route reaching the operation takes it).
+	// Detail says what needs the sign-in and the bound; adapters answer
+	// 403 reauthentication_required.
+	ReauthenticationRequired
 )
 
 func (k Kind) String() string {
@@ -102,6 +111,8 @@ func (k Kind) String() string {
 		return "superseded"
 	case Conflict:
 		return "conflict"
+	case ReauthenticationRequired:
+		return "reauthentication required"
 	}
 	return fmt.Sprintf("kind %d", int(k))
 }
@@ -131,6 +142,23 @@ var ErrSelfDemotion = errors.New("refusing self-demotion — use another admin a
 // ErrRepoNotInGroup is the refusal when the repository is not linked into
 // that group.
 var ErrRepoNotInGroup = errors.New("that repository is not in that group")
+
+// ErrRecentSignInRequired is the sentinel every ReauthenticationRequired
+// refusal matches (errors.Is); the detail rides on the value.
+var ErrRecentSignInRequired = errors.New("a recent sign-in is required")
+
+// reauthError is a ReauthenticationRequired refusal with its own words.
+type reauthError struct{ detail string }
+
+func (e *reauthError) Error() string        { return e.detail }
+func (e *reauthError) Is(target error) bool { return target == ErrRecentSignInRequired }
+
+// refuseReauthentication is the refusal of what (a verb phrase, "ending
+// your own sessions") by a sign-in older than bound — one wording for the
+// API's JSON message and the web GUI's page.
+func refuseReauthentication(what string, bound time.Duration) error {
+	return &reauthError{detail: fmt.Sprintf("%s needs a sign-in within the last %d minutes; sign in again and retry", what, int(bound.Minutes()))}
+}
 
 // inputError is an InvalidInput or TooMany refusal with its own words.
 type inputError struct {
@@ -240,6 +268,8 @@ func Classify(err error) (Refusal, bool) {
 	switch {
 	case errors.Is(err, ErrNotAdmin):
 		return Refusal{Kind: Forbidden}, true
+	case errors.Is(err, ErrRecentSignInRequired):
+		return Refusal{Kind: ReauthenticationRequired, Detail: err.Error()}, true
 	case errors.Is(err, ErrSelfDemotion):
 		return Refusal{Kind: SelfDemotion, Detail: ErrSelfDemotion.Error()}, true
 	case errors.Is(err, db.ErrAddRequestNotFound):

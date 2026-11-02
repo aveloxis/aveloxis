@@ -147,11 +147,20 @@ func (s *Server) requireRecentSignIn(w http.ResponseWriter, r *http.Request, op,
 		return false
 	}
 	if err != nil || !db.SignInIsRecent(created, s.sessionIdle) {
-		setNoStoreHeaders(w.Header())
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "reauthentication_required", "message": fmt.Sprintf("%s needs a sign-in within the last %d minutes; sign in again and retry", what, int(s.sessionIdle.Minutes()))})
+		writeReauthenticationRequired(w, fmt.Sprintf("%s needs a sign-in within the last %d minutes; sign in again and retry", what, int(s.sessionIdle.Minutes())))
 		return false
 	}
 	return true
+}
+
+// writeReauthenticationRequired is the one body of the re-authentication
+// refusal: 403, error "reauthentication_required", the message saying what
+// needs the sign-in (docs/guide/api.md). The handler's own rule
+// (requireRecentSignIn) and the service's (admin.ReauthenticationRequired,
+// through refuse) both write it.
+func writeReauthenticationRequired(w http.ResponseWriter, message string) {
+	setNoStoreHeaders(w.Header())
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": "reauthentication_required", "message": message})
 }

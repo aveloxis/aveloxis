@@ -90,10 +90,14 @@ configurable.
 token of the account with its sign-in time, last use (to the minute, for
 browser sessions; a token shows its mint time) and
 expiry, this browser's marked; "Sign out everywhere" (`POST
-/api/v1/me/sessions/revoke`) ends them all. An administrator ends any
-account's from the Users page ("End sessions") or `POST
-/api/v1/admin/users/{userID}/sessions/revoke`; operator-issued API tokens are
-revoked on the API-tokens page instead. A sign-in from a browser that still
+/api/v1/me/sessions/revoke`) ends them all — after a sign-in within the
+inactivity bound, like the address change, through every route that ends
+the caller's own sessions (0.29.129: the administrative route named below
+takes the same rule when the id is the caller's own, so an older stolen
+administrator session cannot end the owner's others through it). An
+administrator ends any other account's from the Users page ("End sessions")
+or `POST /api/v1/admin/users/{userID}/sessions/revoke` at any sign-in age;
+operator-issued API tokens are revoked on the API-tokens page instead. A sign-in from a browser that still
 carries a session replaces that session (the old row is deleted).
 
 **No cap on concurrent sessions** (V7.1.2): an account may be signed in from

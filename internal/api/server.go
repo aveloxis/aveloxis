@@ -188,7 +188,7 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		}
 	}
 	if store != nil {
-		adminOpts := admin.Options{GitHubAPIBase: opts.GitHubAPIBase, GitLabAPIBase: opts.GitLabAPIBase, AutoApproveAddLimit: opts.AutoApproveAddLimit, SPAURL: opts.SPAURL}
+		adminOpts := admin.Options{GitHubAPIBase: opts.GitHubAPIBase, GitLabAPIBase: opts.GitLabAPIBase, AutoApproveAddLimit: opts.AutoApproveAddLimit, SPAURL: opts.SPAURL, SessionIdle: opts.SessionIdle}
 		if opts.Mailer != nil { // a nil *Mailer must not become a non-nil interface
 			adminOpts.Mailer = opts.Mailer
 		}

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Security &mdash; Aveloxis 0.29.128 documentation</title>
+  <title>Security &mdash; Aveloxis 0.29.129 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=6495aff8"></script>
+      <script src="../_static/documentation_options.js?v=c0ed2be1"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
@@ -1944,9 +1945,14 @@ configurable.</p>
 (<code class="docutils literal notranslate"><span class="pre">/account</span></code>, or <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/me/sessions</span></code>) lists every live session and
 token of the account with its sign-in time, last use (to the minute, for
 browser sessions; a token shows its mint time) and
-expiry, this browser’s marked; “Sign out everywhere” (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/sessions/revoke</span></code>) ends them all. An administrator ends any
-account’s from the Users page (“End sessions”) or <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/sessions/revoke</span></code>; operator-issued API tokens are
-revoked on the API-tokens page instead. A sign-in from a browser that still
+expiry, this browser’s marked; “Sign out everywhere” (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/sessions/revoke</span></code>) ends them all — after a sign-in within the
+inactivity bound, like the address change, through every route that ends
+the caller’s own sessions (0.29.129: the administrative route named below
+takes the same rule when the id is the caller’s own, so an older stolen
+administrator session cannot end the owner’s others through it). An
+administrator ends any other account’s from the Users page (“End sessions”)
+or <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/sessions/revoke</span></code> at any sign-in age;
+operator-issued API tokens are revoked on the API-tokens page instead. A sign-in from a browser that still
 carries a session replaces that session (the old row is deleted).</p>
 <p><strong>No cap on concurrent sessions</strong> (V7.1.2): an account may be signed in from
 any number of browsers and devices. The control is the list and the

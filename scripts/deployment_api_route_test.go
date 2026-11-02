@@ -181,7 +181,11 @@ func TestDeploymentRecipeObtainsTheAPICertificateBeforeItsTLSBlock(t *testing.T)
 	if !(refusal < certonly && certonly < tls) {
 		t.Errorf("the certificate command must follow the port-80 refusal block and precede the TLS block (refusal %d, certonly %d, tls %d): certbot's nginx plugin tests the configuration first", refusal, certonly, tls)
 	}
-	for _, claim := range []string{"runs `nginx -t`", "rewrite ^(/.well-known/acme-challenge/.*) $1 break;"} {
+	// Copilot's seventh review of PR #246 asked for a deploy hook to reload
+	// nginx after renewals; certbot's source says `--nginx` makes the
+	// plugin the installer under certonly too and `renew` restarts it, so
+	// the recipe states that instead (0.29.129).
+	for _, claim := range []string{"runs `nginx -t`", "rewrite ^(/.well-known/acme-challenge/.*) $1 break;", "calls `installer.restart()` after each renewal"} {
 		if !strings.Contains(doc, claim) {
 			t.Errorf("the recipe states certbot's behaviour it depends on (%q)", claim)
 		}

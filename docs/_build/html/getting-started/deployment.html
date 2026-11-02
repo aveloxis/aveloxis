@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Production Deployment &mdash; Aveloxis 0.29.128 documentation</title>
+  <title>Production Deployment &mdash; Aveloxis 0.29.129 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=6495aff8"></script>
+      <script src="../_static/documentation_options.js?v=c0ed2be1"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
@@ -2084,6 +2085,13 @@ is in place:</p>
 sudo<span class="w"> </span>certbot<span class="w"> </span>certonly<span class="w"> </span>--nginx<span class="w"> </span>-d<span class="w"> </span>api.aveloxis.example.org<span class="w">    </span><span class="c1"># the challenge only; it edits no block</span>
 </pre></div>
 </div>
+<p>Renewals reload nginx on their own: <code class="docutils literal notranslate"><span class="pre">--nginx</span></code> makes the nginx plugin the
+lineage’s installer even under <code class="docutils literal notranslate"><span class="pre">certonly</span></code> (<code class="docutils literal notranslate"><span class="pre">choose_configurator_plugins</span></code> in
+<code class="docutils literal notranslate"><span class="pre">certbot/_internal/plugins/selection.py</span></code> sets it when <code class="docutils literal notranslate"><span class="pre">--nginx</span></code> was given),
+the choice is written to the lineage’s renewal configuration
+(<code class="docutils literal notranslate"><span class="pre">installer</span> <span class="pre">=</span> <span class="pre">nginx</span></code> under <code class="docutils literal notranslate"><span class="pre">[renewalparams]</span></code> in the host’s file under
+<code class="docutils literal notranslate"><span class="pre">/etc/letsencrypt/renewal/</span></code>), and <code class="docutils literal notranslate"><span class="pre">certbot</span> <span class="pre">renew</span></code> calls <code class="docutils literal notranslate"><span class="pre">installer.restart()</span></code> after each renewal (<code class="docutils literal notranslate"><span class="pre">renew_cert</span></code> in
+<code class="docutils literal notranslate"><span class="pre">certbot/_internal/main.py</span></code>) — so no <code class="docutils literal notranslate"><span class="pre">--deploy-hook</span></code> is needed for the reload.</p>
 <p>The order is certbot’s, not a preference: its nginx plugin runs <code class="docutils literal notranslate"><span class="pre">nginx</span> <span class="pre">-t</span></code>
 before anything else (<code class="docutils literal notranslate"><span class="pre">prepare</span></code> in <code class="docutils literal notranslate"><span class="pre">certbot/_internal/plugins/nginx/configurator.py</span></code>),
 so a server block naming certificate files that do not exist yet makes the

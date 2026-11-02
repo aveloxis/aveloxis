@@ -101,15 +101,15 @@ func TestGroupAccessOverTheStore(t *testing.T) {
 		want Access
 		err  error
 	}{
-		{"owner reads", Actor{owner, Session}, Read, nil},
-		{"owner writes", Actor{owner, Session}, Write, nil},
-		{"owner's token reads", Actor{owner, APIToken}, Read, nil},
-		{"admin session reads", Actor{admin, Session}, Read, nil},
-		{"admin session writes", Actor{admin, Session}, Write, db.ErrGroupNotOwned},
-		{"admin token reads", Actor{admin, APIToken}, Read, db.ErrGroupNotOwned},
-		{"operator reads", Actor{0, Operator}, Read, nil},
-		{"stranger reads", Actor{stranger, Session}, Read, db.ErrGroupNotOwned},
-		{"stranger writes", Actor{stranger, Session}, Write, db.ErrGroupNotOwned},
+		{"owner reads", Actor{UserID: owner, Kind: Session}, Read, nil},
+		{"owner writes", Actor{UserID: owner, Kind: Session}, Write, nil},
+		{"owner's token reads", Actor{UserID: owner, Kind: APIToken}, Read, nil},
+		{"admin session reads", Actor{UserID: admin, Kind: Session}, Read, nil},
+		{"admin session writes", Actor{UserID: admin, Kind: Session}, Write, db.ErrGroupNotOwned},
+		{"admin token reads", Actor{UserID: admin, Kind: APIToken}, Read, db.ErrGroupNotOwned},
+		{"operator reads", Actor{UserID: 0, Kind: Operator}, Read, nil},
+		{"stranger reads", Actor{UserID: stranger, Kind: Session}, Read, db.ErrGroupNotOwned},
+		{"stranger writes", Actor{UserID: stranger, Kind: Session}, Write, db.ErrGroupNotOwned},
 	} {
 		ref, err := f.svc.GroupAccess(f.ctx, tc.a, gid, tc.want)
 		if !errors.Is(err, tc.err) || (tc.err == nil && (ref.ID != gid || ref.OwnerID != owner)) {
@@ -119,14 +119,14 @@ func TestGroupAccessOverTheStore(t *testing.T) {
 	if !strings.Contains(f.logs.String(), "read another account's group") {
 		t.Errorf("an administrator's read must be logged:\n%s", f.logs.String())
 	}
-	for _, a := range []Actor{{owner, Session}, {admin, Session}, {0, Operator}} {
+	for _, a := range []Actor{{UserID: owner, Kind: Session}, {UserID: admin, Kind: Session}, {UserID: 0, Kind: Operator}} {
 		if _, err := f.svc.GroupAccess(f.ctx, a, 1<<40, Read); !errors.Is(err, db.ErrGroupNotFound) {
 			t.Errorf("unknown group for %s = %v; want ErrGroupNotFound", a, err)
 		}
 	}
 	// A token under db.WithoutAdminPrivilege is what the API sends: the
 	// store answers "not an administrator" even for the admin's own id.
-	if _, err := f.svc.GroupAccess(db.WithoutAdminPrivilege(f.ctx), Actor{admin, Session}, gid, Read); !errors.Is(err, db.ErrGroupNotOwned) {
+	if _, err := f.svc.GroupAccess(db.WithoutAdminPrivilege(f.ctx), Actor{UserID: admin, Kind: Session}, gid, Read); !errors.Is(err, db.ErrGroupNotOwned) {
 		t.Errorf("admin session under WithoutAdminPrivilege = %v; want ErrGroupNotOwned", err)
 	}
 	// The dumb readers answer for the group, whoever asks.
@@ -156,13 +156,13 @@ func TestAuthorizeGroupRepoOverTheStore(t *testing.T) {
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, repoID)
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
-	if _, err := f.svc.AuthorizeGroupRepo(f.ctx, Actor{owner, Session}, gid, repoID); !errors.Is(err, ErrRepoNotInGroup) {
+	if _, err := f.svc.AuthorizeGroupRepo(f.ctx, Actor{UserID: owner, Kind: Session}, gid, repoID); !errors.Is(err, ErrRepoNotInGroup) {
 		t.Fatalf("not yet linked = %v; want ErrRepoNotInGroup", err)
 	}
 	if _, err := f.pool.Exec(f.ctx, `INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)`, gid, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if ref, err := f.svc.AuthorizeGroupRepo(f.ctx, Actor{owner, Session}, gid, repoID); err != nil || ref.ID != gid {
+	if ref, err := f.svc.AuthorizeGroupRepo(f.ctx, Actor{UserID: owner, Kind: Session}, gid, repoID); err != nil || ref.ID != gid {
 		t.Fatalf("linked = %+v, %v", ref, err)
 	}
 }
@@ -208,7 +208,7 @@ func TestSetUserAdminIsAtomic(t *testing.T) {
 			go func(i int, actor, target int) {
 				defer wg.Done()
 				<-start
-				errs[i] = f.svc.SetUserAdmin(f.ctx, Actor{actor, Session}, target, false)
+				errs[i] = f.svc.SetUserAdmin(f.ctx, Actor{UserID: actor, Kind: Session}, target, false)
 			}(i, pair[0], pair[1])
 		}
 		close(start)
@@ -240,10 +240,10 @@ func TestSetUserAdminIsAtomic(t *testing.T) {
 	if _, err := f.pool.Exec(f.ctx, `UPDATE aveloxis_ops.users SET admin = TRUE WHERE user_id = $1`, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.SetUserAdmin(f.ctx, Actor{a, Session}, 1<<30, true); !errors.Is(err, db.ErrUserNotFound) {
+	if err := f.svc.SetUserAdmin(f.ctx, Actor{UserID: a, Kind: Session}, 1<<30, true); !errors.Is(err, db.ErrUserNotFound) {
 		t.Errorf("unknown user = %v; want ErrUserNotFound", err)
 	}
-	if err := f.svc.SetUserAdmin(f.ctx, Actor{a, Session}, a, false); !errors.Is(err, ErrSelfDemotion) {
+	if err := f.svc.SetUserAdmin(f.ctx, Actor{UserID: a, Kind: Session}, a, false); !errors.Is(err, ErrSelfDemotion) {
 		t.Errorf("self-demotion = %v; want ErrSelfDemotion", err)
 	}
 	if h := f.hooks.got(); len(h) == 0 || !strings.HasPrefix(h[0], "role ") {
@@ -258,7 +258,7 @@ func TestGetAddRequestReadsOneRow(t *testing.T) {
 	f := openFixture(t)
 	owner := f.user(t, false)
 	gid := f.group(t, owner)
-	out, err := f.svc.AddToGroup(f.ctx, Actor{owner, Session}, gid, []string{
+	out, err := f.svc.AddToGroup(f.ctx, Actor{UserID: owner, Kind: Session}, gid, []string{
 		fmt.Sprintf("github.com/_avadmin/%d-a", time.Now().UnixNano()),
 		fmt.Sprintf("https://github.com/_avadmin/%d-b", time.Now().UnixNano()),
 		"not a url",

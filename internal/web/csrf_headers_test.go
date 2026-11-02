@@ -47,7 +47,12 @@ func TestCSRFGuardOnEveryPostRoute(t *testing.T) {
 		}
 		posts++
 		session := func(r *http.Request) *http.Request {
-			token := plantSession(t, s, "csrf-"+rt.pattern, &Session{UserID: 1, LoginName: "c", IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)})
+			// A session with its sign-in recorded, as a real browser's is: the
+			// administrative revoke of the session's OWN account (id 1) takes
+			// the service's recent-sign-in rule before any store call (0.29.129),
+			// and a planted session without a sign-in would be refused there —
+			// a 403 this sweep cannot tell from the guard's.
+			token := plantSession(t, s, "csrf-"+rt.pattern, &Session{UserID: 1, LoginName: "c", IsAdmin: true, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
 			r.AddCookie(&http.Cookie{Name: s.cookieName("aveloxis_session"), Value: token})
 			return r
 		}

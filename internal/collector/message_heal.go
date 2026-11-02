@@ -191,12 +191,17 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 		return res, nil
 	}
 	// Outside any job: the API's cached answers of the repositories this
-	// batch writes (refetched conversations, deleted stale links) move,
+	// pass writes (refetched conversations, deleted stale links) move,
 	// however the pass ends — a stop or a failure after a first write
-	// included, so it is deferred before the first write (D7, summary/63;
-	// round 1 finding 2 of 0.29.123: placed after the loop, a stop between
-	// two repositories returned before it).
-	defer stampHealBatch(ctx, store, logger, items)
+	// included, so the stamp is deferred before the first write (D7,
+	// summary/63; round 1 finding 2 of 0.29.123: placed after the loop, a
+	// stop between two repositories returned before it). What it stamps is
+	// the set of repositories a write BEGAN for, filled as the pass goes,
+	// not the planned batch (Copilot's seventh review of PR #246, 0.29.129:
+	// a repository never reached after a stop, or skipped after a lookup or
+	// refetch failure, had its cached answers dropped for nothing).
+	var touched healTouched
+	defer stampHealBatch(ctx, store, logger, &touched)
 
 	repos := map[int64]struct{ owner, name string }{}
 	repoOf := func(id int64) (struct{ owner, name string }, error) {
@@ -278,6 +283,7 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 			continue
 		}
 		if staged > 0 {
+			touched.add(repoID) // a write begins: whatever ProcessRepo commits is stamped
 			proc := NewProcessor(store, logger)
 			if err := proc.ProcessRepo(ctx, repoID, 1); err != nil {
 				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
@@ -307,6 +313,7 @@ func runMessageHealPass(ctx context.Context, store *db.PostgresStore, client pla
 		// on them are the stale half (the refetch just recreated the
 		// correct links against new kind-1 rows).
 		if healDeletesLinks(it) {
+			touched.add(it.RepoIDs...) // every repository the message's links name (and its own): the cleanup's write begins
 			if err := store.DeleteStaleConversationRefs(ctx, it.MsgID); err != nil {
 				// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 				// defect. Only the log is suppressed — surrounding behaviour is
@@ -380,14 +387,61 @@ func healFetchParent(ctx context.Context, client platform.Client, sw *db.Staging
 	return nil
 }
 
-// stampHealBatch stamps every repository a heal batch names (deferred by
-// runMessageHealPass). Detached: a stop after a write still stamps it, so a
-// cancellation cannot end the stamp and is not classified here.
-func stampHealBatch(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, items []db.MessageHealItem) {
+// repoStamper is the one store capability the heal's stamp needs.
+type repoStamper interface {
+	StampReposChangedOutsideJob(ctx context.Context, repoIDs []int64) error
+}
+
+// stampHealBatch stamps every repository a write began for in the pass
+// (deferred by runMessageHealPass); nothing when none did (a dry run, a
+// batch that failed before its first write). Detached: a stop after a
+// write still stamps it, so a cancellation cannot end the stamp and is not
+// classified here.
+func stampHealBatch(ctx context.Context, s repoStamper, logger *slog.Logger, touched *healTouched) {
+	repos := touched.repos()
+	if len(repos) == 0 {
+		return
+	}
 	detached := context.WithoutCancel(ctx)
-	if err := store.StampReposChangedOutsideJob(detached, healBatchRepos(items)); err != nil {
+	if err := s.StampReposChangedOutsideJob(detached, repos); err != nil {
 		logger.Warn("message heal: cache-state stamp failed — the repositories' cached API answers stay until their next collection", "error", err)
 	}
+}
+
+// healTouched is the set of repositories a heal pass began a write for:
+// the repository whose refetched conversations it processes, and — for an
+// item whose links the cleanup deletes — every repository the message's
+// rows name (RepoIDs). Added right before the write, so a partial write is
+// covered and an untouched repository is not (Copilot's seventh review of
+// PR #246, 0.29.129). The zero value is ready; one goroutine uses it.
+type healTouched struct {
+	seen map[int64]bool
+}
+
+// add records that a write begins for each of ids (0, "no repository", is
+// not one).
+func (h *healTouched) add(ids ...int64) {
+	if h.seen == nil {
+		h.seen = map[int64]bool{}
+	}
+	for _, id := range ids {
+		if id != 0 {
+			h.seen[id] = true
+		}
+	}
+}
+
+// repos is the set, ascending; nil when nothing was touched.
+func (h *healTouched) repos() []int64 {
+	if len(h.seen) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(h.seen))
+	for id := range h.seen {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // healDeletesLinks reports whether the pass's cleanup deletes the item's
@@ -398,31 +452,4 @@ func stampHealBatch(ctx context.Context, store *db.PostgresStore, logger *slog.L
 // read it.
 func healDeletesLinks(it db.MessageHealItem) bool {
 	return it.MsgKind == db.MsgKindReviewComment || it.MsgKind == db.MsgKindReviewBody
-}
-
-// healBatchRepos is every repository a heal batch names — the parents it
-// refetches and, for an item whose links the cleanup deletes, every
-// repository the message's rows name (RepoIDs: the message's own and each
-// conversation link's, since the cleanup deletes every link, not only the
-// resolved parent's; Copilot's fourth review of PR #246, 0.29.127) — each
-// once, in ascending order: the repositories the pass writes. An item the
-// cleanup skips (kind 1) stamps its refetched parents only (L10 round 1 of
-// 0.29.127, F2: a stamp without a write churns the repository's cache).
-func healBatchRepos(items []db.MessageHealItem) []int64 {
-	seen := map[int64]bool{}
-	var out []int64
-	for _, it := range items {
-		ids := []int64{it.IssueRepoID, it.PRConvRepoID, it.ReviewRepoID}
-		if healDeletesLinks(it) {
-			ids = append(ids, it.RepoIDs...)
-		}
-		for _, id := range ids {
-			if id != 0 && !seen[id] {
-				seen[id] = true
-				out = append(out, id)
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
 }

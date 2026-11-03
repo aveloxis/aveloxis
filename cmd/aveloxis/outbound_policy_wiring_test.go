@@ -48,4 +48,11 @@ func TestImportFromAugurConsultsTheOutboundRule(t *testing.T) {
 	if !strings.Contains(body, "collector.RefuseRepositoryHost(") || strings.Index(body, "collector.RefuseRepositoryHost(") > strings.Index(body, "verifyRepoExists(") {
 		t.Error("runImportFromAugur must consult collector.RefuseRepositoryHost before verifyRepoExists")
 	}
+	// A resolver failure is a verification failure (counted, nonzero exit),
+	// not a skip (round 6).
+	at := strings.Index(body, "collector.RefuseRepositoryHost(")
+	arm := body[at : strings.Index(body[at:], "verifyRepoExists(")+at]
+	if !strings.Contains(arm, "errors.Is(err, platform.ErrPrivateAddress)") || !strings.Contains(arm, "failed++") {
+		t.Error("runImportFromAugur must count a non-refusal error from the rule as a failure, not a skip")
+	}
 }

@@ -324,12 +324,17 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 	// and whose own clone (go-git) follows redirects the rule never sees —
 	// the stated residual (SECURITY.md). WARN: prelim's ERROR already named
 	// the key for this job.
-	if err := currentOutboundPolicy().Refuse(ctx, opts.RepoURL); err != nil {
+	if err := refuseWithRetry(ctx, opts.RepoURL); err != nil {
 		if ctx.Err() != nil {
 			return nil, err // a stop during the name's resolution is not a failure
 		}
-		logger.Warn("scorecard not run: repository host is a private address", "repo_id", repoID, "error", err)
-		return nil, fmt.Errorf("scorecard repo %d: %w", repoID, err)
+		if errors.Is(err, platform.ErrPrivateAddress) {
+			logger.Warn("scorecard not run: repository host is a private address", "repo_id", repoID, "error", err)
+			return nil, fmt.Errorf("scorecard repo %d: %w", repoID, err)
+		}
+		// A resolver failure past the ladder is not a refusal (round 6): its
+		// own text, and scorecard's own run would have failed the same way.
+		return nil, fmt.Errorf("scorecard repo %d: repository host did not resolve: %w", repoID, err)
 	}
 
 	timeout := opts.Timeout

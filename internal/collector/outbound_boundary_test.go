@@ -298,6 +298,31 @@ func TestScancodeCloneRefusesAPrivateHost(t *testing.T) {
 	}
 }
 
+// A resolver blip at the scorecard's rule check is retried on the ladder
+// (round 6): the scorecard still runs.
+func TestRunScorecardRetriesTheRulesResolverBlip(t *testing.T) {
+	argsLog, _ := installFakeScorecard(t, "exit 3")
+	lookups := 0
+	flaky := currentOutboundPolicy().WithResolver(func(_ context.Context, host string) ([]netip.Addr, error) {
+		lookups++
+		if lookups == 1 {
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true, IsTemporary: true}
+		}
+		return []netip.Addr{netip.MustParseAddr("203.0.113.9")}, nil
+	})
+	prev := currentOutboundPolicy()
+	SetOutboundPolicy(flaky)
+	t.Cleanup(func() { SetOutboundPolicy(prev) })
+	_, err := RunScorecard(context.Background(), nil, 1, ScorecardOptions{RepoURL: "https://forge.test/o/r"}, quiet())
+	if lookups < 2 {
+		t.Fatalf("the blip must be retried, lookups = %d", lookups)
+	}
+	if errors.Is(err, platform.ErrPrivateAddress) || (err != nil && strings.Contains(err.Error(), "did not resolve")) {
+		t.Fatalf("after the retry the rule passes; got %v", err)
+	}
+	_ = argsLog // whether the run then reaches the binary depends on the options, not on the rule
+}
+
 func TestRunScorecardRefusesAPrivateHost(t *testing.T) {
 	strictPolicy(t)
 	argsLog, _ := installFakeScorecard(t, "exit 3") // a binary on PATH (CI has none; round 5): the rule runs after the installed check
@@ -354,6 +379,7 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 				if !strings.Contains(body, "request(ctx, current)") {
 					t.Error("walkRedirects issues every hop through the request it was given, which consults the rule")
 				}
+				continue // the walker itself, not a boundary site (its signature matches its own marker)
 			case "resolveGitEndpoint":
 				if !strings.Contains(body, "walkRedirects(") || !strings.Contains(body, "refuseWithRetry(") {
 					t.Error("resolveGitEndpoint walks the endpoint's chain under the rule and refuses other schemes by name")
@@ -438,7 +464,7 @@ func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 // without it logs nothing for a refused repository (L10 round 2).
 func TestRunScorecardConsultsTheRuleAfterTheInstalledCheck(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func RunScorecard("))
-	look, refuse := strings.Index(body, `exec.LookPath("scorecard")`), strings.Index(body, "currentOutboundPolicy().Refuse(")
+	look, refuse := strings.Index(body, `exec.LookPath("scorecard")`), strings.Index(body, "refuseWithRetry(")
 	if look < 0 || refuse < 0 || refuse < look {
 		t.Errorf("RunScorecard: the installed check (%d) must precede the rule (%d)", look, refuse)
 	}

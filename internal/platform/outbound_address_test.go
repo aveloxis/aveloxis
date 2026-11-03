@@ -127,7 +127,7 @@ func TestOutboundPolicyTrustsConfiguredHostsAndRanges(t *testing.T) {
 	ctx := context.Background()
 	p := policy(t, "GitLab.Internal", "192.168.0.0/16", "fd00::/8", "100.64.3.4")
 	for _, u := range []string{
-		"https://gitlab.internal/g/p", // trusted by name, not resolved
+		"https://gitlab.internal/g/p", // trusted by name: resolved, link-local alone refused
 		"https://GITLAB.INTERNAL./g/p",
 		"git://git.lan/repo.git", // 192.168.7.7 inside the range
 		"https://ula.example/o/r",

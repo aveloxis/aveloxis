@@ -82,6 +82,14 @@ func TestFacadeRealRepoEndToEnd(t *testing.T) {
 	repoDir := t.TempDir()
 	fc := NewFacadeCollector(store, logger, repoDir)
 
+	// A live canary resolves for real: the package's deterministic resolver
+	// (TestMain) would send github.com to a TEST-NET address and the clone's
+	// endpoint walk would time out (L10 round 1 of 0.29.134). The strict rule
+	// is right here — github.com is public.
+	prevPolicy := currentOutboundPolicy()
+	SetOutboundPolicy(nil)
+	t.Cleanup(func() { SetOutboundPolicy(prevPolicy) })
+
 	result, err := fc.CollectRepo(ctx, repoID, gitURL)
 	if err != nil {
 		t.Fatalf("facade CollectRepo against real repo: %v", err)

@@ -63,24 +63,24 @@ func TestRedirectProbeRefusesAPrivateHostBeforeAnyRequest(t *testing.T) {
 }
 
 func TestRedirectProbeRefusesARedirectToAPrivateHost(t *testing.T) {
-	// The forge's own host is trusted by NAME (not resolved); its Location
-	// names localhost, which resolves to loopback and is refused before the
-	// hop is followed.
+	// The forge's own host is trusted by range (127.0.0.1/32); its Location
+	// names a host the package's resolver answers with a private address —
+	// refused before the hop is followed.
 	var next atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/next" {
 			next.Add(1)
 			return
 		}
-		http.Redirect(w, r, "http://localhost:"+srv_port(r)+"/next", http.StatusFound)
+		http.Redirect(w, r, "http://git.internal:"+srv_port(r)+"/next", http.StatusFound)
 	}))
 	t.Cleanup(srv.Close)
-	byName, err := platform.NewOutboundPolicy([]string{"127.0.0.1"})
+	byRange, err := platform.NewOutboundPolicy([]string{"127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	prev := currentOutboundPolicy()
-	SetOutboundPolicy(byName)
+	SetOutboundPolicy(byRange.WithResolver(testOutboundResolver))
 	t.Cleanup(func() { SetOutboundPolicy(prev) })
 	_, _, err = ResolveRedirectTarget(context.Background(), srv.URL+"/o/r")
 	if !errors.Is(err, platform.ErrPrivateAddress) {
@@ -114,7 +114,7 @@ func TestCloneResolvesTheGitEndpointsRedirectUnderTheRule(t *testing.T) {
 			w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
 			w.Write([]byte("001e# service=git-upload-pack\n0000"))
 		case "/moved/info/refs":
-			http.Redirect(w, r, "http://localhost:"+srv_port(r)+"/private/info/refs?service=git-upload-pack", http.StatusFound)
+			http.Redirect(w, r, "http://git.internal:"+srv_port(r)+"/private/info/refs?service=git-upload-pack", http.StatusFound)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -132,11 +132,12 @@ func TestCloneResolvesTheGitEndpointsRedirectUnderTheRule(t *testing.T) {
 	if got, err := resolveGitEndpoint(ctx, srv.URL+"/gone"); err != nil || got != srv.URL+"/gone" {
 		t.Fatalf("a non-redirect answer keeps the stored URL: %q, %v", got, err)
 	}
-	// The forge trusted by NAME; its Location names localhost, which
-	// resolves to loopback and is refused before the hop.
-	byName, _ := platform.NewOutboundPolicy([]string{"127.0.0.1"})
+	// The forge trusted by range (127.0.0.1/32); its Location names a host
+	// the package's resolver answers with a private address, refused before
+	// the hop.
+	byRange, _ := platform.NewOutboundPolicy([]string{"127.0.0.1"})
 	prev := currentOutboundPolicy()
-	SetOutboundPolicy(byName)
+	SetOutboundPolicy(byRange.WithResolver(testOutboundResolver))
 	t.Cleanup(func() { SetOutboundPolicy(prev) })
 	hits = nil
 	if _, err := resolveGitEndpoint(ctx, srv.URL+"/moved"); !errors.Is(err, platform.ErrPrivateAddress) {

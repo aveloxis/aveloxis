@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/platform"
@@ -32,11 +33,21 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	SetOutboundPolicy(loopback.WithResolver(func(_ context.Context, host string) ([]netip.Addr, error) {
-		if host == "localhost" {
-			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
-		}
-		return []netip.Addr{netip.MustParseAddr("203.0.113.1")}, nil
-	}))
+	SetOutboundPolicy(loopback.WithResolver(testOutboundResolver))
 	os.Exit(testdb.Main(m, prepare.Deployment, prepare.Verify))
+}
+
+// testOutboundResolver is the deterministic resolver of this package's
+// outbound policies: localhost to loopback, a name under .internal to a
+// private address (a redirect target the rule must refuse), every other
+// name to a TEST-NET address. A live canary (AVELOXIS_TEST_NETWORK=1)
+// installs its own policy and resolves for real.
+func testOutboundResolver(_ context.Context, host string) ([]netip.Addr, error) {
+	switch {
+	case host == "localhost":
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	case strings.HasSuffix(host, ".internal"):
+		return []netip.Addr{netip.MustParseAddr("10.0.0.5")}, nil
+	}
+	return []netip.Addr{netip.MustParseAddr("203.0.113.1")}, nil
 }

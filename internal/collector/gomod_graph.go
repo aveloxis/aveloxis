@@ -25,6 +25,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,7 +153,7 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// would, per module per collection — the repository's choice; ASVS
 	// review of 0.29.125, V5.3.2); a too-new go line fails into the WARN
 	// arm below, as install-tools' own probe already pins it (tools.go).
-	env := goModuleEnv(ctx, goBin)
+	env := goModuleEnv(ctx, goBin, ac.logger)
 
 	run := func(args ...string) (string, bool) {
 		cmd := exec.CommandContext(ctx, goBin, args...)
@@ -272,32 +273,50 @@ func goProxyWithoutDirect(list string) string {
 	return out.String()
 }
 
-// goModuleEnv is the environment the go-module closure runs under (0.29.132;
-// one builder, pinned by TestGoModuleEnvironmentOverridesSavedPrivateSettings).
-// GOPROXY without `direct` (L10 round 2): a `require` or `replace` naming a
+// goModuleEnv is the environment the go-module closure runs under: the
+// one builder (0.29.133; the behaviour is 0.29.132's), pinned by
+// TestGoModuleEnvironmentOverridesSavedPrivateSettings. GOPROXY without
+// `direct` (L10 round 2 of 0.29.132): a `require` or `replace` naming a
 // host the proxy answers 404/410 for fell through to `direct` — a GET and a
 // git ls-remote from this host to any address the cloned go.mod names, the
 // reachability the outbound-address rule closes elsewhere. The operator's
 // own proxy list is kept (a host behind a corporate module proxy keeps
-// resolving through it; round 3) with `direct` removed — the EFFECTIVE list,
-// read through `go env`, since a value saved with `go env -w` is not in this
-// process's environment (Copilot's twelfth review of PR #246). GONOPROXY and
-// GOPRIVATE are set to a pattern no module path matches, not emptied: the go
-// command falls back to the saved file for an EMPTY variable (cfg.Getenv),
-// so an operator's `go env -w GOPRIVATE=corp.internal` stayed in force and
-// a stranger's go.mod naming that host reached it directly. GOSUMDB and
-// GONOSUMDB stay as the operator set them: they govern integrity, not egress
-// (the checksum database is never the repository host), and clearing them
-// would fail a module only the operator's own proxy serves (round 4). A
-// module no proxy serves is the WARN arm in goModGraphOne (it used to
-// succeed through `direct`).
-func goModuleEnv(ctx context.Context, goBin string) []string {
-	proxy := os.Getenv("GOPROXY")
-	if out, err := exec.CommandContext(ctx, goBin, "env", "GOPROXY").Output(); err == nil {
-		proxy = strings.TrimSpace(string(out)) // the effective value: the environment, else the saved file, else the default
+// resolving through it; round 3) with `direct` removed — the EFFECTIVE
+// list, read through `go env`, since a value saved with `go env -w` is not
+// in this process's environment (Copilot's twelfth review of PR #246).
+// GONOPROXY and GOPRIVATE are set to a pattern no module path matches, not
+// emptied: the go command falls back to the saved file for an EMPTY
+// variable (cfg.Getenv), so an operator's `go env -w GOPRIVATE=corp.internal`
+// stayed in force and a stranger's go.mod naming that host reached it
+// directly. GONOSUMDB is DERIVED from GOPRIVATE when not set itself
+// (cfg.go: EnvOrAndChanged("GONOSUMDB", GOPRIVATE)), so overriding
+// GOPRIVATE would silently send the operator's private modules to
+// sum.golang.org (L10 round 1 of 0.29.133): its effective value is read in
+// the same `go env` call and passed as it was, so the checksum settings are
+// unchanged in effect — they govern integrity, not egress (the checksum
+// database is never the repository host; round 4). A module no proxy serves
+// is the WARN arm in goModGraphOne (it used to succeed through `direct`).
+// The probe runs as GoBinDir's does: the host's toolchain, the process
+// group killed on stop; a failed probe falls back to this process's
+// environment, logged (everything that errors is logged).
+func goModuleEnv(ctx context.Context, goBin string, logger *slog.Logger) []string {
+	proxy, noSumDB := os.Getenv("GOPROXY"), os.Getenv("GONOSUMDB")
+	probe := exec.CommandContext(ctx, goBin, "env", "GOPROXY", "GONOSUMDB")
+	groupKilled(probe)
+	probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if out, err := probe.Output(); err == nil {
+		if lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); len(lines) == 2 {
+			proxy, noSumDB = strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]) // the effective values: the environment, else the saved file, else the default
+		}
+	} else if ctx.Err() == nil {
+		logger.Warn("go env probe failed; the go-module closure runs on this process's GOPROXY and GONOSUMDB (a value saved with go env -w is not seen)",
+			"error", execErr(ctx, err), "stderr", exitStderr(err))
+	}
+	if noSumDB == "" {
+		noSumDB = goNoModule // nothing was exempt from the checksum database; an empty value would derive from the overridden GOPRIVATE
 	}
 	return append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOTOOLCHAIN=local",
-		"GOPROXY="+goProxyWithoutDirect(proxy), "GONOPROXY="+goNoModule, "GOPRIVATE="+goNoModule)
+		"GOPROXY="+goProxyWithoutDirect(proxy), "GONOPROXY="+goNoModule, "GOPRIVATE="+goNoModule, "GONOSUMDB="+noSumDB)
 }
 
 // goNoModule is a module-path pattern nothing matches: a module path's first

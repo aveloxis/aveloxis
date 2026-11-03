@@ -447,11 +447,13 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 // must not reach it from this host through GOPROXY's `direct`; the checksum
 // settings are the operator's (integrity, not egress).
 func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
-	if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne(")), "goModuleEnv(ctx, goBin)") {
+	if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne(")), "goModuleEnv(ctx, goBin, ac.logger)") {
 		t.Error("goModGraphOne runs under goModuleEnv, the one builder")
 	}
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func goModuleEnv("))
-	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(proxy)`, `"GONOPROXY="+goNoModule`, `"GOPRIVATE="+goNoModule`, `"env", "GOPROXY"`} {
+	// GONOSUMDB is passed as its EFFECTIVE value (the go command derives it
+	// from GOPRIVATE, which is overridden); GOSUMDB is never touched.
+	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(proxy)`, `"GONOPROXY="+goNoModule`, `"GOPRIVATE="+goNoModule`, `"GONOSUMDB="+noSumDB`, `"env", "GOPROXY", "GONOSUMDB"`} {
 		if !strings.Contains(body, kv) {
 			t.Errorf("the go-module environment lacks %s", kv)
 		}
@@ -459,8 +461,17 @@ func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 	if strings.Contains(body, ",direct") || strings.Contains(body, "|direct") {
 		t.Error("GOPROXY must not fall through to direct")
 	}
-	if strings.Contains(body, `"GONOSUMDB="`) || strings.Contains(body, `"GOSUMDB=`) {
-		t.Error("the checksum settings stay the operator's")
+	if strings.Contains(body, `"GOSUMDB=`) {
+		t.Error("GOSUMDB stays the operator's")
+	}
+	// The probe runs as GoBinDir's does: the host's toolchain (a cwd go.mod's
+	// toolchain line must not start a download) and the process group
+	// killed on stop (TestGoBinDirIgnoresTheCwdModulesToolchain drives the
+	// same shape).
+	for _, want := range []string{`probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")`, "groupKilled(probe)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("goModuleEnv's go env probe lacks %s", want)
+		}
 	}
 }
 
@@ -479,17 +490,21 @@ func TestGoModuleEnvironmentOverridesSavedPrivateSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GOENV", goenv)
-	t.Setenv("GOPROXY", "")
-	t.Setenv("GOPRIVATE", "")
-	t.Setenv("GONOPROXY", "")
-	env := goModuleEnv(context.Background(), goBin)
-	cmd := exec.Command(goBin, "env", "GOPROXY", "GONOPROXY", "GOPRIVATE")
+	for _, k := range []string{"GOPROXY", "GOPRIVATE", "GONOPROXY", "GONOSUMDB"} {
+		t.Setenv(k, "")
+	}
+	env := goModuleEnv(context.Background(), goBin, quiet())
+	cmd := exec.Command(goBin, "env", "GOPROXY", "GONOPROXY", "GOPRIVATE", "GONOSUMDB")
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(out)), "https://athens.corp\nnone\nnone"; got != want {
+	// GONOSUMDB: the file sets only GOPRIVATE, from which the go command
+	// derived it; the effective value survives the override (L10 round 1 of
+	// 0.29.133: it silently became `none`, sending the operator's private
+	// modules to sum.golang.org).
+	if got, want := strings.TrimSpace(string(out)), "https://athens.corp\nnone\nnone\ncorp.internal/*"; got != want {
 		t.Fatalf("the effective go environment is %q, want %q", got, want)
 	}
 }

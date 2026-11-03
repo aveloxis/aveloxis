@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.131 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.132 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=87b1c8aa"></script>
+      <script src="../_static/documentation_options.js?v=b04942c0"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2126,17 +2126,22 @@ a half against its own reference table below:</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">6</span></code></p></td>
 <td><p>v0.28.1: stretches the recollect interval for ARCHIVED repos (<code class="docutils literal notranslate"><span class="pre">due_at</span> <span class="pre">=</span> <span class="pre">last_collected</span> <span class="pre">+</span> <span class="pre">days_until_recollect</span> <span class="pre">×</span> <span class="pre">multiplier</span></code>). Archived repos still recollect — they can be unarchived or gain issues — just less often; on a large fleet this recovers the ~20% of queue churn otherwise spent on mostly-304 cycles over frozen repos. Set <code class="docutils literal notranslate"><span class="pre">1</span></code> to disable the stretch. Applied inside both due_at writers, so config changes take effect fleet-wide on the next serve restart.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.workers</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.private_network_hosts</span></code></p></td>
+<td><p>array of strings</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>0.29.132, the outbound-address rule. Every repository URL is probed and cloned from the serve host, so a host whose address is loopback, private (RFC 1918, ULA), carrier-grade NAT or otherwise special-use is refused at collection unless the operator trusts it: list a host name (trusted as written, no port) or an address range in CIDR form (a standalone git host on the LAN, as <code class="docutils literal notranslate"><span class="pre">&quot;192.168.10.0/24&quot;</span></code>). The configured forge instances — <code class="docutils literal notranslate"><span class="pre">github.base_url</span></code>, <code class="docutils literal notranslate"><span class="pre">gitlab.base_url</span></code>, <code class="docutils literal notranslate"><span class="pre">web.gitlab_base_url</span></code> — are trusted without an entry, so a self-hosted GitLab or GitHub Enterprise on a private network needs nothing here. Link-local addresses (<code class="docutils literal notranslate"><span class="pre">169.254.0.0/16</span></code>, <code class="docutils literal notranslate"><span class="pre">fe80::/10</span></code>, where cloud metadata services live) are never reached and cannot be listed. A refused repository’s job fails and is retried on its backoff with an ERROR line naming this key; it is never marked gone for it. The rule applies to the redirect probe (each hop), both git clones and the scorecard run; the serve process logs the effective trust at start.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.workers</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">12</span></code></p></td>
 <td><p>Number of concurrent collection workers when running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> sizes its connection pool from the scheduler’s connection demand (v0.29.58; each slot can hold five connections at once), capped by the server’s budget, or set outright by <code class="docutils literal notranslate"><span class="pre">database.pool_max_conns</span></code> — see <a class="reference internal" href="../guide/scaling.html#database-connection-pool"><span class="std std-ref">Database connection pool</span></a>.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repo_clone_dir</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repo_clone_dir</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">~/aveloxis-repos</span></code> (computed at startup)</p></td>
 <td><p>Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.force_full</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.force_full</span></code></p></td>
 <td><p>boolean</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Fleet-wide: when <code class="docutils literal notranslate"><span class="pre">true</span></code>, every collection pass runs <code class="docutils literal notranslate"><span class="pre">since=zero</span></code> regardless of <code class="docutils literal notranslate"><span class="pre">last_collected</span></code>. Use this once after a systemic bug fix that invalidates collected data, then revert to <code class="docutils literal notranslate"><span class="pre">false</span></code>. For per-repo full re-collection, use <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">recollect</span> <span class="pre">&lt;url&gt;</span></code> instead (sets a queue flag, doesn’t touch this setting).</p></td>

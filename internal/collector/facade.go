@@ -345,6 +345,11 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	if err := validateGitURL(gitURL); err != nil {
 		return fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
+	// The outbound-address rule (0.29.132), by name: git is a subprocess,
+	// so the check cannot pin the address it connects to.
+	if err := currentOutboundPolicy().Refuse(ctx, gitURL); err != nil {
+		return fmt.Errorf("clone refused: %w", err)
+	}
 	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

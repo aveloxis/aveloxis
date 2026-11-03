@@ -24,6 +24,7 @@
     "base_url": "https://gitlab.com/api/v4"
   },
   "collection": {
+    "private_network_hosts": [],
     "days_until_recollect": 1,
     "workers": 12,
     "repo_clone_dir": "/data",

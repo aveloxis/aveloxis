@@ -1153,6 +1153,15 @@ type CollectionConfig struct {
 	// days"). Distinct from the API-side sender-RESOLVE ticker, which
 	// keeps its own interval.
 	MailingListSenderBackfillMinutes int `json:"mailing_list_sender_backfill_interval_minutes"`
+	// PrivateNetworkHosts (0.29.132, the outbound-address rule) lists the
+	// repository hosts on private networks the collector may reach: a host
+	// name (trusted as written) or an address range in CIDR form (a
+	// standalone git host on the LAN). The configured forge instances —
+	// github.base_url, gitlab.base_url, web.gitlab_base_url — are trusted
+	// without an entry. Every other host whose address is loopback, private
+	// (RFC 1918, ULA), carrier-grade NAT or otherwise special-use is refused
+	// at collection, logged with this key; link-local is never allowed.
+	PrivateNetworkHosts []string `json:"private_network_hosts"`
 }
 
 // MailingListProcessorWorkersOrDefault falls back to 1 drain goroutine per
@@ -1836,7 +1845,34 @@ func (c *Config) validate() error {
 	if sec := c.API.CacheRewarmSeconds; sec != nil && (*sec < 0 || int64(*sec) > MaxCacheRewarmSeconds) {
 		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default (it applies only while api.response_cache_mb is set)", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
 	}
+	// The outbound-address rule's trust is parsed by the one parser the
+	// collector uses (0.29.132): a bad entry refuses the file here, with
+	// the key, rather than at the first collection.
+	if _, err := c.OutboundPolicy(); err != nil {
+		return fmt.Errorf("collection.private_network_hosts: %w — each entry is a host name or an address range in CIDR form (link-local is never allowed)", err)
+	}
 	return nil
+}
+
+// OutboundAllowlist is the trust of the outbound-address rule (0.29.132):
+// collection.private_network_hosts as written, plus the hosts of the
+// configured forge instances (github.base_url, gitlab.base_url,
+// web.gitlab_base_url), which a self-hosted forge on a private network
+// needs and an operator should not have to repeat.
+func (c *Config) OutboundAllowlist() []string {
+	out := append([]string(nil), c.Collection.PrivateNetworkHosts...)
+	for _, raw := range []string{c.GitHub.BaseURL, c.GitLab.BaseURL, c.Web.GitLabBaseURL} {
+		if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Hostname() != "" {
+			out = append(out, u.Hostname())
+		}
+	}
+	return out
+}
+
+// OutboundPolicy is the outbound-address rule built from OutboundAllowlist
+// — what loadConfig installs for the collector (SR-17: one parser, one rule).
+func (c *Config) OutboundPolicy() (*platform.OutboundPolicy, error) {
+	return platform.NewOutboundPolicy(c.OutboundAllowlist())
 }
 
 // MaxSupplyChainRefreshHours is the largest cadence a time.Duration can
@@ -2209,6 +2245,7 @@ func DefaultConfig() *Config {
 			MailingListMirrorHandling:        "metadata_only",
 			MailingListProcessorWorkers:      1,
 			MailingListSenderBackfillMinutes: 60,
+			PrivateNetworkHosts:              []string{}, // the example files teach the empty list (0.29.132)
 			// v0.29.0 Jira collector. Off by default.
 			JiraEnabled:      false,
 			JiraWorkers:      1,

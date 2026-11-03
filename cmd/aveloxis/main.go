@@ -2151,6 +2151,20 @@ func versionCmd() *cobra.Command {
 
 // --- helpers ---
 
+// outboundPolicyFor is the process's outbound-address rule (0.29.132) from
+// the configuration, logged as the EFFECTIVE trust the collector uses. A
+// bad entry is refused by config.Load, so a failure here is a defect.
+func outboundPolicyFor(cfg *config.Config, logger *slog.Logger) *platform.OutboundPolicy {
+	p, err := cfg.OutboundPolicy()
+	if err != nil {
+		logger.Error("collection.private_network_hosts is invalid — refusing to run", "error", err)
+		exitProcess(1)
+		return nil
+	}
+	logger.Info("outbound-address rule: private repository hosts trusted (collection.private_network_hosts plus the configured forge instances)", "trusted", p.Allow())
+	return p
+}
+
 func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	cfg, err := config.Load(cfgPath)
 	if err == nil {
@@ -2163,12 +2177,14 @@ func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 			logger.Warn("config file is readable by other users — it holds the database password, OAuth secrets and forge keys; chmod 600 it", "path", cfgPath, "mode", fmt.Sprintf("%04o", st.Mode().Perm()))
 		}
 		db.SetProcessCapacitySources(cfg.CapacitySources()) // v0.29.89: every store this process opens
+		collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))
 		return cfg
 	}
 	if errors.Is(err, config.ErrNotFound) {
 		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
 		cfg = config.DefaultConfig()
 		db.SetProcessCapacitySources(cfg.CapacitySources())
+		collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))
 		return cfg
 	}
 	// v0.29.61: a file that EXISTS but does not parse or validate used to

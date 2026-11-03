@@ -91,6 +91,7 @@ var frozenCollectionKeys = []string{
 	"jira_workers",
 	"jira_cadence_hours",
 	"jira_polite_email",
+	"private_network_hosts",
 }
 
 func TestCollectionJSONSurfaceIsFrozen(t *testing.T) {

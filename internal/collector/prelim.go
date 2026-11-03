@@ -68,6 +68,16 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
 		return result, nil
 	}
+	if errors.Is(err, platform.ErrPrivateAddress) {
+		// The outbound-address rule (0.29.132): the URL is left as it is and
+		// the job goes on to the facade, which refuses the clone with the same
+		// error — a failed job, retried with its backoff, never a gone mark
+		// (SR-7). A redirect hop that lands on a private host is refused the
+		// same way (each Location is checked before it is followed).
+		logger.Error("prelim: repository host is a private address — not probed or cloned; list it in collection.private_network_hosts (a configured forge's base_url is trusted)",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
+		return result, nil
+	}
 	if err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is
@@ -287,6 +297,12 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 	// target.
 	current := repoURL
 	for hop := 0; ; hop++ {
+		// The outbound-address rule, by name, before every hop (0.29.132):
+		// the first URL and each Location a forge answers with; the dial
+		// itself pins the checked address (probeDial).
+		if err := currentOutboundPolicy().Refuse(ctx, current); err != nil {
+			return "", 0, err
+		}
 		resp, err := headWithRetry(ctx, current)
 		if err != nil {
 			return "", 0, err
@@ -343,6 +359,7 @@ func isRedirectStatus(code int) bool {
 // whole chain; ResponseHeaderTimeout covers write-to-headers only.
 var probeTransport http.RoundTripper = &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           probeDial, // the outbound-address rule's dial (0.29.132)
 	ResponseHeaderTimeout: 15 * time.Second,
 	IdleConnTimeout:       90 * time.Second,
 }

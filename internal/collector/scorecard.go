@@ -311,6 +311,15 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		logger.Error("scorecard not run: repo URL carries credentials", "repo_id", repoID, "error", err)
 		return nil, fmt.Errorf("scorecard repo %d: %w", repoID, err)
 	}
+	// The outbound-address rule (0.29.132): scorecard reaches the
+	// repository's forge host itself, a subprocess the check cannot pin.
+	if err := currentOutboundPolicy().Refuse(ctx, opts.RepoURL); err != nil {
+		if ctx.Err() != nil {
+			return nil, err // a stop during the name's resolution is not a failure
+		}
+		logger.Error("scorecard not run: repository host is a private address", "repo_id", repoID, "error", err)
+		return nil, fmt.Errorf("scorecard repo %d: %w", repoID, err)
+	}
 	// Check if scorecard is installed.
 	scorecardPath, err := exec.LookPath("scorecard")
 	if err != nil {

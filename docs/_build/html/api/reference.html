@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -362,6 +362,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -775,7 +776,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1613,6 +1614,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-insights">repo_insights</a></li>
@@ -1911,7 +1917,7 @@ PascalCase.</p>
 </section>
 <section id="repositories">
 <h2>Repositories<a class="headerlink" href="#repositories" title="Link to this heading"></a></h2>
-<p>One collected repository’s statistics, series, licenses, SBOMs and scan results.</p>
+<p>One collected repository’s statistics, series, licenses, SBOMs, scan results and traffic.</p>
 <dl class="http get">
 <dt class="sig sig-object http" id="get--api-v1-repos-repoID-stats">
 <span class="sig-name descname"><span class="pre">GET</span> </span><span class="sig-name descname"><span class="pre">/api/v1/repos/{repoID}/stats</span></span><a class="headerlink" href="#get--api-v1-repos-repoID-stats" title="Link to this definition"></a></dt>
@@ -2531,6 +2537,105 @@ SQL wildcards before). <code class="docutils literal notranslate"><span class="p
 </dd>
 <dt class="field-odd">Response Headers<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
+<li><p><strong>X-Aveloxis-Added-To-Group</strong> (<span><em>string</em></span>) – Present once, on the answer whose request added the repository to
+the caller’s “Shared with Me” group (a signed-in session following a
+link to a repository outside its groups). Its value is the group’s
+name. The addition happens before the operation runs, so the header
+rides on whatever that request answers, a <code class="docutils literal notranslate"><span class="pre">400</span></code>, <code class="docutils literal notranslate"><span class="pre">404</span></code>, <code class="docutils literal notranslate"><span class="pre">429</span></code> or
+<code class="docutils literal notranslate"><span class="pre">500</span></code> included; the reference declares it on the success response.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="http get">
+<dt class="sig sig-object http" id="get--api-v1-repos-repoID-traffic">
+<span class="sig-name descname"><span class="pre">GET</span> </span><span class="sig-name descname"><span class="pre">/api/v1/repos/{repoID}/traffic</span></span><a class="headerlink" href="#get--api-v1-repos-repoID-traffic" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Operation<span class="colon">:</span></dt>
+<dd class="field-odd"><p><code class="docutils literal notranslate"><span class="pre">repositoryTraffic</span></code></p>
+</dd>
+<dt class="field-even">Access<span class="colon">:</span></dt>
+<dd class="field-even"><p>a session or an API token; anonymous callers too while <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> is off or from an exempt network.</p>
+</dd>
+</dl>
+<p><strong>Returns a repository’s stored traffic history.</strong></p>
+<p>Everything stored from the forge’s traffic and statistics APIs, in
+one answer without paging: every daily row of clones and views,
+every 14-day window and complete week, and the latest top paths and
+referrers. A day with a row was read, even when its counts are 0. A
+GitLab repository answers its daily clones with <code class="docutils literal notranslate"><span class="pre">uniques</span></code> null,
+empty lists for the rest and a <code class="docutils literal notranslate"><span class="pre">null</span></code> <code class="docutils literal notranslate"><span class="pre">snapshot_date</span></code>. So does a
+repository whose key the forge refuses, and an id with no
+repository, to an unscoped caller (a scoped caller gets the <code class="docutils literal notranslate"><span class="pre">403</span></code>).
+Grows by about 730 daily rows a year; the read is indexed by
+repository.</p>
+<p>Handler: <code class="docutils literal notranslate"><span class="pre">handleRepoTraffic</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Request Headers<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>If-None-Match</strong> (<span><em>string</em></span>) – An <code class="docutils literal notranslate"><span class="pre">ETag</span></code> from an earlier answer. When it names the current one the answer is <code class="docutils literal notranslate"><span class="pre">304</span></code> with no body.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Parameters<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>repoID</strong> (<em>integer:int64, required</em>) – A repository’s id (<code class="docutils literal notranslate"><span class="pre">repo_id</span></code>). A value that is not a positive integer is a <code class="docutils literal notranslate"><span class="pre">400</span></code>; an id no repository has is a <code class="docutils literal notranslate"><span class="pre">404</span></code> on every repository route (since 0.29.99).</p></li>
+</ul>
+</dd>
+<dt class="field-odd">Response JSON Object<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>repo_id</strong> (<em>integer:int64, required</em>)</p></li>
+<li><p><strong>clones[]</strong> (<em>object</em>) – One stored UTC day of clones or views (<code class="docutils literal notranslate"><span class="pre">db.TrafficDay</span></code>).</p></li>
+<li><p><strong>clones[].date</strong> (<em>string:date, required</em>)</p></li>
+<li><p><strong>clones[].count</strong> (<em>integer, null, required</em>) – Clones or views that day.</p></li>
+<li><p><strong>clones[].uniques</strong> (<em>integer, null, required</em>) – Distinct cloners or visitors that day; <code class="docutils literal notranslate"><span class="pre">null</span></code> when the forge does not count them (GitLab clones).</p></li>
+<li><p><strong>views[]</strong> (<em>object</em>) – One stored UTC day of clones or views (<code class="docutils literal notranslate"><span class="pre">db.TrafficDay</span></code>).</p></li>
+<li><p><strong>views[].date</strong> (<em>string:date, required</em>)</p></li>
+<li><p><strong>views[].count</strong> (<em>integer, null, required, required</em>) – Clones or views that day.</p></li>
+<li><p><strong>views[].uniques</strong> (<em>integer, null, required, required</em>) – Distinct cloners or visitors that day; <code class="docutils literal notranslate"><span class="pre">null</span></code> when the forge does not count them (GitLab clones).</p></li>
+<li><p><strong>windows[]</strong> (<em>object</em>) – One 14-day window GitHub reported, from its first to its last daily bucket (<code class="docutils literal notranslate"><span class="pre">db.TrafficWindow</span></code>).</p></li>
+<li><p><strong>windows[].kind</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>windows[].start</strong> (<em>string:date, required</em>)</p></li>
+<li><p><strong>windows[].end</strong> (<em>string:date, required</em>) – The window’s last day, included.</p></li>
+<li><p><strong>windows[].uniques</strong> (<em>integer, null, required</em>) – Distinct visitors or cloners over the window, as GitHub computes them; not the sum of the daily uniques.</p></li>
+<li><p><strong>weeks[]</strong> (<em>object</em>) – One complete Monday-to-Sunday week inside a read’s window (<code class="docutils literal notranslate"><span class="pre">db.TrafficWeek</span></code>).</p></li>
+<li><p><strong>weeks[].kind</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>weeks[].week_start</strong> (<em>string:date, required</em>) – The week’s Monday.</p></li>
+<li><p><strong>weeks[].uniques</strong> (<em>integer, null, required</em>) – Distinct visitors or cloners over the week.</p></li>
+<li><p><strong>snapshot_date</strong> (<em>['string', 'null']:date, required</em>) – The latest UTC collection date that stored a path or a
+referrer; <code class="docutils literal notranslate"><span class="pre">paths</span></code> and <code class="docutils literal notranslate"><span class="pre">referrers</span></code> are that date’s
+snapshot. <code class="docutils literal notranslate"><span class="pre">null</span></code> when none was ever stored.</p></li>
+<li><p><strong>paths[]</strong> (<em>object</em>) – One of the top paths GitHub reported for its 14-day period (<code class="docutils literal notranslate"><span class="pre">db.TrafficPath</span></code>).</p></li>
+<li><p><strong>paths[].path</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>paths[].title</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>paths[].count</strong> (<em>integer, null, required</em>) – Views of the path over GitHub’s 14-day period.</p></li>
+<li><p><strong>paths[].uniques</strong> (<em>integer, null, required</em>) – Distinct visitors of the path over that period.</p></li>
+<li><p><strong>referrers[]</strong> (<em>object</em>) – One of the top referring sites GitHub reported for its 14-day period (<code class="docutils literal notranslate"><span class="pre">db.TrafficReferrer</span></code>).</p></li>
+<li><p><strong>referrers[].referrer</strong> (<em>string, required</em>)</p></li>
+<li><p><strong>referrers[].count</strong> (<em>integer, null, required</em>) – Views the site sent over GitHub’s 14-day period.</p></li>
+<li><p><strong>referrers[].uniques</strong> (<em>integer, null, required</em>) – Distinct visitors the site sent over that period.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Status Codes<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/200">200 OK</a></span> – The stored traffic.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304">304 Not Modified</a></span> – The <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code> validator names the current answer. <a class="reference internal" href="#shared-response-notmodified"><span class="std std-ref">Shared response NotModified</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/400">400 Bad Request</a></span> – The request is malformed (an id that is not an integer, a value outside its enum, a missing parameter). <a class="reference internal" href="#shared-response-badrequest"><span class="std std-ref">Shared response BadRequest</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/401">401 Unauthorized</a></span> – No valid Bearer token: missing, unknown, expired or revoked. <a class="reference internal" href="#shared-response-unauthorized"><span class="std std-ref">Shared response Unauthorized</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/403">403 Forbidden</a></span> – The repository is outside the caller’s scope (<code class="docutils literal notranslate"><span class="pre">repo_out_of_scope</span></code>), or a signed-in session’s automatic addition of it would exceed the account’s repository allocation (<code class="docutils literal notranslate"><span class="pre">capacity_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">kind</span></code> <code class="docutils literal notranslate"><span class="pre">allocation</span></code>). <a class="reference internal" href="#shared-response-repooutofscope"><span class="std std-ref">Shared response RepoOutOfScope</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/500">500 Internal Server Error</a></span> – A server-side failure. <a class="reference internal" href="#shared-response-servererror"><span class="std std-ref">Shared response ServerError</span></a>.</p></li>
+<li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later; this is never a sign-out. <a class="reference internal" href="#shared-response-serviceunavailable"><span class="std std-ref">Shared response ServiceUnavailable</span></a>.</p></li>
+</ul>
+</dd>
+<dt class="field-odd">Response Headers<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>ETag</strong> (<span><em>string</em></span>) – The answer’s validator, weak (<code class="docutils literal notranslate"><span class="pre">W/&quot;…&quot;</span></code>) when the answer depends only
+on the repository’s stored state. Send it back as <code class="docutils literal notranslate"><span class="pre">If-None-Match</span></code>.</p></li>
+<li><p><strong>Cache-Control</strong> (<span><em>string:enum</em></span>) – <code class="docutils literal notranslate"><span class="pre">no-cache</span></code> for an answer any caller may be given (revalidate each
+time); <code class="docutils literal notranslate"><span class="pre">private,</span> <span class="pre">no-store</span></code> for an answer about this caller, which
+nothing may store.</p></li>
+<li><p><strong>X-Cache</strong> (<span><em>string</em></span>) – <code class="docutils literal notranslate"><span class="pre">hit</span></code> when the answer came from the server’s response cache; absent otherwise.</p></li>
 <li><p><strong>X-Aveloxis-Added-To-Group</strong> (<span><em>string</em></span>) – Present once, on the answer whose request added the repository to
 the caller’s “Shared with Me” group (a signed-in session following a
 link to a repository outside its groups). Its value is the group’s

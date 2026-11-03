@@ -17,6 +17,10 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
+// The GitHub client must implement every platform.Client method; this
+// fails the build when the interface grows a method GitHub lacks.
+var _ platform.Client = (*Client)(nil)
+
 // Client implements platform.Client for GitHub.
 type Client struct {
 	http   *platform.HTTPClient
@@ -1331,11 +1335,15 @@ func statusStr(archived, disabled bool) string {
 	return "Active"
 }
 
-func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, error) {
+// githubTrafficSource is the data_source of the traffic rows, as the
+// other GitHub readers write it.
+const githubTrafficSource = "GitHub API"
+
+func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]model.RepoClone, int, error) {
 	path := fmt.Sprintf("/repos/%s/%s/traffic/clones", owner, repo)
 	var raw ghCloneTraffic
 	if err := c.http.GetJSON(ctx, path, &raw); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	clones := make([]model.RepoClone, len(raw.Clones))
@@ -1343,10 +1351,95 @@ func (c *Client) FetchCloneStats(ctx context.Context, owner, repo string) ([]mod
 		clones[i] = model.RepoClone{
 			Timestamp:    c.Timestamp,
 			TotalClones:  c.Count,
-			UniqueClones: c.Uniques,
+			UniqueClones: &c.Uniques,
+			Origin:       model.DataOrigin{DataSource: githubTrafficSource},
 		}
 	}
-	return clones, nil
+	// The top-level uniques of this same read: the clones window's
+	// distinct cloners. Reading it here, beside the buckets that date
+	// that window, keeps its dates and its uniques on one period.
+	return clones, raw.Uniques, nil
+}
+
+// FetchTraffic makes the five traffic reads other than the daily clones
+// (see platform.RepoCollector.FetchTraffic) and maps what GitHub
+// returns, every bucket kept, zeros included. Weekly counts are not
+// kept: a week's total is the sum of its daily rows. The first failure
+// stops the call, and the error names the endpoint and wraps the cause,
+// so ClassifyError still sees the 403 (ClassSkip) or the exhausted 5xx
+// retries (ClassTransient).
+func (c *Client) FetchTraffic(ctx context.Context, owner, repo string) (*model.RepoTraffic, error) {
+	var (
+		viewsDay   ghViewTraffic
+		viewsWeek  ghViewTraffic
+		clonesWeek ghCloneTraffic
+		paths      []ghTrafficPath
+		referrers  []ghTrafficReferrer
+	)
+	reads := []struct {
+		endpoint string
+		dest     any
+	}{
+		{"views?per=day", &viewsDay},
+		{"views?per=week", &viewsWeek},
+		{"clones?per=week", &clonesWeek},
+		{"popular/paths", &paths},
+		{"popular/referrers", &referrers},
+	}
+	for _, r := range reads {
+		path := fmt.Sprintf("/repos/%s/%s/traffic/%s", owner, repo, r.endpoint)
+		if err := c.http.GetJSON(ctx, path, r.dest); err != nil {
+			return nil, fmt.Errorf("traffic %s: %w", r.endpoint, err)
+		}
+	}
+
+	t := &model.RepoTraffic{
+		Views:        make([]model.RepoView, len(viewsDay.Views)),
+		ViewUniques:  viewsDay.Uniques,
+		Origin:       model.DataOrigin{DataSource: githubTrafficSource},
+		WeeklyViews:  trafficWeeks(model.TrafficKindViews, viewsWeek.Views),
+		WeeklyClones: trafficWeeks(model.TrafficKindClones, clonesWeek.Clones),
+		Paths:        make([]model.RepoTrafficPath, len(paths)),
+		Referrers:    make([]model.RepoTrafficReferrer, len(referrers)),
+	}
+	for i, b := range viewsDay.Views {
+		t.Views[i] = model.RepoView{
+			Timestamp:   b.Timestamp,
+			TotalViews:  b.Count,
+			UniqueViews: b.Uniques,
+			Origin:      model.DataOrigin{DataSource: githubTrafficSource},
+		}
+	}
+	for i, p := range paths {
+		t.Paths[i] = model.RepoTrafficPath{
+			Path:        p.Path,
+			Title:       p.Title,
+			TotalViews:  p.Count,
+			UniqueViews: p.Uniques,
+		}
+	}
+	for i, r := range referrers {
+		t.Referrers[i] = model.RepoTrafficReferrer{
+			Referrer:    r.Referrer,
+			TotalViews:  r.Count,
+			UniqueViews: r.Uniques,
+		}
+	}
+	return t, nil
+}
+
+// trafficWeeks maps every weekly bucket of one kind, partial weeks
+// included; the collector keeps only the complete ones.
+func trafficWeeks(kind model.TrafficKind, buckets []ghTrafficBucket) []model.RepoTrafficWeek {
+	weeks := make([]model.RepoTrafficWeek, len(buckets))
+	for i, b := range buckets {
+		weeks[i] = model.RepoTrafficWeek{
+			Kind:      kind,
+			WeekStart: b.Timestamp,
+			Uniques:   b.Uniques,
+		}
+	}
+	return weeks
 }
 
 // FetchIssueByNumber fetches a single issue by number for targeted gap filling.

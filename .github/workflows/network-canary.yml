@@ -31,6 +31,17 @@ jobs:
           # without them those tests skip, visibly, in the -v output.
           AVELOXIS_TEST_GITHUB_TOKEN: ${{ secrets.AVELOXIS_TEST_GITHUB_TOKEN }}
           AVELOXIS_TEST_GITLAB_TOKEN: ${{ secrets.AVELOXIS_TEST_GITLAB_TOKEN }}
+          # v0.29.118: group/project on gitlab.com that the GitLab token
+          # has the Reporter role on (a repository variable, not a
+          # secret: it is a name). Without it the statistics canary
+          # skips, visibly.
+          AVELOXIS_TEST_GITLAB_STATS_PROJECT: ${{ vars.AVELOXIS_TEST_GITLAB_STATS_PROJECT }}
+          # v0.29.118: owner/repo the GitHub token can read the traffic
+          # of, when that is not aveloxis/aveloxis (a repository
+          # variable). A repository variable is not an environment
+          # variable: without this the canary targets aveloxis/aveloxis
+          # and skips on 403 instead of checking the contract.
+          AVELOXIS_TEST_TRAFFIC_REPO: ${{ vars.AVELOXIS_TEST_TRAFFIC_REPO }}
         run: |
           go test ./internal/platform/depsdev/ -run TestLiveDepsDevReverseLookupForSeaborn -count=1 -v
           go test ./internal/platform/github/ -run TestSearchCommitByAuthorEmailLive -count=1 -v
@@ -57,6 +68,19 @@ jobs:
           go test ./internal/platform/ecosystems/ -run TestLiveEcosystemsLookupForSeaborn -count=1 -v
           go test ./internal/platform/gitlab/ -run TestLiveGitLabRepoInfoForGitLabRunner -count=1 -v
           go test ./internal/platform/github/ -run TestLiveGraphQLListingAndPRBatchParityFields -count=1 -v
+          # v0.29.118 — GitHub traffic (views, clones, popular paths and
+          # referrers): the unit tests serve GitHub's OpenAPI examples,
+          # so only this sees the live shape change. GitHub serves
+          # traffic only with push access: the token needs it on
+          # aveloxis/aveloxis (or on AVELOXIS_TEST_TRAFFIC_REPO), and
+          # the canary skips, visibly, on a 403.
+          go test ./internal/platform/github/ -run TestLiveGitHubTrafficContract -count=1 -v
+          # v0.29.118 — GitLab daily clone counts: the unit tests serve a
+          # body built to GitLab's entity, so only this sees a live
+          # change of GET /projects/:id/statistics. GitLab serves it to
+          # a key with at least the Reporter role (and read_api), so
+          # the canary skips, visibly, on a 403 or 404.
+          go test ./internal/platform/gitlab/ -run TestLiveGitLabProjectStatisticsContract -count=1 -v
 
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade

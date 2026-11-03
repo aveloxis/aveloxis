@@ -23,6 +23,7 @@ func TestEntityTypeConstants(t *testing.T) {
 		EntityContributor,
 		EntityRepoInfo,
 		EntityCloneStats,
+		EntityTraffic,
 	}
 
 	seen := make(map[string]bool)
@@ -36,8 +37,8 @@ func TestEntityTypeConstants(t *testing.T) {
 		seen[et] = true
 	}
 
-	if len(types) != 10 {
-		t.Errorf("expected 10 entity types, got %d", len(types))
+	if len(types) != 11 {
+		t.Errorf("expected 11 entity types, got %d", len(types))
 	}
 }
 

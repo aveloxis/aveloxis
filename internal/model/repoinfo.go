@@ -112,13 +112,15 @@ func (ri RepoInfo) ForkedFrom() string {
 	return ""
 }
 
-// RepoClone holds clone/traffic statistics.
+// RepoClone holds clone/traffic statistics. UniqueClones is nil for a
+// day whose forge counts clones but not who made them; it is stored as
+// NULL, because 0 would claim that nobody cloned.
 type RepoClone struct {
 	ID           int64
 	RepoID       int64
 	Timestamp    time.Time
 	TotalClones  int
-	UniqueClones int
+	UniqueClones *int
 	Origin       DataOrigin
 }
 

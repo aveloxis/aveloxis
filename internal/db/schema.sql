@@ -1381,6 +1381,94 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_clones (
 );
 
 -- ============================================================
+-- Repo traffic (GitHub traffic API, read next to repo_clones)
+-- ============================================================
+-- GitHub keeps traffic for 14 days only; these tables keep its history
+-- (aveloxis/aveloxis#234). No total is stored for a window, a week or any
+-- other period: a period's views or clones are the sum of its daily rows
+-- (repo_views, repo_clones). Distinct visitors and cloners cannot be summed,
+-- so the windows and weeks keep the distinct counts GitHub computes for
+-- them. Every bucket GitHub returns is stored, zeros included, so a stored
+-- day was observed and a missing day was not read. Each writer upserts on
+-- the table's UNIQUE key: the latest read of a day, window or week wins.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_views (
+    repo_view_id     BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    view_timestamp   TIMESTAMPTZ NOT NULL,
+    total_views      INT DEFAULT 0,
+    unique_views     INT DEFAULT 0,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, view_timestamp)
+);
+
+-- The top paths and referrers GitHub reports for its 14-day period, as a
+-- snapshot keyed by the UTC collection date: a later read on the same date
+-- replaces that date's rows, other dates are kept.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_traffic_paths (
+    repo_traffic_path_id BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    snapshot_date    DATE NOT NULL,
+    path             TEXT NOT NULL,
+    title            TEXT DEFAULT '',
+    total_views      INT DEFAULT 0,
+    unique_views     INT DEFAULT 0,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, snapshot_date, path)
+);
+
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_traffic_referrers (
+    repo_traffic_referrer_id BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    snapshot_date    DATE NOT NULL,
+    referrer         TEXT NOT NULL,
+    total_views      INT DEFAULT 0,
+    unique_views     INT DEFAULT 0,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, snapshot_date, referrer)
+);
+
+-- Distinct visitors (views) or cloners (clones) over one 14-day window,
+-- from its first to its last daily bucket, both included. One row per
+-- successful read and kind, even when uniques is 0.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_traffic_windows (
+    repo_traffic_window_id BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    traffic_kind     TEXT NOT NULL CHECK (traffic_kind IN ('views', 'clones')),
+    window_start     DATE NOT NULL,
+    window_end       DATE NOT NULL,
+    uniques          INT DEFAULT 0,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, traffic_kind, window_start, window_end)
+);
+
+-- Distinct visitors or cloners of complete Monday-to-Sunday weeks inside
+-- a read's window, keyed by the Monday.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_traffic_weeks (
+    repo_traffic_week_id BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    traffic_kind     TEXT NOT NULL CHECK (traffic_kind IN ('views', 'clones')),
+    week_start       DATE NOT NULL,
+    uniques          INT DEFAULT 0,
+    tool_source      TEXT DEFAULT 'aveloxis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT '',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, traffic_kind, week_start)
+);
+
+-- ============================================================
 -- Repo badging (DEI / CII badging)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_badging (
@@ -3139,6 +3227,11 @@ CREATE INDEX IF NOT EXISTS idx_pull_request_reviewers_repo_id ON aveloxis_data.p
 CREATE INDEX IF NOT EXISTS idx_pull_request_reviews_repo_id ON aveloxis_data.pull_request_reviews (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_badging_repo_id ON aveloxis_data.repo_badging (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_clones_repo_id ON aveloxis_data.repo_clones (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_views_repo_id ON aveloxis_data.repo_views (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_traffic_paths_repo_id ON aveloxis_data.repo_traffic_paths (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_traffic_referrers_repo_id ON aveloxis_data.repo_traffic_referrers (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_traffic_windows_repo_id ON aveloxis_data.repo_traffic_windows (repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_traffic_weeks_repo_id ON aveloxis_data.repo_traffic_weeks (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_cluster_messages_repo_id ON aveloxis_data.repo_cluster_messages (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_insights_repo_id ON aveloxis_data.repo_insights (repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_insights_records_repo_id ON aveloxis_data.repo_insights_records (repo_id);

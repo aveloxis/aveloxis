@@ -70,6 +70,44 @@ var columnWritePolicies = []sqlscan.Registered{
 		Reason: "pre-v0.27.103 GraphQL-rail rows carry empty node_id; a non-empty observation heals them, empty never clobbers (v0.27.103)"},
 	{Table: "aveloxis_data.contributor_identities", Column: "user_type", Policy: sqlscan.PreferNonemptyIncoming,
 		Reason: "same healing contract as node_id (v0.27.103)"},
+	// v0.29.118 GitHub traffic (aveloxis/aveloxis#234): the latest read
+	// wins. GitHub can still revise the newest day of a read, so a day,
+	// a 14-day window or a week read again takes the later read's
+	// figures and the later collection date.
+	{Table: "aveloxis_data.repo_clones", Column: "total_clones", Policy: sqlscan.AlwaysRefresh,
+		Reason: "latest read of the day wins: GitHub revises the newest day after the first read (v0.29.118)"},
+	{Table: "aveloxis_data.repo_clones", Column: "unique_clones", Policy: sqlscan.AlwaysRefresh,
+		Reason: "as total_clones; a read without a distinct count (NULL, never 0) replaces a stored number too, since the later read is the one that counts (v0.29.118)"},
+	{Table: "aveloxis_data.repo_clones", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
+		Reason: "the day's figures are those of the read made at this date (v0.29.118)"},
+	{Table: "aveloxis_data.repo_views", Column: "total_views", Policy: sqlscan.AlwaysRefresh,
+		Reason: "latest read of the day wins, as repo_clones (v0.29.118)"},
+	{Table: "aveloxis_data.repo_views", Column: "unique_views", Policy: sqlscan.AlwaysRefresh,
+		Reason: "as total_views (v0.29.118)"},
+	{Table: "aveloxis_data.repo_views", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
+		Reason: "as repo_clones.data_collection_date (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_windows", Column: "uniques", Policy: sqlscan.AlwaysRefresh,
+		Reason: "a window read again takes the later read's distinct count (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_windows", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
+		Reason: "as repo_clones.data_collection_date (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_weeks", Column: "uniques", Policy: sqlscan.AlwaysRefresh,
+		Reason: "a complete week lies in the window of 7 to 8 daily reads; the later read's distinct count wins (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_weeks", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
+		Reason: "as repo_clones.data_collection_date (v0.29.118)"},
+	// The path and referrer snapshot of a date is replaced as a whole
+	// (delete the date's rows, then insert the read's), never edited in
+	// place: an UPDATE would keep an entry that dropped out of the top
+	// 10 between two reads of one day (v0.29.118).
+	{Table: "aveloxis_data.repo_traffic_paths", Column: "title", Policy: sqlscan.InsertOnly,
+		Reason: "snapshot row: replaced with its date's snapshot, never updated in place (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_paths", Column: "total_views", Policy: sqlscan.InsertOnly,
+		Reason: "as title (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_paths", Column: "unique_views", Policy: sqlscan.InsertOnly,
+		Reason: "as title (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_referrers", Column: "total_views", Policy: sqlscan.InsertOnly,
+		Reason: "snapshot row, as repo_traffic_paths (v0.29.118)"},
+	{Table: "aveloxis_data.repo_traffic_referrers", Column: "unique_views", Policy: sqlscan.InsertOnly,
+		Reason: "as total_views (v0.29.118)"},
 }
 
 // columnWriteExceptions — deliberate, reviewed deviations. An entry

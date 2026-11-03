@@ -63,6 +63,7 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/repos/{repoID}/scancode-licenses":          {},
 	"GET /api/v1/repos/{repoID}/scancode-files":             {},
 	"GET /api/v1/repos/{repoID}/scorecard":                  {},
+	"GET /api/v1/repos/{repoID}/traffic":                    {}, // v0.29.118
 	"GET /api/v1/repos/{repoID}/vulnerabilities":            {},
 	"GET /api/v1/repos/{repoID}/contributions/identities":   {},
 	"GET /api/v1/repos/{repoID}/contributions/affiliations": {},

@@ -121,8 +121,10 @@ func TestCachedRepoGETAuthorizesBeforeAnyLookup(t *testing.T) {
 // the next collection.
 func TestCachedHandlersDegradeOnlyThroughPartialAnswer(t *testing.T) {
 	files := map[string]string{}
-	for _, f := range []string{"server.go", "metrics.go", "vulnerabilities.go", "contributions.go", "top_contributors.go"} {
-		files[f] = srctest.StripGoComments(srctest.Read(t, "internal/api/"+f))
+	// Every non-test file of the package, so a handler that moves into a
+	// new file (traffic.go, v0.29.118) is still found.
+	for repoRel, src := range srctest.PackageFiles(t, "internal/api", 20) {
+		files[strings.TrimPrefix(repoRel, "internal/api/")] = srctest.StripGoComments(src)
 	}
 	discarded := regexp.MustCompile(`(, _ :?=|_ = )s\.store\.`)
 	examined := 0
@@ -254,8 +256,10 @@ var helperFiles = map[string]string{
 // what it reads: Query().Get literals and the window helpers.
 func TestPageParamsMatchTheHandlers(t *testing.T) {
 	files := map[string]string{}
-	for _, f := range []string{"server.go", "metrics.go", "vulnerabilities.go", "contributions.go", "top_contributors.go"} {
-		files[f] = srctest.StripGoComments(srctest.Read(t, "internal/api/"+f))
+	// Every non-test file of the package, so a handler that moves into a
+	// new file (traffic.go, v0.29.118) is still found.
+	for repoRel, src := range srctest.PackageFiles(t, "internal/api", 20) {
+		files[strings.TrimPrefix(repoRel, "internal/api/")] = srctest.StripGoComments(src)
 	}
 	files["page_query.go"] = srctest.StripGoComments(srctest.Read(t, "internal/api/page_query.go"))
 	// The parse helpers a handler may read its query through. What each

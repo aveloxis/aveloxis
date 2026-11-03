@@ -112,6 +112,66 @@ func TestDedupOnePairEndToEnd(t *testing.T) {
 	}
 }
 
+// TestDedupOnePairDeletesTheLosersTraffic: the loser's GitHub traffic
+// rows are per-repository copies of what the winner collects, handled like
+// its daily clones — deleted with the loser, so the loser's repos-row
+// DELETE does not fail on their ON DELETE RESTRICT foreign keys — while the
+// winner keeps its own.
+func TestDedupOnePairDeletesTheLosersTraffic(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_traffic"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+
+	seeds := []string{
+		`INSERT INTO aveloxis_data.repo_views (repo_id, view_timestamp, total_views, unique_views)
+			VALUES ($1, '2026-10-18T00:00:00Z', 5, 2)`,
+		`INSERT INTO aveloxis_data.repo_traffic_paths (repo_id, snapshot_date, path, title, total_views, unique_views)
+			VALUES ($1, '2026-10-19', '/x/y', 'y', 5, 2)`,
+		`INSERT INTO aveloxis_data.repo_traffic_referrers (repo_id, snapshot_date, referrer, total_views, unique_views)
+			VALUES ($1, '2026-10-19', 'github.com', 5, 2)`,
+		`INSERT INTO aveloxis_data.repo_traffic_windows (repo_id, traffic_kind, window_start, window_end, uniques)
+			VALUES ($1, 'views', '2026-10-05', '2026-10-18', 2)`,
+		`INSERT INTO aveloxis_data.repo_traffic_weeks (repo_id, traffic_kind, week_start, uniques)
+			VALUES ($1, 'clones', '2026-10-05', 0)`,
+	}
+	for _, id := range []int64{winnerID, loserID} {
+		for _, sql := range seeds {
+			if _, err := store.pool.Exec(ctx, sql, id); err != nil {
+				t.Fatalf("seed traffic for repo %d: %v", id, err)
+			}
+		}
+	}
+
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil || pair.LoserID != loserID {
+		t.Fatalf("candidate query did not surface the seeded pair (got %+v)", pair)
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair with traffic rows on the loser: %v", err)
+	}
+
+	for _, table := range []string{
+		"repo_views", "repo_traffic_paths", "repo_traffic_referrers",
+		"repo_traffic_windows", "repo_traffic_weeks",
+	} {
+		for id, want := range map[int64]int{loserID: 0, winnerID: 1} {
+			var n int
+			if err := store.pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM aveloxis_data.`+table+` WHERE repo_id = $1`, id).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != want {
+				t.Errorf("%s rows of repo %d after the merge = %d, want %d (loser %d, winner %d)",
+					table, id, n, want, loserID, winnerID)
+			}
+		}
+	}
+}
+
 func TestDedupOnePairSkipsCollectingLoser(t *testing.T) {
 	ctx, store := caseConnect(t)
 	const slug = "_avdedup_coll"
@@ -376,6 +436,16 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 		`DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_ops.user_repos WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.repo_views WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.repo_traffic_paths WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.repo_traffic_referrers WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.repo_traffic_windows WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.repo_traffic_weeks WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.repos WHERE repo_git ILIKE $1`,
 		`DELETE FROM aveloxis_ops.user_groups WHERE name ILIKE $1`,

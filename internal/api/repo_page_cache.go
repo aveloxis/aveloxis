@@ -108,6 +108,7 @@ var pageParams = map[string][]string{
 	"GET /api/v1/repos/{repoID}/contributions/coverage":     {"since", "until"},
 	"GET /api/v1/repos/{repoID}/vulnerabilities":            {},
 	"GET /api/v1/repos/{repoID}/scorecard":                  {},
+	"GET /api/v1/repos/{repoID}/traffic":                    {},
 	"GET /api/v1/repos/{repoID}/contributors/top":           {"since", "until", "limit", "bots"},
 	"GET /api/v1/repos/{repoID}/deps":                       {"license", "scope"},
 	"GET /api/v1/repos/{repoID}/libyear":                    {"license", "scope"},

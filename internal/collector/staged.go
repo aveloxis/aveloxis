@@ -49,6 +49,7 @@ const (
 	EntityContributor   = "contributor"
 	EntityRepoInfo      = "repo_info"
 	EntityCloneStats    = "clone_stats"
+	EntityTraffic       = "traffic"
 )
 
 // LargeRepoCommitThreshold is the commit count above which parallel collection
@@ -314,14 +315,7 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		result.Releases++
 	}
 
-	clones, cloneErr := sc.client.FetchCloneStats(ctx, owner, repo)
-	if cloneErr == nil {
-		for _, clone := range clones {
-			if err := sw.Stage(ctx, EntityCloneStats, clone); err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("stage clone stats: %w", err))
-			}
-		}
-	}
+	sc.collectTraffic(ctx, sw, owner, repo, time.Now(), result)
 
 	// Flush and process metadata immediately so it's in the DB before
 	// the minutes-long issue/PR/event collection begins. This ensures
@@ -331,7 +325,7 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		result.Errors = append(result.Errors, fmt.Errorf("metadata flush: %w", err))
 	}
 	proc := NewProcessor(sc.store, sc.logger)
-	for _, et := range []string{EntityRepoInfo, EntityCloneStats, EntityRelease} {
+	for _, et := range []string{EntityRepoInfo, EntityCloneStats, EntityTraffic, EntityRelease} {
 		if err := sc.store.ProcessStaged(ctx, repoID, et, 500, func(rows []db.StagedRow) error {
 			return proc.processBatch(ctx, repoID, sc.platID, et, rows)
 		}); err != nil {
@@ -1193,6 +1187,7 @@ func (p *Processor) ProcessRepo(ctx context.Context, repoID int64, platID int16)
 	entityTypes := []string{
 		EntityRepoInfo,
 		EntityCloneStats,
+		EntityTraffic,
 		EntityRelease,
 		EntityContributor,
 		EntityIssue,
@@ -1338,6 +1333,31 @@ func (p *Processor) processBatch(ctx context.Context, repoID int64, platID int16
 		return nil
 	}
 
+	// A read's daily clones are written in one transaction with one
+	// stamp of the repos row, not one UPDATE per day. A row that cannot
+	// be read is counted and skipped, as one-at-a-time processing does.
+	if entityType == EntityCloneStats {
+		var clones []model.RepoClone
+		for _, row := range rows {
+			var c model.RepoClone
+			if err := json.Unmarshal(row.Payload, &c); err != nil {
+				p.logger.Warn("failed to unmarshal clone stats", "staging_id", row.ID, "error", err)
+				p.errors++
+				continue
+			}
+			clones = append(clones, c)
+		}
+		if err := p.store.UpsertRepoClones(ctx, repoID, clones); err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return err
+			}
+			// Returned, not swallowed: the staged rows stay unprocessed
+			// and the next drain writes the whole batch again.
+			return fmt.Errorf("upserting %d clone days: %w", len(clones), err)
+		}
+		return nil
+	}
+
 	// All other entity types: process one at a time.
 	var errCount int
 	for _, row := range rows {
@@ -1417,6 +1437,8 @@ func (p *Processor) processOne(ctx context.Context, repoID int64, platID int16, 
 		return p.processStagedRepoInfo(ctx, repoID, platID, payload)
 	case EntityCloneStats:
 		return p.processStagedCloneStats(ctx, repoID, platID, payload)
+	case EntityTraffic:
+		return p.processStagedTraffic(ctx, repoID, platID, payload)
 	default:
 		return fmt.Errorf("unknown entity type: %s", entityType)
 	}
@@ -1790,4 +1812,124 @@ func (p *Processor) processStagedCloneStats(ctx context.Context, repoID int64, p
 	}
 	clone.RepoID = repoID
 	return p.store.UpsertRepoClone(ctx, &clone)
+}
+
+// processStagedTraffic handles one staged EntityTraffic row: one
+// traffic read (daily views, the path and referrer snapshot, the
+// window and complete-week rows), written in one transaction so the
+// window rows never exist without the rest of their read (v0.29.118).
+// The read's daily clones are separate EntityCloneStats rows.
+func (p *Processor) processStagedTraffic(ctx context.Context, repoID int64, platID int16, payload json.RawMessage) error {
+	var tr model.RepoTraffic
+	if err := json.Unmarshal(payload, &tr); err != nil {
+		return err
+	}
+	return p.store.UpsertRepoTraffic(ctx, repoID, &tr)
+}
+
+// trafficStager is the part of db.StagingWriter the traffic step uses.
+type trafficStager interface {
+	Stage(ctx context.Context, entityType string, payload any) error
+}
+
+// collectTraffic reads the repository's traffic in the metadata step and
+// stages it: the daily clones as EntityCloneStats rows and the rest of
+// the read, with its derived windows and weeks, as one EntityTraffic row;
+// now keys the snapshot date. Errors follow the releases endpoint: a
+// routine skip (a 403 from a key without the forge's access, a 404) logs
+// one Info line and stops the step, so such a key spends one request;
+// any other error goes to result.Errors and collection goes on, and a
+// failed clones read still stages the rest of the read, without a clones
+// window. A forge with only daily clones (GitLab) returns no further
+// read, so the step stages its clone rows and no traffic row.
+func (sc *StagedCollector) collectTraffic(ctx context.Context, sw trafficStager, owner, repo string, now time.Time, result *CollectResult) {
+	clones, cloneUniques, cloneErr := sc.client.FetchCloneStats(ctx, owner, repo)
+	if cloneErr != nil {
+		if isOptionalEndpointSkip(cloneErr) {
+			sc.logger.Info("skipping traffic endpoints",
+				"owner", owner, "repo", repo, "reason", cloneErr)
+			return
+		}
+		if !errors.Is(cloneErr, context.Canceled) && ctx.Err() == nil {
+			result.Errors = append(result.Errors, fmt.Errorf("clone stats: %w", cloneErr))
+		}
+		clones = nil
+	}
+	for _, clone := range clones {
+		if err := sw.Stage(ctx, EntityCloneStats, clone); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage clone stats: %w", err))
+		}
+	}
+
+	traffic, trafficErr := sc.client.FetchTraffic(ctx, owner, repo)
+	if trafficErr != nil {
+		if isOptionalEndpointSkip(trafficErr) {
+			sc.logger.Info("skipping traffic endpoints",
+				"owner", owner, "repo", repo, "reason", trafficErr)
+			return
+		}
+		if !errors.Is(trafficErr, context.Canceled) && ctx.Err() == nil {
+			// The client's error already reads "traffic <endpoint>: <cause>".
+			result.Errors = append(result.Errors, trafficErr)
+		}
+		return
+	}
+	if traffic == nil {
+		return
+	}
+	// The clones window's uniques come from the same read as the daily
+	// clones that date it, not from FetchTraffic's later per=week read:
+	// a UTC midnight between the two requests would otherwise store a
+	// window whose dates and uniques describe different 14 days.
+	traffic.CloneUniques = cloneUniques
+	y, m, d := now.UTC().Date()
+	traffic.SnapshotDate = time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	traffic.Windows, traffic.Weeks = deriveTrafficRows(traffic, clones)
+	if err := sw.Stage(ctx, EntityTraffic, traffic); err != nil {
+		if !errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			result.Errors = append(result.Errors, fmt.Errorf("stage traffic: %w", err))
+		}
+	}
+}
+
+// trafficWeekLastDay is how many days after its Monday a weekly
+// traffic bucket's Sunday falls: the seventh day of the week.
+const trafficWeekLastDay = 6
+
+// deriveTrafficRows derives the window and complete-week rows of a
+// traffic read from the daily views in tr and the daily clones. A window
+// runs from the first to the last daily bucket, never from the
+// collection date: GitHub's 14 zero-filled days end before it for a
+// repository with traffic, on it for one without. A weekly bucket is
+// kept when it starts on a Monday, its seven days lie inside the window,
+// and that week has ended by the snapshot date: a zero-traffic read
+// includes the collection day, so on a Sunday the current Monday-to-Sunday
+// bucket is still counting and its uniques (0) must not be stored as a
+// complete week. Zeros are kept; a kind without daily buckets has no
+// window.
+func deriveTrafficRows(tr *model.RepoTraffic, clones []model.RepoClone) ([]model.RepoTrafficWindow, []model.RepoTrafficWeek) {
+	var (
+		windows []model.RepoTrafficWindow
+		weeks   []model.RepoTrafficWeek
+	)
+	derive := func(kind model.TrafficKind, first, last time.Time, uniques int, buckets []model.RepoTrafficWeek) {
+		window := model.RepoTrafficWindow{Kind: kind, Start: first.UTC(), End: last.UTC(), Uniques: uniques}
+		windows = append(windows, window)
+		for _, b := range buckets {
+			start := b.WeekStart.UTC()
+			if start.Weekday() != time.Monday || start.Before(window.Start) ||
+				start.AddDate(0, 0, trafficWeekLastDay).After(window.End) ||
+				start.AddDate(0, 0, trafficWeekLastDay+1).After(tr.SnapshotDate.UTC()) {
+				continue
+			}
+			weeks = append(weeks, model.RepoTrafficWeek{Kind: kind, WeekStart: start, Uniques: b.Uniques})
+		}
+	}
+	if n := len(tr.Views); n > 0 {
+		derive(model.TrafficKindViews, tr.Views[0].Timestamp, tr.Views[n-1].Timestamp, tr.ViewUniques, tr.WeeklyViews)
+	}
+	if n := len(clones); n > 0 {
+		derive(model.TrafficKindClones, clones[0].Timestamp, clones[n-1].Timestamp, tr.CloneUniques, tr.WeeklyClones)
+	}
+	return windows, weeks
 }

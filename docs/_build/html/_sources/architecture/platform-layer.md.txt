@@ -13,6 +13,7 @@ platform.Client
   |-- RepoCollector
   |     |-- FetchRepoInfo
   |     |-- FetchCloneStats
+  |     |-- FetchTraffic
   |-- IssueCollector
   |     |-- ListIssues
   |     |-- ListIssueLabels
@@ -203,7 +204,8 @@ All `platform.Client` interface methods are implemented for both platforms. The 
 |---|---|---|---|
 | Community profile files | GraphQL file detection (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) | Not yet implemented (closable via `/repository/tree`) | `repo_info` community fields empty for GitLab |
 | Watcher count | `watchers.totalCount` via GraphQL | No public API | `repo_info.watcher_count` is 0 for GitLab |
-| Clone stats | `/traffic/clones` | Admin-only API | `repo_clones` table empty for GitLab |
+| Clone stats | `/traffic/clones` | Daily HTTP clone and pull counts for the last 30 days through `GET /projects/:id/statistics` (at least the Reporter role), no unique counts | `repo_clones.unique_clones` is NULL for GitLab |
+| Traffic (views, top paths and referrers, 14-day and weekly uniques) | `/traffic/views` (daily and weekly), `/traffic/clones?per=week`, `/traffic/popular/paths`, `/traffic/popular/referrers` (push access, or "Administration" read for a fine-grained token) | No API for page views, popular paths, referrers or unique visitors and cloners | `FetchTraffic` returns nil without a request; `repo_views`, `repo_traffic_paths`, `repo_traffic_referrers`, `repo_traffic_windows` and `repo_traffic_weeks` empty for GitLab |
 | GraphQL node IDs | Available on all entities | Not applicable (uses numeric IDs) | `pr_src_node_id` empty for GitLab; `pr_src_repo_id` always populated |
 | Contributor identity URLs | 10+ per-user URL fields (followers, gists, starred, etc.) | Not available | `gh_*_url` columns empty for GitLab contributors |
 | Contributor type | `User`, `Bot`, `Organization` | Not distinguished | `cntrb_type` not populated for GitLab |

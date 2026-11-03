@@ -497,6 +497,71 @@ Since v0.27.134, repositories with C2 lockfile data (`collection.vuln_scan_trans
 
 Returns JSON with `Content-Disposition: attachment` header for download.
 
+### Traffic (v0.29.118)
+
+```
+GET /api/v1/repos/{repoID}/traffic
+```
+
+Returns everything Aveloxis stored from the forge's traffic and statistics APIs for the repository, in one answer, without paging or date parameters. GitHub keeps traffic for 14 days only; Aveloxis keeps every read, so this history grows by about 730 daily rows a year.
+
+```jsonc
+{
+  "repo_id": 42,
+  "clones": [
+    {"date": "2026-10-05", "count": 2, "uniques": 1},
+    {"date": "2026-10-06", "count": 0, "uniques": 0}
+    /* ... one row per stored day */
+  ],
+  "views": [
+    {"date": "2026-10-05", "count": 5, "uniques": 3}
+    /* ... */
+  ],
+  "windows": [
+    {"kind": "clones", "start": "2026-10-05", "end": "2026-10-18", "uniques": 2},
+    {"kind": "views", "start": "2026-10-05", "end": "2026-10-18", "uniques": 11}
+  ],
+  "weeks": [
+    {"kind": "views", "week_start": "2026-10-05", "uniques": 8}
+  ],
+  "snapshot_date": "2026-10-19",
+  "paths": [
+    {"path": "/acme/widget", "title": "acme/widget", "count": 41, "uniques": 9}
+  ],
+  "referrers": [
+    {"referrer": "github.com", "count": 20, "uniques": 5}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `repo_id` | The repository. |
+| `clones`, `views` | One row per stored UTC day: `date` (`YYYY-MM-DD`), `count` (clones or views that day) and `uniques` (distinct cloners or visitors that day; `null` when the forge does not count them, which today is GitLab's clones). |
+| `windows` | One row per kind (`views` or `clones`) for each successful read: `kind`, `start` and `end` (the first and last day of the read's 14 daily buckets, both included) and `uniques`, GitHub's distinct visitors or cloners over that window. |
+| `weeks` | Complete Monday-to-Sunday weeks inside a read's window: `kind`, `week_start` (the Monday) and `uniques`. A partial first or last week is never stored. |
+| `snapshot_date` | The latest UTC collection date that stored a top path or referrer; `null` when none was ever stored. |
+| `paths` | That date's top paths: `path`, `title`, `count` (views over GitHub's 14-day period) and `uniques`. |
+| `referrers` | That date's top referring sites: `referrer`, `count` and `uniques`. |
+
+How to read it:
+
+- **Zeros are observations.** Every daily bucket GitHub returns, and every day of GitLab's 30-day period, is stored, zeros included, so a day with a row of `0` was read and had no traffic, and a day without a row was not read (a missed or failed collection). A repository with no rows at all is one Aveloxis cannot read.
+- **No totals are stored.** A period's clones or views are the sum of its daily rows. Distinct visitors and cloners cannot be summed, so they exist only for the windows (`windows[].uniques`) and complete weeks (`weeks[].uniques`), as GitHub computed them.
+- **The latest read wins.** GitHub can still revise its newest day; each day, window and week holds the figures of the latest read that returned it. The path and referrer snapshot of a date is replaced as a whole by a later read on that date; `paths` and `referrers` always come from the one `snapshot_date`, so an empty referrer list on that date answers `[]`, never an older date's referrers.
+- **Order.** Days, windows and weeks are in date order (then kind); paths and referrers by `count`, then `uniques`, descending, as GitHub lists its top 10.
+- **No traffic.** A repository whose collection key cannot read its forge's traffic answers empty arrays and `"snapshot_date": null`. GitHub serves traffic only to a key with push access (classic token) or the "Administration" repository permission set to read (fine-grained token). A GitLab repository answers its daily HTTP clone and pull counts (30 days, `GET /projects/:id/statistics`, Reporter role or higher) in `clones` with `uniques` null, and empty `views`, `windows`, `weeks`, `paths` and `referrers` with `"snapshot_date": null`, because GitLab has no API for page views, popular paths, referrers or unique visitors and cloners. An id with no repository answers the same to an unscoped caller (an administrator's session, or an anonymous call where `api.require_auth` is off or from an exempt network); any other session, and an API token, gets `403`.
+
+Reading it from a script with an [API token](#authentication-getting-an-api-token): the token reads the repositories in its owner's groups, so add the repositories to one of the owner's groups first. A repository outside them is refused with `403 repo_out_of_scope` and a body that says how to add it.
+
+```bash
+SITE=aveloxis.example.org
+curl -H "Authorization: Bearer $AVELOXIS_API_TOKEN" \
+     "https://$SITE/api/v1/repos/42/traffic"
+```
+
+The answer is response-cached like the repository's other pages (send its `ETag` back as `If-None-Match` for a `304`); every traffic write moves the repository's cache state, so a new read is served after the next collection.
+
 ### Contributor identities in a window
 
 ```
@@ -604,7 +669,7 @@ inclusive); `limit` defaults to 20 and is capped at 100.
 **Caching (since 0.29.71; 0.29.73).** With `api.response_cache_mb` set, a
 repository's own GET answers (this endpoint, `/timeseries`, `/licenses`,
 `/deps`, `/libyear`, `/scancode-*`, `/vulnerabilities`, `/scorecard`,
-`/sbom` and `/contributions/*`) are reused until the repository is collected
+`/traffic`, `/sbom` and `/contributions/*`) are reused until the repository is collected
 again or scanned; with it unset (the default) only this endpoint and
 `/timeseries` are, up to 1,000 answers. Answers that name contributors are also recomputed after
 `collection.enrich_interval_minutes` (default 30). These answers carry an

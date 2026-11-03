@@ -239,14 +239,46 @@ type ghRepoInfo struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ghTrafficBucket is one daily or weekly bucket of the traffic/views
+// and traffic/clones responses; Timestamp is the bucket's start.
+type ghTrafficBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	Count     int       `json:"count"`
+	Uniques   int       `json:"uniques"`
+}
+
+// ghCloneTraffic is GitHub's clone-traffic schema, the answer of
+// traffic/clones for per=day and per=week. Count and Uniques cover the
+// whole 14-day window; Uniques is not the sum of the buckets' uniques.
 type ghCloneTraffic struct {
-	Count   int `json:"count"`
-	Uniques int `json:"uniques"`
-	Clones  []struct {
-		Timestamp time.Time `json:"timestamp"`
-		Count     int       `json:"count"`
-		Uniques   int       `json:"uniques"`
-	} `json:"clones"`
+	Count   int               `json:"count"`
+	Uniques int               `json:"uniques"`
+	Clones  []ghTrafficBucket `json:"clones"`
+}
+
+// ghViewTraffic is GitHub's view-traffic schema, the answer of
+// traffic/views, shaped like ghCloneTraffic.
+type ghViewTraffic struct {
+	Count   int               `json:"count"`
+	Uniques int               `json:"uniques"`
+	Views   []ghTrafficBucket `json:"views"`
+}
+
+// ghTrafficPath is one entry of traffic/popular/paths
+// (content-traffic).
+type ghTrafficPath struct {
+	Path    string `json:"path"`
+	Title   string `json:"title"`
+	Count   int    `json:"count"`
+	Uniques int    `json:"uniques"`
+}
+
+// ghTrafficReferrer is one entry of traffic/popular/referrers
+// (referrer-traffic).
+type ghTrafficReferrer struct {
+	Referrer string `json:"referrer"`
+	Count    int    `json:"count"`
+	Uniques  int    `json:"uniques"`
 }
 
 type ghContributor struct {

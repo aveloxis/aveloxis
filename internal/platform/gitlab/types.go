@@ -22,6 +22,23 @@ type glUser struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+// glProjectStatistics is the answer of GET /projects/:id/statistics:
+// the fetch counts per day for the last 30 days, newest first. Days
+// without a fetch are absent. Fetches is a pointer so an answer without
+// the member is told apart from one with an empty day list; Days is a
+// pointer so an answer with `days: null` is told apart from an empty
+// list, and Count is a pointer so a day without a count is told apart
+// from a day of 0 fetches. Both are errors: 30 zeros for a malformed
+// answer would overwrite counts already collected.
+type glProjectStatistics struct {
+	Fetches *struct {
+		Days *[]struct {
+			Count *int   `json:"count"`
+			Date  string `json:"date"` // YYYY-MM-DD, UTC
+		} `json:"days"`
+	} `json:"fetches"`
+}
+
 type glLabel struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`

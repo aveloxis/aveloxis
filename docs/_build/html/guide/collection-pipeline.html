@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.117 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.118 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=21df7cf6"></script>
+      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -362,6 +362,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#sbom-download">SBOM Download</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#traffic-v0-29-118">Traffic (v0.29.118)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#contributor-identities-in-a-window">Contributor identities in a window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#affiliation-breakdown-for-the-same-window">Affiliation breakdown for the same window</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#tweaks-you-can-make-on-the-client-side">Tweaks you can make on the client side</a></li>
@@ -775,7 +776,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-103-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (103 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1613,6 +1614,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#repository-metadata">Repository Metadata</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-info">repo_info</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-clones">repo_clones</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-views">repo_views</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-paths">repo_traffic_paths</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-referrers">repo_traffic_referrers</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-windows">repo_traffic_windows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-traffic-weeks">repo_traffic_weeks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-badging">repo_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#dei-badging">dei_badging</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-insights">repo_insights</a></li>
@@ -1814,7 +1820,7 @@
 <section id="parallel-collection">
 <h3>Parallel collection<a class="headerlink" href="#parallel-collection" title="Link to this heading"></a></h3>
 <p>When <code class="docutils literal notranslate"><span class="pre">CommitCount</span> <span class="pre">&gt;=</span> <span class="pre">10,000</span></code> (from repo_info metadata):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Phase 0: Repo info, releases, clone stats (sequential)
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Phase 0: Repo info, releases, clone stats and traffic (sequential)
 Phase 1: Contributors (sequential)
 Phase 2: Issues | PRs | Events (3 parallel goroutines)
          ─── wait ───
@@ -1822,6 +1828,13 @@ Phase 3: Messages (sequential, after parallel phase)
 </pre></div>
 </div>
 <p>A 404 from <code class="docutils literal notranslate"><span class="pre">/releases</span></code> is treated as <em>zero releases</em> (non-fatal). Not every repo has cut a release, and legacy rows with a stray <code class="docutils literal notranslate"><span class="pre">.git</span></code> in their slug — though now prevented at write time by <code class="docutils literal notranslate"><span class="pre">model.NormalizeRepoName()</span></code> in <code class="docutils literal notranslate"><span class="pre">db.UpsertRepo</span></code> — used to cause this 404. The staged collector logs <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">releases</span> <span class="pre">endpoint</span> <span class="pre">(404)</span> <span class="pre">—</span> <span class="pre">treating</span> <span class="pre">as</span> <span class="pre">zero</span> <span class="pre">releases</span></code> and continues. See the troubleshooting guide for the underlying fix.</p>
+<p>GitHub traffic (v0.29.118) is read after the releases. The daily clones read (<code class="docutils literal notranslate"><span class="pre">/traffic/clones</span></code>) comes first; unless it was skipped, five more reads follow: <code class="docutils literal notranslate"><span class="pre">/traffic/views?per=day</span></code>, <code class="docutils literal notranslate"><span class="pre">/traffic/views?per=week</span></code>, <code class="docutils literal notranslate"><span class="pre">/traffic/clones?per=week</span></code>, <code class="docutils literal notranslate"><span class="pre">/traffic/popular/paths</span></code> and <code class="docutils literal notranslate"><span class="pre">/traffic/popular/referrers</span></code>. GitHub serves traffic only to a key with push access to the repository (classic token) or with the “Administration” repository permission set to read (fine-grained token):</p>
+<ul class="simple">
+<li><p>A <code class="docutils literal notranslate"><span class="pre">403</span></code> from a key without access, or any other routine skip such as a <code class="docutils literal notranslate"><span class="pre">404</span></code>, is skipped as for releases: one Info line <code class="docutils literal notranslate"><span class="pre">skipping</span> <span class="pre">traffic</span> <span class="pre">endpoints</span></code> with the owner, repository and reason, nothing recorded and no further traffic request, so a key without access spends one request per collection.</p></li>
+<li><p>Any other error is recorded as an error of the repository’s collection, as a releases error is (<code class="docutils literal notranslate"><span class="pre">clone</span> <span class="pre">stats:</span> <span class="pre">&lt;cause&gt;</span></code>, or <code class="docutils literal notranslate"><span class="pre">traffic</span> <span class="pre">&lt;endpoint&gt;:</span> <span class="pre">&lt;cause&gt;</span></code> naming the failed read), and the later phases still run. The first failing read of the five stops the rest, and nothing of that read is stored. A failed daily clones read does not stop the five: their read is stored with the views window only. An error caused by a shutdown is neither recorded nor logged.</p></li>
+<li><p>On GitLab only the daily clones read exists, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/projects/:id/statistics</span></code>: the 30 UTC days ending on the collection day, days it omits stored as 0, with no unique counts. A key below the Reporter role gets a <code class="docutils literal notranslate"><span class="pre">403</span></code> (a project it cannot read, a <code class="docutils literal notranslate"><span class="pre">404</span></code>), skipped as above with the same Info line; any other error is recorded as <code class="docutils literal notranslate"><span class="pre">clone</span> <span class="pre">stats:</span> <span class="pre">&lt;cause&gt;</span></code>. Views, paths, referrers, windows and weeks are never read or stored for GitLab. An answer that is not the entity’s shape — no <code class="docutils literal notranslate"><span class="pre">fetches</span></code> member, no <code class="docutils literal notranslate"><span class="pre">days</span></code> array, a day without a <code class="docutils literal notranslate"><span class="pre">count</span></code>, or an unreadable date — is an error, never a period of zeros: stored zeros for a malformed answer would overwrite counts already collected.</p></li>
+</ul>
+<p>A successful read is staged as one row (beside the daily clones rows) and written in one transaction: the daily views (<code class="docutils literal notranslate"><span class="pre">repo_views</span></code>), one 14-day window per kind with GitHub’s unique visitors or cloners (<code class="docutils literal notranslate"><span class="pre">repo_traffic_windows</span></code>), the complete Monday-to-Sunday weeks inside that window (<code class="docutils literal notranslate"><span class="pre">repo_traffic_weeks</span></code>), and the top paths and referrers (<code class="docutils literal notranslate"><span class="pre">repo_traffic_paths</span></code>, <code class="docutils literal notranslate"><span class="pre">repo_traffic_referrers</span></code>) as the snapshot of the UTC collection date, which replaces any earlier snapshot of that date. A week is stored only when its seven days lie inside the window and it has ended by the snapshot date: a zero-traffic read includes the collection day, so on a Sunday the current Monday-to-Sunday bucket is still counting and is not stored as a complete week. Days, windows and weeks take the latest read’s figures. Zeros are stored, never skipped, so a stored day was read even when nobody visited; no totals are stored, a period’s views or clones being the sum of its daily rows. The writer refuses a read without a snapshot date. See <a class="reference internal" href="../schema.html#repo-views"><span class="std std-ref">the schema</span></a> and <a class="reference internal" href="api.html#traffic-v0-29-118"><span class="std std-ref">the API</span></a>.</p>
 <p>The 3 extra goroutines claim parallel slots tracked by an atomic counter. The scheduler’s <code class="docutils literal notranslate"><span class="pre">fillWorkerSlots</span></code> pauses new job starts while the total active count (semaphore + parallel slots) exceeds the configured worker limit.</p>
 <p>The direct pipeline is simpler – it writes directly to relational tables with inline contributor resolution. Best for testing or collecting a small number of repos.</p>
 </section>
@@ -1902,7 +1915,7 @@ restored repository is re-enqueued on its own</p></li>
 <li><p><strong>Pull requests</strong> – upserted with resolved <code class="docutils literal notranslate"><span class="pre">author_id</span></code></p></li>
 <li><p><strong>Events</strong> – issue and PR events with resolved <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
 <li><p><strong>Messages</strong> – issue comments, PR comments, review comments with resolved <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></li>
-<li><p><strong>Metadata</strong> – repo info, releases, clone stats</p></li>
+<li><p><strong>Metadata</strong> – repo info, clone stats, traffic, releases</p></li>
 </ol>
 </section>
 <section id="contributor-resolution">

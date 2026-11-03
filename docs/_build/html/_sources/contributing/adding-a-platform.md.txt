@@ -70,7 +70,7 @@ This is the complete list of files a new platform needs. Some are mandatory; som
 2. **`internal/db/schema.sql`** — add `(4, 'Bugzilla')` to the `aveloxis_data.platforms` seed INSERT.
 3. **`internal/platform/bugzilla/`** — new package implementing `platform.Client`. At minimum:
    - `client.go` — the `Client` struct, constructor, all interface methods (most return empty iterators).
-   - `repos.go` — `FetchRepoInfo` and `FetchCloneStats` (stubbed; Bugzilla products don't have clone stats).
+   - `repos.go` — `FetchRepoInfo`, `FetchCloneStats` and `FetchTraffic` (stubbed; Bugzilla products don't have clone or traffic stats).
    - `issues.go` — `ListIssues`, `ListIssueLabels`, `ListIssueAssignees`, `FetchIssueByNumber`, plus the unified `ListIssuesAndPRs`.
    - `messages.go` — comment-related methods.
    - `events.go` — `ListIssueEvents` from bug history.
@@ -660,6 +660,10 @@ func (c *Client) ListReleases(_ context.Context, _, _ string) iter.Seq2[model.Re
 
 func (c *Client) FetchCloneStats(_ context.Context, _, _ string) ([]model.RepoClone, error) {
     return nil, platform.ErrNotFound  // Bugzilla has no clone stats
+}
+
+func (c *Client) FetchTraffic(_ context.Context, _, _ string) (*model.RepoTraffic, error) {
+    return nil, nil  // no traffic API: nil without a request, as GitLab does
 }
 ```
 

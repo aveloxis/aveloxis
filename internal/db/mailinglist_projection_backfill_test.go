@@ -68,8 +68,22 @@ func TestBackfillMailingListProjection(t *testing.T) {
 			}
 		}
 	}
+	// D7 (0.29.120): each step writes the repository's issues and bridges
+	// outside any job, so each stamps it for the API's cache.
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET data_changed_at = NULL WHERE repo_id = $1`, repoID); err != nil {
+		t.Fatal(err)
+	}
 	runToZero("keyed", func() (int, error) { return store.BackfillKeyedIssueProjection(ctx, 100) })
+	if dataChangedAt(ctx, t, store, repoID) == nil {
+		t.Error("the keyed projection created an issue but did not stamp the repository's data_changed_at")
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET data_changed_at = NULL WHERE repo_id = $1`, repoID); err != nil {
+		t.Fatal(err)
+	}
 	runToZero("thread", func() (int, error) { return store.BackfillThreadInheritance(ctx, 100) })
+	if dataChangedAt(ctx, t, store, repoID) == nil {
+		t.Error("the thread inheritance bridged a reply but did not stamp the repository's data_changed_at")
+	}
 	if _, err := store.BackfillMarkRemainingProjected(ctx); err != nil {
 		t.Fatalf("mark: %v", err)
 	}

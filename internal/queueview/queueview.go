@@ -14,7 +14,6 @@ package queueview
 import (
 	"context"
 	"log/slog"
-	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -92,7 +91,7 @@ func ParseParams(q url.Values, defaultSize, maxSize int) Params {
 			p.Dir = "desc"
 		}
 	}
-	if maxPage := (math.MaxInt-1)/p.PageSize + 1; p.Page > maxPage {
+	if maxPage := db.MaxListingPage(p.PageSize); p.Page > maxPage {
 		p.Page = maxPage
 	}
 	p.Offset = (p.Page - 1) * p.PageSize

@@ -84,8 +84,6 @@ jobs:
     env:
       TZ: America/Chicago
       PGTZ: America/Chicago
-      CFG: ${{ runner.temp }}/ci-golden.json
-      WORK: ${{ runner.temp }}/golden
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,6 +91,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The runner context exists only inside a step (0.29.125: named in the
+      # job's env above, GitHub refused this file at every push and the
+      # schedule never fired — scripts/workflow_context_availability_test.go).
+      - name: Name the config and work directory under the runner's temp
+        run: |
+          echo "CFG=$RUNNER_TEMP/ci-golden.json" >> "$GITHUB_ENV"
+          echo "WORK=$RUNNER_TEMP/golden" >> "$GITHUB_ENV"
       - name: Install the analysis tools the collection pipeline calls
         run: |
           go build -o "$RUNNER_TEMP/aveloxis" ./cmd/aveloxis

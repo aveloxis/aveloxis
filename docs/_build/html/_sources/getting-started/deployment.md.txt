@@ -270,9 +270,54 @@ server {
     }
 }
 
-server {                              # optional: the API for Bearer clients (aveloxis-gui, scripts)
+server {                              # the API host over plain HTTP: refused, never redirected or served
+    listen 80;
     server_name api.aveloxis.example.org;
-    # TLS: certbot --nginx -d api.aveloxis.example.org
+    return 403;                       # a token sent in clear is already exposed when any answer arrives; a refusal makes the client fix its URL, a redirect would hide the mistake and a served answer repeat it
+}
+```
+
+Reload, then obtain the API host's certificate — before the TLS block below
+is in place:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot certonly --nginx -d api.aveloxis.example.org    # the challenge only; it edits no block
+```
+
+Renewals reload nginx on their own: `--nginx` makes the nginx plugin the
+lineage's installer even under `certonly` (`choose_configurator_plugins` in
+`certbot/_internal/plugins/selection.py` sets it when `--nginx` was given),
+the choice is written to the lineage's renewal configuration
+(`installer = nginx` under `[renewalparams]` in the host's file under
+`/etc/letsencrypt/renewal/`), and `certbot
+renew` calls `installer.restart()` after each renewal (`renew_cert` in
+`certbot/_internal/main.py`) — so no `--deploy-hook` is needed for the reload.
+
+The order is certbot's, not a preference: its nginx plugin runs `nginx -t`
+before anything else (`prepare` in `certbot/_internal/plugins/nginx/configurator.py`),
+so a server block naming certificate files that do not exist yet makes the
+command fail with `MisconfigurationError`. The refusal block does not stand in
+the challenge's way: certbot inserts its challenge location into the port-80
+block for the name with a `rewrite ^(/.well-known/acme-challenge/.*) $1 break;`
+ahead of the block's own directives (`_make_or_mod_server_block` in
+`plugins/nginx/http_01.py`), and `break` ends the rewrite phase before
+`return 403` runs. Renewals run the same plugin against the finished
+configuration. With the certificate in `/etc/letsencrypt/live/`, add the TLS
+block:
+
+```nginx
+server {                              # optional: the API for Bearer clients (aveloxis-gui, scripts)
+    listen 443 ssl;
+    server_name api.aveloxis.example.org;
+    # TLS: the certificate obtained above (certbot certonly, before this block exists)
+    ssl_certificate     /etc/letsencrypt/live/api.aveloxis.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.aveloxis.example.org/privkey.pem;
+    # Written out in full rather than left to `certbot --nginx`: that installer
+    # adds `listen 80;` to a block with no listen and splits the port-80 half
+    # off only when it installs its redirect, so with --no-redirect the API
+    # would have kept answering in clear and the refusal above would have been
+    # the ignored duplicate (nginx: "conflicting server name … on 0.0.0.0:80").
 
     location / {
         proxy_pass http://127.0.0.1:8383;

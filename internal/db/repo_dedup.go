@@ -429,6 +429,34 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		fillForgeID = ""
 	}
 
+	// The repositories whose cached answers the loser's deleted conversation
+	// links move, read before any step changes a row (Copilot's ninth review
+	// of PR #246): the retention series counts a message under the MESSAGE's
+	// repository once per conversation link it has, whatever the link's
+	// repository (retention_store.go), and Step 4 deletes the loser's links
+	// by repo_id. A loser-owned link can name a message another repository
+	// owns — a third case variant that collected the comment first (messages
+	// are one row per platform id), or a transferred issue — so that
+	// repository's answer moves with the delete. They are stamped with the
+	// winner at the end of this transaction. The loser's own messages become
+	// the winner's (Step 2), which is stamped anyway; the review-side links
+	// are left out because no cached answer reads them by the message's
+	// repository. One id per repository (DISTINCT); no link to another
+	// repository's message is the common case and reads as an empty array.
+	// A read error stops the merge (SR-5): a stamp the merge cannot know is
+	// not a stamp it may skip.
+	var linkedOwners []int64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(array_agg(DISTINCT m.repo_id), '{}'::bigint[])
+		  FROM aveloxis_data.messages m
+		  JOIN (SELECT msg_id FROM aveloxis_data.issue_message_ref WHERE repo_id = $1
+		        UNION
+		        SELECT msg_id FROM aveloxis_data.pull_request_message_ref WHERE repo_id = $1) br ON br.msg_id = m.msg_id
+		 WHERE m.repo_id <> $1 AND m.repo_id <> $2`,
+		pair.LoserID, pair.WinnerID).Scan(&linkedOwners); err != nil {
+		return fmt.Errorf("read the repositories the loser's conversation links name: %w", err)
+	}
+
 	// --- Step 1: ops linkage. user_repos is repointed (PK (group_id,
 	// repo_id), no FK on repo_id) so every group that referenced either
 	// variant keeps the repo; queue/status/staging rows are loser-scoped
@@ -662,6 +690,16 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 	if err := exec("delete loser repos row",
 		`DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, pair.LoserID); err != nil {
 		return err
+	}
+
+	// The winner gained the loser's rows without a collection (dedup-repos
+	// and reconcile-repos run outside any job, and leave the winner's queue
+	// row alone): its cached answers move with the merge (D7, summary/63).
+	// With it, every repository whose message a deleted loser link named
+	// (linkedOwners, read above).
+	if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = ANY($1::bigint[])`,
+		append(linkedOwners, pair.WinnerID)); err != nil {
+		return fmt.Errorf("stamp winner and linked repositories data changed: %w", err)
 	}
 
 	return tx.Commit(ctx)

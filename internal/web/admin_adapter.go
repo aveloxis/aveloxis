@@ -23,7 +23,9 @@ import (
 
 // sessionActor is the service's view of a signed-in browser session.
 func sessionActor(sess *Session) admin.Actor {
-	return admin.Actor{UserID: sess.UserID, Kind: admin.Session}
+	// SignedInAt: the service's re-authentication rule for a sensitive
+	// change to the actor's own account reads it (ASVS V7.5.2).
+	return admin.Actor{UserID: sess.UserID, Kind: admin.Session, SignedInAt: sess.CreatedAt}
 }
 
 // linkOrigin is what this request contributes to a mailed confirmation
@@ -46,6 +48,7 @@ func (s *Server) newAdminService(m *mailer.Mailer) *admin.Service {
 		AutoApproveAddLimit: s.cfg.AutoApproveAddLimitValue(),
 		DevMode:             s.cfg.DevMode,
 		SPAURL:              s.cfg.SPAURL,
+		SessionIdle:         s.cfg.SessionIdle(),
 	}
 	if m != nil { // a nil *Mailer must not become a non-nil interface
 		opts.Mailer = m
@@ -92,6 +95,10 @@ func (s *Server) refusePage(w http.ResponseWriter, r *http.Request, err error) b
 		http.Error(w, detail("refused"), http.StatusConflict)
 	case admin.SelfDemotion:
 		http.Error(w, "Refusing self-demotion — use another admin account.", http.StatusBadRequest)
+	case admin.ReauthenticationRequired:
+		// A sensitive change to the administrator's own account by an older
+		// sign-in (Copilot's seventh review of PR #246, 0.29.129).
+		http.Error(w, "Sign in again first: "+detail("this change needs a recent sign-in")+".", http.StatusForbidden)
 	case admin.InvalidInput, admin.TooMany, admin.OffHost:
 		http.Error(w, detail("invalid request"), http.StatusBadRequest)
 	case admin.Partial:

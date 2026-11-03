@@ -13,9 +13,14 @@ package db
 
 import (
 	"context"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -328,4 +333,114 @@ func TestRecordCommitBoundsNeverShrinksUnderConcurrency(t *testing.T) {
 	if f, l := bounds(id); f == nil || l == nil || !f.Equal(early) || !l.Equal(late) {
 		t.Errorf("after the race: first=%v last=%v; want %v and %v — a filled column must never shrink", f, l, early, late)
 	}
+}
+
+// TestRecordCommitBoundsWidensFromTheRowItWaitedFor drives the SET side of
+// the lock-wait re-evaluation (round 3 finding 3 of 0.29.123: the test above
+// passes zero bounds, so after the wait only the guard is re-evaluated — a
+// CTE computing SET from the pre-wait row, review round 4 F1's shape, passed
+// it). Writer A widens a filled row and holds the lock; writer B, with a run
+// that widens first and would shrink last, waits on it. B must widen from
+// the row it finally updates: first from B, last from A.
+func TestRecordCommitBoundsWidensFromTheRowItWaitedFor(t *testing.T) {
+	store, repo, _, bounds := commitBoundsFixture(t, "_avcmtwait")
+	ctx := t.Context()
+	d := func(y int) time.Time { return time.Date(y, 3, 1, 0, 0, 0, 0, time.UTC) }
+	id := repo("x")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET first_commit_at = $2, last_commit_at = $3 WHERE repo_id = $1`, id, d(2021), d(2022))
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `UPDATE aveloxis_data.repos SET first_commit_at = $2, last_commit_at = $3 WHERE repo_id = $1`, id, d(2018), d(2026)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.RecordCommitBounds(context.Background(), id, d(2017), d(2023)) }()
+	waiting := false
+	for i := 0; i < 200 && !waiting; i++ {
+		if err := store.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%first_commit_at%')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if !waiting {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if !waiting {
+		t.Fatal("writer B never waited on A's row lock — the race was not set up")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if f, l := bounds(id); f == nil || l == nil || !f.Equal(d(2017)) || !l.Equal(d(2026)) {
+		t.Errorf("after the wait: first=%v last=%v; want %v (B's run) and %v (A's row) — SET must read the row it updates", f, l, d(2017), d(2026))
+	}
+}
+
+// TestRecordCommitBoundsReadsTheCommitsOncePerBound pins the cost of the
+// statement on its plan, not its text (round 2 finding 3 of 0.29.123): D7's
+// change stamp compared the new bounds by spelling each one again, and
+// PostgreSQL plans a repeated sub-SELECT as a second InitPlan — the refill
+// branch read a repository's per-file commit rows four times instead of
+// two, on the table that deliberately has no (repo_id, timestamp) index.
+// The statement RecordCommitBounds sends (captured by a tracer on a pool of
+// its own) reads the commits table once per bound.
+func TestRecordCommitBoundsReadsTheCommitsOncePerBound(t *testing.T) {
+	store, repo, _, _ := commitBoundsFixture(t, "_avboundsplan")
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(os.Getenv("AVELOXIS_TEST_DB"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &captureTracer{}
+	cfg.ConnConfig.Tracer = tr
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	traced := &PostgresStore{pool: pool, logger: store.logger}
+	id := repo("r")
+	now := time.Now().Add(-time.Hour)
+	if err := traced.RecordCommitBounds(ctx, id, now, now); err != nil {
+		t.Fatal(err)
+	}
+	sql, args := tr.last()
+	if !strings.Contains(sql, "first_commit_at") {
+		t.Fatalf("captured %q, not the bounds statement", sql)
+	}
+	var plan string
+	if err := store.pool.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+sql, args...).Scan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(plan, `"Relation Name": "commits"`); n != 2 {
+		t.Errorf("the statement reads aveloxis_data.commits %d times, want 2 (one per bound); plan:\n%s", n, plan)
+	}
+}
+
+// captureTracer records the last statement a pool sent.
+type captureTracer struct {
+	mu   sync.Mutex
+	sql  string
+	args []any
+}
+
+func (c *captureTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sql, c.args = d.SQL, append([]any(nil), d.Args...)
+	return ctx
+}
+
+func (c *captureTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (c *captureTracer) last() (string, []any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sql, c.args
 }

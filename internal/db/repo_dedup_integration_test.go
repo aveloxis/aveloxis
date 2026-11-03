@@ -421,6 +421,8 @@ func cleanupDedupRepos(ctx context.Context, t *testing.T, store *PostgresStore, 
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
+		`DELETE FROM aveloxis_data.pull_request_message_ref WHERE repo_id IN
+		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.pull_request_reviews WHERE repo_id IN
 		   (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git ILIKE $1)`,
 		`DELETE FROM aveloxis_data.messages WHERE repo_id IN

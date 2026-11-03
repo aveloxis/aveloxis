@@ -57,6 +57,7 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/repos/{repoID}":                            {},
 	"GET /api/v1/repos/{repoID}/stats":                      {},
 	"GET /api/v1/repos/{repoID}/timeseries":                 {},
+	"GET /api/v1/repos/{repoID}/metric-series":              {query: "metric=burstiness"}, // v0.29.119
 	"GET /api/v1/repos/{repoID}/licenses":                   {},
 	"GET /api/v1/repos/{repoID}/sbom":                       {},
 	"GET /api/v1/repos/{repoID}/sbom?":                      {}, // placeholder-collision guard; unused
@@ -138,6 +139,9 @@ var smokeRecipes = map[string]smokeRecipe{
 	"GET /api/v1/admin/users":                                {auth: "admin"},
 	"GET /api/v1/admin/monitor/stats":                        {auth: "admin"},
 	"GET /api/v1/admin/monitor/queue":                        {auth: "admin"},
+	"GET /api/v1/admin/cache":                                {auth: "admin"},                        // v0.29.123
+	"GET /api/v1/admin/cache/repos":                          {auth: "admin", query: "sort=entries"}, // v0.29.123
+	"GET /api/v1/admin/cache/repos/{repoID}":                 {auth: "admin"},                        // v0.29.123
 	"POST /api/v1/admin/users/{userID}/admin":                {auth: "admin", body: `{"admin":true}`},
 	"POST /api/v1/admin/groups/{groupID}/reject":             {auth: "admin"},
 	"POST /api/v1/admin/monitor/queue/{repoID}/prioritize":   {auth: "admin"},                                                                          // v0.27.14 Boost (fixture seeds the queue row)

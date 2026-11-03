@@ -52,7 +52,14 @@ var _ = func() bool {
 // Rejects non-integer and sub-1 values with an error the handler
 // turns into a 400.
 func parseRetentionThreshold(r *http.Request) (int, error) {
-	raw := r.URL.Query().Get("retention_threshold")
+	return retentionThresholdValue(r.URL.Query().Get("retention_threshold"))
+}
+
+// retentionThresholdValue is the threshold a ?retention_threshold value
+// means: absent is the default, a positive integer is itself. The cache
+// key folds the parameter through it too (pageParamValue), so 4, 04 and
+// absent share one entry.
+func retentionThresholdValue(raw string) (int, error) {
 	if raw == "" {
 		return DefaultRetentionThreshold, nil
 	}

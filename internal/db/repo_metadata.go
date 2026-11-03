@@ -93,6 +93,11 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- v0.27.104: creation date is immutable — fill-empty-only;
 			    -- updated_at refreshes from the forge (nil-safe).
 			    created_at = COALESCE(repos.created_at, $8),
+			    -- 0.29.123 (round 1 finding 1): created_at is the last arm
+			    -- of every chart's first-activity floor, and the metadata
+			    -- backfill fills it outside any job — stamp the cache state
+			    -- when this statement fills it, never otherwise.
+			    data_changed_at = CASE WHEN repos.created_at IS NULL AND $8::timestamptz IS NOT NULL THEN NOW() ELSE repos.data_changed_at END,
 			    -- v0.27.122: GREATEST (see UpsertRepo) — an out-of-order
 			    -- older response must not regress the forge timestamp.
 			    updated_at = GREATEST(COALESCE($9, repos.updated_at), COALESCE(repos.updated_at, $9)),

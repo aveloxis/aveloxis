@@ -258,11 +258,11 @@ func (s *PostgresStore) BridgeEmailToIssue(ctx context.Context, issueID, repoID,
 // recounting BridgeEmailToIssue.
 func (s *PostgresStore) bridgeEmailToIssueNoRecount(ctx context.Context, issueID, repoID, msgID int64) error {
 	if err := s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
+		_, err := s.pool.Exec(ctx, stampLinkedOwnerSQL(`
 			INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id, data_source)
 			VALUES ($1, $2, $3,
 			        COALESCE((SELECT m.data_source FROM aveloxis_data.messages m WHERE m.msg_id = $3), ''))
-			ON CONFLICT (issue_id, msg_id) DO NOTHING`, issueID, repoID, msgID)
+			ON CONFLICT (issue_id, msg_id) DO NOTHING`), issueID, repoID, msgID)
 		return err
 	}); err != nil {
 		return fmt.Errorf("bridge email to issue: %w", err)

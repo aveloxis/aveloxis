@@ -100,7 +100,8 @@
     "jira_enabled": false,
     "jira_workers": 1,
     "jira_cadence_hours": 24,
-    "jira_polite_email": ""
+    "jira_polite_email": "",
+    "private_network_hosts": []
   },
   "web": {
     "addr": ":8082",

@@ -3541,3 +3541,19 @@ FROM aveloxis_data.releases;
 -- message (Augur uses singular "message", Aveloxis uses plural "messages")
 CREATE OR REPLACE VIEW aveloxis_augur_data.message AS
 SELECT * FROM aveloxis_data.messages;
+
+-- ============================================================
+-- 0.29.122 (summary/63 §8): the API's re-warm list, so a restart forgets
+-- nothing. One row per cached answer visitors asked for again (or a request
+-- loaded at start and not yet replayed): the request URI of a cached route of
+-- that repository and its last computation cost, which orders the replays.
+-- Written only by `aveloxis api` (SavePageCacheReplay, a difference per
+-- re-warm pass); a hint, not data — the re-warm drops a row whose repository
+-- or route is gone. Born empty on every fleet, so its key is here.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.page_cache_replay (
+    repo_id     BIGINT NOT NULL,
+    uri         TEXT NOT NULL,
+    cost_ms     BIGINT NOT NULL DEFAULT 0 CHECK (cost_ms >= 0),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (repo_id, uri)
+);

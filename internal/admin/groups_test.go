@@ -71,20 +71,20 @@ func TestGroupAccessRule(t *testing.T) {
 		err    error
 		logged bool
 	}{
-		{name: "owner reads", a: Actor{owner, Session}, want: Read, exists: true, ok: true},
-		{name: "owner writes", a: Actor{owner, Session}, want: Write, exists: true, ok: true},
-		{name: "owner's api token reads", a: Actor{owner, APIToken}, want: Read, exists: true, ok: true},
-		{name: "owner's api token writes", a: Actor{owner, APIToken}, want: Write, exists: true, ok: true},
-		{name: "operator for the owner writes", a: Actor{owner, Operator}, want: Write, exists: true, ok: true},
-		{name: "admin session reads", a: Actor{admin, Session}, want: Read, row: true, exists: true, ok: true, logged: true},
-		{name: "admin session writes", a: Actor{admin, Session}, want: Write, row: true, exists: true, err: db.ErrGroupNotOwned},
-		{name: "admin api token reads", a: Actor{admin, APIToken}, want: Read, row: true, exists: true, err: db.ErrGroupNotOwned},
-		{name: "operator reads", a: Actor{0, Operator}, want: Read, exists: true, ok: true, logged: true},
-		{name: "operator writes another account's group", a: Actor{0, Operator}, want: Write, exists: true, err: db.ErrGroupNotOwned},
-		{name: "stranger reads", a: Actor{stranger, Session}, want: Read, exists: true, err: db.ErrGroupNotOwned},
-		{name: "stranger writes", a: Actor{stranger, Session}, want: Write, exists: true, err: db.ErrGroupNotOwned},
-		{name: "missing group, owner-like id", a: Actor{owner, Session}, want: Read, err: db.ErrGroupNotFound},
-		{name: "missing group, admin", a: Actor{admin, Session}, want: Read, row: true, err: db.ErrGroupNotFound},
+		{name: "owner reads", a: Actor{UserID: owner, Kind: Session}, want: Read, exists: true, ok: true},
+		{name: "owner writes", a: Actor{UserID: owner, Kind: Session}, want: Write, exists: true, ok: true},
+		{name: "owner's api token reads", a: Actor{UserID: owner, Kind: APIToken}, want: Read, exists: true, ok: true},
+		{name: "owner's api token writes", a: Actor{UserID: owner, Kind: APIToken}, want: Write, exists: true, ok: true},
+		{name: "operator for the owner writes", a: Actor{UserID: owner, Kind: Operator}, want: Write, exists: true, ok: true},
+		{name: "admin session reads", a: Actor{UserID: admin, Kind: Session}, want: Read, row: true, exists: true, ok: true, logged: true},
+		{name: "admin session writes", a: Actor{UserID: admin, Kind: Session}, want: Write, row: true, exists: true, err: db.ErrGroupNotOwned},
+		{name: "admin api token reads", a: Actor{UserID: admin, Kind: APIToken}, want: Read, row: true, exists: true, err: db.ErrGroupNotOwned},
+		{name: "operator reads", a: Actor{UserID: 0, Kind: Operator}, want: Read, exists: true, ok: true, logged: true},
+		{name: "operator writes another account's group", a: Actor{UserID: 0, Kind: Operator}, want: Write, exists: true, err: db.ErrGroupNotOwned},
+		{name: "stranger reads", a: Actor{UserID: stranger, Kind: Session}, want: Read, exists: true, err: db.ErrGroupNotOwned},
+		{name: "stranger writes", a: Actor{UserID: stranger, Kind: Session}, want: Write, exists: true, err: db.ErrGroupNotOwned},
+		{name: "missing group, owner-like id", a: Actor{UserID: owner, Kind: Session}, want: Read, err: db.ErrGroupNotFound},
+		{name: "missing group, admin", a: Actor{UserID: admin, Kind: Session}, want: Read, row: true, err: db.ErrGroupNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &fakeStore{
@@ -113,7 +113,7 @@ func TestGroupAccessRule(t *testing.T) {
 	// A failed owner lookup is the failure it is, not "not yours" (SR-5).
 	st := &fakeStore{groupOwner: func(context.Context, int64) (int, string, error) { return 0, "", errors.New("closed pool") }}
 	svc, _, _ := testService(t, st, Options{})
-	_, err := svc.GroupAccess(context.Background(), Actor{owner, Session}, 5, Read)
+	_, err := svc.GroupAccess(context.Background(), Actor{UserID: owner, Kind: Session}, 5, Read)
 	if _, refused := Classify(err); err == nil || refused {
 		t.Errorf("GroupAccess on a failed lookup = %v; want the failure, unclassified", err)
 	}
@@ -136,7 +136,7 @@ func TestAuthorizeGroupRepoRequiresMembership(t *testing.T) {
 				repoInGroup: func(context.Context, int64, int64) (bool, error) { return tc.in, tc.err },
 			}
 			svc, _, _ := testService(t, st, Options{})
-			ref, err := svc.AuthorizeGroupRepo(context.Background(), Actor{7, Session}, 5, 99)
+			ref, err := svc.AuthorizeGroupRepo(context.Background(), Actor{UserID: 7, Kind: Session}, 5, 99)
 			switch {
 			case tc.err != nil:
 				if _, refused := Classify(err); err == nil || refused {
@@ -159,7 +159,7 @@ func TestAuthorizeGroupRepoRequiresMembership(t *testing.T) {
 	// A stranger never reaches the membership read.
 	st := &fakeStore{groupOwner: func(context.Context, int64) (int, string, error) { return 7, "g", nil }, isUserAdmin: adminIs(false)}
 	svc, _, _ := testService(t, st, Options{})
-	if _, err := svc.AuthorizeGroupRepo(context.Background(), Actor{9, Session}, 5, 99); !errors.Is(err, db.ErrGroupNotOwned) {
+	if _, err := svc.AuthorizeGroupRepo(context.Background(), Actor{UserID: 9, Kind: Session}, 5, 99); !errors.Is(err, db.ErrGroupNotOwned) {
 		t.Errorf("stranger = %v", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestAddToGroupParsesEveryLine(t *testing.T) {
 		return db.AddOutcome{Linked: 1, Enqueued: 2}, nil
 	}}
 	svc, hooks, logs := testService(t, st, Options{AutoApproveAddLimit: 3})
-	out, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, []string{
+	out, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, []string{
 		"github.com/chaoss/augur",
 		"  https://gitlab.com/fdroid/fdroidclient.git  ",
 		"https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
@@ -228,7 +228,7 @@ func TestAddToGroupRefusals(t *testing.T) {
 		for i := range paste {
 			paste[i] = "github.com/o/r"
 		}
-		_, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, paste)
+		_, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, paste)
 		if ref, ok := Classify(err); !errors.Is(err, ErrTooMany) || !ok || ref.Kind != TooMany || !strings.Contains(ref.Detail, "1000") {
 			t.Errorf("= %v (%+v)", err, ref)
 		}
@@ -236,7 +236,7 @@ func TestAddToGroupRefusals(t *testing.T) {
 	t.Run("no usable line", func(t *testing.T) {
 		svc, _, _ := testService(t, &fakeStore{}, Options{})
 		for _, paste := range [][]string{nil, {"", "  "}, {"junk"}} {
-			if _, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, paste); !errors.Is(err, ErrInvalidInput) {
+			if _, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, paste); !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("AddToGroup(%q) = %v; want ErrInvalidInput", paste, err)
 			}
 		}
@@ -257,7 +257,7 @@ func TestAddToGroupRefusals(t *testing.T) {
 				return db.AddOutcome{Linked: tc.linked}, tc.err
 			}}
 			svc, hooks, logs := testService(t, st, Options{})
-			out, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, []string{"github.com/a/b"})
+			out, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, []string{"github.com/a/b"})
 			if !errors.Is(err, tc.err) || out.Linked != tc.linked {
 				t.Errorf("err %v: = %+v, %v", tc.err, out, err)
 			}
@@ -283,7 +283,7 @@ func TestAddToGroupRefusals(t *testing.T) {
 			return db.AddOutcome{}, errors.New("closed pool")
 		}}
 		svc, _, _ := testService(t, st, Options{})
-		_, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, []string{"github.com/a/b"})
+		_, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, []string{"github.com/a/b"})
 		if _, ok := Classify(err); err == nil || ok || !strings.Contains(err.Error(), "user 7") {
 			t.Errorf("= %v", err)
 		}
@@ -307,7 +307,7 @@ func TestAddToGroupNotifiesAPendingRequest(t *testing.T) {
 	m := newFakeMailer()
 	m.operator = "ops@example.com"
 	svc, hooks, _ := testService(t, st, Options{Mailer: m})
-	if _, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, []string{"github.com/a/b", "github.com/c/d"}); err != nil {
+	if _, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, []string{"github.com/a/b", "github.com/c/d"}); err != nil {
 		t.Fatal(err)
 	}
 	m.waitMail(t)
@@ -323,7 +323,7 @@ func TestAddToGroupNotifiesAPendingRequest(t *testing.T) {
 func TestAddOrgToGroup(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		svc, _, _ := testService(t, &fakeStore{}, Options{})
-		if _, err := svc.AddOrgToGroup(context.Background(), Actor{7, Session}, 5, "  "); !errors.Is(err, ErrInvalidInput) {
+		if _, err := svc.AddOrgToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, "  "); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("= %v", err)
 		}
 	})
@@ -337,7 +337,7 @@ func TestAddOrgToGroup(t *testing.T) {
 		m := newFakeMailer()
 		m.operator = "ops@example.com"
 		svc, hooks, logs := testService(t, st, Options{Mailer: m})
-		out, err := svc.AddOrgToGroup(context.Background(), Actor{7, Session}, 5, " https://github.com/chaoss ")
+		out, err := svc.AddOrgToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, " https://github.com/chaoss ")
 		if err != nil || !out.Registered {
 			t.Fatalf("= %+v, %v", out, err)
 		}
@@ -360,7 +360,7 @@ func TestAddOrgToGroup(t *testing.T) {
 		m := newFakeMailer()
 		m.operator = "ops@example.com"
 		svc, _, _ := testService(t, st, Options{Mailer: m})
-		if _, err := svc.AddOrgToGroup(context.Background(), Actor{7, Session}, 5, "https://github.com/chaoss"); err != nil {
+		if _, err := svc.AddOrgToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, "https://github.com/chaoss"); err != nil {
 			t.Fatal(err)
 		}
 		m.waitMail(t)
@@ -373,7 +373,7 @@ func TestAddOrgToGroup(t *testing.T) {
 			return db.OrgAddOutcome{}, db.ErrOrgOffGitHubHost
 		}}
 		svc, _, _ := testService(t, st, Options{GitHubAPIBase: "https://github.example/api/v3"})
-		_, err := svc.AddOrgToGroup(context.Background(), Actor{7, Session}, 5, "https://github.com/chaoss")
+		_, err := svc.AddOrgToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, "https://github.com/chaoss")
 		ref, ok := Classify(err)
 		if !errors.Is(err, db.ErrOrgOffGitHubHost) || !ok || ref.Kind != OffHost || !strings.Contains(ref.Detail, "(github.example)") {
 			t.Errorf("= %v, %+v", err, ref)
@@ -400,7 +400,7 @@ func TestRemoveFromGroup(t *testing.T) {
 				return tc.removed, tc.err
 			}}
 			svc, hooks, logs := testService(t, st, Options{})
-			removed, err := svc.RemoveFromGroup(context.Background(), Actor{7, Session}, 5, 99)
+			removed, err := svc.RemoveFromGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, 99)
 			if removed != tc.removed || !errors.Is(err, tc.err) {
 				t.Fatalf("= %v, %v", removed, err)
 			}
@@ -433,14 +433,14 @@ func TestAddToGroupCountsOnlyNonBlankLines(t *testing.T) {
 		}
 	}
 	paste = append(paste, "")
-	if _, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, paste); err != nil {
+	if _, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, paste); err != nil {
 		t.Fatalf("%d URLs among %d lines = %v; want accepted", MaxPasteURLs, len(paste), err)
 	}
 	if got != MaxPasteURLs {
 		t.Errorf("the store received %d URLs; want %d", got, MaxPasteURLs)
 	}
 	paste = append(paste, "https://github.com/o/one-more")
-	if _, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, paste); !errors.Is(err, ErrTooMany) {
+	if _, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, paste); !errors.Is(err, ErrTooMany) {
 		t.Errorf("%d URLs = %v; want ErrTooMany", MaxPasteURLs+1, err)
 	}
 }
@@ -548,7 +548,7 @@ func TestAddToGroupNamesAnSCPAddressByThePlatformsRule(t *testing.T) {
 			return db.AddOutcome{Linked: 1}, nil
 		}}
 		svc, _, _ := testService(t, st, Options{})
-		out, err := svc.AddToGroup(context.Background(), Actor{7, Session}, 5, []string{tc.line, "https://github.com/chaoss/augur"})
+		out, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, []string{tc.line, "https://github.com/chaoss/augur"})
 		if err != nil {
 			t.Fatalf("%q: %v", tc.line, err)
 		}

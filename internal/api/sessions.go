@@ -58,7 +58,16 @@ func (s *Server) handleMeSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	n, err := s.admin.RevokeSessions(r.Context(), s.actor(info), info.UserID)
+	// A sensitive change like the address (ASVS V7.5.2, the 0.29.125
+	// review): the service refuses a sign-in older than the bound
+	// (ReauthenticationRequired → 403 reauthentication_required), reading
+	// the sign-in signedInActor supplies.
+	a, err := s.signedInActor(r, info)
+	if err != nil {
+		s.serverError(w, r, "handleMeSessionsRevoke", err)
+		return
+	}
+	n, err := s.admin.RevokeSessions(r.Context(), a, info.UserID)
 	if err != nil {
 		if !s.refuse(w, info, err) {
 			s.serverError(w, r, "handleMeSessionsRevoke", err)
@@ -71,6 +80,9 @@ func (s *Server) handleMeSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleAdminUserSessionsRevoke — POST /api/v1/admin/users/{userID}/sessions/revoke.
+// Naming the caller's own account is the sensitive self-change, and the
+// service applies the recent-sign-in rule to it here too (Copilot's
+// seventh review of PR #246, 0.29.129).
 func (s *Server) handleAdminUserSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	info, ok := s.requireAdmin(w, r)
 	if !ok {
@@ -81,7 +93,12 @@ func (s *Server) handleAdminUserSessionsRevoke(w http.ResponseWriter, r *http.Re
 		writeAuthError(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
-	n, err := s.admin.RevokeSessions(r.Context(), s.actor(info), targetID)
+	a, err := s.signedInActor(r, info)
+	if err != nil {
+		s.serverError(w, r, "handleAdminUserSessionsRevoke", err)
+		return
+	}
+	n, err := s.admin.RevokeSessions(r.Context(), a, targetID)
 	if err != nil {
 		if !s.refuse(w, info, err) {
 			s.serverError(w, r, "handleAdminUserSessionsRevoke", err)

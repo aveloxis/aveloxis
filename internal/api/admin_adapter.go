@@ -4,9 +4,11 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/aveloxis/aveloxis/internal/admin"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 // The API's adapter over the admin service (stage 1 of summary/59): the
@@ -22,6 +24,27 @@ func (s *Server) actor(info authInfo) admin.Actor {
 		return admin.Actor{UserID: info.UserID, Kind: admin.APIToken}
 	}
 	return admin.Actor{UserID: info.UserID, Kind: admin.Session}
+}
+
+// signedInActor is actor with the session's sign-in filled in: the creation
+// of the web session this bearer token was minted from (db
+// SessionTokenCreatedAt; a parentless token has none, and the zero value
+// is never recent). The service's re-authentication rule reads it
+// (Copilot's seventh review of PR #246, 0.29.129). A store failure is an
+// error for the handler to answer.
+func (s *Server) signedInActor(r *http.Request, info authInfo) (admin.Actor, error) {
+	a := s.actor(info)
+	if a.Kind != admin.Session || s.store == nil {
+		return a, nil
+	}
+	created, err := s.store.SessionTokenCreatedAt(r.Context(), bearerToken(r))
+	if err != nil && !errors.Is(err, db.ErrInvalidSessionToken) {
+		return a, err
+	}
+	if err == nil {
+		a.SignedInAt = created
+	}
+	return a, nil
 }
 
 // apiHooks are this process's caches: the token-validation cache (scope
@@ -98,6 +121,10 @@ func (s *Server) refuse(w http.ResponseWriter, info authInfo, err error) bool {
 	}
 	if ref.Kind == admin.Capacity {
 		return s.refuseCapacity(w, info, err)
+	}
+	if ref.Kind == admin.ReauthenticationRequired {
+		writeReauthenticationRequired(w, ref.Detail)
+		return true
 	}
 	code, msg := refusalAnswer(ref)
 	writeAuthError(w, code, msg)

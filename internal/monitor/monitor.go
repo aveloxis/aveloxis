@@ -216,7 +216,13 @@ func isMobile(r *http.Request) bool {
 
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every answer, the 404s and the mux's own 405s included (ASVS
+		// V14.4.4, the 0.29.125 review): a browser must not sniff a JSON
+		// answer or an error text into HTML.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		s.mux.ServeHTTP(w, r)
+	})
 }
 
 // serverError is the one arm for a store failure (PR #218 review C5): the
@@ -327,6 +333,15 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrioritize(w http.ResponseWriter, r *http.Request) {
+	// The monitor's one state change takes no credential, so a page on
+	// another site could post it from the operator's browser (ASVS V4.3.3,
+	// the 0.29.125 review): the same-site rule the web GUI's guard uses,
+	// with no second origin admitted.
+	if origin, ok := httpserver.RequestOrigin(r, nil); !ok {
+		s.logger.Warn("cross-site prioritize refused", "path", r.URL.Path, "origin", origin)
+		http.Error(w, "cross-site request refused", http.StatusForbidden)
+		return
+	}
 	repoID, err := strconv.ParseInt(r.PathValue("repoID"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid repo_id", http.StatusBadRequest)

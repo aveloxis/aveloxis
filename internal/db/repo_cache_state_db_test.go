@@ -328,10 +328,10 @@ func TestSingleVulnerabilityInsertMovesTheCacheState(t *testing.T) {
 	}
 }
 
-// StampRepoDataChanged is the stamp for a whole run that writes outside the
+// StampReposChangedOutsideJob is the stamp for a whole run that writes outside the
 // queue (the one-shot `aveloxis collect`): it moves the cache state of that
 // repository only.
-func TestStampRepoDataChanged(t *testing.T) {
+func TestStampReposChangedOutsideJobMovesOnlyItsRepositories(t *testing.T) {
 	dsn := os.Getenv("AVELOXIS_TEST_DB")
 	if dsn == "" {
 		t.Skip("AVELOXIS_TEST_DB not set")
@@ -361,7 +361,7 @@ func TestStampRepoDataChanged(t *testing.T) {
 		return m
 	}
 	before := states()
-	if err := store.StampRepoDataChanged(ctx, a); err != nil {
+	if err := store.StampReposChangedOutsideJob(ctx, []int64{a}); err != nil {
 		t.Fatal(err)
 	}
 	after := states()

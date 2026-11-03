@@ -24,6 +24,7 @@
     "site_url": "https://rule.aveloxis.io"
   },
   "collection": {
+    "private_network_hosts": [],
     "days_until_recollect": 30,
     "search_resolve_interval_minutes": 15,
     "enrich_interval_minutes": 30,

@@ -173,7 +173,16 @@ func TestAPISessionsAreListedEndedAndTheEmailChangeNeedsARecentSignIn(t *testing
 		t.Errorf("bad user id = %d, want 400", w.Code)
 	}
 
-	// The account ends its own: every token dies, this one included.
+	// The account ends its own — after a recent sign-in (ASVS V7.5.2, the
+	// 0.29.125 review): the web session was aged above, so the first try is
+	// the re-authentication refusal and ends nothing.
+	if w := call(http.MethodPost, "/api/v1/me/sessions/revoke", spa, ""); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"reauthentication_required"`) {
+		t.Fatalf("an old sign-in's sign-out-everywhere = %d %s; want 403 reauthentication_required", w.Code, w.Body.String())
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.user_session_tokens SET created_at = $2 WHERE token = $1`, db.HashToken(webRaw), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	// Every token dies, this one included.
 	w = call(http.MethodPost, "/api/v1/me/sessions/revoke", spa, "")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ended":4`) {
 		t.Fatalf("POST /me/sessions/revoke = %d %s; want 200 ended 4 (web, its two children, the loose token)", w.Code, w.Body.String())
@@ -201,5 +210,45 @@ func TestAPISessionsAreListedEndedAndTheEmailChangeNeedsARecentSignIn(t *testing
 	}
 	if w := call(http.MethodGet, "/api/v1/me/sessions", adminTok, ""); w.Code != http.StatusOK {
 		t.Errorf("the administrator's own session was ended too: %d", w.Code)
+	}
+
+	// Copilot's seventh review of PR #246 (0.29.129): the administrative
+	// route ending the caller's OWN account is the same sensitive change as
+	// /me/sessions/revoke and takes the same recent-sign-in rule (the
+	// service's), so a stolen old administrator session cannot end the
+	// owner's others through it. A parentless token has no sign-in that
+	// counts; a token minted from an hour-old web session is refused; a
+	// fresh one ends every session of the account, itself included.
+	own := fmt.Sprintf("/api/v1/admin/users/%d/sessions/revoke", adminID)
+	if w := call(http.MethodPost, own, adminTok, ""); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"reauthentication_required"`) {
+		t.Fatalf("a parentless administrator token ending its own account's sessions = %d %s; want 403 reauthentication_required", w.Code, w.Body.String())
+	}
+	adminWeb, err := store.CreateWebSession(ctx, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminSPA, err := store.MintTokenForWebSession(ctx, adminWeb, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.user_session_tokens SET created_at = $2 WHERE token = $1`, db.HashToken(adminWeb), time.Now().Add(-time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if w := call(http.MethodPost, own, adminSPA, ""); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"reauthentication_required"`) {
+		t.Fatalf("an hour-old administrator sign-in ending its own account's sessions through the admin route = %d %s; want 403 reauthentication_required", w.Code, w.Body.String())
+	}
+	if w := call(http.MethodGet, "/api/v1/me/sessions", adminTok, ""); w.Code != http.StatusOK {
+		t.Fatalf("the refused self-revocation ended sessions anyway: %d", w.Code)
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.user_session_tokens SET created_at = $2 WHERE token = $1`, db.HashToken(adminWeb), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if w := call(http.MethodPost, own, adminSPA, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ended":3`) {
+		t.Fatalf("a fresh administrator sign-in ending its own account's sessions = %d %s; want 200 ended 3 (the web session, its token, the parentless token)", w.Code, w.Body.String())
+	}
+	for name, tok := range map[string]string{"adminSPA": adminSPA, "adminTok": adminTok} {
+		if w := call(http.MethodGet, "/api/v1/me/sessions", tok, ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("after the administrator's self-revocation the %s token still answers %d, want 401", name, w.Code)
+		}
 	}
 }

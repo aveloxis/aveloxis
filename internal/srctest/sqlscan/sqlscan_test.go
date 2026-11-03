@@ -131,6 +131,71 @@ func TestWritesColumnFixtures(t *testing.T) {
 		{"qualified-predicate", `UPDATE aveloxis_data.commits c SET cmt_added = v.added FROM (SELECT 1) v WHERE c.cmt_filename = v.filename`, "aveloxis_data.commits", "cmt_filename", false},
 		// aveloxis_ops now expressible (the old helper hardcoded aveloxis_data)
 		{"ops-schema", `UPDATE aveloxis_ops.collection_queue SET last_issues = $1`, "aveloxis_ops.collection_queue", "last_issues", true},
+		// PostgreSQL's multiple-column assignment, SET (a, b) = (...)
+		// (RecordCommitBounds, round 2 finding 3 of 0.29.123): every
+		// listed column is written; one read only on its right side is not.
+		{"column-list-first", `UPDATE aveloxis_data.repos r SET (first_commit_at, last_commit_at) = (SELECT 1, 2) WHERE r.repo_id = $1`, "aveloxis_data.repos", "first_commit_at", true},
+		{"column-list-last", "UPDATE aveloxis_data.repos r SET\n (first_commit_at, last_commit_at, data_changed_at) = (\n SELECT b.f) WHERE r.repo_id = $1", "aveloxis_data.repos", "data_changed_at", true},
+		{"column-list-after-a-set", `UPDATE aveloxis_data.repos SET repo_name = $1, (repo_owner, repo_git) = ($2, $3)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-rhs-only", `UPDATE aveloxis_data.repos r SET (repo_name, repo_owner) = (SELECT r.repo_git, COALESCE(last_commit_at, NOW()))`, "aveloxis_data.repos", "last_commit_at", false},
+		// A list member as the UPDATE grammar spells it: column_name,
+		// quoted or not, then any [subscript] or .field (round 5 of 0.29.123).
+		{"column-list-quoted", `UPDATE aveloxis_data.repos SET ("repo_git", repo_name) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-quoted-last", `UPDATE aveloxis_data.repos SET (repo_name, "repo_git") = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-subfield", `UPDATE aveloxis_data.repos SET (repo_git.f, repo_name) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-subscript", `UPDATE aveloxis_data.repos SET (repo_name, repo_git[1]) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-other-subfield", `UPDATE aveloxis_data.repos SET (repo_name, other.repo_git) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		// Round 6: whitespace and quoted fields in the indirection are the
+		// grammar's too; a quoted name is that exact name (case kept), and a
+		// quoted name holding the column's letters is another column.
+		{"column-list-spaced-subscript", `UPDATE aveloxis_data.repos SET (a, repo_git [1]) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-spaced-field", `UPDATE aveloxis_data.repos SET (a, repo_git . f) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-quoted-field", `UPDATE aveloxis_data.repos SET (a, repo_git."F") = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-quoted-other-case", `UPDATE aveloxis_data.repos SET (a, "REPO_GIT") = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-quoted-comma", `UPDATE aveloxis_data.repos SET ("x,repo_git", a) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-open-quote", `UPDATE aveloxis_data.repos SET ("repo_git, a) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		// Round 7: a quoted name holding commas, a parenthesised row after a
+		// comma outside the SET clause, and a non-ASCII fold are no member.
+		{"column-list-quoted-commas", `UPDATE aveloxis_data.repos SET ("x,repo_git,y", a) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-literal-subscript", `UPDATE aveloxis_data.repos SET (a, x[',repo_git,']) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"row-in-coalesce", `UPDATE aveloxis_data.repos SET flag = COALESCE($1, (repo_git) = $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"row-in-select-list", `INSERT INTO aveloxis_data.repos (repo_name) SELECT n, (o, repo_git) = ($1, $2) FROM s`, "aveloxis_data.repos", "repo_git", false},
+		{"row-in-where-call", `UPDATE aveloxis_data.repos SET a = $1 WHERE x AND COALESCE($2, (b, repo_git) = ($3, $4))`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-kelvin", "UPDATE aveloxis_data.repos SET (a, repo_\u212Aey) = ($1, $2)", "aveloxis_data.repos", "repo_key", false},
+		{"column-list-paren-subscript", `UPDATE aveloxis_data.repos SET (tags[array_length(tags, 1)], repo_git) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		// Round 8: brackets in an earlier assignment, IS DISTINCT FROM, E''
+		// escapes and dollar quotes, and the clause's RETURNING / FROM ends.
+		{"after-array-literal", `UPDATE aveloxis_data.repos SET tags = ARRAY[$1, $2], (x, repo_git) = ($3, $4)`, "aveloxis_data.repos", "repo_git", true},
+		{"row-in-array", `UPDATE aveloxis_data.repos SET flags = ARRAY[true, (repo_git) = $1]`, "aveloxis_data.repos", "repo_git", false},
+		{"after-is-distinct-from", `UPDATE aveloxis_data.repos SET changed = repo_name IS DISTINCT FROM $1, (x, repo_git) = ($2, $3)`, "aveloxis_data.repos", "repo_git", true},
+		{"after-is-not-distinct-from", `UPDATE aveloxis_data.repos SET changed = (b) IS NOT DISTINCT FROM c, (x, repo_git) = ($2, $3)`, "aveloxis_data.repos", "repo_git", true},
+		{"after-e-escape", `UPDATE aveloxis_data.repos SET x = E'\'', (a, repo_git) = (1, 2)`, "aveloxis_data.repos", "repo_git", true},
+		{"after-dollar-quote", `UPDATE aveloxis_data.repos SET x = $$it's$$, (a, repo_git) = (1, 2)`, "aveloxis_data.repos", "repo_git", true},
+		{"after-tagged-dollar-quote", `UPDATE aveloxis_data.repos SET x = $q$it's$q$, (a, repo_git) = (1, 2)`, "aveloxis_data.repos", "repo_git", true},
+		{"set-in-e-escape", `UPDATE aveloxis_data.repos SET a = E'\' SET (repo_git) = (1)', b = 2`, "aveloxis_data.repos", "repo_git", false},
+		{"set-in-dollar-quote", `UPDATE aveloxis_data.repos SET x = $$ SET (repo_git) = (1) $$`, "aveloxis_data.repos", "repo_git", false},
+		{"param-is-no-dollar-quote", `UPDATE aveloxis_data.repos SET x = $1, (a, repo_git) = ($2, $3)`, "aveloxis_data.repos", "repo_git", true},
+		{"row-in-returning", `UPDATE aveloxis_data.repos SET a = 1 RETURNING id, (repo_git) = $1 AS same`, "aveloxis_data.repos", "repo_git", false},
+		{"row-in-from", `UPDATE aveloxis_data.repos r SET a = 1 FROM s, (SELECT 1, repo_git FROM t) v WHERE (v.a) = 1`, "aveloxis_data.repos", "repo_git", false},
+		// Round 9: a DO or function body is executed SQL, not a value; a
+		// qualified column named distinct is no IS DISTINCT FROM; a $ inside
+		// an identifier is part of it, and an identifier ending in e before
+		// a quote is no E'…' prefix.
+		{"list-in-do-body", `DO $$ BEGIN UPDATE aveloxis_data.repos SET (a, repo_git) = (1, repos.repo_git) WHERE x = 1; END $$`, "aveloxis_data.repos", "repo_git", true},
+		{"list-in-tagged-do-body", `DO $body$ BEGIN UPDATE aveloxis_data.repos SET (a, repo_git) = (1, 2); END $body$`, "aveloxis_data.repos", "repo_git", true},
+		{"list-in-function-body", `CREATE FUNCTION f() RETURNS void AS $$ UPDATE aveloxis_data.repos SET (a, repo_git) = (1, 2) $$ LANGUAGE sql`, "aveloxis_data.repos", "repo_git", true},
+		{"qualified-distinct-column", `UPDATE aveloxis_data.repos SET a = s.distinct FROM s, (SELECT 1, repo_git FROM t) v WHERE (v.a) = 1`, "aveloxis_data.repos", "repo_git", false},
+		{"spaced-qualified-distinct-column", `UPDATE aveloxis_data.repos SET a = s . distinct FROM s, (SELECT 1, repo_git FROM t) v WHERE (v.a) = 1`, "aveloxis_data.repos", "repo_git", false},
+		{"dollar-in-identifier", `UPDATE aveloxis_data.repos SET a = x$y$, (b, repo_git) = (1, 2)`, "aveloxis_data.repos", "repo_git", true},
+		{"typed-literal-no-escape", `UPDATE aveloxis_data.repos SET d = name'a\', (b, repo_git) = (1, 2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-comma-in-subscript", `UPDATE aveloxis_data.repos SET (a, x[f(1, repo_git)]) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-nested-subscript", `UPDATE aveloxis_data.repos SET (a, repo_git[b[1]]) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-upper", `UPDATE aveloxis_data.repos SET (a, REPO_GIT) = ($1, $2)`, "aveloxis_data.repos", "repo_git", true},
+		{"column-list-in-cte", `WITH u AS (UPDATE aveloxis_data.repos SET (repo_git, a) = ($1, $2) RETURNING 1) SELECT 1`, "aveloxis_data.repos", "repo_git", true},
+		{"set-in-a-literal", `UPDATE aveloxis_data.repos SET a = 'x SET (repo_git) = y' WHERE b`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-qualified", `INSERT INTO aveloxis_data.repos (repo_git) SELECT x FROM s ORDER BY s.c, (s.added_at) = $1`, "aveloxis_data.repos", "added_at", false},
+		{"column-list-substring", `UPDATE aveloxis_data.repos SET (repo_name, repo_git_old) = ($1, $2)`, "aveloxis_data.repos", "repo_git", false},
+		{"column-list-in-where", `UPDATE aveloxis_data.repos SET repo_name = $1 WHERE (repo_owner, repo_git) = ($2, $3)`, "aveloxis_data.repos", "repo_git", false},
 	}
 	for _, c := range cases {
 		s := Stmt{File: "fixture.go", SQL: c.sql}

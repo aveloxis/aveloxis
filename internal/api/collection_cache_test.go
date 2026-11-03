@@ -5,57 +5,57 @@ package api
 
 import (
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestCollectionCacheIsKeyedByGenerationAndBounded — O11 option 4
 // (v0.29.71): an answer is reused while the repositories' collection
-// generation is unchanged and its age is under the TTL (the contributor
-// enrichment cadence), recomputed when either moves. The old 60 s body
-// caches missed on every page view more than a minute apart.
+// generation is unchanged and recomputed when it moves. Since 0.29.120 (D6,
+// summary/63) it has no age limit: durable until a member is collected again
+// or a stamping writer moves its repository (the generation digests
+// data_changed_at).
 func TestCollectionCacheIsKeyedByGenerationAndBounded(t *testing.T) {
-	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	c := newCollectionCache(30 * time.Minute)
-	c.now = func() time.Time { return now }
-	c.put(collectionKey("topcontrib|7", "gen-1"), []byte("A"))
-
-	now = now.Add(10 * time.Minute) // well past the old 60 s TTL
-	if v, ok := c.get(collectionKey("topcontrib|7", "gen-1")); !ok || string(v.([]byte)) != "A" {
-		t.Errorf("same generation within the TTL must hit, got %v %v", v, ok)
+	c := newCollectionCache()
+	c.put(collectionKey("series|7", "gen-1"), []byte("A"))
+	// No clock: nothing in the cache reads one, so an entry's age cannot
+	// end it.
+	if v, ok := c.get(collectionKey("series|7", "gen-1")); !ok || string(v.([]byte)) != "A" {
+		t.Errorf("the same generation must hit however old the entry is, got %v %v", v, ok)
 	}
-	if _, ok := c.get(collectionKey("topcontrib|7", "gen-2")); ok {
+	if _, ok := c.get(collectionKey("series|7", "gen-2")); ok {
 		t.Error("a new collection generation must miss")
-	}
-	now = now.Add(21 * time.Minute)
-	if _, ok := c.get(collectionKey("topcontrib|7", "gen-1")); ok {
-		t.Error("an entry older than the TTL must miss")
-	}
-	if newCollectionCache(0).ttl != compareCacheTTL {
-		t.Error("a zero TTL (a Server built by New) keeps the old 60 s behavior")
 	}
 }
 
-// TestServerCacheUsesTheConfiguredMaxAge — the option reaches the cache.
-func TestServerCacheUsesTheConfiguredMaxAge(t *testing.T) {
+// TestServerCachesHaveNoAgeLimit — D6 (0.29.120, summary/63): neither the
+// compare series cache nor the repository-page cache ages its answers, so the
+// api takes no maximum age (the enrichment interval it used to receive is
+// removed, not left unread: a negative tripwire), and the start-up lines
+// report no TTL.
+func TestServerCachesHaveNoAgeLimit(t *testing.T) {
+	if _, ok := reflect.TypeOf(Options{}).FieldByName("ResponseCacheMaxAge"); ok {
+		t.Error("api.Options carries ResponseCacheMaxAge again: the caches are durable until recollection (D6), an age option would be dead or would bring the timer back")
+	}
 	var buf lockedBuffer
-	s, err := NewWithOptions(nil, slog.New(slog.NewTextHandler(&buf, nil)), Options{ResponseCacheMaxAge: 45 * time.Minute})
+	s, err := NewWithOptions(nil, slog.New(slog.NewTextHandler(&buf, nil)), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The compare series and the repository page (v0.29.73) are separate
-	// caches (a compare flood cannot evict the repository-page answers),
-	// both aged by the same enrichment interval.
-	if s.seriesCache == nil || s.seriesCache.ttl != 45*time.Minute {
-		t.Errorf("seriesCache = %+v, want a 45 min TTL", s.seriesCache)
+	// caches (a flood of organization comparisons cannot evict the
+	// repository-page answers; a repository entity's series lives in the
+	// page cache since 0.29.121).
+	if s.seriesCache == nil || s.pageCache == nil {
+		t.Fatalf("both caches must exist: series %v page %v", s.seriesCache, s.pageCache)
 	}
-	if s.pageCache == nil || s.pageCache.ttl != 45*time.Minute {
-		t.Errorf("pageCache = %+v, want a 45 min enriched TTL", s.pageCache)
+	got := buf.String()
+	if !strings.Contains(got, "API repository page cache") || !strings.Contains(got, "API collection cache") {
+		t.Fatalf("the start-up lines are missing; log:\n%s", got)
 	}
-	// SR-10: the EFFECTIVE value is logged at startup.
-	if got := buf.String(); !strings.Contains(got, "collection cache") || !strings.Contains(got, "ttl=45m0s") {
-		t.Errorf("the API must log the cache TTL in effect; log:\n%s", got)
+	if strings.Contains(got, "ttl=") {
+		t.Errorf("a start-up line reports a TTL, which no cache has; log:\n%s", got)
 	}
 	// A nil logger (tests) must not panic.
 	if _, err := NewWithOptions(nil, nil, Options{}); err != nil {

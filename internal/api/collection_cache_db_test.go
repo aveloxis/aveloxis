@@ -46,7 +46,7 @@ func TestRepoEndpointsCacheByCollectionGeneration(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
 	s, err := NewWithOptions(store, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 1 << 20, ResponseCacheMaxAge: 30 * time.Minute})
+		Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestCompareSeriesCacheByCollectionGeneration(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
-	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), seriesCache: newCollectionCache(30 * time.Minute)}
+	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), seriesCache: newCollectionCache()}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	since, until := time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
 	ids := []int64{repoID}
@@ -122,7 +122,7 @@ func TestCompareSeriesCacheByCollectionGeneration(t *testing.T) {
 	// Replace the stored entry with a sentinel: a cached answer is returned.
 	s.seriesCache.mu.Lock()
 	for k := range s.seriesCache.m {
-		s.seriesCache.m[k] = collectionCacheEntry{val: entitySeries{points: []db.WeeklyPoint{{Value: 424242}}}, expires: time.Now().Add(time.Hour)}
+		s.seriesCache.m[k] = collectionCacheEntry{val: entitySeries{points: []db.WeeklyPoint{{Value: 424242}}}}
 	}
 	s.seriesCache.mu.Unlock()
 	points, _, err := s.cachedMetricSeries(r, ids, "contributors", "week", since, until, 4)
@@ -135,5 +135,61 @@ func TestCompareSeriesCacheByCollectionGeneration(t *testing.T) {
 	points, _, err = s.cachedMetricSeries(r, ids, "contributors", "week", since, until, 4)
 	if err != nil || (len(points) == 1 && points[0].Value == 424242) {
 		t.Errorf("after a new collection the series must be recomputed, got %v %v", points, err)
+	}
+}
+
+// TestFirstActivityFloorCacheByCollectionGeneration — the per-entity floor
+// is read once per collection generation, as the series it clamps (round 2
+// finding 2 of 0.29.123: with the process-lifetime memo gone, every /compare
+// body-cache miss read FirstActivityAt for an organisation's repositories
+// before the series cache was even consulted). A sentinel planted under the
+// floor's key is served within the generation; a new collection bypasses it.
+func TestFirstActivityFloorCacheByCollectionGeneration(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	var repoID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ('https://github.com/_avcachefloor/r', 'r', '_avcachefloor', 1) RETURNING repo_id`).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO aveloxis_ops.collection_queue (repo_id, last_collected) VALUES ($1, '2026-09-01T00:00:00Z')`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
+	})
+	s := &Server{store: store, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), seriesCache: newCollectionCache()}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	ids := []int64{repoID}
+	if _, ok, err := s.cachedFirstActivity(r, ids); err != nil || ok {
+		t.Fatalf("a repository with no activity has no floor: ok=%v err=%v", ok, err)
+	}
+	sentinel := time.Date(2001, 2, 3, 0, 0, 0, 0, time.UTC)
+	s.seriesCache.mu.Lock()
+	n := len(s.seriesCache.m)
+	for k := range s.seriesCache.m {
+		s.seriesCache.m[k] = collectionCacheEntry{val: firstActivityFloor{at: sentinel, ok: true}}
+	}
+	s.seriesCache.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("the floor must be cached under one key, the cache holds %d", n)
+	}
+	if fa, ok, err := s.cachedFirstActivity(r, ids); err != nil || !ok || !fa.Equal(sentinel) {
+		t.Errorf("within the generation the cached floor must be served, got %v %v %v", fa, ok, err)
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.collection_queue SET last_collected = last_collected + interval '1 day' WHERE repo_id = $1`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.cachedFirstActivity(r, ids); err != nil || ok {
+		t.Errorf("after a new collection the floor must be read again, got ok=%v err=%v", ok, err)
 	}
 }

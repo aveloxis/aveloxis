@@ -325,3 +325,19 @@ func TestWriteIsAtomicForAConcurrentReader(t *testing.T) {
 		t.Errorf("mode after Write = %v; want 0644 as before", fi.Mode().Perm())
 	}
 }
+
+// ASVS 5.0 review of 0.29.125 (V16.4.2, D-N3): the directory holds the
+// processes' logs — sign-ins, account ids, client addresses, administrator
+// actions — so it is the owner's alone. (An existing installation keeps its
+// mode: upgrading.md says to chmod it.)
+func TestDirIsCreatedForTheOwnerAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := Dir()
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o700 {
+		t.Errorf("%s created with mode %o, want 0700", dir, st.Mode().Perm())
+	}
+}

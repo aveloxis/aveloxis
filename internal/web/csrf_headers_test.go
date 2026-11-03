@@ -47,7 +47,12 @@ func TestCSRFGuardOnEveryPostRoute(t *testing.T) {
 		}
 		posts++
 		session := func(r *http.Request) *http.Request {
-			token := plantSession(t, s, "csrf-"+rt.pattern, &Session{UserID: 1, LoginName: "c", IsAdmin: true, ExpiresAt: time.Now().Add(time.Hour)})
+			// A session with its sign-in recorded, as a real browser's is: the
+			// administrative revoke of the session's OWN account (id 1) takes
+			// the service's recent-sign-in rule before any store call (0.29.129),
+			// and a planted session without a sign-in would be refused there —
+			// a 403 this sweep cannot tell from the guard's.
+			token := plantSession(t, s, "csrf-"+rt.pattern, &Session{UserID: 1, LoginName: "c", IsAdmin: true, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
 			r.AddCookie(&http.Cookie{Name: s.cookieName("aveloxis_session"), Value: token})
 			return r
 		}
@@ -138,6 +143,9 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		scriptSrc := strings.SplitN(strings.SplitN(csp+";", "script-src", 2)[1], ";", 2)[0]
 		if strings.Contains(scriptSrc, "unsafe") || strings.Contains(scriptSrc, "http") {
 			t.Errorf("GET %s: script-src allows unsafe or remote sources: %q", path, scriptSrc)
+		}
+		if (path == "/login" || path == "/") && !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html; charset=utf-8") {
+			t.Errorf("GET %s: a rendered page states its type, got %q", path, rec.Header().Get("Content-Type"))
 		}
 		if rec.Header().Get("X-Content-Type-Options") != "nosniff" || rec.Header().Get("X-Frame-Options") != "DENY" || rec.Header().Get("Referrer-Policy") == "" {
 			t.Errorf("GET %s: nosniff=%q frame=%q referrer=%q", path, rec.Header().Get("X-Content-Type-Options"), rec.Header().Get("X-Frame-Options"), rec.Header().Get("Referrer-Policy"))

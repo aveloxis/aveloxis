@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -54,20 +55,52 @@ func (s *PostgresStore) RecordCommitBounds(ctx context.Context, repoID int64, fi
 	// r: a statement that waited on another writer's row lock re-evaluates
 	// them against the row it finally updates (review round 4 F1 — computed
 	// in a CTE joined to the UPDATE, they kept the pre-wait row, and a
-	// concurrent fill shrank a filled column).
-	_, err := s.pool.Exec(ctx, `
+	// concurrent fill shrank a filled column). The bounds are every metric
+	// chart's first-activity floor, and the gone-recheck sweep records them
+	// outside any job (a gone repository has no queue row), so a change stamps
+	// data_changed_at in the same statement (D7, 0.29.120, summary/63) — only
+	// when a bound moves: a row the guard below admits can keep its bounds
+	// (both stay NULL for a repository with no plausibly dated commit), and
+	// stamping it would move the cache state on every gone-recheck (round 1
+	// finding 6 of 0.29.123). Each bound is spelled once (commitBoundFirst/
+	// commitBoundLast) and compared in the same statement, against the
+	// target row (a CTE would read the pre-wait row, review round 4 F1).
+	//
+	// The three columns are set from one correlated sub-SELECT, so each
+	// bound is computed once and the stamp compares the values computed
+	// (round 2 finding 3 of 0.29.123: spelling a bound again in
+	// data_changed_at's CASE planned its commits aggregate twice). It reads
+	// r, so the lock-wait re-evaluation above holds; OFFSET 0 keeps the
+	// planner from pulling the inner sub-SELECT up — flattened, each
+	// reference to b.first_at / b.last_at is replaced by its expression and
+	// the aggregates are planned twice again
+	// (TestRecordCommitBoundsReadsTheCommitsOncePerBound).
+	_, err := s.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE aveloxis_data.repos r SET
-		    first_commit_at = CASE WHEN r.first_commit_at IS NULL OR r.first_commit_at >= $4::timestamptz OR r.first_commit_at < $5::timestamptz
-		        THEN (SELECT MIN(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_author_timestamp >= $5::timestamptz AND cmt_author_timestamp < $4::timestamptz)
-		        ELSE LEAST(r.first_commit_at, $2::timestamptz) END,
-		    last_commit_at = CASE WHEN r.last_commit_at IS NULL OR r.last_commit_at >= $4::timestamptz OR r.last_commit_at < $5::timestamptz
-		        THEN (SELECT MAX(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_author_timestamp >= $5::timestamptz AND cmt_author_timestamp < $4::timestamptz)
-		        ELSE GREATEST(r.last_commit_at, $3::timestamptz) END
+		    (first_commit_at, last_commit_at, data_changed_at) = (
+		        SELECT b.first_at, b.last_at,
+		               CASE WHEN (b.first_at, b.last_at) IS DISTINCT FROM (r.first_commit_at, r.last_commit_at)
+		                   THEN NOW() ELSE r.data_changed_at END
+		        FROM (SELECT %[1]s AS first_at, %[2]s AS last_at OFFSET 0) b)
 		WHERE r.repo_id = $1
 		  AND (r.first_commit_at IS NULL OR r.last_commit_at IS NULL
 		       OR r.first_commit_at >= $4::timestamptz OR r.last_commit_at >= $4::timestamptz
 		       OR r.first_commit_at < $5::timestamptz OR r.last_commit_at < $5::timestamptz
-		       OR r.first_commit_at > $2::timestamptz OR r.last_commit_at < $3::timestamptz)`,
+		       OR r.first_commit_at > $2::timestamptz OR r.last_commit_at < $3::timestamptz)`, commitBoundFirst, commitBoundLast),
 		repoID, NullTime(first), NullTime(last), bound, floor)
 	return err
 }
+
+// commitBoundFirst and commitBoundLast are RecordCommitBounds' new bounds,
+// read against the target row r ($1 repository, $2/$3 the run's bounds, $4
+// the plausibility ceiling, $5 the floor): a stored bound outside the
+// plausible range is refilled from the commits table, a plausible one only
+// widens.
+const (
+	commitBoundFirst = `CASE WHEN r.first_commit_at IS NULL OR r.first_commit_at >= $4::timestamptz OR r.first_commit_at < $5::timestamptz
+		        THEN (SELECT MIN(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_author_timestamp >= $5::timestamptz AND cmt_author_timestamp < $4::timestamptz)
+		        ELSE LEAST(r.first_commit_at, $2::timestamptz) END`
+	commitBoundLast = `CASE WHEN r.last_commit_at IS NULL OR r.last_commit_at >= $4::timestamptz OR r.last_commit_at < $5::timestamptz
+		        THEN (SELECT MAX(cmt_author_timestamp) FROM aveloxis_data.commits WHERE repo_id = $1 AND cmt_author_timestamp >= $5::timestamptz AND cmt_author_timestamp < $4::timestamptz)
+		        ELSE GREATEST(r.last_commit_at, $3::timestamptz) END`
+)

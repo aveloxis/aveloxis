@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/outboundtest"
 	"github.com/aveloxis/aveloxis/internal/testdb"
 	"github.com/aveloxis/aveloxis/internal/testdb/prepare"
 )
@@ -16,4 +17,12 @@ import (
 // (migrated, bootstrap admin signed up) before any test, checked with the
 // data-verify battery after green tests, and dropped (internal/testdb), so
 // rows an earlier or concurrent run left behind can never reach them.
-func TestMain(m *testing.M) { os.Exit(testdb.Main(m, prepare.Deployment, prepare.Verify)) }
+// The tests of this package probe, clone or scan loopback servers: the
+// outbound-address rule (0.29.132) trusts loopback here and resolves names
+// deterministically (internal/outboundtest, the one owner) so no test
+// resolves for real. A test of the rule itself sets its own policy and
+// restores this one.
+func TestMain(m *testing.M) {
+	SetOutboundPolicy(outboundtest.Policy())
+	os.Exit(testdb.Main(m, prepare.Deployment, prepare.Verify))
+}

@@ -29,8 +29,11 @@ func Dir() string {
 	}
 	dir := filepath.Join(home, ".aveloxis")
 	// Best-effort: if this fails, the subsequent Write surfaces a clear
-	// error against the missing directory.
-	_ = os.MkdirAll(dir, 0o755)
+	// error against the missing directory. The owner's alone: it holds the
+	// processes' logs — sign-ins, account ids, client addresses,
+	// administrator actions (ASVS V16.4.2, the 0.29.125 review). An
+	// existing directory keeps its mode (upgrading.md: chmod it).
+	_ = os.MkdirAll(dir, 0o700)
 	return dir
 }
 

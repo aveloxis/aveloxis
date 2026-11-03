@@ -5,6 +5,8 @@ package collector
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -27,12 +29,19 @@ func TestScancodeCloneCmdRefusesUnsafeURLs(t *testing.T) {
 }
 
 func TestScancodeCloneCmdUsesTheCloneEnvironment(t *testing.T) {
-	const u = "https://github.com/chaoss/augur"
+	// A loopback stub (trusted by the package's TestMain): the command's
+	// git endpoint walk must not reach a live forge from a unit test (L10
+	// round 3 of 0.29.132); a 404 there keeps the stored URL.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	u := srv.URL + "/chaoss/augur"
 	cmd, err := scancodeCloneCmd(context.Background(), u, "/tmp/dir")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"git", "clone", "--depth", "1", "--", u, "/tmp/dir"}
+	// -c http.followRedirects=false: git never follows a redirect the
+	// outbound-address rule's probe did not see (0.29.132).
+	want := []string{"git", "-c", gitNoRedirects, "clone", "--depth", "1", "--", u, "/tmp/dir"}
 	if !slices.Equal(cmd.Args, want) {
 		t.Fatalf("args = %q, want %q", cmd.Args, want)
 	}

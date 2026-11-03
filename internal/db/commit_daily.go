@@ -287,6 +287,12 @@ func (s *PostgresStore) FillRepoCommitDailyFromCommits(ctx context.Context, repo
 		if _, err := tx.Exec(ctx, stampCommitDailyCompleteSQL, repoID); err != nil {
 			return fmt.Errorf("stamp repo_commit_daily complete: %w", err)
 		}
+		// The daily picture now answers the commit arms of the time series,
+		// top contributors and the first-activity floor, and heal-commit-daily
+		// runs outside any job: the cached answers move with it (D7).
+		if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
+			return fmt.Errorf("stamp repository data changed: %w", err)
+		}
 		return tx.Commit(ctx)
 	})
 	return written, err

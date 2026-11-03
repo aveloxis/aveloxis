@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Production Deployment &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>Production Deployment &mdash; Aveloxis 0.29.135 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=7bc0d20d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,13 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +366,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +786,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1755,6 +1763,10 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#working-commits-aveloxis-ops">working_commits (aveloxis_ops)</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#api-response-cache-ops">API Response Cache (ops)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#page-cache-replay-aveloxis-ops">page_cache_replay (aveloxis_ops)</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#indexes">Indexes</a><ul>
@@ -2060,9 +2072,48 @@ block below. <code class="docutils literal notranslate"><span class="pre">sudo</
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 
-<span class="k">server</span><span class="w"> </span><span class="p">{</span><span class="w">                              </span><span class="c1"># optional: the API for Bearer clients (aveloxis-gui, scripts)</span>
+<span class="k">server</span><span class="w"> </span><span class="p">{</span><span class="w">                              </span><span class="c1"># the API host over plain HTTP: refused, never redirected or served</span>
+<span class="w">    </span><span class="kn">listen</span><span class="w"> </span><span class="mi">80</span><span class="p">;</span>
 <span class="w">    </span><span class="kn">server_name</span><span class="w"> </span><span class="s">api.aveloxis.example.org</span><span class="p">;</span>
-<span class="w">    </span><span class="c1"># TLS: certbot --nginx -d api.aveloxis.example.org</span>
+<span class="w">    </span><span class="kn">return</span><span class="w"> </span><span class="mi">403</span><span class="p">;</span><span class="w">                       </span><span class="c1"># a token sent in clear is already exposed when any answer arrives; a refusal makes the client fix its URL, a redirect would hide the mistake and a served answer repeat it</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Reload, then obtain the API host’s certificate — before the TLS block below
+is in place:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>nginx<span class="w"> </span>-t<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>sudo<span class="w"> </span>systemctl<span class="w"> </span>reload<span class="w"> </span>nginx
+sudo<span class="w"> </span>certbot<span class="w"> </span>certonly<span class="w"> </span>--nginx<span class="w"> </span>-d<span class="w"> </span>api.aveloxis.example.org<span class="w">    </span><span class="c1"># the challenge only; it edits no block</span>
+</pre></div>
+</div>
+<p>Renewals reload nginx on their own: <code class="docutils literal notranslate"><span class="pre">--nginx</span></code> makes the nginx plugin the
+lineage’s installer even under <code class="docutils literal notranslate"><span class="pre">certonly</span></code> (<code class="docutils literal notranslate"><span class="pre">choose_configurator_plugins</span></code> in
+<code class="docutils literal notranslate"><span class="pre">certbot/_internal/plugins/selection.py</span></code> sets it when <code class="docutils literal notranslate"><span class="pre">--nginx</span></code> was given),
+the choice is written to the lineage’s renewal configuration
+(<code class="docutils literal notranslate"><span class="pre">installer</span> <span class="pre">=</span> <span class="pre">nginx</span></code> under <code class="docutils literal notranslate"><span class="pre">[renewalparams]</span></code> in the host’s file under
+<code class="docutils literal notranslate"><span class="pre">/etc/letsencrypt/renewal/</span></code>), and <code class="docutils literal notranslate"><span class="pre">certbot</span> <span class="pre">renew</span></code> calls <code class="docutils literal notranslate"><span class="pre">installer.restart()</span></code> after each renewal (<code class="docutils literal notranslate"><span class="pre">renew_cert</span></code> in
+<code class="docutils literal notranslate"><span class="pre">certbot/_internal/main.py</span></code>) — so no <code class="docutils literal notranslate"><span class="pre">--deploy-hook</span></code> is needed for the reload.</p>
+<p>The order is certbot’s, not a preference: its nginx plugin runs <code class="docutils literal notranslate"><span class="pre">nginx</span> <span class="pre">-t</span></code>
+before anything else (<code class="docutils literal notranslate"><span class="pre">prepare</span></code> in <code class="docutils literal notranslate"><span class="pre">certbot/_internal/plugins/nginx/configurator.py</span></code>),
+so a server block naming certificate files that do not exist yet makes the
+command fail with <code class="docutils literal notranslate"><span class="pre">MisconfigurationError</span></code>. The refusal block does not stand in
+the challenge’s way: certbot inserts its challenge location into the port-80
+block for the name with a <code class="docutils literal notranslate"><span class="pre">rewrite</span> <span class="pre">^(/.well-known/acme-challenge/.*)</span> <span class="pre">$1</span> <span class="pre">break;</span></code>
+ahead of the block’s own directives (<code class="docutils literal notranslate"><span class="pre">_make_or_mod_server_block</span></code> in
+<code class="docutils literal notranslate"><span class="pre">plugins/nginx/http_01.py</span></code>), and <code class="docutils literal notranslate"><span class="pre">break</span></code> ends the rewrite phase before
+<code class="docutils literal notranslate"><span class="pre">return</span> <span class="pre">403</span></code> runs. Renewals run the same plugin against the finished
+configuration. With the certificate in <code class="docutils literal notranslate"><span class="pre">/etc/letsencrypt/live/</span></code>, add the TLS
+block:</p>
+<div class="highlight-nginx notranslate"><div class="highlight"><pre><span></span><span class="k">server</span><span class="w"> </span><span class="p">{</span><span class="w">                              </span><span class="c1"># optional: the API for Bearer clients (aveloxis-gui, scripts)</span>
+<span class="w">    </span><span class="kn">listen</span><span class="w"> </span><span class="mi">443</span><span class="w"> </span><span class="s">ssl</span><span class="p">;</span>
+<span class="w">    </span><span class="kn">server_name</span><span class="w"> </span><span class="s">api.aveloxis.example.org</span><span class="p">;</span>
+<span class="w">    </span><span class="c1"># TLS: the certificate obtained above (certbot certonly, before this block exists)</span>
+<span class="w">    </span><span class="kn">ssl_certificate</span><span class="w">     </span><span class="s">/etc/letsencrypt/live/api.aveloxis.example.org/fullchain.pem</span><span class="p">;</span>
+<span class="w">    </span><span class="kn">ssl_certificate_key</span><span class="w"> </span><span class="s">/etc/letsencrypt/live/api.aveloxis.example.org/privkey.pem</span><span class="p">;</span>
+<span class="w">    </span><span class="c1"># Written out in full rather than left to `certbot --nginx`: that installer</span>
+<span class="w">    </span><span class="c1"># adds `listen 80;` to a block with no listen and splits the port-80 half</span>
+<span class="w">    </span><span class="c1"># off only when it installs its redirect, so with --no-redirect the API</span>
+<span class="w">    </span><span class="c1"># would have kept answering in clear and the refusal above would have been</span>
+<span class="w">    </span><span class="c1"># the ignored duplicate (nginx: &quot;conflicting server name … on 0.0.0.0:80&quot;).</span>
 
 <span class="w">    </span><span class="kn">location</span><span class="w"> </span><span class="s">/</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="kn">proxy_pass</span><span class="w"> </span><span class="s">http://127.0.0.1:8383</span><span class="p">;</span>

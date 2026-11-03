@@ -193,11 +193,7 @@ func (d DatabaseConfig) ConnectionString() string {
 // is a Unix-socket directory: it goes in the host parameter, where pgx
 // reads it. extra carries further query parameters (application_name).
 func (d DatabaseConfig) connectionURL(extra url.Values) string {
-	sslmode := d.SSLMode
-	if sslmode == "" {
-		sslmode = "prefer"
-	}
-	q := url.Values{"sslmode": {sslmode}}
+	q := url.Values{"sslmode": {d.EffectiveSSLMode()}}
 	for k, v := range extra {
 		q[k] = v
 	}
@@ -213,6 +209,39 @@ func (d DatabaseConfig) connectionURL(extra url.Values) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// EffectiveSSLMode is the sslmode the DSN carries: the configured one, or
+// libpq's `prefer` when none is set (the one default layer, SR-10).
+func (d DatabaseConfig) EffectiveSSLMode() string {
+	if d.SSLMode == "" {
+		return "prefer"
+	}
+	return d.SSLMode
+}
+
+// tlsWarning is the load-time warning for a remote database reached with
+// an sslmode weaker than `require` (ASVS V12.3.1/V12.3.2, the 0.29.125
+// review): `disable`, `allow` and `prefer` may send the password and every
+// row in clear, and none verifies the server's certificate. A Unix socket
+// or a loopback host is the usual deployment and gets no warning; the
+// message names the effective mode. Empty when there is nothing to say.
+func (d DatabaseConfig) tlsWarning() string {
+	if strings.HasPrefix(d.Host, "/") {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(d.Host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	switch mode := d.EffectiveSSLMode(); mode {
+	case "disable", "allow", "prefer":
+		return fmt.Sprintf("database.sslmode is %q for the remote host %q: the connection may be unencrypted and the server is not verified — use require, or verify-full with the server's CA in PGSSLROOTCERT", mode, d.Host)
+	}
+	return ""
 }
 
 // ConnectionStringWithAppName returns a PostgreSQL DSN with an
@@ -1124,6 +1153,15 @@ type CollectionConfig struct {
 	// days"). Distinct from the API-side sender-RESOLVE ticker, which
 	// keeps its own interval.
 	MailingListSenderBackfillMinutes int `json:"mailing_list_sender_backfill_interval_minutes"`
+	// PrivateNetworkHosts (0.29.132, the outbound-address rule) lists the
+	// repository hosts on private networks the collector may reach: a host
+	// name (trusted as written) or an address range in CIDR form (a
+	// standalone git host on the LAN). The configured forge instances —
+	// github.base_url, gitlab.base_url, web.gitlab_base_url — are trusted
+	// without an entry. Every other host whose address is loopback, private
+	// (RFC 1918, ULA), carrier-grade NAT or otherwise special-use is refused
+	// at collection, logged with this key; link-local is never allowed.
+	PrivateNetworkHosts []string `json:"private_network_hosts"`
 }
 
 // MailingListProcessorWorkersOrDefault falls back to 1 drain goroutine per
@@ -1642,6 +1680,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	cfg.loadWarnings = removedKeyWarnings(data)
+	if w := cfg.Database.tlsWarning(); w != "" {
+		cfg.loadWarnings = append(cfg.loadWarnings, w)
+	}
 	return cfg, nil
 }
 
@@ -1751,7 +1792,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
 	if mb := c.API.ResponseCacheMB; mb != nil && (*mb < 0 || int64(*mb) > MaxResponseCacheMB) {
-		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep only the weekly time series and top contributors, as before 0.29.73", *mb, MaxResponseCacheMB)
+		return fmt.Errorf("api.response_cache_mb is %d — use a number of megabytes between 1 and %d to turn the response cache on, or 0 (the default, and what omitting it means) to keep only the weekly time series and top contributors (at most 1,000 answers) and the metric series (at most another 1,000)", *mb, MaxResponseCacheMB)
 	}
 	if spa := c.Web.SPAURL; spa != "" {
 		// With it set, spa_url starts the mailed page links (group, pending
@@ -1804,7 +1845,51 @@ func (c *Config) validate() error {
 	if sec := c.API.CacheRewarmSeconds; sec != nil && (*sec < 0 || int64(*sec) > MaxCacheRewarmSeconds) {
 		return fmt.Errorf("api.cache_rewarm_seconds is %d — use a number of seconds between 1 and %d, 0 to turn the re-warm off, or omit it for the %d s default (it applies only while api.response_cache_mb is set)", *sec, MaxCacheRewarmSeconds, DefaultCacheRewarmSeconds)
 	}
+	// The outbound-address rule's trust is parsed by the one parser the
+	// collector uses (0.29.132): a bad entry refuses the file here, with
+	// the key, rather than at the first collection.
+	if _, err := platform.NewOutboundPolicy(c.Collection.PrivateNetworkHosts); err != nil {
+		return fmt.Errorf("collection.private_network_hosts: %w — each entry is a host name or an address range in CIDR form (link-local is never allowed)", err)
+	}
+	// The forge hosts under their own keys: a link-local base_url is refused
+	// as such, not as a private_network_hosts entry.
+	for key, raw := range map[string]string{"github.base_url": c.GitHub.BaseURL, "gitlab.base_url": c.GitLab.BaseURL, "web.gitlab_base_url": c.Web.GitLabBaseURL} {
+		if host := forgeHost(raw); host != "" {
+			if _, err := platform.NewOutboundPolicy([]string{host}); err != nil {
+				return fmt.Errorf("%s: its host is trusted by the outbound-address rule, which refuses it: %w", key, err)
+			}
+		}
+	}
 	return nil
+}
+
+// forgeHost is the host of a configured forge URL, "" when none.
+func forgeHost(raw string) string {
+	if u, err := url.Parse(strings.TrimSpace(raw)); err == nil {
+		return u.Hostname()
+	}
+	return ""
+}
+
+// OutboundAllowlist is the trust of the outbound-address rule (0.29.132):
+// collection.private_network_hosts as written, plus the hosts of the
+// configured forge instances (github.base_url, gitlab.base_url,
+// web.gitlab_base_url), which a self-hosted forge on a private network
+// needs and an operator should not have to repeat.
+func (c *Config) OutboundAllowlist() []string {
+	out := append([]string(nil), c.Collection.PrivateNetworkHosts...)
+	for _, raw := range []string{c.GitHub.BaseURL, c.GitLab.BaseURL, c.Web.GitLabBaseURL} {
+		if host := forgeHost(raw); host != "" {
+			out = append(out, host)
+		}
+	}
+	return out
+}
+
+// OutboundPolicy is the outbound-address rule built from OutboundAllowlist
+// — what loadConfig installs for the collector (SR-17: one parser, one rule).
+func (c *Config) OutboundPolicy() (*platform.OutboundPolicy, error) {
+	return platform.NewOutboundPolicy(c.OutboundAllowlist())
 }
 
 // MaxSupplyChainRefreshHours is the largest cadence a time.Duration can
@@ -2177,6 +2262,7 @@ func DefaultConfig() *Config {
 			MailingListMirrorHandling:        "metadata_only",
 			MailingListProcessorWorkers:      1,
 			MailingListSenderBackfillMinutes: 60,
+			PrivateNetworkHosts:              []string{}, // the example files teach the empty list (0.29.132)
 			// v0.29.0 Jira collector. Off by default.
 			JiraEnabled:      false,
 			JiraWorkers:      1,
@@ -2234,7 +2320,8 @@ type APIConfig struct {
 	// megabytes (v0.29.73; off by default — an advanced option a deployment
 	// turns on by setting it). Absent → DefaultResponseCacheMB (0); an explicit 0
 	// keeps only the /timeseries and /contributors/top answers main always
-	// kept, bounded by count (0.29.78; every answer is still tagged and
+	// kept (0.29.78) and the /metric-series answers (0.29.119), each pool
+	// bounded at 1,000 answers (every answer is still tagged and
 	// revalidated);
 	// negative or past MaxResponseCacheMB → refused at load.
 	ResponseCacheMB *int `json:"response_cache_mb,omitempty"`
@@ -2278,9 +2365,10 @@ const MaxResponseCacheMB int64 = math.MaxInt64 >> 20
 // cache is on: a visitor who arrives within a minute of a collection's end
 // may still pay for the recomputation; each pass costs one primary-key
 // read per cached repository. With the cache off (ResponseCacheBytes 0)
-// the effective cadence is 0: the two routes still kept then are not
-// re-warmed (main never re-warmed them; their key carries the repository's
-// state, so a collection makes a new answer, not a stale one).
+// the effective cadence is 0: the answers still kept then (the time series,
+// top contributors and the metric series) are not re-warmed, and no
+// re-warm list is saved (their key carries the repository's state, so a
+// collection makes a new answer, not a stale one).
 const DefaultCacheRewarmSeconds = 60
 
 // MaxCacheRewarmSeconds is the largest cadence a time.Duration can hold

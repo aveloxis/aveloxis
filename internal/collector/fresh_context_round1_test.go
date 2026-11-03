@@ -163,6 +163,14 @@ func TestJiraDrainRefreshesOnPartialCommit(t *testing.T) {
 	if len(store.refreshedRepos) != 1 || store.refreshedRepos[0] != repoID {
 		t.Fatalf("refreshedRepos = %v — a repo whose issue committed before a comment failure must still refresh the activity cache", store.refreshedRepos)
 	}
+	// The envelope failed after its issue committed: a partial write, which
+	// stamps once — a repository without a queue row has no next collection
+	// to show it — while its retries do not (round 1 finding 3 of 0.29.123,
+	// refined by the whole-branch review's A5; TestJiraDrainStampsAPartialWriteOnce
+	// drives the retries).
+	if len(store.stampedRepos) != 1 || store.stampedRepos[0] != repoID {
+		t.Fatalf("stampedRepos = %v — an envelope whose issue committed before it failed stamps its repository once", store.stampedRepos)
+	}
 }
 
 // TestMailingListDrainRefreshesOnAllDeferredBatch (Copilot round 18):

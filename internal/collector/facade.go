@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -211,6 +212,15 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
 		return err
 	}
+	// The outbound-address rule (0.29.132), before the fetch of an existing
+	// clone as before a fresh one (a clone made before the rule from a host
+	// it refuses kept fetching from it every cycle, L10 round 1): the git
+	// endpoint's redirect chain is walked under the rule, and what it ends
+	// at is what the clone or fetch reaches (round 2).
+	cloneURL, err := resolveGitEndpoint(ctx, gitURL)
+	if err != nil {
+		return err
+	}
 	// Bare repos don't have a .git subdirectory — check for HEAD file instead.
 	if _, err := os.Stat(filepath.Join(path, "HEAD")); err == nil {
 		// Existing bare clone found — verify it's the right repo.
@@ -219,13 +229,36 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		// Reusing it would parse the wrong git history.
 		configData, _ := os.ReadFile(filepath.Join(path, "config"))
 		existingURL := parseOriginURL(string(configData))
-		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) {
+		// Either spelling is the right repository: the stored URL or the
+		// git endpoint's resolved one, which origin carries after the first
+		// fetch (L10 round 3: a forge whose git endpoint moves across a path
+		// its web page does not would otherwise re-clone every cycle).
+		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) && normalizeCloneURL(existingURL) != normalizeCloneURL(cloneURL) {
 			f.logger.Warn("stale clone detected: origin URL mismatch, re-cloning",
 				"path", path,
 				"existing_url", platform.RedactURLUserinfo(existingURL),
 				"expected_url", platform.RedactURLUserinfo(gitURL))
 			_ = os.RemoveAll(path)
-			return f.freshClone(ctx, gitURL, path)
+			return f.freshClone(ctx, gitURL, cloneURL, path)
+		}
+
+		if existingURL != "" && existingURL != cloneURL {
+			// The git endpoint moved (or is spelled with .git where the
+			// stored URL is not): the fetch below reaches origin, so origin
+			// is pointed at the resolved URL first — the one place on this
+			// path where a URL reaches git's argv, validated as the clone's
+			// is (round 5); the fetch itself names only origin.
+			if err := validateGitURL(cloneURL); err != nil {
+				return fmt.Errorf("unsafe git URL rejected: %w", err)
+			}
+			f.logger.Info("origin URL updated to the resolved git endpoint", "path", path,
+				"from", platform.RedactURLUserinfo(existingURL), "to", platform.RedactURLUserinfo(cloneURL))
+			if out, serr := exec.CommandContext(ctx, "git", "-C", path, "remote", "set-url", "--", "origin", cloneURL).CombinedOutput(); serr != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				f.logger.Warn("origin URL update failed; the fetch may re-clone", "path", path, "error", serr, "output", string(out))
+			}
 		}
 
 		f.logger.Info("fetching updates", "path", path)
@@ -233,7 +266,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		// Use an explicit refspec because git clone --bare does NOT create a
 		// fetch refspec in the config. Without one, git fetch downloads objects
 		// but never advances refs/heads/*, leaving the clone permanently stale.
-		cmd := exec.CommandContext(ctx, "git", "-C", path,
+		cmd := exec.CommandContext(ctx, "git", "-C", path, "-c", gitNoRedirects,
 			"fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -248,7 +281,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 			f.logger.Warn("fetch failed, re-cloning",
 				"path", path, "error", err, "stderr", stderr.String())
 			_ = os.RemoveAll(path)
-			return f.freshClone(ctx, gitURL, path)
+			return f.freshClone(ctx, gitURL, cloneURL, path)
 		}
 
 		// Sync HEAD to the remote's default branch. git clone --bare sets HEAD
@@ -265,7 +298,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		_ = os.RemoveAll(path)
 	}
 
-	return f.freshClone(ctx, gitURL, path)
+	return f.freshClone(ctx, gitURL, cloneURL, path)
 }
 
 // syncDefaultBranch updates the bare clone's HEAD to match the remote's default
@@ -275,7 +308,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 func (f *FacadeCollector) syncDefaultBranch(ctx context.Context, clonePath string) {
 	// git ls-remote --symref outputs a line like:
 	//   ref: refs/heads/main\tHEAD
-	cmd := exec.CommandContext(ctx, "git", "-C", clonePath,
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "-c", gitNoRedirects,
 		"ls-remote", "--symref", "origin", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
@@ -341,16 +374,23 @@ func normalizeCloneURL(u string) string {
 	return strings.ToLower(model.NormalizeRepoGitURL(u)) // the stored spelling's suffix rule (follow-up 8)
 }
 
-func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) error {
+// freshClone clones gitURL's repository from cloneURL — the git endpoint
+// ensureClone resolved under the outbound-address rule (one walk per job;
+// ensureClone is its only caller, pinned). git is a subprocess, so the
+// check cannot pin the address it connects to (the stated residual).
+func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, cloneURL, path string) error {
 	if err := validateGitURL(gitURL); err != nil {
 		return fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
-	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "path", path)
+	if err := validateGitURL(cloneURL); err != nil { // the resolved URL is what git is given (L4)
+		return fmt.Errorf("unsafe git URL rejected: %w", err)
+	}
+	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "clone_url", platform.RedactURLUserinfo(cloneURL), "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--", gitURL, path)
+	cmd := exec.CommandContext(ctx, "git", "-c", gitNoRedirects, "clone", "--bare", "--", cloneURL, path)
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -358,6 +398,67 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 	}
 	return nil
 }
+
+// gitNoRedirects keeps git from following a redirect of its own (0.29.132,
+// L10 round 1): git's http.followRedirects defaults to "initial", so a
+// server answering the probe's HEAD with 200 and the clone's
+// /info/refs with a 302 to a private host was never seen by the rule.
+// The redirect a forge's git endpoint answers with is resolved under the
+// rule instead (resolveGitEndpoint) and the resolved URL is what git is
+// given, so git needs none of its own. Every network git command in this
+// package carries it (the boundary test).
+const gitNoRedirects = "http.followRedirects=false"
+
+// gitUploadPackRefs is the request a clone or fetch opens with: the git
+// endpoint a forge may redirect where its web page does not.
+const gitUploadPackRefs = "/info/refs?service=git-upload-pack"
+
+// resolveGitEndpoint answers the URL git is given to clone or fetch from:
+// for an http or https URL, the stored URL's git endpoint followed through
+// its redirects under the outbound-address rule (each hop checked by name,
+// the probe's dial pinned), with the endpoint suffix removed from where the
+// chain ends — GitLab answers the spelling without .git (the store strips
+// it) with a 301 that the web page's HEAD never shows, so with git's own
+// redirects off every GitLab clone and fetch failed (L10 round 2 of
+// 0.29.132, verified live). Other schemes (git://, ssh://, SCP) have no
+// redirects: the rule by name, the URL as given. A walk the forge answered
+// definitively — 2xx, or a 4xx git will explain better (401, 403, 404,
+// 410) — resolves; a walk that failed (the host down, a timeout, a resolver
+// blip past the ladder) or ended in a 429 or 5xx is errGitEndpointUnavailable:
+// the job fails without the clone being touched (L10 round 4: a probe-side
+// blip on GitLab answered the bare spelling, repointed a healthy clone's
+// origin at it, failed the fetch on the 301 and deleted the bare clone).
+func resolveGitEndpoint(ctx context.Context, gitURL string) (string, error) {
+	lower := strings.ToLower(gitURL)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		if err := refuseWithRetry(ctx, gitURL); err != nil {
+			if errors.Is(err, platform.ErrPrivateAddress) {
+				return "", fmt.Errorf("clone refused: %w", err)
+			}
+			return "", fmt.Errorf("%w: %w", errGitEndpointUnavailable, err) // a resolver failure past the ladder, a cancel
+		}
+		return gitURL, nil
+	}
+	final, status, err := walkRedirects(ctx, strings.TrimRight(gitURL, "/")+gitUploadPackRefs, getDiscarding)
+	if errors.Is(err, platform.ErrPrivateAddress) {
+		return "", fmt.Errorf("clone refused: %w", err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errGitEndpointUnavailable, err)
+	}
+	if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+		return "", fmt.Errorf("%w: status %d", errGitEndpointUnavailable, status)
+	}
+	if !strings.HasSuffix(final, gitUploadPackRefs) {
+		return gitURL, nil // a chain that ended elsewhere: the stored URL, and git's own error
+	}
+	return strings.TrimSuffix(final, gitUploadPackRefs), nil
+}
+
+// errGitEndpointUnavailable is resolveGitEndpoint's answer when the forge
+// did not say where its git endpoint is: nothing is cloned, fetched or
+// changed, and the job fails as a clone would have.
+var errGitEndpointUnavailable = errors.New("git endpoint unavailable (not refused): the clone is left as it is; the job records it (a forge repository) or fails and retries (git-only)")
 
 // gitCloneEnv returns environment variables for git clone commands:
 //   - GIT_LFS_SKIP_SMUDGE=1: prevents LFS smudge filter failures when remote

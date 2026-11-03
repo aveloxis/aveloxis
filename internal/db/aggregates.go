@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // RefreshRepoAggregates recomputes the dm_repo_annual, dm_repo_monthly, and
@@ -286,31 +285,14 @@ func (s *PostgresStore) RefreshAllRepoAggregates(ctx context.Context, logger int
 	Info(string, ...any)
 	Warn(string, ...any)
 }) error {
-	lockConn, err := s.pool.Acquire(ctx)
+	lock, locked, err := s.tryHoldAdvisoryLock(ctx, DMAggregatesAdvisoryLockID)
 	if err != nil {
-		return fmt.Errorf("acquiring connection for the dm_ aggregate lock: %w", err)
-	}
-	var locked bool
-	if err := lockConn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, DMAggregatesAdvisoryLockID).Scan(&locked); err != nil {
-		lockConn.Release()
-		return fmt.Errorf("dm_ aggregate advisory lock: %w", err)
+		return fmt.Errorf("dm_ aggregate lock: %w", err)
 	}
 	if !locked {
-		lockConn.Release()
 		return ErrAggregateRebuildRunning
 	}
-	defer func() {
-		// Unlock on a fresh bounded context — the caller's ctx may be the
-		// one that just got canceled (the v0.27.130 lesson); an unconfirmed
-		// unlock destroys the session so the lock cannot leak.
-		unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		var unlocked bool
-		if err := lockConn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, DMAggregatesAdvisoryLockID).Scan(&unlocked); err != nil || !unlocked {
-			_ = lockConn.Conn().Close(unlockCtx)
-		}
-		lockConn.Release()
-	}()
+	defer lock.release()
 
 	// Get all repo IDs that have commits.
 	rows, err := s.pool.Query(ctx,

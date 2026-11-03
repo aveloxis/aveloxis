@@ -137,6 +137,14 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			c.refused++
 			continue
 		}
+		if errors.Is(rerr, platform.ErrPrivateAddress) {
+			// The outbound-address rule (0.29.132): skipped, under the phrase
+			// the operator greps for.
+			logger.Warn("reconcile: repository host is a private address — not probed; list it in collection.private_network_hosts, skipping",
+				"repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
+			c.skipped++
+			continue
+		}
 		if rerr != nil {
 			logger.Warn("reconcile: redirect check failed — skipping this pass", "repo_id", sr.RepoID, "url", platform.RedactURLUserinfo(sr.GitURL), "error", rerr)
 			c.skipped++

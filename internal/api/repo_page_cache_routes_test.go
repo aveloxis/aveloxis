@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -183,7 +184,7 @@ func TestCachedRepoRoutesServeFromTheCache(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
 	s, err := NewWithOptions(store, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20, ResponseCacheMaxAge: 30 * time.Minute})
+		Options{ExemptCIDRs: DefaultExemptCIDRs, ResponseCacheBytes: 8 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +204,7 @@ func TestCachedRepoRoutesServeFromTheCache(t *testing.T) {
 			continue
 		}
 		routes++
-		path := strings.Replace(reg.path, "{repoID}", strconv.FormatInt(repoID, 10), 1)
+		path := strings.Replace(reg.path, "{repoID}", strconv.FormatInt(repoID, 10), 1) + requiredQuery[reg.path]
 		first := call(path, "")
 		if first.Code != http.StatusOK {
 			t.Errorf("%s: %d %s", reg.path, first.Code, first.Body.String())
@@ -230,22 +231,34 @@ func TestCachedRepoRoutesServeFromTheCache(t *testing.T) {
 		if !reg.cached {
 			continue
 		}
-		path := strings.Replace(reg.path, "{repoID}", strconv.FormatInt(repoID, 10), 1)
+		path := strings.Replace(reg.path, "{repoID}", strconv.FormatInt(repoID, 10), 1) + requiredQuery[reg.path]
 		if w := call(path, ""); w.Header().Get("X-Cache") == "hit" {
 			t.Errorf("%s: after the next collection the answer must be recomputed", reg.path)
 		}
 	}
 }
 
+// requiredQuery is the query a cached route cannot answer without (a 400
+// otherwise), for the tests that drive every cached route.
+var requiredQuery = map[string]string{
+	"/api/v1/repos/{repoID}/metric-series": "?metric=code_change_commits",
+}
+
 // helperFiles lists the parse helpers a cached handler may read its query
-// through, and their files. TestPageParamsMatchTheHandlers derives what each
-// reads from its body; TestEveryQueryReaderIsScannedOrReviewed requires
-// every other query reader to be reviewed as serving uncached routes.
-var helperFiles = map[string]string{
-	"parseWindow":              "page_query.go",
-	"parseDateRange":           "page_query.go",
-	"parseTopContributorsArgs": "page_query.go",
-	"parseSBOMArgs":            "page_query.go",
+// through (found by name in the package, wherever they live).
+// TestPageParamsMatchTheHandlers derives what each reads from its body;
+// TestEveryQueryReaderIsScannedOrReviewed requires every other query reader
+// to be reviewed as serving uncached routes.
+var helperFiles = map[string]bool{
+	"parseWindow":              true,
+	"parseDateRange":           true,
+	"parseTopContributorsArgs": true,
+	"parseSBOMArgs":            true,
+	// The repository page's metric series (0.29.119): its parser reads
+	// ?metric and hands the window and threshold to /compare's readers.
+	"parseMetricSeriesArgs":   true,
+	"compareWindow":           true,
+	"parseRetentionThreshold": true,
 }
 
 // TestPageParamsMatchTheHandlers — the cache keys a route on the query
@@ -261,7 +274,6 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 	for repoRel, src := range srctest.PackageFiles(t, "internal/api", 20) {
 		files[strings.TrimPrefix(repoRel, "internal/api/")] = srctest.StripGoComments(src)
 	}
-	files["page_query.go"] = srctest.StripGoComments(srctest.Read(t, "internal/api/page_query.go"))
 	// The parse helpers a handler may read its query through. What each
 	// reads is taken from its own body (and the helpers it calls), never
 	// from a list here: a parameter added inside a helper is a parameter the
@@ -280,7 +292,7 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 			return nil
 		}
 		seen[name] = true
-		body := srctest.FuncBody(t, files[helperFiles[name]], "func "+name+"(")
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func "+name+"("))
 		if m := helperOther.FindString(body); m != "" {
 			t.Errorf("%s reads the query another way (%q): pageParams cannot be checked against it", name, m)
 		}
@@ -403,12 +415,53 @@ func TestPageParamsMatchTheHandlers(t *testing.T) {
 // test, and its parameter would never reach the key: ?severity=critical and
 // ?severity=low would share one answer (review rounds on 5403959037).
 var uncachedQueryReaders = map[string]string{
-	"compareWindow":           "the /compare routes, which are not repository-page cached",
 	"parsePeriod":             "the metrics routes (period=), not repository-page cached",
 	"parsePortalPage":         "the portal list pages, per caller",
-	"parseRetentionThreshold": "the retention admin route",
 	"resolveSupplyChainScope": "the supply-chain routes, not repository-page cached",
 	"canonicalQuery":          "the cache key itself (reads only the listed parameters)",
+	"repoSeriesURI":           "/compare (not repository-page cached): it forwards its window, bucket and threshold to the repository's metric-series route, which reads them through parseMetricSeriesArgs (0.29.121)",
+}
+
+// walkReference matches a reference to fn in a function body for the
+// query-reader walk: a call (fn( or fn[T]( ), or fn handed on as a value
+// (an argument, fn, or fn) — the series routes pass their floor and series
+// functions so; round 3 of 0.29.123). A package-level function is never
+// reached through a selector inside its own package, so a qualified name
+// (sha256.New) is another package's and no edge: matched by name alone,
+// idSetDigest's sha256.New( reached the package's New and through it every
+// route registration. A method is reached through a selector (s.fn), so its
+// match stays by name.
+func walkReference(fn string, method bool) *regexp.Regexp {
+	prefix := `(?:^|[^.\w])`
+	if method {
+		prefix = `\b`
+	}
+	return regexp.MustCompile(prefix + regexp.QuoteMeta(fn) + `\s*[\[(,)]`)
+}
+
+func TestWalkReference(t *testing.T) {
+	for _, c := range []struct {
+		fn     string
+		method bool
+		src    string
+		want   bool
+	}{
+		{"New", false, "h := New(opts)", true},
+		{"New", false, "h := sha256.New()", false},
+		{"idSetDigest", false, "x(idSetDigest(ids))", true},
+		{"helper", false, "run(r, helper)", true},
+		{"helper", false, "run(r, helper, other)", true},
+		{"helper", false, "helperFor(r)", false},
+		{"parse", false, "v := parse[int](r)", true},
+		{"cachedFirstActivity", true, "s.entitySeriesFor(r, e, s.cachedFirstActivity, s.cachedMetricSeries)", true},
+		{"cachedMetricSeries", true, "s.entitySeriesFor(r, e, s.cachedFirstActivity, s.cachedMetricSeries)", true},
+		{"get", true, "v, ok := s.seriesCache.get(key)", true},
+		{"get", true, "v := s.getter(key)", false},
+	} {
+		if got := walkReference(c.fn, c.method).MatchString(c.src); got != c.want {
+			t.Errorf("walkReference(%q, method=%t) on %q = %t, want %t", c.fn, c.method, c.src, got, c.want)
+		}
+	}
 }
 
 func TestEveryQueryReaderIsScannedOrReviewed(t *testing.T) {
@@ -417,6 +470,7 @@ func TestEveryQueryReaderIsScannedOrReviewed(t *testing.T) {
 	// The name of a function or method, generic ones included (name[T ...]).
 	name := regexp.MustCompile(`^(?:\([^)]*\)\s*)?(\w+)[\[(]`)
 	bodies := map[string]string{}
+	methods := map[string]bool{} // names declared as a method at least once
 	found := map[string]bool{}
 	examined := 0
 	for file, src := range srctest.PackageFiles(t, "internal/api", 20) {
@@ -432,6 +486,9 @@ func TestEveryQueryReaderIsScannedOrReviewed(t *testing.T) {
 			// Same-named functions (methods on several types) are merged:
 			// deterministic, and errs toward reporting.
 			bodies[fn] += part
+			if strings.HasPrefix(part, "(") {
+				methods[fn] = true
+			}
 			if !reads.MatchString(part) || strings.HasPrefix(fn, "handle") {
 				continue
 			}
@@ -454,7 +511,7 @@ func TestEveryQueryReaderIsScannedOrReviewed(t *testing.T) {
 	// cannot see.
 	callRE := map[string]*regexp.Regexp{}
 	for fn := range bodies {
-		callRE[fn] = regexp.MustCompile(`\b` + fn + `[\[(]`)
+		callRE[fn] = walkReference(fn, methods[fn])
 	}
 	cachedHandlers := 0
 	for _, reg := range repoGETRegistrations(t) {
@@ -484,4 +541,102 @@ func TestEveryQueryReaderIsScannedOrReviewed(t *testing.T) {
 		}
 	}
 	srctest.MinCount(t, "cached handlers checked", cachedHandlers, 13)
+}
+
+// windowParsers are the parse functions whose default window depends on
+// the current time: a cached handler that calls one is windowed.
+var windowParsers = []string{"parseWindow(r)", "parseTopContributorsArgs(r)", "parseMetricSeriesArgs(r)"}
+
+// D6 (0.29.120, summary/63): a cached route whose window depends on the
+// current time keys on the window its parser computes (pageWindows); one
+// that is not windowed has no entry. Without an entry a windowed answer
+// would be keyed on its query alone and served past the window's move.
+func TestWindowedRoutesKeyOnTheirEffectiveWindow(t *testing.T) {
+	windowed := 0
+	seen := map[string]bool{}
+	for _, reg := range repoGETRegistrations(t) {
+		if !reg.cached {
+			continue
+		}
+		pattern := "GET " + reg.path
+		seen[pattern] = true
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/api", "func (s *Server) "+reg.handler+"("))
+		calls := false
+		for _, p := range windowParsers {
+			calls = calls || strings.Contains(body, p)
+		}
+		_, keyed := pageWindows[pattern]
+		switch {
+		case calls && !keyed:
+			t.Errorf("%s (%s) parses a window that moves with the clock but has no pageWindows entry: its answers would be served past the window's move", pattern, reg.handler)
+		case !calls && keyed:
+			t.Errorf("%s has a pageWindows entry but %s parses no window", pattern, reg.handler)
+		case calls:
+			windowed++
+		}
+	}
+	srctest.MinCount(t, "windowed cached routes", windowed, 6)
+	for pattern := range pageWindows {
+		if pattern != testPagePattern && !seen[pattern] {
+			t.Errorf("pageWindows lists %s, which is not a cached route", pattern)
+		}
+	}
+}
+
+// Each window function is its route's parser: over a corpus of spellings at
+// one instant, two requests share a window key exactly when the parser
+// gives them the same window (and both are refused, or neither).
+func TestWindowKeysAreTheParsersWindow(t *testing.T) {
+	corpus := []string{"", "since=2024-01-01", "since=2024-01-02", "until=2025-06-01", "until=2025-06-02",
+		"since=2024-01-01&until=2025-06-01", "since=bad", "until=2023-01-01&since=2024-01-01", "bucket=month", "bucket=week",
+		"bucket=day", "metric=issues", "metric=committers", "metric=nope", "retention_threshold=2", "limit=5", "bots=hide"}
+	parsed := map[string]func(*http.Request) (any, error){
+		"GET /api/v1/repos/{repoID}/timeseries": func(r *http.Request) (any, error) { s, u, err := parseWindow(r); return [2]time.Time{s, u}, err },
+		"GET /api/v1/repos/{repoID}/contributors/top": func(r *http.Request) (any, error) {
+			a, err := parseTopContributorsArgs(r)
+			return [2]time.Time{a.since, a.until}, err
+		},
+		"GET /api/v1/repos/{repoID}/metric-series": func(r *http.Request) (any, error) {
+			a, err := parseMetricSeriesArgs(r)
+			return [3]any{a.since, a.until, a.bucket}, err
+		},
+	}
+	for _, p := range []string{"identities", "affiliations", "coverage"} {
+		parsed["GET /api/v1/repos/{repoID}/contributions/"+p] = parsed["GET /api/v1/repos/{repoID}/timeseries"]
+	}
+	for pattern, win := range pageWindows {
+		if pattern == testPagePattern {
+			continue
+		}
+		parse, ok := parsed[pattern]
+		if !ok {
+			t.Errorf("%s has a window function but this test has no parser for it", pattern)
+			continue
+		}
+		byKey := map[string]string{}
+		byWindow := map[string]string{}
+		for _, q := range corpus {
+			if strings.HasSuffix(pattern, "/metric-series") && !strings.Contains(q, "metric=") {
+				q = strings.Trim("metric=issues&"+q, "&")
+			}
+			r := httptest.NewRequest(http.MethodGet, "/x?"+q, nil)
+			key, keyable := win(r)
+			w, err := parse(r)
+			if keyable != (err == nil) {
+				t.Errorf("%s ?%s: the window function says keyable=%v but the parser's error is %v", pattern, q, keyable, err)
+				continue
+			}
+			if !keyable {
+				continue
+			}
+			got := fmt.Sprint(w)
+			if prev, ok := byKey[key]; ok && prev != got {
+				t.Errorf("%s: window key %q stands for two windows, %s and %s", pattern, key, prev, got)
+			}
+			if prev, ok := byWindow[got]; ok && prev != key {
+				t.Errorf("%s: window %s has two keys, %q and %q", pattern, got, prev, key)
+			}
+			byKey[key], byWindow[got] = got, key
+		}
+	}
 }

@@ -218,3 +218,60 @@ func FuncParts(t testing.TB, src string) map[string]string {
 	out[PackageLevel] = top.String()
 	return out
 }
+
+// PackageValues maps each package-level const and var of one Go source to
+// the source of its value expression — the SQL a function executes through
+// a named constant is read where the function names it (whole-branch review
+// of 0.29.119–0.29.123, A11: a writer whose statement was a package-level
+// const was invisible to a scan of function bodies). A multi-name spec maps
+// each name to its own value; a spec with no value of its own (an implicit
+// repeat, an iota run, a var with only a type) is absent. src is usually
+// comment-stripped.
+func PackageValues(t testing.TB, src string) map[string]string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("srctest.PackageValues: source does not parse (%v) — this helper takes whole valid Go files", err)
+	}
+	out := map[string]string{}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || (gd.Tok != token.CONST && gd.Tok != token.VAR) {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok || len(vs.Values) != len(vs.Names) {
+				continue
+			}
+			for i, ident := range vs.Names {
+				if ident.Name == "_" {
+					continue // nothing can name the blank identifier
+				}
+				out[ident.Name] = src[fset.Position(vs.Values[i].Pos()).Offset:fset.Position(vs.Values[i].End()).Offset]
+			}
+		}
+	}
+	return out
+}
+
+// MethodNames is the set of names one Go source declares as methods (a
+// FuncDecl with a receiver) — FuncParts keys a method and a function by
+// name alone, and a walk that follows calls must tell `.name(` (a method)
+// from `name(` (a function) by the declaration, not by text.
+func MethodNames(t testing.TB, src string) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("srctest.MethodNames: source does not parse (%v) — this helper takes whole valid Go files", err)
+	}
+	out := map[string]bool{}
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
+			out[fn.Name.Name] = true
+		}
+	}
+	return out
+}

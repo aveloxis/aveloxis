@@ -710,7 +710,16 @@ func scancodeCloneCmd(ctx context.Context, repoGit, dir string) (*exec.Cmd, erro
 	if err := validateGitURL(repoGit); err != nil {
 		return nil, fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--", repoGit, dir)
+	// The outbound-address rule (0.29.132), as the facade's clone: the git
+	// endpoint's chain walked under it, the resolved URL cloned.
+	cloneURL, err := resolveGitEndpoint(ctx, repoGit)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateGitURL(cloneURL); err != nil { // the resolved URL is what git is given (L4)
+		return nil, fmt.Errorf("unsafe git URL rejected: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "git", "-c", gitNoRedirects, "clone", "--depth", "1", "--", cloneURL, dir)
 	cmd.Env = gitCloneEnv()
 	return cmd, nil
 }
@@ -753,8 +762,31 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 	defer cloneCancel()
 	cloneCmd, err := scancodeCloneCmd(cloneCtx, job.RepoGit, tempDir)
 	if err != nil {
-		w.logger.Warn("scancode runOne: unsafe git URL refused — not cloned",
-			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName, "error", err)
+		if ctx.Err() != nil {
+			// A stop during the host's resolution: the lock is cleared as on
+			// every other shutdown arm, nothing recorded.
+			w.clearLockBestEffort(ctx, job.RepoID)
+			return false
+		}
+		switch {
+		case errors.Is(err, platform.ErrPrivateAddress):
+			// The outbound-address rule (0.29.132): the strike and its backoff
+			// apply as to any clone failure — a refusal every cadence would
+			// otherwise reclaim the row each tick — and listing the host in
+			// collection.private_network_hosts lifts the refusal at the next
+			// attempt (the sideline after ten strikes is the operator's to
+			// clear, as for any sidelined scan).
+			w.logger.Warn("scancode runOne: repository host is a private address — not cloned; list it in collection.private_network_hosts",
+				"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName, "error", err)
+		case errors.Is(err, errGitEndpointUnavailable):
+			// A transient answer at the git endpoint (429, 5xx, a walk that
+			// failed): the strike the clone's own failure would have taken.
+			w.logger.Warn("scancode runOne: git endpoint unavailable — not cloned this cadence",
+				"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName, "error", err)
+		default:
+			w.logger.Warn("scancode runOne: unsafe git URL refused — not cloned",
+				"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName, "error", err)
+		}
 		w.recordFailureBestEffort(ctx, job.RepoID)
 		return false
 	}

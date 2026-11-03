@@ -702,6 +702,33 @@ func ensurePythonUserBinOnPath(ctx context.Context) {
 	fmt.Printf("  Run: source %s\n", profile)
 }
 
+// goEnvValues is the ONE `go env` probe (SR-17; 0.29.133's review folded the
+// go-module closure's onto GoBinDir's): the installed toolchain answers,
+// whatever module the process sits in (round 18 of v0.29.57: under
+// GOTOOLCHAIN=auto a newer go line in the cwd's go.mod made the probe
+// download a toolchain, or fail offline), the process group is killed on
+// stop, and the answer is exactly one line per name, each possibly empty
+// (trimming every trailing newline made "GOBIN\n\n" — an empty GOPATH —
+// one line). An exit error carries the toolchain's stderr.
+func goEnvValues(ctx context.Context, goBin string, names ...string) ([]string, error) {
+	probe := exec.CommandContext(ctx, goBin, append([]string{"env"}, names...)...)
+	groupKilled(probe)
+	probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	out, err := probe.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("go env %s: %w: %s", strings.Join(names, " "), execErr(ctx, err), strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("go env %s: %w", strings.Join(names, " "), execErr(ctx, err))
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != len(names) {
+		return nil, fmt.Errorf("go env %s answered %q; want %d lines", strings.Join(names, " "), out, len(names))
+	}
+	return lines, nil
+}
+
 // GoBinDir is where `go install` puts binaries (batch 4a review rounds
 // 16–17). cmd/go reads GOBIN and GOPATH from its env file (`go env -w`) as
 // well as the process environment, so when go is on PATH the answer is `go
@@ -713,27 +740,11 @@ func ensurePythonUserBinOnPath(ctx context.Context) {
 func GoBinDir(ctx context.Context) (string, error) {
 	gobin, gopath := os.Getenv("GOBIN"), os.Getenv("GOPATH")
 	if goPath, err := exec.LookPath("go"); err == nil {
-		probe := exec.CommandContext(ctx, goPath, "env", "GOBIN", "GOPATH")
-		groupKilled(probe)
-		// The installed toolchain answers, whatever module the process sits
-		// in (round 18: under GOTOOLCHAIN=auto a newer go line in the cwd's
-		// go.mod made this probe download a toolchain, or fail offline).
-		probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-		out, err := probe.Output()
+		values, err := goEnvValues(ctx, goPath, "GOBIN", "GOPATH")
 		if err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-				return "", fmt.Errorf("go env GOBIN GOPATH: %w: %s", execErr(ctx, err), strings.TrimSpace(string(exitErr.Stderr)))
-			}
-			return "", fmt.Errorf("go env GOBIN GOPATH: %w", execErr(ctx, err))
+			return "", err
 		}
-		// Exactly two lines, either possibly empty (round 18: trimming every
-		// trailing newline made "GOBIN\n\n" — an empty GOPATH — one line).
-		lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
-		if len(lines) != 2 {
-			return "", fmt.Errorf("go env GOBIN GOPATH answered %q; want two lines", out)
-		}
-		gobin, gopath = lines[0], lines[1]
+		gobin, gopath = values[0], values[1]
 	}
 	dir := gobin
 	if dir == "" && gopath != "" {

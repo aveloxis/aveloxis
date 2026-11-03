@@ -22,7 +22,7 @@ import (
 //go:embed icon.png
 var IconPNG []byte
 
-//go:embed app.css avx.js repo-search.js compare.js repo-detail.js monitor.js vendor/chart.umd.js
+//go:embed app.css avx.js repo-search.js compare.js repo-detail.js monitor.js admin-cache.js vendor/chart.umd.js
 var pages embed.FS
 
 // Asset is one served page asset: its path under /static/, its media type

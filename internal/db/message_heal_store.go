@@ -29,6 +29,16 @@ type MessageHealItem struct {
 	// Review-side parent (inline comment or review body).
 	ReviewRepoID int64 // 0 = no review-side claim
 	ReviewPRNum  int64
+	// RepoIDs is every repository the message's rows name: the message's
+	// own and each conversation link's (the bridge row's and its issue's or
+	// pull request's) — the healer's cleanup deletes EVERY conversation
+	// link, not only the one parent per bridge resolved above, and the API's
+	// cached answers read the links by the message's repository (the
+	// retention series) and by the link's (the contributor metrics). The
+	// repositories the heal stamps (Copilot's fourth review of PR #246,
+	// 0.29.127: a link whose repository no parent named left that
+	// repository's cached answers stale).
+	RepoIDs []int64
 }
 
 // CountMessageHealPending returns unhealed worklist rows.
@@ -54,7 +64,8 @@ func (s *PostgresStore) GetMessageHealBatch(ctx context.Context, afterMsgID int6
 		SELECT w.msg_id, m.msg_kind,
 		       COALESCE(i.repo_id, 0), COALESCE(i.issue_number, 0),
 		       COALESCE(pc.repo_id, 0), COALESCE(pc.pr_number, 0),
-		       COALESCE(rp.repo_id, 0), COALESCE(rp.pr_number, 0)
+		       COALESCE(rp.repo_id, 0), COALESCE(rp.pr_number, 0),
+		       touched.ids
 		FROM aveloxis_ops.message_heal_worklist w
 		JOIN aveloxis_data.messages m ON m.msg_id = w.msg_id
 		LEFT JOIN LATERAL (
@@ -85,6 +96,24 @@ func (s *PostgresStore) GetMessageHealBatch(ctx context.Context, afterMsgID int6
 			JOIN aveloxis_data.pull_requests pr ON pr.pull_request_id = rv.pull_request_id
 			LIMIT 1
 		) rp ON TRUE
+		LEFT JOIN LATERAL (
+			-- Every repository the message's rows name (RepoIDs): the
+			-- cleanup deletes every conversation link, so the one parent
+			-- per bridge above is not the whole set the heal writes.
+			SELECT array_agg(DISTINCT named.repo_id) AS ids FROM (
+				SELECT m.repo_id
+				UNION ALL
+				SELECT ir.repo_id FROM aveloxis_data.issue_message_ref ir WHERE ir.msg_id = w.msg_id
+				UNION ALL
+				SELECT iss.repo_id FROM aveloxis_data.issue_message_ref ir
+				JOIN aveloxis_data.issues iss ON iss.issue_id = ir.issue_id WHERE ir.msg_id = w.msg_id
+				UNION ALL
+				SELECT pm.repo_id FROM aveloxis_data.pull_request_message_ref pm WHERE pm.msg_id = w.msg_id
+				UNION ALL
+				SELECT pr.repo_id FROM aveloxis_data.pull_request_message_ref pm
+				JOIN aveloxis_data.pull_requests pr ON pr.pull_request_id = pm.pull_request_id WHERE pm.msg_id = w.msg_id
+			) named
+		) touched ON TRUE
 		WHERE w.healed_at IS NULL
 		  AND w.msg_id > $1
 		ORDER BY w.msg_id
@@ -99,7 +128,7 @@ func (s *PostgresStore) GetMessageHealBatch(ctx context.Context, afterMsgID int6
 		if err := rows.Scan(&it.MsgID, &it.MsgKind,
 			&it.IssueRepoID, &it.IssueNumber,
 			&it.PRConvRepoID, &it.PRConvNumber,
-			&it.ReviewRepoID, &it.ReviewPRNum); err != nil {
+			&it.ReviewRepoID, &it.ReviewPRNum, &it.RepoIDs); err != nil {
 			return nil, err
 		}
 		out = append(out, it)

@@ -158,7 +158,11 @@ Pushes a repo to the top of the queue by its `repo_id`.
 curl -X POST http://localhost:5555/api/prioritize/42
 ```
 
-Returns 200 on success.
+Returns 200 on success. A request from another site — an `Origin` or
+`Referer` on a different host, or a browser's `Sec-Fetch-Site: cross-site`
+— is refused with 403 and logged (0.29.125): the monitor has no sign-in,
+so a page elsewhere must not be able to post this from an operator's
+browser. The `curl` above sends neither header and passes.
 
 ---
 

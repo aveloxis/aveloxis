@@ -74,7 +74,7 @@ func TestFreshCloneCarriesTheRemoteNotice(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := NewFacadeCollector(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
-	err := f.freshClone(context.Background(), srv.URL+"/o/r.git", filepath.Join(t.TempDir(), "r"))
+	err := f.freshClone(context.Background(), srv.URL+"/o/r.git", srv.URL+"/o/r.git", filepath.Join(t.TempDir(), "r"))
 	if err == nil {
 		t.Fatal("clone of a refused repository succeeded")
 	}

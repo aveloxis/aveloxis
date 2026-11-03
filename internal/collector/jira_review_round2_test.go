@@ -64,7 +64,7 @@ func (f *failingIdentityStore) MintJiraContributor(ctx context.Context, name, di
 func TestIdentityResolveErrorFailsTheEnvelope(t *testing.T) {
 	f := &failingIdentityStore{resolveErr: errors.New("deadlock detected")}
 	p := NewJiraProcessor(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := p.processEnvelope(context.Background(), 1, []byte(jiraEnvelope)); err == nil {
+	if _, err := p.processEnvelope(context.Background(), 1, []byte(jiraEnvelope)); err == nil {
 		t.Fatal("a ResolveJiraIdentity ERROR must fail the envelope (stays staged, retries) — swallowing it permanently loses the attribution (SR-5)")
 	}
 	if len(f.issues) != 0 {
@@ -75,7 +75,7 @@ func TestIdentityResolveErrorFailsTheEnvelope(t *testing.T) {
 func TestMintErrorFailsTheEnvelope(t *testing.T) {
 	f := &failingIdentityStore{mintErr: errors.New("connection refused")}
 	p := NewJiraProcessor(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := p.processEnvelope(context.Background(), 1, []byte(jiraEnvelope)); err == nil {
+	if _, err := p.processEnvelope(context.Background(), 1, []byte(jiraEnvelope)); err == nil {
 		t.Fatal("a MintJiraContributor ERROR must fail the envelope — the mint is what banks the raw Jira identity")
 	}
 }
@@ -86,7 +86,7 @@ func TestAmbiguousIdentityStillResolvesEmpty(t *testing.T) {
 	f := &failingIdentityStore{}
 	f.identities = map[string][3]any{"alice-gh": {"", "", true}}
 	p := NewJiraProcessor(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := p.processEnvelope(context.Background(), 1, []byte(jiraEnvelope)); err != nil {
+	if _, err := p.processEnvelope(context.Background(), 1, []byte(jiraEnvelope)); err != nil {
 		t.Fatalf("ambiguous identity must not fail the envelope: %v", err)
 	}
 	if len(f.issues) != 1 {

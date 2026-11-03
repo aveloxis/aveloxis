@@ -8,6 +8,7 @@
 {{template "head" (dict "Title" "Account")}}
 {{template "nav" .}}
 <div class="breadcrumb"><a href="/dashboard">Home</a>{{template "adminLinks" .}}<span class="sep">/</span><span class="current">Account</span></div>
+{{if .Error}}<p style="color:#cb2431;background:#ffeef0;padding:8px;border-radius:4px;margin:12px 0">{{.Error}} <a href="/login?next=%2Faccount">Sign in again</a>.</p>{{end}}
 <div class="container">
 {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
 <div class="card">

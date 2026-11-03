@@ -90,10 +90,14 @@ configurable.
 token of the account with its sign-in time, last use (to the minute, for
 browser sessions; a token shows its mint time) and
 expiry, this browser's marked; "Sign out everywhere" (`POST
-/api/v1/me/sessions/revoke`) ends them all. An administrator ends any
-account's from the Users page ("End sessions") or `POST
-/api/v1/admin/users/{userID}/sessions/revoke`; operator-issued API tokens are
-revoked on the API-tokens page instead. A sign-in from a browser that still
+/api/v1/me/sessions/revoke`) ends them all — after a sign-in within the
+inactivity bound, like the address change, through every route that ends
+the caller's own sessions (0.29.129: the administrative route named below
+takes the same rule when the id is the caller's own, so an older stolen
+administrator session cannot end the owner's others through it). An
+administrator ends any other account's from the Users page ("End sessions")
+or `POST /api/v1/admin/users/{userID}/sessions/revoke` at any sign-in age;
+operator-issued API tokens are revoked on the API-tokens page instead. A sign-in from a browser that still
 carries a session replaces that session (the old row is deleted).
 
 **No cap on concurrent sessions** (V7.1.2): an account may be signed in from
@@ -145,6 +149,25 @@ What a deployment stores, by sensitivity (ASVS V14.1.1, V14.1.2):
   file's secrets. Shown to nobody: a token is shown once, at its mint.
 - **Operational data** — the queue, the logs, capacity counters, the sign-up
   escrow envelopes.
+
+**Cached copies of the public data.** With `api.response_cache_mb` set, the
+`api` process keeps answers in memory — contributor names and e-mail
+addresses among them (`/contributions/identities`, `/contributors/top`) —
+until the repository's state moves: its next collection or scan, or a repair
+that stamps it. No answer expires on a timer (0.29.120), and an nginx disk
+cache in front of it revalidates against the API, so a disk copy lasts as
+long. A contributor row changed or removed by hand (an erasure request, an
+identity merge) is therefore still served for each repository that names it
+until that repository is collected again. To stop that at once, move the
+affected repositories' state —
+`UPDATE aveloxis_data.repos SET data_changed_at = NOW() WHERE repo_id = ANY('{…}')`
+— which changes their answers' ETags, so the API recomputes and nginx's
+revalidation replaces its copy. Restarting the `api` process does not do it
+for every answer: an exact answer's ETag comes from the state alone, so after
+a restart nginx's revalidation still gets a 304 and keeps its disk copy; the
+contributor answers above name their body in their ETag, so they are replaced
+as each is revalidated after a restart. The stamp covers both, with no
+restart.
 
 ## Logs
 

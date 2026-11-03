@@ -4,6 +4,7 @@
 package scripts
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -97,4 +98,96 @@ func nginxServerBlocks(doc string) []string {
 		}
 	}
 	return out
+}
+
+// L10 round 3 of 0.29.125: the API host's plain-HTTP refusal was an ignored
+// duplicate — `certbot --nginx` adds `listen 80;` to a block with no listen
+// and splits the port-80 half off only with its redirect, so the proxy
+// block and the `return 403` block both took port 80 for one name and nginx
+// kept the first (a warning, not an error: `nginx -t` passes). The recipe
+// now states every listen of the API host itself. Two blocks sharing a
+// server_name must never both take port 80 (an explicit `listen 80`, or no
+// listen at all), and the block that proxies the api states `listen 443 ssl`.
+func TestDeploymentRecipeRefusesPlainHTTPOnTheAPIHostUnambiguously(t *testing.T) {
+	doc := srctest.Read(t, "docs/getting-started/deployment.md")
+	blocks := nginxServerBlocks(doc)
+	srctest.MinCount(t, "nginx server blocks in deployment.md", len(blocks), 3)
+	listen80 := map[string]int{}
+	listenRE := regexp.MustCompile(`(?m)^\s*listen\s+([^;]+);`)
+	nameRE := regexp.MustCompile(`(?m)^\s*server_name\s+([^;]+);`)
+	apiBlocks := 0
+	for _, b := range blocks {
+		name := nameRE.FindStringSubmatch(b)
+		if name == nil {
+			t.Errorf("a server block without server_name:\n%s", b)
+			continue
+		}
+		listens := listenRE.FindAllStringSubmatch(b, -1)
+		on80 := len(listens) == 0 // nginx's implicit *:80 for the superuser
+		for _, l := range listens {
+			// The address is the first token (`80`, `[::]:80`, `0.0.0.0:80`,
+			// `443 ssl`); its port is what follows the last colon, or the
+			// whole token. A prefix test read 8080 as 80 (the mutant that
+			// survived).
+			addr := strings.Fields(l[1])[0]
+			if port := addr[strings.LastIndex(addr, ":")+1:]; port == "80" {
+				on80 = true
+			}
+		}
+		if on80 {
+			listen80[strings.TrimSpace(name[1])]++
+		}
+		if strings.Contains(b, "127.0.0.1:8383") {
+			apiBlocks++
+			if !regexp.MustCompile(`(?m)^\s*listen\s+443 ssl;`).MatchString(b) {
+				t.Errorf("the API host's proxy block must state `listen 443 ssl;` itself (certbot --nginx would add listen 80 and keep serving in clear):\n%s", b)
+			}
+			if !strings.Contains(b, "ssl_certificate ") || !strings.Contains(b, "ssl_certificate_key ") {
+				t.Errorf("the API host's proxy block states its certificate lines (certonly fetches, edits nothing):\n%s", b)
+			}
+		}
+		if strings.Contains(b, "return 403") && !on80 {
+			t.Errorf("the plain-HTTP refusal must listen on 80:\n%s", b)
+		}
+	}
+	srctest.MinCount(t, "blocks proxying the api", apiBlocks, 1)
+	for name, n := range listen80 {
+		if n > 1 {
+			t.Errorf("%d server blocks for %q take port 80; nginx keeps one and ignores the rest with a warning `nginx -t` does not fail on", n, name)
+		}
+	}
+	if !strings.Contains(doc, "certbot certonly --nginx -d api.") {
+		t.Error("the API host's certificate comes from `certbot certonly --nginx` (the challenge only); `certbot --nginx` rewrites the block")
+	}
+}
+
+// Copilot's review of PR #246 on 0.29.125 (Low): on a fresh host the TLS
+// block's certificate files do not exist, `nginx -t` fails on them, and
+// certbot's nginx plugin runs `nginx -t` before anything else (its prepare),
+// so the documented certificate command could not bootstrap the block it
+// was written under. The recipe obtains the certificate first: the command
+// comes after the plain-HTTP refusal block (the port-80 block the challenge
+// goes through — certbot inserts its challenge location with a `rewrite …
+// break` ahead of the block's `return`) and before the first `listen 443
+// ssl` block, and the prose states why.
+func TestDeploymentRecipeObtainsTheAPICertificateBeforeItsTLSBlock(t *testing.T) {
+	doc := srctest.Read(t, "docs/getting-started/deployment.md")
+	certonly := strings.Index(doc, "certbot certonly --nginx -d api.")
+	refusal := strings.Index(doc, "return 403;")
+	tls := strings.Index(doc, "listen 443 ssl;")
+	if certonly < 0 || refusal < 0 || tls < 0 {
+		t.Fatalf("recipe pieces missing: certonly %d, refusal %d, tls %d", certonly, refusal, tls)
+	}
+	if !(refusal < certonly && certonly < tls) {
+		t.Errorf("the certificate command must follow the port-80 refusal block and precede the TLS block (refusal %d, certonly %d, tls %d): certbot's nginx plugin tests the configuration first", refusal, certonly, tls)
+	}
+	// Copilot's seventh review of PR #246 asked for a deploy hook to reload
+	// nginx after renewals; certbot's source says `--nginx` makes the
+	// plugin the installer under certonly too and `renew` restarts it, so
+	// the recipe states that instead (0.29.129).
+	for _, claim := range []string{"runs `nginx -t`", "rewrite ^(/.well-known/acme-challenge/.*) $1 break;", "calls `installer.restart()` after each renewal"} {
+		if !strings.Contains(doc, claim) {
+			t.Errorf("the recipe states certbot's behaviour it depends on (%q)", claim)
+		}
+	}
 }

@@ -126,18 +126,31 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 // repo satisfied the candidate predicate forever and "rerun until 0
 // candidates" never converged. Touches ONLY the two count columns —
 // never last_collected, status, or due_at.
+//
+// A row whose counts are unchanged is not written: updated_at is part of
+// the repository's cache state (RepoCacheState, CollectionGeneration), and
+// the drains call this after every pass that reached a repository, so a
+// staged row that keeps failing would otherwise move the state — and
+// invalidate every cached answer of the repository — each drain
+// (whole-branch review of 0.29.119–0.29.123, A2). The healer does not rely
+// on this stamp: ReleaseDrainLock moves updated_at after its fill. The
+// comparison reads the target row, so a statement that waited on another
+// writer's lock compares against the row it finally updates.
 func (s *PostgresStore) RefreshQueueGatheredCounts(ctx context.Context, repoID int64) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `
-			UPDATE aveloxis_ops.collection_queue
-			SET last_issues = (SELECT COUNT(*) FROM aveloxis_data.issues WHERE repo_id = $1),
-				last_prs = (SELECT COUNT(*) FROM aveloxis_data.pull_requests WHERE repo_id = $1),
-				last_activity_90d = (SELECT COUNT(*) FROM aveloxis_data.issues
-				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days')
-				                  + (SELECT COUNT(*) FROM aveloxis_data.pull_requests
-				                     WHERE repo_id = $1 AND created_at >= NOW() - INTERVAL '90 days'),
+			UPDATE aveloxis_ops.collection_queue q
+			SET last_issues = c.issues,
+				last_prs = c.prs,
+				last_activity_90d = c.activity,
 				updated_at = NOW()
-			WHERE repo_id = $1`, repoID)
+			FROM (SELECT i.n AS issues, p.n AS prs, i.recent + p.recent AS activity
+			      FROM (SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '90 days') AS recent
+			            FROM aveloxis_data.issues WHERE repo_id = $1) i,
+			           (SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '90 days') AS recent
+			            FROM aveloxis_data.pull_requests WHERE repo_id = $1) p) c
+			WHERE q.repo_id = $1
+			  AND (q.last_issues, q.last_prs, q.last_activity_90d) IS DISTINCT FROM (c.issues, c.prs, c.activity)`, repoID)
 		return err
 	})
 }

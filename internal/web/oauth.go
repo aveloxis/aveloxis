@@ -188,6 +188,10 @@ func (s *Server) fetchOAuthUser(w http.ResponseWriter, r *http.Request, ctx cont
 		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
 		return nil, nil, false
 	}
+	// Checked: the state has done its one job, so it does not live out its
+	// MaxAge in the browser (ASVS review of 0.29.125, N7; logout expired it
+	// already, a completed sign-in did not).
+	http.SetCookie(w, s.expireCookie("oauth_state"))
 	token, err := p.cfg.Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
 		s.logOAuthFailure(r.Context(), p.name, "exchange", err)

@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -455,7 +456,17 @@ func runAPI(cfgPath, addr string) error {
 	signalReady(logger)
 
 	// v0.29.73: recompute cached repository pages after their collections.
-	safego.Go(logger, "repository page cache re-warm", func() { apiServer.RunRewarm(ctx) })
+	// The re-warm saves the replay list when it stops and then releases the
+	// list's lock (whole-branch review of 0.29.119–0.29.123, A7), so it runs
+	// on its own cancel — a server that stopped on an error stops it too —
+	// and the shutdown below waits for it before the deferred store.Close.
+	rewarmCtx, cancelRewarm := context.WithCancel(ctx)
+	defer cancelRewarm()
+	rewarmDone := make(chan struct{})
+	safego.Go(logger, "repository page cache re-warm", func() {
+		defer close(rewarmDone)
+		apiServer.RunRewarm(rewarmCtx)
+	})
 
 	// v0.29.89: share the daily request counts with the other api
 	// processes, and save what is left once the server has stopped (the
@@ -464,9 +475,15 @@ func runAPI(cfgPath, addr string) error {
 
 	srv := newAPIServer(cfg, addr, apiServer.Handler(), logger)
 	err = serveUntilDone(ctx, srv, ln, logger, "API server")
+	cancelRewarm()
 	flushCtx, cancelFlush := context.WithTimeout(context.Background(), serverShutdownTimeout)
 	defer cancelFlush()
 	apiServer.FlushCapacity(flushCtx)
+	// The re-warm's last save is bounded by StopTimeout (the same
+	// serverShutdownTimeout); waiting here is what the deferred store.Close
+	// would do anyway — pgx's pool Close blocks until the list's connection
+	// is returned (L10 round F2: a select with its own bound only claimed one).
+	<-rewarmDone
 	return err
 }
 
@@ -562,14 +579,9 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 		result, err := coll.CollectRepo(ctx, repoID, owner, repo, since)
 		// Outside the queue no CompleteJob marks the end of this run: stamp
 		// the repository so the API replaces its cached answers (v0.29.73).
-		// Also after a failure — the run may have written part of its data.
-		// On a context the interrupt cannot cancel (Ctrl-C is the commonest
-		// failure of a one-shot run, after part of the data was written),
-		// bounded so a dead database cannot hold the command.
-		stampCtx, stampCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		stampErr := store.StampRepoDataChanged(stampCtx, repoID)
-		stampCancel()
-		if stampErr != nil {
+		// Also after a failure — the run may have written part of its data;
+		// the store stamps on a context the interrupt cannot cancel, bounded.
+		if stampErr := store.StampReposChangedOutsideJob(ctx, []int64{repoID}); stampErr != nil {
 			logger.Warn("could not stamp the repository's cache state — its cached API answers may stay until its next collection",
 				"url", platform.RedactURLUserinfo(repoURL), "error", stampErr)
 		}
@@ -787,6 +799,20 @@ func runImportFromAugur(cfgPath string, priority int) error {
 			continue
 		}
 
+		// The outbound-address rule (0.29.132, L10 round 2): a poisoned
+		// Augur row is not probed from this machine.
+		if err := collector.RefuseRepositoryHost(ctx, ar.RepoGit); err != nil {
+			if !errors.Is(err, platform.ErrPrivateAddress) {
+				// A resolver failure, not a refusal (round 6): the verify arm's
+				// outcome, counted as a failure and driving the exit status.
+				logger.Warn("error verifying repo", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
+				failed++
+				continue
+			}
+			logger.Warn("repo host refused by the outbound-address rule — not probed, skipping", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
+			skipped++
+			continue
+		}
 		// Verify the repo still exists on the forge with an HTTP HEAD.
 		exists, err := verifyRepoExists(ctx, httpClient, ar.RepoGit)
 		if err != nil {
@@ -1588,7 +1614,7 @@ func startComponent(component, cfgPath string) error {
 	}
 
 	logPath := pidfile.LogPath(component)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // the owner's alone: sign-ins and administrator actions (ASVS V16.4.2)
 	if err != nil {
 		return fmt.Errorf("opening log file %s: %w", logPath, err)
 	}
@@ -2140,19 +2166,44 @@ func versionCmd() *cobra.Command {
 
 // --- helpers ---
 
+// outboundPolicyFor is the process's outbound-address rule (0.29.132) from
+// the configuration, logged as the EFFECTIVE trust the collector uses. A
+// bad entry is refused by config.Load, so a failure here is a defect.
+func outboundPolicyFor(cfg *config.Config, logger *slog.Logger) *platform.OutboundPolicy {
+	p, err := cfg.OutboundPolicy()
+	if err != nil {
+		logger.Error("collection.private_network_hosts is invalid — refusing to run", "error", err)
+		exitProcess(1)
+		return nil
+	}
+	outboundPolicyLogged.Do(func() { // once per process: serve loads the configuration twice
+		logger.Info("outbound-address rule: private repository hosts trusted (collection.private_network_hosts plus the configured forge instances); a configured proxy resolves the probe's targets itself", "trusted", p.Allow(), "proxies", collector.ProxyHosts())
+	})
+	return p
+}
+
+var outboundPolicyLogged sync.Once
+
 func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	cfg, err := config.Load(cfgPath)
 	if err == nil {
-		for _, w := range cfg.LoadWarnings() { // a removed key the file still carries (N15)
+		for _, w := range cfg.LoadWarnings() { // a removed key the file still carries (N15); a remote database without TLS
 			logger.Warn(w, "path", cfgPath)
 		}
+		// The file holds the database password, the OAuth client secrets
+		// and the forge keys (ASVS V13.3.2, the 0.29.125 review).
+		if st, serr := os.Stat(cfgPath); serr == nil && st.Mode().Perm()&0o077 != 0 {
+			logger.Warn("config file is readable by other users — it holds the database password, OAuth secrets and forge keys; chmod 600 it", "path", cfgPath, "mode", fmt.Sprintf("%04o", st.Mode().Perm()))
+		}
 		db.SetProcessCapacitySources(cfg.CapacitySources()) // v0.29.89: every store this process opens
+		collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))
 		return cfg
 	}
 	if errors.Is(err, config.ErrNotFound) {
 		logger.Warn("config file not found, using defaults", "path", cfgPath, "error", err)
 		cfg = config.DefaultConfig()
 		db.SetProcessCapacitySources(cfg.CapacitySources())
+		collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))
 		return cfg
 	}
 	// v0.29.61: a file that EXISTS but does not parse or validate used to
@@ -2286,14 +2337,12 @@ func apiOptions(cfg *config.Config, logger *slog.Logger) api.Options {
 		AutoApproveAddLimit: cfg.Web.AutoApproveAddLimitValue(),
 		GitHubAPIBase:       cfg.GitHub.GitHubAPIBase(),
 		GitLabAPIBase:       cfg.GitLab.BaseURL,
-		// O11 option 4 (v0.29.71): a per-repository answer is reused within
-		// its collection generation for at most one enrichment interval.
-		ResponseCacheMaxAge: cfg.Collection.EnrichIntervalDuration(),
 		// v0.29.73: the repository-page cache's budget, its re-warm
 		// cadence, and the request bound each re-warm request runs under.
 		ResponseCacheBytes: cfg.API.ResponseCacheBytes(),
 		RewarmInterval:     cfg.API.CacheRewarmInterval(),
 		RequestTimeout:     cfg.HTTPTimeout(),
+		StopTimeout:        serverShutdownTimeout, // the re-warm's last save at a stop (pgx's pool Close waits for it)
 		FrontEndSecret:     cfg.API.FrontEndSecret,
 		SPAURL:             cfg.Web.SPAURL,
 	}

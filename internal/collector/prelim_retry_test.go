@@ -35,9 +35,15 @@ func TestPrelimRetriesOnDNSErrors(t *testing.T) {
 			"with exponential backoff — 3 retries at 1s, 3s, 9s before giving up")
 	}
 	// v0.29.57: the probe walks the redirect chain itself and must issue
-	// every hop through headWithRetry.
+	// every hop through headWithRetry — since 0.29.132 by handing it to the
+	// one walker (walkRedirects), which issues each hop through the request
+	// it was given.
 	rr := strings.Index(code, "func resolveRedirects")
-	if rr < 0 || !strings.Contains(code[rr:], "headWithRetry(ctx, current)") {
-		t.Error("resolveRedirects must issue each hop through headWithRetry")
+	if rr < 0 || !strings.Contains(code[rr:], "walkRedirects(ctx, repoURL, headWithRetry)") {
+		t.Error("resolveRedirects must hand headWithRetry to walkRedirects")
+	}
+	wr := strings.Index(code, "func walkRedirects")
+	if wr < 0 || !strings.Contains(code[wr:], "request(ctx, current)") {
+		t.Error("walkRedirects must issue each hop through the request it was given")
 	}
 }

@@ -4,6 +4,7 @@
 package db
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -71,4 +72,29 @@ func extractStoreFunc(t *testing.T, file, sig string) string {
 		return rest
 	}
 	return rest[:end]
+}
+
+// ASVS 5.0 review of 0.29.125 (V1.4.2/V2.2.1, A-N2): a page number near
+// MaxInt made (page−1)×page_size overflow to a negative OFFSET, which
+// PostgreSQL refuses — a 500 and an ERROR log line per request for any
+// signed-in caller. The one clamp (NormalizeListingPage) bounds the page so
+// the offset always fits.
+func TestNormalizeListingPageKeepsTheOffsetNonNegative(t *testing.T) {
+	// Every legal page size (1..100), every far page: the offset fits.
+	for size := 1; size <= 100; size++ {
+		for _, page := range []int{math.MaxInt, math.MaxInt - 1, math.MaxInt / 2, 1 << 62} {
+			p := NormalizeListingPage(page, size, "", "")
+			if off := (p.Page - 1) * p.PageSize; off < 0 || p.Page < 1 {
+				t.Errorf("page %d, size %d: page %d offset %d", page, size, p.Page, off)
+			}
+		}
+	}
+	// L10 round 2 of 0.29.125: the first spelling of the clamp wrapped for
+	// page_size=1 (math.MaxInt/1 + 1 = MinInt) and turned EVERY page of that
+	// size into offset MaxInt — an empty answer. Ordinary pages stay as asked.
+	for _, tc := range []struct{ page, size, wantPage int }{{1, 1, 1}, {2, 1, 2}, {5, 1, 5}, {3, 100, 3}, {7, 50, 7}} {
+		if p := NormalizeListingPage(tc.page, tc.size, "", ""); p.Page != tc.wantPage || (p.Page-1)*p.PageSize != (tc.wantPage-1)*tc.size {
+			t.Errorf("page %d size %d: normalised to page %d (offset %d); want page %d", tc.page, tc.size, p.Page, (p.Page-1)*p.PageSize, tc.wantPage)
+		}
+	}
 }

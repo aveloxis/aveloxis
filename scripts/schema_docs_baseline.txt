@@ -1,0 +1,46 @@
+# Tables of internal/db/schema.sql with no `#### <table>` section in docs/schema.md
+# at 0.29.126 (TestEveryTableIsDocumentedInSchemaMD). Shrink-only: document a
+# table, remove its line; a new table is never added here.
+aveloxis_data.contributor_activity_day_totals
+aveloxis_data.contributor_activity_days
+aveloxis_data.contributor_login_history
+aveloxis_data.repo_deps_libyear_history
+aveloxis_data.repo_deps_scorecard_history
+aveloxis_data.repo_deps_vulnerabilities
+aveloxis_data.repo_distribution
+aveloxis_data.repo_distribution_history
+aveloxis_data.repo_distribution_manifest
+aveloxis_data.repo_distribution_manifest_history
+aveloxis_data.repo_forge_id_changes
+aveloxis_data.repo_info_history
+aveloxis_data.repo_lockfile_edges
+aveloxis_data.repo_lockfile_packages
+aveloxis_data.repo_lockfiles
+aveloxis_ops.account_signups
+aveloxis_ops.api_token_settings
+aveloxis_ops.api_tokens
+aveloxis_ops.capacity_quotas
+aveloxis_ops.capacity_settings
+aveloxis_ops.collection_add_request_items
+aveloxis_ops.collection_add_requests
+aveloxis_ops.collection_groups
+aveloxis_ops.collections
+aveloxis_ops.deploy_ack
+aveloxis_ops.email_confirmations
+aveloxis_ops.foundation_membership
+aveloxis_ops.mailing_list_sender_resolve
+aveloxis_ops.mailing_list_staging
+aveloxis_ops.message_heal_worklist
+aveloxis_ops.migration_ledger
+aveloxis_ops.request_counts
+aveloxis_ops.schema_meta
+aveloxis_ops.signup_allowlist
+aveloxis_ops.signup_key_secrets
+aveloxis_ops.user_capacity
+aveloxis_ops.user_collection_stars
+aveloxis_ops.user_org_requests
+aveloxis_ops.user_repo_stars
+aveloxis_scan.scancode_file_results
+aveloxis_scan.scancode_file_results_history
+aveloxis_scan.scancode_scans
+aveloxis_scan.scancode_scans_history

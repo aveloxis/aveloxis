@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Security &mdash; Aveloxis 0.29.118 documentation</title>
+  <title>Security &mdash; Aveloxis 0.29.135 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c9c5df34"></script>
+      <script src="../_static/documentation_options.js?v=7bc0d20d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,13 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-123">Changes for API clients in 0.29.123</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-121">Changes for API clients in 0.29.121</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-120">Changes for API clients in 0.29.120</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-119">Changes for API clients in 0.29.119</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-114">Changes for API clients in 0.29.114</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-113">Changes for API clients in 0.29.113</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-110">Changes for API clients in 0.29.110</a></li>
@@ -359,6 +366,7 @@
 <li class="toctree-l3"><a class="reference internal" href="api.html#capacity-admin-v0-29-89">Capacity (admin, v0.29.89)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#batch-statistics">Batch Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#time-series">Time Series</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api.html#metric-series-v0-29-119">Metric series (v0.29.119)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#dependency-licenses">Dependency Licenses</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#repository-search">Repository Search</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api.html#sbom-download">SBOM Download</a></li>
@@ -778,7 +786,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-51-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (51 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -1755,6 +1763,10 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#working-commits-aveloxis-ops">working_commits (aveloxis_ops)</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#api-response-cache-ops">API Response Cache (ops)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#page-cache-replay-aveloxis-ops">page_cache_replay (aveloxis_ops)</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#indexes">Indexes</a><ul>
@@ -1933,9 +1945,14 @@ configurable.</p>
 (<code class="docutils literal notranslate"><span class="pre">/account</span></code>, or <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/me/sessions</span></code>) lists every live session and
 token of the account with its sign-in time, last use (to the minute, for
 browser sessions; a token shows its mint time) and
-expiry, this browser’s marked; “Sign out everywhere” (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/sessions/revoke</span></code>) ends them all. An administrator ends any
-account’s from the Users page (“End sessions”) or <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/sessions/revoke</span></code>; operator-issued API tokens are
-revoked on the API-tokens page instead. A sign-in from a browser that still
+expiry, this browser’s marked; “Sign out everywhere” (<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/me/sessions/revoke</span></code>) ends them all — after a sign-in within the
+inactivity bound, like the address change, through every route that ends
+the caller’s own sessions (0.29.129: the administrative route named below
+takes the same rule when the id is the caller’s own, so an older stolen
+administrator session cannot end the owner’s others through it). An
+administrator ends any other account’s from the Users page (“End sessions”)
+or <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/api/v1/admin/users/{userID}/sessions/revoke</span></code> at any sign-in age;
+operator-issued API tokens are revoked on the API-tokens page instead. A sign-in from a browser that still
 carries a session replaces that session (the old row is deleted).</p>
 <p><strong>No cap on concurrent sessions</strong> (V7.1.2): an account may be signed in from
 any number of browsers and devices. The control is the list and the
@@ -2007,6 +2024,24 @@ file’s secrets. Shown to nobody: a token is shown once, at its mint.</p></li>
 <li><p><strong>Operational data</strong> — the queue, the logs, capacity counters, the sign-up
 escrow envelopes.</p></li>
 </ul>
+<p><strong>Cached copies of the public data.</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, the
+<code class="docutils literal notranslate"><span class="pre">api</span></code> process keeps answers in memory — contributor names and e-mail
+addresses among them (<code class="docutils literal notranslate"><span class="pre">/contributions/identities</span></code>, <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code>) —
+until the repository’s state moves: its next collection or scan, or a repair
+that stamps it. No answer expires on a timer (0.29.120), and an nginx disk
+cache in front of it revalidates against the API, so a disk copy lasts as
+long. A contributor row changed or removed by hand (an erasure request, an
+identity merge) is therefore still served for each repository that names it
+until that repository is collected again. To stop that at once, move the
+affected repositories’ state —
+<code class="docutils literal notranslate"><span class="pre">UPDATE</span> <span class="pre">aveloxis_data.repos</span> <span class="pre">SET</span> <span class="pre">data_changed_at</span> <span class="pre">=</span> <span class="pre">NOW()</span> <span class="pre">WHERE</span> <span class="pre">repo_id</span> <span class="pre">=</span> <span class="pre">ANY('{…}')</span></code>
+— which changes their answers’ ETags, so the API recomputes and nginx’s
+revalidation replaces its copy. Restarting the <code class="docutils literal notranslate"><span class="pre">api</span></code> process does not do it
+for every answer: an exact answer’s ETag comes from the state alone, so after
+a restart nginx’s revalidation still gets a 304 and keeps its disk copy; the
+contributor answers above name their body in their ETag, so they are replaced
+as each is revalidated after a restart. The stamp covers both, with no
+restart.</p>
 </section>
 <section id="logs">
 <h2>Logs<a class="headerlink" href="#logs" title="Link to this heading"></a></h2>

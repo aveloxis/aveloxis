@@ -157,7 +157,8 @@ a half against its own reference table below:
     "jira_enabled": false,
     "jira_workers": 1,
     "jira_cadence_hours": 24,
-    "jira_polite_email": ""
+    "jira_polite_email": "",
+    "private_network_hosts": []
   },
   "web": {
     "addr": ":8082",
@@ -220,7 +221,7 @@ Every field is optional except `database` credentials and at least one API key s
 | `database.user` | string | (required) | Database username. |
 | `database.password` | string | (required) | Database password. |
 | `database.dbname` | string | (required) | Database name. |
-| `database.sslmode` | string | `"prefer"` | PostgreSQL SSL mode. Options: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`. |
+| `database.sslmode` | string | `"prefer"` | PostgreSQL SSL mode. Options: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`. Fine for a Unix socket or a loopback host; for a remote host anything weaker than `require` is warned about at start (the connection may be unencrypted and the server unverified) — use `verify-full`, with the server's CA in the process's `PGSSLROOTCERT`. |
 | `database.pool_max_conns` | int | `0` | Caps `aveloxis serve`'s connection pool (v0.29.58). `0` derives the size from the scheduler's connection demand capped by the server's budget and logs the derivation at startup; a positive value is honored as written. See [Database connection pool](../guide/scaling.md#database-connection-pool). Other commands always use a pool of 20. |
 
 ### GitHub
@@ -247,6 +248,7 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 |---|---|---|---|
 | `collection.days_until_recollect` | integer | `1` | Minimum number of days before a repo is re-collected. After a successful job, `due_at = last_collected + days_until_recollect`. Changing this value takes effect on the next `aveloxis serve` restart (v0.16.6's startup-time `RealignDueDates` rewrites queued rows); a repository whose last collection failed keeps its retry time and picks up the new interval at its next completion (v0.29.69). |
 | `collection.archived_recollect_multiplier` | integer | `6` | v0.28.1: stretches the recollect interval for ARCHIVED repos (`due_at = last_collected + days_until_recollect × multiplier`). Archived repos still recollect — they can be unarchived or gain issues — just less often; on a large fleet this recovers the ~20% of queue churn otherwise spent on mostly-304 cycles over frozen repos. Set `1` to disable the stretch. Applied inside both due_at writers, so config changes take effect fleet-wide on the next serve restart. |
+| `collection.private_network_hosts` | array of strings | `[]` | 0.29.132, the outbound-address rule. Every repository URL is probed and cloned from the serve host, so a host whose address is loopback, private (RFC 1918, ULA), carrier-grade NAT or otherwise special-use is refused at collection unless the operator trusts it: list a host name (trusted as written, no port) or an address range in CIDR form (a standalone git host on the LAN, as `"192.168.10.0/24"`). The configured forge instances — `github.base_url`, `gitlab.base_url`, `web.gitlab_base_url` — are trusted without an entry, so a self-hosted GitLab or GitHub Enterprise on a private network needs nothing here. Link-local addresses (`169.254.0.0/16`, `fe80::/10`, where cloud metadata services live) are never reached and cannot be listed — a trusted name resolving to one is refused too (0.29.134), so a trusted name must resolve from the serve host even when a proxy carries the connection. With `HTTP_PROXY`/`HTTPS_PROXY` set, the probe's connection is the proxy's and the proxy resolves the target itself: the rule checks each hop by name, the proxy's resolution is the operator's, and a host named in `NO_PROXY` is dialed directly, pinned (0.29.135). The serve log's trust line names the configured proxies. A refused repository is logged with an ERROR line naming this key (`repository host is a private address`) and never marked gone for it: a GitHub or GitLab repository's job records the refused clone and completes its API collection, returning at its normal due time; a git-only repository's job fails and retries on its backoff. The rule applies to the redirect probe (each hop, with the probe's connection pinned to the checked address when no proxy carries it), the fetch or clone of every repository (the git endpoint's own redirect chain is walked under the rule first, and git runs with `http.followRedirects=false`) and the scorecard run; the go-module closure keeps the host's effective `GOPROXY` list with its `direct` entry removed (the public proxy when none is set; `GOPRIVATE` and `GONOPROXY` overridden with a pattern no module path matches, `GONOSUMDB` passed as its effective value, `GOSUMDB` untouched); a numeric host that is not a dotted-decimal address (octal, hexadecimal or integer forms) is refused as written, because resolvers and git read it differently. GitHub Enterprise with subdomain isolation names `api.HOST` in `github.base_url`: list `HOST` here for the clone. A range of `0.0.0.0/0` or `::/0` trusts every address but link-local — the rule off, by the operator's hand. The serve process logs the effective trust at start. |
 | `collection.workers` | integer | `12` | Number of concurrent collection workers when running `aveloxis serve`. `aveloxis serve` sizes its connection pool from the scheduler's connection demand (v0.29.58; each slot can hold five connections at once), capped by the server's budget, or set outright by `database.pool_max_conns` — see [Database connection pool](../guide/scaling.md#database-connection-pool). |
 | `collection.repo_clone_dir` | string | `~/aveloxis-repos` (computed at startup) | Directory for bare git clones used by the facade phase. Can grow to terabytes for large instances (400K+ repos). |
 | `collection.force_full` | boolean | `false` | Fleet-wide: when `true`, every collection pass runs `since=zero` regardless of `last_collected`. Use this once after a systemic bug fix that invalidates collected data, then revert to `false`. For per-repo full re-collection, use `aveloxis recollect <url>` instead (sets a queue flag, doesn't touch this setting). |
@@ -284,7 +286,7 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `collection.enrich_interval_minutes` | integer | `30` | Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via `GET /users/{login}`. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. Since 0.29.71 it also bounds `aveloxis api`'s per-repository cache: an answer (top contributors, the weekly time series, each compare series) is reused within one collection of the repository for at most this long, because contributor names and logins can change between collections at this cadence. |
+| `collection.enrich_interval_minutes` | integer | `30` | Cadence (minutes) of the thin-contributor profile enrichment ticker. Each tick processes one batch of up to 14,000 thin contributors via `GET /users/{login}`. With 14K candidates and 73 keys, even 60 minutes is well under the rate budget. From 0.29.71 to 0.29.119 it also aged `aveloxis api`'s cached answers; since 0.29.120 it does not (they are valid until the repository is collected again, and a name filled in between collections shows after the next collection). |
 | `collection.search_resolve_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.2 search-resolve ticker. Each tick takes 100 contributors with email-but-no-`gh_user_id` and calls GitHub's search API to backfill the identity. GitHub search is rate-limited to 30/min/token (separate budget from the 5000/hour core API), so this runs at a deliberately low cadence. |
 | `collection.affiliation_interval_minutes` | integer | `60` | Cadence (minutes) of the v0.19.7 affiliation-population ticker. Recomputes the global domain→company map from `contributor_affiliations`. Pre-v0.19.7 this fired from every worker after every repo and caused `UNIQUE (ca_domain)` ShareLock contention. |
 | `collection.breadth_interval_minutes` | integer | `15` | Cadence (minutes) of the v0.20.17 contributor breadth ticker. Each tick calls `/users/{login}/events` for up to `breadth_batch_size` contributors past their cooldown window and stamps `contributors.cntrb_last_breadth_at`. Pre-v0.20.17 this was hardcoded to 6 hours / 100 batch / no cooldown (400 contributors/day — 9.6 years for one pass over a 1.4M fleet). At 15-min interval × 2000 batch a cycle-per-tick cadence targets ~192K contributors/day → first pass over a 2.3M-contributor fleet in ~12 days, provided each cycle actually finishes within the interval — which is what `breadth_fetch_concurrency` controls (a sequential cycle over 2000 contributors at HTTP-RTT speed takes ~15–30 min; 8 concurrent fetchers bring it to ~2–4 min). |
@@ -546,7 +548,7 @@ you enforce them.
 | `cors_origins` | `[]` | Browser origins allowed to call the API. Empty sends `Access-Control-Allow-Origin: *` (any origin); a list makes it a strict allowlist — set it on a public host, naming the origins whose pages fetch the API. |
 | `trusted_proxy` | `""` | Peer IP whose `X-Forwarded-For` is believed when resolving the client address. Set it to the address the API sees the proxy connect from (`127.0.0.1` for nginx on the same host) — otherwise every request appears to come from the proxy and the exemption/limits misapply. Empty = XFF ignored (spoof-safe default). Must be an IP address in canonical form, as the API sees peers (dotted IPv4 such as `127.0.0.1`, lowercase compressed IPv6 such as `::1`); anything else (spaces, a host name, a CIDR, `::ffff:127.0.0.1`) is refused at load, and the error names the canonical spelling (0.29.73). Left empty behind a reverse proxy, every client appears as the proxy's loopback address, which the default `exempt_cidrs` exempts: the per-IP limits do not apply to anyone and `require_auth` is bypassed for every client. The API logs a WARN naming `api.trusted_proxy` when it sees this; set the key to the proxy's address (`"trusted_proxy": "127.0.0.1"` under `"api"` for nginx on the same host) and restart the api. Traffic through the web GUI's own `/api` proxy arrives from the web's address, carrying the client the web resolved under `web.trusted_proxy`: set that key too. |
 | `require_auth` | `false` | Gate every data endpoint (all but `/health` and `/public/stats`) behind the Bearer session tokens the web process mints at `/auth/token`. It can be `true` with the built-in web GUI since 0.29.110: the web process mints a token for each signed-in session on its first `/api/` request (held in the web process, revoked by sign-out) and attaches it to every request it forwards, so the pages are scoped to the account; before 0.29.110 it had to stay `false`. Those page loads are counted against the account's `requests_per_hour` and `requests_per_day` (shadow by default). Exempt-CIDR clients bypass auth even when enabled. Scoped users receive structured 403s for repos outside their approved groups. |
-| `response_cache_mb` | `0` | **Advanced, off by default.** Memory for the API's per-repository response cache, in megabytes, on top of the process's baseline; set it to turn the cache on (see "Response caching" below). `0` keeps no response bodies in memory except the weekly time series and top contributors, which are kept for up to 1,000 answers as before 0.29.73. Negative values, and values above the maximum, are refused at load. |
+| `response_cache_mb` | `0` | **Advanced, off by default.** Memory for the API's per-repository response cache, in megabytes, on top of the process's baseline; set it to turn the cache on (see "Response caching" below). `0` keeps no response bodies in memory except, as before 0.29.73, up to 1,000 weekly time series and top-contributor answers and up to 1,000 metric series (two pools, 2,000 answers in all). Negative values, and values above the maximum, are refused at load. |
 | `front_end_secret` | `""` | A shared secret for a separate front end that documents it; leave it empty otherwise (every request is then counted against its visitor). At least 32 characters, and `trusted_proxy` must be set with it; shorter, or without `trusted_proxy`, is refused at load. The start-up line reports `front_end_secret_set`, never the value. |
 | `cache_rewarm_seconds` | `60` | With the cache on: how often the API recomputes cached repository answers after their repository is collected again. `0` turns the re-warm off; it is off whenever `response_cache_mb` is `0`. Negative values, and values above the maximum, are refused at load. |
 
@@ -619,26 +621,35 @@ needs (`cors_origins`, `require_auth`, `front_end_secret`) itself.
 ### Response caching (advanced, off by default)
 
 With `response_cache_mb` set, the `api` process keeps each repository's
-own answers (time series, licenses, dependencies, scancode, vulnerabilities,
-scorecard, SBOM, contributors) in memory, up to that many megabytes, until
-that repository is collected or scanned again — answers naming contributors
-for at most `collection.enrich_interval_minutes` — and recomputes a viewed
-repository's answers after its collection ends, every
-`cache_rewarm_seconds`. The start-up line `API repository page cache`
+own answers (time series, metric charts, licenses, dependencies and libyear,
+scancode, vulnerabilities, scorecard, SBOM, traffic, contributors) in memory,
+up to that many megabytes, until
+that repository is collected or scanned again (no answer expires on a timer
+since 0.29.120: a contributor name filled in between collections shows
+after the next collection) and recomputes a viewed
+repository's answers after its collection ends, or when their window moves
+(once a week), every `cache_rewarm_seconds`. Since 0.29.122 the list of
+answers it keeps warm is saved in `aveloxis_ops.page_cache_replay` and read
+back when the api starts, so a restart rebuilds them without a warm-up run.
+The start-up line `API repository page cache`
 shows the values in effect. Cached GETs carry an `ETag` and answer
 `If-None-Match` with 304 whether or not the cache is on; the cache only
-decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed. Size it from the largest repositories you
+decides whether a body is kept. With it unset, the weekly time series and top contributors are still kept, at most 1,000 answers, as they were before the setting existed, and the metric series (0.29.119), at most another 1,000 (the start-up line reports `kept_without_budget=1000 kept_pools=2`). Size it from the largest repositories you
 want held (a 56,000-file scancode listing is about 7 MB of JSON, a
 600-finding vulnerability list about 1 MB, a typical page about 100 KB);
 the Aveloxis project's own site uses 2048. Past the budget the oldest
 bodies are evicted; an evicted answer still gets a 304, because its ETag
 is computed from the repository's state, not from the cache.
 
-The re-warm replays only the answers that were requested since the
-repository's last collection, in-process, so a repository nobody viewed
-costs nothing. It follows the scheduler's collections; a one-shot
-`aveloxis collect` does not trigger it (the next scheduled collection
-does).
+The re-warm replays only the answers that were requested again since they
+were computed, so a repository nobody came back to costs nothing; a restart
+recomputes what the stopped process held of them, and of the answers its
+own replays had stored, until the repository's state or the answer's window
+moves or the budget evicts them (the list is bounded by `response_cache_mb`). It
+follows every change of a repository's state — a scheduled collection, a
+one-shot `aveloxis collect`, a repair command that stamps the repository —
+and the weekly move of a default window. It is off when the cache is
+(`response_cache_mb` unset); so is its saved list.
 
 ## Email (Gmail SMTP, optional)
 

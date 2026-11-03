@@ -101,14 +101,28 @@ func TestRepoInfoHistoryRepoIDIndexIsMigrationOnly(t *testing.T) {
 // tables have no PK/UNIQUE, so two interleaved DELETE+INSERT passes
 // duplicate aggregate rows.
 func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
-	body := srctest.FuncBody(t, readSourceFile(t, "aggregates.go"), "func (s *PostgresStore) RefreshAllRepoAggregates(")
-	for _, needle := range []string{"pg_try_advisory_lock($1)", "DMAggregatesAdvisoryLockID", "return ErrAggregateRebuildRunning", "pg_advisory_unlock($1)"} {
+	body := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "aggregates.go"), "func (s *PostgresStore) RefreshAllRepoAggregates("))
+	for _, needle := range []string{"s.tryHoldAdvisoryLock(ctx, DMAggregatesAdvisoryLockID)", "return ErrAggregateRebuildRunning", "defer lock.release()"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("RefreshAllRepoAggregates must contain %s", needle)
 		}
 	}
-	if strings.Contains(body, "pg_advisory_lock($1)") {
+	// The ban covers the pass itself too (L10 round: moved with the lock into
+	// the helper, it no longer saw a blocking lock taken in the pass).
+	if strings.Contains(body, "pg_advisory_lock(") {
 		t.Error("the aggregate pass must TRY the lock, never block on it (a blocked waiter holds a snapshot — the v0.27.20 class)")
+	}
+	// The lock itself is the shared try-once helper's (whole-branch review
+	// of 0.29.119–0.29.123, A1, moved it out of this pass).
+	try := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) tryHoldAdvisoryLock("))
+	if !strings.Contains(try, "pg_try_advisory_lock($1)") {
+		t.Error("tryHoldAdvisoryLock must take the lock with pg_try_advisory_lock")
+	}
+	if strings.Contains(try, "pg_advisory_lock($1)") {
+		t.Error("the aggregate pass must TRY the lock, never block on it (a blocked waiter holds a snapshot — the v0.27.20 class)")
+	}
+	if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (l *heldAdvisoryLock) release(")), "pg_advisory_unlock($1)") {
+		t.Error("a held lock's release must unlock it")
 	}
 	if DMAggregatesAdvisoryLockID == MigrateAdvisoryLockID {
 		t.Error("the aggregate lock must not share the migrate advisory lock id")

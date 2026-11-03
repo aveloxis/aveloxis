@@ -18,6 +18,7 @@ package db
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 )
@@ -65,6 +66,13 @@ func NormalizeListingPage(page, pageSize int, sortKey, sortDir string) ListingPa
 	}
 	if pageSize > 100 {
 		pageSize = 100
+	}
+	// The offset (page−1)×page_size must fit an int: past this page it
+	// overflowed negative and PostgreSQL refused the OFFSET with a 500 (ASVS
+	// review of 0.29.125, A-N2). Nothing lists that far; the clamp lands on
+	// an empty page.
+	if maxPage := MaxListingPage(pageSize); page > maxPage {
+		page = maxPage
 	}
 	if !CollectionRepoSortValid(sortKey) {
 		sortKey = "name"
@@ -175,4 +183,13 @@ func (s *PostgresStore) GetUserAccount(ctx context.Context, userID int) (provide
 		SELECT `+effectiveProviderSQL("")+`, COALESCE(email, '')
 		FROM aveloxis_ops.users WHERE user_id = $1`, userID).Scan(&provider, &email)
 	return provider, email, err
+}
+
+// MaxListingPage is the last page whose offset (page−1)×pageSize still fits
+// an int — the one spelling of that clamp (queueview.ParseParams, the
+// 0.29.109 round 2, and NormalizeListingPage; L10 round 2 of 0.29.125: a
+// second spelling, math.MaxInt/pageSize+1, wrapped to MinInt for pageSize 1
+// and emptied every page of that size). pageSize is at least 1.
+func MaxListingPage(pageSize int) int {
+	return (math.MaxInt-1)/pageSize + 1
 }

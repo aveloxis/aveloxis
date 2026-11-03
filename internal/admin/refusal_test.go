@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/capacity"
 	"github.com/aveloxis/aveloxis/internal/db"
@@ -53,6 +54,8 @@ func TestClassifyNamesEveryRefusalTheServiceReturns(t *testing.T) {
 		{db.ErrForgeIDNotAsExpected, Superseded, "superseded"},
 		{refuseNotFound(`no quota named "x"`), NotFound, `no quota named "x"`},
 		{refuseConflict("x is set in aveloxis.json"), Conflict, "x is set in aveloxis.json"},
+		{refuseReauthentication("ending your own sessions", 10*time.Minute), ReauthenticationRequired, "ending your own sessions needs a sign-in within the last 10 minutes; sign in again and retry"},
+		{ErrRecentSignInRequired, ReauthenticationRequired, ErrRecentSignInRequired.Error()},
 		{db.ErrAPITokenNotFound, NotFound, "no API token with that id"},
 		{db.ErrInvalidCIDR, InvalidInput, db.ErrInvalidCIDR.Error()},
 		{db.ErrInvalidCapacitySettings, InvalidInput, db.ErrInvalidCapacitySettings.Error()},
@@ -125,7 +128,7 @@ func TestClassifyNamesEveryRefusalTheServiceReturns(t *testing.T) {
 }
 
 func TestKindString(t *testing.T) {
-	for k := Forbidden; k <= Conflict; k++ {
+	for k := Forbidden; k <= ReauthenticationRequired; k++ {
 		if s := k.String(); s == "" || strings.HasPrefix(s, "kind ") {
 			t.Errorf("Kind(%d).String() = %q", int(k), s)
 		}

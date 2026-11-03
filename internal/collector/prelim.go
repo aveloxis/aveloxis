@@ -68,6 +68,19 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
 		return result, nil
 	}
+	if errors.Is(err, platform.ErrPrivateAddress) {
+		// The outbound-address rule (0.29.132): the URL is left as it is and
+		// the job goes on to the facade, which refuses the clone with the same
+		// error. A forge-platform repository's job records that refusal and
+		// completes its API collection (item 83: a facade error alone does
+		// not fail the job), so it returns at its normal due time; a git-only
+		// repository's job fails and retries on its backoff. Never a gone mark
+		// (SR-7). A redirect hop that lands on a private host is refused the
+		// same way (each Location is checked before it is followed).
+		logger.Error("prelim: repository host is a private address — not probed or cloned; list it in collection.private_network_hosts (a configured forge's base_url is trusted)",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "error", err)
+		return result, nil
+	}
 	if err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is
@@ -285,9 +298,23 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 	// fixed strings. Each Location is refused, then parsed, then refused
 	// again once resolved; no error returned from here names a redirect
 	// target.
-	current := repoURL
+	return walkRedirects(ctx, repoURL, headWithRetry)
+}
+
+// walkRedirects follows start's redirect chain with request making each
+// hop's request — the web probe's HEAD (resolveRedirects), the git
+// endpoint's GET (resolveGitEndpoint) — under the outbound-address rule,
+// and answers the URL the chain ends at and its status. The ONE walker
+// (SR-17; L10 round 2 of 0.29.132: a forge may redirect its git endpoint
+// where its web page does not).
+func walkRedirects(ctx context.Context, start string, request func(ctx context.Context, url string) (*http.Response, error)) (string, int, error) {
+	current := start
 	for hop := 0; ; hop++ {
-		resp, err := headWithRetry(ctx, current)
+		// The outbound-address rule is consulted by the request itself, by
+		// name, on every attempt of every hop (probeWithRetry, 0.29.132):
+		// the first URL and each Location a forge answers with; the dial
+		// pins the checked address (probeDial).
+		resp, err := request(ctx, current)
 		if err != nil {
 			return "", 0, err
 		}
@@ -343,9 +370,48 @@ func isRedirectStatus(code int) bool {
 // whole chain; ResponseHeaderTimeout covers write-to-headers only.
 var probeTransport http.RoundTripper = &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           probeDial, // the outbound-address rule's dial (0.29.132)
+	ForceAttemptHTTP2:     true,      // a custom DialContext would otherwise drop HTTP/2 (L10 round 3)
 	ResponseHeaderTimeout: 15 * time.Second,
 	IdleConnTimeout:       90 * time.Second,
 }
+
+// probeDelays is the probe's retry ladder for a transient network error
+// (a resolver blip, a reset): the attempt, then three retries.
+var probeDelays = []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
+
+// refuseWithRetry is the outbound-address rule by name with the probe's
+// retry ladder for a resolver's transient error — the rule's lookup is
+// the same lookup the dial would make, so it retries the same way
+// (L10 round 3 of 0.29.132: a pre-hop check returned a resolver blip at
+// once, and the ladder below it was never reached). A refusal returns at
+// once. Used by every request of the walker and by the clone of a URL
+// without HTTP redirects (git://, ssh://, SCP).
+func refuseWithRetry(ctx context.Context, url string) error {
+	for attempt, delay := range probeDelays {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		hopCtx, cancel := context.WithTimeout(ctx, probeHopTimeout)
+		err := currentOutboundPolicy().Refuse(hopCtx, url)
+		cancel()
+		if err == nil || errors.Is(err, platform.ErrPrivateAddress) || ctx.Err() != nil {
+			return err
+		}
+		if !isTransientNetError(err) || attempt == len(probeDelays)-1 {
+			return err
+		}
+	}
+	return nil // every attempt returned above; the ladder is never empty
+}
+
+// probeHopTimeout bounds one attempt of a hop: its name resolution, dial
+// and response headers.
+const probeHopTimeout = 15 * time.Second
 
 // headWithRetry issues one HEAD to url on the transport (a redirect
 // response is returned as is, never followed or parsed here), retrying
@@ -358,9 +424,21 @@ var probeTransport http.RoundTripper = &http.Transport{
 // shutdown_grace_seconds of 1..8 and most of the default 10 — at the one
 // probe every consumer shares.
 func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
+	return probeWithRetry(ctx, http.MethodHead, url)
+}
+
+// getDiscarding is the git endpoint's request: a GET whose body (the ref
+// advertisement, megabytes for a large repository) is never read — the
+// walker closes it at once; only the status and Location matter.
+func getDiscarding(ctx context.Context, url string) (*http.Response, error) {
+	return probeWithRetry(ctx, http.MethodGet, url)
+}
+
+// probeWithRetry makes one hop's request with the probe's transport and
+// its transient-error retries.
+func probeWithRetry(ctx context.Context, method, url string) (*http.Response, error) {
 	var lastErr error
-	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
-	for attempt, delay := range delays {
+	for attempt, delay := range probeDelays {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -368,22 +446,36 @@ func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
 			case <-time.After(delay):
 			}
 		}
-		hopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		req, err := http.NewRequestWithContext(hopCtx, http.MethodHead, url, nil)
+		hopCtx, cancel := context.WithTimeout(ctx, probeHopTimeout)
+		// The outbound-address rule, by name, on this attempt (0.29.132): a
+		// refusal ends the probe; a resolver's transient error is retried
+		// on the ladder like a dial's (L10 round 3).
+		if rerr := currentOutboundPolicy().Refuse(hopCtx, url); rerr != nil {
+			cancel()
+			if errors.Is(rerr, platform.ErrPrivateAddress) || ctx.Err() != nil {
+				return nil, rerr
+			}
+			lastErr = rerr
+			if isTransientNetError(rerr) && attempt < len(probeDelays)-1 {
+				continue
+			}
+			return nil, rerr
+		}
+		req, err := http.NewRequestWithContext(hopCtx, method, url, nil)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
 		req.Header.Set("User-Agent", "Aveloxis/1.0")
 		resp, err := probeTransport.RoundTrip(req)
-		cancel() // a HEAD's body is empty; the response is complete
+		cancel() // a HEAD's body is empty; a GET's body is dropped — the walker closes it unread
 		if err != nil {
 			lastErr = err
 			// Only retry on DNS/network errors, not on context cancellation.
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			if isTransientNetError(err) && attempt < len(delays)-1 {
+			if isTransientNetError(err) && attempt < len(probeDelays)-1 {
 				continue // retry
 			}
 			return nil, err

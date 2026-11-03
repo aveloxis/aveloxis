@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -256,3 +257,41 @@ func (d *MissingTrustedProxyDetector) Observe(logger *slog.Logger, r *http.Reque
 // included. One constant so the two processes cannot drift (review round 1
 // of 0.29.113 found the string spelled in each).
 const HSTSValue = "max-age=31536000; includeSubDomains"
+
+// RequestOrigin is the one same-site rule for a state-changing request
+// (the web CSRF guard since 0.29.102; the monitor's prioritize since the
+// 0.29.125 ASVS review, V4.3.3 — moved here so both read one spelling,
+// L18). It reports whether the request's origin — the Origin header, else
+// the Referer's — is this deployment's: the request's Host, or an origin
+// alsoAllowed admits (the web passes its configured SPA origin; nil admits
+// none). A browser sends Origin on every cross-site POST, so a request
+// with neither header is not a cross-site browser request and passes; a
+// Sec-Fetch-Site of cross-site is refused whatever else says, unless
+// alsoAllowed admits its Origin. The origin string comes back for the
+// caller's log.
+//
+// The Host arm compares the host only, the alsoAllowed arm is the caller's
+// (0.29.106 review, W3 — left apart with the reason): behind a reverse
+// proxy the request's own scheme is not knowable here (r.TLS is nil; a
+// forwarded-proto header is only as trustworthy as the proxy), while a
+// configured origin's scheme is known. A plain-http page on the same host
+// name posting into an https deployment is the one case this admits; HSTS
+// closes it.
+func RequestOrigin(r *http.Request, alsoAllowed func(origin string) bool) (string, bool) {
+	allowed := func(origin string) bool { return alsoAllowed != nil && alsoAllowed(origin) }
+	if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") && !allowed(r.Header.Get("Origin")) {
+		return r.Header.Get("Origin"), false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = r.Header.Get("Referer")
+	}
+	if origin == "" {
+		return "", true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return origin, false
+	}
+	return origin, strings.EqualFold(u.Host, r.Host) || allowed(origin)
+}

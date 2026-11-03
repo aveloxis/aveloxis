@@ -106,6 +106,15 @@ func TestAccountSessionsAreListedEndedAndBounded(t *testing.T) {
 	if w := post("/account/email", raw1, url.Values{"email": {"x@example.org"}}); strings.Contains(w.Body.String(), "sign in again") {
 		t.Errorf("a fresh session's address change was asked to sign in again")
 	}
+	// Sign out everywhere needs a recent sign-in too (ASVS V7.5.2, the
+	// 0.29.125 review): the hour-old session is asked to sign in again and
+	// ends nothing.
+	if w := post("/account/sessions/revoke", raw2, url.Values{}); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "sign in again") || !strings.Contains(w.Body.String(), `href="/login?next=%2Faccount"`) {
+		t.Errorf("an old session's sign-out-everywhere = %d; want the account page asking to sign in again\n%s", w.Code, w.Body.String())
+	}
+	if _, err := store.LookupWebSession(ctx, raw1); err != nil {
+		t.Fatalf("an old session's refused sign-out-everywhere must end nothing: %v", err)
+	}
 	// Sign out everywhere: every session of the account ends, this one too.
 	if w := post("/account/sessions/revoke", raw1, url.Values{}); w.Code != http.StatusFound || w.Header().Get("Location") != "/login" {
 		t.Fatalf("POST /account/sessions/revoke = %d → %q; want 302 to /login", w.Code, w.Header().Get("Location"))
@@ -146,6 +155,30 @@ func TestAccountSessionsAreListedEndedAndBounded(t *testing.T) {
 	}
 	if w := get("/admin/users?ok=sessions_ended", adminRaw); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "sessions are ended") || !strings.Contains(w.Body.String(), "End sessions") {
 		t.Errorf("the Users page after a revoke = %d; want the notice and the button\n%s", w.Code, w.Body.String())
+	}
+	// Copilot's seventh review of PR #246 (0.29.129): the administrative
+	// route ending the administrator's OWN account takes the recent-sign-in
+	// rule like the account page's button (the service's rule, both routes):
+	// the hour-old session is refused and ends nothing; the fresh one ends
+	// every session of the account and leaves for the login page.
+	ownRoute := fmt.Sprintf("/admin/users/%d/sessions/revoke", adminID)
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.user_session_tokens SET created_at = $2 WHERE token = $1`, db.HashToken(adminRaw), time.Now().Add(-time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if w := post(ownRoute, adminRaw, url.Values{}); w.Code != http.StatusForbidden || !strings.Contains(strings.ToLower(w.Body.String()), "sign in again") {
+		t.Errorf("an hour-old administrator session ending its own account through the admin route = %d; want 403 asking to sign in again\n%s", w.Code, w.Body.String())
+	}
+	if _, err := store.LookupWebSession(ctx, adminRaw); err != nil {
+		t.Errorf("the refused self-revocation ended the administrator's session anyway: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.user_session_tokens SET created_at = $2 WHERE token = $1`, db.HashToken(adminRaw), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if w := post(ownRoute, adminRaw, url.Values{}); w.Code != http.StatusFound || w.Header().Get("Location") != "/login" {
+		t.Errorf("a fresh administrator session ending its own account = %d → %q; want 302 to /login", w.Code, w.Header().Get("Location"))
+	}
+	if _, err := store.LookupWebSession(ctx, adminRaw); !errors.Is(err, db.ErrNoWebSession) {
+		t.Errorf("the administrator's session survives its own revocation: %v", err)
 	}
 	// The inactivity bound, end to end: the knob's value is the store's,
 	// and a session last used past it is signed out at the gate.

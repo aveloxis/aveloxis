@@ -26,8 +26,9 @@ import (
 //   - data_changed_at, stamped through stampRepoCacheStateSQL, in the same
 //     transaction as the data, by the writers that can run outside the job
 //     (scorecard, scancode snapshot, vulnerability insert/resolve/rescore,
-//     heal-libyear), and by StampRepoDataChanged at the end of a run outside
-//     the queue (`aveloxis collect`). The authoritative list, enforced, is
+//     heal-libyear, and since 0.29.120 the out-of-job writers of the windowed
+//     and contributor answers), and by StampReposChangedOutsideJob at the end
+//     of a run outside the queue (`aveloxis collect`, the drains, the heals). The authoritative list, enforced, is
 //     pageCacheWriters in page_cache_writers_test.go. The completion stamps
 //     above are separate statements that can fail after the data commits
 //     (PR #226 review), so the data writers stamp themselves. A new writer
@@ -75,8 +76,38 @@ func (st RepoCacheState) Fingerprint() string {
 // gone repository is dequeued with its data kept, so a queue stamp missed
 // it. Used, in the same transaction as their data, by every stamping writer
 // (pageCacheWriters in page_cache_writers_test.go is the enforced list) and
-// by StampRepoDataChanged; the caller appends the WHERE clause on repo_id.
+// by StampReposChangedOutsideJob; the caller appends the WHERE clause.
 const stampRepoCacheStateSQL = `UPDATE aveloxis_data.repos SET data_changed_at = NOW()`
+
+// stampLinkedOwnerSQL wraps a conversation-link INSERT (issue_message_ref or
+// pull_request_message_ref, ending in its ON CONFLICT ... DO NOTHING) so the
+// one statement also stamps the cache state of the message's OWNER when
+// another repository owns it. A message is one row for the whole fleet (its
+// platform id), owned by the repository that wrote it first, and the
+// retention series counts it under the owner once per conversation link it
+// has, from any repository: a link repository B writes to a message
+// repository A owns moves A's cached answer, and A's own stamp would come
+// only with its next collection (the insert side of 0.29.130's merge
+// finding; decided as a class, 0.29.131, after Copilot's tenth review of
+// PR #246 on the projection backfill). Only rows the INSERT actually wrote
+// count (RETURNING after DO NOTHING is empty for a conflict), so a
+// re-collection's no-op link moves nobody's state; the link's own
+// repository is left to its job, drain or backfill. The one spelling of a
+// link INSERT: TestEveryConversationLinkInsertStampsTheOwner. The UPDATE
+// row-locks the owner's repos row for the rest of the caller's transaction
+// (the staged processor sends one message per transaction; a cross-link
+// cycle between two processors is a 40P01 their withRetry restarts). A
+// message row's later EDITS by another repository (upsertMessageSQL's
+// DO UPDATE filling cntrb_id on the owner's row) are not stamped: only a
+// link written or deleted is — the owner's own next collection resolves
+// its authors (L10 round 1 of 0.29.131, declined as narrow).
+func stampLinkedOwnerSQL(insert string) string {
+	return `WITH ins AS (` + insert + `
+		RETURNING msg_id, repo_id)
+	` + stampRepoCacheStateSQL + `
+	  FROM ins JOIN aveloxis_data.messages m ON m.msg_id = ins.msg_id
+	 WHERE repos.repo_id = m.repo_id AND m.repo_id <> ins.repo_id`
+}
 
 // RepoCacheStates reads the cache state of each repository in repoIDs. An id
 // with no repos row is absent from the map. One index scan over each
@@ -125,12 +156,28 @@ func (s *PostgresStore) RepoCacheStates(ctx context.Context, repoIDs []int64) (m
 	return out, nil
 }
 
-// StampRepoDataChanged moves one repository's cache state: the stamp for a
-// whole run that writes the repository's data outside the collection queue
-// (the one-shot `aveloxis collect`), whose end no CompleteJob marks.
-func (s *PostgresStore) StampRepoDataChanged(ctx context.Context, repoID int64) error {
-	if _, err := s.pool.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
-		return fmt.Errorf("stamp repository data changed (repo %d): %w", repoID, err)
+// outOfJobStampTimeout bounds StampReposChangedOutsideJob, so a dead
+// database cannot hold the command or drain that ends with it (the bound
+// `collect` used since 0.29.73).
+const outOfJobStampTimeout = 10 * time.Second
+
+// StampReposChangedOutsideJob moves the cache state of repoIDs: the stamp
+// for a run that wrote their data outside the collection queue, whose end no
+// CompleteJob marks — the one-shot `aveloxis collect`, the leftover-staging
+// drain, heal-messages, the mailing-list and Jira drains and the backfill
+// commands (D7, 0.29.120, summary/63). It runs on a context the caller's
+// cancel cannot stop, bounded by outOfJobStampTimeout: an interrupted run has
+// usually written part of its data, and the interrupt is the commonest end
+// of one. The one spelling of that stamp (SR-17): callers only log its error.
+// No repositories is a no-op; a repeated id is stamped once.
+func (s *PostgresStore) StampReposChangedOutsideJob(ctx context.Context, repoIDs []int64) error {
+	if len(repoIDs) == 0 {
+		return nil
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outOfJobStampTimeout)
+	defer cancel()
+	if _, err := s.pool.Exec(sctx, stampRepoCacheStateSQL+` WHERE repo_id = ANY($1::bigint[])`, repoIDs); err != nil {
+		return fmt.Errorf("stamp repository data changed (%d repositories): %w", len(repoIDs), err)
 	}
 	return nil
 }

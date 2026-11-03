@@ -137,7 +137,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"UpsertPRReview":                 {"processor", "staged reviews"},
 	"UpsertIssueEvent":               {"processor", "staged issue events"},
 	"UpsertPREvent":                  {"processor", "staged pull request events"},
-	"UpsertMessageBatch":             {"processor", "staged messages and their bridges"},
+	"UpsertMessageBatch":             {"processor", "staged messages and their bridges; a bridge to a message another repository owns stamps that owner in its statement (stampLinkedOwnerSQL, 0.29.131)"},
 	// Found once the scan read SQL held in package-level constants (A11).
 	"UpsertReviewCommentBatch":          {"processor", "staged inline review comments (staged.go), through upsertMessageSQL"},
 	"ensurePRMetaLinks":                 {"migrate", "migrate's PR meta link backfill"},
@@ -151,7 +151,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"UpsertJiraComment":                 {"drain", "the Jira drain"},
 	"UpsertJiraIssueFromAPI":            {"drain", "the Jira drain; backfill-jira-identities (stamps each registration's repository)"},
 	"UpsertMailingListMessageBody":      {"drain", "the mailing-list drain"},
-	"bridgeEmailToIssueNoRecount":       {"drain", "UpsertJiraComment and BridgeEmailToIssue (the mailing-list drain, the projection backfill)"},
+	"bridgeEmailToIssueNoRecount":       {"drain", "UpsertJiraComment and BridgeEmailToIssue (the mailing-list drain, the projection backfill); a bridge to a message another repository owns stamps that owner in its statement (stampLinkedOwnerSQL, 0.29.131)"},
 	"BackfillSyntheticJiraState":        {"migrate", "stage 10"},
 	"HealAutomationPhantomContributors": {"migrate", "a migration step"},
 	"backfillMsgKinds":                  {"migrate", "stage 1"},

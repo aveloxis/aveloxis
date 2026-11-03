@@ -1554,11 +1554,11 @@ func (s *PostgresStore) UpsertMessageBatch(ctx context.Context, msgs []platform.
 
 			if m.IssueRef != nil {
 				m.IssueRef.MsgID = msgID
-				_, err = tx.Exec(ctx, `
+				_, err = tx.Exec(ctx, stampLinkedOwnerSQL(`
 					INSERT INTO aveloxis_data.issue_message_ref
 						(issue_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
 					VALUES ($1,$2,$3,$4,$5,$6)
-					ON CONFLICT (issue_id, msg_id) DO NOTHING`,
+					ON CONFLICT (issue_id, msg_id) DO NOTHING`),
 					m.IssueRef.IssueID, m.IssueRef.RepoID, msgID,
 					m.IssueRef.PlatformSrcID, m.IssueRef.PlatformNodeID,
 					m.Message.Origin.DataSource,
@@ -1569,11 +1569,11 @@ func (s *PostgresStore) UpsertMessageBatch(ctx context.Context, msgs []platform.
 			}
 			if m.PRRef != nil {
 				m.PRRef.MsgID = msgID
-				_, err = tx.Exec(ctx, `
+				_, err = tx.Exec(ctx, stampLinkedOwnerSQL(`
 					INSERT INTO aveloxis_data.pull_request_message_ref
 						(pull_request_id, repo_id, msg_id, platform_src_id, platform_node_id, data_source)
 					VALUES ($1,$2,$3,$4,$5,$6)
-					ON CONFLICT (pull_request_id, msg_id) DO NOTHING`,
+					ON CONFLICT (pull_request_id, msg_id) DO NOTHING`),
 					m.PRRef.PRID, m.PRRef.RepoID, msgID,
 					m.PRRef.PlatformSrcID, m.PRRef.PlatformNodeID,
 					m.Message.Origin.DataSource,

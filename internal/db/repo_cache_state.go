@@ -79,6 +79,36 @@ func (st RepoCacheState) Fingerprint() string {
 // by StampReposChangedOutsideJob; the caller appends the WHERE clause.
 const stampRepoCacheStateSQL = `UPDATE aveloxis_data.repos SET data_changed_at = NOW()`
 
+// stampLinkedOwnerSQL wraps a conversation-link INSERT (issue_message_ref or
+// pull_request_message_ref, ending in its ON CONFLICT ... DO NOTHING) so the
+// one statement also stamps the cache state of the message's OWNER when
+// another repository owns it. A message is one row for the whole fleet (its
+// platform id), owned by the repository that wrote it first, and the
+// retention series counts it under the owner once per conversation link it
+// has, from any repository: a link repository B writes to a message
+// repository A owns moves A's cached answer, and A's own stamp would come
+// only with its next collection (the insert side of 0.29.130's merge
+// finding; decided as a class, 0.29.131, after Copilot's tenth review of
+// PR #246 on the projection backfill). Only rows the INSERT actually wrote
+// count (RETURNING after DO NOTHING is empty for a conflict), so a
+// re-collection's no-op link moves nobody's state; the link's own
+// repository is left to its job, drain or backfill. The one spelling of a
+// link INSERT: TestEveryConversationLinkInsertStampsTheOwner. The UPDATE
+// row-locks the owner's repos row for the rest of the caller's transaction
+// (the staged processor sends one message per transaction; a cross-link
+// cycle between two processors is a 40P01 their withRetry restarts). A
+// message row's later EDITS by another repository (upsertMessageSQL's
+// DO UPDATE filling cntrb_id on the owner's row) are not stamped: only a
+// link written or deleted is — the owner's own next collection resolves
+// its authors (L10 round 1 of 0.29.131, declined as narrow).
+func stampLinkedOwnerSQL(insert string) string {
+	return `WITH ins AS (` + insert + `
+		RETURNING msg_id, repo_id)
+	` + stampRepoCacheStateSQL + `
+	  FROM ins JOIN aveloxis_data.messages m ON m.msg_id = ins.msg_id
+	 WHERE repos.repo_id = m.repo_id AND m.repo_id <> ins.repo_id`
+}
+
 // RepoCacheStates reads the cache state of each repository in repoIDs. An id
 // with no repos row is absent from the map. One index scan over each
 // table's primary key.

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,10 +245,15 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		if existingURL != "" && existingURL != cloneURL {
 			// The git endpoint moved (or is spelled with .git where the
 			// stored URL is not): the fetch below reaches origin, so origin
-			// is pointed at the resolved URL first.
+			// is pointed at the resolved URL first — the one place on this
+			// path where a URL reaches git's argv, validated as the clone's
+			// is (round 5); the fetch itself names only origin.
+			if err := validateGitURL(cloneURL); err != nil {
+				return fmt.Errorf("unsafe git URL rejected: %w", err)
+			}
 			f.logger.Info("origin URL updated to the resolved git endpoint", "path", path,
 				"from", platform.RedactURLUserinfo(existingURL), "to", platform.RedactURLUserinfo(cloneURL))
-			if out, serr := exec.CommandContext(ctx, "git", "-C", path, "remote", "set-url", "origin", cloneURL).CombinedOutput(); serr != nil {
+			if out, serr := exec.CommandContext(ctx, "git", "-C", path, "remote", "set-url", "--", "origin", cloneURL).CombinedOutput(); serr != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -376,6 +382,9 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, cloneURL, path
 	if err := validateGitURL(gitURL); err != nil {
 		return fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
+	if err := validateGitURL(cloneURL); err != nil { // the resolved URL is what git is given (L4)
+		return fmt.Errorf("unsafe git URL rejected: %w", err)
+	}
 	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "clone_url", platform.RedactURLUserinfo(cloneURL), "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -389,13 +398,6 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, cloneURL, path
 	}
 	return nil
 }
-
-// gitCloneEnv returns environment variables for git clone commands:
-//   - GIT_LFS_SKIP_SMUDGE=1: prevents LFS smudge filter failures when remote
-//     objects are missing (common with free GitHub LFS quota).
-//   - GIT_TERMINAL_PROMPT=0: prevents macOS keychain prompts
-//     (errSecInteractionNotAllowed) when running as a background process.
-//
 
 // gitNoRedirects keeps git from following a redirect of its own (0.29.132,
 // L10 round 1): git's http.followRedirects defaults to "initial", so a
@@ -419,28 +421,50 @@ const gitUploadPackRefs = "/info/refs?service=git-upload-pack"
 // it) with a 301 that the web page's HEAD never shows, so with git's own
 // redirects off every GitLab clone and fetch failed (L10 round 2 of
 // 0.29.132, verified live). Other schemes (git://, ssh://, SCP) have no
-// redirects: the rule by name, the URL as given. A walk that fails for a
-// reason other than the rule (the host down, a timeout, a status git will
-// explain better) answers the stored URL: git's own error is the honest
-// one, and nothing was reached that the rule refused.
+// redirects: the rule by name, the URL as given. A walk the forge answered
+// definitively — 2xx, or a 4xx git will explain better (401, 403, 404,
+// 410) — resolves; a walk that failed (the host down, a timeout, a resolver
+// blip past the ladder) or ended in a 429 or 5xx is errGitEndpointUnavailable:
+// the job fails without the clone being touched (L10 round 4: a probe-side
+// blip on GitLab answered the bare spelling, repointed a healthy clone's
+// origin at it, failed the fetch on the 301 and deleted the bare clone).
 func resolveGitEndpoint(ctx context.Context, gitURL string) (string, error) {
 	lower := strings.ToLower(gitURL)
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		if err := refuseWithRetry(ctx, gitURL); err != nil {
-			return "", fmt.Errorf("clone refused: %w", err)
+			if errors.Is(err, platform.ErrPrivateAddress) {
+				return "", fmt.Errorf("clone refused: %w", err)
+			}
+			return "", fmt.Errorf("%w: %w", errGitEndpointUnavailable, err) // a resolver failure past the ladder, a cancel
 		}
 		return gitURL, nil
 	}
-	final, _, err := walkRedirects(ctx, strings.TrimRight(gitURL, "/")+gitUploadPackRefs, getDiscarding)
+	final, status, err := walkRedirects(ctx, strings.TrimRight(gitURL, "/")+gitUploadPackRefs, getDiscarding)
 	if errors.Is(err, platform.ErrPrivateAddress) {
 		return "", fmt.Errorf("clone refused: %w", err)
 	}
-	if err != nil || !strings.HasSuffix(final, gitUploadPackRefs) {
-		return gitURL, nil
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errGitEndpointUnavailable, err)
+	}
+	if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+		return "", fmt.Errorf("%w: status %d", errGitEndpointUnavailable, status)
+	}
+	if !strings.HasSuffix(final, gitUploadPackRefs) {
+		return gitURL, nil // a chain that ended elsewhere: the stored URL, and git's own error
 	}
 	return strings.TrimSuffix(final, gitUploadPackRefs), nil
 }
 
+// errGitEndpointUnavailable is resolveGitEndpoint's answer when the forge
+// did not say where its git endpoint is: nothing is cloned, fetched or
+// changed, and the job fails as a clone would have.
+var errGitEndpointUnavailable = errors.New("git endpoint unavailable (not refused): the clone is left as it is; the job records it (a forge repository) or fails and retries (git-only)")
+
+// gitCloneEnv returns environment variables for git clone commands:
+//   - GIT_LFS_SKIP_SMUDGE=1: prevents LFS smudge filter failures when remote
+//     objects are missing (common with free GitHub LFS quota).
+//   - GIT_TERMINAL_PROMPT=0: prevents macOS keychain prompts
+//     (errSecInteractionNotAllowed) when running as a background process.
 func gitCloneEnv() []string {
 	env := os.Environ()
 	env = append(env, "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0")

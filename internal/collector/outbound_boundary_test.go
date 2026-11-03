@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -205,8 +206,49 @@ func TestEnsureCloneAcceptsTheResolvedSpellingOfOrigin(t *testing.T) {
 	var logs bytes.Buffer
 	f := &FacadeCollector{logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	_ = f.ensureClone(context.Background(), srv.URL+"/o/r", dir) // the fetch itself fails against the stub; the verdict is in the log
-	if strings.Contains(logs.String(), "stale clone detected") {
-		t.Fatalf("origin at the resolved spelling is the same repository, not a stale clone: %s", logs.String())
+	if out := logs.String(); strings.Contains(out, "stale clone detected") || strings.Contains(out, "origin URL updated") || !strings.Contains(out, "fetching updates") {
+		t.Fatalf("origin at the resolved spelling is the same repository: fetched, not re-pointed, not re-cloned: %s", out)
+	}
+}
+
+// A transient answer at the git endpoint (429, 5xx, a walk that failed)
+// fails the job and touches nothing: no origin re-pointing, no fetch, no
+// deletion (L10 round 4: a probe-side blip on GitLab answered the bare
+// spelling, repointed a healthy clone's origin, failed the fetch on the
+// 301 and deleted the bare clone).
+func TestEnsureCloneLeavesTheCloneAloneWhenTheGitEndpointIsUnavailable(t *testing.T) {
+	// 0 = a walk that errors (a Location of a scheme the transport cannot
+	// speak: an immediate error, not a transient one, so no ladder).
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusBadGateway, 0} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if status == 0 {
+				http.Redirect(w, r, "ftp://127.0.0.1/x/info/refs?service=git-upload-pack", http.StatusFound)
+				return
+			}
+			w.WriteHeader(status)
+		}))
+		dir := filepath.Join(t.TempDir(), "clone")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string]string{"HEAD": "ref: refs/heads/main\n", "config": "[remote \"origin\"]\n\turl = " + srv.URL + "/o/r.git\n"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var logs bytes.Buffer
+		f := &FacadeCollector{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+		err := f.ensureClone(context.Background(), srv.URL+"/o/r", dir)
+		srv.Close()
+		if !errors.Is(err, errGitEndpointUnavailable) {
+			t.Fatalf("status %d: want errGitEndpointUnavailable, got %v", status, err)
+		}
+		if out := logs.String(); strings.Contains(out, "origin URL updated") || strings.Contains(out, "fetch failed") || strings.Contains(out, "fetching updates") {
+			t.Fatalf("status %d: the clone must not be touched: %s", status, out)
+		}
+		if _, serr := os.Stat(filepath.Join(dir, "HEAD")); serr != nil {
+			t.Fatalf("status %d: the bare clone was removed", status)
+		}
 	}
 }
 
@@ -258,9 +300,13 @@ func TestScancodeCloneRefusesAPrivateHost(t *testing.T) {
 
 func TestRunScorecardRefusesAPrivateHost(t *testing.T) {
 	strictPolicy(t)
+	argsLog, _ := installFakeScorecard(t, "exit 3") // a binary on PATH (CI has none; round 5): the rule runs after the installed check
 	_, err := RunScorecard(context.Background(), nil, 1, ScorecardOptions{RepoURL: "https://172.16.0.4/o/r"}, quiet())
 	if !errors.Is(err, platform.ErrPrivateAddress) {
-		t.Fatalf("want the rule's refusal before scorecard is looked up, got %v", err)
+		t.Fatalf("want the rule's refusal, got %v", err)
+	}
+	if _, serr := os.Stat(argsLog); serr == nil {
+		t.Fatal("the refusal must come before any scorecard subprocess")
 	}
 }
 
@@ -342,6 +388,19 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 		}
 	}
 	srctest.MinCount(t, "repository-host boundaries", sites, 5)
+	// Every caller of the walker hands it a request that consults the rule
+	// (probeWithRetry): headWithRetry or getDiscarding.
+	src := srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1))
+	calls := strings.Count(src, "walkRedirects(") - 1                                                                   // minus its declaration
+	named := regexp.MustCompile(`(?m)walkRedirects\(ctx, .*?, (headWithRetry|getDiscarding)\)$`).FindAllString(src, -1) // the request is the call's last argument, by name
+	if calls != len(named) || calls < 2 {
+		t.Errorf("%d walkRedirects calls, %d of them handing it headWithRetry or getDiscarding by name — a closure or another request would bypass the rule's consult", calls, len(named))
+	}
+	for _, fn := range []string{"func headWithRetry(", "func getDiscarding("} {
+		if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", fn)), "probeWithRetry(") {
+			t.Errorf("%s does not go through probeWithRetry", fn)
+		}
+	}
 	// freshClone is reached only through ensureClone, which resolved the
 	// URL it clones.
 	pkg := srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1))
@@ -356,18 +415,22 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 	}
 }
 
-// The go-module closure resolves through the public proxy only (L10 round
-// 2): a `require` or `replace` naming a private host must not reach it
-// from this host through GOPROXY's `direct`.
+// The go-module closure resolves through the configured module proxies
+// only (L10 rounds 2 and 4): a `require` or `replace` naming a private host
+// must not reach it from this host through GOPROXY's `direct`; the checksum
+// settings are the operator's (integrity, not egress).
 func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne("))
-	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY"))`, `"GONOPROXY="`, `"GOPRIVATE="`, `"GONOSUMDB="`} {
+	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY"))`, `"GONOPROXY="`, `"GOPRIVATE="`} {
 		if !strings.Contains(body, kv) {
 			t.Errorf("the go-module environment lacks %s", kv)
 		}
 	}
 	if strings.Contains(body, ",direct") || strings.Contains(body, "|direct") {
 		t.Error("GOPROXY must not fall through to direct")
+	}
+	if strings.Contains(body, `"GONOSUMDB="`) || strings.Contains(body, `"GOSUMDB=`) {
+		t.Error("the checksum settings stay the operator's")
 	}
 }
 
@@ -391,6 +454,7 @@ func TestGoProxyWithoutDirect(t *testing.T) {
 		"https://athens.corp|direct":           "https://athens.corp",
 		"https://a.corp,https://b.corp,direct": "https://a.corp,https://b.corp",
 		"direct,https://a.corp":                "https://a.corp",
+		"https://x,direct|https://y":           "https://x|https://y", // the separator after the dropped entry survives: x's non-404 error falls through to y (a decision, round 4)
 		"off":                                  "off",
 	} {
 		if got := goProxyWithoutDirect(in); got != want {

@@ -388,7 +388,6 @@ var probeDelays = []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.
 // once. Used by every request of the walker and by the clone of a URL
 // without HTTP redirects (git://, ssh://, SCP).
 func refuseWithRetry(ctx context.Context, url string) error {
-	var lastErr error
 	for attempt, delay := range probeDelays {
 		if attempt > 0 {
 			select {
@@ -403,12 +402,11 @@ func refuseWithRetry(ctx context.Context, url string) error {
 		if err == nil || errors.Is(err, platform.ErrPrivateAddress) || ctx.Err() != nil {
 			return err
 		}
-		lastErr = err
 		if !isTransientNetError(err) || attempt == len(probeDelays)-1 {
 			return err
 		}
 	}
-	return lastErr
+	return nil // every attempt returned above; the ladder is never empty
 }
 
 // probeHopTimeout bounds one attempt of a hop: its name resolution, dial

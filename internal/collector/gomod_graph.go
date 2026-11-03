@@ -158,12 +158,15 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// cloned go.mod names, the reachability the outbound-address rule
 	// closes elsewhere. The operator's own proxy list is kept (a host
 	// behind a corporate module proxy keeps resolving through it; round 3)
-	// with `direct` removed; GONOPROXY/GOPRIVATE/GONOSUMDB are cleared so
-	// an operator's private-module settings do not reopen the path for a
-	// stranger's go.mod. A module no proxy serves is the WARN arm below
-	// (it used to succeed through `direct`).
+	// with `direct` removed; GONOPROXY/GOPRIVATE are cleared so an
+	// operator's private-module settings do not reopen the path for a
+	// stranger's go.mod. GOSUMDB/GONOSUMDB stay as the operator set them:
+	// they govern integrity, not egress (the checksum database is never the
+	// repository host), and clearing them would fail a module only the
+	// operator's own proxy serves (round 4). A module no proxy serves is
+	// the WARN arm below (it used to succeed through `direct`).
 	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOTOOLCHAIN=local",
-		"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY")), "GONOPROXY=", "GOPRIVATE=", "GONOSUMDB=")
+		"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY")), "GONOPROXY=", "GOPRIVATE=")
 
 	run := func(args ...string) (string, bool) {
 		cmd := exec.CommandContext(ctx, goBin, args...)

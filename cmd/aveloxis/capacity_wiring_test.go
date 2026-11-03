@@ -20,6 +20,7 @@ import (
 // word reaches every store the process opens, through loadConfig — the
 // one door every command takes. A missing file means WEB for every quota.
 func TestCapacityWordsReachEveryStore(t *testing.T) {
+	restoreOutboundPolicy(t) // loadConfig installs the configuration's outbound policy for the process
 	t.Cleanup(func() { db.SetProcessCapacitySources(nil) })
 	p := filepath.Join(t.TempDir(), "aveloxis.json")
 	if err := os.WriteFile(p, []byte(`{"capacity": {"repos_per_account": "OFF", "requests_per_hour": "DEFAULT"}}`), 0o600); err != nil {

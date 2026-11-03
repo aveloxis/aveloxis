@@ -46,6 +46,7 @@ func TestRefreshViewsSetValues(t *testing.T) {
 // before; a file that exists but is invalid must never — it exits. The
 // distinction is config.ErrNotFound, the one sentinel Load wraps for it.
 func TestLoadConfigTellsMissingFromInvalid(t *testing.T) {
+	restoreOutboundPolicy(t) // loadConfig installs the configuration's outbound policy for the process
 	dir := t.TempDir()
 	if _, err := config.Load(filepath.Join(dir, "absent.json")); !errors.Is(err, config.ErrNotFound) {
 		t.Errorf("a missing file must be config.ErrNotFound, got %v", err)

@@ -4,13 +4,11 @@
 package scheduler
 
 import (
-	"context"
-	"net/netip"
 	"os"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/collector"
-	"github.com/aveloxis/aveloxis/internal/platform"
+	"github.com/aveloxis/aveloxis/internal/outboundtest"
 	"github.com/aveloxis/aveloxis/internal/testdb"
 	"github.com/aveloxis/aveloxis/internal/testdb/prepare"
 )
@@ -20,24 +18,12 @@ import (
 // (migrated, bootstrap admin signed up) before any test, checked with the
 // data-verify battery after green tests, and dropped (internal/testdb), so
 // rows an earlier or concurrent run left behind can never reach them.
-// The tests of this package probe and clone loopback servers: the
-// outbound-address rule (0.29.132) trusts loopback here through the same
-// allowlist an operator would write, and resolves names deterministically
-// (localhost to loopback, every other name to a TEST-NET address) so a
-// fixture naming github.com or gitlab.com needs no DNS (Copilot's
-// thirteenth review of PR #246: the rule's preflight made the fake-scorecard
-// tests resolve for real). A test of the rule itself sets its own policy and
+// The tests of this package probe, clone or scan loopback servers: the
+// outbound-address rule (0.29.132) trusts loopback here and resolves names
+// deterministically (internal/outboundtest, the one owner) so no test
+// resolves for real. A test of the rule itself sets its own policy and
 // restores this one.
 func TestMain(m *testing.M) {
-	loopback, err := platform.NewOutboundPolicy([]string{"127.0.0.0/8", "::1/128"})
-	if err != nil {
-		panic(err)
-	}
-	collector.SetOutboundPolicy(loopback.WithResolver(func(_ context.Context, host string) ([]netip.Addr, error) {
-		if host == "localhost" {
-			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
-		}
-		return []netip.Addr{netip.MustParseAddr("203.0.113.1")}, nil
-	}))
+	collector.SetOutboundPolicy(outboundtest.Policy())
 	os.Exit(testdb.Main(m, prepare.Deployment, prepare.Verify))
 }

@@ -310,9 +310,11 @@ func TestOutboundPolicyDialContextPinsTheCheckedAddress(t *testing.T) {
 	if _, err := byName.DialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); !errors.Is(err, ErrPrivateAddress) {
 		t.Errorf("the literal address is not the trusted name: refused as loopback, got %v", err)
 	}
-	meta := policy(t, "meta.test")
-	meta.lookup = fakeLookup(map[string][]string{"meta.test": {"169.254.169.254"}})
-	if _, err := meta.DialContext(context.Background(), "tcp", net.JoinHostPort("meta.test", strconv.Itoa(port))); !errors.Is(err, ErrLinkLocalAddress) {
-		t.Errorf("a trusted name resolving link-local is refused at the dial too, got %v", err)
+	for name, answer := range map[string]string{"meta.test": "169.254.169.254", "meta6.test": "fe80::1"} {
+		meta := policy(t, name)
+		meta.lookup = fakeLookup(map[string][]string{name: {answer}})
+		if _, err := meta.DialContext(context.Background(), "tcp", net.JoinHostPort(name, strconv.Itoa(port))); !errors.Is(err, ErrLinkLocalAddress) {
+			t.Errorf("a trusted name resolving link-local (%s) is refused at the dial too, got %v", answer, err)
+		}
 	}
 }

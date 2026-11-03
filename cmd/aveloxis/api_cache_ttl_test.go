@@ -122,6 +122,7 @@ func TestComponentLogsAreCreatedForTheOwnerAlone(t *testing.T) {
 // database password, the OAuth client secrets and the forge keys; a file
 // other users can read is reported at every start.
 func TestLoadConfigWarnsWhenOthersCanReadTheFile(t *testing.T) {
+	restoreOutboundPolicy(t) // loadConfig installs the configuration's outbound policy for the process
 	for _, c := range []struct {
 		mode os.FileMode
 		warn bool

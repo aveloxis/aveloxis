@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/outboundtest"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -80,7 +81,7 @@ func TestRedirectProbeRefusesARedirectToAPrivateHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	prev := currentOutboundPolicy()
-	SetOutboundPolicy(byRange.WithResolver(testOutboundResolver))
+	SetOutboundPolicy(byRange.WithResolver(outboundtest.Resolve))
 	t.Cleanup(func() { SetOutboundPolicy(prev) })
 	_, _, err = ResolveRedirectTarget(context.Background(), srv.URL+"/o/r")
 	if !errors.Is(err, platform.ErrPrivateAddress) {
@@ -137,7 +138,7 @@ func TestCloneResolvesTheGitEndpointsRedirectUnderTheRule(t *testing.T) {
 	// the hop.
 	byRange, _ := platform.NewOutboundPolicy([]string{"127.0.0.1"})
 	prev := currentOutboundPolicy()
-	SetOutboundPolicy(byRange.WithResolver(testOutboundResolver))
+	SetOutboundPolicy(byRange.WithResolver(outboundtest.Resolve))
 	t.Cleanup(func() { SetOutboundPolicy(prev) })
 	hits = nil
 	if _, err := resolveGitEndpoint(ctx, srv.URL+"/moved"); !errors.Is(err, platform.ErrPrivateAddress) {

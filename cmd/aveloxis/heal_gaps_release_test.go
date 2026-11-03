@@ -493,6 +493,7 @@ func TestGapHealFleetCompletes(t *testing.T) {
 // RunE calls after setup (runGapHeal) is driven at runtime by the TestGapHeal*
 // tests.
 func TestHealCollectionGapsWiring(t *testing.T) {
+	restoreOutboundPolicy(t) // loadConfig installs the configuration's outbound policy for the process
 	norm := func(s string) string { return srctest.NormalizeWS(srctest.StripGoComments(s)) }
 	runSrc := srctest.Read(t, "cmd/aveloxis/heal_collection_gaps_run.go")
 	filler := norm(srctest.FuncBody(t, runSrc, "func collectorGapFiller("))

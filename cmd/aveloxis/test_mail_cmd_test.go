@@ -32,6 +32,7 @@ func TestTestMailCmdRegistered(t *testing.T) {
 }
 
 func TestTestMailCmdCallsValidateAndSend(t *testing.T) {
+	restoreOutboundPolicy(t) // loadConfig installs the configuration's outbound policy for the process
 	src, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)

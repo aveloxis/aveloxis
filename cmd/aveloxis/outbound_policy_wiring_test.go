@@ -4,6 +4,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,4 +57,34 @@ func TestImportFromAugurConsultsTheOutboundRule(t *testing.T) {
 	if !strings.Contains(arm, "errors.Is(err, platform.ErrPrivateAddress)") || !strings.Contains(arm, "failed++") {
 		t.Error("runImportFromAugur must count a non-refusal error from the rule as a failure, not a skip")
 	}
+}
+
+// Every test body that runs loadConfig restores the package's outbound
+// policy (loadConfig installs the configuration's for the process).
+func TestEveryLoadConfigTestRestoresTheOutboundPolicy(t *testing.T) {
+	dir := filepath.Join(srctest.Root(t), "cmd", "aveloxis")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for fn, body := range srctest.FuncParts(t, srctest.StripGoComments(string(b))) {
+			if !strings.Contains(body, "loadConfig(") || fn == "restoreOutboundPolicy" || fn == "TestEveryLoadConfigTestRestoresTheOutboundPolicy" || fn == "TestLoadConfigWiresTheOutboundPolicy" {
+				continue // the helper, this pin and the source pin name the call without running it
+			}
+			sites++
+			if !strings.Contains(body, "restoreOutboundPolicy(t)") {
+				t.Errorf("%s: %s runs loadConfig without restoreOutboundPolicy(t)", e.Name(), fn)
+			}
+		}
+	}
+	srctest.MinCount(t, "tests running loadConfig", sites, 4)
 }

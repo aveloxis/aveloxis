@@ -41,6 +41,7 @@ var names = map[string][]string{
 	"v6ll.example":    {"fe80::1"},
 	"mapped.example":  {"::ffff:10.9.9.9"},
 	"localhost":       {"127.0.0.1", "::1"},
+	"meta6.example":   {"2002:a9fe:a9fe::1"}, // 6to4 of 169.254.169.254
 	"six.example":     {"2001:db8::7"},
 }
 
@@ -144,6 +145,21 @@ func TestOutboundPolicyTrustsConfiguredHostsAndRanges(t *testing.T) {
 		if err := p.Refuse(ctx, u); !errors.Is(err, ErrPrivateAddress) {
 			t.Errorf("%s: want a refusal, got %v", u, err)
 		}
+	}
+	// A trusted name is resolved to refuse link-local alone (Copilot's
+	// thirteenth review): its private addresses are the operator's trust,
+	// the metadata address is nobody's.
+	byName := policy(t, "meta.example", "v6ll.example", "meta6.example", "gitlab.internal", "nowhere.example")
+	for _, u := range []string{"https://meta.example/o/r", "https://v6ll.example/o/r", "https://meta6.example/o/r"} {
+		if err := byName.Refuse(ctx, u); !errors.Is(err, ErrLinkLocalAddress) {
+			t.Errorf("%s: a trusted name resolving link-local is refused, got %v", u, err)
+		}
+	}
+	if err := byName.Refuse(ctx, "https://gitlab.internal/g/p"); err != nil {
+		t.Errorf("a trusted name's private address is the operator's trust, got %v", err)
+	}
+	if err := byName.Refuse(ctx, "https://nowhere.example/o/r"); err == nil || errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("a trusted name that does not resolve is the resolver's error, got %v", err)
 	}
 	if got, want := strings.Join(p.Allow(), " "), "gitlab.internal 100.64.3.4/32 192.168.0.0/16 fd00::/8"; got != want {
 		t.Errorf("Allow() = %q, want %q", got, want)
@@ -285,11 +301,18 @@ func TestOutboundPolicyDialContextPinsTheCheckedAddress(t *testing.T) {
 		t.Errorf("a name with one private answer is refused at the dial, got %v", err)
 	}
 	byName := policy(t, "local.test")
-	byName.lookup = fakeLookup(map[string][]string{}) // a trusted name is not resolved by the policy
-	if _, err := byName.DialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err != nil {
-		// the literal address is not the trusted name: resolved (literal) and refused as loopback
-		if !errors.Is(err, ErrPrivateAddress) {
-			t.Errorf("got %v", err)
-		}
+	byName.lookup = fakeLookup(map[string][]string{"local.test": {"127.0.0.1"}})
+	conn, err = byName.DialContext(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("a trusted name's loopback address is the operator's trust: %v", err)
+	}
+	conn.Close()
+	if _, err := byName.DialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); !errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("the literal address is not the trusted name: refused as loopback, got %v", err)
+	}
+	meta := policy(t, "meta.test")
+	meta.lookup = fakeLookup(map[string][]string{"meta.test": {"169.254.169.254"}})
+	if _, err := meta.DialContext(context.Background(), "tcp", net.JoinHostPort("meta.test", strconv.Itoa(port))); !errors.Is(err, ErrLinkLocalAddress) {
+		t.Errorf("a trusted name resolving link-local is refused at the dial too, got %v", err)
 	}
 }

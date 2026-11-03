@@ -216,29 +216,58 @@ func RepositoryHost(rawURL string) (string, error) {
 }
 
 // RefuseHost is Refuse for a bare host (a name or an address, with or
-// without a port). A trusted name is not resolved: the operator trusts the
-// name as written. Otherwise every address the name resolves to is checked
-// — a name that resolves to one private address among public ones is
-// refused, since the connection may land on either.
+// without a port). Every address the name resolves to is checked — a name
+// that resolves to one private address among public ones is refused, since
+// the connection may land on either. A trusted name's addresses are the
+// operator's trust, checked for link-local alone: "never reached" holds
+// for a trusted name too (Copilot's thirteenth review of PR #246: a trusted
+// name was not resolved at all, so one resolving to the metadata address
+// reached it).
 func (p *OutboundPolicy) RefuseHost(ctx context.Context, host string) error {
 	name := strings.ToLower(strings.TrimSuffix(host, "."))
 	if h, _, err := net.SplitHostPort(name); err == nil {
 		name = h
 	}
 	name = strings.Trim(name, "[]")
-	if p != nil {
-		if _, ok := p.hosts[name]; ok {
-			return nil
-		}
-	}
+	_, err := p.checkedAddrs(ctx, name)
+	return err
+}
+
+// checkedAddrs resolves name and answers the addresses the policy permits
+// the connection to reach, or the refusal: every address is classified; a
+// trusted name's are refused for link-local only.
+func (p *OutboundPolicy) checkedAddrs(ctx context.Context, name string) ([]netip.Addr, error) {
 	addrs, err := p.resolve(ctx, name)
 	if err != nil {
-		return fmt.Errorf("resolving %s: %w", name, err)
+		return nil, fmt.Errorf("resolving %s: %w", name, err)
+	}
+	trusted := false
+	if p != nil {
+		_, trusted = p.hosts[name]
 	}
 	for _, a := range addrs {
-		if err := p.refuseAddr(a); err != nil {
-			return fmt.Errorf("%s (%s): %w", name, a, err)
+		var err error
+		if trusted {
+			err = refuseLinkLocal(a)
+		} else {
+			err = p.refuseAddr(a)
 		}
+		if err != nil {
+			return nil, fmt.Errorf("%s (%s): %w", name, a, err)
+		}
+	}
+	return addrs, nil
+}
+
+// refuseLinkLocal is the one check a trusted name's address still faces
+// (an embedded IPv4 counts as the address it carries).
+func refuseLinkLocal(a netip.Addr) error {
+	a = a.Unmap().WithZone("")
+	if inner, ok := embeddedIPv4(a); ok {
+		a = inner
+	}
+	if a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+		return ErrLinkLocalAddress
 	}
 	return nil
 }
@@ -348,26 +377,17 @@ func (p *OutboundPolicy) trusted(a netip.Addr) bool {
 // DialContext is a net.Dialer's DialContext under the rule: the address is
 // resolved, each candidate is checked, and the connection is made to a
 // permitted candidate — so what was checked is what is dialed (no DNS
-// rebinding between the two). A trusted name dials as it is.
+// rebinding between the two). A trusted name's candidates are checked for
+// link-local alone, and dialed the same way.
 func (p *OutboundPolicy) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
 	}
 	name := strings.ToLower(strings.TrimSuffix(host, "."))
-	if p != nil {
-		if _, ok := p.hosts[name]; ok {
-			return p.dial().DialContext(ctx, network, address)
-		}
-	}
-	addrs, err := p.resolve(ctx, name)
+	addrs, err := p.checkedAddrs(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("resolving %s: %w", name, err)
-	}
-	for _, a := range addrs {
-		if err := p.refuseAddr(a); err != nil {
-			return nil, fmt.Errorf("%s (%s): %w", name, a, err)
-		}
+		return nil, err
 	}
 	var last error
 	for _, a := range addrs {

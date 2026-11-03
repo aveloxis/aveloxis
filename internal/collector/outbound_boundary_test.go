@@ -453,7 +453,7 @@ func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func goModuleEnv("))
 	// GONOSUMDB is passed as its EFFECTIVE value (the go command derives it
 	// from GOPRIVATE, which is overridden); GOSUMDB is never touched.
-	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(proxy)`, `"GONOPROXY="+goNoModule`, `"GOPRIVATE="+goNoModule`, `"GONOSUMDB="+noSumDB`, `"env", "GOPROXY", "GONOSUMDB"`} {
+	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(proxy)`, `"GONOPROXY="+goNoModule`, `"GOPRIVATE="+goNoModule`, `"GONOSUMDB="+noSumDB`, `goEnvValues(ctx, goBin, "GOPROXY", "GONOSUMDB")`} {
 		if !strings.Contains(body, kv) {
 			t.Errorf("the go-module environment lacks %s", kv)
 		}
@@ -464,14 +464,18 @@ func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 	if strings.Contains(body, `"GOSUMDB=`) {
 		t.Error("GOSUMDB stays the operator's")
 	}
-	// The probe runs as GoBinDir's does: the host's toolchain (a cwd go.mod's
-	// toolchain line must not start a download) and the process group
-	// killed on stop (TestGoBinDirIgnoresTheCwdModulesToolchain drives the
-	// same shape).
+	// The probe is goEnvValues, the one `go env` spelling: the host's
+	// toolchain (a cwd go.mod's toolchain line must not start a download)
+	// and the process group killed on stop — driven for GoBinDir by
+	// TestGoBinDirIgnoresTheCwdModulesToolchain, the same helper.
+	helper := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func goEnvValues("))
 	for _, want := range []string{`probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")`, "groupKilled(probe)"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("goModuleEnv's go env probe lacks %s", want)
+		if !strings.Contains(helper, want) {
+			t.Errorf("goEnvValues lacks %s", want)
 		}
+	}
+	if n := strings.Count(srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1)), `"env"`); n != 1 {
+		t.Errorf("the package spells a go env probe %d times; goEnvValues is the one", n)
 	}
 }
 

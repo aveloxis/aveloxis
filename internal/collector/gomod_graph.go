@@ -296,21 +296,21 @@ func goProxyWithoutDirect(list string) string {
 // unchanged in effect — they govern integrity, not egress (the checksum
 // database is never the repository host; round 4). A module no proxy serves
 // is the WARN arm in goModGraphOne (it used to succeed through `direct`).
-// The probe runs as GoBinDir's does: the host's toolchain, the process
-// group killed on stop; a failed probe falls back to this process's
-// environment, logged (everything that errors is logged).
+// The probe is GoBinDir's (goEnvValues, the one spelling); a failed probe,
+// or one that does not answer as it should, falls back to this process's
+// environment, logged (everything that errors is logged) unless the
+// context was cancelled.
 func goModuleEnv(ctx context.Context, goBin string, logger *slog.Logger) []string {
 	proxy, noSumDB := os.Getenv("GOPROXY"), os.Getenv("GONOSUMDB")
-	probe := exec.CommandContext(ctx, goBin, "env", "GOPROXY", "GONOSUMDB")
-	groupKilled(probe)
-	probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	if out, err := probe.Output(); err == nil {
-		if lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); len(lines) == 2 {
-			proxy, noSumDB = strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]) // the effective values: the environment, else the saved file, else the default
-		}
-	} else if ctx.Err() == nil {
+	values, err := goEnvValues(ctx, goBin, "GOPROXY", "GONOSUMDB")
+	if err == nil {
+		proxy, noSumDB = strings.TrimSpace(values[0]), strings.TrimSpace(values[1]) // the effective values: the environment, else the saved file, else the default
+	}
+	// A stop during the probe is not a failure: the closure's commands below
+	// stop the same way.
+	if err != nil && !errors.Is(err, context.Canceled) {
 		logger.Warn("go env probe failed; the go-module closure runs on this process's GOPROXY and GONOSUMDB (a value saved with go env -w is not seen)",
-			"error", execErr(ctx, err), "stderr", exitStderr(err))
+			"error", err)
 	}
 	if noSumDB == "" {
 		noSumDB = goNoModule // nothing was exempt from the checksum database; an empty value would derive from the overridden GOPRIVATE

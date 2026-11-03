@@ -156,12 +156,14 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// `replace` naming a host the proxy answers 404/410 for fell through to
 	// `direct` — a GET and a git ls-remote from this host to any address the
 	// cloned go.mod names, the reachability the outbound-address rule
-	// closes elsewhere. The public proxy serves every public module;
-	// GONOPROXY/GOPRIVATE/GONOSUMDB are cleared so an operator's own
-	// private-module settings do not reopen the path for a stranger's
-	// go.mod. A module the proxy lacks is the WARN arm below, as before.
+	// closes elsewhere. The operator's own proxy list is kept (a host
+	// behind a corporate module proxy keeps resolving through it; round 3)
+	// with `direct` removed; GONOPROXY/GOPRIVATE/GONOSUMDB are cleared so
+	// an operator's private-module settings do not reopen the path for a
+	// stranger's go.mod. A module no proxy serves is the WARN arm below
+	// (it used to succeed through `direct`).
 	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOTOOLCHAIN=local",
-		"GOPROXY=https://proxy.golang.org", "GONOPROXY=", "GOPRIVATE=", "GONOSUMDB=")
+		"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY")), "GONOPROXY=", "GOPRIVATE=", "GONOSUMDB=")
 
 	run := func(args ...string) (string, bool) {
 		cmd := exec.CommandContext(ctx, goBin, args...)
@@ -241,4 +243,42 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 		})
 	}
 	return packages, edges, true
+}
+
+// goPublicProxy is the proxy used when the environment names none.
+const goPublicProxy = "https://proxy.golang.org"
+
+// goProxyWithoutDirect is the GOPROXY list with its `direct` entries
+// removed (the fallback that reaches any host a go.mod names), keeping the
+// operator's proxies and separators; an empty result is the public proxy.
+func goProxyWithoutDirect(list string) string {
+	if strings.TrimSpace(list) == "" {
+		return goPublicProxy
+	}
+	var out strings.Builder
+	sep := ""
+	for i := 0; i < len(list); {
+		j := strings.IndexAny(list[i:], ",|")
+		end := len(list)
+		if j >= 0 {
+			end = i + j
+		}
+		entry := strings.TrimSpace(list[i:end])
+		if entry != "" && entry != "direct" {
+			out.WriteString(sep)
+			out.WriteString(entry)
+		}
+		if end < len(list) {
+			if out.Len() > 0 {
+				sep = string(list[end])
+			}
+			i = end + 1
+		} else {
+			break
+		}
+	}
+	if out.Len() == 0 {
+		return goPublicProxy
+	}
+	return out.String()
 }

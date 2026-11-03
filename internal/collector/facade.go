@@ -228,13 +228,17 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		// Reusing it would parse the wrong git history.
 		configData, _ := os.ReadFile(filepath.Join(path, "config"))
 		existingURL := parseOriginURL(string(configData))
-		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) {
+		// Either spelling is the right repository: the stored URL or the
+		// git endpoint's resolved one, which origin carries after the first
+		// fetch (L10 round 3: a forge whose git endpoint moves across a path
+		// its web page does not would otherwise re-clone every cycle).
+		if existingURL != "" && normalizeCloneURL(existingURL) != normalizeCloneURL(gitURL) && normalizeCloneURL(existingURL) != normalizeCloneURL(cloneURL) {
 			f.logger.Warn("stale clone detected: origin URL mismatch, re-cloning",
 				"path", path,
 				"existing_url", platform.RedactURLUserinfo(existingURL),
 				"expected_url", platform.RedactURLUserinfo(gitURL))
 			_ = os.RemoveAll(path)
-			return f.freshClone(ctx, gitURL, path)
+			return f.freshClone(ctx, gitURL, cloneURL, path)
 		}
 
 		if existingURL != "" && existingURL != cloneURL {
@@ -271,7 +275,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 			f.logger.Warn("fetch failed, re-cloning",
 				"path", path, "error", err, "stderr", stderr.String())
 			_ = os.RemoveAll(path)
-			return f.freshClone(ctx, gitURL, path)
+			return f.freshClone(ctx, gitURL, cloneURL, path)
 		}
 
 		// Sync HEAD to the remote's default branch. git clone --bare sets HEAD
@@ -288,7 +292,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		_ = os.RemoveAll(path)
 	}
 
-	return f.freshClone(ctx, gitURL, path)
+	return f.freshClone(ctx, gitURL, cloneURL, path)
 }
 
 // syncDefaultBranch updates the bare clone's HEAD to match the remote's default
@@ -364,16 +368,13 @@ func normalizeCloneURL(u string) string {
 	return strings.ToLower(model.NormalizeRepoGitURL(u)) // the stored spelling's suffix rule (follow-up 8)
 }
 
-func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) error {
+// freshClone clones gitURL's repository from cloneURL — the git endpoint
+// ensureClone resolved under the outbound-address rule (one walk per job;
+// ensureClone is its only caller, pinned). git is a subprocess, so the
+// check cannot pin the address it connects to (the stated residual).
+func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, cloneURL, path string) error {
 	if err := validateGitURL(gitURL); err != nil {
 		return fmt.Errorf("unsafe git URL rejected: %w", err)
-	}
-	// The outbound-address rule (0.29.132): the git endpoint's chain walked
-	// under it; git is a subprocess, so the check cannot pin the address
-	// it connects to (the stated residual).
-	cloneURL, err := resolveGitEndpoint(ctx, gitURL)
-	if err != nil {
-		return err
 	}
 	f.logger.Info("cloning repository", "url", platform.RedactURLUserinfo(gitURL), "clone_url", platform.RedactURLUserinfo(cloneURL), "path", path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -425,7 +426,7 @@ const gitUploadPackRefs = "/info/refs?service=git-upload-pack"
 func resolveGitEndpoint(ctx context.Context, gitURL string) (string, error) {
 	lower := strings.ToLower(gitURL)
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		if err := currentOutboundPolicy().Refuse(ctx, gitURL); err != nil {
+		if err := refuseWithRetry(ctx, gitURL); err != nil {
 			return "", fmt.Errorf("clone refused: %w", err)
 		}
 		return gitURL, nil

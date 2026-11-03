@@ -4,12 +4,15 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,13 +152,71 @@ func TestCloneResolvesTheGitEndpointsRedirectUnderTheRule(t *testing.T) {
 	}
 }
 
+// A resolver blip at the probe is retried on the ladder as a dial's is
+// (L10 round 3: the rule's own lookup ran before the request and returned
+// the blip at once, so the DNS-retry contract of v0.29.57 was gone).
+func TestProbeRetriesTheRulesResolverBlip(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(srv.Close)
+	lookups := 0
+	loopback, _ := platform.NewOutboundPolicy([]string{"127.0.0.0/8"})
+	flaky := loopback.WithResolver(func(_ context.Context, host string) ([]netip.Addr, error) {
+		lookups++
+		if lookups == 1 {
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true, IsTemporary: true}
+		}
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	prev := currentOutboundPolicy()
+	SetOutboundPolicy(flaky)
+	t.Cleanup(func() { SetOutboundPolicy(prev) })
+	u := strings.Replace(srv.URL, "127.0.0.1", "probe.test", 1) // a NAME, resolved by the policy's resolver
+	_, status, err := ResolveRedirectTarget(context.Background(), u+"/o/r")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("the blip is retried and the probe answers: %d %v", status, err)
+	}
+	if lookups < 2 {
+		t.Fatalf("the rule's lookup ran %d time(s); the retry must run it again", lookups)
+	}
+}
+
+// Either spelling of origin is the right repository: the stored URL or the
+// git endpoint's resolved one, which origin carries after the first fetch
+// (L10 round 3: a forge whose git endpoint moves across a path its web page
+// does not would otherwise re-clone every cycle).
+func TestEnsureCloneAcceptsTheResolvedSpellingOfOrigin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/o/r/info/refs" {
+			http.Redirect(w, r, "/mirror/r.git/info/refs?service=git-upload-pack", http.StatusMovedPermanently)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	dir := filepath.Join(t.TempDir(), "clone")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"HEAD": "ref: refs/heads/main\n", "config": "[remote \"origin\"]\n\turl = " + srv.URL + "/mirror/r.git\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs bytes.Buffer
+	f := &FacadeCollector{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	_ = f.ensureClone(context.Background(), srv.URL+"/o/r", dir) // the fetch itself fails against the stub; the verdict is in the log
+	if strings.Contains(logs.String(), "stale clone detected") {
+		t.Fatalf("origin at the resolved spelling is the same repository, not a stale clone: %s", logs.String())
+	}
+}
+
 func TestFreshCloneRefusesAPrivateHost(t *testing.T) {
 	strictPolicy(t)
 	f := &FacadeCollector{logger: quiet()}
 	dir := filepath.Join(t.TempDir(), "clone")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a check mutated away would dial, not fail
 	defer cancel()
-	err := f.freshClone(ctx, "git://10.0.0.5/repo.git", dir)
+	err := f.ensureClone(ctx, "git://10.0.0.5/repo.git", dir)
 	if !errors.Is(err, platform.ErrPrivateAddress) {
 		t.Fatalf("want the rule's refusal before git runs, got %v", err)
 	}
@@ -221,7 +282,8 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 	// (resolveGitEndpoint), which consults it at every hop.
 	markers := []string{`"clone", "--bare"`, `"clone", "--depth"`, `"fetch", "origin"`, "walkRedirects(", `exec.LookPath("scorecard")`}
 	consults := func(body string) bool {
-		return strings.Contains(body, "currentOutboundPolicy().Refuse(") || strings.Contains(body, "resolveGitEndpoint(") || strings.Contains(body, "walkRedirects(")
+		return strings.Contains(body, "currentOutboundPolicy().Refuse(") || strings.Contains(body, "refuseWithRetry(") ||
+			strings.Contains(body, "resolveGitEndpoint(") || strings.Contains(body, "walkRedirects(")
 	}
 	sites := 0
 	for _, e := range entries {
@@ -234,19 +296,26 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 		for fn, body := range srctest.FuncParts(t, srctest.StripGoComments(string(b))) {
-			if fn == "headWithRetry" || fn == "probeWithRetry" || fn == "getDiscarding" {
-				continue // the requests themselves; walkRedirects owns the check
-			}
-			if fn == "walkRedirects" && !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
-				t.Error("walkRedirects consults the rule at every hop")
-			}
-			if fn == "resolveGitEndpoint" {
-				if !strings.Contains(body, "walkRedirects(") || !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
+			switch fn {
+			case "headWithRetry", "getDiscarding":
+				continue // the requests' shapes; probeWithRetry owns the check
+			case "probeWithRetry", "refuseWithRetry":
+				if !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
+					t.Errorf("%s consults the rule on every attempt", fn)
+				}
+				continue
+			case "walkRedirects":
+				if !strings.Contains(body, "request(ctx, current)") {
+					t.Error("walkRedirects issues every hop through the request it was given, which consults the rule")
+				}
+			case "resolveGitEndpoint":
+				if !strings.Contains(body, "walkRedirects(") || !strings.Contains(body, "refuseWithRetry(") {
 					t.Error("resolveGitEndpoint walks the endpoint's chain under the rule and refuses other schemes by name")
 				}
-			}
-			if fn == "walkRedirects" && !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
-				t.Error("walkRedirects consults the rule at every hop")
+			case "freshClone":
+				// Clones the URL ensureClone resolved (one walk per job): its
+				// only caller is ensureClone, pinned below.
+				continue
 			}
 			// Every network git command carries gitNoRedirects (the clones,
 			// the fetch, syncDefaultBranch's ls-remote; the analysis's clone
@@ -273,6 +342,13 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 		}
 	}
 	srctest.MinCount(t, "repository-host boundaries", sites, 5)
+	// freshClone is reached only through ensureClone, which resolved the
+	// URL it clones.
+	pkg := srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1))
+	ensure := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (f *FacadeCollector) ensureClone("))
+	if all, inEnsure := strings.Count(pkg, "freshClone("), strings.Count(ensure, "freshClone("); all != inEnsure+1 { // +1: its declaration
+		t.Errorf("freshClone is called %d times outside ensureClone, which alone resolves the URL it clones", all-inEnsure-1)
+	}
 	// The probe's transport dials through the rule, so the address checked
 	// by name is the address connected to (platform.OutboundPolicy.DialContext).
 	if !strings.Contains(srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1)), "DialContext:           probeDial,") {
@@ -285,12 +361,12 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 // from this host through GOPROXY's `direct`.
 func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne("))
-	for _, kv := range []string{`"GOPROXY=https://proxy.golang.org"`, `"GONOPROXY="`, `"GOPRIVATE="`, `"GONOSUMDB="`} {
+	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY"))`, `"GONOPROXY="`, `"GOPRIVATE="`, `"GONOSUMDB="`} {
 		if !strings.Contains(body, kv) {
 			t.Errorf("the go-module environment lacks %s", kv)
 		}
 	}
-	if strings.Contains(body, "direct") {
+	if strings.Contains(body, ",direct") || strings.Contains(body, "|direct") {
 		t.Error("GOPROXY must not fall through to direct")
 	}
 }
@@ -302,5 +378,23 @@ func TestRunScorecardConsultsTheRuleAfterTheInstalledCheck(t *testing.T) {
 	look, refuse := strings.Index(body, `exec.LookPath("scorecard")`), strings.Index(body, "currentOutboundPolicy().Refuse(")
 	if look < 0 || refuse < 0 || refuse < look {
 		t.Errorf("RunScorecard: the installed check (%d) must precede the rule (%d)", look, refuse)
+	}
+}
+
+// The operator's GOPROXY keeps its proxies and separators; only `direct`
+// goes; an empty list is the public proxy (L10 round 3).
+func TestGoProxyWithoutDirect(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                                     goPublicProxy,
+		"direct":                               goPublicProxy,
+		"https://proxy.golang.org,direct":      "https://proxy.golang.org",
+		"https://athens.corp|direct":           "https://athens.corp",
+		"https://a.corp,https://b.corp,direct": "https://a.corp,https://b.corp",
+		"direct,https://a.corp":                "https://a.corp",
+		"off":                                  "off",
+	} {
+		if got := goProxyWithoutDirect(in); got != want {
+			t.Errorf("goProxyWithoutDirect(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -45,7 +45,7 @@ func TestProbeConsumersNameTheOutboundRefusal(t *testing.T) {
 // row's host (L10 round 2): a poisoned Augur row is not probed from here.
 func TestImportFromAugurConsultsTheOutboundRule(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runImportFromAugur("))
-	if strings.Index(body, "collector.RefuseRepositoryHost(") < 0 || strings.Index(body, "collector.RefuseRepositoryHost(") > strings.Index(body, "verifyRepoExists(") {
+	if !strings.Contains(body, "collector.RefuseRepositoryHost(") || strings.Index(body, "collector.RefuseRepositoryHost(") > strings.Index(body, "verifyRepoExists(") {
 		t.Error("runImportFromAugur must consult collector.RefuseRepositoryHost before verifyRepoExists")
 	}
 }

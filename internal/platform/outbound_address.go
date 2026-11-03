@@ -135,6 +135,18 @@ func parseAllowedPrefix(e string) (netip.Prefix, error) {
 	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
 
+// WithResolver answers a copy of the policy that resolves names through
+// lookup instead of the system resolver (a caller with its own resolver;
+// the collector's probe test drives a resolver that fails once).
+func (p *OutboundPolicy) WithResolver(lookup func(ctx context.Context, host string) ([]netip.Addr, error)) *OutboundPolicy {
+	if p == nil {
+		p = &OutboundPolicy{hosts: map[string]struct{}{}}
+	}
+	c := *p
+	c.lookup = lookup
+	return &c
+}
+
 // Allow reports the policy's trust as the normalised entries it holds, for
 // the log line that states the effective value.
 func (p *OutboundPolicy) Allow() []string {

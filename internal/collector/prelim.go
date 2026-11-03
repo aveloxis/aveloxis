@@ -310,12 +310,10 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 func walkRedirects(ctx context.Context, start string, request func(ctx context.Context, url string) (*http.Response, error)) (string, int, error) {
 	current := start
 	for hop := 0; ; hop++ {
-		// The outbound-address rule, by name, before every hop (0.29.132):
+		// The outbound-address rule is consulted by the request itself, by
+		// name, on every attempt of every hop (probeWithRetry, 0.29.132):
 		// the first URL and each Location a forge answers with; the dial
-		// itself pins the checked address (probeDial).
-		if err := currentOutboundPolicy().Refuse(ctx, current); err != nil {
-			return "", 0, err
-		}
+		// pins the checked address (probeDial).
 		resp, err := request(ctx, current)
 		if err != nil {
 			return "", 0, err
@@ -373,9 +371,49 @@ func isRedirectStatus(code int) bool {
 var probeTransport http.RoundTripper = &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
 	DialContext:           probeDial, // the outbound-address rule's dial (0.29.132)
+	ForceAttemptHTTP2:     true,      // a custom DialContext would otherwise drop HTTP/2 (L10 round 3)
 	ResponseHeaderTimeout: 15 * time.Second,
 	IdleConnTimeout:       90 * time.Second,
 }
+
+// probeDelays is the probe's retry ladder for a transient network error
+// (a resolver blip, a reset): the attempt, then three retries.
+var probeDelays = []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
+
+// refuseWithRetry is the outbound-address rule by name with the probe's
+// retry ladder for a resolver's transient error — the rule's lookup is
+// the same lookup the dial would make, so it retries the same way
+// (L10 round 3 of 0.29.132: a pre-hop check returned a resolver blip at
+// once, and the ladder below it was never reached). A refusal returns at
+// once. Used by every request of the walker and by the clone of a URL
+// without HTTP redirects (git://, ssh://, SCP).
+func refuseWithRetry(ctx context.Context, url string) error {
+	var lastErr error
+	for attempt, delay := range probeDelays {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		hopCtx, cancel := context.WithTimeout(ctx, probeHopTimeout)
+		err := currentOutboundPolicy().Refuse(hopCtx, url)
+		cancel()
+		if err == nil || errors.Is(err, platform.ErrPrivateAddress) || ctx.Err() != nil {
+			return err
+		}
+		lastErr = err
+		if !isTransientNetError(err) || attempt == len(probeDelays)-1 {
+			return err
+		}
+	}
+	return lastErr
+}
+
+// probeHopTimeout bounds one attempt of a hop: its name resolution, dial
+// and response headers.
+const probeHopTimeout = 15 * time.Second
 
 // headWithRetry issues one HEAD to url on the transport (a redirect
 // response is returned as is, never followed or parsed here), retrying
@@ -402,8 +440,7 @@ func getDiscarding(ctx context.Context, url string) (*http.Response, error) {
 // its transient-error retries.
 func probeWithRetry(ctx context.Context, method, url string) (*http.Response, error) {
 	var lastErr error
-	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
-	for attempt, delay := range delays {
+	for attempt, delay := range probeDelays {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -411,7 +448,21 @@ func probeWithRetry(ctx context.Context, method, url string) (*http.Response, er
 			case <-time.After(delay):
 			}
 		}
-		hopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		hopCtx, cancel := context.WithTimeout(ctx, probeHopTimeout)
+		// The outbound-address rule, by name, on this attempt (0.29.132): a
+		// refusal ends the probe; a resolver's transient error is retried
+		// on the ladder like a dial's (L10 round 3).
+		if rerr := currentOutboundPolicy().Refuse(hopCtx, url); rerr != nil {
+			cancel()
+			if errors.Is(rerr, platform.ErrPrivateAddress) || ctx.Err() != nil {
+				return nil, rerr
+			}
+			lastErr = rerr
+			if isTransientNetError(rerr) && attempt < len(probeDelays)-1 {
+				continue
+			}
+			return nil, rerr
+		}
 		req, err := http.NewRequestWithContext(hopCtx, method, url, nil)
 		if err != nil {
 			cancel()
@@ -419,14 +470,14 @@ func probeWithRetry(ctx context.Context, method, url string) (*http.Response, er
 		}
 		req.Header.Set("User-Agent", "Aveloxis/1.0")
 		resp, err := probeTransport.RoundTrip(req)
-		cancel() // a HEAD's body is empty; the response is complete
+		cancel() // a HEAD's body is empty; a GET's body is dropped — the walker closes it unread
 		if err != nil {
 			lastErr = err
 			// Only retry on DNS/network errors, not on context cancellation.
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			if isTransientNetError(err) && attempt < len(delays)-1 {
+			if isTransientNetError(err) && attempt < len(probeDelays)-1 {
 				continue // retry
 			}
 			return nil, err

@@ -132,6 +132,7 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	flaky := mk("flaky")     // 503 → stays gone, checked (bounded: retried next cadence, not next tick)
 	unreach := mk("unreach") // transport error → stays gone, checked (same bound — review round 1 MEDIUM)
 	target := mk("target")   // the forge redirected to a credentialed URL → not followed; stays gone, checked (round 9)
+	private := mk("private") // the outbound-address rule refused the host (0.29.132) → stays gone, checked, logged under the operator's phrase
 	// A legacy row whose stored URL carries credentials (the store refuses
 	// such a URL on write, so it is planted by UPDATE): never probed — the
 	// HEAD would send the credential as basic auth — stays gone, stamped
@@ -160,6 +161,7 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		flaky.url:   {http.StatusServiceUnavailable, nil},
 		unreach.url: {0, errors.New("dial tcp: i/o timeout")},
 		target.url:  {0, platform.ErrRedirectTargetUserinfo},
+		private.url: {0, platform.ErrPrivateAddress},
 	}
 	// Not in verdicts on purpose: a probe of creds.url is the failure.
 	prev := goneProbe
@@ -198,6 +200,10 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	if strings.Contains(logs.String(), "s3cret") {
 		t.Errorf("a credential reached the log: %s", logs.String())
 	}
+	privateLines := linesWithRepoID(logs.String(), private.id)
+	if !strings.Contains(privateLines, "repository host is a private address") || strings.Contains(privateLines, "probe failed") {
+		t.Errorf("the refused-host row must be logged by its own arm under the operator's phrase; its lines: %q", privateLines)
+	}
 
 	state := func(id int64) (gone bool, checked bool, queued bool) {
 		var g, c *time.Time
@@ -223,6 +229,9 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	}
 	if gone, checked, queued := state(unreach.id); !gone || !checked || queued {
 		t.Errorf("a transport error must stay gone AND stamp the check (an unreachable cohort must not head every tick): gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	if gone, checked, queued := state(private.id); !gone || !checked || queued {
+		t.Errorf("a refused host must stay gone AND stamp the check (an unreachable cohort must not head every tick): gone=%v checked=%v queued=%v", gone, checked, queued)
 	}
 	if gone, checked, queued := state(target.id); !gone || !checked || queued {
 		t.Errorf("a credentialed redirect target must stay gone AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)

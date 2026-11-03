@@ -23,8 +23,8 @@ func TestLoadConfigWiresTheOutboundPolicy(t *testing.T) {
 		t.Errorf("loadConfig installs the outbound-address rule on both arms (file loaded, defaults), found %d", n)
 	}
 	helper := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func outboundPolicyFor("))
-	if !strings.Contains(helper, "cfg.OutboundPolicy()") || !strings.Contains(helper, "p.Allow()") {
-		t.Error("outboundPolicyFor builds the rule from the configuration and logs the effective trust")
+	if !strings.Contains(helper, "cfg.OutboundPolicy()") || !strings.Contains(helper, "p.Allow()") || !strings.Contains(helper, "collector.ProxyHosts()") {
+		t.Error("outboundPolicyFor builds the rule from the configuration and logs the effective trust and the configured proxies")
 	}
 }
 

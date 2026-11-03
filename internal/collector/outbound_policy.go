@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -39,7 +40,13 @@ func RefuseRepositoryHost(ctx context.Context, rawURL string) error {
 // (HTTP_PROXY, HTTPS_PROXY): a probe through a proxy dials the proxy, whose
 // address the rule must not judge in the target's place (it is the
 // operator's egress, often private); the target is still checked by name
-// before the hop. Read once: the environment does not change under a process.
+// before the hop. The proxy resolves the target itself, so the address the
+// rule checked is not the one the proxy reaches — the stated residual
+// (SECURITY.md; Copilot's fourteenth review of PR #246, declined: the
+// proxy's resolution is under the operator's control, and routing to the
+// checked address through the proxy would break hosts that reach the
+// internet only through one). Read once: the environment does not change
+// under a process.
 var proxyHosts = func() map[string]struct{} {
 	out := map[string]struct{}{}
 	cfg := httpproxy.FromEnvironment()
@@ -56,6 +63,18 @@ var proxyHosts = func() map[string]struct{} {
 	}
 	return out
 }()
+
+// ProxyHosts are the proxy hosts the environment names, for the log line
+// that states the effective trust: an operator reads from it whether the
+// proxy residual (SECURITY.md) is live on this host.
+func ProxyHosts() []string {
+	out := make([]string, 0, len(proxyHosts))
+	for h := range proxyHosts {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // probeDial is the redirect probe's connection under the rule: the address
 // checked is the address dialed (platform.OutboundPolicy.DialContext), so a

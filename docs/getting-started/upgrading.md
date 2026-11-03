@@ -164,6 +164,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.135 changes nothing to run.** Documentation: with `HTTP_PROXY`/`HTTPS_PROXY` set, the outbound-address rule's probe connects through the proxy, which resolves the target itself — the rule checks each hop by name; the proxy's resolution is yours (SECURITY.md names the residual). A fleet already running 0.29.134 needs only the stop, the migrate and the start.
+
 **0.29.134 changes nothing to run.** A host the outbound-address rule trusts by name — a configured forge, a `collection.private_network_hosts` entry — is now resolved and refused when it resolves to a link-local address (the cloud metadata range); its private addresses remain your trust, and it must resolve from the serve host, a configured proxy notwithstanding. 0.29.132 did not resolve trusted names at all, so "never reached" did not hold for one. A fleet already running 0.29.133 needs only the stop, the migrate and the start.
 
 **0.29.133 changes nothing to run.** The go-module closure of a cloned repository sets `GOPRIVATE` and `GONOPROXY` to a pattern no module path matches, where 0.29.132 emptied them — the go command treats an empty variable as "use the value saved with `go env -w`", so a saved private pattern stayed in force and a stranger's go.mod naming it reached that host directly — and reads the effective `GOPROXY` and `GONOSUMDB` through `go env`, so a proxy saved with `go env -w` is honoured (its `direct` entry removed) and the checksum exemption the go command derives from your `GOPRIVATE` is kept as it was. A fleet already running 0.29.132 needs only the stop, the migrate and the start.

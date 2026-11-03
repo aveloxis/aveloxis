@@ -2177,7 +2177,7 @@ func outboundPolicyFor(cfg *config.Config, logger *slog.Logger) *platform.Outbou
 		return nil
 	}
 	outboundPolicyLogged.Do(func() { // once per process: serve loads the configuration twice
-		logger.Info("outbound-address rule: private repository hosts trusted (collection.private_network_hosts plus the configured forge instances)", "trusted", p.Allow())
+		logger.Info("outbound-address rule: private repository hosts trusted (collection.private_network_hosts plus the configured forge instances); a configured proxy resolves the probe's targets itself", "trusted", p.Allow(), "proxies", collector.ProxyHosts())
 	})
 	return p
 }

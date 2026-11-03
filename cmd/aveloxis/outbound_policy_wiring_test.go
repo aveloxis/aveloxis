@@ -25,3 +25,27 @@ func TestLoadConfigWiresTheOutboundPolicy(t *testing.T) {
 		t.Error("outboundPolicyFor builds the rule from the configuration and logs the effective trust")
 	}
 }
+
+// The three consumers of the probe answer the rule's refusal under the
+// phrase the operator greps for (L10 round 2), as a skip — never gone.
+func TestProbeConsumersNameTheOutboundRefusal(t *testing.T) {
+	for _, c := range []struct{ dir, sig string }{
+		{"cmd/aveloxis", "func runMarkGoneRepos("},
+		{"cmd/aveloxis", "func runReconcileRepos("},
+		{"internal/scheduler", "func (s *Scheduler) runGoneRecheck("},
+	} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, c.dir, c.sig))
+		if !strings.Contains(body, "platform.ErrPrivateAddress") || !strings.Contains(body, "repository host is a private address") {
+			t.Errorf("%s %s: no arm for platform.ErrPrivateAddress naming the refusal", c.dir, c.sig)
+		}
+	}
+}
+
+// import-from-augur's existence HEAD consults the rule before probing a
+// row's host (L10 round 2): a poisoned Augur row is not probed from here.
+func TestImportFromAugurConsultsTheOutboundRule(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runImportFromAugur("))
+	if strings.Index(body, "collector.RefuseRepositoryHost(") < 0 || strings.Index(body, "collector.RefuseRepositoryHost(") > strings.Index(body, "verifyRepoExists(") {
+		t.Error("runImportFromAugur must consult collector.RefuseRepositoryHost before verifyRepoExists")
+	}
+}

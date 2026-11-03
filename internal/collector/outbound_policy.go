@@ -29,6 +29,12 @@ func SetOutboundPolicy(p *platform.OutboundPolicy) { outboundPolicy.Store(p) }
 // currentOutboundPolicy is the rule every boundary consults.
 func currentOutboundPolicy() *platform.OutboundPolicy { return outboundPolicy.Load() }
 
+// RefuseRepositoryHost is the rule for a caller outside this package that
+// reaches a repository's host itself (import-from-augur's existence HEAD).
+func RefuseRepositoryHost(ctx context.Context, rawURL string) error {
+	return currentOutboundPolicy().Refuse(ctx, rawURL)
+}
+
 // proxyHosts are the hosts of the proxies the environment names
 // (HTTP_PROXY, HTTPS_PROXY): a probe through a proxy dials the proxy, whose
 // address the rule must not judge in the target's place (it is the

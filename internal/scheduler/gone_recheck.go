@@ -166,6 +166,16 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			stampChecked(c)
 			continue
 		}
+		if errors.Is(perr, platform.ErrPrivateAddress) {
+			// The outbound-address rule (0.29.132): the same verdict as a
+			// transport failure (gone stays, stamped, retried next cadence),
+			// under the phrase the operator greps for.
+			unreachable++
+			s.logger.Warn("gone recheck: repository host is a private address — not probed; repo stays gone, list it in collection.private_network_hosts",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
+			stampChecked(c)
+			continue
+		}
 		if perr != nil {
 			// SR-16: a transport failure is not "no" — the gone state
 			// is untouched. The CHECK is stamped (see the header): the

@@ -799,6 +799,13 @@ func runImportFromAugur(cfgPath string, priority int) error {
 			continue
 		}
 
+		// The outbound-address rule (0.29.132, L10 round 2): a poisoned
+		// Augur row is not probed from this machine.
+		if err := collector.RefuseRepositoryHost(ctx, ar.RepoGit); err != nil {
+			logger.Warn("repo host refused by the outbound-address rule — not probed, skipping", "url", platform.RedactURLUserinfo(ar.RepoGit), "error", err)
+			skipped++
+			continue
+		}
 		// Verify the repo still exists on the forge with an HTTP HEAD.
 		exists, err := verifyRepoExists(ctx, httpClient, ar.RepoGit)
 		if err != nil {

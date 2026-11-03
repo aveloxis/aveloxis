@@ -89,11 +89,13 @@ func TestOutboundPolicyRefusesSpecialUseAddressesAfterResolution(t *testing.T) {
 		{"http://240.0.0.1/", ErrPrivateAddress},
 		{"http://255.255.255.255/", ErrPrivateAddress},
 		// Transition addresses reach their embedded IPv4 host.
-		{"http://[64:ff9b::7f00:1]/", ErrPrivateAddress},     // NAT64 of 127.0.0.1
-		{"http://[64:ff9b:1::a00:5]/", ErrPrivateAddress},    // RFC 8215 of 10.0.0.5
-		{"http://[2002:a9fe:a9fe::1]/", ErrLinkLocalAddress}, // 6to4 of 169.254.169.254
-		{"http://[2001:0:1:2:3:4:7fff:fffe]/", nil},          // Teredo: ^7fff:fffe = 128.0.0.1, public (the loopback case is TestOutboundPolicyTeredoEmbedsAnInvertedIPv4)
-		{"http://[2002:cb00:7105::1]/", nil},                 // 6to4 of 203.0.113.5, public
+		{"http://[64:ff9b::7f00:1]/", ErrPrivateAddress},        // NAT64 of 127.0.0.1
+		{"http://[64:ff9b::7f00:1%25eth0]/", ErrPrivateAddress}, // the same with a zone (round 2: Contains ignored zoned addresses)
+		{"http://[2002:7f00:1::1%25eth0]/", ErrPrivateAddress},  // 6to4 of 127.0.0.1 with a zone
+		{"http://[64:ff9b:1::a00:5]/", ErrPrivateAddress},       // RFC 8215 of 10.0.0.5
+		{"http://[2002:a9fe:a9fe::1]/", ErrLinkLocalAddress},    // 6to4 of 169.254.169.254
+		{"http://[2001:0:1:2:3:4:7fff:fffe]/", nil},             // Teredo: ^7fff:fffe = 128.0.0.1, public (the loopback case is TestOutboundPolicyTeredoEmbedsAnInvertedIPv4)
+		{"http://[2002:cb00:7105::1]/", nil},                    // 6to4 of 203.0.113.5, public
 		// Numeric hosts that are not dotted-decimal: parsers disagree, refused as written.
 		{"http://0177.0.0.1/", ErrNumericHost},
 		{"http://0x7f.1/", ErrNumericHost},
@@ -154,7 +156,7 @@ func TestOutboundPolicyRefusesALinkLocalAllowlistEntry(t *testing.T) {
 			t.Errorf("%q: an allowlist never lifts link-local, got %v", e, err)
 		}
 	}
-	for _, e := range []string{"not a host", "host:8080", "http://x", "a..b", "10.0.0.0/33"} {
+	for _, e := range []string{"not a host", "host:8080", "http://x", "a..b", "10.0.0.0/33", "*.lan", ".", "*"} {
 		if _, err := NewOutboundPolicy([]string{e}); err == nil {
 			t.Errorf("%q: neither a host name nor a CIDR, want an error", e)
 		}

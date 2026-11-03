@@ -22,8 +22,10 @@ import (
 // reachability, never content, and a non-administrator's URL waits for
 // approval, but an administrator's add ran at once. The rule: a host whose
 // address is loopback, link-local, multicast, unspecified, private (RFC
-// 1918, ULA) or carrier-grade NAT (RFC 6598) is refused, after resolution,
-// unless the operator trusts it — the host of a configured forge instance
+// 1918, ULA), carrier-grade NAT (RFC 6598) or another IANA special-purpose
+// range (specialUse), or an IPv6 transition address embedding such an IPv4
+// address, or a numeric host that is not a dotted-decimal address, is
+// refused, after resolution, unless the operator trusts it — the host of a configured forge instance
 // (github.base_url, gitlab.base_url, web.gitlab_base_url: a self-hosted
 // GitLab or GitHub Enterprise on a private network works untouched) or an
 // entry of collection.private_network_hosts (a name, or a CIDR for a
@@ -110,11 +112,13 @@ func NewOutboundPolicy(allow []string) (*OutboundPolicy, error) {
 			p.nets = append(p.nets, prefix)
 			continue
 		}
-		host := strings.ToLower(e)
-		if strings.ContainsAny(host, "/:@ ") || strings.Contains(host, "..") {
-			return nil, fmt.Errorf("%q is neither a host name nor an address range in CIDR form", raw)
+		host := strings.TrimSuffix(strings.ToLower(e), ".")
+		// A wildcard or an empty name would be stored and never match: said
+		// now, not discovered as silent non-trust (L10 round 2).
+		if host == "" || strings.ContainsAny(host, "*/:@ ") || strings.Contains(host, "..") {
+			return nil, fmt.Errorf("%q is neither a host name nor an address range in CIDR form (a name is exact; no wildcards)", raw)
 		}
-		p.hosts[strings.TrimSuffix(host, ".")] = struct{}{}
+		p.hosts[host] = struct{}{}
 	}
 	sort.Slice(p.nets, func(i, j int) bool { return p.nets[i].String() < p.nets[j].String() })
 	return p, nil
@@ -286,7 +290,10 @@ func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
 // other special-use kinds are refused unless a trusted range holds the
 // address; everything else is reachable.
 func (p *OutboundPolicy) refuseAddr(a netip.Addr) error {
-	a = a.Unmap()
+	// The zone is a scope, not an address: dropped before any range check
+	// (netip's Contains answers false for every zoned address, so a zoned
+	// NAT64 or 6to4 spelling of a loopback host passed; L10 round 2).
+	a = a.Unmap().WithZone("")
 	if inner, ok := embeddedIPv4(a); ok {
 		// The transition address reaches its embedded IPv4 host: classify
 		// that one, and a trusted range may hold either spelling.
@@ -352,7 +359,7 @@ func (p *OutboundPolicy) DialContext(ctx context.Context, network, address strin
 	}
 	var last error
 	for _, a := range addrs {
-		conn, derr := p.dial().DialContext(ctx, network, net.JoinHostPort(a.Unmap().String(), port))
+		conn, derr := p.dial().DialContext(ctx, network, net.JoinHostPort(a.Unmap().WithZone("").String(), port))
 		if derr == nil {
 			return conn, nil
 		}

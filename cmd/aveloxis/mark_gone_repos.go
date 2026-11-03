@@ -166,6 +166,15 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			stampChecked(c)
 			continue
 		}
+		if errors.Is(perr, platform.ErrPrivateAddress) {
+			// The outbound-address rule (0.29.132): skipped like an
+			// indeterminate probe, under the phrase the operator greps for.
+			logger.Warn("repository host is a private address — not probed; list it in collection.private_network_hosts, skipping",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "error", perr)
+			tally.skipped++
+			stampChecked(c)
+			continue
+		}
 		if perr != nil {
 			// SR-16: a transport failure is not "no" — the gone state is
 			// untouched; a rerun retries. The check is still stamped on

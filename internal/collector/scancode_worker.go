@@ -710,11 +710,13 @@ func scancodeCloneCmd(ctx context.Context, repoGit, dir string) (*exec.Cmd, erro
 	if err := validateGitURL(repoGit); err != nil {
 		return nil, fmt.Errorf("unsafe git URL rejected: %w", err)
 	}
-	// The outbound-address rule (0.29.132), by name, as the facade's clone.
-	if err := currentOutboundPolicy().Refuse(ctx, repoGit); err != nil {
-		return nil, fmt.Errorf("clone refused: %w", err)
+	// The outbound-address rule (0.29.132), as the facade's clone: the git
+	// endpoint's chain walked under it, the resolved URL cloned.
+	cloneURL, err := resolveGitEndpoint(ctx, repoGit)
+	if err != nil {
+		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "git", "-c", gitNoRedirects, "clone", "--depth", "1", "--", repoGit, dir)
+	cmd := exec.CommandContext(ctx, "git", "-c", gitNoRedirects, "clone", "--depth", "1", "--", cloneURL, dir)
 	cmd.Env = gitCloneEnv()
 	return cmd, nil
 }

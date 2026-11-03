@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/srctest"
@@ -92,11 +93,69 @@ func srv_port(r *http.Request) string {
 	return "80"
 }
 
+// The git endpoint's redirect chain is walked under the rule before a
+// clone or fetch (L10 round 2: GitLab answers the spelling without .git
+// with a 301 the web HEAD never shows; with git's own redirects off every
+// GitLab clone failed). A public redirect still clones, from where the
+// chain ends; a redirect onto a private host is refused before the hop.
+func TestCloneResolvesTheGitEndpointsRedirectUnderTheRule(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.Method+" "+r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/o/r/info/refs":
+			http.Redirect(w, r, "/o/r.git/info/refs?service=git-upload-pack", http.StatusMovedPermanently)
+		case "/o/r.git/info/refs":
+			w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+			w.Write([]byte("001e# service=git-upload-pack\n0000"))
+		case "/moved/info/refs":
+			http.Redirect(w, r, "http://localhost:"+srv_port(r)+"/private/info/refs?service=git-upload-pack", http.StatusFound)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	ctx := context.Background()
+	got, err := resolveGitEndpoint(ctx, srv.URL+"/o/r")
+	if err != nil || got != srv.URL+"/o/r.git" {
+		t.Fatalf("the public redirect's end is the clone URL: got %q, %v", got, err)
+	}
+	if len(hits) != 2 || !strings.HasPrefix(hits[0], "GET /o/r/info/refs?service=git-upload-pack") {
+		t.Fatalf("the endpoint is walked with GET, each hop once: %v", hits)
+	}
+	// A status git explains better (404): the stored URL, nothing refused.
+	if got, err := resolveGitEndpoint(ctx, srv.URL+"/gone"); err != nil || got != srv.URL+"/gone" {
+		t.Fatalf("a non-redirect answer keeps the stored URL: %q, %v", got, err)
+	}
+	// The forge trusted by NAME; its Location names localhost, which
+	// resolves to loopback and is refused before the hop.
+	byName, _ := platform.NewOutboundPolicy([]string{"127.0.0.1"})
+	prev := currentOutboundPolicy()
+	SetOutboundPolicy(byName)
+	t.Cleanup(func() { SetOutboundPolicy(prev) })
+	hits = nil
+	if _, err := resolveGitEndpoint(ctx, srv.URL+"/moved"); !errors.Is(err, platform.ErrPrivateAddress) {
+		t.Fatalf("a redirect onto a private host is refused, got %v", err)
+	}
+	for _, h := range hits {
+		if strings.Contains(h, "/private/") {
+			t.Fatalf("the refused hop must not be followed: %v", hits)
+		}
+	}
+	// Other schemes have no redirects: the rule by name, the URL as given.
+	SetOutboundPolicy(nil)
+	if _, err := resolveGitEndpoint(ctx, "git@10.0.0.5:org/repo.git"); !errors.Is(err, platform.ErrPrivateAddress) {
+		t.Fatalf("an SCP-style clone URL of a private host is refused, got %v", err)
+	}
+}
+
 func TestFreshCloneRefusesAPrivateHost(t *testing.T) {
 	strictPolicy(t)
 	f := &FacadeCollector{logger: quiet()}
 	dir := filepath.Join(t.TempDir(), "clone")
-	err := f.freshClone(context.Background(), "git://10.0.0.5/repo.git", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a check mutated away would dial, not fail
+	defer cancel()
+	err := f.freshClone(ctx, "git://10.0.0.5/repo.git", dir)
 	if !errors.Is(err, platform.ErrPrivateAddress) {
 		t.Fatalf("want the rule's refusal before git runs, got %v", err)
 	}
@@ -158,7 +217,12 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 	// scorecard run (RunScorecard owns the check; invokeScorecard is its
 	// helper; syncDefaultBranch's ls-remote runs only after ensureClone's
 	// check).
-	markers := []string{`"clone", "--bare"`, `"clone", "--depth"`, `"fetch", "origin"`, "headWithRetry(", `exec.LookPath("scorecard")`}
+	// A clone or fetch consults the rule through the git endpoint's walk
+	// (resolveGitEndpoint), which consults it at every hop.
+	markers := []string{`"clone", "--bare"`, `"clone", "--depth"`, `"fetch", "origin"`, "walkRedirects(", `exec.LookPath("scorecard")`}
+	consults := func(body string) bool {
+		return strings.Contains(body, "currentOutboundPolicy().Refuse(") || strings.Contains(body, "resolveGitEndpoint(") || strings.Contains(body, "walkRedirects(")
+	}
 	sites := 0
 	for _, e := range entries {
 		name := e.Name()
@@ -170,8 +234,19 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 		for fn, body := range srctest.FuncParts(t, srctest.StripGoComments(string(b))) {
-			if fn == "headWithRetry" {
-				continue // the request itself; resolveRedirects owns the check
+			if fn == "headWithRetry" || fn == "probeWithRetry" || fn == "getDiscarding" {
+				continue // the requests themselves; walkRedirects owns the check
+			}
+			if fn == "walkRedirects" && !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
+				t.Error("walkRedirects consults the rule at every hop")
+			}
+			if fn == "resolveGitEndpoint" {
+				if !strings.Contains(body, "walkRedirects(") || !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
+					t.Error("resolveGitEndpoint walks the endpoint's chain under the rule and refuses other schemes by name")
+				}
+			}
+			if fn == "walkRedirects" && !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
+				t.Error("walkRedirects consults the rule at every hop")
 			}
 			// Every network git command carries gitNoRedirects (the clones,
 			// the fetch, syncDefaultBranch's ls-remote; the analysis's clone
@@ -192,7 +267,7 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 				continue
 			}
 			sites++
-			if !strings.Contains(body, "currentOutboundPolicy().Refuse(") {
+			if !consults(body) {
 				t.Errorf("%s: %s reaches a repository host without consulting the outbound-address rule", name, fn)
 			}
 		}
@@ -202,5 +277,30 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 	// by name is the address connected to (platform.OutboundPolicy.DialContext).
 	if !strings.Contains(srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1)), "DialContext:           probeDial,") {
 		t.Error("probeTransport must dial through probeDial (the outbound-address rule's pinned dial)")
+	}
+}
+
+// The go-module closure resolves through the public proxy only (L10 round
+// 2): a `require` or `replace` naming a private host must not reach it
+// from this host through GOPROXY's `direct`.
+func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne("))
+	for _, kv := range []string{`"GOPROXY=https://proxy.golang.org"`, `"GONOPROXY="`, `"GOPRIVATE="`, `"GONOSUMDB="`} {
+		if !strings.Contains(body, kv) {
+			t.Errorf("the go-module environment lacks %s", kv)
+		}
+	}
+	if strings.Contains(body, "direct") {
+		t.Error("GOPROXY must not fall through to direct")
+	}
+}
+
+// RunScorecard checks the rule only once scorecard is installed: a host
+// without it logs nothing for a refused repository (L10 round 2).
+func TestRunScorecardConsultsTheRuleAfterTheInstalledCheck(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func RunScorecard("))
+	look, refuse := strings.Index(body, `exec.LookPath("scorecard")`), strings.Index(body, "currentOutboundPolicy().Refuse(")
+	if look < 0 || refuse < 0 || refuse < look {
+		t.Errorf("RunScorecard: the installed check (%d) must precede the rule (%d)", look, refuse)
 	}
 }

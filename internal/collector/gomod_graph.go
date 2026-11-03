@@ -152,7 +152,16 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// would, per module per collection — the repository's choice; ASVS
 	// review of 0.29.125, V5.3.2); a too-new go line fails into the WARN
 	// arm below, as install-tools' own probe already pins it (tools.go).
-	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOTOOLCHAIN=local")
+	// GOPROXY without `direct` (L10 round 2 of 0.29.132): a `require` or
+	// `replace` naming a host the proxy answers 404/410 for fell through to
+	// `direct` — a GET and a git ls-remote from this host to any address the
+	// cloned go.mod names, the reachability the outbound-address rule
+	// closes elsewhere. The public proxy serves every public module;
+	// GONOPROXY/GOPRIVATE/GONOSUMDB are cleared so an operator's own
+	// private-module settings do not reopen the path for a stranger's
+	// go.mod. A module the proxy lacks is the WARN arm below, as before.
+	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOTOOLCHAIN=local",
+		"GOPROXY=https://proxy.golang.org", "GONOPROXY=", "GOPRIVATE=", "GONOSUMDB=")
 
 	run := func(args ...string) (string, bool) {
 		cmd := exec.CommandContext(ctx, goBin, args...)

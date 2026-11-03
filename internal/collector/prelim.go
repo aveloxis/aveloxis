@@ -298,7 +298,17 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 	// fixed strings. Each Location is refused, then parsed, then refused
 	// again once resolved; no error returned from here names a redirect
 	// target.
-	current := repoURL
+	return walkRedirects(ctx, repoURL, headWithRetry)
+}
+
+// walkRedirects follows start's redirect chain with request making each
+// hop's request — the web probe's HEAD (resolveRedirects), the git
+// endpoint's GET (resolveGitEndpoint) — under the outbound-address rule,
+// and answers the URL the chain ends at and its status. The ONE walker
+// (SR-17; L10 round 2 of 0.29.132: a forge may redirect its git endpoint
+// where its web page does not).
+func walkRedirects(ctx context.Context, start string, request func(ctx context.Context, url string) (*http.Response, error)) (string, int, error) {
+	current := start
 	for hop := 0; ; hop++ {
 		// The outbound-address rule, by name, before every hop (0.29.132):
 		// the first URL and each Location a forge answers with; the dial
@@ -306,7 +316,7 @@ func resolveRedirects(ctx context.Context, repoURL string) (string, int, error) 
 		if err := currentOutboundPolicy().Refuse(ctx, current); err != nil {
 			return "", 0, err
 		}
-		resp, err := headWithRetry(ctx, current)
+		resp, err := request(ctx, current)
 		if err != nil {
 			return "", 0, err
 		}
@@ -378,6 +388,19 @@ var probeTransport http.RoundTripper = &http.Transport{
 // shutdown_grace_seconds of 1..8 and most of the default 10 — at the one
 // probe every consumer shares.
 func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
+	return probeWithRetry(ctx, http.MethodHead, url)
+}
+
+// getDiscarding is the git endpoint's request: a GET whose body (the ref
+// advertisement, megabytes for a large repository) is never read — the
+// walker closes it at once; only the status and Location matter.
+func getDiscarding(ctx context.Context, url string) (*http.Response, error) {
+	return probeWithRetry(ctx, http.MethodGet, url)
+}
+
+// probeWithRetry makes one hop's request with the probe's transport and
+// its transient-error retries.
+func probeWithRetry(ctx context.Context, method, url string) (*http.Response, error) {
 	var lastErr error
 	delays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 9 * time.Second}
 	for attempt, delay := range delays {
@@ -389,7 +412,7 @@ func headWithRetry(ctx context.Context, url string) (*http.Response, error) {
 			}
 		}
 		hopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		req, err := http.NewRequestWithContext(hopCtx, http.MethodHead, url, nil)
+		req, err := http.NewRequestWithContext(hopCtx, method, url, nil)
 		if err != nil {
 			cancel()
 			return nil, err

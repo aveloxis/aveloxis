@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -2161,9 +2162,13 @@ func outboundPolicyFor(cfg *config.Config, logger *slog.Logger) *platform.Outbou
 		exitProcess(1)
 		return nil
 	}
-	logger.Info("outbound-address rule: private repository hosts trusted (collection.private_network_hosts plus the configured forge instances)", "trusted", p.Allow())
+	outboundPolicyLogged.Do(func() { // once per process: serve loads the configuration twice
+		logger.Info("outbound-address rule: private repository hosts trusted (collection.private_network_hosts plus the configured forge instances)", "trusted", p.Allow())
+	})
 	return p
 }
+
+var outboundPolicyLogged sync.Once
 
 func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 	cfg, err := config.Load(cfgPath)

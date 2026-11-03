@@ -71,7 +71,10 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	if errors.Is(err, platform.ErrPrivateAddress) {
 		// The outbound-address rule (0.29.132): the URL is left as it is and
 		// the job goes on to the facade, which refuses the clone with the same
-		// error — a failed job, retried with its backoff, never a gone mark
+		// error. A forge-platform repository's job records that refusal and
+		// completes its API collection (item 83: a facade error alone does
+		// not fail the job), so it returns at its normal due time; a git-only
+		// repository's job fails and retries on its backoff. Never a gone mark
 		// (SR-7). A redirect hop that lands on a private host is refused the
 		// same way (each Location is checked before it is followed).
 		logger.Error("prelim: repository host is a private address — not probed or cloned; list it in collection.private_network_hosts (a configured forge's base_url is trusted)",

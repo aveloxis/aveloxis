@@ -32,7 +32,9 @@ func TestScancodeCloneCmdUsesTheCloneEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"git", "clone", "--depth", "1", "--", u, "/tmp/dir"}
+	// -c http.followRedirects=false: git never follows a redirect the
+	// outbound-address rule's probe did not see (0.29.132).
+	want := []string{"git", "-c", gitNoRedirects, "clone", "--depth", "1", "--", u, "/tmp/dir"}
 	if !slices.Equal(cmd.Args, want) {
 		t.Fatalf("args = %q, want %q", cmd.Args, want)
 	}

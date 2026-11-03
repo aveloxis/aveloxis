@@ -56,6 +56,13 @@ func TestLoadRefusesABadPrivateNetworkHostsEntry(t *testing.T) {
 	}
 }
 
+func TestLoadRefusesALinkLocalForgeHostUnderItsOwnKey(t *testing.T) {
+	_, err := Load(writeConfig(t, `{"gitlab": {"base_url": "https://[fe80::1]/api/v4"}}`))
+	if err == nil || !strings.Contains(err.Error(), "gitlab.base_url") || strings.Contains(err.Error(), "collection.private_network_hosts:") {
+		t.Errorf("a link-local forge host is refused under gitlab.base_url, got %v", err)
+	}
+}
+
 func TestDefaultConfigTrustsOnlyThePublicForgeHosts(t *testing.T) {
 	// The default base URLs name the public forges; trusting them by name
 	// changes nothing (they resolve to public addresses) and keeps one rule

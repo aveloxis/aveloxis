@@ -1848,10 +1848,27 @@ func (c *Config) validate() error {
 	// The outbound-address rule's trust is parsed by the one parser the
 	// collector uses (0.29.132): a bad entry refuses the file here, with
 	// the key, rather than at the first collection.
-	if _, err := c.OutboundPolicy(); err != nil {
+	if _, err := platform.NewOutboundPolicy(c.Collection.PrivateNetworkHosts); err != nil {
 		return fmt.Errorf("collection.private_network_hosts: %w — each entry is a host name or an address range in CIDR form (link-local is never allowed)", err)
 	}
+	// The forge hosts under their own keys: a link-local base_url is refused
+	// as such, not as a private_network_hosts entry.
+	for key, raw := range map[string]string{"github.base_url": c.GitHub.BaseURL, "gitlab.base_url": c.GitLab.BaseURL, "web.gitlab_base_url": c.Web.GitLabBaseURL} {
+		if host := forgeHost(raw); host != "" {
+			if _, err := platform.NewOutboundPolicy([]string{host}); err != nil {
+				return fmt.Errorf("%s: its host is trusted by the outbound-address rule, which refuses it: %w", key, err)
+			}
+		}
+	}
 	return nil
+}
+
+// forgeHost is the host of a configured forge URL, "" when none.
+func forgeHost(raw string) string {
+	if u, err := url.Parse(strings.TrimSpace(raw)); err == nil {
+		return u.Hostname()
+	}
+	return ""
 }
 
 // OutboundAllowlist is the trust of the outbound-address rule (0.29.132):
@@ -1862,8 +1879,8 @@ func (c *Config) validate() error {
 func (c *Config) OutboundAllowlist() []string {
 	out := append([]string(nil), c.Collection.PrivateNetworkHosts...)
 	for _, raw := range []string{c.GitHub.BaseURL, c.GitLab.BaseURL, c.Web.GitLabBaseURL} {
-		if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Hostname() != "" {
-			out = append(out, u.Hostname())
+		if host := forgeHost(raw); host != "" {
+			out = append(out, host)
 		}
 	}
 	return out

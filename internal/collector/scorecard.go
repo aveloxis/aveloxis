@@ -312,7 +312,9 @@ func RunScorecard(ctx context.Context, store scorecardStore, repoID int64, opts 
 		return nil, fmt.Errorf("scorecard repo %d: %w", repoID, err)
 	}
 	// The outbound-address rule (0.29.132): scorecard reaches the
-	// repository's forge host itself, a subprocess the check cannot pin.
+	// repository's forge host itself, a subprocess the check cannot pin,
+	// and whose own clone (go-git) follows redirects the rule never sees —
+	// the stated residual (SECURITY.md).
 	if err := currentOutboundPolicy().Refuse(ctx, opts.RepoURL); err != nil {
 		if ctx.Err() != nil {
 			return nil, err // a stop during the name's resolution is not a failure

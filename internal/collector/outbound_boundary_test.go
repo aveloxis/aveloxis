@@ -105,6 +105,30 @@ func TestFreshCloneRefusesAPrivateHost(t *testing.T) {
 	}
 }
 
+// An existing clone (its HEAD present, its origin the private host) is
+// refused before the fetch: the rule is consulted in ensureClone, not only
+// on a fresh clone (L10 round 1).
+func TestEnsureCloneRefusesAnExistingCloneOfAPrivateHost(t *testing.T) {
+	strictPolicy(t)
+	f := &FacadeCollector{logger: quiet()}
+	dir := filepath.Join(t.TempDir(), "clone")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"HEAD": "ref: refs/heads/main\n", "config": "[remote \"origin\"]\n\turl = git://10.0.0.5/repo.git\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := f.ensureClone(context.Background(), "git://10.0.0.5/repo.git", dir)
+	if !errors.Is(err, platform.ErrPrivateAddress) {
+		t.Fatalf("want the rule's refusal before the fetch, got %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(dir, "HEAD")); serr != nil {
+		t.Fatal("the refused clone is left as it is")
+	}
+}
+
 func TestScancodeCloneRefusesAPrivateHost(t *testing.T) {
 	strictPolicy(t)
 	if _, err := scancodeCloneCmd(context.Background(), "https://192.168.1.9/o/r.git", t.TempDir()); !errors.Is(err, platform.ErrPrivateAddress) {
@@ -130,9 +154,11 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The two network clones (the analysis's clone is of the local bare
-	// clone), the probe's request, the scorecard run (RunScorecard owns the
-	// check; invokeScorecard is its helper).
-	markers := []string{`"git", "clone", "--bare"`, `"git", "clone", "--depth"`, "headWithRetry(", `exec.LookPath("scorecard")`}
+	// clone), the fetch of an existing clone, the probe's request, the
+	// scorecard run (RunScorecard owns the check; invokeScorecard is its
+	// helper; syncDefaultBranch's ls-remote runs only after ensureClone's
+	// check).
+	markers := []string{`"clone", "--bare"`, `"clone", "--depth"`, `"fetch", "origin"`, "headWithRetry(", `exec.LookPath("scorecard")`}
 	sites := 0
 	for _, e := range entries {
 		name := e.Name()
@@ -146,6 +172,15 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 		for fn, body := range srctest.FuncParts(t, srctest.StripGoComments(string(b))) {
 			if fn == "headWithRetry" {
 				continue // the request itself; resolveRedirects owns the check
+			}
+			// Every network git command carries gitNoRedirects (the clones,
+			// the fetch, syncDefaultBranch's ls-remote; the analysis's clone
+			// of the local bare clone and log keys named "clone" are not
+			// network commands).
+			for _, g := range []string{`"clone", "--bare"`, `"clone", "--depth"`, `"fetch", "origin"`, `"ls-remote"`} {
+				if strings.Contains(body, g) && !strings.Contains(body, "gitNoRedirects") {
+					t.Errorf("%s: %s runs a network git command without gitNoRedirects (git would follow a redirect the rule never saw)", name, fn)
+				}
 			}
 			hit := false
 			for _, m := range markers {
@@ -162,7 +197,7 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 			}
 		}
 	}
-	srctest.MinCount(t, "repository-host boundaries", sites, 4)
+	srctest.MinCount(t, "repository-host boundaries", sites, 5)
 	// The probe's transport dials through the rule, so the address checked
 	// by name is the address connected to (platform.OutboundPolicy.DialContext).
 	if !strings.Contains(srctest.StripGoComments(srctest.PackageSource(t, "internal/collector", 1)), "DialContext:           probeDial,") {

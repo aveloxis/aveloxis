@@ -211,6 +211,12 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	if err := platform.RefuseURLUserinfo(gitURL); err != nil {
 		return err
 	}
+	// The outbound-address rule (0.29.132), before the fetch of an existing
+	// clone as before a fresh one: a clone made before the rule from a host
+	// it refuses kept fetching from it every cycle (L10 round 1).
+	if err := currentOutboundPolicy().Refuse(ctx, gitURL); err != nil {
+		return fmt.Errorf("clone refused: %w", err)
+	}
 	// Bare repos don't have a .git subdirectory — check for HEAD file instead.
 	if _, err := os.Stat(filepath.Join(path, "HEAD")); err == nil {
 		// Existing bare clone found — verify it's the right repo.
@@ -233,7 +239,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		// Use an explicit refspec because git clone --bare does NOT create a
 		// fetch refspec in the config. Without one, git fetch downloads objects
 		// but never advances refs/heads/*, leaving the clone permanently stale.
-		cmd := exec.CommandContext(ctx, "git", "-C", path,
+		cmd := exec.CommandContext(ctx, "git", "-C", path, "-c", gitNoRedirects,
 			"fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -275,7 +281,7 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 func (f *FacadeCollector) syncDefaultBranch(ctx context.Context, clonePath string) {
 	// git ls-remote --symref outputs a line like:
 	//   ref: refs/heads/main\tHEAD
-	cmd := exec.CommandContext(ctx, "git", "-C", clonePath,
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "-c", gitNoRedirects,
 		"ls-remote", "--symref", "origin", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
@@ -355,7 +361,7 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 		return err
 	}
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--", gitURL, path)
+	cmd := exec.CommandContext(ctx, "git", "-c", gitNoRedirects, "clone", "--bare", "--", gitURL, path)
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -369,6 +375,17 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, path string) e
 //     objects are missing (common with free GitHub LFS quota).
 //   - GIT_TERMINAL_PROMPT=0: prevents macOS keychain prompts
 //     (errSecInteractionNotAllowed) when running as a background process.
+//
+
+// gitNoRedirects keeps git from following a redirect of its own (0.29.132,
+// L10 round 1): git's http.followRedirects defaults to "initial", so a
+// server answering the probe's HEAD with 200 and the clone's
+// /info/refs with a 302 to a private host was never seen by the rule.
+// Prelim already resolves redirects and stores the final URL, so the clone,
+// the fetch and ls-remote need none. Every network git command in this
+// package carries it (the boundary test).
+const gitNoRedirects = "http.followRedirects=false"
+
 func gitCloneEnv() []string {
 	env := os.Environ()
 	env = append(env, "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0")

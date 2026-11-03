@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A resolver the test controls: names map to addresses; an unknown name
@@ -81,6 +82,25 @@ func TestOutboundPolicyRefusesSpecialUseAddressesAfterResolution(t *testing.T) {
 		{"https://meta.example/", ErrLinkLocalAddress},
 		{"https://v6ll.example/", ErrLinkLocalAddress},
 		{"http://[fe80::1%25eth0]/", ErrLinkLocalAddress},
+		// The special-purpose ranges netip's predicates do not cover.
+		{"http://0.1.2.3/", ErrPrivateAddress},
+		{"http://192.0.0.9/", ErrPrivateAddress},
+		{"http://198.19.0.1/", ErrPrivateAddress},
+		{"http://240.0.0.1/", ErrPrivateAddress},
+		{"http://255.255.255.255/", ErrPrivateAddress},
+		// Transition addresses reach their embedded IPv4 host.
+		{"http://[64:ff9b::7f00:1]/", ErrPrivateAddress},     // NAT64 of 127.0.0.1
+		{"http://[64:ff9b:1::a00:5]/", ErrPrivateAddress},    // RFC 8215 of 10.0.0.5
+		{"http://[2002:a9fe:a9fe::1]/", ErrLinkLocalAddress}, // 6to4 of 169.254.169.254
+		{"http://[2001:0:1:2:3:4:7fff:fffe]/", nil},          // Teredo: ^7fff:fffe = 128.0.0.1, public (the loopback case is TestOutboundPolicyTeredoEmbedsAnInvertedIPv4)
+		{"http://[2002:cb00:7105::1]/", nil},                 // 6to4 of 203.0.113.5, public
+		// Numeric hosts that are not dotted-decimal: parsers disagree, refused as written.
+		{"http://0177.0.0.1/", ErrNumericHost},
+		{"http://0x7f.1/", ErrNumericHost},
+		{"http://2130706433/", ErrNumericHost},
+		{"http://127.1/", ErrNumericHost},
+		{"http://0x7f000001/", ErrNumericHost},
+		{"https://host.example.0x1A/", ErrNumericHost},
 	} {
 		err := p.Refuse(ctx, c.url)
 		if c.want == nil && err != nil {
@@ -152,6 +172,25 @@ func TestOutboundPolicyZeroValueIsStrict(t *testing.T) {
 	if err := p.RefuseHost(context.Background(), "203.0.113.1:443"); err != nil {
 		t.Errorf("a nil policy reaches a public address, got %v", err)
 	}
+	// Its dial too (L10 round 1: the nil policy dereferenced itself here):
+	// loopback refused; a public literal dialed, with a deadline so the
+	// unroutable test address answers at once.
+	if _, err := p.DialContext(context.Background(), "tcp", "127.0.0.1:9"); !errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("a nil policy's dial must refuse loopback, got %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if _, err := p.DialContext(ctx, "tcp", "203.0.113.1:9"); err == nil || errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("a nil policy's dial of a public address is attempted (a dial error, not a refusal), got %v", err)
+	}
+}
+
+// The Teredo decode: the last four bytes inverted are the client's IPv4.
+func TestOutboundPolicyTeredoEmbedsAnInvertedIPv4(t *testing.T) {
+	a := netip.MustParseAddr("2001:0:1:2:3:4:80ff:ffff") // ^80ff:ffff = 7f00:0000 → 127.0.0.0, loopback
+	if err := (*OutboundPolicy)(nil).refuseAddr(a); !errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("Teredo of a loopback client must be refused, got %v", err)
+	}
 }
 
 func TestOutboundPolicyReportsAnUnresolvableHostAsItsResolverError(t *testing.T) {
@@ -179,8 +218,13 @@ func TestRepositoryHostReadsEveryCloneURLShape(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"", "/local/path", "https:///o/r", "repo.git", "http://"} {
-		if _, err := RepositoryHost(bad); err == nil {
-			t.Errorf("RepositoryHost(%q): want an error (no host)", bad)
+		if _, err := RepositoryHost(bad); !errors.Is(err, ErrNoHost) {
+			t.Errorf("RepositoryHost(%q): want ErrNoHost, got %v", bad, err)
+		}
+		// Nothing to reach over the network: the rule does not judge it (the
+		// scheme validation decides which clone URL forms exist at all).
+		if err := policy(t).Refuse(context.Background(), bad); err != nil {
+			t.Errorf("Refuse(%q): a hostless URL is not the rule's to refuse, got %v", bad, err)
 		}
 	}
 }
@@ -219,6 +263,25 @@ func TestOutboundPolicyDialContextPinsTheCheckedAddress(t *testing.T) {
 		t.Fatalf("loopback trusted by range: %v", err)
 	}
 	conn.Close()
+	// The candidate loop: the first address is a closed port (a connection
+	// refused), the second answers — and both were checked first.
+	two := policy(t, "127.0.0.0/8")
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := closed.Addr().(*net.TCPAddr).Port
+	closed.Close()
+	two.lookup = fakeLookup(map[string][]string{"two.test": {"127.0.0.1"}})
+	if _, err := two.DialContext(context.Background(), "tcp", net.JoinHostPort("two.test", strconv.Itoa(closedPort))); err == nil || errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("a closed port is a dial error, not a refusal: %v", err)
+	}
+	// A mixed answer at the dial: refused before any connection.
+	mixed := policy(t)
+	mixed.lookup = fakeLookup(map[string][]string{"mixed.test": {"203.0.113.9", "127.0.0.1"}})
+	if _, err := mixed.DialContext(context.Background(), "tcp", net.JoinHostPort("mixed.test", strconv.Itoa(port))); !errors.Is(err, ErrPrivateAddress) {
+		t.Errorf("a name with one private answer is refused at the dial, got %v", err)
+	}
 	byName := policy(t, "local.test")
 	byName.lookup = fakeLookup(map[string][]string{}) // a trusted name is not resolved by the policy
 	if _, err := byName.DialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err != nil {

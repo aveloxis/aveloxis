@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -446,8 +447,11 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 // must not reach it from this host through GOPROXY's `direct`; the checksum
 // settings are the operator's (integrity, not egress).
 func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
-	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne("))
-	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(os.Getenv("GOPROXY"))`, `"GONOPROXY="`, `"GOPRIVATE="`} {
+	if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne(")), "goModuleEnv(ctx, goBin)") {
+		t.Error("goModGraphOne runs under goModuleEnv, the one builder")
+	}
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func goModuleEnv("))
+	for _, kv := range []string{`"GOPROXY="+goProxyWithoutDirect(proxy)`, `"GONOPROXY="+goNoModule`, `"GOPRIVATE="+goNoModule`, `"env", "GOPROXY"`} {
 		if !strings.Contains(body, kv) {
 			t.Errorf("the go-module environment lacks %s", kv)
 		}
@@ -457,6 +461,36 @@ func TestGoModuleClosureUsesTheProxyOnly(t *testing.T) {
 	}
 	if strings.Contains(body, `"GONOSUMDB="`) || strings.Contains(body, `"GOSUMDB=`) {
 		t.Error("the checksum settings stay the operator's")
+	}
+}
+
+// With the real go command: a saved `go env -w` file naming a private
+// module pattern and a proxy list with `direct` is overridden — the private
+// patterns match nothing, the proxy list keeps the operator's proxy and
+// loses `direct` (Copilot's twelfth review of PR #246: an EMPTY variable
+// let the saved pattern stay in force).
+func TestGoModuleEnvironmentOverridesSavedPrivateSettings(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("the go command is not on PATH (the closure needs it)")
+	}
+	goenv := filepath.Join(t.TempDir(), "go.env")
+	if err := os.WriteFile(goenv, []byte("GOPRIVATE=corp.internal/*\nGONOPROXY=corp.internal/*\nGOPROXY=https://athens.corp,direct\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+	t.Setenv("GOPROXY", "")
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "")
+	env := goModuleEnv(context.Background(), goBin)
+	cmd := exec.Command(goBin, "env", "GOPROXY", "GONOPROXY", "GOPRIVATE")
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "https://athens.corp\nnone\nnone"; got != want {
+		t.Fatalf("the effective go environment is %q, want %q", got, want)
 	}
 }
 

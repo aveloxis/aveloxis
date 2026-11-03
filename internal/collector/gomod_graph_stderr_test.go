@@ -93,8 +93,10 @@ func TestGoModGraphOneWorksInsideAGoWorkspace(t *testing.T) {
 // install-tools probe already does (tools.go); a too-new go line fails into
 // the existing WARN arm.
 func TestGoModGraphRunsTheHostToolchainOnly(t *testing.T) {
-	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) goModGraphOne("))
+	// The env is built by goModuleEnv (0.29.133, the one builder), which
+	// goModGraphOne runs under (TestGoModuleClosureUsesTheProxyOnly).
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func goModuleEnv("))
 	if !strings.Contains(body, `"GOTOOLCHAIN=local"`) {
-		t.Error("goModGraphOne's env must carry GOTOOLCHAIN=local (a cloned go.mod's toolchain line must not pick the toolchain the collector runs)")
+		t.Error("goModuleEnv must carry GOTOOLCHAIN=local (a cloned go.mod's toolchain line must not pick the toolchain the collector runs)")
 	}
 }

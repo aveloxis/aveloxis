@@ -96,6 +96,95 @@ func TestDedupOnePairStampsTheWinner(t *testing.T) {
 	}
 }
 
+// Copilot's ninth review of PR #246: the retention series counts a message
+// under the MESSAGE's repository once per conversation link it has, whatever
+// the link's repository (retention_store.go). Step 4 of the merge deletes the
+// loser's links by repo_id, and a loser-owned link can name a message another
+// repository owns — a third case variant that collected the comment first
+// (messages are one row per platform id), or a transferred issue. That
+// repository's cached answer moved with the delete and nothing stamped it.
+// The merge stamps every repository its deleted conversation links name, in
+// its transaction, with the winner; a repository the links do not name is
+// left alone.
+func TestDedupOnePairStampsTheRepositoriesItsDeletedLinksName(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_links"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+	gid := defaultRepoGroup(ctx, t, store)
+	repo := func(name string) int64 {
+		var id int64
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.repos (repo_group_id, platform_id, repo_git, repo_name, repo_owner)
+			VALUES ($1, 1, $2, $3, $4) RETURNING repo_id`, gid, "https://github.com/"+slug+"_third/"+name, name, slug+"_third").Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	viaIssue, viaPR, untouched := repo("via-issue"), repo("via-pr"), repo("untouched")
+	// Two messages other repositories own, each linked from a loser-owned
+	// conversation link: one from the loser's issue, one from its pull request.
+	var loserIssueID, loserPRID int64
+	if err := store.pool.QueryRow(ctx, `SELECT issue_id FROM aveloxis_data.issues WHERE repo_id = $1`, loserID).Scan(&loserIssueID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1`, loserID).Scan(&loserPRID); err != nil {
+		t.Fatal(err)
+	}
+	message := func(owner int64, platformMsgID int64) int64 {
+		var id int64
+		if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.messages (repo_id, platform_msg_id, platform_id)
+			VALUES ($1, $2, 1) RETURNING msg_id`, owner, platformMsgID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id) VALUES ($1, $2, $3)`,
+		loserIssueID, loserID, message(viaIssue, 909090911)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.pull_request_message_ref (pull_request_id, repo_id, msg_id) VALUES ($1, $2, $3)`,
+		loserPRID, loserID, message(viaPR, 909090912)); err != nil {
+		t.Fatal(err)
+	}
+	// The untouched repository owns a message too, linked from its own issue
+	// only: a read that ignored the link's repository, or the link, would
+	// stamp it.
+	var untouchedIssueID int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number)
+		VALUES ($1, 424242431, 43) RETURNING issue_id`, untouched).Scan(&untouchedIssueID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO aveloxis_data.issue_message_ref (issue_id, repo_id, msg_id) VALUES ($1, $2, $3)`,
+		untouchedIssueID, untouched, message(untouched, 909090913)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE aveloxis_data.repos SET data_changed_at = NULL WHERE repo_id = ANY($1::bigint[])`,
+		[]int64{winnerID, viaIssue, viaPR, untouched}); err != nil {
+		t.Fatal(err)
+	}
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil || pair.LoserID != loserID {
+		t.Fatalf("candidate query did not surface the seeded pair (got %+v)", pair)
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		id   int64
+	}{{"winner", winnerID}, {"owner of the message the loser's issue link named", viaIssue}, {"owner of the message the loser's pull request link named", viaPR}} {
+		if dataChangedAt(ctx, t, store, c.id) == nil {
+			t.Errorf("the merge must stamp the %s: its retention inputs moved with the deleted link", c.name)
+		}
+	}
+	if dataChangedAt(ctx, t, store, untouched) != nil {
+		t.Error("a repository the loser's links do not name must not be stamped")
+	}
+}
+
 // The one stamp of every run outside a queued job (D7): it lands on a
 // context the caller's cancel cannot stop (an interrupted run has usually
 // written part of its data — the reason collect stamped this way since

@@ -126,7 +126,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"RecordCommitBounds":             {"stamps", "the facade and the gone-recheck sweep: data_changed_at in the same UPDATE, when a bound moves"},
 	"UpdateRepoMetadata":             {"stamps", "Phase 0, the metadata backfill sweep and backfill-repo-metadata: data_changed_at in the same UPDATE, when it fills created_at"},
 	"FillRepoCommitDailyFromCommits": {"stamps", "heal-commit-daily, in its transaction"},
-	"dedupOnePair":                   {"stamps", "dedup-repos / reconcile-repos: the winner, in the merge's transaction"},
+	"dedupOnePair":                   {"stamps", "dedup-repos / reconcile-repos: the winner and every repository whose message a deleted loser conversation link named, in the merge's transaction"},
 	"UpsertCommit":                   {"job", "the facade phase (the job, or collect, which stamps)"},
 	"UpsertCommitBatch":              {"job", "the facade phase"},
 	"ReplaceRepoCommitDaily":         {"job", "the facade phase"},

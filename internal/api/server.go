@@ -106,8 +106,9 @@ type Server struct {
 	pageCache      *repoPageCache
 	repoStates     func(ctx context.Context, repoIDs []int64) (map[int64]db.RepoCacheState, error)
 	rewarmInterval time.Duration
-	requestTimeout time.Duration // http_timeout_seconds, bounds each re-warm request
-	frontEndSecret string        // api.front_end_secret; empty = every request counted
+	requestTimeout time.Duration   // http_timeout_seconds, bounds each re-warm request
+	lifetime       context.Context // the process's stop ends a leader's detached run (BindLifetime; nil = none)
+	frontEndSecret string          // api.front_end_secret; empty = every request counted
 
 	// 0.29.122 (D2): the saved re-warm list (aveloxis_ops.page_cache_replay)
 	// and what the last save wrote — each request and its cost in

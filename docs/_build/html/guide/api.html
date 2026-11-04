@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.136 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.137 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4c385867"></script>
+      <script src="../_static/documentation_options.js?v=e840dc7e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2649,6 +2649,13 @@ time and gets a 304 when nothing changed. An answer that depends on who
 asks — the per-user routes, every <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code>, and a response that just
 added the repository to the caller’s group — carries
 <code class="docutils literal notranslate"><span class="pre">Cache-Control:</span> <span class="pre">private,</span> <span class="pre">no-store</span></code> and is never cached by anything.</p>
+<p>A cacheable answer is computed once for everyone asking at the same time,
+and (since 0.29.137) the computation outlives the caller that started it:
+a client that disconnects mid-way — a front end whose read timeout is
+shorter than <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>, a closed tab — no longer discards the
+work, the answer is stored for the next caller, bounded by
+<code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> like the request itself. A warm run that gets a
+<code class="docutils literal notranslate"><span class="pre">503</span></code> on a heavy chart therefore finds the answer stored on its next pass.</p>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/authz/repos/{repoID}</span></code> (0.29.73) returns <code class="docutils literal notranslate"><span class="pre">204</span></code> when the caller
 may read that repository, otherwise the same <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code> the data endpoints
 return. It returns no data.</p>

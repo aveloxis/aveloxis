@@ -524,6 +524,130 @@ func TestPageCacheZeroBudgetStillRevalidates(t *testing.T) {
 	}
 }
 
+// 0.29.137 (the kate warm run of 2026-11-04): nginx's read timeout cut the
+// warm script's contributors chart at 120 s, which cancelled the leader's
+// context, which marked 120 s of computation uncacheable — and the next
+// pass failed the same request the same way. The leader now runs its
+// handler under a context its caller cannot cancel, so the answer is
+// stored for whoever asks next; the caller that left simply does not get it.
+func TestPageCacheLeaderFinishesAndStoresAfterItsCallerLeaves(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var sawCancel atomic.Bool
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if hn.runs.Load() == 1 {
+			started <- struct{}{}
+			<-release
+			sawCancel.Store(r.Context().Err() != nil)
+		}
+		okBody(hn, w, r)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	var leader *httptest.ResponseRecorder
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		leader = hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) })
+	}()
+	<-started
+	cancel() // the caller leaves mid-computation (nginx's read timeout; a closed tab)
+	close(release)
+	wg.Wait()
+	if sawCancel.Load() {
+		t.Fatal("the leader's handler saw its caller's cancellation: the computation must run under a context the caller cannot end")
+	}
+	if leader.Code != 200 {
+		t.Fatalf("leader answered %d", leader.Code)
+	}
+	w := hn.get("/api/v1/repos/7/thing")
+	if hn.runs.Load() != 1 || w.Header().Get("X-Cache") != "hit" {
+		t.Fatalf("the answer computed after the caller left must be stored: runs %d, X-Cache %q", hn.runs.Load(), w.Header().Get("X-Cache"))
+	}
+}
+
+// The detached run is not unbounded: http_timeout_seconds (Server.
+// requestTimeout, the bound every request and every re-warm request has)
+// ends it, a run it ends is not stored, and — the caller having left, so
+// nobody else reports it — the cut is logged at WARN with the key and the
+// bound (review round 1 F5).
+func TestPageCacheLeaderRunIsBoundedByTheRequestTimeout(t *testing.T) {
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done() // a computation that only the bound ends
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	var logs lockedBuffer
+	hn.s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	hn.s.requestTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) }) }()
+	<-started
+	cancel() // the caller leaves; the bound is what ends the run
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the leader's run outlived the request timeout: the detached context must carry the bound")
+	}
+	if _, ok := hn.s.pageCache.get(pageKey(testPagePattern, 7, "", "", hn.state)); ok {
+		t.Fatal("a run the bound ended must not be stored")
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "ran into http_timeout_seconds") || !strings.Contains(got, "bound=50ms") {
+		t.Fatalf("a bound-cut computation whose caller left must be logged at WARN with the bound; log:\n%s", got)
+	}
+}
+
+// Round 2 F2: the request's own bound (http.TimeoutHandler derives the
+// request context with the same duration, started earlier) always fires
+// before the leader's, and the Bound reports that cut itself — a caller
+// still present when its request times out must not be reported a second
+// time as a caller that "left".
+func TestPageCacheLeaderDoesNotDoubleReportTheRequestBound(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	var logs lockedBuffer
+	hn.s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	hn.s.requestTimeout = 30 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond) // the request bound, as TimeoutHandler sets it
+	defer cancel()
+	hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) })
+	if got := logs.String(); strings.Contains(got, "ran into http_timeout_seconds") {
+		t.Fatalf("a caller whose own request bound fired is not a caller that left; the Bound reports that cut — log:\n%s", got)
+	}
+}
+
+// Detached from the caller, not from the process (review round 1 F3): a
+// stop (`aveloxis stop api` cancelling the context BindLifetime names) ends
+// a leader's run at once — the deploy's next step must not wait up to
+// http_timeout_seconds on a computation nobody will read — and the run is
+// not stored.
+func TestPageCacheLeaderRunEndsWithTheProcess(t *testing.T) {
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	lifetime, stop := context.WithCancel(context.Background())
+	hn.s.BindLifetime(lifetime)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- hn.get("/api/v1/repos/7/thing") }()
+	<-started
+	stop()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the process's stop must end a leader's detached run at once")
+	}
+	if _, ok := hn.s.pageCache.get(pageKey(testPagePattern, 7, "", "", hn.state)); ok {
+		t.Fatal("a run the stop ended must not be stored")
+	}
+}
+
 // A handler that panics must not leave its single-flight entry behind:
 // every later request for that answer would wait on it until its own
 // deadline (review round 1, finding 4).

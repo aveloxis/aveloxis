@@ -243,9 +243,15 @@ rows are scattered about one per page across it (forty workers insert
 interleaved), so the repository page's weekly commit series and the commits
 arm of its top contributors read millions of pages for a kernel fork
 (NVIDIA/nova: 118 s). The daily table is a few thousand rows
-for the same window. The two readers use it when the repository's picture
-is complete (the stamp) and the window is UTC-day aligned — every default window the API hands them
-is a UTC midnight — and the commits table otherwise. The activity bounds (`/stats`' last
+for the same window. The readers — the weekly series, the commits arm of
+top contributors and, since 0.29.137, the commit arms of the `contributors`,
+`committers` and `code_change_commits` metric series (the series over a
+repository set read the days of the repositories whose picture is complete
+and the commit rows of the rest, in one statement; a daily row's author is
+resolved by the same rule as top contributors') — use it when the
+repository's picture is complete (the stamp) and the window is UTC-day
+aligned — every default window the API hands them is a UTC midnight, and a
+chart window is a bucket start — and the commits table otherwise. The activity bounds (`/stats`' last
 activity, the chart floor) read its first and last plausible day — a UTC
 midnight — when the stored bound is not yet filled and the picture is
 complete (0.29.76: the one live commits scan still on the page after the

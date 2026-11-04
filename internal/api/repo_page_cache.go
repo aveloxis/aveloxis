@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1021,13 +1022,68 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.H
 		c.mu.Unlock()
 		close(f.done)
 	}()
-	res, cost := s.runHandler(r, h)
+	lctx, release := s.leaderContext(r.Context())
+	defer release()
+	res, cost := s.runHandler(r.WithContext(lctx), h)
+	if errors.Is(lctx.Err(), context.DeadlineExceeded) && errors.Is(r.Context().Err(), context.Canceled) {
+		// The caller had LEFT (a disconnect cancels its context; the request
+		// bound's own cut is DeadlineExceeded and the Bound reports that one
+		// — round 2 F2) and the bound ended the run the cache kept alive:
+		// nobody else reports it (serverError classifies the handler's error
+		// as "request ended"), and the next caller will pay the same cost
+		// again (review round 1 F5). The path names the repository and the
+		// chart — what decides `heal-commit-daily` (round 2 F4).
+		s.logger.Warn("repository page cache: a computation its caller left behind ran into http_timeout_seconds and was not stored",
+			"method", r.Method, "path", logSafe(r.URL.Path), "query", logSafe(r.URL.RawQuery),
+			"elapsed", cost.Round(time.Millisecond), "bound", s.requestTimeout)
+	}
 	var e *pageEntry
 	if res.cacheable {
 		e = store(res, cost) // before close(f.done): followers find it stored
 	}
 	f.res, f.entry = res, e // written before close(f.done), read only after it
 	return res, e
+}
+
+// leaderContext is the context a leader computes under: the caller's values
+// (the authorization, the re-warm expectation) without the caller's
+// cancellation, bounded by http_timeout_seconds like every request and every
+// re-warm request. A caller that leaves mid-computation — nginx's read
+// timeout is 120 s against the API's 180 s, so the warm script's heaviest
+// chart was cut at 120 s on kate (2026-11-04), the cancellation reached the
+// store through the query, the run was marked uncacheable and the next warm
+// pass failed the same way, forever — no longer discards the work: the
+// answer is stored for whoever asks next, and only the caller that left
+// goes without it. The bound keeps a runaway computation from outliving
+// the request it would have been refused as (requestTimeout zero:
+// unbounded, as the re-warm's own requests are). Detached from the CALLER
+// only: the process's stop (BindLifetime; `aveloxis stop api`) still ends
+// the run at once, so a deploy's next step never waits on a computation
+// nobody will read (review round 1 F3). The caller releases the returned
+// function when the run ends.
+func (s *Server) leaderContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx = context.WithoutCancel(ctx)
+	var cancel context.CancelFunc
+	if s.requestTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.requestTimeout)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	stop := context.AfterFunc(s.lifetimeContext(), cancel)
+	return ctx, func() { stop(); cancel() }
+}
+
+// BindLifetime names the context whose end is the process's stop: a
+// leader's detached run ends with it. Set once by the api command before it
+// serves; unset (the tests, a Server built apart), a run has no lifetime
+// bound beyond the request timeout.
+func (s *Server) BindLifetime(ctx context.Context) { s.lifetime = ctx }
+
+func (s *Server) lifetimeContext() context.Context {
+	if s.lifetime == nil {
+		return context.Background()
+	}
+	return s.lifetime
 }
 
 func (s *Server) runHandler(r *http.Request, h http.HandlerFunc) (pageResult, time.Duration) {

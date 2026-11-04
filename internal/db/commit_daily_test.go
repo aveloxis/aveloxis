@@ -301,6 +301,75 @@ func TestRepoTimeSeriesReadsTheDailyTableWhenFilledAndAligned(t *testing.T) {
 	}
 }
 
+// 0.29.137 (the kate warm run of 2026-11-04: the contributors chart of a
+// 3.2-million-row repository read every commit-file row through the
+// (repo_id, hash) index and discarded 85%% of them on the window, 3.4 s hot
+// and past nginx's 120 s cold): the commit arms of the contributors,
+// committers and code_change_commits series read the daily table on the
+// same rule as the weekly series and top contributors — the picture
+// complete, the window UTC-day aligned — and the commits table otherwise.
+// A repository-id SET is split: the complete repositories' days and the
+// others' commit rows, in one statement.
+func TestMetricSeriesCommitArmsReadTheDailyTableWhenFilledAndAligned(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_ms004")
+	other := seedCommitDaily(t, store, ctx, "_avcd_ms005") // stays unfilled: its one commit row
+	since := utcDay(time.Now()).AddDate(0, 0, -30)
+
+	sum := func(metric string, ids []int64, since time.Time) float64 {
+		t.Helper()
+		pts, err := store.MetricWeeklySeries(ctx, ids, metric, "week", since, utcDay(time.Now()).AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0.0
+		for _, p := range pts {
+			total += p.Value
+		}
+		return total
+	}
+	one := []int64{fx.repoID}
+	both := []int64{fx.repoID, other.repoID}
+	for _, m := range []string{"code_change_commits", "committers", "contributors"} {
+		if got := sum(m, one, since); got != 1 {
+			t.Fatalf("%s unfilled: the commits table says 1, got %v", m, got)
+		}
+	}
+	// Three days of ONE week (the fixture's day has today's weekday, so
+	// day+1 could be next Monday on a Sunday run — review round 1 F2): the
+	// Monday of its week and the two days after it, all inside the window
+	// (the fixture's day is seven days back; since is thirty, until tomorrow).
+	mon := fx.in.AddDate(0, 0, -int((fx.in.Weekday()+6)%7))
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: mon, AuthorEmail: "_avcd_ms004@x", Commits: 5},                  // alice, through the alias
+		{Day: mon.AddDate(0, 0, 1), AuthorEmail: "_avcd_ms004@x", Commits: 1}, // alice again, the same week
+		{Day: mon.AddDate(0, 0, 2), AuthorEmail: "nobody@x", Commits: 2},      // unresolved: a commit, not a person
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := sum("code_change_commits", one, since); got != 8 {
+		t.Fatalf("filled + aligned: code_change_commits sums the daily rows (5+1+2), got %v", got)
+	}
+	if got := sum("committers", one, since); got != 1 {
+		t.Fatalf("filled + aligned: committers counts alice once for the week (nobody@x resolves to no one), got %v", got)
+	}
+	if got := sum("contributors", one, since); got != 1 {
+		t.Fatalf("filled + aligned: contributors counts alice once for the week, got %v", got)
+	}
+	// The set: the filled repository's days and the unfilled one's commit row.
+	if got := sum("code_change_commits", both, since); got != 9 {
+		t.Fatalf("a set mixes the arms per repository: 8 daily + 1 commit row, got %v", got)
+	}
+	if got := sum("committers", both, since); got != 2 {
+		t.Fatalf("a set mixes the arms per repository: alice and the other fixture's alice, got %v", got)
+	}
+	// An unaligned window falls back to the commits table for every repository.
+	if got := sum("code_change_commits", one, since.Add(time.Hour)); got != 1 {
+		t.Fatalf("unaligned window falls back to the commits table: got %v", got)
+	}
+}
+
 // The time series ends at the plausible bound on both paths: a commit (and
 // a daily row) dated 2080 adds no week beyond it.
 func TestRepoTimeSeriesEndsAtThePlausibleBound(t *testing.T) {

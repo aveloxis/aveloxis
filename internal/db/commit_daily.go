@@ -18,8 +18,10 @@ import (
 //
 // Why: the commits table is one row per FILE per commit, and one
 // repository's rows lie about one per page across the whole table (forty
-// workers insert interleaved), so the two commit answers on the repository
-// page — the weekly series and the commits arm of top contributors — read
+// workers insert interleaved), so the commit answers on the repository
+// page — the weekly series, the commits arm of top contributors and, since
+// 0.29.137, the commit arms of the contributors, committers and
+// code_change_commits chart series — read
 // millions of scattered pages for a kernel fork (NVIDIA/nova: 118 s). The
 // daily table is a few thousand rows for the same window; author identity
 // is resolved as the next paragraph says (the alias rule R5 is its LAST
@@ -224,13 +226,51 @@ const stampCommitDailyCompleteSQL = `UPDATE aveloxis_data.repos SET commit_daily
 // than silently taking the slow path. An unknown repository is not
 // complete.
 func (s *PostgresStore) RepoCommitDailyComplete(ctx context.Context, repoID int64) (bool, error) {
-	var complete bool
-	err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE((SELECT commit_daily_complete_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1), false)`, repoID).Scan(&complete)
+	complete, err := s.reposWithCompleteCommitDaily(ctx, []int64{repoID})
 	if err != nil {
-		return false, fmt.Errorf("repo_commit_daily completeness probe: %w", err)
+		return false, err
+	}
+	return len(complete) == 1, nil
+}
+
+// reposWithCompleteCommitDaily is the subset of ids whose daily picture is
+// complete (the stamp), in one read: the series over a repository-id set
+// (0.29.137) split it into the repositories whose days they read and those
+// whose commit rows they read. The one completeness probe; an unknown id
+// is not complete. An error is an error (SR-5).
+func (s *PostgresStore) reposWithCompleteCommitDaily(ctx context.Context, repoIDs []int64) ([]int64, error) {
+	if len(repoIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT repo_id FROM aveloxis_data.repos
+		WHERE repo_id = ANY($1) AND commit_daily_complete_at IS NOT NULL ORDER BY repo_id`, repoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("repo_commit_daily completeness probe: %w", err)
+	}
+	defer rows.Close()
+	var complete []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("repo_commit_daily completeness probe: %w", err)
+		}
+		complete = append(complete, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo_commit_daily completeness probe: %w", err)
 	}
 	return complete, nil
+}
+
+// commitDailyServesOf splits a repository-id set for a window the way
+// commitDailyServes decides one repository: the ids whose daily table answers
+// it (picture complete, both bounds UTC-day aligned) and the rest. An
+// unaligned window puts every id in the rest without a probe.
+func (s *PostgresStore) commitDailyServesOf(ctx context.Context, repoIDs []int64, lower, upper time.Time) (daily []int64, err error) {
+	if !alignedToUTCDay(lower) || !alignedToUTCDay(upper) {
+		return nil, nil
+	}
+	return s.reposWithCompleteCommitDaily(ctx, repoIDs)
 }
 
 // FillRepoCommitDailyFromCommits computes the repository's daily rows from
@@ -260,6 +300,10 @@ func (s *PostgresStore) FillRepoCommitDailyFromCommits(ctx context.Context, repo
 		if _, err := tx.Exec(ctx, repoCommitDailyLockSQL, repoID); err != nil {
 			return fmt.Errorf("lock repo_commit_daily: %w", err)
 		}
+		// The one completeness read that is not reposWithCompleteCommitDaily:
+		// it must run on THIS transaction, after the lock, to see a stamp the
+		// lock holder before it committed (the pool method would read on
+		// another connection, before or beside it).
 		var complete bool
 		if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT commit_daily_complete_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1), false)`, repoID).Scan(&complete); err != nil {
 			return fmt.Errorf("recheck repo_commit_daily completeness: %w", err)
@@ -327,9 +371,12 @@ func (s *PostgresStore) ListReposNeedingCommitDaily(ctx context.Context, limit i
 	return out, rows.Err()
 }
 
-// dailyCommitsArmSQL is the commits arm of TopContributors read from the
-// daily table: distinct commits per (day, email) summed over the window,
-// each row attributed in this order — its stored identity (the backfill's),
+// dailyAuthorIdentitySQL is the one spelling of who a daily row's author is
+// (0.29.137): an expression over the row alias `d`, shared by
+// dailyCommitsArmSQL (top contributors) and the series that count people
+// from the daily table (metricSeriesSQL's contributors and committers), so
+// every reader resolves exactly alike (SR-17: one normalizer). NULL when no
+// rule resolves. Each row is attributed in this order — its stored identity (the backfill's),
 // only while that contributor is LIVE: a contributor merge soft-deletes the
 // loser and leaves child rows on its id by design, mapping its email to the
 // winner through an alias, so a merged-away stored id falls through to the
@@ -349,13 +396,9 @@ func (s *PostgresStore) ListReposNeedingCommitDaily(ctx context.Context, limit i
 // are built on (a non-zero gh_user_id; a non-empty gh_login): the planner cannot prove
 // them from the equality, and without them each lookup is a sequential
 // scan of contributors per daily row (round 3 F1; the backfill's v0.27.25
-// lesson). $1 repo, $2/$3 the window as timestamptz UTC midnights.
-const dailyCommitsArmSQL = `
-    SELECT i.cntrb_id,
-           SUM(i.commits)::bigint AS commits,
-           0::bigint AS issues, 0::bigint AS prs, 0::bigint AS reviews, 0::bigint AS comments
-    FROM (
-        SELECT COALESCE(
+// lesson).
+const dailyAuthorIdentitySQL = `
+               COALESCE(
                    (SELECT c.cntrb_id FROM aveloxis_data.contributors c
                      WHERE c.cntrb_id = d.cntrb_id AND COALESCE(c.cntrb_deleted, 0) = 0),
                    (SELECT MIN(c.cntrb_id::text)::uuid FROM aveloxis_data.contributors c
@@ -379,7 +422,17 @@ const dailyCommitsArmSQL = `
                     WHERE a.alias_email = d.author_email
                       AND COALESCE(c.cntrb_deleted, 0) = 0
                     LIMIT 1)
-               ) AS cntrb_id,
+               )`
+
+// dailyCommitsArmSQL is the commits arm of TopContributors read from the
+// daily table: distinct commits per (day, email) summed over the window,
+// each row attributed by dailyAuthorIdentitySQL. $1 repo, $2/$3 the window as timestamptz UTC midnights.
+const dailyCommitsArmSQL = `
+    SELECT i.cntrb_id,
+           SUM(i.commits)::bigint AS commits,
+           0::bigint AS issues, 0::bigint AS prs, 0::bigint AS reviews, 0::bigint AS comments
+    FROM (
+        SELECT ` + dailyAuthorIdentitySQL + ` AS cntrb_id,
                d.commits
         FROM aveloxis_data.repo_commit_daily d
         WHERE d.repo_id = $1
@@ -406,10 +459,8 @@ const dailyWeeklyCommitsSQL = `
 // this repository: its picture complete, and both bounds UTC-day aligned.
 // A probe error is returned (SR-5).
 func (s *PostgresStore) commitDailyServes(ctx context.Context, repoID int64, lower, upper time.Time) (bool, error) {
-	if !alignedToUTCDay(lower) || !alignedToUTCDay(upper) {
-		return false, nil
-	}
-	return s.RepoCommitDailyComplete(ctx, repoID)
+	daily, err := s.commitDailyServesOf(ctx, []int64{repoID}, lower, upper)
+	return len(daily) == 1, err
 }
 
 // ErrCommitDailyAlreadyComplete says the repository's daily picture was stamped

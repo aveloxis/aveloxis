@@ -783,6 +783,14 @@ asks — the per-user routes, every `401`/`403`, and a response that just
 added the repository to the caller's group — carries
 `Cache-Control: private, no-store` and is never cached by anything.
 
+A cacheable answer is computed once for everyone asking at the same time,
+and (since 0.29.137) the computation outlives the caller that started it:
+a client that disconnects mid-way — a front end whose read timeout is
+shorter than `http_timeout_seconds`, a closed tab — no longer discards the
+work, the answer is stored for the next caller, bounded by
+`http_timeout_seconds` like the request itself. A warm run that gets a
+`503` on a heavy chart therefore finds the answer stored on its next pass.
+
 `GET /api/v1/authz/repos/{repoID}` (0.29.73) returns `204` when the caller
 may read that repository, otherwise the same `401`/`403` the data endpoints
 return. It returns no data.

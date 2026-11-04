@@ -17,7 +17,7 @@ the union for people-counting metrics.
 
 - **id**: `contributors` · **kind**: temporal · **unit**: people
 - **Our definition**: Distinct people with ANY contribution event (issue, change request, commit, comment, or event action) in the bucket. Soft-deleted merge-loser identities excluded.
-- **Improvement on CHAOSS**: Counts resolved platform identities (cntrb_id) across ALL activity types in one pass, rather than per-activity contributor lists. Commit authors are read from the daily commit table, resolved as for committers, once the repository's commit picture is complete.
+- **Improvement on CHAOSS**: Counts resolved platform identities (cntrb_id) across ALL activity types in one pass, rather than per-activity contributor lists. Commit authors are read from the daily commit table, resolved as for committers, once the repository's commit picture is complete (a day on which two live identities authored under one email then counts one person or none, never both: decided, 0.29.137).
 - **CHAOSS nominal**: https://chaoss.community/kb/metric-contributors/
 
 ## Change Requests {#change_requests}
@@ -59,7 +59,7 @@ the union for people-counting metrics.
 
 - **id**: `committers` · **kind**: temporal · **unit**: people
 - **Our definition**: Distinct resolved commit authors per bucket. Commits whose author could not be resolved to a platform identity (~8% fleet-wide) are excluded and documented.
-- **Improvement on CHAOSS**: Uses deterministic platform-resolved identities, not raw email strings, so renames and aliases collapse correctly: the stored cmt_ght_author_id, or — once the repository's daily commit picture is complete — the daily table's author resolved by the same rule as its top contributors (the stored identity while live, else the forge's numeric user id, the login, then the house email rule).
+- **Improvement on CHAOSS**: Uses deterministic platform-resolved identities, not raw email strings, so renames and aliases collapse correctly: the stored cmt_ght_author_id, or — once the repository's daily commit picture is complete — the daily table's author resolved by the same rule as its top contributors (the stored identity while live, else the forge's numeric user id, the login, then the house email rule; a day on which two live identities authored under one email then counts one person or none, never both: decided, 0.29.137).
 - **CHAOSS nominal**: https://chaoss.community/kb/metric-committers/
 
 ## Burstiness {#burstiness}

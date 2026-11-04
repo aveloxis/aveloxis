@@ -83,6 +83,23 @@ records the repository in the viewer's "Comparisons" group; comparing it on
 a comparison page still does. (The built-in GUI's repository page draws no
 metric charts.)
 
+**Commit authorship once the daily picture is complete (0.29.137).** For a
+repository whose daily commit picture is complete
+(`repos.commit_daily_complete_at`, set by a completed walk of its default
+branch or by `aveloxis heal-commit-daily`), the commit arms of the
+`contributors` and `committers` series read the daily commit table — one row
+per repository, UTC day and author email — and a day's author is resolved by
+one rule, the one `/contributors/top` applies: the stored identity while it
+is live, else the forge's numeric user id, the login, then the house email
+rule. A consequence, decided and kept (Copilot's PR #249 review, comment 2,
+declined): a day on which two distinct live identities authored commits
+under ONE email resolves to one person or to none, where the per-file commit
+rows counted two — crediting either would be fabricated identity, and the
+table is keyed by email by design. A repository whose picture is not
+complete keeps the per-file rows and their stored identities. Such days are
+rare (two live identities, one email, one UTC day); a chart can change by
+that much when a repository's picture first becomes complete.
+
 ## Changes for API clients in 0.29.114
 
 `POST /api/v1/me/sessions/revoke` is never refused by a spent request quota
@@ -759,6 +776,14 @@ The ranked "who does the work here" table behind the repo page's Top
 contributors card. Same `since`/`until` window semantics as the
 `/contributions/*` endpoints (default: from two years before the Monday,
 UTC, that starts the current week; `until` is inclusive); `limit` defaults to 20 and is capped at 100.
+
+**Commit counts once the daily picture is complete (0.29.137 documents the
+rule this endpoint has applied since the daily commit table existed).** The
+commits column reads the daily commit table when the repository's picture
+is complete, resolving each day's author by the rule the paragraph on
+`/metric-series` above describes, and keeps that endpoint's consequence: a
+day on which two distinct live identities authored commits under one
+email credits one of them or neither, never both.
 
 **Caching (since 0.29.71; 0.29.73).** With `api.response_cache_mb` set, a
 repository's own GET answers (this endpoint, `/timeseries`, `/licenses`,

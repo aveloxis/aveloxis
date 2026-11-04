@@ -1882,6 +1882,22 @@ from it instead of <code class="docutils literal notranslate"><span class="pre">
 records the repository in the viewer’s “Comparisons” group; comparing it on
 a comparison page still does. (The built-in GUI’s repository page draws no
 metric charts.)</p>
+<p><strong>Commit authorship once the daily picture is complete (0.29.137).</strong> For a
+repository whose daily commit picture is complete
+(<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>, set by a completed walk of its default
+branch or by <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code>), the commit arms of the
+<code class="docutils literal notranslate"><span class="pre">contributors</span></code> and <code class="docutils literal notranslate"><span class="pre">committers</span></code> series read the daily commit table — one row
+per repository, UTC day and author email — and a day’s author is resolved by
+one rule, the one <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code> applies: the stored identity while it
+is live, else the forge’s numeric user id, the login, then the house email
+rule. A consequence, decided and kept (Copilot’s PR #249 review, comment 2,
+declined): a day on which two distinct live identities authored commits
+under ONE email resolves to one person or to none, where the per-file commit
+rows counted two — crediting either would be fabricated identity, and the
+table is keyed by email by design. A repository whose picture is not
+complete keeps the per-file rows and their stored identities. Such days are
+rare (two live identities, one email, one UTC day); a chart can change by
+that much when a repository’s picture first becomes complete.</p>
 </section>
 <section id="changes-for-api-clients-in-0-29-114">
 <h2>Changes for API clients in 0.29.114<a class="headerlink" href="#changes-for-api-clients-in-0-29-114" title="Link to this heading"></a></h2>
@@ -2627,6 +2643,13 @@ GET /api/v1/repos/{repoID}/contributors/top?since=2024-01-01&amp;until=2024-12-3
 contributors card. Same <code class="docutils literal notranslate"><span class="pre">since</span></code>/<code class="docutils literal notranslate"><span class="pre">until</span></code> window semantics as the
 <code class="docutils literal notranslate"><span class="pre">/contributions/*</span></code> endpoints (default: from two years before the Monday,
 UTC, that starts the current week; <code class="docutils literal notranslate"><span class="pre">until</span></code> is inclusive); <code class="docutils literal notranslate"><span class="pre">limit</span></code> defaults to 20 and is capped at 100.</p>
+<p><strong>Commit counts once the daily picture is complete (0.29.137 documents the
+rule this endpoint has applied since the daily commit table existed).</strong> The
+commits column reads the daily commit table when the repository’s picture
+is complete, resolving each day’s author by the rule the paragraph on
+<code class="docutils literal notranslate"><span class="pre">/metric-series</span></code> above describes, and keeps that endpoint’s consequence: a
+day on which two distinct live identities authored commits under one
+email credits one of them or neither, never both.</p>
 <p><strong>Caching (since 0.29.71; 0.29.73).</strong> With <code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> set, a
 repository’s own GET answers (this endpoint, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>, <code class="docutils literal notranslate"><span class="pre">/licenses</span></code>,
 <code class="docutils literal notranslate"><span class="pre">/deps</span></code>, <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">/scancode-*</span></code>, <code class="docutils literal notranslate"><span class="pre">/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">/scorecard</span></code>,

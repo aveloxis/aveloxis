@@ -108,15 +108,19 @@ func TestEveryCommitReadingSeriesTakesTheDailySplit(t *testing.T) {
 	srctest.MinCount(t, "metricSeriesSQL entries", len(metricSeriesSQL), 7)
 	readsCommits := 0
 	for name, q := range metricSeriesSQL {
+		// $4 is judged on the RAW statement, as MetricWeeklySeries judges it
+		// (round 4 F4: one predicate — a comment naming $4 would otherwise pass
+		// here and fail at bind time); the tables on the comment-stripped one.
+		takesSplit := strings.Contains(q, "$4")
 		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
 		if !strings.Contains(stmt, "aveloxis_data.commits") {
-			if strings.Contains(stmt, "$4") {
+			if takesSplit {
 				t.Errorf("%s: takes $4 without reading the commits table; MetricWeeklySeries would pass a split it has no arm for", name)
 			}
 			continue
 		}
 		readsCommits++
-		if !strings.Contains(stmt, "aveloxis_data.repo_commit_daily") || !strings.Contains(stmt, "$4") {
+		if !strings.Contains(stmt, "aveloxis_data.repo_commit_daily") || !takesSplit {
 			t.Errorf("%s reads aveloxis_data.commits but has no repo_commit_daily arm on $4: a complete repository's chart would scan its per-file rows", name)
 		}
 	}

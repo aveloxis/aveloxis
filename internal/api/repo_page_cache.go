@@ -912,7 +912,7 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 
 	uri := pageRequestURI(r, query)
 	_, replaying := r.Context().Value(rewarmExpectKey{}).(string)
-	res, e := s.runOnce(c, key, uri, authed, h, func(res pageResult, cost time.Duration) *pageEntry {
+	res, e := s.runOnce(c, key, authed, uri, h, func(res pageResult, cost time.Duration) *pageEntry {
 		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(), window: window,
 			body: res.body, contentType: res.contentType, disposition: res.disposition,
 			computed: c.now(), cost: cost, keptWhenOff: pol.keptWhenOff, keptPool: pol.keptPool, onReplayList: replaying}
@@ -978,10 +978,12 @@ func writeEntry(w http.ResponseWriter, contentType, disposition string, body []b
 // releasing the others, who share that answer and its entry without storing
 // anything (PR #226 review: followers replaced the entry, resetting its
 // measured cost and its hits). A follower whose leader produced nothing
-// cacheable (the leader's client left, a partial answer, an error) runs h
-// itself — and stores what it computed — so one caller's failure never
-// becomes another's.
-func (s *Server) runOnce(c *repoPageCache, key, uri string, r *http.Request, h http.HandlerFunc,
+// cacheable (the bound or the process's stop ended the leader's run, a
+// partial answer, an error — since 0.29.137 the leader's client leaving is
+// NOT that: leaderContext) runs h itself — and stores what it computed — so
+// one caller's failure never becomes another's. uri is the keyed request
+// as the saved re-warm list spells it, for the log alone.
+func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, uri string, h http.HandlerFunc,
 	store func(pageResult, time.Duration) *pageEntry) (pageResult, *pageEntry) {
 	c.mu.Lock()
 	if f, ok := c.inflight[key]; ok {
@@ -1107,8 +1109,9 @@ func (s *Server) runHandler(r *http.Request, h http.HandlerFunc) (pageResult, ti
 		body:        cw.buf.Bytes(),
 		contentType: cw.header.Get("Content-Type"),
 		disposition: cw.header.Get("Content-Disposition"),
-		// A run whose request ended (client gone, http_timeout_seconds)
-		// may have written a half answer; only a complete 200 is kept.
+		// A run whose context ended (a follower's client gone or its request
+		// bound; a leader's bound or the process's stop) may have written a
+		// half answer; only a complete 200 is kept.
 		cacheable: status == http.StatusOK && !partial && r.Context().Err() == nil,
 	}, cost
 }

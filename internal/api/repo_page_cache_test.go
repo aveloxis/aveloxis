@@ -1369,7 +1369,7 @@ func TestRunOnceRechecksTheCacheBeforeLeading(t *testing.T) {
 	c.put(stored) // the leader that finished between the caller's miss and its claim
 	runs := 0
 	h := func(w http.ResponseWriter, r *http.Request) { runs++; _, _ = w.Write([]byte("recomputed")) }
-	res, e := s.runOnce(c, key, "/x", httptest.NewRequest(http.MethodGet, "/x", nil), h, func(res pageResult, cost time.Duration) *pageEntry {
+	res, e := s.runOnce(c, key, httptest.NewRequest(http.MethodGet, "/x", nil), "/x", h, func(res pageResult, cost time.Duration) *pageEntry {
 		ne := &pageEntry{key: key, repoID: 1, body: res.body, computed: c.now(), cost: cost, keptWhenOff: true}
 		c.put(ne)
 		return ne

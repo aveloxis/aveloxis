@@ -14,14 +14,15 @@ import (
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// summary/49 (2026-10-06): the repository page's two commit answers — the
-// weekly commit series and the commits arm of top contributors — timed out
+// summary/49 (2026-10-06): the repository page's commit answers — the
+// weekly commit series and the commits arm of top contributors then; the
+// contributors, committers and code_change_commits charts since 0.29.137 — timed out
 // on kernel forks because the commits table is one row per FILE per commit
 // and one repository's rows lie about one per page across the whole table
 // (NVIDIA/nova: 118 s, 1.48M heap pages for 337K rows). The facade already
 // walks the whole default branch every run, so it folds what it walks into
 // aveloxis_data.repo_commit_daily — one row per repository, UTC day and
-// author email — and the two readers sum that table when the repository's
+// author email — and the readers sum that table when the repository's
 // picture is complete (repos.commit_daily_complete_at: a trimming walk or
 // the heal fill, never a walk that swallowed writes) and the window is
 // UTC-day aligned, falling back to the commits table otherwise. Author identity at read time is the contract's own rule R5:

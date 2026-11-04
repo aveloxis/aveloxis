@@ -269,7 +269,7 @@ func TestCommitDailyCompleteColumnMigrationStampsOnce(t *testing.T) {
 // LastActivityAt, whose commits arm falls back from the stored bound
 // (NULL until the repository's next collection) to a live scan of the
 // commits table — the scattered-page scan the daily table retired for
-// the other two readers. A complete daily picture answers the bound from
+// the other readers. A complete daily picture answers the bound from
 // its primary key instead: the stored bound first (exact), then the daily
 // table (a UTC day: midnight of the last/first day — a lower bound of the
 // true last instant, which every consumer rounds to a day anyway), then

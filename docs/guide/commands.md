@@ -1395,7 +1395,7 @@ commit answers for a large repository read millions of pages (a kernel fork:
 two minutes, past the front end's budget). The facade now folds the walk it
 already makes of the whole default branch into one row per repository, UTC
 day and author email, and replaces the repository's rows after every
-completed walk; the two readers sum that table when the repository's
+completed walk; the readers (the weekly series, top contributors and, since 0.29.137, the contributors, committers and code_change_commits charts) sum that table when the repository's
 picture is complete (`repos.commit_daily_complete_at`, set by a facade walk
 whose every commit was proven written and by this command — never by a
 walk that swallowed writes; 0.29.75) and the window is UTC-day aligned,

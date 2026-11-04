@@ -4,6 +4,7 @@
 package db
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -68,28 +69,16 @@ func TestMetricReadersUseHalfOpenWindows(t *testing.T) {
 // (bucket, person) first and anti-join the deleted-loser rule on the
 // distinct pairs. A cost shape, which no seeded value can observe
 // (TestMetricSeriesExactValuesFromSeededData proves the counts), so the SQL
-// is pinned: the DISTINCT lies inside the derived table the NOT EXISTS
-// reads from.
+// is pinned — the resolved statement from the map itself (round 3 R3-7: a
+// source read folded a misnamed entry into its neighbour): the DISTINCT
+// lies inside the derived table the NOT EXISTS reads from.
 func TestPersonSeriesDeduplicateBeforeTheDeletedLoserAntiJoin(t *testing.T) {
-	body, ok := "", false
-	for _, src := range srctest.PackageFiles(t, "internal/db", 100) {
-		if v, found := srctest.PackageValues(t, srctest.StripGoComments(src))["metricSeriesSQL"]; found {
-			body, ok = v, true
-		}
-	}
-	if !ok {
-		t.Fatal("metricSeriesSQL moved: this pin reads the series map in internal/db")
-	}
 	for _, metric := range []string{"contributors", "committers"} {
-		start := strings.Index(body, "\""+metric+"\":")
-		if start < 0 {
+		q, ok := metricSeriesSQL[metric]
+		if !ok {
 			t.Fatalf("metric %q is not in metricSeriesSQL", metric)
 		}
-		end := strings.Index(body[start:], "GROUP BY 1 ORDER BY 1`")
-		if end < 0 {
-			t.Fatalf("metric %q: its statement no longer ends in the shared GROUP BY 1 ORDER BY 1", metric)
-		}
-		stmt := srctest.StripSQLComments(body[start : start+end])
+		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
 		distinct := strings.Index(stmt, "SELECT DISTINCT")
 		anti := strings.Index(stmt, "NOT EXISTS")
 		// The derived table's closing alias: the NOT EXISTS must sit past it.
@@ -100,7 +89,10 @@ func TestPersonSeriesDeduplicateBeforeTheDeletedLoserAntiJoin(t *testing.T) {
 		if distinct < 0 || anti < 0 || closed < 0 || distinct > anti || anti < closed {
 			t.Errorf("%s: the (bucket, person) DISTINCT must come before the deleted-loser NOT EXISTS, and the NOT EXISTS must sit OUTSIDE the derived table (past its `) p`), so the anti-join probes once per person and bucket (DISTINCT at %d, NOT EXISTS at %d, `) p` at %d)", metric, distinct, anti, closed)
 		}
-		if strings.Contains(stmt, "COUNT(DISTINCT") {
+		// The outer count is COUNT(*) over the distinct pairs; the identity
+		// expression's own COUNT(DISTINCT c.cntrb_id) = 1 (one live
+		// contributor per rule) is not that count.
+		if strings.Contains(stmt, "COUNT(DISTINCT cntrb)") || strings.Contains(stmt, "COUNT(DISTINCT cmt_ght_author_id)") || !strings.Contains(stmt, "COUNT(*)::float") {
 			t.Errorf("%s: counts the distinct pairs with COUNT(*) over the derived table, not COUNT(DISTINCT) over every row", metric)
 		}
 	}
@@ -111,26 +103,12 @@ func TestPersonSeriesDeduplicateBeforeTheDeletedLoserAntiJoin(t *testing.T) {
 // a statement that names $4 — so a NEW commit-reading series written
 // without the daily arm would silently keep the per-file path. Every
 // metricSeriesSQL statement that reads aveloxis_data.commits must also read
-// repo_commit_daily and take $4.
+// repo_commit_daily and take $4; read from the map itself (round 3 R3-7).
 func TestEveryCommitReadingSeriesTakesTheDailySplit(t *testing.T) {
-	body, ok := "", false
-	for _, src := range srctest.PackageFiles(t, "internal/db", 100) {
-		if v, found := srctest.PackageValues(t, srctest.StripGoComments(src))["metricSeriesSQL"]; found {
-			body, ok = v, true
-		}
-	}
-	if !ok {
-		t.Fatal("metricSeriesSQL moved: this pin reads the series map in internal/db")
-	}
-	entries := regexp.MustCompile("\"([a-z_]+)\": `").FindAllStringSubmatchIndex(body, -1)
-	srctest.MinCount(t, "metricSeriesSQL entries", len(entries), 7)
+	srctest.MinCount(t, "metricSeriesSQL entries", len(metricSeriesSQL), 7)
 	readsCommits := 0
-	for i, m := range entries {
-		end := len(body)
-		if i+1 < len(entries) {
-			end = entries[i+1][0]
-		}
-		name, stmt := body[m[2]:m[3]], srctest.StripSQLComments(body[m[1]:end])
+	for name, q := range metricSeriesSQL {
+		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
 		if !strings.Contains(stmt, "aveloxis_data.commits") {
 			if strings.Contains(stmt, "$4") {
 				t.Errorf("%s: takes $4 without reading the commits table; MetricWeeklySeries would pass a split it has no arm for", name)

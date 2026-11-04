@@ -2655,7 +2655,9 @@ a client that disconnects mid-way — a front end whose read timeout is
 shorter than <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>, a closed tab — no longer discards the
 work, the answer is stored for the next caller, bounded by
 <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> like the request itself. A warm run that gets a
-<code class="docutils literal notranslate"><span class="pre">503</span></code> on a heavy chart therefore finds the answer stored on its next pass.</p>
+<code class="docutils literal notranslate"><span class="pre">503</span></code> on a heavy chart therefore finds the answer stored on its next pass,
+provided the computation finishes within that bound (a computation the
+bound ends is logged; see Troubleshooting, “Charts or pages time out”).</p>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/authz/repos/{repoID}</span></code> (0.29.73) returns <code class="docutils literal notranslate"><span class="pre">204</span></code> when the caller
 may read that repository, otherwise the same <code class="docutils literal notranslate"><span class="pre">401</span></code>/<code class="docutils literal notranslate"><span class="pre">403</span></code> the data endpoints
 return. It returns no data.</p>

@@ -912,7 +912,7 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 
 	uri := pageRequestURI(r, query)
 	_, replaying := r.Context().Value(rewarmExpectKey{}).(string)
-	res, e := s.runOnce(c, key, authed, h, func(res pageResult, cost time.Duration) *pageEntry {
+	res, e := s.runOnce(c, key, uri, authed, h, func(res pageResult, cost time.Duration) *pageEntry {
 		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(), window: window,
 			body: res.body, contentType: res.contentType, disposition: res.disposition,
 			computed: c.now(), cost: cost, keptWhenOff: pol.keptWhenOff, keptPool: pol.keptPool, onReplayList: replaying}
@@ -981,7 +981,7 @@ func writeEntry(w http.ResponseWriter, contentType, disposition string, body []b
 // cacheable (the leader's client left, a partial answer, an error) runs h
 // itself — and stores what it computed — so one caller's failure never
 // becomes another's.
-func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.HandlerFunc,
+func (s *Server) runOnce(c *repoPageCache, key, uri string, r *http.Request, h http.HandlerFunc,
 	store func(pageResult, time.Duration) *pageEntry) (pageResult, *pageEntry) {
 	c.mu.Lock()
 	if f, ok := c.inflight[key]; ok {
@@ -1031,11 +1031,13 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.H
 		// — round 2 F2) and the bound ended the run the cache kept alive:
 		// nobody else reports it (serverError classifies the handler's error
 		// as "request ended"), and the next caller will pay the same cost
-		// again (review round 1 F5). The path names the repository and the
-		// chart — what decides `heal-commit-daily` (round 2 F4).
+		// again (review round 1 F5). The keyed request (the path and the
+		// listed parameters, as the saved re-warm list spells it) names the
+		// repository and the chart — what decides `heal-commit-daily`
+		// (round 2 F4; round 3 R3-2: the caller hands it in, so this is not
+		// a reader of the query).
 		s.logger.Warn("repository page cache: a computation its caller left behind ran into http_timeout_seconds and was not stored",
-			"method", r.Method, "path", logSafe(r.URL.Path), "query", logSafe(r.URL.RawQuery),
-			"elapsed", cost.Round(time.Millisecond), "bound", s.requestTimeout)
+			"method", r.Method, "uri", logSafe(uri), "elapsed", cost.Round(time.Millisecond), "bound", s.requestTimeout)
 	}
 	var e *pageEntry
 	if res.cacheable {

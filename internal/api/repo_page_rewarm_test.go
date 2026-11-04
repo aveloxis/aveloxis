@@ -407,6 +407,7 @@ func TestRewarmShutdownDuringAReplayIsNotAFailure(t *testing.T) {
 		}
 		okBody(hn, w, r)
 	})
+	hn.s.BindLifetime(ctx) // as runAPI does: the pass's context is the lifetime a leader's run ends with (0.29.137)
 	hn.get("/api/v1/repos/7/thing?a=1")
 	hn.get("/api/v1/repos/7/thing?a=1")
 	runs()

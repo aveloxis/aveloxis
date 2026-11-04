@@ -73,6 +73,13 @@ func newPageCacheHarness(t *testing.T, pol pagePolicy, maxBytes int64, h func(hn
 	hn := &pageCacheHarness{t: t, known: true, now: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
 		state: db.RepoCacheState{HasQueueRow: true, LastCollected: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}}
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(maxBytes)}
+	// The lifetime production always binds (runAPI: the re-warm context): a
+	// leader's detached run ends with the test, never outliving it (review
+	// round 3 R3-1/R3-8 — a harness with no lifetime and no request bound
+	// modelled an unstoppable leader, a shape production refuses).
+	lifetime, endLifetime := context.WithCancel(context.Background())
+	t.Cleanup(endLifetime)
+	s.BindLifetime(lifetime)
 	s.pageCache.now = func() time.Time { hn.mu.Lock(); defer hn.mu.Unlock(); return hn.now }
 	s.repoStates = func(_ context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
 		hn.mu.Lock()
@@ -1362,7 +1369,7 @@ func TestRunOnceRechecksTheCacheBeforeLeading(t *testing.T) {
 	c.put(stored) // the leader that finished between the caller's miss and its claim
 	runs := 0
 	h := func(w http.ResponseWriter, r *http.Request) { runs++; _, _ = w.Write([]byte("recomputed")) }
-	res, e := s.runOnce(c, key, httptest.NewRequest(http.MethodGet, "/x", nil), h, func(res pageResult, cost time.Duration) *pageEntry {
+	res, e := s.runOnce(c, key, "/x", httptest.NewRequest(http.MethodGet, "/x", nil), h, func(res pageResult, cost time.Duration) *pageEntry {
 		ne := &pageEntry{key: key, repoID: 1, body: res.body, computed: c.now(), cost: cost, keptWhenOff: true}
 		c.put(ne)
 		return ne

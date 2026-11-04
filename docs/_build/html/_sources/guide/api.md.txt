@@ -789,7 +789,9 @@ a client that disconnects mid-way — a front end whose read timeout is
 shorter than `http_timeout_seconds`, a closed tab — no longer discards the
 work, the answer is stored for the next caller, bounded by
 `http_timeout_seconds` like the request itself. A warm run that gets a
-`503` on a heavy chart therefore finds the answer stored on its next pass.
+`503` on a heavy chart therefore finds the answer stored on its next pass,
+provided the computation finishes within that bound (a computation the
+bound ends is logged; see Troubleshooting, "Charts or pages time out").
 
 `GET /api/v1/authz/repos/{repoID}` (0.29.73) returns `204` when the caller
 may read that repository, otherwise the same `401`/`403` the data endpoints

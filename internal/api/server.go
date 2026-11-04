@@ -200,28 +200,23 @@ func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) 
 		if opts.Mailer != nil { // a nil *Mailer must not become a non-nil interface
 			adminOpts.Mailer = opts.Mailer
 		}
-		adminLogger := logger
-		if adminLogger == nil {
-			adminLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
-		}
-		s.admin = admin.New(store, adminOpts, apiHooks{s}, adminLogger)
+		s.admin = admin.New(store, adminOpts, apiHooks{s}, logger)
 	}
 	s.rewarmInterval = opts.RewarmInterval
 	s.requestTimeout = opts.RequestTimeout
 	s.stopTimeout = opts.StopTimeout
 	s.frontEndSecret = opts.FrontEndSecret
-	if logger != nil { // SR-10: the effective values, after the zero defaults
-		// Neither cache ages its answers (D6, 0.29.120): each is valid until
-		// its repositories change, so no TTL is reported.
-		logger.Info("API collection cache", "max_entries", collectionCacheMaxEntries,
-			"valid_until", "a member's next collection or data_changed_at stamp")
-		logger.Info("API repository page cache", "max_bytes", s.pageCache.maxBytes,
-			"kept_without_budget", s.pageCache.keptWithoutBudget(), // per pool at max_bytes=0: /timeseries + /contributors/top, and /metric-series
-			"kept_pools", s.pageCache.keptPools(),
-			"rewarm_interval", s.rewarmInterval,
-			"front_end_secret_set", s.frontEndSecret != "", // never the value
-			"source", "api.response_cache_mb, api.cache_rewarm_seconds")
-	}
+	// SR-10: the effective values, after the zero defaults.
+	// Neither cache ages its answers (D6, 0.29.120): each is valid until
+	// its repositories change, so no TTL is reported.
+	logger.Info("API collection cache", "max_entries", collectionCacheMaxEntries,
+		"valid_until", "a member's next collection or data_changed_at stamp")
+	logger.Info("API repository page cache", "max_bytes", s.pageCache.maxBytes,
+		"kept_without_budget", s.pageCache.keptWithoutBudget(), // per pool at max_bytes=0: /timeseries + /contributors/top, and /metric-series
+		"kept_pools", s.pageCache.keptPools(),
+		"rewarm_interval", s.rewarmInterval,
+		"front_end_secret_set", s.frontEndSecret != "", // never the value
+		"source", "api.response_cache_mb, api.cache_rewarm_seconds")
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	// v0.27.59/v0.27.77: the landing page's public fleet stats — on
 	// the publicPaths allowlist (auth.go); 60s stale-on-error cache.

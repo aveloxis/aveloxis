@@ -97,7 +97,8 @@ func alignedToUTCDay(t time.Time) bool {
 
 // ReplaceRepoCommitDaily makes rows the repository's daily picture in one
 // transaction under the per-repository lock: every (day, author) in rows is
-// upserted — a known identity the walk could not supply is KEPT — and, when
+// upserted — a known identity the walk could not supply is KEPT while the
+// bucket's effective count is unchanged (a changed count drops it) — and, when
 // trim is set, every (day, author) not in rows is deleted, so a walk that
 // saw nothing (an empty default branch) clears the table — and the
 // repository is stamped complete (repos.commit_daily_complete_at): the

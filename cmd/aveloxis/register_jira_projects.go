@@ -106,7 +106,7 @@ func registerJiraProjectsCmd(cfgPath *string) *cobra.Command {
 				// the project to the wrong repo. Require an explicit
 				// operator mapping instead.
 				if c.RepoCount > 1 {
-					fmt.Fprintf(os.Stderr, "skipping %s: its synthetic issues span %d repos — register it explicitly with `register-jira-projects --project %s --repo-id <repo> --base-url %s`\n", c.ProjectKey, c.RepoCount, c.ProjectKey, baseURL)
+					prose(os.Stderr, "skipping %s: its synthetic issues span %d repos — register it explicitly with `register-jira-projects --project %s --repo-id <repo> --base-url %s`", c.ProjectKey, c.RepoCount, c.ProjectKey, baseURL)
 					skipped++
 					continue
 				}

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.135 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.136 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7bc0d20d"></script>
+      <script src="../_static/documentation_options.js?v=4c385867"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -3700,9 +3700,18 @@ only when the schema stamp is readable and current and this release’s steps
 are acknowledged (or it has none); a missing, unreadable or malformed stamp
 prints the steps, with a first line saying why, and so does a database
 with no collected data yet (the start gate does not require the steps on a
-fresh install). Otherwise its last line is
+fresh install). Otherwise it ends with
 the migrate to run. It does not take <code class="docutils literal notranslate"><span class="pre">--since</span></code> or <code class="docutils literal notranslate"><span class="pre">--inclusive</span></code>. Use it for
 upgrades (<a class="reference internal" href="../getting-started/upgrading.html"><span class="std std-doc">Upgrading</span></a>).</p>
+<p>Every note wraps at the terminal’s column width: <code class="docutils literal notranslate"><span class="pre">COLUMNS</span></code> when it is set
+(<code class="docutils literal notranslate"><span class="pre">COLUMNS=120</span> <span class="pre">aveloxis</span> <span class="pre">deploy-checklist</span> <span class="pre">--pending</span></code>; the shell’s own
+<code class="docutils literal notranslate"><span class="pre">COLUMNS</span></code> is not exported unless you export it), otherwise 80. A step’s
+command line, and a command in backticks inside a note, are never split
+across lines, so they copy into a shell whole. A command an older note
+carries without backticks wraps like prose (the notes are frozen as their
+operators saw them): copy it from the note’s lines, not the screen. The
+start gate’s refusals and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span></code>’s verdict wrap the same way
+(0.29.136).</p>
 <p><code class="docutils literal notranslate"><span class="pre">--since</span></code> is the offline form: it takes a version you name — typically the
 last acknowledged deploy, the highest version in <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.deploy_ack</span></code>
 compared as a version — and prints every later release’s block up to this

@@ -33,7 +33,7 @@ the stamp. When the stamp is current and this release's steps are
 acknowledged (or it has none), it prints `nothing pending` — only then: a
 missing, unreadable or malformed stamp prints the steps, saying why first,
 and so does a fresh install with no collected data yet.
-Otherwise its last line names the migrate step 3 runs. It reads the database in
+Otherwise it ends by naming the migrate step 3 runs. It reads the database in
 `aveloxis.json` (`--config` for another) and changes nothing. Versions
 compare as numbers (0.29.9 is before 0.29.10).
 

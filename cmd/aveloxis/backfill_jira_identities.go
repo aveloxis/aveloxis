@@ -242,7 +242,7 @@ func backfillJiraIdentitiesCmd(cfgPath *string) *cobra.Command {
 						// the beginning, so "rerun to continue" was a lie
 						// (the same --limit reprocesses the same N and
 						// stops at the same point). Say what is true.
-						fmt.Printf("hit --limit after %d issues attempted (%d fully processed, linked=%d minted=%d) — canary complete. Rerun WITHOUT --limit for the full pass; it restarts from the beginning and every write is idempotent.\n",
+						prose(os.Stdout, "hit --limit after %d issues attempted (%d fully processed, linked=%d minted=%d) — canary complete. Rerun WITHOUT --limit for the full pass; it restarts from the beginning and every write is idempotent.",
 							attempted, processed, linked, minted)
 						return nil
 					case errors.Is(walkErr, context.Canceled):

@@ -116,7 +116,7 @@ func TestAccumulatedChecklistCollapsesIdenticalBlocks(t *testing.T) {
 	if n := strings.Count(out.String(), "Deployment steps for aveloxis"); n >= 20 {
 		t.Errorf("a no-ack fleet at stamp 0.29.13 printed %d blocks; identical consecutive lists must collapse", n)
 	}
-	if !strings.Contains(out.String(), "from the schema stamp (0.29.13, whose own steps are unacknowledged)") {
+	if !strings.Contains(oneLine(out.String()), "from the schema stamp (0.29.13, whose own steps are unacknowledged)") {
 		t.Errorf("with no acknowledgement the header must name the stamp, not \"the last acknowledged deploy\":\n%s", out.String()[:min(400, out.Len())])
 	}
 }
@@ -216,7 +216,7 @@ func TestMultiReleaseHeaderRunsTheLadderOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := out.String()
-		header := s[:strings.Index(s, "=== Deployment steps")]
+		header := oneLine(s[:strings.Index(s, "=== Deployment steps")]) // wrapped at the column width (0.29.136)
 		if strings.Contains(header, "run each block's steps") {
 			t.Errorf("--since %s: the header still tells the operator to run every block's ladder:\n%s", tc.since, header)
 		}
@@ -245,7 +245,7 @@ func TestMultiReleaseHeaderRunsTheLadderOnce(t *testing.T) {
 	var out bytes.Buffer
 	list, origin, ackErr := deployRange(context.Background(), g, g.stamp, "0.29.69")
 	printRange(&out, list, origin, ackErr)
-	if !strings.Contains(out.String(), "`aveloxis migrate --skip-views` (the migrate this range needs)") {
+	if !strings.Contains(oneLine(out.String()), "`aveloxis migrate --skip-views` (the migrate this range needs)") {
 		t.Errorf("printDeploySteps must print the once-only header:\n%s", out.String()[:min(600, out.Len())])
 	}
 }
@@ -318,7 +318,7 @@ func TestGateNamesTheRangesMigrate(t *testing.T) {
 		if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.56"}, "0.29.69", skip, os.Stdin, &out); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "deploy steps for 0.29.69 (`aveloxis migrate`)") || !strings.Contains(out.String(), "the migrate of the deploy steps from the schema stamp (0.29.56") {
+		if s := oneLine(out.String()); strings.Contains(s, "deploy steps for 0.29.69 (`aveloxis migrate`)") || !strings.Contains(s, "the migrate of the deploy steps from the schema stamp (0.29.56") {
 			t.Errorf("skip=%v: the refusal must label the range's migrate as the range's:\n%s", skip, out.String())
 		}
 	}
@@ -331,7 +331,7 @@ func TestGateNamesTheRangesMigrate(t *testing.T) {
 		if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.58", latestAck: "0.29.56"}, "0.29.69", skip, os.Stdin, &out); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "from 0.29.58") || !strings.Contains(out.String(), "the migrate of the deploy steps since the last acknowledged deploy (0.29.56) (`aveloxis migrate`)") {
+		if s := oneLine(out.String()); strings.Contains(s, "from 0.29.58") || !strings.Contains(s, "the migrate of the deploy steps since the last acknowledged deploy (0.29.56) (`aveloxis migrate`)") {
 			t.Errorf("skip=%v: the label must name the range after the ack at 0.29.56:\n%s", skip, out.String())
 		}
 	}
@@ -497,7 +497,14 @@ func TestAckAheadRefusalReadsAsOneSentence(t *testing.T) {
 	if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.56", latestAck: "0.29.65"}, "0.29.69", false, os.Stdin, &out); err != nil {
 		t.Fatal(err)
 	}
-	line := strings.SplitN(out.String(), "\n", 2)[0]
+	// The refusal's first sentence, folded back from its wrapped lines
+	// (0.29.136): everything up to its "has not completed".
+	folded := oneLine(out.String())
+	end := strings.Index(folded, "has not completed")
+	if end < 0 {
+		t.Fatalf("the refusal must say the migrate has not completed:\n%s", out.String())
+	}
+	line := folded[:end+len("has not completed")]
 	if strings.Contains(line, ";") || !strings.Contains(line, "0.29.65") || !strings.Contains(line, "to this binary (`aveloxis migrate`) has not completed") {
 		t.Errorf("the ack-ahead refusal must read as one sentence naming the ack:\n%s", line)
 	}
@@ -587,7 +594,7 @@ func TestPendingReasonLinesArePinned(t *testing.T) {
 		if err := runDeployChecklistPending(context.Background(), g, &out, version); err != nil {
 			t.Fatal(err)
 		}
-		return out.String()
+		return oneLine(out.String()) // wrapped at the column width (0.29.136)
 	}
 	s := run(&fakeGate{hasDataErr: errors.New("boom"), stamp: "0.29.56"}, "0.29.69")
 	if !strings.Contains(s, "could not read whether this database has collected data: boom") || strings.Contains(s, "no collected data yet") || !strings.Contains(s, "The migrate to run") {
@@ -686,7 +693,7 @@ func TestStampRefusalSaysWhereTheStepsAre(t *testing.T) {
 		if _, _, err := checkDeployReadinessNaming(context.Background(), &fakeGate{hasData: true, stamp: "0.29.60", latestAck: "0.29.60"}, version, false, nil, &out); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "`aveloxis deploy-checklist --pending` lists them") {
+		if !strings.Contains(oneLine(out.String()), "`aveloxis deploy-checklist --pending` lists them") {
 			t.Errorf("%s: the stamp refusal must name where its steps are listed:\n%s", version, out.String())
 		}
 	}

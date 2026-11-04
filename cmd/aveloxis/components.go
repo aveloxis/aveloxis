@@ -124,7 +124,7 @@ func printBackendVerdict(out io.Writer, appName string, budget time.Duration, la
 		fmt.Fprintf(out, "WARNING: %d %s backend(s) from this host did not disconnect within %s after SIGTERM.\n",
 			len(last.ThisHost), appName, budget.Truncate(time.Second))
 		fmt.Fprintf(out, "Persistent PIDs (this host): %v\n", last.ThisHost)
-		fmt.Fprintf(out, "If no aveloxis process for this component (%s) is running on this host (`ps`), these backends are orphans.\n", appName)
+		prose(out, "If no aveloxis process for this component (%s) is running on this host (`ps`), these backends are orphans.", appName)
 		fmt.Fprintln(out, "Terminate them with:")
 		for _, pid := range last.ThisHost {
 			fmt.Fprintf(out, "  SELECT pg_terminate_backend(%d);\n", pid)
@@ -138,11 +138,11 @@ func printBackendVerdict(out io.Writer, appName string, budget time.Duration, la
 	// operator who stops the primary and sees nothing would read the
 	// fleet as down. Kept on purpose.
 	if last.OtherHosts > 0 {
-		fmt.Fprintf(out, "Note: %d %s backend(s) are connected from other client addresses (normally another machine running this component against the same database); they are not this host's and were left alone.\n",
+		prose(out, "Note: %d %s backend(s) are connected from other client addresses (normally another machine running this component against the same database); they are not this host's and were left alone.",
 			last.OtherHosts, appName)
 	}
 	if last.Hidden > 0 {
-		fmt.Fprintf(out, "Note: %d %s backend(s) belong to a database role whose privileges this one does not hold, so their client address is not visible here (pg_stat_activity shows a session's address only to roles that HOLD that session's role's privileges, and to roles that hold pg_read_all_stats's) — no verdict from here; re-check as that role, or `GRANT pg_read_all_stats TO <this role>` (a plain grant to a role with INHERIT: a NOINHERIT member, or a grant made WITH INHERIT FALSE, is a member without the privileges and still reads NULL).\n",
+		prose(out, "Note: %d %s backend(s) belong to a database role whose privileges this one does not hold, so their client address is not visible here (pg_stat_activity shows a session's address only to roles that HOLD that session's role's privileges, and to roles that hold pg_read_all_stats's) — no verdict from here; re-check as that role, or `GRANT pg_read_all_stats TO <this role>` (a plain grant to a role with INHERIT: a NOINHERIT member, or a grant made WITH INHERIT FALSE, is a member without the privileges and still reads NULL).",
 			last.Hidden, appName)
 	}
 }

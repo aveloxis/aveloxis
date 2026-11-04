@@ -1750,9 +1750,19 @@ only when the schema stamp is readable and current and this release's steps
 are acknowledged (or it has none); a missing, unreadable or malformed stamp
 prints the steps, with a first line saying why, and so does a database
 with no collected data yet (the start gate does not require the steps on a
-fresh install). Otherwise its last line is
+fresh install). Otherwise it ends with
 the migrate to run. It does not take `--since` or `--inclusive`. Use it for
 upgrades ([Upgrading](../getting-started/upgrading.md)).
+
+Every note wraps at the terminal's column width: `COLUMNS` when it is set
+(`COLUMNS=120 aveloxis deploy-checklist --pending`; the shell's own
+`COLUMNS` is not exported unless you export it), otherwise 80. A step's
+command line, and a command in backticks inside a note, are never split
+across lines, so they copy into a shell whole. A command an older note
+carries without backticks wraps like prose (the notes are frozen as their
+operators saw them): copy it from the note's lines, not the screen. The
+start gate's refusals and `aveloxis stop`'s verdict wrap the same way
+(0.29.136).
 
 `--since` is the offline form: it takes a version you name — typically the
 last acknowledged deploy, the highest version in `aveloxis_ops.deploy_ack`

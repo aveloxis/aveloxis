@@ -164,6 +164,13 @@ func New(store *db.PostgresStore, logger *slog.Logger) *Server {
 // request through the CORS + rate-limit middleware chain (v0.27.0 —
 // plan: summary/api-analytics-plan-2026-07-10.md).
 func NewWithOptions(store *db.PostgresStore, logger *slog.Logger, opts Options) (*Server, error) {
+	if logger == nil {
+		// A server built without a sink (tests): every log call still has a
+		// logger, none of them a nil dereference (Copilot PR #249, second
+		// round: the page cache's leader WARN was the first such call on a
+		// path a caller's disconnect reaches).
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	s := &Server{store: store, logger: logger, mux: http.NewServeMux(),
 		mailer: opts.Mailer, autoApproveAddLimit: opts.AutoApproveAddLimit,
 		ghAPIBase:    platform.GitHubAPIBaseOrPublic(opts.GitHubAPIBase),

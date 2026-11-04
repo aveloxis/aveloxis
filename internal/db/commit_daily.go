@@ -48,7 +48,11 @@ import (
 // survives an account rename, the login does not; the contributor id the
 // resolver WANTS for the login, PlatformUUID, is not the id it keeps when a
 // legacy row already holds the login, so no contributor id is stored), and
-// a replace keeps an id the table already knows. The reader resolves the
+// a replace keeps an id the table already knows WHILE the bucket's count is
+// unchanged — a walk that reports another count changed the evidence the id
+// rested on (the bucket may hold two identities under the email now), so
+// the id is dropped and the reader resolves afresh (Copilot PR #249,
+// second round). The reader resolves the
 // rest at read time, each only when unambiguous among live contributors:
 // the stored id, else the numeric id (contributors.gh_user_id), else the
 // login through the backfill's own rule (LOWER(gh_login)), else the house
@@ -159,7 +163,9 @@ func (s *PostgresStore) ReplaceRepoCommitDaily(ctx context.Context, repoID int64
 				SET commits = CASE WHEN $8::boolean THEN EXCLUDED.commits ELSE GREATEST(repo_commit_daily.commits, EXCLUDED.commits) END,
 				    author_login = CASE WHEN EXCLUDED.author_login <> '' THEN EXCLUDED.author_login ELSE repo_commit_daily.author_login END,
 				    author_gh_user_id = CASE WHEN EXCLUDED.author_gh_user_id <> 0 THEN EXCLUDED.author_gh_user_id ELSE repo_commit_daily.author_gh_user_id END,
-				    cntrb_id = COALESCE(EXCLUDED.cntrb_id, repo_commit_daily.cntrb_id),
+				    cntrb_id = CASE WHEN EXCLUDED.cntrb_id IS NOT NULL THEN EXCLUDED.cntrb_id
+				                    WHEN repo_commit_daily.commits IS NOT DISTINCT FROM CASE WHEN $8::boolean THEN EXCLUDED.commits ELSE GREATEST(repo_commit_daily.commits, EXCLUDED.commits) END THEN repo_commit_daily.cntrb_id
+				                    ELSE NULL END,
 				    computed_at = NOW()
 				WHERE repo_commit_daily.commits IS DISTINCT FROM CASE WHEN $8::boolean THEN EXCLUDED.commits ELSE GREATEST(repo_commit_daily.commits, EXCLUDED.commits) END
 				   OR (EXCLUDED.author_login <> '' AND repo_commit_daily.author_login IS DISTINCT FROM EXCLUDED.author_login)

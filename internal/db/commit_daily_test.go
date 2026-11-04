@@ -750,7 +750,7 @@ func TestReplaceRepoCommitDailyKeepsKnownIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
-		{Day: fx.in, AuthorEmail: "a@x", Commits: 7}, // no identity known to this walk
+		{Day: fx.in, AuthorEmail: "a@x", Commits: 1}, // no identity known to this walk; the bucket unchanged
 	}, true); err != nil {
 		t.Fatal(err)
 	}
@@ -764,6 +764,35 @@ func TestReplaceRepoCommitDailyKeepsKnownIdentities(t *testing.T) {
 	}
 	if n != 1 || id == nil || *id != fx.alice {
 		t.Fatalf("rows=%d (want 1: gone@x removed), id=%v (want alice kept)", n, id)
+	}
+	// Copilot PR #249 (second round): a stored identity is the backfill's
+	// knowledge of the bucket AS IT WAS — its commits agreed on one. A walk
+	// that reports a different count for the bucket changed the evidence
+	// (commits landed on that day since; a rewritten history), and the
+	// bucket may now carry two identities under the email: the stored id is
+	// dropped and the reader resolves by the login and the email rules, or
+	// to no one. A walk that knows the identity still writes it.
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: "a@x", Commits: 7},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT cntrb_id::text FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND author_email = 'a@x'`, fx.repoID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != nil {
+		t.Fatalf("a replace that changed the bucket's count (1 → 7) with no identity of its own must drop the stored id, got %v", *id)
+	}
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: "a@x", Commits: 9, CntrbID: fx.alice},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT cntrb_id::text FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND author_email = 'a@x'`, fx.repoID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id == nil || *id != fx.alice {
+		t.Fatalf("a replace that knows the identity writes it whatever the count, got %v", id)
 	}
 }
 

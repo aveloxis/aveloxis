@@ -627,6 +627,21 @@ func TestPageCacheLeaderDoesNotDoubleReportTheRequestBound(t *testing.T) {
 	}
 }
 
+// Copilot PR #249 (second round): NewWithOptions permits a nil logger (a
+// test's server without a sink), and the leader's WARN is the first log
+// call on a path such a server can reach — a caller disconnecting while a
+// bounded leader runs must skip the diagnostic, never panic.
+func TestNilLoggerIsNormalizedByTheConstructor(t *testing.T) {
+	s, err := NewWithOptions(nil, nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.logger == nil {
+		t.Fatal("a nil logger must be normalized to a discarding one: every log call on the server would otherwise panic")
+	}
+	s.logger.Warn("must not panic")
+}
+
 // Detached from the caller, not from the process (review round 1 F3): a
 // stop (`aveloxis stop api` cancelling the context BindLifetime names) ends
 // a leader's run at once — the deploy's next step must not wait up to

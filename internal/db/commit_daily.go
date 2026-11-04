@@ -376,7 +376,16 @@ func (s *PostgresStore) ListReposNeedingCommitDaily(ctx context.Context, limit i
 // dailyCommitsArmSQL (top contributors) and the series that count people
 // from the daily table (metricSeriesSQL's contributors and committers), so
 // every reader resolves exactly alike (SR-17: one normalizer). NULL when no
-// rule resolves. Each row is attributed in this order — its stored identity (the backfill's),
+// rule resolves — a (repository, day, email) bucket whose commits carried
+// two stored identities is written with none (FillRepoCommitDailyFromCommits;
+// SR-6) and resolves by the rules below or to no one, so the person series
+// of a complete repository can count such a day's two authors as one or
+// none where the per-file rows counted two (Copilot PR #249 #2: declined —
+// the daily table is per author EMAIL by design, summary/49; an email two
+// identities share on one day is ambiguous, and crediting either is
+// fabricated identity; the same rule has governed top contributors' commits
+// column since 0.29.76, and the catalog texts say which rule applies when).
+// Each row is attributed in this order — its stored identity (the backfill's),
 // only while that contributor is LIVE: a contributor merge soft-deletes the
 // loser and leaves child rows on its id by design, mapping its email to the
 // winner through an alias, so a merged-away stored id falls through to the

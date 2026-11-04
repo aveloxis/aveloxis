@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"strings"
@@ -358,9 +359,14 @@ func TestMetricSeriesCommitArmsReadTheDailyTableWhenFilledAndAligned(t *testing.
 	if got := sum("contributors", one, since); got != 1 {
 		t.Fatalf("filled + aligned: contributors counts alice once for the week, got %v", got)
 	}
-	// The set: the filled repository's days and the unfilled one's commit row.
-	if got := sum("code_change_commits", both, since); got != 9 {
-		t.Fatalf("a set mixes the arms per repository: 8 daily + 1 commit row, got %v", got)
+	// The set: the person series mix the arms per repository; the commit
+	// count over a SET keeps the hash path for every repository (Copilot
+	// PR #249 #1: a commit a fork shares with its upstream counts once
+	// across the set, which daily counts cannot) — the two fixtures carry
+	// the same hash, the fork shape, so the set counts it once and reads
+	// none of the daily rows.
+	if got := sum("code_change_commits", both, since); got != 1 {
+		t.Fatalf("a set keeps code_change_commits on the hash path (the shared hash once), got %v", got)
 	}
 	if got := sum("committers", both, since); got != 2 {
 		t.Fatalf("a set mixes the arms per repository: alice and the other fixture's alice, got %v", got)
@@ -368,6 +374,106 @@ func TestMetricSeriesCommitArmsReadTheDailyTableWhenFilledAndAligned(t *testing.
 	// An unaligned window falls back to the commits table for every repository.
 	if got := sum("code_change_commits", one, since.Add(time.Hour)); got != 1 {
 		t.Fatalf("unaligned window falls back to the commits table: got %v", got)
+	}
+}
+
+// Copilot PR #249 #1: a commit two repositories share (a fork and its
+// upstream, the same hash in both) counts ONCE across the set on the hash
+// path, whether or not one of them is complete; the single repository's
+// chart takes its daily count.
+func TestCommitCountOverASetDeduplicatesSharedHashes(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	up := seedCommitDaily(t, store, ctx, "_avcd_sh006")
+	fork := seedCommitDaily(t, store, ctx, "_avcd_sh007") // the same hash (c0ffee1) in both: the fork shape
+	since, until := utcDay(time.Now()).AddDate(0, 0, -30), utcDay(time.Now()).AddDate(0, 0, 1)
+	count := func(ids []int64) float64 {
+		t.Helper()
+		pts, err := store.MetricWeeklySeries(ctx, ids, "code_change_commits", "week", since, until)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0.0
+		for _, p := range pts {
+			total += p.Value
+		}
+		return total
+	}
+	set := []int64{up.repoID, fork.repoID}
+	if got := count(set); got != 1 {
+		t.Fatalf("unfilled: the hash path counts the shared commit once across the set, got %v", got)
+	}
+	if err := store.ReplaceRepoCommitDaily(ctx, up.repoID, []CommitDailyRow{{Day: up.in, AuthorEmail: "_avcd_sh006@x", Commits: 1}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(set); got != 1 {
+		t.Fatalf("one repository complete: the set still counts the shared commit once (daily counts would say 2), got %v", got)
+	}
+	if got := count([]int64{up.repoID}); got != 1 {
+		t.Fatalf("the complete repository alone reads its daily count, got %v", got)
+	}
+}
+
+// Copilot PR #249 #3: for a complete repository the commits arm must not be
+// reached at all — the live set is its positive filter. A `repo_id = ANY(all)
+// AND repo_id <> ALL(daily)` shape matched every commit-file row of the
+// repository in the index and dropped them after the heap fetch, the scan
+// this release retires. The plan of each commit-reading series for a
+// complete repository visits no commits row and no commits page.
+func TestCompleteRepositorysSeriesVisitNoCommitRows(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_pl008")
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{{Day: fx.in, AuthorEmail: "_avcd_pl008@x", Commits: 1}}, true); err != nil {
+		t.Fatal(err)
+	}
+	since, until := utcDay(time.Now()).AddDate(0, 0, -30), utcDay(time.Now()).AddDate(0, 0, 1)
+	ids := []int64{fx.repoID}
+	daily, err := store.commitDailyServesOf(ctx, ids, since, until)
+	if err != nil || len(daily) != 1 {
+		t.Fatalf("the fixture must be complete and the window aligned: %v %v", daily, err)
+	}
+	live := complementOf(ids, daily)
+	if len(live) != 0 {
+		t.Fatalf("complementOf left %v", live)
+	}
+	// The plan's SHAPE is judged, not the planner's choice of index (the test
+	// table is small, and it carries indexes production lacks): the commits
+	// node's condition names the live set as `repo_id = ANY(...)`, carries no
+	// `<> ALL`, and returns no row.
+	for _, metric := range []string{"contributors", "committers", "code_change_commits"} {
+		var plan []byte
+		if err := store.pool.QueryRow(ctx, "EXPLAIN (ANALYZE, FORMAT JSON) "+fmt.Sprintf(metricSeriesSQL[metric], "week"), live, since, until, daily).Scan(&plan); err != nil {
+			t.Fatalf("%s: %v", metric, err)
+		}
+		var root []map[string]any
+		if err := json.Unmarshal(plan, &root); err != nil || len(root) != 1 {
+			t.Fatalf("%s: plan JSON: %v", metric, err)
+		}
+		commitsNodes := 0
+		var walk func(node map[string]any)
+		walk = func(node map[string]any) {
+			if rel, _ := node["Relation Name"].(string); rel == "commits" {
+				commitsNodes++
+				rows, _ := node["Actual Rows"].(float64)
+				cond, _ := node["Index Cond"].(string)
+				filter, _ := node["Filter"].(string)
+				if rows != 0 || strings.Contains(cond+filter, "<> ALL") || !strings.Contains(cond+filter, "repo_id = ANY") {
+					t.Errorf("%s: the commits arm is not filtered by the live set alone (actual rows %v; cond %q filter %q): a complete repository's rows must never be fetched and dropped", metric, rows, cond, filter)
+				}
+			}
+			if subs, ok := node["Plans"].([]any); ok {
+				for _, sub := range subs {
+					if m, ok := sub.(map[string]any); ok {
+						walk(m)
+					}
+				}
+			}
+		}
+		walk(root[0]["Plan"].(map[string]any))
+		if commitsNodes == 0 {
+			t.Errorf("%s: no commits node in the plan — the pin must see the arm it judges", metric)
+		}
 	}
 }
 

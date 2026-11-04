@@ -52,16 +52,23 @@ func (s *PostgresStore) ResolveOrgRepos(ctx context.Context, host, login string)
 
 // metricSeriesSQL maps each base temporal metric to its bucketed
 // query. $1 = repo ids, $2 = since, $3 = until, %s (or %[1]s, where the
-// bucket appears twice) = bucket (validated week|month upstream); a
-// statement that reads the commits table takes $4, the ids among $1 whose
-// daily commit table serves the window (MetricWeeklySeries).
+// bucket appears twice) = bucket (validated week|month upstream). A
+// statement that reads the commits table takes the ids SPLIT instead: $4
+// the ids whose daily commit table serves the window, $1 the rest (the
+// commits arm's positive filter; the other arms read $1 || $4) —
+// MetricWeeklySeries.
 var metricSeriesSQL = map[string]string{
 	// DISTINCT people with ANY contribution event in the bucket —
-	// same source set as the v0.23.10 contributions CTE. $1 the
-	// repositories, $2/$3 the window, $4 the repositories among them whose
-	// daily commit table serves the window (0.29.137; MetricWeeklySeries
-	// splits them): their commit authors come from their days, the rest's
-	// from their commit-file rows. The person is made distinct per bucket
+	// same source set as the v0.23.10 contributions CTE. $2/$3 the
+	// window; the repositories are split (0.29.137; MetricWeeklySeries):
+	// $4 those whose daily commit table serves the window — their commit
+	// authors come from their days — and $1 the rest, whose commit-file
+	// rows are read; the other arms read both ($1 || $4, cast: an untyped
+	// || is text). $1 is the
+	// POSITIVE filter of the commits arm (Copilot PR #249 #3: a complete
+	// repository inside ANY($1) with a `<> ALL($4)` filter still had every
+	// commit-file row fetched and then dropped — the scan this release
+	// retires). The person is made distinct per bucket
 	// FIRST, so the deleted-loser rule is asked once per (bucket, person),
 	// not once per commit-file row (kate, 2026-11-04: 497,889 probes for
 	// one repository).
@@ -70,12 +77,12 @@ var metricSeriesSQL = map[string]string{
 		FROM (
 			SELECT DISTINCT date_trunc('%[1]s', ts AT TIME ZONE 'UTC') AS bucket, cntrb
 			FROM (
-				SELECT created_at AS ts, reporter_id AS cntrb FROM aveloxis_data.issues WHERE repo_id = ANY($1) AND reporter_id IS NOT NULL
+				SELECT created_at AS ts, reporter_id AS cntrb FROM aveloxis_data.issues WHERE repo_id = ANY($1::bigint[] || $4::bigint[]) AND reporter_id IS NOT NULL
 				UNION ALL
-				SELECT created_at, author_id FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1) AND author_id IS NOT NULL
+				SELECT created_at, author_id FROM aveloxis_data.pull_requests WHERE repo_id = ANY($1::bigint[] || $4::bigint[]) AND author_id IS NOT NULL
 				UNION ALL
 				SELECT cmt_author_timestamp, cmt_ght_author_id FROM aveloxis_data.commits
-				WHERE repo_id = ANY($1) AND repo_id <> ALL($4) AND cmt_ght_author_id IS NOT NULL
+				WHERE repo_id = ANY($1) AND cmt_ght_author_id IS NOT NULL
 				UNION ALL
 				SELECT (d.day::timestamp AT TIME ZONE 'UTC'), ` + dailyAuthorIdentitySQL + `
 				FROM aveloxis_data.repo_commit_daily d
@@ -83,11 +90,11 @@ var metricSeriesSQL = map[string]string{
 				  AND d.day >= (($2::timestamptz) AT TIME ZONE 'UTC')::date
 				  AND d.day <  (($3::timestamptz) AT TIME ZONE 'UTC')::date
 				UNION ALL
-				SELECT msg_timestamp, cntrb_id FROM aveloxis_data.messages WHERE repo_id = ANY($1) AND cntrb_id IS NOT NULL
+				SELECT msg_timestamp, cntrb_id FROM aveloxis_data.messages WHERE repo_id = ANY($1::bigint[] || $4::bigint[]) AND cntrb_id IS NOT NULL
 				UNION ALL
-				SELECT created_at, cntrb_id FROM aveloxis_data.issue_events WHERE repo_id = ANY($1) AND cntrb_id IS NOT NULL
+				SELECT created_at, cntrb_id FROM aveloxis_data.issue_events WHERE repo_id = ANY($1::bigint[] || $4::bigint[]) AND cntrb_id IS NOT NULL
 				UNION ALL
-				SELECT created_at, cntrb_id FROM aveloxis_data.pull_request_events WHERE repo_id = ANY($1) AND cntrb_id IS NOT NULL
+				SELECT created_at, cntrb_id FROM aveloxis_data.pull_request_events WHERE repo_id = ANY($1::bigint[] || $4::bigint[]) AND cntrb_id IS NOT NULL
 			) u
 			WHERE ts >= $2 AND ts < $3 AND cntrb IS NOT NULL
 		) p
@@ -121,13 +128,16 @@ var metricSeriesSQL = map[string]string{
 		GROUP BY 1 ORDER BY 1`,
 	// Distinct commits per bucket: the daily table's counts for the
 	// repositories it serves ($4), distinct hashes over the per-file rows
-	// for the rest (0.29.137).
+	// for the rest ($1; 0.29.137). A SET of repositories is never split
+	// (MetricWeeklySeries): the hash path counts a commit a fork shares
+	// with its upstream ONCE across the set, which daily counts cannot
+	// (Copilot PR #249 #1).
 	"code_change_commits": `
 		SELECT a.bucket, SUM(a.n)::float
 		FROM (
 			SELECT date_trunc('%[1]s', cmt_author_timestamp AT TIME ZONE 'UTC') AS bucket, COUNT(DISTINCT cmt_commit_hash) AS n
 			FROM aveloxis_data.commits
-			WHERE repo_id = ANY($1) AND repo_id <> ALL($4) AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
+			WHERE repo_id = ANY($1) AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
 			GROUP BY 1
 			UNION ALL
 			SELECT date_trunc('%[1]s', d.day::timestamp), SUM(d.commits)
@@ -148,7 +158,7 @@ var metricSeriesSQL = map[string]string{
 			SELECT DISTINCT date_trunc('%[1]s', ts AT TIME ZONE 'UTC') AS bucket, cntrb
 			FROM (
 				SELECT cmt_author_timestamp AS ts, cmt_ght_author_id AS cntrb FROM aveloxis_data.commits
-				WHERE repo_id = ANY($1) AND repo_id <> ALL($4) AND cmt_ght_author_id IS NOT NULL
+				WHERE repo_id = ANY($1) AND cmt_ght_author_id IS NOT NULL
 				UNION ALL
 				SELECT (d.day::timestamp AT TIME ZONE 'UTC'), ` + dailyAuthorIdentitySQL + `
 				FROM aveloxis_data.repo_commit_daily d
@@ -186,15 +196,24 @@ func (s *PostgresStore) MetricWeeklySeries(ctx context.Context, repoIDs []int64,
 		// The commit arm (0.29.137; summary/49's rule): the daily table for
 		// every repository whose picture is complete when the window is
 		// UTC-day aligned — the chart windows are bucket starts, so they
-		// are — and the commit-file rows for the rest, in one statement.
-		daily, err := s.commitDailyServesOf(ctx, repoIDs, since, until)
-		if err != nil {
-			return nil, fmt.Errorf("metric %s: %w", metric, err)
+		// are — and the commit-file rows for the rest, in one statement;
+		// $1 becomes the rest, the commits arm's positive filter, so a
+		// complete repository's per-file rows are never visited (Copilot
+		// PR #249 #3). code_change_commits over a SET is never split: its
+		// hash path deduplicates a commit shared across the set's
+		// repositories, which daily counts cannot (Copilot PR #249 #1).
+		live, daily := repoIDs, []int64{}
+		if metric != "code_change_commits" || len(repoIDs) == 1 {
+			served, err := s.commitDailyServesOf(ctx, repoIDs, since, until)
+			if err != nil {
+				return nil, fmt.Errorf("metric %s: %w", metric, err)
+			}
+			if len(served) > 0 {
+				daily = served
+				live = complementOf(repoIDs, served)
+			}
 		}
-		if daily == nil {
-			daily = []int64{} // <> ALL(NULL) is NULL, not true: an empty array keeps every row
-		}
-		args = append(args, daily)
+		args = []any{live, since, until, daily} // never nil: ANY(NULL) and $1 || NULL are NULL, not empty
 	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(q, bucket), args...)
 	if err != nil {
@@ -494,4 +513,20 @@ func (s *PostgresStore) FirstActivityAt(ctx context.Context, repoIDs []int64) (t
 		return time.Time{}, false, nil
 	}
 	return fa.UTC(), true, nil
+}
+
+// complementOf is ids without the members of served, in ids' order (both
+// small: a chart's one repository, a comparison's at most 500).
+func complementOf(ids, served []int64) []int64 {
+	drop := make(map[int64]bool, len(served))
+	for _, id := range served {
+		drop[id] = true
+	}
+	rest := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if !drop[id] {
+			rest = append(rest, id)
+		}
+	}
+	return rest
 }

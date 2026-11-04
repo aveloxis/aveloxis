@@ -5,7 +5,6 @@ package db
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"strings"
@@ -415,66 +414,37 @@ func TestCommitCountOverASetDeduplicatesSharedHashes(t *testing.T) {
 }
 
 // Copilot PR #249 #3: for a complete repository the commits arm must not be
-// reached at all — the live set is its positive filter. A `repo_id = ANY(all)
-// AND repo_id <> ALL(daily)` shape matched every commit-file row of the
-// repository in the index and dropped them after the heap fetch, the scan
-// this release retires. The plan of each commit-reading series for a
-// complete repository visits no commits row and no commits page.
-func TestCompleteRepositorysSeriesVisitNoCommitRows(t *testing.T) {
-	store, ctx := v0251Connect(t)
-	t.Cleanup(store.Close)
-	fx := seedCommitDaily(t, store, ctx, "_avcd_pl008")
-	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{{Day: fx.in, AuthorEmail: "_avcd_pl008@x", Commits: 1}}, true); err != nil {
-		t.Fatal(err)
-	}
-	since, until := utcDay(time.Now()).AddDate(0, 0, -30), utcDay(time.Now()).AddDate(0, 0, 1)
-	ids := []int64{fx.repoID}
-	daily, err := store.commitDailyServesOf(ctx, ids, since, until)
-	if err != nil || len(daily) != 1 {
-		t.Fatalf("the fixture must be complete and the window aligned: %v %v", daily, err)
-	}
-	live := complementOf(ids, daily)
-	if len(live) != 0 {
-		t.Fatalf("complementOf left %v", live)
-	}
-	// The plan's SHAPE is judged, not the planner's choice of index (the test
-	// table is small, and it carries indexes production lacks): the commits
-	// node's condition names the live set as `repo_id = ANY(...)`, carries no
-	// `<> ALL`, and returns no row.
-	for _, metric := range []string{"contributors", "committers", "code_change_commits"} {
-		var plan []byte
-		if err := store.pool.QueryRow(ctx, "EXPLAIN (ANALYZE, FORMAT JSON) "+fmt.Sprintf(metricSeriesSQL[metric], "week"), live, since, until, daily).Scan(&plan); err != nil {
-			t.Fatalf("%s: %v", metric, err)
-		}
-		var root []map[string]any
-		if err := json.Unmarshal(plan, &root); err != nil || len(root) != 1 {
-			t.Fatalf("%s: plan JSON: %v", metric, err)
-		}
-		commitsNodes := 0
-		var walk func(node map[string]any)
-		walk = func(node map[string]any) {
-			if rel, _ := node["Relation Name"].(string); rel == "commits" {
-				commitsNodes++
-				rows, _ := node["Actual Rows"].(float64)
-				cond, _ := node["Index Cond"].(string)
-				filter, _ := node["Filter"].(string)
-				if rows != 0 || strings.Contains(cond+filter, "<> ALL") || !strings.Contains(cond+filter, "repo_id = ANY") {
-					t.Errorf("%s: the commits arm is not filtered by the live set alone (actual rows %v; cond %q filter %q): a complete repository's rows must never be fetched and dropped", metric, rows, cond, filter)
+// reached at all — the live set ($1) is its positive filter. The retired
+// shape, `repo_id = ANY(all) AND repo_id <> ALL(daily)`, matched every
+// commit-file row of the repository in the index and dropped them after the
+// heap fetch — the scan this release retires. The statement's shape is
+// pinned, read from metricSeriesSQL itself: a plan-based oracle depends on
+// the plan the small test database picks (a sequential scan reports every
+// other row as removed by its filter; a bitmap scan carries its condition
+// under another key — review round 5 R5-2), where production's one plan is
+// the EXPLAIN the operator ran. Each commits arm's WHERE names $1, never $4,
+// and carries no exclusion of the daily set. The value tests pin the Go
+// split (TestMetricSeriesCommitArmsReadTheDailyTableWhenFilledAndAligned:
+// 8, not 9; TestCommitCountOverASetDeduplicatesSharedHashes: 1).
+func TestCommitsArmIsFilteredByTheLiveSetAlone(t *testing.T) {
+	examined := 0
+	for name, q := range metricSeriesSQL {
+		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
+		for _, arm := range strings.Split(stmt, "FROM aveloxis_data.commits")[1:] {
+			examined++
+			// The arm's WHERE clause: up to the next arm or the grouping.
+			where := arm
+			for _, end := range []string{"UNION ALL", "GROUP BY", ") u"} {
+				if i := strings.Index(where, end); i >= 0 {
+					where = where[:i]
 				}
 			}
-			if subs, ok := node["Plans"].([]any); ok {
-				for _, sub := range subs {
-					if m, ok := sub.(map[string]any); ok {
-						walk(m)
-					}
-				}
+			if !strings.Contains(where, "repo_id = ANY($1)") || strings.Contains(where, "$4") || strings.Contains(where, "<> ALL") || strings.Contains(where, "NOT (") {
+				t.Errorf("%s: the commits arm must be filtered by the live set alone (repo_id = ANY($1), no $4, no exclusion): %q", name, strings.TrimSpace(where))
 			}
 		}
-		walk(root[0]["Plan"].(map[string]any))
-		if commitsNodes == 0 {
-			t.Errorf("%s: no commits node in the plan — the pin must see the arm it judges", metric)
-		}
 	}
+	srctest.MinCount(t, "commits arms in metricSeriesSQL", examined, 3)
 }
 
 // The time series ends at the plausible bound on both paths: a commit (and

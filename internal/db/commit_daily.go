@@ -384,7 +384,8 @@ func (s *PostgresStore) ListReposNeedingCommitDaily(ctx context.Context, limit i
 // the daily table is per author EMAIL by design, summary/49; an email two
 // identities share on one day is ambiguous, and crediting either is
 // fabricated identity; the same rule has governed top contributors' commits
-// column since 0.29.76, and the catalog texts say which rule applies when).
+// column since 0.29.73, its stored-identity arm live-only since 0.29.81, and
+// the catalog texts say which rule applies when).
 // Each row is attributed in this order — its stored identity (the backfill's),
 // only while that contributor is LIVE: a contributor merge soft-deletes the
 // loser and leaves child rows on its id by design, mapping its email to the
